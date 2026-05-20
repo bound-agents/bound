@@ -1,91 +1,117 @@
-import { describe, expect, it } from "bun:test";
-import { injectTraceContext } from "@bound/shared";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { TypedEventEmitter } from "@bound/shared";
+import type { ServerWebSocket } from "bun";
+import { createWebSocketHandler } from "../server/websocket";
 
-describe("WebSocket tool:call trace dispatch (AC6.1)", () => {
-	it("injectTraceContext returns null when no span is active", () => {
-		// When there is no active span, injectTraceContext should return null
-		const context = injectTraceContext();
-		expect(context).toBeNull();
+class MockWebSocket {
+	readyState = 1;
+	messages: unknown[] = [];
+
+	send(message: string | Buffer) {
+		this.messages.push(typeof message === "string" ? JSON.parse(message) : message);
+	}
+}
+
+describe("WebSocket tool:call trace dispatch", () => {
+	let eventBus: TypedEventEmitter;
+	let handler: ReturnType<typeof createWebSocketHandler>;
+
+	beforeEach(() => {
+		eventBus = new TypedEventEmitter();
+		handler = createWebSocketHandler(eventBus);
 	});
 
-	it("injectTraceContext returns carrier object when called", () => {
-		// Test that the function is callable and has the expected behavior
-		// In a test environment without active spans, it should return null
-		const result = injectTraceContext();
-		if (result !== null) {
-			// If span is somehow active, it should have traceparent
-			expect(typeof result).toBe("object");
-			if ("traceparent" in result) {
-				expect(typeof result.traceparent).toBe("string");
-			}
-		} else {
-			// No span active
-			expect(result).toBeNull();
-		}
+	afterEach(() => {
+		handler.cleanup();
 	});
 
-	it("tool:call message structure includes conditional trace_context", async () => {
-		// Verify that the WebSocket implementation conditionally includes trace_context
-		// by examining the message structure
+	function configureToolAndSubscribe(): MockWebSocket {
+		const ws = new MockWebSocket();
+		handler.open(ws as unknown as ServerWebSocket<unknown>);
+		handler.message(
+			ws as unknown as ServerWebSocket<unknown>,
+			JSON.stringify({
+				type: "session:configure",
+				tools: [
+					{
+						type: "function",
+						function: {
+							name: "test_tool",
+							description: "A test tool",
+							parameters: { type: "object", properties: {} },
+						},
+					},
+				],
+			}),
+		);
+		handler.message(
+			ws as unknown as ServerWebSocket<unknown>,
+			JSON.stringify({ type: "thread:subscribe", thread_id: "thread-1" }),
+		);
+		return ws;
+	}
 
-		// Simulate the tool:call message construction logic from websocket.ts line 666-674
-		const traceContext = injectTraceContext(); // Will be null in test env
-		const toolCallMessage = {
-			type: "tool:call",
-			call_id: "call-1",
-			thread_id: "thread-1",
-			tool_name: "test_tool",
-			arguments: { param: "value" },
-			...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
+	it("forwards traceContext from event payload into tool:call frame", () => {
+		const ws = configureToolAndSubscribe();
+
+		const carrier = {
+			traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		};
 
-		// Verify structure
-		expect(toolCallMessage.type).toBe("tool:call");
-		expect(toolCallMessage.call_id).toBe("call-1");
-		expect(toolCallMessage.thread_id).toBe("thread-1");
-		expect(toolCallMessage.tool_name).toBe("test_tool");
-
-		// When no span is active, trace_context should not be in the message
-		if (traceContext === null) {
-			expect("trace_context" in toolCallMessage).toBe(false);
-		}
-	});
-
-	it("trace_context is stringified when present", () => {
-		// Verify the stringification logic
-		const testTraceContext = { traceparent: "00-0af7-b7ad-01" };
-
-		const serialized = JSON.stringify(testTraceContext);
-		expect(typeof serialized).toBe("string");
-		expect(serialized).toContain("traceparent");
-
-		// Parse it back
-		const parsed = JSON.parse(serialized);
-		expect(parsed.traceparent).toBe("00-0af7-b7ad-01");
-	});
-
-	it("tool:call message can be serialized and deserialized", () => {
-		// Verify the entire message flow works correctly
-		const toolCallMsg = {
-			type: "tool:call",
-			call_id: "call-x",
-			thread_id: "thread-1",
-			tool_name: "my_tool",
+		eventBus.emit("client_tool_call:created", {
+			threadId: "thread-1",
+			callId: "call-1",
+			entryId: "entry-1",
+			toolName: "test_tool",
 			arguments: { foo: "bar" },
-			// trace_context would only be present if span is active
-		};
+			traceContext: carrier,
+		});
 
-		const serialized = JSON.stringify(toolCallMsg);
-		expect(typeof serialized).toBe("string");
+		const toolCall = ws.messages.find(
+			(m): m is { type: string; trace_context: string } =>
+				typeof m === "object" && m !== null && (m as { type: string }).type === "tool:call",
+		);
+		expect(toolCall).toBeDefined();
+		expect(toolCall?.trace_context).toBeDefined();
+		expect(JSON.parse(toolCall?.trace_context as string)).toEqual(carrier);
+	});
 
-		const deserialized = JSON.parse(serialized);
-		expect(deserialized.type).toBe("tool:call");
-		expect(deserialized.call_id).toBe("call-x");
-		expect(deserialized.thread_id).toBe("thread-1");
-		expect(deserialized.tool_name).toBe("my_tool");
-		expect(deserialized.arguments).toEqual({ foo: "bar" });
+	it("omits trace_context when event payload has no traceContext", () => {
+		const ws = configureToolAndSubscribe();
 
-		// Verify trace_context is not present when not set
-		expect("trace_context" in deserialized).toBe(false);
+		eventBus.emit("client_tool_call:created", {
+			threadId: "thread-1",
+			callId: "call-2",
+			entryId: "entry-2",
+			toolName: "test_tool",
+			arguments: { foo: "bar" },
+		});
+
+		const toolCall = ws.messages.find(
+			(m): m is Record<string, unknown> =>
+				typeof m === "object" && m !== null && (m as { type: string }).type === "tool:call",
+		);
+		expect(toolCall).toBeDefined();
+		expect("trace_context" in (toolCall as Record<string, unknown>)).toBe(false);
+	});
+
+	it("omits trace_context when event payload sets traceContext explicitly null", () => {
+		const ws = configureToolAndSubscribe();
+
+		eventBus.emit("client_tool_call:created", {
+			threadId: "thread-1",
+			callId: "call-3",
+			entryId: "entry-3",
+			toolName: "test_tool",
+			arguments: {},
+			traceContext: null,
+		});
+
+		const toolCall = ws.messages.find(
+			(m): m is Record<string, unknown> =>
+				typeof m === "object" && m !== null && (m as { type: string }).type === "tool:call",
+		);
+		expect(toolCall).toBeDefined();
+		expect("trace_context" in (toolCall as Record<string, unknown>)).toBe(false);
 	});
 });

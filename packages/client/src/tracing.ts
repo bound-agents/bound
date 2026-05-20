@@ -1,5 +1,4 @@
 import { type SerializedSpan, extractTraceContext, serializeReadableSpan } from "@bound/shared";
-import type { Context, Span } from "@opentelemetry/api";
 import { SpanKind, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	BasicTracerProvider,
@@ -21,27 +20,29 @@ export interface WrapToolCallOptions {
 /**
  * A long-lived client-side tracing session, scoped to one WebSocket connection.
  *
- * The session holds a single `BasicTracerProvider` for the connection's lifetime
- * and groups tool calls under a `boundless.session` span keyed to the server-injected
- * `traceparent`. When the traceparent changes (a new agent turn on the server side),
- * the previous session span is closed and a new one is opened — so all parallel/serial
- * client tool calls dispatched under one server-side parent share one session parent.
+ * The session owns a single `BasicTracerProvider` for the connection's lifetime
+ * — providers are expensive to construct, so we don't recreate one per call —
+ * but emits no spans of its own. Each `wrapToolCall` extracts the server's
+ * SpanContext from the carrier and parents `client-tool.execute` directly under
+ * it, so parallel/serial sibling calls naturally group under the agent loop's
+ * `tool-execute` span on a single unified Jaeger trace.
  *
- * Each `client-tool.execute` span:
- *   - parents to the active `boundless.session` span (groups siblings on the client trace);
- *   - carries a `Link` to the server-side `SpanContext` (cross-trace nav in Jaeger).
- *
- * This replaces the per-call provider churn of the old `withClientToolTracing` and
- * stops `client-tool.execute` from dangling under `web.handle-message` on the server trace.
+ * The previous `boundless.session` span has been removed: it conflated
+ * connection lifetime with per-turn lifetime (it rolled per-traceparent), and
+ * once children parent under the server SpanContext directly, sibling grouping
+ * happens automatically via the carrier — the session span added a layer of
+ * indirection that misrepresented causality (it appeared to be the parent of a
+ * tool-execute span that had actually caused it).
  */
 export interface ClientTracingSession {
 	/**
 	 * Wrap a single tool call with tracing. Returns the tool's result plus any
-	 * spans that completed during this call (serialized for shipping back to the server).
+	 * spans that completed during this call (serialized for shipping back to the
+	 * server).
 	 *
-	 * If `traceContextStr` is missing, malformed, or has no `traceparent`, executes
-	 * `fn` without any tracing overhead and returns `traceData: undefined`. Tracing
-	 * setup failures must never block tool execution.
+	 * If `traceContextStr` is missing, malformed, or has no `traceparent`,
+	 * executes `fn` without tracing overhead and returns `traceData: undefined`.
+	 * Tracing setup failures must never block tool execution.
 	 */
 	wrapToolCall<T>(
 		traceContextStr: string | undefined,
@@ -50,22 +51,13 @@ export interface ClientTracingSession {
 	): Promise<ClientToolTracingResult<T>>;
 
 	/**
-	 * End the session: close any active `boundless.session` span, drain the exporter,
-	 * shut down the provider (fire-and-forget), and return the final batch of serialized
-	 * spans (for shipping in a trailing message before WS close).
-	 *
-	 * Synchronous — `SimpleSpanProcessor` exports each span on `span.end()`, so the
-	 * exporter array is populated by the time this returns. Idempotent — subsequent
-	 * calls return `[]`.
+	 * Shut down the underlying provider (fire-and-forget). Idempotent —
+	 * subsequent calls return `[]`. The return type is preserved for back-compat
+	 * with callers that previously needed to ship a trailing batch span; with
+	 * the session span removed, every `client-tool.execute` ships on its own
+	 * `span.end()` and there is nothing trailing to flush.
 	 */
 	end(): SerializedSpan[];
-}
-
-interface ActiveBatch {
-	/** The `traceparent` header value this batch is bound to. */
-	traceparent: string;
-	span: Span;
-	context: Context;
 }
 
 export function createClientTracingSession(): ClientTracingSession {
@@ -74,20 +66,12 @@ export function createClientTracingSession(): ClientTracingSession {
 	provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
 	const tracer = provider.getTracer("bound.client-tool");
 
-	let activeBatch: ActiveBatch | null = null;
 	let sessionEnded = false;
 
 	const drainFinished = (): SerializedSpan[] => {
 		const finished = exporter.getFinishedSpans();
 		exporter.reset();
 		return finished.map(serializeReadableSpan);
-	};
-
-	const closeActiveBatch = (): void => {
-		if (activeBatch) {
-			activeBatch.span.end();
-			activeBatch = null;
-		}
 	};
 
 	return {
@@ -109,33 +93,21 @@ export function createClientTracingSession(): ClientTracingSession {
 				return { result, traceData: undefined };
 			}
 
-			const traceparent = carrier.traceparent;
-			if (!traceparent) {
+			if (!carrier.traceparent) {
 				const result = await fn();
 				return { result, traceData: undefined };
-			}
-
-			// Roll the batch when the server-injected traceparent changes.
-			// One agent turn => one `boundless.session` span containing all client tool children.
-			if (activeBatch && activeBatch.traceparent !== traceparent) {
-				closeActiveBatch();
 			}
 
 			const linkedCtx = extractTraceContext(carrier);
 			const linkedSpanContext = trace.getSpan(linkedCtx)?.spanContext();
 
-			if (!activeBatch) {
-				const batchSpan = tracer.startSpan("boundless.session", {
-					kind: SpanKind.INTERNAL,
-					links: linkedSpanContext ? [{ context: linkedSpanContext }] : [],
-				});
-				activeBatch = {
-					traceparent,
-					span: batchSpan,
-					context: trace.setSpan(context.active(), batchSpan),
-				};
-			}
-
+			// Parent client-tool.execute directly under the server's SpanContext
+			// (typically agent-loop.tool-execute). Sibling client tool calls under
+			// the same server traceparent share that same parent automatically. The
+			// Link is retained for the rare case where extractTraceContext could not
+			// build a context (no traceparent was present, already handled above) —
+			// it is harmless when the parent context already points at the same
+			// SpanContext.
 			const span = tracer.startSpan(
 				"client-tool.execute",
 				{
@@ -143,12 +115,12 @@ export function createClientTracingSession(): ClientTracingSession {
 					attributes: options?.toolName ? { "tool.name": options.toolName } : {},
 					links: linkedSpanContext ? [{ context: linkedSpanContext }] : [],
 				},
-				activeBatch.context,
+				linkedCtx,
 			);
 
 			let result: T;
 			try {
-				result = await context.with(trace.setSpan(activeBatch.context, span), fn);
+				result = await context.with(trace.setSpan(linkedCtx, span), fn);
 				span.setStatus({ code: SpanStatusCode.OK });
 			} catch (err) {
 				span.setStatus({
@@ -170,12 +142,10 @@ export function createClientTracingSession(): ClientTracingSession {
 		end(): SerializedSpan[] {
 			if (sessionEnded) return [];
 			sessionEnded = true;
-			closeActiveBatch();
-			const final = drainFinished();
-			// Fire-and-forget shutdown — InMemorySpanExporter has no real resources to release,
-			// and we don't want disconnect() to await.
+			// Fire-and-forget shutdown — InMemorySpanExporter has no real resources
+			// to release, and we don't want disconnect() to await.
 			void provider.shutdown();
-			return final;
+			return [];
 		},
 	};
 }

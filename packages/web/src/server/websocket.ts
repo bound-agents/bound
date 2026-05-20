@@ -8,12 +8,7 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
-import {
-	formatFileAttachment,
-	getTraceExporter,
-	injectTraceContext,
-	reExportSpans,
-} from "@bound/shared";
+import { formatFileAttachment, getTraceExporter, reExportSpans } from "@bound/shared";
 import type {
 	Message,
 	SerializedSpan,
@@ -93,13 +88,6 @@ const toolResultSchema = z.object({
 	trace_data: z.string().optional(), // serialized span array JSON (optional)
 });
 
-// Trailing client-side spans (e.g. boundless.session parent) shipped by BoundClient
-// on disconnect, after all per-call trace_data have been sent on tool:result.
-const traceFlushSchema = z.object({
-	type: z.literal("trace:flush"),
-	trace_data: z.string(), // serialized SerializedSpan[] JSON
-});
-
 // Discriminated union for all message types
 const wsClientMessageSchema = z.discriminatedUnion("type", [
 	sessionConfigureSchema,
@@ -107,7 +95,6 @@ const wsClientMessageSchema = z.discriminatedUnion("type", [
 	threadSubscribeSchema,
 	threadUnsubscribeSchema,
 	toolResultSchema,
-	traceFlushSchema,
 ]);
 
 interface ClientConnection {
@@ -524,12 +511,6 @@ export function createWebSocketHandler(
 		}
 	}
 
-	function handleTraceFlush(msg: z.infer<typeof traceFlushSchema>): void {
-		// Trailing trace data shipped by BoundClient on clean disconnect (typically the
-		// open `boundless.session` parent span and any final children). Re-export silently.
-		reExportClientTraceData(msg.trace_data);
-	}
-
 	function handleToolResult(conn: ClientConnection, msg: z.infer<typeof toolResultSchema>): void {
 		if (!db || !siteId || !defaultUserId) {
 			conn.ws.send(
@@ -679,18 +660,21 @@ export function createWebSocketHandler(
 		entryId: string;
 		toolName: string;
 		arguments: Record<string, unknown>;
+		traceContext?: Record<string, string> | null;
 	}): void => {
-		// Find the first connection subscribed to this thread that has the matching tool
+		// Find the first connection subscribed to this thread that has the matching tool.
+		// data.traceContext is captured by the agent loop while its tool-execute span is
+		// active. We can't call injectTraceContext() here — this listener runs outside the
+		// emitter's OTel context and would observe no active span.
 		for (const [, conn] of clients) {
 			if (conn.subscriptions.has(data.threadId) && conn.clientTools.has(data.toolName)) {
-				const traceContext = injectTraceContext();
 				const toolCallMessage = JSON.stringify({
 					type: "tool:call",
 					call_id: data.callId,
 					thread_id: data.threadId,
 					tool_name: data.toolName,
 					arguments: data.arguments,
-					...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
+					...(data.traceContext ? { trace_context: JSON.stringify(data.traceContext) } : {}),
 				});
 				if (conn.ws.readyState === 1) {
 					conn.ws.send(toolCallMessage);
@@ -951,10 +935,6 @@ export function createWebSocketHandler(
 					}
 					case "tool:result": {
 						handleToolResult(conn, message);
-						break;
-					}
-					case "trace:flush": {
-						handleTraceFlush(message);
 						break;
 					}
 				}

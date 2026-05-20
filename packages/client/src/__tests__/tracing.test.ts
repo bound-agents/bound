@@ -5,7 +5,9 @@ import { createClientTracingSession } from "../tracing";
 const PARENT_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
 const PARENT_SPAN_ID = "b7ad6b7169203331";
 const TRACEPARENT_A = `00-${PARENT_TRACE_ID}-${PARENT_SPAN_ID}-01`;
-const TRACEPARENT_B = "00-1bf8762a27cd43dd8448eb211c80319d-c8ad6b7169203331-01";
+const PARENT_TRACE_ID_B = "1bf8762a27cd43dd8448eb211c80319d";
+const PARENT_SPAN_ID_B = "c8ad6b7169203331";
+const TRACEPARENT_B = `00-${PARENT_TRACE_ID_B}-${PARENT_SPAN_ID_B}-01`;
 
 const traceContext = (traceparent: string): string => JSON.stringify({ traceparent });
 
@@ -48,7 +50,7 @@ describe("createClientTracingSession", () => {
 		}
 	});
 
-	it("creates a client-tool.execute span on a fresh trace, with a Link to the server SpanContext", async () => {
+	it("creates a client-tool.execute span parented directly under the server SpanContext", async () => {
 		const session = createClientTracingSession();
 		const { result, traceData } = await session.wrapToolCall(
 			traceContext(TRACEPARENT_A),
@@ -59,14 +61,18 @@ describe("createClientTracingSession", () => {
 			expect(result).toEqual({ ok: true });
 			expect(traceData).toBeDefined();
 			const spans = parseSpans(traceData);
-			const child = spans.find((s) => s.name === "client-tool.execute");
-			expect(child).toBeDefined();
+			expect(spans.length).toBe(1);
+			const child = spans[0];
+			expect(child?.name).toBe("client-tool.execute");
 			expect(child?.status.code).toBe(1); // OK
 			expect(child?.attributes["tool.name"]).toBe("boundless_bash");
 
-			// New semantics: client span lives on a FRESH trace (the session trace),
-			// NOT the parent's trace. Cross-trace nav is via the Link.
-			expect(child?.traceId).not.toBe(PARENT_TRACE_ID);
+			// Lives on the server's trace and is a direct child of the server span
+			// (typically agent-loop.tool-execute) — no intermediary boundless.session.
+			expect(child?.traceId).toBe(PARENT_TRACE_ID);
+			expect(child?.parentSpanId).toBe(PARENT_SPAN_ID);
+
+			// The Link is retained for parity with the no-traceparent fallback path.
 			expect(child?.links?.length).toBe(1);
 			expect(child?.links?.[0]?.traceId).toBe(PARENT_TRACE_ID);
 			expect(child?.links?.[0]?.spanId).toBe(PARENT_SPAN_ID);
@@ -88,7 +94,7 @@ describe("createClientTracingSession", () => {
 		}
 	});
 
-	it("groups parallel/serial calls under one boundless.session for the same traceparent", async () => {
+	it("siblings under the same server traceparent share parentSpanId implicitly via the carrier", async () => {
 		const session = createClientTracingSession();
 		const a = await session.wrapToolCall(traceContext(TRACEPARENT_A), async () => 1, {
 			toolName: "tool_a",
@@ -96,57 +102,42 @@ describe("createClientTracingSession", () => {
 		const b = await session.wrapToolCall(traceContext(TRACEPARENT_A), async () => 2, {
 			toolName: "tool_b",
 		});
-		const trailing = session.end();
+		session.end();
 
-		const aSpans = parseSpans(a.traceData);
-		const bSpans = parseSpans(b.traceData);
+		const childA = parseSpans(a.traceData)[0];
+		const childB = parseSpans(b.traceData)[0];
+		expect(childA?.name).toBe("client-tool.execute");
+		expect(childB?.name).toBe("client-tool.execute");
 
-		const childA = aSpans.find((s) => s.name === "client-tool.execute");
-		const childB = bSpans.find((s) => s.name === "client-tool.execute");
-		expect(childA).toBeDefined();
-		expect(childB).toBeDefined();
-
-		// Both client-tool.execute spans share the same trace and same parent span (the session).
-		expect(childA?.traceId).toBe(childB?.traceId);
-		expect(childA?.parentSpanId).toBeDefined();
-		expect(childA?.parentSpanId).toBe(childB?.parentSpanId);
-
-		// The session span ends in the trailing flush, sharing the trace and matching the parentSpanId.
-		const sessionSpan = trailing.find((s) => s.name === "boundless.session");
-		expect(sessionSpan).toBeDefined();
-		expect(sessionSpan?.traceId).toBe(childA?.traceId);
-		expect(sessionSpan?.spanId).toBe(childA?.parentSpanId);
+		// Same trace, same parent — no client-side container span needed.
+		expect(childA?.traceId).toBe(PARENT_TRACE_ID);
+		expect(childB?.traceId).toBe(PARENT_TRACE_ID);
+		expect(childA?.parentSpanId).toBe(PARENT_SPAN_ID);
+		expect(childB?.parentSpanId).toBe(PARENT_SPAN_ID);
 	});
 
-	it("rolls the session when the server traceparent changes (new agent turn)", async () => {
+	it("calls under different server traceparents land on different unified traces", async () => {
 		const session = createClientTracingSession();
 		const a = await session.wrapToolCall(traceContext(TRACEPARENT_A), async () => 1);
-		// Second call under a different traceparent — should close the previous batch
-		// and start a new one. The previous batch span ships on this call's flush.
 		const b = await session.wrapToolCall(traceContext(TRACEPARENT_B), async () => 2);
 		session.end();
 
-		const aSpans = parseSpans(a.traceData);
-		const bSpans = parseSpans(b.traceData);
+		const aChild = parseSpans(a.traceData)[0];
+		const bChild = parseSpans(b.traceData)[0];
 
-		const aChild = aSpans.find((s) => s.name === "client-tool.execute");
-		const bChild = bSpans.find((s) => s.name === "client-tool.execute");
-		const rolledSessionSpan = bSpans.find((s) => s.name === "boundless.session");
-
-		// Children live on different traces (different sessions).
+		expect(aChild?.traceId).toBe(PARENT_TRACE_ID);
+		expect(aChild?.parentSpanId).toBe(PARENT_SPAN_ID);
+		expect(bChild?.traceId).toBe(PARENT_TRACE_ID_B);
+		expect(bChild?.parentSpanId).toBe(PARENT_SPAN_ID_B);
 		expect(aChild?.traceId).not.toBe(bChild?.traceId);
-		// The rolled session span shipped on b's flush is the OLD one (matches a's parent).
-		expect(rolledSessionSpan).toBeDefined();
-		expect(rolledSessionSpan?.traceId).toBe(aChild?.traceId);
-		expect(rolledSessionSpan?.spanId).toBe(aChild?.parentSpanId);
 	});
 
-	it("end() is idempotent and returns [] on subsequent calls", async () => {
+	it("end() is idempotent and returns [] (no trailing batch span to flush)", async () => {
 		const session = createClientTracingSession();
 		await session.wrapToolCall(traceContext(TRACEPARENT_A), async () => "ok");
 		const first = session.end();
 		const second = session.end();
-		expect(first.length).toBeGreaterThan(0);
+		expect(first).toEqual([]);
 		expect(second).toEqual([]);
 	});
 
@@ -174,7 +165,7 @@ describe("createClientTracingSession", () => {
 			expect(result).toEqual({ delayed: true });
 			expect(traceData).toBeDefined();
 			const spans = parseSpans(traceData);
-			expect(spans.length).toBeGreaterThan(0);
+			expect(spans.length).toBe(1);
 		} finally {
 			session.end();
 		}

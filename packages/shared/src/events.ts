@@ -30,6 +30,13 @@ export interface EventMap {
 		entryId: string;
 		toolName: string;
 		arguments: Record<string, unknown>;
+		/**
+		 * W3C trace context carrier captured at emit time on the agent-loop side.
+		 * Captured at emit because event-bus listeners run outside the emitter's
+		 * OTel context, so the WS handler cannot recover the active span itself.
+		 * Forwarded verbatim into the `tool:call` WS frame as `trace_context`.
+		 */
+		traceContext?: Record<string, string> | null;
 	};
 	"connector:event": {
 		trigger_key: string;
