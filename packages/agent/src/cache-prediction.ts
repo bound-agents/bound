@@ -53,15 +53,15 @@ export const CACHE_TTL_MS: Record<"5m" | "1h", number> = {
 	"1h": 60 * 60_000,
 };
 
-/** Interfaces where conversations are typically sparse (minutes+ between messages). */
-const SPARSE_INTERFACES = new Set(["discord", "discord-interaction", "scheduler"]);
-
 /**
- * Selects the optimal cache TTL based on thread interface.
+ * Selects the cache TTL for warm/cold path prediction.
  *
- * Sparse interfaces (Discord, scheduler) use 1h to survive longer gaps.
- * Dense interfaces (web, MCP) use 5m since messages arrive frequently.
+ * All interfaces use 1h. The 5m TTL was previously used for web/MCP under the
+ * assumption that messages arrive frequently, but agent tool-use turns routinely
+ * take 30-130+ seconds — a 5m TTL between separate user messages forced
+ * unnecessary cold reassembly and prefix reshuffling, guaranteeing provider-side
+ * cache misses on subsequent turns.
  */
-export function selectCacheTtl(threadInterface: string): "5m" | "1h" {
-	return SPARSE_INTERFACES.has(threadInterface) ? "1h" : "5m";
+export function selectCacheTtl(_threadInterface: string): "5m" | "1h" {
+	return "1h";
 }
