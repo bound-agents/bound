@@ -14,8 +14,8 @@ export function createWebhooksRoutes(db: Database): Hono {
 	}
 
 	// SELECT projection used by list/detail/patch responses. The webhook's
-	// custom prompt lives on the linked event task as `system_prompt_addition`,
-	// so we LEFT JOIN tasks and surface it as `prompt` for the UI/client.
+	// custom prompt and model_hint live on the linked event task, so we
+	// LEFT JOIN tasks and surface them as `prompt` / `model_hint` for the UI/client.
 	const WEBHOOK_SELECT = `SELECT
 			w.id,
 			w.name,
@@ -25,7 +25,8 @@ export function createWebhooksRoutes(db: Database): Hono {
 			w.thread_id,
 			w.created_at,
 			w.modified_at,
-			t.system_prompt_addition AS prompt
+			t.system_prompt_addition AS prompt,
+			t.model_hint AS model_hint
 		FROM webhooks w
 		LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0`;
 
@@ -95,6 +96,10 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const format = (body.format || "github") as SignatureFormat;
 			const description = body.description as string | undefined;
 			const prompt = body.prompt as string | undefined;
+			// model_hint: missing/null/empty all mean "use system default"
+			const rawModelHint = body.model_hint;
+			const modelHint =
+				typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
 
 			// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 			if (!name) {
@@ -141,7 +146,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 					summary_through: null,
 					summary_model_id: null,
 					extracted_through: null,
-					model_hint: null,
+					model_hint: modelHint,
 					created_at: now,
 					last_message_at: now,
 					modified_at: now,
@@ -173,7 +178,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 					run_count: 0,
 					max_runs: null,
 					requires: null,
-					model_hint: null,
+					model_hint: modelHint,
 					no_history: 0,
 					inject_mode: "results",
 					depends_on: null,
@@ -212,21 +217,13 @@ export function createWebhooksRoutes(db: Database): Hono {
 				siteId,
 			);
 
-			// Return full webhook object INCLUDING secret
-			return c.json(
-				{
-					id: webhookId,
-					name,
-					secret,
-					signature_format: format,
-					description: description || null,
-					task_id: taskId,
-					thread_id: threadId,
-					created_at: now,
-					modified_at: now,
-				},
-				201,
-			);
+			// Return full webhook object INCLUDING secret. Re-SELECT through
+			// WEBHOOK_SELECT so the response shape (prompt, model_hint, etc.)
+			// matches GET/PATCH and the client can avoid a follow-up fetch.
+			const fresh = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(webhookId) as
+				| Record<string, unknown>
+				| undefined;
+			return c.json({ ...(fresh ?? {}), secret }, 201);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -248,8 +245,8 @@ export function createWebhooksRoutes(db: Database): Hono {
 
 			// Look up webhook by id
 			const webhook = db
-				.prepare("SELECT id, task_id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { id: string; task_id: string } | null;
+				.prepare("SELECT id, task_id, thread_id FROM webhooks WHERE id = ? AND deleted = 0")
+				.get(id) as { id: string; task_id: string; thread_id: string } | null;
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -258,6 +255,14 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const description = body.description as string | undefined;
 			const prompt = body.prompt as string | undefined;
 			const format = body.format as SignatureFormat | undefined;
+			// model_hint three-state:
+			//   key absent          → leave alone
+			//   null / ""           → clear back to system default
+			//   non-empty string    → set
+			const modelHintProvided = "model_hint" in body;
+			const rawModelHint = body.model_hint;
+			const modelHintValue =
+				typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
 
 			// Update task system_prompt_addition if prompt provided
 			if (prompt !== undefined) {
@@ -267,6 +272,29 @@ export function createWebhooksRoutes(db: Database): Hono {
 					webhook.task_id,
 					{
 						system_prompt_addition: prompt || null,
+					},
+					siteId,
+				);
+			}
+
+			// Update task model_hint if provided
+			if (modelHintProvided) {
+				updateRow(
+					db,
+					"tasks",
+					webhook.task_id,
+					{
+						model_hint: modelHintValue,
+					},
+					siteId,
+				);
+				// Mirror onto the delivery thread (matches CLI + create semantics)
+				updateRow(
+					db,
+					"threads",
+					webhook.thread_id,
+					{
+						model_hint: modelHintValue,
 					},
 					siteId,
 				);

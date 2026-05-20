@@ -189,6 +189,11 @@ export interface WebhookListEntry {
 	 * Null when no custom prompt has been configured.
 	 */
 	prompt: string | null;
+	/**
+	 * Model hint applied to the webhook's event task (and its delivery thread).
+	 * Stored on `tasks.model_hint`; null means "use the cluster default model".
+	 */
+	model_hint: string | null;
 }
 
 export interface WebhookCreateResponse extends WebhookListEntry {
@@ -204,12 +209,24 @@ export interface CreateWebhookOptions {
 	format?: string;
 	description?: string;
 	prompt?: string;
+	/**
+	 * Optional model hint for the webhook's event task. Omit / null / empty
+	 * string all leave the task on the cluster default model.
+	 */
+	model_hint?: string | null;
 }
 
 export interface UpdateWebhookOptions {
 	description?: string;
 	prompt?: string;
 	format?: string;
+	/**
+	 * Three-state semantics, mirroring the server PATCH route:
+	 *   omitted        → leave existing model_hint alone
+	 *   null or ""     → clear back to the cluster default
+	 *   non-empty str  → set the model_hint
+	 */
+	model_hint?: string | null;
 }
 
 // ---- Errors ----

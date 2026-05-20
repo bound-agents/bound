@@ -357,4 +357,118 @@ describe("webhook commands", () => {
 			}).toThrow(/not found/);
 		});
 	});
+
+	// --model flag: end-to-end semantics across create, list, update
+	describe("--model flag", () => {
+		const taskAndThreadModelFor = (
+			name: string,
+		): { task: string | null; thread: string | null } => {
+			const wh = db.prepare("SELECT task_id, thread_id FROM webhooks WHERE name = ?").get(name) as {
+				task_id: string;
+				thread_id: string;
+			};
+			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get(wh.task_id) as {
+				model_hint: string | null;
+			};
+			const thread = db
+				.prepare("SELECT model_hint FROM threads WHERE id = ?")
+				.get(wh.thread_id) as { model_hint: string | null };
+			return { task: task.model_hint, thread: thread.model_hint };
+		};
+
+		it("webhookCreate without --model leaves model_hint null on the task and thread", () => {
+			setup();
+			console.log = () => {};
+
+			webhookCreate(db, SITE_ID, ["--name", "no-model"]);
+
+			const hints = taskAndThreadModelFor("no-model");
+			expect(hints.task).toBeNull();
+			expect(hints.thread).toBeNull();
+		});
+
+		it("webhookCreate with --model sets model_hint on the task and thread", () => {
+			setup();
+			console.log = () => {};
+
+			webhookCreate(db, SITE_ID, ["--name", "kimi-hook", "--model", "kimi-k2"]);
+
+			const hints = taskAndThreadModelFor("kimi-hook");
+			expect(hints.task).toBe("kimi-k2");
+			expect(hints.thread).toBe("kimi-k2");
+		});
+
+		it("webhookCreate with --model '' is equivalent to omitting the flag", () => {
+			setup();
+			console.log = () => {};
+
+			webhookCreate(db, SITE_ID, ["--name", "empty-model", "--model", ""]);
+
+			const hints = taskAndThreadModelFor("empty-model");
+			expect(hints.task).toBeNull();
+			expect(hints.thread).toBeNull();
+		});
+
+		it("webhookCreate prints the configured model in the create output", () => {
+			setup();
+			const output: string[] = [];
+			console.log = (msg: string) => output.push(msg);
+
+			webhookCreate(db, SITE_ID, ["--name", "print-model", "--model", "kimi-k2"]);
+
+			expect(output.join("\n")).toContain("Model: kimi-k2");
+		});
+
+		it("webhookList surfaces the configured model column", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "listed-default"]);
+			webhookCreate(db, SITE_ID, ["--name", "listed-kimi", "--model", "kimi-k2"]);
+
+			const output: string[] = [];
+			console.log = (msg: string) => output.push(msg);
+			webhookList(db);
+			const joined = output.join("\n");
+
+			expect(joined).toContain("MODEL");
+			expect(joined).toContain("kimi-k2");
+			expect(joined).toContain("(default)");
+		});
+
+		it("webhookUpdate with --model sets model_hint on the task and thread", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "set-via-update"]);
+
+			webhookUpdate(db, SITE_ID, ["--name", "set-via-update", "--model", "kimi-k2"]);
+
+			const hints = taskAndThreadModelFor("set-via-update");
+			expect(hints.task).toBe("kimi-k2");
+			expect(hints.thread).toBe("kimi-k2");
+		});
+
+		it("webhookUpdate with --model '' clears model_hint back to default", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "clear-via-update", "--model", "kimi-k2"]);
+
+			webhookUpdate(db, SITE_ID, ["--name", "clear-via-update", "--model", ""]);
+
+			const hints = taskAndThreadModelFor("clear-via-update");
+			expect(hints.task).toBeNull();
+			expect(hints.thread).toBeNull();
+		});
+
+		it("webhookUpdate without --model leaves existing model_hint alone", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "leave-alone", "--model", "kimi-k2"]);
+
+			webhookUpdate(db, SITE_ID, ["--name", "leave-alone", "--description", "still kimi"]);
+
+			const hints = taskAndThreadModelFor("leave-alone");
+			expect(hints.task).toBe("kimi-k2");
+			expect(hints.thread).toBe("kimi-k2");
+		});
+	});
 });
