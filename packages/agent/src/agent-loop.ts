@@ -43,7 +43,6 @@ import {
 	applyActualUsageToContextDebug,
 	assembleContext,
 	buildVolatileContext,
-	computeSafetyMargin,
 	rebuildWarmSections,
 } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
@@ -64,7 +63,8 @@ import type {
 	ClientToolCallRequest,
 } from "./types";
 import { VALID_TRANSITIONS, isClientToolCallRequest } from "./types";
-import { hasStrippableThinking, stripThinkingFromToolCall } from "./warm-compaction";
+// Thinking-block compaction now lives exclusively in context-assembly.ts (Stage 1.7).
+// The warm path no longer mutates stored messages — see agent-loop.ts step 3a comment.
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
@@ -524,49 +524,20 @@ export class AgentLoop {
 
 					storedMessages.push(...deltaMessages);
 
-					// 3a. BUDGET-DRIVEN THINKING COMPACTION
-					// Only strip thinking blocks when context is approaching the budget
-					// ceiling. This preserves the model's reasoning chain across turns
-					// (preventing "context restored" reorientation) while still protecting
-					// against overflow. Threshold: 85% of contextWindow (same as cold-path
-					// TRUNCATION_TARGET_RATIO) — stripping only fires when genuinely needed.
-					// Messages in the recent window are never stripped regardless of budget.
-					const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
-					const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
-					const thinkingCompactionThreshold = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
-
-					// Pre-compute token estimate to decide if stripping is needed.
-					const systemTokensPreCheck = cached.systemPrompt
-						? countContentTokens(cached.systemPrompt)
-						: 0;
-					let preStripEstimate = toolTokenEstimate + systemTokensPreCheck;
-					for (const msg of storedMessages) {
-						preStripEstimate += countContentTokens(msg.content);
-					}
-
-					let thinkingStrippedCount = 0;
-					if (preStripEstimate > thinkingCompactionThreshold) {
-						// Strip thinking from oldest messages first until under threshold.
-						for (let i = 0; i < compactionBoundary; i++) {
-							if (preStripEstimate <= thinkingCompactionThreshold) break;
-							const msg = storedMessages[i];
-							if (
-								msg.role === "tool_call" &&
-								typeof msg.content === "string" &&
-								hasStrippableThinking(msg.content)
-							) {
-								const before = countContentTokens(msg.content);
-								msg.content = stripThinkingFromToolCall(msg.content);
-								const after = countContentTokens(msg.content);
-								preStripEstimate -= before - after;
-								thinkingStrippedCount++;
-							}
-						}
-					}
-					assembleContextSpan.setAttribute(
-						"context.thinking_stripped_count",
-						thinkingStrippedCount,
-					);
+					// 3a. NO MUTATION ON WARM PATH.
+					// Previously we stripped thinking blocks here when context approached the
+					// budget ceiling. That mutation invalidated Bedrock's cached prefix on
+					// every turn it fired (cache_read=0, full rewrite of ~100k tokens),
+					// because cache lookups are byte-exact on the prefix bytes leading up to
+					// the cachePoint. Bedrock's "simplified cache management" auto-lookback
+					// is only ~20 content blocks, but our stripping walked from oldest msg
+					// forward — well outside that window.
+					//
+					// Compaction now happens exclusively on the cold path (Stage 1.7), which
+					// produces a stable new prefix. The warm-path budget gate below bails to
+					// cold reassembly when context exceeds the threshold so compaction
+					// happens once, deterministically, and the resulting prefix stays cached
+					// for the next ~20-30 turns.
 
 					// 3b. If the merged stored+delta array contains a tool_call with no
 					//    matching tool_result before a non-tool turn (common when a
@@ -626,11 +597,16 @@ export class AgentLoop {
 							content: volatileContext.content,
 						});
 
-						// 6. Check high-water mark: estimate total token count and compare against
-						//    the safety-margined effective budget. Using raw contextWindow here would
-						//    allow the warm path to ship a payload that overflows on the wire when the
-						//    estimator undercounts vs the backend's real tokenizer — same failure mode
-						//    as the cold-path gate in context-assembly.ts.
+						// 6. Check budget: bail to cold reassembly when context exceeds the
+						//    TRUNCATION_TARGET_RATIO threshold (85% of contextWindow). This is
+						//    LOWER than the safety-margined budget (~98%) used by the previous
+						//    high-water-mark gate. The lower threshold lets cold path do all
+						//    compaction (tool_result pointer stubs, conditional thinking strip)
+						//    in one stable shot, producing a fresh prefix the provider can cache
+						//    for the next ~20-30 warm turns. The previous higher threshold left
+						//    a 170k-196k window where neither warm-path mutation nor cold
+						//    reassembly fired cleanly, causing the alternating cache MISS/HIT
+						//    pattern we observed on Bedrock.
 						const budgetCheckSpan = getTracer().startSpan("context.warm.budget-check");
 						const storedTokens = storedMessages.reduce(
 							(sum, msg) => sum + countContentTokens(msg.content),
@@ -638,8 +614,7 @@ export class AgentLoop {
 						);
 						const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
 						const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
-						const warmSafetyMargin = computeSafetyMargin(contextWindow);
-						const warmEffectiveBudget = Math.max(0, contextWindow - warmSafetyMargin);
+						const warmEffectiveBudget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
 						budgetCheckSpan.setAttribute("context.estimated_tokens", estimatedTotal);
 						budgetCheckSpan.setAttribute("context.effective_budget", warmEffectiveBudget);
 
@@ -654,7 +629,6 @@ export class AgentLoop {
 									estimatedTotal,
 									contextWindow,
 									effectiveBudget: warmEffectiveBudget,
-									safetyMargin: warmSafetyMargin,
 									storedTokens,
 									systemTokens,
 									toolTokenEstimate,
@@ -942,6 +916,11 @@ export class AgentLoop {
 								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
+								// cache_ttl is omitted on the remote-dispatch payload — the
+								// receiving spoke's relay-processor reads its OWN per-backend
+								// config via getCacheTtl(payload.model). This avoids the spoke
+								// honoring a TTL configured on the hub for a model it doesn't
+								// support.
 							};
 							const MAX_INLINE_BYTES = 2 * 1024 * 1024;
 							const serialized = JSON.stringify(inferencePayload);
@@ -1074,6 +1053,7 @@ export class AgentLoop {
 											),
 											thinking: resolution.thinkingConfig,
 											effort: resolution.effort,
+											cache_ttl: resolution.cacheTtl,
 											resolveFileRef: createFileRefResolver(this.ctx.db),
 											signal: this.config.abortSignal,
 										});
