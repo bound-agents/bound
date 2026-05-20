@@ -39,6 +39,7 @@ import { maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
+	TRUNCATION_TARGET_RATIO,
 	applyActualUsageToContextDebug,
 	assembleContext,
 	buildVolatileContext,
@@ -63,7 +64,7 @@ import type {
 	ClientToolCallRequest,
 } from "./types";
 import { VALID_TRANSITIONS, isClientToolCallRequest } from "./types";
-import { stripThinkingFromToolCall } from "./warm-compaction";
+import { hasStrippableThinking, stripThinkingFromToolCall } from "./warm-compaction";
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
@@ -523,20 +524,49 @@ export class AgentLoop {
 
 					storedMessages.push(...deltaMessages);
 
-					// 3a. INCREMENTAL THINKING COMPACTION
-					// Strip thinking blocks from tool_call messages that have aged past
-					// the recent window. Mirrors the cold path's Stage 1.7 behavior so
-					// context degrades gradually rather than cliff-falling on cold
-					// reassembly. Idempotent: already-stripped messages are skipped via
-					// a cheap substring check before JSON.parse.
+					// 3a. BUDGET-DRIVEN THINKING COMPACTION
+					// Only strip thinking blocks when context is approaching the budget
+					// ceiling. This preserves the model's reasoning chain across turns
+					// (preventing "context restored" reorientation) while still protecting
+					// against overflow. Threshold: 85% of contextWindow (same as cold-path
+					// TRUNCATION_TARGET_RATIO) — stripping only fires when genuinely needed.
+					// Messages in the recent window are never stripped regardless of budget.
 					const recentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
 					const compactionBoundary = Math.max(0, storedMessages.length - recentWindow);
-					for (let i = 0; i < compactionBoundary; i++) {
-						const msg = storedMessages[i];
-						if (msg.role === "tool_call" && typeof msg.content === "string") {
-							msg.content = stripThinkingFromToolCall(msg.content);
+					const thinkingCompactionThreshold = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+
+					// Pre-compute token estimate to decide if stripping is needed.
+					const systemTokensPreCheck = cached.systemPrompt
+						? countContentTokens(cached.systemPrompt)
+						: 0;
+					let preStripEstimate = toolTokenEstimate + systemTokensPreCheck;
+					for (const msg of storedMessages) {
+						preStripEstimate += countContentTokens(msg.content);
+					}
+
+					let thinkingStrippedCount = 0;
+					if (preStripEstimate > thinkingCompactionThreshold) {
+						// Strip thinking from oldest messages first until under threshold.
+						for (let i = 0; i < compactionBoundary; i++) {
+							if (preStripEstimate <= thinkingCompactionThreshold) break;
+							const msg = storedMessages[i];
+							if (
+								msg.role === "tool_call" &&
+								typeof msg.content === "string" &&
+								hasStrippableThinking(msg.content)
+							) {
+								const before = countContentTokens(msg.content);
+								msg.content = stripThinkingFromToolCall(msg.content);
+								const after = countContentTokens(msg.content);
+								preStripEstimate -= before - after;
+								thinkingStrippedCount++;
+							}
 						}
 					}
+					assembleContextSpan.setAttribute(
+						"context.thinking_stripped_count",
+						thinkingStrippedCount,
+					);
 
 					// 3b. If the merged stored+delta array contains a tool_call with no
 					//    matching tool_result before a non-tool turn (common when a
