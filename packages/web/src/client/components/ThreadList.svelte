@@ -12,6 +12,15 @@ interface Props {
 	onSelectThread?: (threadId: string) => void;
 	onNavigateThread?: (threadId: string) => void;
 	onHoverThread?: (threadId: string | null) => void;
+	/**
+	 * Fired when the user scrolls within `LOAD_MORE_THRESHOLD_PX` of the
+	 * bottom of the list AND `hasMore` is true. The parent is responsible
+	 * for guarding double-fires by toggling `isLoadingMore` synchronously
+	 * before awaiting the fetch.
+	 */
+	onLoadMore?: () => void;
+	hasMore?: boolean;
+	isLoadingMore?: boolean;
 }
 
 let {
@@ -21,6 +30,9 @@ let {
 	onSelectThread,
 	onNavigateThread,
 	onHoverThread,
+	onLoadMore,
+	hasMore = false,
+	isLoadingMore = false,
 }: Props = $props();
 
 function sanitizeTitle(title: string | null): string {
@@ -78,6 +90,9 @@ type Item =
 const HEADER_HEIGHT = 36;
 const CARD_HEIGHT = 162;
 const OVERSCAN = 6;
+// Prefetch the next page when within this many px of the bottom — about
+// 5 cards ahead, so the fetch starts before the user sees the bottom edge.
+const LOAD_MORE_THRESHOLD_PX = 800;
 
 const items = $derived.by<Item[]>(() => {
 	const sorted = [...threads].sort((a, b) => {
@@ -129,7 +144,20 @@ let scrollTop = $state(0);
 let viewportHeight = $state(800);
 
 function onScroll(): void {
-	if (scrollEl) scrollTop = scrollEl.scrollTop;
+	if (!scrollEl) return;
+	scrollTop = scrollEl.scrollTop;
+	// Fire `onLoadMore` when scrolling within LOAD_MORE_THRESHOLD_PX of the
+	// bottom. The parent flips `isLoadingMore` synchronously inside its
+	// handler, so subsequent scroll events bail until the fetch completes —
+	// no local debounce needed.
+	if (
+		hasMore &&
+		!isLoadingMore &&
+		onLoadMore &&
+		scrollTop + viewportHeight > totalHeight - LOAD_MORE_THRESHOLD_PX
+	) {
+		onLoadMore();
+	}
 }
 
 // Binary search for the last index whose offset <= scroll. The visible
