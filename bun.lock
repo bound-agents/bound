@@ -71,6 +71,7 @@
         "@bound/llm": "workspace:*",
         "@bound/shared": "workspace:*",
         "@opentelemetry/api": "^1.9.0",
+        "@opentelemetry/sdk-trace-base": "^1.30.0",
         "zod": "^4.0.0",
       },
     },
