@@ -213,9 +213,12 @@ onDestroy(() => {
 	}
 
 	.thread-scroll {
-		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
 		flex: 1;
 		min-height: 0;
+		/* No overflow here — ThreadList owns its own scrolling so its
+		   internal virtualization can hook the scroll container directly. */
 	}
 
 	.map-panel {
