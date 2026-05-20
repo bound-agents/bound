@@ -89,7 +89,10 @@ async function pollMessages(): Promise<void> {
 }
 
 function handleThreadStatus(data: unknown): void {
-	const status = data as { active?: boolean; state?: string | null };
+	const status = data as { thread_id?: string; active?: boolean; state?: string | null };
+	// `thread:status` is a global event — filter to events for this thread only,
+	// otherwise activity in any sibling thread flips this view's indicator on.
+	if (status.thread_id && status.thread_id !== threadId) return;
 	agentActive = status.active ?? false;
 	agentState = status.state ?? null;
 	if (waiting && !status.active) waiting = false;
