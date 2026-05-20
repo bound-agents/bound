@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { ThreadListEntry } from "@bound/client";
+import { onMount } from "svelte";
 import { formatRelativeTime, isToday } from "../lib/format-time";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import LineBadge from "./LineBadge.svelte";
@@ -56,12 +57,29 @@ function makeActivity(seed: string, messageCount: number): number[] {
 	return out;
 }
 
-interface ThreadGroup {
-	label: string;
-	threads: ThreadListEntry[];
-}
+// Virtualization: flatten group headers + thread cards into a single linear
+// list of `Item`s, then only render the slice currently visible inside the
+// scroll container. With ~325 threads this drops DOM node count from ~5000
+// to ~50ish at any time, so scrolling stays smooth.
+type Item =
+	| { kind: "header"; key: string; label: string; height: number }
+	| {
+			kind: "thread";
+			key: string;
+			thread: ThreadListEntry;
+			height: number;
+	  };
 
-const threadGroups = $derived.by<ThreadGroup[]>(() => {
+// Estimated heights — these don't have to be exact, they just need to be
+// stable so the scrollbar doesn't jump as cards come in/out of the window.
+// `with-summary` cards are ~170px (sparkline + 2-line summary clamp + meta);
+// `no-summary` cards are ~134px. Picking a single 162px estimate for cards
+// minimizes drift in the common case (most threads have summaries).
+const HEADER_HEIGHT = 36;
+const CARD_HEIGHT = 162;
+const OVERSCAN = 6;
+
+const items = $derived.by<Item[]>(() => {
 	const sorted = [...threads].sort((a, b) => {
 		const aTime = new Date(a.last_message_at).getTime();
 		const bTime = new Date(b.last_message_at).getTime();
@@ -74,10 +92,80 @@ const threadGroups = $derived.by<ThreadGroup[]>(() => {
 		(isToday(t.last_message_at) ? today : older).push(t);
 	}
 
-	const groups: ThreadGroup[] = [];
-	if (today.length > 0) groups.push({ label: "Today", threads: today });
-	if (older.length > 0) groups.push({ label: "Earlier", threads: older });
-	return groups;
+	const out: Item[] = [];
+	if (today.length > 0) {
+		out.push({ kind: "header", key: "h:Today", label: "Today", height: HEADER_HEIGHT });
+		for (const t of today) {
+			out.push({ kind: "thread", key: `t:${t.id}`, thread: t, height: CARD_HEIGHT });
+		}
+	}
+	if (older.length > 0) {
+		out.push({ kind: "header", key: "h:Earlier", label: "Earlier", height: HEADER_HEIGHT });
+		for (const t of older) {
+			out.push({ kind: "thread", key: `t:${t.id}`, thread: t, height: CARD_HEIGHT });
+		}
+	}
+	return out;
+});
+
+// Cumulative top-offset table — offsets[i] is the y-offset of items[i],
+// offsets[items.length] is the total content height. Recomputed when
+// items change.
+const offsets = $derived.by<number[]>(() => {
+	const arr: number[] = new Array(items.length + 1);
+	let total = 0;
+	arr[0] = 0;
+	for (let i = 0; i < items.length; i++) {
+		total += items[i].height;
+		arr[i + 1] = total;
+	}
+	return arr;
+});
+
+const totalHeight = $derived(offsets[offsets.length - 1] ?? 0);
+
+let scrollEl = $state<HTMLDivElement | undefined>();
+let scrollTop = $state(0);
+let viewportHeight = $state(800);
+
+function onScroll(): void {
+	if (scrollEl) scrollTop = scrollEl.scrollTop;
+}
+
+// Binary search for the last index whose offset <= scroll. The visible
+// window starts at that index (minus overscan).
+function findStartIdx(scroll: number): number {
+	if (offsets.length <= 1) return 0;
+	let lo = 0;
+	let hi = items.length - 1;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >> 1;
+		if (offsets[mid] <= scroll) lo = mid;
+		else hi = mid - 1;
+	}
+	return lo;
+}
+
+const visibleRange = $derived.by(() => {
+	if (items.length === 0) return { start: 0, end: 0 };
+	const startRaw = findStartIdx(scrollTop);
+	const start = Math.max(0, startRaw - OVERSCAN);
+	const endTarget = scrollTop + viewportHeight;
+	let end = startRaw;
+	while (end < items.length && offsets[end] < endTarget) end++;
+	end = Math.min(items.length, end + OVERSCAN);
+	return { start, end };
+});
+
+onMount(() => {
+	if (!scrollEl) return;
+	viewportHeight = scrollEl.clientHeight;
+	scrollTop = scrollEl.scrollTop;
+	const ro = new ResizeObserver(() => {
+		if (scrollEl) viewportHeight = scrollEl.clientHeight;
+	});
+	ro.observe(scrollEl);
+	return () => ro.disconnect();
 });
 
 function handleThreadClick(id: string): void {
@@ -93,95 +181,115 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 }
 </script>
 
-<div class="thread-list">
-	{#each threadGroups as group (group.label)}
-		<div class="group-label">
-			<span class="kicker">{group.label}</span>
-			<div class="rule-faint"></div>
-		</div>
-
-		{#each group.threads as thread (thread.id)}
-			{@const color = getLineColor(thread.color)}
-			{@const selected = selectedThreadId === thread.id}
-			{@const activity = makeActivity(thread.id, thread.messageCount ?? 0)}
-			{@const maxActivity = Math.max(1, ...activity)}
-			{@const totalActivity = activity.reduce((a, b) => a + b, 0)}
-			{@const isActive = threadStatuses.get(thread.id)?.active ?? false}
-			<div
-				class="thread-card"
-				class:selected
-				onclick={() => handleThreadClick(thread.id)}
-				onmouseenter={() => onHoverThread?.(thread.id)}
-				onmouseleave={() => onHoverThread?.(null)}
-				onkeydown={(e) => handleThreadKeydown(e, thread.id)}
-				role="button"
-				tabindex="0"
-			>
-				<div class="rail" style="background: {color}"></div>
-
-				<div class="top-row">
-					<LineBadge lineIndex={thread.color} size="compact" />
-					<span class="line-name">{getLineName(thread.color)}</span>
-					<span class="thread-id mono">{thread.id.slice(0, 8)}</span>
-					<div class="spacer"></div>
-					<span class="relative-time tnum">
-						{formatRelativeTime(thread.last_message_at)}
-					</span>
-					{#if isActive}
-						<span class="live">
-							<span class="live-dot"></span>
-							Live
-						</span>
-					{/if}
-				</div>
-
-				<h3 class="title" title={sanitizeTitle(thread.title)}>
-					{sanitizeTitle(thread.title)}
-				</h3>
-
-				{#if thread.summary}
-					<p class="summary">{thread.summary}</p>
-				{/if}
-
-				<div class="sparkline" title="{activity.length}h activity · {totalActivity} turns">
-					{#each activity as v, i}
-						{@const isRecent = i >= activity.length - 3}
-						{@const h = v === 0 ? 1 : Math.max(2, Math.round((v / maxActivity) * 26))}
-						<span
-							class="spark-bar"
-							style="
-								height: {h}px;
-								background: {v === 0 ? 'var(--rule-soft)' : isRecent ? color : 'var(--ink-3)'};
-								opacity: {v === 0 ? 0.4 : isRecent ? 0.95 : 0.55};
-							"
-						></span>
-					{/each}
-				</div>
-
-				<div class="meta">
-					<span>{thread.messageCount ?? 0} messages</span>
-					{#if thread.lastModel}
-						<span class="sep">·</span>
-						<span class="model mono">{thread.lastModel}</span>
-					{/if}
-					<div class="spacer"></div>
-					<span class="turn-count mono">{totalActivity} turns / 24h</span>
-				</div>
-			</div>
-		{/each}
-	{/each}
-
-	{#if threads.length === 0}
+<div class="thread-list" bind:this={scrollEl} onscroll={onScroll}>
+	{#if items.length === 0}
 		<div class="empty-state">
 			<p>No threads yet. Start a new line to begin.</p>
+		</div>
+	{:else}
+		<div class="virtual-spacer" style="height: {totalHeight}px;">
+			{#each items.slice(visibleRange.start, visibleRange.end) as item, i (item.key)}
+				{@const top = offsets[visibleRange.start + i]}
+				<div class="virtual-row" style="top: {top}px; height: {item.height}px;">
+					{#if item.kind === "header"}
+						<div class="group-label">
+							<span class="kicker">{item.label}</span>
+							<div class="rule-faint"></div>
+						</div>
+					{:else}
+						{@const thread = item.thread}
+						{@const color = getLineColor(thread.color)}
+						{@const selected = selectedThreadId === thread.id}
+						{@const activity = makeActivity(thread.id, thread.messageCount ?? 0)}
+						{@const maxActivity = Math.max(1, ...activity)}
+						{@const totalActivity = activity.reduce((a, b) => a + b, 0)}
+						{@const isActive = threadStatuses.get(thread.id)?.active ?? false}
+						<div
+							class="thread-card"
+							class:selected
+							onclick={() => handleThreadClick(thread.id)}
+							onmouseenter={() => onHoverThread?.(thread.id)}
+							onmouseleave={() => onHoverThread?.(null)}
+							onkeydown={(e) => handleThreadKeydown(e, thread.id)}
+							role="button"
+							tabindex="0"
+						>
+							<div class="rail" style="background: {color}"></div>
+
+							<div class="top-row">
+								<LineBadge lineIndex={thread.color} size="compact" />
+								<span class="line-name">{getLineName(thread.color)}</span>
+								<span class="thread-id mono">{thread.id.slice(0, 8)}</span>
+								<div class="spacer"></div>
+								<span class="relative-time tnum">
+									{formatRelativeTime(thread.last_message_at)}
+								</span>
+								{#if isActive}
+									<span class="live">
+										<span class="live-dot"></span>
+										Live
+									</span>
+								{/if}
+							</div>
+
+							<h3 class="title" title={sanitizeTitle(thread.title)}>
+								{sanitizeTitle(thread.title)}
+							</h3>
+
+							{#if thread.summary}
+								<p class="summary">{thread.summary}</p>
+							{/if}
+
+							<div class="sparkline" title="{activity.length}h activity · {totalActivity} turns">
+								{#each activity as v, j}
+									{@const isRecent = j >= activity.length - 3}
+									{@const h = v === 0 ? 1 : Math.max(2, Math.round((v / maxActivity) * 26))}
+									<span
+										class="spark-bar"
+										style="
+											height: {h}px;
+											background: {v === 0 ? 'var(--rule-soft)' : isRecent ? color : 'var(--ink-3)'};
+											opacity: {v === 0 ? 0.4 : isRecent ? 0.95 : 0.55};
+										"
+									></span>
+								{/each}
+							</div>
+
+							<div class="meta">
+								<span>{thread.messageCount ?? 0} messages</span>
+								{#if thread.lastModel}
+									<span class="sep">·</span>
+									<span class="model mono">{thread.lastModel}</span>
+								{/if}
+								<div class="spacer"></div>
+								<span class="turn-count mono">{totalActivity} turns / 24h</span>
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/each}
 		</div>
 	{/if}
 </div>
 
 <style>
 	.thread-list {
-		display: flex;
-		flex-direction: column;
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		/* `position: relative` is required so absolute children of
+		   .virtual-spacer position relative to the scroll content. */
+	}
+
+	.virtual-spacer {
+		position: relative;
+		width: 100%;
+	}
+
+	.virtual-row {
+		position: absolute;
+		left: 0;
+		right: 0;
 	}
 
 	.group-label {
@@ -212,6 +320,9 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 		cursor: pointer;
 		transition: background 0.12s ease;
 		outline: none;
+		height: 100%;
+		box-sizing: border-box;
+		overflow: hidden;
 	}
 
 	.thread-card:hover {
