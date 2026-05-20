@@ -74,7 +74,7 @@ export function createAppContext(configDir: string, dbPath: string): AppContext 
 		logger,
 		siteId,
 		hostName,
-		turnStateStore: new InMemoryTurnStateStore(),
+		turnStateStore: new InMemoryTurnStateStore(55 * 60 * 1000),
 		commandRegistry: [],
 	};
 }
