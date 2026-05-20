@@ -339,7 +339,7 @@ describe("metrics routes", () => {
 
 			expect(totals.tokens_in).toBe(1800); // 1000 + 800
 			expect(totals.tokens_out).toBe(3500); // 2000 + 1500
-			expect(totals.cost_usd).toBe(0.09); // 0.05 + 0.04
+			expect(totals.cost_usd).toBeCloseTo(0.09, 8); // 0.05 + 0.04 (raw float; format only at display time)
 			expect(totals.turn_count).toBe(2);
 			expect(totals.error_count).toBe(1);
 		});
