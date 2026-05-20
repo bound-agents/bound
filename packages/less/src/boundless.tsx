@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { hostname as getHostname } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
+import { initTelemetry, shutdownTelemetry } from "@bound/shared";
 import { render } from "ink";
 // biome-ignore lint/correctness/noUnusedImports: React is used implicitly in JSX
 import React from "react";
@@ -62,6 +63,11 @@ export async function resolveThreadId(
 
 async function main(): Promise<void> {
 	try {
+		// Step 0: Telemetry. No-op unless OTEL_ENABLED is set. Done first so
+		// every subsequent operation that creates a span (sendMessage, tool
+		// execution, etc.) gets exported to the configured OTLP endpoint.
+		initTelemetry("boundless");
+
 		// Step 1: Parse arguments
 		let attachArg: string | null = null;
 		let urlArg: string | null = null;
@@ -164,6 +170,7 @@ async function main(): Promise<void> {
 			releaseLock(configDir, threadId);
 			client.disconnect();
 			logger.close();
+			await shutdownTelemetry();
 			process.exit(0);
 		});
 
@@ -175,6 +182,7 @@ async function main(): Promise<void> {
 		releaseLock(configDir, threadId);
 		client.disconnect();
 		logger.close();
+		await shutdownTelemetry();
 	} catch (error) {
 		process.stderr.write(`Fatal error: ${(error as Error).message}\n`);
 		process.exit(1);
