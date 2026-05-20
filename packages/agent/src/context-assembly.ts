@@ -21,7 +21,7 @@ import {
 	computeBaseline,
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
-import { stripThinkingFromToolCall } from "./warm-compaction";
+import { hasStrippableThinking, stripThinkingFromToolCall } from "./warm-compaction";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -830,15 +830,11 @@ Original output was too large for the context window. If you need the full conte
 
 		// Compact old tool results (everything before the recent window)
 		// The boundary shifts by 1 if we prepended the summary message.
-		// - tool_result: replace with pointer + short preview
-		// - tool_call: strip `thinking` blocks; keep `tool_use` block(s) intact
-		//   (tool_use is required for protocol-level tool_call/tool_result pairing;
-		//   thinking blocks are the model's own reasoning and the model does not
-		//   need to re-read its stale CoT on cold turns — the results are in
-		//   tool_result). On dense task threads with extended-thinking models,
-		//   this reclaims the single largest chunk of context.
-		// - assistant: NOT compacted — the LLM mimics the compaction format,
-		//   generating fake retrieval pointers instead of real responses
+		// - tool_result: replace with pointer + short preview (always, for space)
+		// - tool_call thinking: budget-driven — only strip when context exceeds
+		//   TRUNCATION_TARGET_RATIO of the window. Preserves the model's reasoning
+		//   chain on cold assembly when there's room, preventing reorientation.
+		// - assistant: NOT compacted — the LLM mimics the compaction format
 		// - user: kept intact (ground truth)
 		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
 		for (let i = 0; i < adjustedBoundary; i++) {
@@ -847,11 +843,28 @@ Original output was too large for the context window. If you need the full conte
 				const originalLength = msg.content.length;
 				const preview = safeSlice(msg.content, 0, 200).trimEnd();
 				msg.content = `[Tool result truncated for inline display — ${originalLength} chars stored. Full content: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
-			} else if (msg.role === "tool_call") {
-				// Strip thinking/redacted_thinking blocks from tool_call content,
-				// keeping tool_use blocks intact. Shared utility ensures warm and
-				// cold paths produce identical compacted content.
-				msg.content = stripThinkingFromToolCall(msg.content);
+			}
+		}
+
+		// Budget-driven thinking compaction: only strip thinking blocks from
+		// tool_call messages when post-tool_result-compaction size exceeds the
+		// TRUNCATION_TARGET_RATIO threshold. Preserves the model's reasoning
+		// chain on cold assembly when there's headroom.
+		const thinkingThreshold = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+		let coldEstimate = 0;
+		for (const msg of messages) {
+			coldEstimate += countTokens(msg.content);
+		}
+		if (coldEstimate > thinkingThreshold) {
+			for (let i = 0; i < adjustedBoundary; i++) {
+				if (coldEstimate <= thinkingThreshold) break;
+				const msg = messages[i];
+				if (msg.role === "tool_call" && hasStrippableThinking(msg.content)) {
+					const before = countTokens(msg.content);
+					msg.content = stripThinkingFromToolCall(msg.content);
+					const after = countTokens(msg.content);
+					coldEstimate -= before - after;
+				}
 			}
 		}
 	}

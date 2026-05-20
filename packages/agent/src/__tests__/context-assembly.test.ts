@@ -5709,7 +5709,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		it("strips thinking blocks from old tool_call messages but preserves tool_use", () => {
+		it("preserves thinking blocks on old tool_call messages when under budget", () => {
 			const localUserId = randomUUID();
 			const localThreadId = randomUUID();
 			const now = new Date().toISOString();
@@ -5787,13 +5787,12 @@ This skill reviews pull requests.`;
 					m.role === "tool_call" && typeof m.content === "string" && m.content.includes(oldToolId),
 			);
 			expect(compactedToolCall).toBeDefined();
-			// The tool_use block must survive — protocol requires it for pairing
+			// The tool_use block must survive
 			expect(compactedToolCall?.content as string).toContain(oldToolId);
 			expect(compactedToolCall?.content as string).toContain("tool_use");
-			// The thinking block must be stripped (check for the block type marker,
-			// not the raw word "thinking" — our tool_use id happens to contain it).
-			expect(compactedToolCall?.content as string).not.toContain('"type":"thinking"');
-			expect(compactedToolCall?.content as string).not.toContain("carefully reason");
+			// Thinking is PRESERVED when context is under budget (85% threshold)
+			expect(compactedToolCall?.content as string).toContain('"type":"thinking"');
+			expect(compactedToolCall?.content as string).toContain("carefully reason");
 
 			// Clean up
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
