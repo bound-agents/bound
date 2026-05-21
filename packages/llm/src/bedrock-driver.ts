@@ -80,10 +80,16 @@ export class BedrockDriver implements LLMBackend {
 		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
 		// sentinel (see openai-compatible-driver.ts for the same note).
 		const modelId = params.model || this.model;
+		// Reasoning-block signature/redactedData passthrough is Anthropic-only.
+		// Non-Anthropic Bedrock models (Kimi, MiniMax, GLM, Nova, …) reject
+		// `reasoningContent.reasoningText.signature` outright. Detection mirrors
+		// buildReasoningConfig: substring match on "anthropic" in the model id.
+		const isAnthropicModel = modelId.includes("anthropic");
 		const messages = toModelMessages(params.messages, {
 			cacheProvider: "bedrock",
 			cacheTtl: params.cache_ttl,
 			resolveFileRef: params.resolveFileRef,
+			reasoningProviderOptions: isAnthropicModel ? "bedrock" : null,
 		});
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);

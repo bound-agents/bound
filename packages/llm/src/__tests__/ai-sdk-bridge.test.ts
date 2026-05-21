@@ -362,16 +362,19 @@ describe("toModelMessages — content blocks", () => {
 	});
 
 	it("converts thinking blocks to reasoning parts", () => {
-		const out = toModelMessages([
-			{ role: "user", content: "ask" },
-			{
-				role: "assistant",
-				content: [
-					{ type: "thinking", thinking: "reasoning text", signature: "sig-1" },
-					{ type: "text", text: "answer" },
-				],
-			},
-		]);
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "reasoning text", signature: "sig-1" },
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{ reasoningProviderOptions: "bedrock" },
+		);
 		expect(out[1].content).toEqual([
 			{
 				type: "reasoning",
@@ -380,6 +383,71 @@ describe("toModelMessages — content blocks", () => {
 			},
 			{ type: "text", text: "answer" },
 		]);
+	});
+
+	it("emits anthropic-keyed providerOptions when target is anthropic", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "reasoning text", signature: "sig-1" }],
+				},
+			],
+			{ reasoningProviderOptions: "anthropic" },
+		);
+		expect(out[1].content).toEqual([
+			{
+				type: "reasoning",
+				text: "reasoning text",
+				providerOptions: { anthropic: { signature: "sig-1" } },
+			},
+		]);
+	});
+
+	it("omits providerOptions on reasoning when target is non-anthropic Bedrock", () => {
+		// Reproduces the Kimi / MiniMax / GLM / Nova case: reasoningProviderOptions
+		// is null because the target Bedrock model rejects
+		// `reasoningContent.reasoningText.signature`. The reasoning text still
+		// replays so the model retains context, but signature/redactedData are
+		// dropped.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "reasoning text",
+							signature: "sig-1",
+							redacted_data: "BLOB",
+						},
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{ reasoningProviderOptions: null },
+		);
+		expect(out[1].content).toEqual([
+			{ type: "reasoning", text: "reasoning text" },
+			{ type: "text", text: "answer" },
+		]);
+	});
+
+	it("omits providerOptions on reasoning when reasoningProviderOptions is unset", () => {
+		// Default behavior — callers that don't set reasoningProviderOptions
+		// (e.g. openai-compatible-driver) get bare reasoning parts. The
+		// providerOptions key is only meaningful when a provider has been
+		// chosen by the driver layer.
+		const out = toModelMessages([
+			{ role: "user", content: "ask" },
+			{
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "reasoning text", signature: "sig-1" }],
+			},
+		]);
+		expect(out[1].content).toEqual([{ type: "reasoning", text: "reasoning text" }]);
 	});
 
 	it("omits providerOptions on reasoning when no signature", () => {
@@ -636,20 +704,23 @@ describe("toModelMessages — content blocks", () => {
 	});
 
 	it("propagates thinking.redacted_data to providerOptions.bedrock.redactedData", () => {
-		const out = toModelMessages([
-			{ role: "user", content: "ask" },
-			{
-				role: "assistant",
-				content: [
-					{
-						type: "thinking",
-						thinking: "",
-						redacted_data: "BLOB",
-					},
-					{ type: "text", text: "answer" },
-				],
-			},
-		]);
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "",
+							redacted_data: "BLOB",
+						},
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{ reasoningProviderOptions: "bedrock" },
+		);
 		expect(out[1].content).toEqual([
 			{
 				type: "reasoning",
@@ -661,25 +732,57 @@ describe("toModelMessages — content blocks", () => {
 	});
 
 	it("merges signature and redacted_data under the same bedrock bucket", () => {
-		const out = toModelMessages([
-			{ role: "user", content: "ask" },
-			{
-				role: "assistant",
-				content: [
-					{
-						type: "thinking",
-						thinking: "visible reasoning",
-						signature: "SIG",
-						redacted_data: "RED",
-					},
-				],
-			},
-		]);
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "visible reasoning",
+							signature: "SIG",
+							redacted_data: "RED",
+						},
+					],
+				},
+			],
+			{ reasoningProviderOptions: "bedrock" },
+		);
 		expect(out[1].content).toEqual([
 			{
 				type: "reasoning",
 				text: "visible reasoning",
 				providerOptions: { bedrock: { signature: "SIG", redactedData: "RED" } },
+			},
+		]);
+	});
+
+	it("drops redactedData when target is anthropic (bedrock-only field)", () => {
+		// redactedData is a Bedrock-specific reasoning artifact. When replaying
+		// to an Anthropic-direct endpoint, only the signature is meaningful.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "visible",
+							signature: "SIG",
+							redacted_data: "RED",
+						},
+					],
+				},
+			],
+			{ reasoningProviderOptions: "anthropic" },
+		);
+		expect(out[1].content).toEqual([
+			{
+				type: "reasoning",
+				text: "visible",
+				providerOptions: { anthropic: { signature: "SIG" } },
 			},
 		]);
 	});

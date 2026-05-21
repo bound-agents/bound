@@ -48,6 +48,21 @@ export interface ToModelMessagesOptions {
 	 * callback, threaded through driver → bridge.
 	 */
 	resolveFileRef?: (fileId: string) => string | null;
+	/**
+	 * Provider key used to attach reasoning-block `signature` and
+	 * `redacted_data` via `providerOptions.{key}` on AI SDK ReasoningParts.
+	 *
+	 * Only Anthropic models (direct or on Bedrock) accept these fields. On
+	 * Bedrock, non-Anthropic models (Moonshot Kimi, MiniMax, GLM, Nova, …)
+	 * reject `reasoningContent.reasoningText.signature` outright with
+	 * "This model doesn't support the reasoningContent.reasoningText.signature
+	 * field. Remove reasoningContent.reasoningText.signature and try again."
+	 *
+	 * Set to null (or omit) for non-Anthropic targets; the reasoning text
+	 * itself is still emitted on the part — only the signature/redactedData
+	 * passthrough is suppressed.
+	 */
+	reasoningProviderOptions?: "bedrock" | "anthropic" | null;
 }
 
 /**
@@ -131,7 +146,7 @@ export function toModelMessages(
 				if (b.type === "text" && b.text) {
 					parts.push({ type: "text", text: b.text });
 				} else if (b.type === "thinking") {
-					parts.push(buildReasoningPart(b));
+					parts.push(buildReasoningPart(b, opts.reasoningProviderOptions));
 				} else if (b.type === "tool_use") {
 					parts.push({
 						type: "tool-call",
@@ -189,7 +204,7 @@ export function toModelMessages(
 			if (b.type === "text") {
 				if (b.text) parts.push({ type: "text", text: b.text });
 			} else if (b.type === "thinking") {
-				parts.push(buildReasoningPart(b));
+				parts.push(buildReasoningPart(b, opts.reasoningProviderOptions));
 			} else if (b.type === "tool_use") {
 				parts.push({
 					type: "tool-call",
@@ -376,17 +391,29 @@ function extractText(blocks: ContentBlock[]): string {
  * (Anthropic direct uses providerOptions.anthropic.signature; redacted data
  * is Bedrock-only in practice). The bedrock provider options schema accepts
  * both keys simultaneously, so we route them through a single bucket.
+ *
+ * `providerKey` gates the providerOptions emission. Non-Anthropic Bedrock
+ * models (Kimi, MiniMax, GLM, Nova, …) reject `reasoningContent.reasoningText
+ * .signature` and have no analogue for redacted_data; pass `null` for those
+ * targets so the reasoning text replays without the unsupported metadata.
  */
-function buildReasoningPart(b: Extract<ContentBlock, { type: "thinking" }>) {
-	const bedrock: Record<string, unknown> = {};
-	if (b.signature) bedrock.signature = b.signature;
-	if (b.redacted_data) bedrock.redactedData = b.redacted_data;
-	const providerOptions = Object.keys(bedrock).length > 0 ? { bedrock } : undefined;
-	return {
+function buildReasoningPart(
+	b: Extract<ContentBlock, { type: "thinking" }>,
+	providerKey: "bedrock" | "anthropic" | null | undefined,
+) {
+	const part: Record<string, unknown> = {
 		type: "reasoning" as const,
 		text: b.thinking,
-		...(providerOptions && { providerOptions }),
 	};
+	if (!providerKey) return part;
+	const bucket: Record<string, unknown> = {};
+	if (b.signature) bucket.signature = b.signature;
+	// redactedData is only meaningful under providerOptions.bedrock.
+	if (b.redacted_data && providerKey === "bedrock") bucket.redactedData = b.redacted_data;
+	if (Object.keys(bucket).length > 0) {
+		part.providerOptions = { [providerKey]: bucket };
+	}
+	return part;
 }
 
 /**
