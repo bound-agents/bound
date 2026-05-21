@@ -1,5 +1,6 @@
 <script lang="ts">
 import { scaleLinear } from "d3-scale";
+import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
 interface Props {
@@ -19,6 +20,11 @@ let tooltipY = $state(0);
 let tooltipLines = $state<string[]>([]);
 let containerEl: HTMLDivElement | undefined = $state(undefined);
 
+// Track the chart's rendered width so we can size the SVG 1:1 with pixels.
+// Without this, width="100%" on a fixed viewBox stretches the entire SVG
+// (text included) — model labels balloon on wide screens.
+let measuredWidth = $state(600);
+
 // Filter out models with zero total tokens (AC2.5)
 const filteredData = $derived.by(() => {
 	return data.filter((d) => d.tokens_in + d.tokens_out > 0);
@@ -31,10 +37,11 @@ const sortedData = $derived.by(() => {
 	);
 });
 
-// Calculate dimensions
-const rowHeight = 40;
-const padding = { top: 16, right: 16, bottom: 16, left: 120 };
-const contentWidth = 600;
+// Calculate dimensions — viewBox tracks the actual rendered pixel width,
+// so absolute font-sizes in CSS render at their true sizes.
+const rowHeight = 32;
+const padding = { top: 12, right: 16, bottom: 12, left: 140 };
+const contentWidth = $derived(Math.max(measuredWidth, 320));
 const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
 
 // Compute max total tokens for x scale domain
@@ -74,12 +81,19 @@ function hideTooltip(): void {
 }
 </script>
 
-<div class="token-bar-chart" bind:this={containerEl}>
+<div
+	class="token-bar-chart"
+	bind:this={containerEl}
+	use:observeWidth={(w) => {
+		measuredWidth = w;
+	}}
+>
 	<svg
 		width={contentWidth}
 		height={containerHeight}
 		viewBox="0 0 {contentWidth} {containerHeight}"
 		class="chart-svg"
+		preserveAspectRatio="xMinYMin meet"
 	>
 		<!-- Model labels on the left -->
 		{#each sortedData as d, i}
@@ -96,9 +110,9 @@ function hideTooltip(): void {
 			<!-- Input tokens (tokens_in) - blue -->
 			<rect
 				x={padding.left}
-				y={padding.top + i * rowHeight + 8}
+				y={padding.top + i * rowHeight + 4}
 				width={xScale(d.tokens_in)}
-				height={rowHeight - 16}
+				height={rowHeight - 8}
 				fill="var(--line-3)"
 				opacity="0.8"
 				class="bar"
@@ -110,9 +124,9 @@ function hideTooltip(): void {
 			<!-- Output tokens (tokens_out) - amber, positioned after input -->
 			<rect
 				x={padding.left + xScale(d.tokens_in)}
-				y={padding.top + i * rowHeight + 8}
+				y={padding.top + i * rowHeight + 4}
 				width={xScale(d.tokens_out)}
-				height={rowHeight - 16}
+				height={rowHeight - 8}
 				fill="var(--line-0)"
 				opacity="0.8"
 				class="bar"
@@ -143,7 +157,7 @@ function hideTooltip(): void {
 		position: relative;
 		display: flex;
 		flex-direction: column;
-		gap: 16px;
+		gap: 12px;
 		padding: 16px;
 		background: var(--paper);
 		border: 1px solid var(--rule-soft);
@@ -152,9 +166,8 @@ function hideTooltip(): void {
 	}
 
 	.chart-svg {
-		width: 100%;
-		height: auto;
 		display: block;
+		max-width: 100%;
 	}
 
 	.model-label {
@@ -176,7 +189,7 @@ function hideTooltip(): void {
 	.legend {
 		display: flex;
 		gap: 24px;
-		padding-left: 120px;
+		padding-left: 140px;
 		font-size: 12px;
 		color: var(--ink-3);
 	}
@@ -191,5 +204,11 @@ function hideTooltip(): void {
 		width: 12px;
 		height: 12px;
 		border-radius: 2px;
+	}
+
+	@media (max-width: 600px) {
+		.legend {
+			padding-left: 0;
+		}
 	}
 </style>

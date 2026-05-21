@@ -1,5 +1,6 @@
 <script lang="ts">
 import { scaleLinear } from "d3-scale";
+import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
 interface Props {
@@ -21,6 +22,9 @@ let tooltipY = $state(0);
 let tooltipLines = $state<string[]>([]);
 let containerEl: HTMLDivElement | undefined = $state(undefined);
 
+// Track rendered width so SVG renders 1:1 with pixels (avoids text scaling).
+let measuredWidth = $state(700);
+
 // Sort data by avg latency descending
 const sortedData = $derived.by(() => {
 	return [...data].sort((a, b) => b.avg_latency_ms - a.avg_latency_ms);
@@ -31,21 +35,23 @@ const maxLatency = $derived.by(() => {
 	return Math.max(...sortedData.map((d) => d.p95_latency_ms), 1);
 });
 
-// Color coding helper based on health thresholds
+// Latency-tier color (green / amber / red). The legend below shows these
+// tiers separately so viewers can decode bar color independently of the
+// avg/p95 distinction.
+const LATENCY_OK = "rgb(0, 200, 100)";
+const LATENCY_WARN = "rgb(255, 193, 7)";
+const LATENCY_BAD = "rgb(244, 67, 54)";
+
 const getColorForLatency = (latency: number, opacity = 1): string => {
-	if (latency < 500) {
-		return `rgba(0, 200, 100, ${opacity})`;
-	}
-	if (latency < 2000) {
-		return `rgba(255, 193, 7, ${opacity})`;
-	}
+	if (latency < 500) return `rgba(0, 200, 100, ${opacity})`;
+	if (latency < 2000) return `rgba(255, 193, 7, ${opacity})`;
 	return `rgba(244, 67, 54, ${opacity})`;
 };
 
 // Calculate dimensions
-const rowHeight = 60;
-const padding = { top: 16, right: 16, bottom: 16, left: 200 };
-const contentWidth = 700;
+const rowHeight = 56;
+const padding = { top: 12, right: 16, bottom: 12, left: 180 };
+const contentWidth = $derived(Math.max(measuredWidth, 360));
 const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
 
 // X scale: linear from 0 to maxLatency with nice ticks
@@ -56,10 +62,7 @@ const xScale = $derived.by(() => {
 		.nice();
 });
 
-// Format latency value with unit
-const formatLatency = (ms: number): string => {
-	return `${Math.round(ms)}ms`;
-};
+const formatLatency = (ms: number): string => `${Math.round(ms)}ms`;
 
 // Truncate site ID to last 8 chars for readability
 const truncateSiteId = (id: string): string => {
@@ -97,16 +100,21 @@ function hideTooltip(): void {
 }
 </script>
 
-<div class="latency-bar-chart" bind:this={containerEl}>
+<div
+	class="latency-bar-chart"
+	bind:this={containerEl}
+	use:observeWidth={(w) => {
+		measuredWidth = w - 32;
+	}}
+>
 	<svg
 		width={contentWidth}
 		height={containerHeight}
 		viewBox="0 0 {contentWidth} {containerHeight}"
 		class="chart-svg"
+		preserveAspectRatio="xMinYMin meet"
 	>
-		<!-- Host labels and bars on the left -->
 		{#each sortedData as d, i}
-			<!-- Host label -->
 			<text
 				x={padding.left - 8}
 				y={padding.top + i * rowHeight + rowHeight / 2}
@@ -117,12 +125,12 @@ function hideTooltip(): void {
 				{truncateSiteId(d.peer_site_id)}
 			</text>
 
-			<!-- Average latency bar (solid color) -->
+			<!-- Average latency bar (solid) -->
 			<rect
 				x={padding.left}
-				y={padding.top + i * rowHeight + 8}
+				y={padding.top + i * rowHeight + 6}
 				width={xScale(d.avg_latency_ms)}
-				height={rowHeight / 2 - 12}
+				height={rowHeight / 2 - 8}
 				fill={getColorForLatency(d.avg_latency_ms, 1)}
 				class="bar"
 				onmouseenter={(e) => showTooltip(e, d, "avg")}
@@ -130,10 +138,9 @@ function hideTooltip(): void {
 				onmouseleave={hideTooltip}
 			/>
 
-			<!-- Average latency label -->
 			<text
 				x={padding.left + xScale(d.avg_latency_ms) + 4}
-				y={padding.top + i * rowHeight + 14}
+				y={padding.top + i * rowHeight + 6 + (rowHeight / 2 - 8) / 2}
 				class="bar-label"
 				dominant-baseline="middle"
 				fill="var(--ink)"
@@ -144,9 +151,9 @@ function hideTooltip(): void {
 			<!-- P95 latency bar (semi-transparent) -->
 			<rect
 				x={padding.left}
-				y={padding.top + i * rowHeight + rowHeight / 2}
+				y={padding.top + i * rowHeight + rowHeight / 2 + 2}
 				width={xScale(d.p95_latency_ms)}
-				height={rowHeight / 2 - 12}
+				height={rowHeight / 2 - 8}
 				fill={getColorForLatency(d.p95_latency_ms, 0.5)}
 				class="bar"
 				onmouseenter={(e) => showTooltip(e, d, "p95")}
@@ -154,10 +161,9 @@ function hideTooltip(): void {
 				onmouseleave={hideTooltip}
 			/>
 
-			<!-- P95 latency label -->
 			<text
 				x={padding.left + xScale(d.p95_latency_ms) + 4}
-				y={padding.top + i * rowHeight + rowHeight / 2 + 6}
+				y={padding.top + i * rowHeight + rowHeight / 2 + 2 + (rowHeight / 2 - 8) / 2}
 				class="bar-label"
 				dominant-baseline="middle"
 				fill="var(--ink)"
@@ -167,15 +173,32 @@ function hideTooltip(): void {
 		{/each}
 	</svg>
 
-	<!-- Legend -->
+	<!-- Legend: avg vs p95 (opacity-distinguished) plus health tiers -->
 	<div class="legend">
-		<div class="legend-item">
-			<div class="legend-color" style="background-color: rgba(0, 200, 100, 1); opacity: 1"></div>
-			<span>Avg</span>
+		<div class="legend-group">
+			<div class="legend-item">
+				<div class="legend-bar" style="background-color: var(--ink); opacity: 0.85"></div>
+				<span>Avg (solid)</span>
+			</div>
+			<div class="legend-item">
+				<div class="legend-bar" style="background-color: var(--ink); opacity: 0.4"></div>
+				<span>P95 (faded)</span>
+			</div>
 		</div>
-		<div class="legend-item">
-			<div class="legend-color" style="background-color: rgba(0, 200, 100, 1); opacity: 0.5"></div>
-			<span>P95</span>
+		<div class="legend-divider" aria-hidden="true"></div>
+		<div class="legend-group">
+			<div class="legend-item">
+				<div class="legend-color" style="background-color: {LATENCY_OK}"></div>
+				<span>&lt; 500ms</span>
+			</div>
+			<div class="legend-item">
+				<div class="legend-color" style="background-color: {LATENCY_WARN}"></div>
+				<span>500–2000ms</span>
+			</div>
+			<div class="legend-item">
+				<div class="legend-color" style="background-color: {LATENCY_BAD}"></div>
+				<span>≥ 2000ms</span>
+			</div>
 		</div>
 	</div>
 
@@ -187,7 +210,7 @@ function hideTooltip(): void {
 		position: relative;
 		display: flex;
 		flex-direction: column;
-		gap: 16px;
+		gap: 12px;
 		padding: 16px;
 		background: var(--paper);
 		border: 1px solid var(--rule-soft);
@@ -196,9 +219,8 @@ function hideTooltip(): void {
 	}
 
 	.chart-svg {
-		width: 100%;
-		height: auto;
 		display: block;
+		max-width: 100%;
 	}
 
 	.host-label {
@@ -225,10 +247,23 @@ function hideTooltip(): void {
 
 	.legend {
 		display: flex;
-		gap: 24px;
-		padding-left: 200px;
-		font-size: 12px;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 16px;
+		font-size: 11px;
 		color: var(--ink-3);
+	}
+
+	.legend-group {
+		display: flex;
+		gap: 16px;
+		flex-wrap: wrap;
+	}
+
+	.legend-divider {
+		width: 1px;
+		height: 16px;
+		background: var(--rule-soft);
 	}
 
 	.legend-item {
@@ -241,5 +276,11 @@ function hideTooltip(): void {
 		width: 12px;
 		height: 12px;
 		border-radius: 2px;
+	}
+
+	.legend-bar {
+		width: 16px;
+		height: 8px;
+		border-radius: 1px;
 	}
 </style>
