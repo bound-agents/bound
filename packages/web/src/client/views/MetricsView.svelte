@@ -7,6 +7,7 @@ import DataTable from "../components/DataTable.svelte";
 import DateRangeBar from "../components/DateRangeBar.svelte";
 import LatencyBarChart from "../components/LatencyBarChart.svelte";
 import MetroCard from "../components/MetroCard.svelte";
+import MiniMetricChart from "../components/MiniMetricChart.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import TokenBarChart from "../components/TokenBarChart.svelte";
@@ -104,57 +105,9 @@ function relayRowAccent(row: Record<string, unknown>): string | null {
 	return null;
 }
 
-// Sparkline helper - generates normalized points and paths for inline SVGs
-const SPARKLINE_WIDTH = 288;
-const SPARKLINE_HEIGHT = 48;
-
-interface SparklineData {
-	points: Array<{ x: number; y: number }>;
-	pathD: string;
-	areaD: string;
-}
-
-function generateSparklineData(values: number[]): SparklineData {
-	if (values.length === 0) {
-		return { points: [], pathD: "", areaD: "" };
-	}
-
-	// Normalize values to [0, 1]
-	const maxVal = Math.max(...values, 1); // Avoid division by zero
-	const normalizedValues = values.map((v) => Math.max(0, Math.min(1, v / maxVal)));
-
-	// Generate points
-	const points = normalizedValues.map((v, i) => ({
-		x: values.length === 1 ? SPARKLINE_WIDTH / 2 : (i / (values.length - 1)) * SPARKLINE_WIDTH,
-		y: SPARKLINE_HEIGHT - v * (SPARKLINE_HEIGHT - 4),
-	}));
-
-	// Generate polyline path
-	const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-
-	// Generate area path (polyline + close)
-	const areaD =
-		points.length > 0
-			? `${pathD} L ${points[points.length - 1].x} ${SPARKLINE_HEIGHT} L ${points[0].x} ${SPARKLINE_HEIGHT} Z`
-			: "";
-
-	return { points, pathD, areaD };
-}
-
-// Extract sparkline data from context timeline
-function getBudgetPressureSparkline(
-	timeline: Array<{ budget_pressure_pct: number }>,
-): SparklineData {
-	const values = timeline.map((d) => d.budget_pressure_pct);
-	return generateSparklineData(values);
-}
-
-function getContextUtilizationSparkline(
-	timeline: Array<{ avg_context_utilization: number }>,
-): SparklineData {
-	const values = timeline.map((d) => d.avg_context_utilization);
-	return generateSparklineData(values);
-}
+// Format helpers for mini-chart axis/tooltip labels
+const formatPctAxis = (v: number): string => `${(v * 100).toFixed(0)}%`;
+const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 </script>
 
 <Page>
@@ -218,7 +171,7 @@ function getContextUtilizationSparkline(
 					</div>
 
 					<TokenBarChart data={data.tokens.byModel} />
-					<CostTimeline data={data.tokens.timeline} />
+					<CostTimeline data={data.tokens.costByModelTimeline} />
 				{/if}
 
 				<SectionHeader number={2} subtitle="Local-only — reflects this node's observations" title="Relay Performance" />
@@ -305,45 +258,33 @@ function getContextUtilizationSparkline(
 
 					<div class="sparkline-row">
 						<div class="sparkline-item">
-							<span class="sparkline-label">Budget Pressure Frequency</span>
-							{#if data.context.timeline.length > 0}
-								{@const sparkline = getBudgetPressureSparkline(data.context.timeline)}
-								<svg
-									viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
-									width="100%"
-									height={SPARKLINE_HEIGHT}
-									preserveAspectRatio="none"
-									class="sparkline-svg"
-								>
-									{#if sparkline.areaD}
-										<path d={sparkline.areaD} fill="var(--warn)" opacity="0.15" />
-									{/if}
-									{#if sparkline.pathD}
-										<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--warn)" stroke-width="1.5" />
-									{/if}
-								</svg>
-							{/if}
+							<MiniMetricChart
+								title="Budget Pressure Frequency (% of turns)"
+								color="var(--line-1)"
+								yMin={0}
+								yMax={1}
+								formatValue={formatPctTooltip}
+								formatAxis={formatPctAxis}
+								data={data.context.timeline.map((d) => ({
+									date: d.date,
+									value: d.budget_pressure_pct,
+								}))}
+							/>
 						</div>
 
 						<div class="sparkline-item">
-							<span class="sparkline-label">Context Utilization</span>
-							{#if data.context.timeline.length > 0}
-								{@const sparkline = getContextUtilizationSparkline(data.context.timeline)}
-								<svg
-									viewBox="0 0 {SPARKLINE_WIDTH} {SPARKLINE_HEIGHT}"
-									width="100%"
-									height={SPARKLINE_HEIGHT}
-									preserveAspectRatio="none"
-									class="sparkline-svg"
-								>
-									{#if sparkline.areaD}
-										<path d={sparkline.areaD} fill="var(--line-3)" opacity="0.15" />
-									{/if}
-									{#if sparkline.pathD}
-										<polyline points={sparkline.points.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="var(--line-3)" stroke-width="1.5" />
-									{/if}
-								</svg>
-							{/if}
+							<MiniMetricChart
+								title="Context Utilization (avg estimated / window)"
+								color="var(--line-3)"
+								yMin={0}
+								yMax={1}
+								formatValue={formatPctTooltip}
+								formatAxis={formatPctAxis}
+								data={data.context.timeline.map((d) => ({
+									date: d.date,
+									value: d.avg_context_utilization,
+								}))}
+							/>
 						</div>
 					</div>
 				{/if}
@@ -401,7 +342,7 @@ function getContextUtilizationSparkline(
 		grid-template-columns: 1fr 1fr;
 		gap: 16px;
 		margin: 16px 0;
-		padding: 16px;
+		padding: 8px;
 		background: var(--paper);
 		border: 1px solid var(--rule-soft);
 		border-radius: 8px;
@@ -410,20 +351,7 @@ function getContextUtilizationSparkline(
 	.sparkline-item {
 		display: flex;
 		flex-direction: column;
-	}
-
-	.sparkline-label {
-		font-size: 12px;
-		color: var(--ink-3);
-		margin-bottom: 8px;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		text-align: center;
-	}
-
-	.sparkline-svg {
-		display: block;
-		height: auto;
+		min-width: 0; /* allow shrink within grid track */
 	}
 
 	.relay-table-scroll {

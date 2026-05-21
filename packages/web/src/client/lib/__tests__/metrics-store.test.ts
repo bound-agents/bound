@@ -18,6 +18,7 @@ function makeMetricsResponse(overrides?: Partial<MetricsResponse>): MetricsRespo
 				},
 			],
 			timeline: [{ date: "2026-05-19", tokens_in: 1000, tokens_out: 500, cost_usd: 0.05 }],
+			costByModelTimeline: [{ date: "2026-05-19", model_id: "claude-opus", cost_usd: 0.05 }],
 			totals: { tokens_in: 1000, tokens_out: 500, cost_usd: 0.05, turn_count: 3, error_count: 0 },
 		},
 		relay: {

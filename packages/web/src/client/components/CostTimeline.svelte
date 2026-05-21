@@ -1,10 +1,12 @@
 <script lang="ts">
 import { scaleLinear, scaleTime } from "d3-scale";
+import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
 interface Props {
 	data: Array<{
 		date: string;
+		model_id: string;
 		cost_usd: number;
 	}>;
 }
@@ -18,55 +20,92 @@ let tooltipY = $state(0);
 let tooltipLines = $state<string[]>([]);
 let containerEl: HTMLDivElement | undefined = $state(undefined);
 
-// Parse dates and sort by time
-const parsedData = $derived.by(() => {
-	return data
-		.map((d) => ({
-			...d,
-			dateObj: new Date(d.date),
-		}))
-		.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+// Track rendered width — keeps text at literal pixel sizes.
+let measuredWidth = $state(600);
+
+// Tokyo Metro line colors — picked to be high-contrast against the paper
+// background. Maps assign a stable color per model; the order is fixed so
+// a model gets the same color across re-renders.
+const MODEL_PALETTE: string[] = [
+	"var(--line-3)", // blue
+	"var(--line-0)", // amber
+	"var(--line-4)", // green
+	"var(--line-9)", // ruby
+	"var(--line-6)", // violet
+	"var(--line-7)", // teal
+	"var(--line-1)", // red
+	"var(--line-5)", // gold
+	"var(--line-8)", // brown
+	"var(--line-2)", // silver
+];
+
+// Group rows by model_id, parse dates, sort each series by time.
+interface ModelSeries {
+	model_id: string;
+	color: string;
+	points: Array<{ dateObj: Date; cost_usd: number }>;
+}
+
+const seriesList = $derived.by<ModelSeries[]>(() => {
+	const byModel = new Map<string, Array<{ dateObj: Date; cost_usd: number }>>();
+	for (const row of data) {
+		const existing = byModel.get(row.model_id) ?? [];
+		existing.push({ dateObj: new Date(row.date), cost_usd: row.cost_usd });
+		byModel.set(row.model_id, existing);
+	}
+	// Stable color assignment: sort model ids alphabetically so the palette
+	// index does not depend on Map insertion order.
+	const ids = [...byModel.keys()].sort();
+	return ids.map((id, idx) => {
+		const points = (byModel.get(id) ?? []).sort(
+			(a, b) => a.dateObj.getTime() - b.dateObj.getTime(),
+		);
+		return {
+			model_id: id,
+			color: MODEL_PALETTE[idx % MODEL_PALETTE.length] as string,
+			points,
+		};
+	});
 });
 
+const allPoints = $derived(seriesList.flatMap((s) => s.points));
+const hasData = $derived(allPoints.length > 0);
+
 // Dimensions
-const width = 600;
-const height = 200;
-const padding = { top: 16, right: 16, bottom: 32, left: 48 };
-const innerWidth = width - padding.left - padding.right;
+const width = $derived(Math.max(measuredWidth, 320));
+const height = 220;
+const padding = { top: 16, right: 16, bottom: 32, left: 64 };
+const innerWidth = $derived(width - padding.left - padding.right);
 const innerHeight = height - padding.top - padding.bottom;
 
-// Scales
+// Scales — domain spans every model's points so all lines share the axis.
 const xScale = $derived.by(() => {
-	const extent = [
-		parsedData[0]?.dateObj ?? new Date(),
-		parsedData[parsedData.length - 1]?.dateObj ?? new Date(),
-	];
-	return scaleTime().domain(extent).range([0, innerWidth]);
+	if (!hasData) return scaleTime().domain([new Date(), new Date()]).range([0, innerWidth]);
+	const times = allPoints.map((p) => p.dateObj.getTime());
+	const min = Math.min(...times);
+	const max = Math.max(...times);
+	return scaleTime()
+		.domain([new Date(min), new Date(max)])
+		.range([0, innerWidth]);
 });
 
 const yScale = $derived.by(() => {
-	const maxCost = Math.max(...parsedData.map((d) => d.cost_usd), 0);
+	const maxCost = Math.max(...allPoints.map((p) => p.cost_usd), 0);
 	return scaleLinear().domain([0, maxCost]).range([innerHeight, 0]).nice();
 });
 
-// Format USD currency
-const formatUSD = (value: number): string => {
-	return `$${value.toFixed(4)}`;
-};
+const formatUSD = (value: number): string => `$${value.toFixed(4)}`;
 
-// Format date/time for labels (depends on data granularity)
 const formatDate = (date: Date): string => {
 	const hour = date.getHours().toString().padStart(2, "0");
 	const month = (date.getMonth() + 1).toString().padStart(2, "0");
 	const day = date.getDate();
-	// If hour is 00, this is daily data; otherwise hourly
 	if (hour === "00") {
 		return `${month}/${day}`;
 	}
 	return `${hour}:00`;
 };
 
-// Format date for tooltip (more detailed)
 const formatDateFull = (date: Date): string => {
 	const month = (date.getMonth() + 1).toString().padStart(2, "0");
 	const day = date.getDate().toString().padStart(2, "0");
@@ -78,63 +117,52 @@ const formatDateFull = (date: Date): string => {
 	return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
-// Generate path data for the line and area
-const pathData = $derived.by(() => {
-	return parsedData
-		.map((d, i) => {
-			const x = padding.left + xScale(d.dateObj);
-			const y = padding.top + yScale(d.cost_usd);
+function pathDataFor(points: ModelSeries["points"]): string {
+	return points
+		.map((p, i) => {
+			const x = padding.left + xScale(p.dateObj);
+			const y = padding.top + yScale(p.cost_usd);
 			return `${i === 0 ? "M" : "L"}${x},${y}`;
 		})
 		.join(" ");
-});
+}
 
-// Generate area path (includes closing to baseline)
-const areaData = $derived.by(() => {
-	if (parsedData.length === 0) return "";
-
-	let path = pathData;
-	// Close the path: draw down to baseline at the last x position
-	const lastData = parsedData[parsedData.length - 1];
-	if (lastData) {
-		const lastX = padding.left + xScale(lastData.dateObj);
-		path += ` L${lastX},${padding.top + innerHeight}`;
-	}
-	// Draw back to start baseline
-	const firstData = parsedData[0];
-	if (firstData) {
-		const firstX = padding.left + xScale(firstData.dateObj);
-		path += ` L${firstX},${padding.top + innerHeight} Z`;
-	}
-	return path;
-});
-
-// Generate Y axis tick labels
 const yTicks = $derived.by(() => {
 	const ticks: number[] = [];
 	const domain = yScale.domain();
-	const step = (domain[1] - domain[0]) / 4; // 5 ticks total
+	const step = (domain[1] - domain[0]) / 4;
 	for (let i = 0; i <= 4; i++) {
 		ticks.push(domain[0] + i * step);
 	}
 	return ticks;
 });
 
-// Generate X axis tick labels (sample every nth point to avoid crowding)
-const xTicks = $derived.by(() => {
-	if (parsedData.length <= 6) {
-		return parsedData;
+// X tick selection — use the union of all unique dates, evenly sampled.
+const xTickDates = $derived.by(() => {
+	const seen = new Map<number, Date>();
+	for (const p of allPoints) {
+		seen.set(p.dateObj.getTime(), p.dateObj);
 	}
-	const step = Math.ceil(parsedData.length / 6);
-	return parsedData.filter((_, i) => i % step === 0);
+	const unique = [...seen.values()].sort((a, b) => a.getTime() - b.getTime());
+	if (unique.length <= 6) return unique;
+	const step = Math.ceil(unique.length / 6);
+	return unique.filter((_, i) => i % step === 0);
 });
 
-function showTooltip(event: MouseEvent, d: { dateObj: Date; cost_usd: number }): void {
+function showTooltip(
+	event: MouseEvent,
+	series: ModelSeries,
+	point: { dateObj: Date; cost_usd: number },
+): void {
 	if (!containerEl) return;
 	const rect = containerEl.getBoundingClientRect();
 	tooltipX = event.clientX - rect.left;
 	tooltipY = event.clientY - rect.top;
-	tooltipLines = [formatDateFull(d.dateObj), `Cost: ${formatUSD(d.cost_usd)}`];
+	tooltipLines = [
+		series.model_id,
+		formatDateFull(point.dateObj),
+		`Cost: ${formatUSD(point.cost_usd)}`,
+	];
 	tooltipVisible = true;
 }
 
@@ -143,8 +171,20 @@ function hideTooltip(): void {
 }
 </script>
 
-<div class="cost-timeline" bind:this={containerEl}>
-	<svg {width} {height} viewBox="0 0 {width} {height}" class="chart-svg">
+<div
+	class="cost-timeline"
+	bind:this={containerEl}
+	use:observeWidth={(w) => {
+		measuredWidth = w - 32;
+	}}
+>
+	<svg
+		{width}
+		{height}
+		viewBox="0 0 {width} {height}"
+		class="chart-svg"
+		preserveAspectRatio="xMinYMin meet"
+	>
 		<!-- Y-axis gridlines and labels -->
 		{#each yTicks as tick}
 			<line
@@ -168,51 +208,66 @@ function hideTooltip(): void {
 			</text>
 		{/each}
 
-		<!-- Area fill -->
-		{#if parsedData.length > 0}
-			<path d={areaData} fill="var(--line-0)" opacity="0.2" />
-
-			<!-- Line on top -->
-			<path
-				d={pathData}
-				fill="none"
-				stroke="var(--line-0)"
-				stroke-width="2"
-				stroke-linecap="round"
-				stroke-linejoin="round"
-			/>
-
-			<!-- Interactive hit-area circles -->
-			{#each parsedData as d}
-				<circle
-					cx={padding.left + xScale(d.dateObj)}
-					cy={padding.top + yScale(d.cost_usd)}
-					r="2.5"
-					fill="var(--line-0)"
-					class="data-point"
-					onmouseenter={(e) => showTooltip(e, d)}
-					onmousemove={(e) => showTooltip(e, d)}
-					onmouseleave={hideTooltip}
+		{#if hasData}
+			{#each seriesList as series}
+				<!-- Line per model -->
+				<path
+					d={pathDataFor(series.points)}
+					fill="none"
+					stroke={series.color}
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
 				/>
+
+				<!-- Hit-area circles per model -->
+				{#each series.points as point}
+					<circle
+						cx={padding.left + xScale(point.dateObj)}
+						cy={padding.top + yScale(point.cost_usd)}
+						r="2.5"
+						fill={series.color}
+						class="data-point"
+						onmouseenter={(e) => showTooltip(e, series, point)}
+						onmousemove={(e) => showTooltip(e, series, point)}
+						onmouseleave={hideTooltip}
+					/>
+				{/each}
 			{/each}
 
-			<!-- X-axis labels -->
-			{#each xTicks as d}
+			<!-- X-axis labels (one set, drawn from union of dates) -->
+			{#each xTickDates as d}
 				<text
-					x={padding.left + xScale(d.dateObj)}
+					x={padding.left + xScale(d)}
 					y={height - padding.bottom + 16}
 					text-anchor="middle"
 					class="x-label"
 				>
-					{formatDate(d.dateObj)}
+					{formatDate(d)}
 				</text>
 			{/each}
+		{:else}
+			<text x={width / 2} y={height / 2} text-anchor="middle" class="no-data-label">
+				No cost data
+			</text>
 		{/if}
 
 		<!-- Axes -->
 		<line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="var(--ink)" stroke-width="1" />
 		<line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="var(--ink)" stroke-width="1" />
 	</svg>
+
+	<!-- Per-model legend -->
+	{#if seriesList.length > 0}
+		<div class="legend">
+			{#each seriesList as series}
+				<div class="legend-item">
+					<div class="legend-color" style="background-color: {series.color}"></div>
+					<span class="legend-label">{series.model_id}</span>
+				</div>
+			{/each}
+		</div>
+	{/if}
 
 	<ChartTooltip visible={tooltipVisible} x={tooltipX} y={tooltipY} lines={tooltipLines} />
 </div>
@@ -228,9 +283,8 @@ function hideTooltip(): void {
 	}
 
 	.chart-svg {
-		width: 100%;
-		height: auto;
 		display: block;
+		max-width: 100%;
 	}
 
 	.gridline {
@@ -244,6 +298,12 @@ function hideTooltip(): void {
 		font-family: inherit;
 	}
 
+	.no-data-label {
+		font-size: 14px;
+		fill: var(--ink-3);
+		font-family: inherit;
+	}
+
 	.data-point {
 		cursor: pointer;
 		transition: r 0.15s ease;
@@ -251,5 +311,30 @@ function hideTooltip(): void {
 
 	.data-point:hover {
 		r: 4.5;
+	}
+
+	.legend {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 12px 20px;
+		margin-top: 12px;
+		font-size: 12px;
+		color: var(--ink-3);
+	}
+
+	.legend-item {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.legend-color {
+		width: 12px;
+		height: 12px;
+		border-radius: 2px;
+	}
+
+	.legend-label {
+		color: var(--ink);
 	}
 </style>
