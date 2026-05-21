@@ -23,6 +23,15 @@ export interface WebServerConfig {
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
+	/**
+	 * Optional cross-handler-invocation span tracker. Forwarded to the WS
+	 * handler so `tool:result` reception closes the matching `tool.dispatch`
+	 * span. Typed as a minimal interface so this package doesn't import
+	 * `@bound/agent`.
+	 */
+	handleMessageTracker?: {
+		closeDispatch(callId: string, status?: "ok" | "error", reason?: string): void;
+	};
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -61,6 +70,7 @@ export async function createWebServer(
 		db,
 		siteId: config.siteId,
 		defaultUserId: config.operatorUserId,
+		handleMessageTracker: config.handleMessageTracker,
 	});
 
 	const webAppConfig: WebAppConfig = {

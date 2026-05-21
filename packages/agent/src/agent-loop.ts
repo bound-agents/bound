@@ -1874,11 +1874,27 @@ export class AgentLoop {
 								connectionId,
 							);
 
-							// Capture the W3C trace context with toolExecuteCtx active so the
-							// carrier identifies agent-loop.tool-execute as the parent span.
-							// Event-bus listeners run outside this context, so the WS handler
-							// can't recover the right active span on its own.
-							const traceContext = context.with(toolExecuteCtx, () => injectTraceContext());
+							// Open a `tool.dispatch` span that survives past this handler
+							// invocation. The dispatch span lives until the WS handler sees
+							// the matching tool_result and calls `closeDispatch`, so it
+							// covers the actual round-trip wall-clock — not just the in-loop
+							// dispatch instant. `agent-loop.tool-execute` would have been
+							// lifetime-inverted as a parent (it ends synchronously while the
+							// remote tool is still running), so the carrier we inject for
+							// the WS frame has to point at `tool.dispatch` instead.
+							//
+							// When no tracker is configured (older callers or tests), fall
+							// back to the toolExecuteCtx so behavior is unchanged.
+							const tracker = this.config.handleMessageTracker;
+							const dispatchCtx = tracker
+								? (tracker.openDispatch(
+										this.config.threadId,
+										toolCall.id,
+										toolCall.name,
+									) as Context)
+								: toolExecuteCtx;
+
+							const traceContext = context.with(dispatchCtx, () => injectTraceContext());
 
 							// Emit event for WS handler to deliver tool:call to client
 							this.ctx.eventBus.emit("client_tool_call:created", {

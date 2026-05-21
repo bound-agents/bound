@@ -50,6 +50,15 @@ export interface ShutdownHandles {
 	syncServer: { stop(): Promise<void> } | null;
 	wsClient: { close: () => void } | null;
 	wsTransport: { start(): void; stop(): void } | undefined;
+	/**
+	 * Cross-handler-invocation span tracker. Stopped and flushed before
+	 * `shutdownTelemetry` so any open `agent.handle-message` and
+	 * `tool.dispatch` spans get exported in the OTLP final flush.
+	 */
+	handleMessageTracker: {
+		stopWatchdog(): void;
+		endAllOpenSpans(reason?: string): void;
+	} | null;
 }
 
 export function initScheduler(
@@ -288,6 +297,13 @@ export function setupGracefulShutdown(
 			}
 			if (handles.webServer) await handles.webServer.stop();
 			if (handles.syncServer) await handles.syncServer.stop();
+			// Stop the watchdog and end any still-open turn / dispatch spans
+			// so BatchSpanProcessor exports them on final flush. Ordering
+			// matters: this must run BEFORE shutdownTelemetry.
+			if (handles.handleMessageTracker) {
+				handles.handleMessageTracker.stopWatchdog();
+				handles.handleMessageTracker.endAllOpenSpans("shutdown");
+			}
 			await shutdownTelemetry();
 			resolve();
 		};

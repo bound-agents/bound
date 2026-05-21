@@ -6,6 +6,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
+	HandleMessageTracker,
 	createRelayOutboxEntry,
 	generateThreadTitle,
 	getDelegationTarget,
@@ -197,6 +198,7 @@ export interface ServerResult {
 	activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	threadExecutor: ThreadExecutor;
 	platformMcpRegistry: PlatformMcpRegistry | null;
+	handleMessageTracker: HandleMessageTracker;
 	wsTransportHolder: {
 		addPeer: (
 			siteId: string,
@@ -266,6 +268,35 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
 	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
+	const handleMessageTracker = new HandleMessageTracker();
+	handleMessageTracker.startWatchdog();
+
+	/**
+	 * Close the `agent.handle-message` span if the cycle is genuinely done.
+	 * "Done" means:
+	 *   - the agent loop returned with no `yielded` flag (otherwise the loop
+	 *     will be re-batched and we want to keep the span open), AND
+	 *   - the dispatch_queue contains no rows that would re-trigger the
+	 *     thread (pending/processing user_message, tool_result, notification).
+	 *
+	 * `client_tool_call` rows are excluded — they intentionally sit pending
+	 * while the WS round-trip is in flight, and the matching tool_result
+	 * (which DOES count) drives the resume.
+	 */
+	const maybeCloseTurn = (threadId: string, status: "ok" | "error"): void => {
+		const row = appContext.db
+			.prepare(
+				`SELECT COUNT(*) AS pending FROM dispatch_queue
+				 WHERE thread_id = ?
+				   AND status IN ('pending', 'processing')
+				   AND event_type != 'client_tool_call'`,
+			)
+			.get(threadId) as { pending: number } | null;
+		const pending = row?.pending ?? 0;
+		if (pending === 0) {
+			handleMessageTracker.closeTurn(threadId, status);
+		}
+	};
 
 	// Mutable holder for wsTransport (populated in Phase 8 after sync init)
 	const wsTransportHolder: ServerResult["wsTransportHolder"] = {
@@ -341,6 +372,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			activeDelegations,
 			activeLoops: threadExecutor.activeThreads as Set<string>,
 			requestConsistency: (tables: string[]) => wsTransportHolder.requestConsistency(tables),
+			handleMessageTracker,
 		});
 		await webServer.start();
 
@@ -561,7 +593,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							const turnStartAt = new Date().toISOString();
 
 							const tracer = getTracer();
-							const parentCtx = traceContext
+							const inboundCtx = traceContext
 								? extractTraceContext(
 										(() => {
 											try {
@@ -572,6 +604,26 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										})(),
 									)
 								: undefined;
+
+							// Decide whether this handler invocation OPENS a new
+							// `agent.handle-message` (logical message-handling cycle)
+							// or RESUMES one already in flight. Tool-result triggers
+							// resume the existing cycle; user messages and other
+							// triggers start a fresh one.
+							const triggerEventTypes = new Set(claimed.map((c) => c.event_type));
+							const isToolResultResume =
+								triggerEventTypes.has("tool_result") && !triggerEventTypes.has("user_message");
+
+							let turnCtx = handleMessageTracker.getTurnContext(thread_id);
+							if (!isToolResultResume || turnCtx === null) {
+								// Open (or replace) the turn span. When the prior cycle
+								// is gone (e.g. process restart between dispatch and
+								// result), this also covers the resume — degraded but
+								// not fatal.
+								turnCtx = handleMessageTracker.openTurn(thread_id, inboundCtx);
+							}
+							handleMessageTracker.touchTurn(thread_id);
+
 							const rootSpan = tracer.startSpan(
 								"web.handle-message",
 								{
@@ -582,12 +634,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										platform: platform ?? "web",
 									},
 								},
-								parentCtx,
+								turnCtx,
 							);
 
 							let agentLoopResult: Awaited<ReturnType<typeof runLocalAgentLoop>>;
 							try {
-								const result = await context.with(trace.setSpan(context.active(), rootSpan), () =>
+								const result = await context.with(trace.setSpan(turnCtx, rootSpan), () =>
 									runLocalAgentLoop({
 										eventBus: appContext.eventBus,
 										threadId: thread_id,
@@ -601,6 +653,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										connectionId: resolvedConnectionId,
 										systemPromptAddition,
 										platformTools,
+										handleMessageTracker,
 									}),
 								);
 								agentLoopResult = result;
@@ -613,6 +666,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								throw err;
 							} finally {
 								rootSpan.end();
+								handleMessageTracker.touchTurn(thread_id);
 							}
 
 							const { agentResult: result } = agentLoopResult;
@@ -658,6 +712,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 						// Acknowledge the batch we just processed
 						acknowledgeBatch(appContext.db, claimedIds);
+						maybeCloseTurn(thread_id, "ok");
 						return { claimedIds };
 					} catch (error) {
 						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
@@ -669,6 +724,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								claimedIds,
 							});
 						}
+						// Close the turn with error status — the cycle terminated
+						// abnormally and is no longer in a state that should hold
+						// the span open.
+						handleMessageTracker.closeTurn(
+							thread_id,
+							"error",
+							error instanceof Error ? error.message : String(error),
+						);
 						return {};
 					}
 				},
@@ -1085,6 +1148,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		activeDelegations,
 		threadExecutor,
 		platformMcpRegistry,
+		handleMessageTracker,
 		wsTransportHolder,
 	};
 }

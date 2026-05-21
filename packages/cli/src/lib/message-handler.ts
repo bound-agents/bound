@@ -5,7 +5,7 @@
  * and cleanup so the behaviour can be verified in unit tests without starting
  * the full web server.
  */
-import type { AgentLoopResult } from "@bound/agent";
+import type { AgentLoopResult, HandleMessageTracker } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import type { AgentLoop } from "@bound/agent";
 import type { PlatformRegisteredTool } from "@bound/platforms";
@@ -32,6 +32,11 @@ export interface RunLocalLoopParams {
 	systemPromptAddition?: string;
 	/** Platform MCP tools with execute closures (e.g., discord_send_message). */
 	platformTools?: PlatformRegisteredTool[];
+	/**
+	 * Cross-handler-invocation span tracker. Forwarded into AgentLoopConfig
+	 * so client tool dispatches open `tool.dispatch` spans on it.
+	 */
+	handleMessageTracker?: HandleMessageTracker;
 }
 
 export interface RunLocalLoopResult {
@@ -84,6 +89,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		connectionId,
 		systemPromptAddition,
 		platformTools,
+		handleMessageTracker,
 	} = params;
 
 	const abortController = new AbortController();
@@ -121,6 +127,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			connectionId,
 			systemPromptAddition,
 			platformTools,
+			handleMessageTracker,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };
