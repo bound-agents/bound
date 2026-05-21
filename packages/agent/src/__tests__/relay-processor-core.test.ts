@@ -1384,4 +1384,148 @@ describe("RelayProcessor", () => {
 			expect(errors.length).toBe(0);
 		});
 	});
+
+	describe("passive kind handling", () => {
+		// Passive relay kinds (currently: webhook_intake) are durable mailbox
+		// rows owned by another consumer — the scheduler's event-task wakeup
+		// path drains webhook envelopes via buildEventWakeupContent. The
+		// relay-processor must leave passive rows entirely untouched.
+		//
+		// Pre-fix this exact scenario was the production bug: webhook handler
+		// wrote rows with kind="intake", relay-processor failed to parse them
+		// as the MCP intakePayloadSchema, called markProcessed in the error
+		// branch, and the scheduler's helper saw processed=0 empty and fell
+		// back to "Execute scheduled task." on every webhook wakeup.
+		it("leaves webhook_intake rows unprocessed for the scheduler to drain", async () => {
+			const siteId = "local-site";
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["remote-site"]);
+			const eventBus = createMockEventBus();
+			const logger = createMockLogger();
+
+			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+
+			const processor = new RelayProcessor(
+				db,
+				siteId,
+				mcpClients,
+				null,
+				keyringSiteIds,
+				logger,
+				eventBus,
+			);
+
+			// HTTP webhook envelope shape — distinct from intakePayloadSchema.
+			// Pre-fix this would have failed to parse and been silently consumed
+			// by the relay-processor's error branch.
+			const httpEnvelope = JSON.stringify({
+				method: "POST",
+				path: "/webhook/bound",
+				headers: { "x-github-event": "push", "x-github-delivery": "abc-123" },
+				content_type: "application/json",
+				body: '{"ref":"refs/heads/main","commits":[]}',
+			});
+
+			const { insertInbox } = require("@bound/core");
+			insertInbox(db, {
+				id: "webhook-row-1",
+				source_site_id: "remote-site",
+				kind: "webhook_intake",
+				ref_id: "thread-aaaa",
+				idempotency_key: "github-abc-123",
+				stream_id: null,
+				payload: httpEnvelope,
+				expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+				received_at: new Date().toISOString(),
+				processed: 0,
+			});
+
+			const handle = processor.start(10);
+			// Long enough for several poll ticks; if the row were going to be
+			// touched, it would have been touched several times over by now.
+			await sleep(300);
+			handle.stop();
+
+			// Row must still be unprocessed — the scheduler is the rightful
+			// consumer.
+			const inboxEntry = db
+				.query("SELECT processed FROM relay_inbox WHERE id = ?")
+				.get("webhook-row-1") as { processed: number } | null;
+			expect(inboxEntry).not.toBeNull();
+			expect(inboxEntry?.processed).toBe(0);
+
+			// And no error response or any other outbox entry was generated.
+			const outbox = db.query("SELECT * FROM relay_outbox").all() as RelayOutboxEntry[];
+			expect(outbox.length).toBe(0);
+		});
+
+		it("does not interfere with non-passive entries arriving alongside webhook_intake", async () => {
+			// A passive row coexisting with a regular request kind must not
+			// block the regular dispatcher path. The poll loop iterates all
+			// unprocessed entries each tick.
+			const siteId = "local-site";
+			const mcpClients = new Map<string, MCPClient>();
+			const keyringSiteIds = new Set(["remote-site"]);
+			const eventBus = createMockEventBus();
+			const logger = createMockLogger();
+
+			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+
+			const processor = new RelayProcessor(
+				db,
+				siteId,
+				mcpClients,
+				null,
+				keyringSiteIds,
+				logger,
+				eventBus,
+			);
+
+			const { insertInbox } = require("@bound/core");
+			// Passive row — must remain unprocessed
+			insertInbox(db, {
+				id: "passive-row",
+				source_site_id: "remote-site",
+				kind: "webhook_intake",
+				ref_id: "thread-aaaa",
+				idempotency_key: "github-1",
+				stream_id: null,
+				payload: JSON.stringify({ method: "POST", path: "/webhook/bound", body: "{}" }),
+				expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+				received_at: new Date().toISOString(),
+				processed: 0,
+			});
+			// Response row — relay-processor markProcessed-es response kinds
+			insertInbox(db, {
+				id: "response-row",
+				source_site_id: "remote-site",
+				kind: "result",
+				ref_id: "some-prior-request",
+				idempotency_key: "result-1",
+				stream_id: null,
+				payload: JSON.stringify({ result: "ok" }),
+				expires_at: new Date(Date.now() + 300_000).toISOString(),
+				received_at: new Date().toISOString(),
+				processed: 0,
+			});
+
+			const handle = processor.start(10);
+			await waitFor(
+				() => {
+					const row = db
+						.query("SELECT processed FROM relay_inbox WHERE id = ?")
+						.get("response-row") as { processed: number } | null;
+					return row?.processed === 1;
+				},
+				{ message: "response row not processed" },
+			);
+			handle.stop();
+
+			// Passive row still unprocessed
+			const passive = db
+				.query("SELECT processed FROM relay_inbox WHERE id = ?")
+				.get("passive-row") as { processed: number } | null;
+			expect(passive?.processed).toBe(0);
+		});
+	});
 });

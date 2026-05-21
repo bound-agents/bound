@@ -192,16 +192,25 @@ function resetEventTask(
 	const isCompletion = context === "completion" || context === "template completion";
 	let nextRunAt: string | null = null;
 	if (!isCompletion && task.thread_id) {
-		// Only retry if the inbox has unprocessed envelopes for this thread.
-		// markProcessed (scheduler.ts:895) drains the inbox BEFORE the agent
-		// loop runs, so the common-case retry would replay an empty wakeup
-		// (the "Execute scheduled task." fallback in buildEventWakeupContent)
-		// and produce phantom wakeups. The retry remains useful only when
-		// persistence failed BEFORE markProcessed, leaving the inbox genuinely
-		// pending and the retry replaying the actual event payload.
+		// Only retry if the inbox has unprocessed webhook envelopes for this
+		// thread. markProcessed (scheduler.ts:895) drains the inbox BEFORE the
+		// agent loop runs, so the common-case retry would replay an empty
+		// wakeup (the "Execute scheduled task." fallback in
+		// buildEventWakeupContent) and produce phantom wakeups. The retry
+		// remains useful only when persistence failed BEFORE markProcessed,
+		// leaving the inbox genuinely pending and the retry replaying the
+		// actual event payload.
+		//
+		// kind is filtered to match buildEventWakeupContent's reader — only
+		// webhook_intake rows are foldable into the wakeup, so only those
+		// rows can produce a non-empty retry. A stray platform-MCP `intake`
+		// row sharing this thread_id would NOT survive a retry into the
+		// helper, so retrying on its presence would be a phantom wakeup.
 		const unprocessed = db
-			.query("SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0")
-			.get(task.thread_id) as { c: number } | null;
+			.query(
+				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
+			)
+			.get(task.thread_id, "webhook_intake") as { c: number } | null;
 		if (unprocessed && unprocessed.c > 0) {
 			const failures = current.consecutive_failures ?? 0;
 			if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {

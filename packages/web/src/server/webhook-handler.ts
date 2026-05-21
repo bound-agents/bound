@@ -95,11 +95,18 @@ export async function handleWebhookRequest(
 	const deliveryId = extractDeliveryId(request.headers);
 	const idempotencyKey = deliveryId ?? `${name}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
-	// Write relay_inbox entry
+	// Write relay_inbox entry. `webhook_intake` is a passive relay kind — the
+	// row is a durable mailbox entry owned by the scheduler's event-task
+	// wakeup path (buildEventWakeupContent), NOT the relay-processor's
+	// dispatcher. Using a discriminated kind prevents the relay-processor
+	// from picking up the row, failing to parse the HTTP envelope as the
+	// MCP-platform `intakePayloadSchema`, and silently markProcessed-ing it
+	// before the scheduler ever sees it. See RELAY_KIND_REGISTRY in
+	// @bound/shared types.ts for the full dispatch-mode contract.
 	const inboxEntry = {
 		id: randomUUID(),
 		source_site_id: deps.siteId,
-		kind: "intake" as const,
+		kind: "webhook_intake" as const,
 		ref_id: webhook.thread_id,
 		idempotency_key: idempotencyKey,
 		stream_id: null,

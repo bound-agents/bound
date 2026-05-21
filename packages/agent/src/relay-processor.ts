@@ -29,6 +29,7 @@ import type {
 	RelayConfig,
 	RelayInboxEntry,
 	RelayOutboxEntry,
+	RelayPassiveKind,
 	ResourceReadPayload,
 	ResultPayload,
 	SerializedSpan,
@@ -37,6 +38,7 @@ import type {
 	TypedEventEmitter,
 } from "@bound/shared";
 import {
+	RELAY_PASSIVE_KINDS,
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
@@ -83,10 +85,15 @@ type RelayEntryHandler = (entry: RelayInboxEntry) => Promise<string | null>;
 
 /**
  * All request kinds that processEntry dispatches to handlers.
- * cancel is excluded because it is handled in the first pass of processPendingEntries
- * (needs to run before other entries to abort in-flight work).
+ * - `cancel` is excluded because it is handled in the first pass of
+ *   processPendingEntries (needs to run before other entries to abort in-flight
+ *   work).
+ * - `RelayPassiveKind` (currently `webhook_intake`) is excluded because passive
+ *   kinds are durable mailbox rows owned by another consumer; the
+ *   relay-processor must NOT touch them. See RELAY_KIND_REGISTRY in
+ *   @bound/shared types.ts for the dispatch-mode contract.
  */
-type HandledRequestKind = Exclude<RelayRequestKind, "cancel">;
+type HandledRequestKind = Exclude<RelayRequestKind, "cancel" | RelayPassiveKind>;
 
 /**
  * Thrown by handlers when payload parsing fails and the handler has already
@@ -293,16 +300,29 @@ export class RelayProcessor {
 	}
 
 	private static readonly RESPONSE_KIND_SET = new Set<string>(RELAY_RESPONSE_KINDS);
+	private static readonly PASSIVE_KIND_SET = new Set<string>(RELAY_PASSIVE_KINDS);
 
 	private async processEntry(entry: RelayInboxEntry): Promise<void> {
 		try {
-			// Step 0: Skip response kinds (result, error, stream_chunk, etc.)
+			// Step 0a: Skip response kinds (result, error, stream_chunk, etc.)
 			// These are callbacks from prior requests — consumed by RELAY_WAIT
 			// polling in the agent loop, not re-processed here. Without this
 			// guard, "error" kind entries generate "Unknown request kind: error"
 			// errors which amplify into an infinite loop (see March 28 incident).
 			if (RelayProcessor.RESPONSE_KIND_SET.has(entry.kind)) {
 				markProcessed(this.db, [entry.id]);
+				return;
+			}
+
+			// Step 0b: Leave passive kinds entirely alone — they are durable
+			// mailbox rows owned by another consumer (currently the scheduler's
+			// event-task wakeup path, which drains `webhook_intake` rows after
+			// folding their envelopes into the agent context). markProcessed-ing
+			// these here would steal the row from its rightful consumer; the
+			// scheduler would then read processed=0 empty and silently fall back
+			// to "Execute scheduled task." on every wakeup. That was the failure
+			// mode that motivated this branch.
+			if (RelayProcessor.PASSIVE_KIND_SET.has(entry.kind)) {
 				return;
 			}
 

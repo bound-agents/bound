@@ -171,11 +171,32 @@ export function readInboxByRefId(db: Database, refId: string): RelayInboxEntry |
  * envelopes (or other intake payloads) into the agent context — `readInboxByRefId`
  * only returns the earliest single entry, which is the wrong shape when multiple
  * events have queued up between scheduler runs.
+ *
+ * The optional `kind` filter restricts results to a specific relay kind. The
+ * scheduler's event-task wakeup path passes `kind="webhook_intake"` to ensure
+ * it only folds rows that the webhook handler wrote — without the filter,
+ * stray rows of other kinds (e.g. platform-MCP `intake` with a totally
+ * different payload schema) sharing a `ref_id` would be opaquely re-emitted
+ * as if they were webhook envelopes. Callers that genuinely need every
+ * unprocessed row regardless of kind may omit the filter.
  */
-export function readUnprocessedInboxByRefId(db: Database, refId: string): RelayInboxEntry[] {
+export function readUnprocessedInboxByRefId(
+	db: Database,
+	refId: string,
+	kind?: string,
+): RelayInboxEntry[] {
+	if (kind === undefined) {
+		return db
+			.query(
+				"SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 ORDER BY received_at ASC",
+			)
+			.all(refId) as RelayInboxEntry[];
+	}
 	return db
-		.query("SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 ORDER BY received_at ASC")
-		.all(refId) as RelayInboxEntry[];
+		.query(
+			"SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ? ORDER BY received_at ASC",
+		)
+		.all(refId, kind) as RelayInboxEntry[];
 }
 
 export function readInboxByStreamId(db: Database, streamId: string): RelayInboxEntry[] {

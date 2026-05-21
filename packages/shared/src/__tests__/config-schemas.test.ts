@@ -1042,7 +1042,7 @@ describe("platform-connectors.AC3.1 — new relay kinds exist", () => {
 // single source of truth and derived arrays stay consistent.
 describe("RELAY_KIND_REGISTRY completeness", () => {
 	it("every kind in the registry has a valid dispatch mode", () => {
-		const validModes: RelayDispatch[] = ["sync", "async", "response"];
+		const validModes: RelayDispatch[] = ["sync", "async", "response", "passive"];
 		for (const [_kind, meta] of Object.entries(RELAY_KIND_REGISTRY)) {
 			expect(validModes).toContain(meta.dispatch);
 		}
@@ -1069,6 +1069,16 @@ describe("RELAY_KIND_REGISTRY completeness", () => {
 			.map(([kind]) => kind)
 			.sort();
 		const actual = [...RELAY_RESPONSE_KINDS].sort();
+		expect(actual).toEqual(expected);
+	});
+
+	it("derived RELAY_PASSIVE_KINDS matches passive registry entries", () => {
+		const { RELAY_PASSIVE_KINDS } = require("../types.js");
+		const expected = Object.entries(RELAY_KIND_REGISTRY)
+			.filter(([, meta]) => meta.dispatch === "passive")
+			.map(([kind]) => kind)
+			.sort();
+		const actual = [...RELAY_PASSIVE_KINDS].sort();
 		expect(actual).toEqual(expected);
 	});
 
