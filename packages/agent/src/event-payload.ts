@@ -41,6 +41,12 @@ const DEFAULT_FALLBACK = "Execute scheduled task.";
  * Non-event task types (cron, deferred, heartbeat) do NOT consume the
  * inbox — they have their own wakeup paths and shouldn't be hijacked
  * by stray intake entries that happen to share a thread_id.
+ *
+ * The inbox query filters on `kind="webhook_intake"` (a passive relay
+ * kind owned by this consumer). Without the kind filter, stray rows
+ * of other intake-shaped kinds sharing a `ref_id` could be opaquely
+ * folded into the wakeup as if they were webhook envelopes — the
+ * payload schemas are not interchangeable.
  */
 export function buildEventWakeupContent(db: Database, task: Task): EventWakeupContent {
 	const fallback = task.payload ?? DEFAULT_FALLBACK;
@@ -49,7 +55,7 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 		return { content: fallback, processedIds: [] };
 	}
 
-	const entries = readUnprocessedInboxByRefId(db, task.thread_id);
+	const entries = readUnprocessedInboxByRefId(db, task.thread_id, "webhook_intake");
 	if (entries.length === 0) {
 		return { content: fallback, processedIds: [] };
 	}

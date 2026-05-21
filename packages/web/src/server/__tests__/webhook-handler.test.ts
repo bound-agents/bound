@@ -80,7 +80,9 @@ describe("handleWebhookRequest", () => {
 		expect(text).toBe("");
 
 		// Verify relay_inbox entry was written
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(1);
 
 		const entry = inboxEntries[0] as any;
@@ -243,7 +245,9 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		// Verify body was preserved
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		const entry = inboxEntries[0] as any;
 		const payload = JSON.parse(entry.payload);
 		expect(payload.body).toBe(originalBody.toString("utf-8"));
@@ -316,7 +320,9 @@ describe("handleWebhookRequest", () => {
 		expect(text).toBe("");
 
 		// Verify no relay_inbox entry was created
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(0);
 	});
 
@@ -369,7 +375,9 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		// Verify relay_inbox entry
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(1);
 	});
 
@@ -420,7 +428,9 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		// Verify relay_inbox entry
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(1);
 	});
 
@@ -472,7 +482,9 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		// Verify envelope includes event headers but not connection/host headers
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
 
@@ -555,7 +567,9 @@ describe("handleWebhookRequest", () => {
 		expect(response2.status).toBe(202);
 
 		// Verify only one relay_inbox entry was created (deduped)
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(1);
 
 		// Verify idempotency_key matches the delivery ID pattern
@@ -624,7 +638,9 @@ describe("handleWebhookRequest", () => {
 		expect(response2.status).toBe(202);
 
 		// Verify two separate relay_inbox entries were created (no dedup possible)
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(2);
 
 		// Verify each has a unique idempotency_key (generated from timestamp/UUID)
@@ -682,7 +698,9 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		// Verify relay_inbox entry uses Stripe delivery ID
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		expect(inboxEntries.length).toBe(1);
 
 		const entry = inboxEntries[0] as any;
@@ -736,7 +754,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response.status).toBe(202);
 
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
 
@@ -790,7 +810,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response.status).toBe(202);
 
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
 
@@ -844,7 +866,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response.status).toBe(202);
 
-		const inboxEntries = db.prepare("SELECT * FROM relay_inbox WHERE kind = 'intake'").all();
+		const inboxEntries = db
+			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
 

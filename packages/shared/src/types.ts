@@ -396,7 +396,28 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
  * add it to RelayProcessor.processEntry() — the exhaustive switch will remind
  * you at compile time if you forget.
  */
-export type RelayDispatch = "sync" | "async" | "response";
+/**
+ * Relay-processor dispatch mode for a given relay kind.
+ *
+ * - "sync": handled synchronously by the relay-processor; result returned in
+ *   the same WS exchange.
+ * - "async": handled asynchronously by the relay-processor; the row is pulled
+ *   from `relay_inbox` and `markProcessed`-ed once a handler completes.
+ * - "response": NOT handled by the relay-processor; produced as a callback to
+ *   a prior request, consumed elsewhere by RELAY_WAIT polling. The
+ *   relay-processor `markProcessed`-es these rows on sight as a cleanup step
+ *   (the consumer has already read them by the time the poll loop sees them).
+ * - "passive": NOT handled by the relay-processor AND NOT cleaned up by it.
+ *   The row is a durable mailbox entry owned by a non-relay-processor
+ *   consumer (currently: the scheduler's event-task wakeup path, which reads
+ *   webhook envelopes via `buildEventWakeupContent`). The relay-processor
+ *   must leave passive rows untouched — `markProcessed`-ing them would steal
+ *   the row from the rightful consumer, producing the "agent woke up with
+ *   `Execute scheduled task.` and no envelope" symptom observed pre-fix.
+ *   Drainage is the consumer's responsibility (scheduler.ts:925 calls
+ *   `markProcessed` after the wakeup messages are durably persisted).
+ */
+export type RelayDispatch = "sync" | "async" | "response" | "passive";
 
 export interface RelayKindMeta {
 	readonly dispatch: RelayDispatch;
@@ -418,6 +439,20 @@ export const RELAY_KIND_REGISTRY = {
 	inference: { dispatch: "async" },
 	process: { dispatch: "async" },
 	intake: { dispatch: "async" },
+
+	// Passive kinds — durable mailbox rows owned by a non-relay-processor
+	// consumer. The relay-processor must NOT markProcessed these.
+	//
+	// `webhook_intake` carries the raw HTTP envelope written by the
+	// `/webhook/:name` handler. Its payload shape is
+	// {method, path, headers, content_type, body} — distinct from the
+	// platform-MCP `intake` shape (intakePayloadSchema). Pre-fix, this kind
+	// was overloaded onto `intake` and the relay-processor silently consumed
+	// every webhook by failing to parse it as an MCP intake; the scheduler's
+	// `buildEventWakeupContent` then found `processed=0` empty and fell back
+	// to `"Execute scheduled task."` on every wakeup. See the May 2026 fix
+	// commit message for the full incident write-up.
+	webhook_intake: { dispatch: "passive" },
 
 	// Response kinds — stored in relay_inbox for polling loops
 	result: { dispatch: "response" },
@@ -443,13 +478,28 @@ export const RELAY_RESPONSE_KINDS = (
 	.filter(([, meta]) => meta.dispatch === "response")
 	.map(([kind]) => kind);
 
+export const RELAY_PASSIVE_KINDS = (
+	Object.entries(RELAY_KIND_REGISTRY) as [RelayKind, RelayKindMeta][]
+)
+	.filter(([, meta]) => meta.dispatch === "passive")
+	.map(([kind]) => kind);
+
 export const RELAY_KINDS = Object.keys(RELAY_KIND_REGISTRY) as RelayKind[];
 
+// RelayRequestKind mirrors RELAY_REQUEST_KINDS — every non-response kind. This
+// includes passive kinds because they still flow through the same value-level
+// surfaces (e.g. self-targeted-outbox loopback into inbox in
+// relay-processor.ts). Consumers that want only the kinds that actually need a
+// processEntry handler should use Exclude<RelayRequestKind, "cancel" |
+// RelayPassiveKind> — see HandledRequestKind in relay-processor.ts.
 export type RelayRequestKind = {
 	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "response" ? never : K;
 }[RelayKind];
 export type RelayResponseKind = {
 	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "response" ? K : never;
+}[RelayKind];
+export type RelayPassiveKind = {
+	[K in RelayKind]: (typeof RELAY_KIND_REGISTRY)[K]["dispatch"] extends "passive" ? K : never;
 }[RelayKind];
 
 export interface RelayOutboxEntry {

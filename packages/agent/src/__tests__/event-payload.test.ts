@@ -62,12 +62,17 @@ describe("buildEventWakeupContent", () => {
 		} as Task;
 	}
 
-	function insertEnvelope(threadId: string, body: string, receivedAt: string): string {
+	function insertEnvelope(
+		threadId: string,
+		body: string,
+		receivedAt: string,
+		kind: "webhook_intake" | "intake" = "webhook_intake",
+	): string {
 		const id = randomUUID();
 		insertInbox(db, {
 			id,
 			source_site_id: siteId,
-			kind: "intake",
+			kind,
 			ref_id: threadId,
 			idempotency_key: randomUUID(),
 			stream_id: null,
@@ -192,5 +197,25 @@ describe("buildEventWakeupContent", () => {
 
 		expect(result.content).toContain("envelope-body");
 		expect(result.content).toContain("Standing context");
+	});
+
+	test("ignores rows of other kinds even when they share the ref_id", () => {
+		// Pre-fix the helper queried only by ref_id, so a stray platform-MCP
+		// `intake` row (entirely different payload schema) on the same thread
+		// would be folded as if it were a webhook envelope. The kind filter
+		// scopes the helper to its own mailbox kind.
+		const threadId = randomUUID();
+		insertEnvelope(threadId, "platform-mcp-payload", "2026-05-18T20:00:00Z", "intake");
+		insertEnvelope(threadId, "real-webhook-payload", "2026-05-18T21:00:00Z", "webhook_intake");
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task);
+
+		expect(result.content).toContain("real-webhook-payload");
+		expect(result.content).not.toContain("platform-mcp-payload");
+		// processedIds is exclusively the webhook_intake row id; the stray
+		// intake row stays processed=0 for the relay-processor to handle on
+		// its own dispatch path.
+		expect(result.processedIds.length).toBe(1);
 	});
 });
