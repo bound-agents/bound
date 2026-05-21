@@ -1965,8 +1965,12 @@ describe("Context Assembly Pipeline", () => {
 
 			// Skill index should be in systemSuffix
 			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("SKILLS (1 active):");
-			expect(systemSuffix).toContain("pr-review — Review GitHub PRs");
+			expect(systemSuffix).toContain("<available_skills>");
+			expect(systemSuffix).toContain("<skill>");
+			expect(systemSuffix).toContain("<name>pr-review</name>");
+			expect(systemSuffix).toContain("<description>Review GitHub PRs</description>");
+			expect(systemSuffix).toContain("</skill>");
+			expect(systemSuffix).toContain("</available_skills>");
 		});
 
 		it("AC3.2: should not inject SKILLS block when no active skills exist", () => {
@@ -1980,9 +1984,9 @@ describe("Context Assembly Pipeline", () => {
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
-			// Should not contain SKILLS block
+			// Should not contain skills block
 			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).not.toContain("SKILLS (");
+			expect(systemSuffix).not.toContain("<available_skills>");
 		});
 
 		it("AC3.3: should inject task-referenced skill body when skill is active", () => {
@@ -2057,7 +2061,12 @@ This skill reviews pull requests.`;
 			const devMsg = messages.find((m) => m.role === "developer");
 			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 			expect(devContent).toBeDefined();
-			expect(devContent).toContain("SKILLS (1 active):");
+			expect(devContent).toContain("<available_skills>");
+			expect(devContent).toContain("<skill>");
+			expect(devContent).toContain("<name>pr-review</name>");
+			expect(devContent).toContain("<description>Review GitHub PRs</description>");
+			expect(devContent).toContain("</skill>");
+			expect(devContent).toContain("</available_skills>");
 		});
 
 		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
@@ -2107,7 +2116,10 @@ This skill reviews pull requests.`;
 
 			// No SKILL.md should be injected as a system message
 			const skillBodyMsg = systemMessages.find(
-				(m) => m.content.includes("Review GitHub PRs") && !m.content.includes("SKILLS ("),
+				(m) =>
+					typeof m.content === "string" &&
+					m.content.includes("Review GitHub PRs") &&
+					!m.content.includes("<available_skills>"),
 			);
 			expect(skillBodyMsg).toBeUndefined();
 

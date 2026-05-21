@@ -47,7 +47,7 @@ The skills system is fully designed and ready for implementation when:
 - **agent-skills.AC2.16 Success:** `skill-retire` scans `tasks` for payloads containing `"skill": "pr-review"` and creates one advisory per matching task
 
 ### agent-skills.AC3: Context assembly injects skills correctly
-- **agent-skills.AC3.1 Success:** When active skills exist, volatile context includes a `SKILLS (N active):` block with one `name — description` line per skill
+- **agent-skills.AC3.1 Success:** When active skills exist, volatile context includes an `<available_skills>` block with one `name — description` line per skill
 - **agent-skills.AC3.2 Edge:** When no active skills exist, no SKILLS block appears in volatile context
 - **agent-skills.AC3.3 Success:** When `ContextParams.taskId` is set and task payload has `"skill": "pr-review"` for an active skill, the assembled messages include a system message with the SKILL.md body before the history
 - **agent-skills.AC3.4 Failure:** When the referenced skill is not active, a note `"Referenced skill 'pr-review' is not active."` appears in volatile context (no skill body injection)
@@ -146,10 +146,20 @@ CREATE UNIQUE INDEX idx_skills_name ON skills(name)
 
 **Skill index** — appended to the volatile context system message on every turn:
 ```
-SKILLS (3 active):
-  pr-review — Review GitHub PRs with a structured checklist.
-  daily-standup — Summarize recent thread activity for standup.
-  deploy-monitor — Monitor production deploys and alert on failures.
+<available_skills>
+<skill>
+<name>pr-review</name>
+<description>Review GitHub PRs with structured checklist. Use when reviewing code.</description>
+</skill>
+<skill>
+<name>daily-standup</name>
+<description>Generate daily standup summaries from recent thread activity.</description>
+</skill>
+<skill>
+<name>deploy-monitor</name>
+<description>Monitor production deploys and alert on failures.</description>
+</skill>
+</available_skills>
 ```
 Query: `SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC`. Bounded by the active skill cap (default 20, ~100 tokens per skill).
 

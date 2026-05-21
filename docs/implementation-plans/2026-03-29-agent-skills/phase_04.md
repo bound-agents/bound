@@ -20,7 +20,7 @@
 
 ### agent-skills.AC3: Context assembly injects skills correctly
 
-- **agent-skills.AC3.1 Success:** When active skills exist, volatile context includes a `SKILLS (N active):` block with one `name — description` line per skill
+- **agent-skills.AC3.1 Success:** When active skills exist, volatile context includes an `<available_skills>` block with one `name — description` line per skill
 - **agent-skills.AC3.2 Edge:** When no active skills exist, no SKILLS block appears in volatile context
 - **agent-skills.AC3.3 Success:** When `ContextParams.taskId` is set and task payload has `"skill": "pr-review"` for an active skill, the assembled messages include a system message with the SKILL.md body before the history
 - **agent-skills.AC3.4 Failure:** When the referenced skill is not active, a note `"Referenced skill 'pr-review' is not active."` appears in volatile context (no skill body injection)
@@ -136,11 +136,7 @@ Insert between the end of the file-thread notifications try-catch (line 620) and
 				.all() as Array<{ name: string; description: string }>;
 
 			if (activeSkills.length > 0) {
-				volatileLines.push("");
-				volatileLines.push(`SKILLS (${activeSkills.length} active):`);
-				for (const s of activeSkills) {
-					volatileLines.push(`  ${s.name} — ${s.description}`);
-				}
+				volatileLines.push(...buildSkillIndex(activeSkills).split('\n'));
 			}
 		} catch {
 			// Non-fatal
@@ -198,9 +194,9 @@ Add a `describe("skill context injection", ...)` block using the same test setup
 
 Tests to write (one `it()` per AC case):
 
-- **AC3.1**: Insert an active skill row directly into `skills` table. Call `assembleContext({ db, threadId, userId })`. Find the system message containing `SKILLS (1 active):`. Verify it includes `pr-review — Review GitHub PRs`.
+- **AC3.1**: Insert an active skill row directly into `skills` table. Call `assembleContext({ db, threadId, userId })`. Find the system message containing `<available_skills>`. Verify it includes `<name>pr-review</name><description>Review GitHub PRs</description>`.
 
-- **AC3.2**: Ensure no skills exist in DB. Call `assembleContext(...)`. Verify no system message content contains `SKILLS (`.
+- **AC3.2**: Ensure no skills exist in DB. Call `assembleContext(...)`. Verify no system message content contains `<available_skills>`.
 
 - **AC3.3**: Insert an active `pr-review` skill into `skills` table. Insert the SKILL.md content into `files` table at path `/home/user/skills/pr-review/SKILL.md`. Insert a task with `payload = '{"skill":"pr-review"}'`. Call `assembleContext({ db, threadId, userId, taskId: task.id })`. Verify one system message contains the SKILL.md content (verify by checking for `name: pr-review` or similar frontmatter text from the file content). Verify this message appears BEFORE the message history.
 
