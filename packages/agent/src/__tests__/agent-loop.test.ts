@@ -1195,6 +1195,177 @@ describe("AgentLoop", () => {
 		expect(turns[0].cost_usd).toBeCloseTo(0.00675, 6);
 	});
 
+	// CONTRIBUTING.md invariant #17: when the relay hub stamps cost_usd onto
+	// the done chunk, the spoke must record that value verbatim instead of
+	// re-deriving it from its own (possibly empty) model_backends. This is
+	// the core fix for hub-only spokes writing cost_usd=0 for delegated turns.
+	it("uses hub-stamped cost_usd from done chunk when present", async () => {
+		const mockBackend = new MockLLMBackend();
+		// Simulate a hub-stamped done chunk: token usage that would compute
+		// to 0.000105 locally, but the hub stamps a different (authoritative)
+		// value of 0.42 — proving recordTurn writes the hub value, not a
+		// recomputed one.
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "delegated response" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+				cost_usd: 0.42,
+			};
+		});
+
+		const mockBash = createMockSandbox();
+		// Spoke is hub-only mode: empty backends list, exactly the production
+		// state where the bug manifests.
+		const ctx = {
+			db,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+			config: {
+				modelBackends: {
+					backends: [],
+					default: "",
+				},
+			},
+		} as unknown as AppContext;
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const turns = db
+			.query("SELECT cost_usd FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ cost_usd: number }>;
+
+		expect(turns.length).toBe(1);
+		// Hub-stamped value persists verbatim — no local recomputation.
+		expect(turns[0].cost_usd).toBe(0.42);
+	});
+
+	it("falls back to local calculateTurnCost when done chunk has no cost_usd", async () => {
+		// Backward-compat: an older hub (or a local non-relay turn) won't
+		// stamp cost_usd. The spoke must keep its existing local-pricing
+		// behavior so non-hub-only deployments don't regress.
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("locally priced response");
+
+		const mockBash = createMockSandbox();
+		const ctx = {
+			db,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+			config: {
+				modelBackends: {
+					backends: [
+						{
+							id: "claude-opus",
+							provider: "anthropic",
+							model: "claude-opus",
+							context_window: 8000,
+							tier: 1,
+							price_per_m_input: 3.0,
+							price_per_m_output: 15.0,
+						},
+					],
+					default: "claude-opus",
+				},
+			},
+		} as unknown as AppContext;
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		// Same expectation as the existing local-pricing test: input 10 × $3/M
+		// + output 5 × $15/M = 0.000105.
+		const turns = db
+			.query("SELECT cost_usd FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ cost_usd: number }>;
+
+		expect(turns.length).toBe(1);
+		expect(turns[0].cost_usd).toBeCloseTo(0.000105, 8);
+	});
+
+	it("treats hub-stamped cost_usd of 0 as authoritative (does not fall back)", async () => {
+		// Edge case: hub explicitly stamps 0 (e.g. its own backends list is
+		// missing pricing for the model). The `??` operator falls through
+		// only on null/undefined, NOT on a real 0. This pins that contract:
+		// an explicit 0 from the hub is the recorded value, even if the
+		// spoke could compute something positive locally.
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "free response" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+				cost_usd: 0,
+			};
+		});
+
+		const mockBash = createMockSandbox();
+		// Spoke has pricing locally — would compute non-zero — but must
+		// honor the hub's 0.
+		const ctx = {
+			db,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+			config: {
+				modelBackends: {
+					backends: [
+						{
+							id: "claude-opus",
+							provider: "anthropic",
+							model: "claude-opus",
+							context_window: 8000,
+							tier: 1,
+							price_per_m_input: 3.0,
+							price_per_m_output: 15.0,
+						},
+					],
+					default: "claude-opus",
+				},
+			},
+		} as unknown as AppContext;
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const turns = db
+			.query("SELECT cost_usd FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ cost_usd: number }>;
+
+		expect(turns.length).toBe(1);
+		expect(turns[0].cost_usd).toBe(0);
+	});
+
 	// Bug #10: turns table must record the resolved model_id, not "unknown"
 	it("records the resolved model_id in the turns table (not 'unknown')", async () => {
 		const mockBackend = new MockLLMBackend();

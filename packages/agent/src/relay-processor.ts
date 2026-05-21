@@ -64,7 +64,11 @@ import {
 	merge,
 	tap,
 } from "rxjs";
-import { clampMaxOutputTokens, createFileRefResolver } from "./agent-loop-utils.js";
+import {
+	calculateTurnCost,
+	clampMaxOutputTokens,
+	createFileRefResolver,
+} from "./agent-loop-utils.js";
 import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import type { MCPClient } from "./mcp-client.js";
@@ -1350,8 +1354,31 @@ export class RelayProcessor {
 				// AC3.4: Check abort signal (cancel from requester)
 				if (abortController.signal.aborted) break;
 
-				chunkBuffer.push(chunk);
-				const chunkBytes = new TextEncoder().encode(JSON.stringify(chunk)).byteLength;
+				// Stamp authoritative cost on the done chunk before it leaves
+				// the hub. The spoke that initiated this delegated turn will
+				// often be hub-only mode (empty model_backends.backends) and
+				// its local calculateTurnCost would return 0 — we hold the
+				// real pricing config, so we compute it here. Mirrors the
+				// per-backend hand-off pattern used for cache_ttl/thinking/
+				// effort/max_tokens (CONTRIBUTING.md invariant #17).
+				let outChunk: StreamChunk = chunk;
+				if (chunk.type === "done") {
+					const backends = this.appCtx?.config.modelBackends.backends ?? [];
+					const cost_usd = calculateTurnCost(
+						payload.model,
+						{
+							inputTokens: chunk.usage.input_tokens,
+							outputTokens: chunk.usage.output_tokens,
+							cacheReadTokens: chunk.usage.cache_read_tokens,
+							cacheWriteTokens: chunk.usage.cache_write_tokens,
+						},
+						backends,
+					);
+					outChunk = { ...chunk, cost_usd };
+				}
+
+				chunkBuffer.push(outChunk);
+				const chunkBytes = new TextEncoder().encode(JSON.stringify(outChunk)).byteLength;
 				bufferBytes += chunkBytes;
 
 				const elapsed = Date.now() - lastFlushTime;
