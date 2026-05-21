@@ -22,6 +22,7 @@
  * over DB-persisted SpanContext.
  */
 
+import type { Database } from "bun:sqlite";
 import type { Context, Span } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
@@ -261,6 +262,43 @@ export class HandleMessageTracker {
 			count++;
 		}
 		return count;
+	}
+
+	/**
+	 * Close the `agent.handle-message` for `threadId` only if the cycle is
+	 * idle: the dispatch_queue has no rows in `pending` or `processing` state
+	 * for the thread.
+	 *
+	 * `client_tool_call` rows are INCLUDED in the count. They sit `pending`
+	 * from the moment the agent enqueues a client tool until
+	 * `acknowledgeClientToolCall` flips them to `acknowledged` — exactly the
+	 * in-flight window during which the cycle must remain open. (An earlier
+	 * incarnation of this query excluded them, which closed the turn the
+	 * instant the first handler returned, fragmenting one logical message
+	 * cycle into one trace per dispatch.) `tool_result` rows enqueued by
+	 * the WS handler are flushed by `acknowledgeBatch` immediately before
+	 * the resumed handler reaches this probe, so they don't keep the cycle
+	 * open spuriously after the resumed handler completes its terminal turn.
+	 *
+	 * Returns true if the turn was closed, false otherwise.
+	 */
+	maybeCloseTurnIfIdle(
+		db: Database,
+		threadId: string,
+		status: "ok" | "error" = "ok",
+		errorReason?: string,
+	): boolean {
+		const row = db
+			.prepare(
+				`SELECT COUNT(*) AS pending FROM dispatch_queue
+				 WHERE thread_id = ?
+				   AND status IN ('pending', 'processing')`,
+			)
+			.get(threadId) as { pending: number } | null;
+		const pending = row?.pending ?? 0;
+		if (pending > 0) return false;
+		this.closeTurn(threadId, status, errorReason);
+		return true;
 	}
 
 	/**
