@@ -50,14 +50,14 @@ describe("Banner", () => {
 		);
 		const output = lastFrame();
 		expect(output).toContain("Dismissible error");
-		expect(output).toContain("[Press 'x' to dismiss]");
+		expect(output).toContain("[press 'x' to dismiss]");
 	});
 
 	it("does not show dismiss hint when onDismiss not provided", () => {
 		const { lastFrame } = render(<Banner type="error" message="Non-dismissible error" />);
 		const output = lastFrame();
 		expect(output).toContain("Non-dismissible error");
-		expect(output).not.toContain("[Press 'x' to dismiss]");
+		expect(output).not.toContain("[press 'x' to dismiss]");
 	});
 
 	it("has useInput handler configured for x key dismissal", () => {

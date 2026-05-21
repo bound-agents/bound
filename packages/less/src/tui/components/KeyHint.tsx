@@ -6,11 +6,15 @@ export interface KeyHintProps {
 	label: string;
 }
 
+/**
+ * Renders a single keybinding hint as `<keys> label`, with the keys
+ * highlighted in cyan so they pop against the dim status row.
+ */
 export function KeyHint({ keys, label }: KeyHintProps): React.ReactElement {
 	return (
 		<Box>
-			<Text dimColor>[{keys}]</Text>
-			<Text> {label}</Text>
+			<Text color="cyan">{keys}</Text>
+			<Text dimColor> {label}</Text>
 		</Box>
 	);
 }
