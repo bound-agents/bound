@@ -2,6 +2,7 @@ import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
+import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 import { computeLineDiff, hunkDiff } from "./lineDiff";
 
@@ -44,17 +45,20 @@ function summarizeToolArgs(toolName: string, input: Record<string, unknown>): st
 
 /**
  * Render a unified-diff body for a `boundless_edit` tool call, using the
- * call's `old_string`/`new_string` args. Lines are color-coded:
- *   red `- ` for removed, green `+ ` for added, dim `  ` for context.
+ * call's `old_string`/`new_string` args. Lines get syntax-highlighted via
+ * the shared shiki singleton; on add/remove lines the diff color (green/red)
+ * overrides token colors so the diff signal stays unambiguous.
  * Long unchanged stretches between changes are collapsed via `hunkDiff`,
  * and the whole rendering is hard-capped at EDIT_DIFF_MAX_LINES entries.
  */
 function EditDiffBody({
 	oldString,
 	newString,
+	filePath,
 }: {
 	oldString: string;
 	newString: string;
+	filePath?: string | null;
 }): React.ReactElement | null {
 	const diff = computeLineDiff(oldString, newString);
 	const hunked = hunkDiff(diff, EDIT_DIFF_CONTEXT);
@@ -64,6 +68,7 @@ function EditDiffBody({
 
 	const truncated = hunked.length > EDIT_DIFF_MAX_LINES;
 	const display = truncated ? hunked.slice(0, EDIT_DIFF_MAX_LINES) : hunked;
+	const lang = langFromPath(filePath);
 
 	return (
 		<Box flexDirection="column" paddingLeft={2}>
@@ -79,24 +84,26 @@ function EditDiffBody({
 				if (entry.kind === "remove") {
 					return (
 						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-						<Text key={idx} color="red">
-							- {entry.text}
+						<Text key={idx}>
+							<Text color="red">- </Text>
+							<HighlightedLine line={entry.text} lang={lang} color="red" />
 						</Text>
 					);
 				}
 				if (entry.kind === "add") {
 					return (
 						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-						<Text key={idx} color="green">
-							+ {entry.text}
+						<Text key={idx}>
+							<Text color="green">+ </Text>
+							<HighlightedLine line={entry.text} lang={lang} color="green" />
 						</Text>
 					);
 				}
 				return (
 					// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-					<Text key={idx} dimColor>
-						{"  "}
-						{entry.text}
+					<Text key={idx}>
+						<Text dimColor>{"  "}</Text>
+						<HighlightedLine line={entry.text} lang={lang} dim />
 					</Text>
 				);
 			})}
@@ -113,22 +120,32 @@ function EditDiffBody({
 /**
  * Render a content preview for a `boundless_write` tool call. Since write
  * replaces (or creates) a file's full contents, every line is conceptually
- * "added" — we show the first N lines in green with a `+ ` prefix to
- * mirror the edit-diff rendering.
+ * "added" — we show the first N lines with a green `+ ` prefix and let
+ * shiki tokens carry the foreground colors so the code stays readable.
+ * (Departing from strict diff semantics here on purpose: green prefix as
+ * a visual cue, syntax colors on the content itself.)
  */
-function WritePreviewBody({ content }: { content: string }): React.ReactElement | null {
+function WritePreviewBody({
+	content,
+	filePath,
+}: {
+	content: string;
+	filePath?: string | null;
+}): React.ReactElement | null {
 	if (content.length === 0) {
 		return null;
 	}
 	const lines = content.split("\n");
 	const truncated = lines.length > WRITE_PREVIEW_MAX_LINES;
 	const display = truncated ? lines.slice(0, WRITE_PREVIEW_MAX_LINES) : lines;
+	const lang = langFromPath(filePath);
 	return (
 		<Box flexDirection="column" paddingLeft={2}>
 			{display.map((line, idx) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable per render
-				<Text key={idx} color="green">
-					+ {line}
+				<Text key={idx}>
+					<Text color="green">+ </Text>
+					<HighlightedLine line={line} lang={lang} />
 				</Text>
 			))}
 			{truncated && (
@@ -169,7 +186,7 @@ function ToolCallRow({
 					</Text>
 					<Text dimColor> {filePath}</Text>
 				</Text>
-				<EditDiffBody oldString={oldString} newString={newString} />
+				<EditDiffBody oldString={oldString} newString={newString} filePath={filePath} />
 			</Box>
 		);
 	}
@@ -190,7 +207,7 @@ function ToolCallRow({
 						{filePath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
 					</Text>
 				</Text>
-				<WritePreviewBody content={content} />
+				<WritePreviewBody content={content} filePath={filePath} />
 			</Box>
 		);
 	}
@@ -240,6 +257,14 @@ function StripeBox({
 
 export interface MessageBlockProps {
 	message: Message;
+	/**
+	 * Optional file path resolved from the originating tool_call. Set by
+	 * ChatView for tool_result messages whose tool_call carried a `file_path`
+	 * input — used to detect the language for syntax highlighting on read
+	 * results. (Edit/write get filePath from their own tool_call args, not
+	 * from this prop.)
+	 */
+	filePath?: string;
 }
 
 /**
@@ -250,7 +275,7 @@ export interface MessageBlockProps {
  * - `"tool_result"`: blue stripe, `✓/✗ name · summary` with truncated body
  * - Pending placeholder: dimmed "Waiting for tool result..." text
  */
-export function MessageBlock({ message }: MessageBlockProps): React.ReactElement {
+export function MessageBlock({ message, filePath }: MessageBlockProps): React.ReactElement {
 	// Helper to render content with markdown support
 	const renderContent = (content: string | ContentBlock[]): React.ReactElement => {
 		if (typeof content === "string") {
@@ -407,6 +432,45 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 		const indicatorColor = isError ? "red" : "green";
 		const toolName = message.tool_name ? displayToolName(message.tool_name) : null;
 
+		// When this tool_result is for a tool that operated on a file (read,
+		// most importantly), the file path is resolved upstream via the
+		// tool_use_id correlation map. Use it to:
+		//   1. Show a meaningful header label — basename, not the first line of
+		//      content (which would otherwise smush the file body into the row
+		//      that already carries the indicator + tool name).
+		//   2. Detect language for per-line syntax highlighting via the shared
+		//      shiki singleton.
+		// Errors won't have line-numbered output, so the regex check below
+		// gracefully degrades to plain text rendering.
+		const lang = !isError ? langFromPath(filePath) : undefined;
+		const baseName = filePath ? (filePath.split("/").pop() ?? null) : null;
+		const headerLabel = baseName ?? displayLines[0] ?? "";
+		const bodyLines = baseName ? displayLines : displayLines.slice(1);
+
+		const lineNumPattern = /^(\s*\d+)\t(.*)$/;
+		const renderResultLine = (line: string, idx: number): React.ReactElement => {
+			if (lang) {
+				const match = line.match(lineNumPattern);
+				if (match) {
+					const [, lineNum, code] = match;
+					return (
+						<Text key={idx}>
+							{"  "}
+							<Text dimColor>{lineNum}</Text>
+							{"\t"}
+							<HighlightedLine line={code} lang={lang} />
+						</Text>
+					);
+				}
+			}
+			return (
+				<Text key={idx}>
+					{"  "}
+					{line}
+				</Text>
+			);
+		};
+
 		return (
 			<StripeBox color="blue">
 				<Box flexDirection="column" paddingLeft={2}>
@@ -421,15 +485,9 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 						) : (
 							<Text> </Text>
 						)}
-						<Text>{displayLines[0] ?? ""}</Text>
+						<Text>{headerLabel}</Text>
 					</Text>
-					{displayLines.slice(1).map((line, idx) => (
-						// biome-ignore lint/suspicious/noArrayIndexKey: result lines are immutable
-						<Text key={idx}>
-							{"  "}
-							{line}
-						</Text>
-					))}
+					{bodyLines.map((line, idx) => renderResultLine(line, idx))}
 					{truncated && (
 						<Text dimColor>
 							{"  "}… {allLines.length - TOOL_RESULT_MAX_LINES} more lines

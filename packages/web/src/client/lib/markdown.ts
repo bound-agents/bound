@@ -1,35 +1,7 @@
+import { SYNTAX_THEME, getHighlighter, normalizeLang } from "@bound/shared";
 import DOMPurify from "dompurify";
 import { Marked } from "marked";
 import { markedHighlight } from "marked-highlight";
-import { type Highlighter, createHighlighter } from "shiki";
-
-// ---------------------------------------------------------------------------
-// Shiki singleton
-// createHighlighter() is async and expensive. The Promise is cached at module
-// level so the cost is paid once across all callers.
-// ---------------------------------------------------------------------------
-let highlighterPromise: Promise<Highlighter> | null = null;
-
-function getHighlighter(): Promise<Highlighter> {
-	if (!highlighterPromise) {
-		highlighterPromise = createHighlighter({
-			themes: ["tokyo-night"],
-			langs: [
-				"javascript",
-				"typescript",
-				"sql",
-				"python",
-				"bash",
-				"json",
-				"yaml",
-				"html",
-				"css",
-				"plaintext",
-			],
-		});
-	}
-	return highlighterPromise;
-}
 
 // ---------------------------------------------------------------------------
 // Sanitizer type and config
@@ -54,6 +26,10 @@ const browserSanitize: Sanitizer = (html) => DOMPurify.sanitize(html, DOMPURIFY_
  * Falls back to plaintext for unsupported languages.
  * Output is sanitized with DOMPurify for safe {@html} injection.
  *
+ * Backed by the shared `@bound/shared` highlighter singleton — same theme,
+ * same language list, same Oniguruma WASM as the TUI. Add a language
+ * there once and both surfaces pick it up.
+ *
  * @param code The source code string to highlight.
  * @param lang The language identifier (e.g., "typescript", "python").
  * @param sanitize Optional sanitizer override. Defaults to DOMPurify (browser).
@@ -66,11 +42,9 @@ export async function highlightCode(
 	sanitize: Sanitizer = browserSanitize,
 ): Promise<string> {
 	const highlighter = await getHighlighter();
-	const supported = highlighter.getLoadedLanguages();
-	const language = supported.includes(lang) ? lang : "plaintext";
 	const html = highlighter.codeToHtml(code, {
-		lang: language,
-		theme: "tokyo-night",
+		lang: normalizeLang(lang),
+		theme: SYNTAX_THEME,
 	});
 	// Sanitize with DOMPurify for safe {@html} injection.
 	// Preserves Shiki inline color attributes on code tokens.
@@ -82,7 +56,7 @@ export async function highlightCode(
 // ---------------------------------------------------------------------------
 
 // Marked instance configured with:
-//   markedHighlight — delegates fenced code blocks to the Shiki singleton.
+//   markedHighlight — delegates fenced code blocks to the shared Shiki singleton.
 const markedInstance = new Marked(
 	markedHighlight({
 		async: true,
@@ -94,12 +68,9 @@ const markedInstance = new Marked(
 				return code;
 			}
 			const highlighter = await getHighlighter();
-			const supported = highlighter.getLoadedLanguages();
-			// Unknown languages fall back to plaintext to avoid Shiki errors.
-			const language = supported.includes(lang) ? lang : "plaintext";
 			return highlighter.codeToHtml(code, {
-				lang: language,
-				theme: "tokyo-night",
+				lang: normalizeLang(lang),
+				theme: SYNTAX_THEME,
 			});
 		},
 	}),
@@ -152,7 +123,7 @@ export function splitOnThinkingBlocks(content: string): Segment[] {
  * blocks) to sanitized HTML safe for injection via Svelte `{@html}`.
  *
  * - Thinking blocks are wrapped in `<details class="thinking-block"><summary>Thinking...</summary>`.
- * - Fenced code blocks are syntax-highlighted by the Shiki singleton (tokyo-night theme).
+ * - Fenced code blocks are syntax-highlighted by the shared Shiki singleton (tokyo-night theme).
  * - All output is sanitized by DOMPurify with Shiki style attributes and
  *   details/summary tags explicitly allowed.
  *
