@@ -1,5 +1,6 @@
 <script lang="ts">
 import { scaleLinear, scaleTime } from "d3-scale";
+import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
 interface Props {
@@ -18,6 +19,10 @@ let tooltipY = $state(0);
 let tooltipLines = $state<string[]>([]);
 let containerEl: HTMLDivElement | undefined = $state(undefined);
 
+// Track rendered width — keeps text at literal pixel sizes regardless of
+// container width (see responsive-svg.ts for rationale).
+let measuredWidth = $state(600);
+
 // Parse dates and sort by time
 const parsedData = $derived.by(() => {
 	return data
@@ -29,10 +34,10 @@ const parsedData = $derived.by(() => {
 });
 
 // Dimensions
-const width = 600;
-const height = 180;
+const width = $derived(Math.max(measuredWidth, 320));
+const height = 200;
 const padding = { top: 16, right: 16, bottom: 32, left: 48 };
-const innerWidth = width - padding.left - padding.right;
+const innerWidth = $derived(width - padding.left - padding.right);
 const innerHeight = height - padding.top - padding.bottom;
 
 // Scales
@@ -63,14 +68,12 @@ const formatDate = (date: Date): string => {
 	const hour = date.getHours().toString().padStart(2, "0");
 	const month = (date.getMonth() + 1).toString().padStart(2, "0");
 	const day = date.getDate();
-	// If hour is 00, this is daily data; otherwise hourly
 	if (hour === "00") {
 		return `${month}/${day}`;
 	}
 	return `${hour}:00`;
 };
 
-// Format date for tooltip (more detailed)
 const formatDateFull = (date: Date): string => {
 	const month = (date.getMonth() + 1).toString().padStart(2, "0");
 	const day = date.getDate().toString().padStart(2, "0");
@@ -82,7 +85,6 @@ const formatDateFull = (date: Date): string => {
 	return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
-// Generate path data for the line
 const pathData = $derived.by(() => {
 	return parsedData
 		.map((d, i) => {
@@ -93,18 +95,15 @@ const pathData = $derived.by(() => {
 		.join(" ");
 });
 
-// Generate area path (includes closing to baseline)
 const areaData = $derived.by(() => {
 	if (parsedData.length === 0) return "";
 
 	let path = pathData;
-	// Close the path: draw down to baseline at the last x position
 	const lastData = parsedData[parsedData.length - 1];
 	if (lastData) {
 		const lastX = padding.left + xScale(lastData.dateObj);
 		path += ` L${lastX},${padding.top + innerHeight}`;
 	}
-	// Draw back to start baseline
 	const firstData = parsedData[0];
 	if (firstData) {
 		const firstX = padding.left + xScale(firstData.dateObj);
@@ -113,10 +112,8 @@ const areaData = $derived.by(() => {
 	return path;
 });
 
-// Generate Y axis tick labels (0%, 25%, 50%, 75%, 100%)
 const yTicks = [0, 0.25, 0.5, 0.75, 1];
 
-// Generate X axis tick labels (sample every nth point to avoid crowding)
 const xTicks = $derived.by(() => {
 	if (parsedData.length <= 6) {
 		return parsedData;
@@ -125,7 +122,6 @@ const xTicks = $derived.by(() => {
 	return parsedData.filter((_, i) => i % step === 0);
 });
 
-// Check if we should show "No cache data" message
 const hasData = $derived(parsedData.length > 0 && parsedData.some((d) => d.cache_hit_rate > 0));
 
 function showTooltip(event: MouseEvent, d: { dateObj: Date; cache_hit_rate: number }): void {
@@ -142,8 +138,20 @@ function hideTooltip(): void {
 }
 </script>
 
-<div class="cache-hit-timeline" bind:this={containerEl}>
-	<svg {width} {height} viewBox="0 0 {width} {height}" class="chart-svg">
+<div
+	class="cache-hit-timeline"
+	bind:this={containerEl}
+	use:observeWidth={(w) => {
+		measuredWidth = w - 32; /* subtract horizontal padding */
+	}}
+>
+	<svg
+		{width}
+		{height}
+		viewBox="0 0 {width} {height}"
+		class="chart-svg"
+		preserveAspectRatio="xMinYMin meet"
+	>
 		<!-- Y-axis gridlines and labels -->
 		{#each yTicks as tick}
 			<line
@@ -167,12 +175,9 @@ function hideTooltip(): void {
 			</text>
 		{/each}
 
-		<!-- Area fill and line -->
 		{#if hasData}
-			<!-- Area fill -->
 			<path d={areaData} fill="var(--line-5)" opacity="0.15" />
 
-			<!-- Line on top -->
 			<path
 				d={pathData}
 				fill="none"
@@ -182,7 +187,6 @@ function hideTooltip(): void {
 				stroke-linejoin="round"
 			/>
 
-			<!-- Interactive data points -->
 			{#each parsedData as d}
 				<circle
 					cx={padding.left + xScale(d.dateObj)}
@@ -196,7 +200,6 @@ function hideTooltip(): void {
 				/>
 			{/each}
 
-			<!-- X-axis labels -->
 			{#each xTicks as d}
 				<text
 					x={padding.left + xScale(d.dateObj)}
@@ -208,7 +211,6 @@ function hideTooltip(): void {
 				</text>
 			{/each}
 		{:else}
-			<!-- No data or all zeros — flat line at 0% with message -->
 			<line
 				x1={padding.left}
 				y1={padding.top + innerHeight}
@@ -243,9 +245,8 @@ function hideTooltip(): void {
 	}
 
 	.chart-svg {
-		width: 100%;
-		height: auto;
 		display: block;
+		max-width: 100%;
 	}
 
 	.gridline {
