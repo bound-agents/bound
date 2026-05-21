@@ -46,6 +46,7 @@ import {
 	deterministicUUID,
 	extractTraceContext,
 	formatError,
+	injectTraceContext,
 	parseJsonSafe,
 	resultPayloadSchema,
 } from "@bound/shared";
@@ -271,36 +272,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const handleMessageTracker = new HandleMessageTracker();
 	handleMessageTracker.startWatchdog();
 
-	/**
-	 * Close the `agent.handle-message` span if the cycle is genuinely done.
-	 * "Done" means:
-	 *   - the agent loop returned with no `yielded` flag (otherwise the loop
-	 *     will be re-batched and we want to keep the span open), AND
-	 *   - the dispatch_queue contains no rows in `pending` or `processing`
-	 *     state for the thread.
-	 *
-	 * `client_tool_call` rows are INCLUDED. They sit `pending` from the moment
-	 * the agent enqueues a client tool until `handleToolResult` flips them to
-	 * `acknowledged` — exactly the in-flight window during which the cycle
-	 * must remain open. (Earlier this filter excluded them, which closed the
-	 * turn the instant `web.handle-message #1` returned, so each tool round
-	 * trip produced its own disconnected trace.) `tool_result` rows enqueued
-	 * by `handleToolResult` are flushed by `acknowledgeBatch` immediately
-	 * before this probe runs, so they don't keep the cycle open spuriously.
-	 */
-	const maybeCloseTurn = (threadId: string, status: "ok" | "error"): void => {
-		const row = appContext.db
-			.prepare(
-				`SELECT COUNT(*) AS pending FROM dispatch_queue
-				 WHERE thread_id = ?
-				   AND status IN ('pending', 'processing')`,
-			)
-			.get(threadId) as { pending: number } | null;
-		const pending = row?.pending ?? 0;
-		if (pending === 0) {
-			handleMessageTracker.closeTurn(threadId, status);
-		}
-	};
+	// `maybeCloseTurnIfIdle` lives on the tracker — it's the close-condition
+	// counterpart to `openTurn`/`closeTurn` and shares the dispatch_queue
+	// semantics, so co-locating keeps invariants discoverable. See
+	// `packages/agent/src/handle-message-tracker.ts` and the integration test
+	// `handle-message-tracker.integration.test.ts` for the lifecycle contract.
 
 	// Mutable holder for wsTransport (populated in Phase 8 after sync init)
 	const wsTransportHolder: ServerResult["wsTransportHolder"] = {
@@ -435,6 +411,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			threadId: string,
 			messageId: string,
 			userId: string,
+			traceContext?: string,
 		): Promise<void> => {
 			if (!targetHost) return;
 
@@ -450,6 +427,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				"process",
 				JSON.stringify(processPayload),
 				5 * 60 * 1000, // 5 minute timeout for delegated loop
+				undefined,
+				undefined,
+				undefined,
+				traceContext,
 			);
 			writeOutbox(appContext.db, outboxEntry);
 			activeDelegations.set(threadId, {
@@ -533,11 +514,78 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							.get(thread_id) as { user_id: string; interface: string } | null;
 						const userId = threadRow?.user_id || operatorUserId;
 
+						// `agent.handle-message` and `web.handle-message` wrap BOTH the
+						// delegation path and the local-loop path so the whole logical
+						// cycle lives on one trace regardless of where inference runs.
+						// Computed outside the branches so the span is open before the
+						// first decision the handler makes.
+						const inboundCtx = traceContext
+							? extractTraceContext(
+									(() => {
+										try {
+											return JSON.parse(traceContext) as Record<string, string>;
+										} catch {
+											return {};
+										}
+									})(),
+								)
+							: undefined;
+
+						const triggerEventTypes = new Set(claimed.map((c) => c.event_type));
+						const isToolResultResume =
+							triggerEventTypes.has("tool_result") && !triggerEventTypes.has("user_message");
+
+						let turnCtx = handleMessageTracker.getTurnContext(thread_id);
+						if (!isToolResultResume || turnCtx === null) {
+							turnCtx = handleMessageTracker.openTurn(thread_id, inboundCtx);
+						}
+						handleMessageTracker.touchTurn(thread_id);
+
 						if (delegationTarget) {
 							appContext.logger.info(
 								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
 							);
-							await dispatchDelegation(delegationTarget, thread_id, delegationMessageId, userId);
+							const tracer = getTracer();
+							const rootSpan = tracer.startSpan(
+								"web.handle-message",
+								{
+									attributes: {
+										"thread.id": thread_id,
+										"user.id": userId,
+										"message.id": claimedIds[0] ?? "",
+										"agent.execution": "delegated",
+										"agent.delegate.site_id": delegationTarget.site_id,
+									},
+								},
+								turnCtx,
+							);
+							try {
+								await context.with(trace.setSpan(turnCtx, rootSpan), async () => {
+									// Inject the W3C trace context with web.handle-message
+									// active so the relay outbox carries our traceparent
+									// to the remote host. The remote `relay.execute-process`
+									// span re-exports under us via reExportSpans.
+									const carrier = injectTraceContext();
+									const carrierStr = carrier ? JSON.stringify(carrier) : undefined;
+									await dispatchDelegation(
+										delegationTarget,
+										thread_id,
+										delegationMessageId,
+										userId,
+										carrierStr,
+									);
+								});
+								rootSpan.setStatus({ code: SpanStatusCode.OK });
+							} catch (err) {
+								rootSpan.setStatus({
+									code: SpanStatusCode.ERROR,
+									message: err instanceof Error ? err.message : String(err),
+								});
+								throw err;
+							} finally {
+								rootSpan.end();
+								handleMessageTracker.touchTurn(thread_id);
+							}
 						} else {
 							// Derive the platform tag and platform tools for
 							// this thread. The tag tells the agent which surface the
@@ -596,38 +644,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							// Capture turn boundary for metrics recording and context tracking.
 							const turnStartAt = new Date().toISOString();
 
+							// `agent.handle-message` and the open/resume logic are
+							// hoisted above the if/else so they cover both delegation
+							// and local-loop branches. `turnCtx` is captured outside
+							// and reused here.
 							const tracer = getTracer();
-							const inboundCtx = traceContext
-								? extractTraceContext(
-										(() => {
-											try {
-												return JSON.parse(traceContext) as Record<string, string>;
-											} catch {
-												return {};
-											}
-										})(),
-									)
-								: undefined;
-
-							// Decide whether this handler invocation OPENS a new
-							// `agent.handle-message` (logical message-handling cycle)
-							// or RESUMES one already in flight. Tool-result triggers
-							// resume the existing cycle; user messages and other
-							// triggers start a fresh one.
-							const triggerEventTypes = new Set(claimed.map((c) => c.event_type));
-							const isToolResultResume =
-								triggerEventTypes.has("tool_result") && !triggerEventTypes.has("user_message");
-
-							let turnCtx = handleMessageTracker.getTurnContext(thread_id);
-							if (!isToolResultResume || turnCtx === null) {
-								// Open (or replace) the turn span. When the prior cycle
-								// is gone (e.g. process restart between dispatch and
-								// result), this also covers the resume — degraded but
-								// not fatal.
-								turnCtx = handleMessageTracker.openTurn(thread_id, inboundCtx);
-							}
-							handleMessageTracker.touchTurn(thread_id);
-
 							const rootSpan = tracer.startSpan(
 								"web.handle-message",
 								{
@@ -635,6 +656,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										"thread.id": thread_id,
 										"user.id": userId,
 										"message.id": claimedIds[0] ?? "",
+										"agent.execution": "local",
 										platform: platform ?? "web",
 									},
 								},
@@ -716,7 +738,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 						// Acknowledge the batch we just processed
 						acknowledgeBatch(appContext.db, claimedIds);
-						maybeCloseTurn(thread_id, "ok");
+						handleMessageTracker.maybeCloseTurnIfIdle(appContext.db, thread_id, "ok");
 						return { claimedIds };
 					} catch (error) {
 						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
