@@ -139,6 +139,18 @@ export interface VolatileContext {
 	totalMemCount: number;
 }
 
+function buildSkillIndex(skills: { name: string; description: string }[]): string {
+	return `<available_skills>
+${skills.map(
+	(skill) => `<skill>
+<name>${skill.name}</name>
+<description>${skill.description}</description>
+</skill>
+`,
+)}
+</available_skills>`;
+}
+
 export function buildVolatileContext(params: {
 	db: Database;
 	threadId: string;
@@ -305,11 +317,7 @@ export function buildVolatileContext(params: {
 			.all() as Array<{ name: string; description: string }>;
 
 		if (activeSkills.length > 0) {
-			suffixLines.push("");
-			suffixLines.push(`SKILLS (${activeSkills.length} active):`);
-			for (const s of activeSkills) {
-				suffixLines.push(`  ${s.name} — ${s.description}`);
-			}
+			suffixLines.push(...buildSkillIndex(activeSkills).split("\n"));
 		}
 	} catch (_error) {
 		// Non-fatal: active skills query failed

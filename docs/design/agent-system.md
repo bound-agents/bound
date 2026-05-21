@@ -226,7 +226,7 @@ The final message array is composed in this order:
    - Semantic memory entries (up to 10, most-recently-modified first).
    - Cross-thread digest.
    - Cross-thread file modification notifications.
-   - Active skill index: `SKILLS (N active):` followed by name and description for each active skill, ordered by `last_activated_at DESC`.
+   - Active skill index: `<available_skills>` followed by name and description for each active skill, ordered by `last_activated_at DESC`.
    - Operator retirement notifications: skills retired by `"operator"` within the last 24 hours are listed with their reason.
    - Inactive skill reference note: if the task payload referenced a skill that is not currently active, a warning is appended here.
 
