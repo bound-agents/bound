@@ -2,7 +2,7 @@ import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
 import { Box, Static, Text } from "ink";
 import type React from "react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
 	ActionBar,
 	Banner,
@@ -13,6 +13,53 @@ import {
 	ToolCallCard,
 } from "../components";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+
+/**
+ * Walk messages once to map each tool_result message id to the file path
+ * captured in its originating tool_call.
+ *
+ * Tool calls and their results are correlated through `tool_use_id`:
+ * the call's content is a JSON `[{type: "tool_use", id, name, input}]`,
+ * and the result message stores the matching id in its `tool_name`
+ * column (a quirk of the storage layer — the column name reads as the
+ * tool name but for tool_result rows it's the tool_use_id).
+ *
+ * The resulting map lets MessageBlock render `boundless_read` results
+ * with syntax highlighting keyed by the file's extension.
+ */
+function buildToolResultFilePathMap(messages: Message[]): Map<string, string> {
+	const idToFilePath = new Map<string, string>();
+	for (const msg of messages) {
+		if (msg.role !== "tool_call") continue;
+		try {
+			const blocks = JSON.parse(msg.content) as Array<{
+				type?: string;
+				id?: string;
+				input?: Record<string, unknown>;
+			}>;
+			if (!Array.isArray(blocks)) continue;
+			for (const block of blocks) {
+				if (block.type !== "tool_use" || !block.id) continue;
+				const filePath = block.input?.file_path;
+				if (typeof filePath === "string") {
+					idToFilePath.set(block.id, filePath);
+				}
+			}
+		} catch {
+			// Non-parseable content — skip; not all tool_call messages parse cleanly.
+		}
+	}
+
+	const result = new Map<string, string>();
+	for (const msg of messages) {
+		if (msg.role !== "tool_result" || !msg.tool_name) continue;
+		const filePath = idToFilePath.get(msg.tool_name);
+		if (filePath) {
+			result.set(msg.id, filePath);
+		}
+	}
+	return result;
+}
 
 export interface ChatViewProps {
 	client: BoundClient | null;
@@ -66,6 +113,10 @@ export function ChatView({
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
 	const { columns: termColumns } = useTerminalSize();
+	// Per-message file_path map for tool_result rendering. Memoized over
+	// the messages array so we walk it only when new messages arrive,
+	// keeping per-frame cost flat as scrollback grows.
+	const toolResultFilePaths = useMemo(() => buildToolResultFilePathMap(messages), [messages]);
 	// Account for the rounded input frame: 2 cols of border + 2 cols of
 	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
 	// input. Off-by-one here makes the explicit \n breaks emitted by
@@ -139,7 +190,7 @@ export function ChatView({
 				<Static items={messages}>
 					{(msg) => (
 						<Box key={msg.id} marginBottom={msg.role === "tool_call" ? 0 : 1}>
-							<MessageBlock message={msg} />
+							<MessageBlock message={msg} filePath={toolResultFilePaths.get(msg.id)} />
 						</Box>
 					)}
 				</Static>

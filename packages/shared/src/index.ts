@@ -31,6 +31,9 @@ export * from "./branded-types.js";
 export * from "./parse-json.js";
 export * from "./relay-schemas.js";
 
+// Syntax highlighting (shared shiki singleton, used by web + TUI)
+export * from "./syntax.js";
+
 // OpenTelemetry trace collection
 export * from "./telemetry.js";
 export * from "./trace-collector.js";

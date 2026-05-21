@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { hostname as getHostname } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
-import { initTelemetry, shutdownTelemetry } from "@bound/shared";
+import { initTelemetry, prewarmHighlighter, shutdownTelemetry } from "@bound/shared";
 import { render } from "ink";
 // biome-ignore lint/correctness/noUnusedImports: React is used implicitly in JSX
 import React from "react";
@@ -67,6 +67,14 @@ async function main(): Promise<void> {
 		// every subsequent operation that creates a span (sendMessage, tool
 		// execution, etc.) gets exported to the configured OTLP endpoint.
 		initTelemetry("boundless");
+
+		// Kick off shiki highlighter init in the background. Loading the
+		// Oniguruma WASM and tokyo-night grammars takes ~hundreds of ms;
+		// firing it here lets it overlap with the WebSocket connect and
+		// attach I/O below. We await before render() so message history
+		// rendered into Ink's <Static> always gets highlighted (Static
+		// commits its items to stdout permanently and cannot reflow).
+		const highlighterReady = prewarmHighlighter();
 
 		// Step 1: Parse arguments
 		let attachArg: string | null = null;
@@ -145,6 +153,12 @@ async function main(): Promise<void> {
 		// Step 8: Build tool set for App
 		const mcpTools = mcpManager.getRunningTools();
 		const toolSet = buildToolSet(process.cwd(), hostname, mcpTools, undefined);
+
+		// Block on the shiki highlighter before render so initial message
+		// history (committed to Ink's <Static>) is fully syntax-highlighted.
+		// In practice this finishes during attach, so the await is usually
+		// a no-op; on a cold start it adds a few hundred ms.
+		await highlighterReady;
 
 		// Step 9: Render App
 		const { waitUntilExit } = render(
