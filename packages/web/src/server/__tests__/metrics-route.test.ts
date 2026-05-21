@@ -131,6 +131,8 @@ describe("metrics routes", () => {
 			expect(Array.isArray(tokens.byModel)).toBe(true);
 			expect(tokens).toHaveProperty("timeline");
 			expect(Array.isArray(tokens.timeline)).toBe(true);
+			expect(tokens).toHaveProperty("costByModelTimeline");
+			expect(Array.isArray(tokens.costByModelTimeline)).toBe(true);
 			expect(tokens).toHaveProperty("totals");
 
 			// Verify totals has expected fields
@@ -1114,6 +1116,85 @@ describe("metrics routes", () => {
 				expect(byModel[0]?.model_id).toBe("model-b");
 				expect(byModel[1]?.model_id).toBe("model-a");
 				expect(byModel[2]?.model_id).toBe("model-c");
+			});
+		});
+
+		describe("costByModelTimeline (per-model cost breakdown)", () => {
+			it("returns one row per (date, model_id) with summed cost", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// Two opus turns in the same hour, one kimi turn in a different hour
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-opus-1",
+					"thread-1",
+					"2026-05-18T12:15:00Z",
+					"opus",
+					100,
+					100,
+					0.05,
+					"ok",
+					null,
+				);
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-opus-2",
+					"thread-1",
+					"2026-05-18T12:45:00Z",
+					"opus",
+					100,
+					100,
+					0.07,
+					"ok",
+					null,
+				);
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-kimi-1",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"kimi",
+					100,
+					100,
+					0.02,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const tokens = json.tokens as Record<string, unknown>;
+				const costByModel = tokens.costByModelTimeline as Array<Record<string, unknown>>;
+
+				// 12:00 opus row (sum of both opus turns) + 13:00 kimi row
+				expect(costByModel.length).toBe(2);
+
+				const opus12 = costByModel.find(
+					(r) => r.model_id === "opus" && (r.date as string).startsWith("2026-05-18T12"),
+				);
+				const kimi13 = costByModel.find(
+					(r) => r.model_id === "kimi" && (r.date as string).startsWith("2026-05-18T13"),
+				);
+
+				expect(opus12).toBeDefined();
+				expect(opus12?.cost_usd).toBeCloseTo(0.12, 8); // 0.05 + 0.07
+				expect(kimi13).toBeDefined();
+				expect(kimi13?.cost_usd).toBeCloseTo(0.02, 8);
 			});
 		});
 

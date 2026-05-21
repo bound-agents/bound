@@ -13,6 +13,7 @@ export interface MetricsResponse {
 			turn_count: number;
 		}>;
 		timeline: Array<{ date: string; tokens_in: number; tokens_out: number; cost_usd: number }>;
+		costByModelTimeline: Array<{ date: string; model_id: string; cost_usd: number }>;
 		totals: {
 			tokens_in: number;
 			tokens_out: number;
@@ -184,6 +185,23 @@ export function createMetricsRoutes(_db: Database): Hono {
 				date: string;
 				tokens_in: number;
 				tokens_out: number;
+				cost_usd: number;
+			}>;
+
+			const costByModelTimelineRows = _db
+				.prepare(
+					`SELECT
+					${timelineBucketFormat} as date,
+					model_id,
+					SUM(COALESCE(cost_usd, 0)) as cost_usd
+				FROM turns
+				WHERE created_at BETWEEN ? AND ? AND deleted = 0
+				GROUP BY date, model_id
+				ORDER BY date ASC, model_id ASC`,
+				)
+				.all(fromISO, toISO) as Array<{
+				date: string;
+				model_id: string;
 				cost_usd: number;
 			}>;
 
@@ -364,6 +382,7 @@ export function createMetricsRoutes(_db: Database): Hono {
 				tokens: {
 					byModel: byModelRows || [],
 					timeline: timelineRows || [],
+					costByModelTimeline: costByModelTimelineRows || [],
 					totals: {
 						tokens_in: totalsRow?.tokens_in ?? 0,
 						tokens_out: totalsRow?.tokens_out ?? 0,
