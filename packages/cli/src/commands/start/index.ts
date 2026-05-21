@@ -6,6 +6,7 @@
 export { type StartArgs, ensureMcpUser } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
+import { HandleMessageTracker } from "@bound/agent";
 import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
 import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
@@ -83,6 +84,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					activeDelegations: new Map(),
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformMcpRegistry: null,
+					handleMessageTracker: new HandleMessageTracker({ watchdogIntervalMs: 0 }),
 					wsTransportHolder: {
 						addPeer: () => {},
 						removePeer: () => {},
@@ -230,5 +232,6 @@ Press Ctrl+C to stop.
 		syncServer: serverResult.syncServer,
 		wsClient,
 		wsTransport,
+		handleMessageTracker: serverResult.handleMessageTracker,
 	});
 }

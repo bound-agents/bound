@@ -147,6 +147,20 @@ export interface WebSocketHandlerConfig {
 	siteId?: string;
 	defaultUserId?: string;
 	hostOrigin?: string;
+	/**
+	 * Span tracker for cross-handler-invocation OTel spans. When provided,
+	 * `tool:result` reception closes the matching `tool.dispatch` span, and
+	 * `tool:cancel` paths close it with ERROR. When absent, dispatch spans
+	 * are not closed by the WS handler (the watchdog eventually closes them
+	 * with `watchdog_timeout` instead).
+	 *
+	 * Typed as a minimal interface to avoid pulling `@bound/agent` into
+	 * the web package's import graph; the concrete implementation lives in
+	 * `packages/agent/src/handle-message-tracker.ts`.
+	 */
+	handleMessageTracker?: {
+		closeDispatch(callId: string, status?: "ok" | "error", reason?: string): void;
+	};
 }
 
 export function createWebSocketHandler(
@@ -166,6 +180,7 @@ export function createWebSocketHandler(
 	let siteId: string | undefined;
 	let defaultUserId: string | undefined;
 	let hostOrigin = "localhost:3000";
+	let handleMessageTracker: WebSocketHandlerConfig["handleMessageTracker"];
 
 	if ("on" in config && "emit" in config) {
 		// Old signature: eventBus parameter
@@ -177,6 +192,7 @@ export function createWebSocketHandler(
 		siteId = config.siteId;
 		defaultUserId = config.defaultUserId;
 		hostOrigin = config.hostOrigin ?? "localhost:3000";
+		handleMessageTracker = config.handleMessageTracker;
 	}
 
 	const clients = new Map<ServerWebSocket<unknown>, ClientConnection>();
@@ -636,6 +652,16 @@ export function createWebSocketHandler(
 				reExportClientTraceData(msg.trace_data);
 			}
 
+			// Close the matching `tool.dispatch` span. Status mirrors the
+			// tool result. The re-exported `client-tool.execute` span shows
+			// up under this dispatch via the carrier we injected at dispatch
+			// time, so closing here ends the round-trip wall-clock cleanly.
+			handleMessageTracker?.closeDispatch(
+				msg.call_id,
+				msg.is_error ? "error" : "ok",
+				msg.is_error ? "tool_error" : undefined,
+			);
+
 			// Emit an event to trigger handleThread (re-emit the message so subscribed clients see it)
 			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
 			eventBus.emit("message:created", {
@@ -784,6 +810,11 @@ export function createWebSocketHandler(
 						}),
 					);
 				}
+
+				// Close the dispatch span with ERROR status. The reason is
+				// the same string we send over the wire so traces and logs
+				// agree on the cancellation cause.
+				handleMessageTracker?.closeDispatch(payload.call_id, "error", reason);
 
 				// For TTL expiry and connection close, synthesize error messages
 				if ((reason === "dispatch_expired" || reason === "session_reset") && db && siteId) {

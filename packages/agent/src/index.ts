@@ -34,6 +34,12 @@ export { getDelegationTarget, getRecentToolCalls } from "./delegation";
 // Export agent loop
 export { AgentLoop } from "./agent-loop";
 export { findPendingUserMessage } from "./agent-loop-utils";
+export {
+	HandleMessageTracker,
+	DEFAULT_WATCHDOG_TIMEOUT_MS,
+	DEFAULT_WATCHDOG_INTERVAL_MS,
+} from "./handle-message-tracker";
+export type { HandleMessageTrackerOptions } from "./handle-message-tracker";
 
 // Export context assembly
 export { assembleContext } from "./context-assembly";

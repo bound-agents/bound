@@ -139,6 +139,16 @@ export interface AgentLoopConfig {
 	 * When provided, enables registry-based dispatch with backward compatibility via legacy waterfall.
 	 */
 	toolRegistry?: Map<string, RegisteredTool>;
+	/**
+	 * Cross-handler-invocation span tracker. When provided, the agent loop
+	 * opens `tool.dispatch` spans here as out-of-process tool calls are
+	 * enqueued, so the carrier injected into the WS `tool:call` frame
+	 * identifies `tool.dispatch` (not `agent-loop.tool-execute`) as the
+	 * parent. The dispatch span is closed by the WS handler on `tool:result`,
+	 * not by the agent loop itself. Optional — when absent, dispatches still
+	 * function but client tool spans dangle as before.
+	 */
+	handleMessageTracker?: import("./handle-message-tracker").HandleMessageTracker;
 }
 
 export interface AgentLoopResult {
