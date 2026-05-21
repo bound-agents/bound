@@ -1,11 +1,88 @@
 import { Box, Text } from "ink";
 import { Lexer, type Token, type Tokens } from "marked";
 import type React from "react";
+import { getLangConfig, tokenize } from "./syntax";
 
 const HR_WIDTH = 40;
 
 export interface MarkdownProps {
 	text: string;
+}
+
+/**
+ * Renders a fenced code block with optional syntax highlighting.
+ *
+ * If the lang tag matches one of the configs in `./syntax`, we tokenize
+ * and color each token (magenta keywords, yellow types, green strings,
+ * cyan numbers, blue builtins, dim italic comments, default for the
+ * rest). Unknown or missing lang falls back to plain default-colored
+ * text — better than miscolouring an unrecognized language.
+ */
+function HighlightedCode({
+	code,
+	lang,
+}: {
+	code: string;
+	lang?: string;
+}): React.ReactElement {
+	const config = getLangConfig(lang);
+	if (!config) {
+		return <Text>{code}</Text>;
+	}
+	const tokens = tokenize(code, config);
+	return (
+		<Text>
+			{tokens.map((tok, i) => {
+				switch (tok.kind) {
+					case "keyword":
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+							<Text key={i} color="magenta">
+								{tok.text}
+							</Text>
+						);
+					case "builtin":
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+							<Text key={i} color="blue">
+								{tok.text}
+							</Text>
+						);
+					case "type":
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+							<Text key={i} color="yellow">
+								{tok.text}
+							</Text>
+						);
+					case "string":
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+							<Text key={i} color="green">
+								{tok.text}
+							</Text>
+						);
+					case "number":
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+							<Text key={i} color="cyan">
+								{tok.text}
+							</Text>
+						);
+					case "comment":
+						return (
+							// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+							<Text key={i} dimColor italic>
+								{tok.text}
+							</Text>
+						);
+					default:
+						// biome-ignore lint/suspicious/noArrayIndexKey: tokens are immutable per render
+						return <Text key={i}>{tok.text}</Text>;
+				}
+			})}
+		</Text>
+	);
 }
 
 /**
@@ -133,7 +210,7 @@ function renderBlock(token: Token, index: number): React.ReactElement | null {
 							{t.lang}
 						</Text>
 					)}
-					<Text color="green">{t.text}</Text>
+					<HighlightedCode code={t.text} lang={t.lang} />
 				</Box>
 			);
 		}
