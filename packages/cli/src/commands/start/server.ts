@@ -276,20 +276,24 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	 * "Done" means:
 	 *   - the agent loop returned with no `yielded` flag (otherwise the loop
 	 *     will be re-batched and we want to keep the span open), AND
-	 *   - the dispatch_queue contains no rows that would re-trigger the
-	 *     thread (pending/processing user_message, tool_result, notification).
+	 *   - the dispatch_queue contains no rows in `pending` or `processing`
+	 *     state for the thread.
 	 *
-	 * `client_tool_call` rows are excluded — they intentionally sit pending
-	 * while the WS round-trip is in flight, and the matching tool_result
-	 * (which DOES count) drives the resume.
+	 * `client_tool_call` rows are INCLUDED. They sit `pending` from the moment
+	 * the agent enqueues a client tool until `handleToolResult` flips them to
+	 * `acknowledged` — exactly the in-flight window during which the cycle
+	 * must remain open. (Earlier this filter excluded them, which closed the
+	 * turn the instant `web.handle-message #1` returned, so each tool round
+	 * trip produced its own disconnected trace.) `tool_result` rows enqueued
+	 * by `handleToolResult` are flushed by `acknowledgeBatch` immediately
+	 * before this probe runs, so they don't keep the cycle open spuriously.
 	 */
 	const maybeCloseTurn = (threadId: string, status: "ok" | "error"): void => {
 		const row = appContext.db
 			.prepare(
 				`SELECT COUNT(*) AS pending FROM dispatch_queue
 				 WHERE thread_id = ?
-				   AND status IN ('pending', 'processing')
-				   AND event_type != 'client_tool_call'`,
+				   AND status IN ('pending', 'processing')`,
 			)
 			.get(threadId) as { pending: number } | null;
 		const pending = row?.pending ?? 0;
