@@ -15,8 +15,21 @@ import {
 import { useTerminalSize } from "../hooks/useTerminalSize";
 
 /**
- * Walk messages once to map each tool_result message id to the file path
- * captured in its originating tool_call.
+ * Per-tool_result metadata derived from its originating tool_call:
+ * - `filePath`: present when the matching tool_use carried a `file_path`
+ *   input — used by MessageBlock for syntax highlighting on read results.
+ * - `isLastInGroup`: false when more sibling results from the same parallel
+ *   tool_call are still expected; true for the final one. ChatView uses this
+ *   to collapse the inter-result gap so a parallel-call group renders as one
+ *   continuous blue-striped card.
+ */
+export type ToolResultMeta = {
+	filePath?: string;
+	isLastInGroup: boolean;
+};
+
+/**
+ * Walk messages once to derive per-tool_result metadata.
  *
  * Tool calls and their results are correlated through `tool_use_id`:
  * the call's content is a JSON `[{type: "tool_use", id, name, input}]`,
@@ -24,11 +37,18 @@ import { useTerminalSize } from "../hooks/useTerminalSize";
  * column (a quirk of the storage layer — the column name reads as the
  * tool name but for tool_result rows it's the tool_use_id).
  *
- * The resulting map lets MessageBlock render `boundless_read` results
- * with syntax highlighting keyed by the file's extension.
+ * The `isLastInGroup` flag is computed using each call's full
+ * tool_use count as the denominator and a per-call running counter
+ * over results seen so far. Crucially, the denominator is known the
+ * moment the call lands — so even before sibling results arrive, an
+ * early result can correctly classify itself as `isLastInGroup=false`.
+ * That's what makes the visual grouping Static-friendly: each result
+ * gets the right margin on first render and never needs to re-render.
  */
-function buildToolResultFilePathMap(messages: Message[]): Map<string, string> {
-	const idToFilePath = new Map<string, string>();
+export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolResultMeta> {
+	// Pass 1: index every tool_use block from every tool_call message.
+	// Each entry knows its parent call and the call's total tool_use count.
+	const toolUseToInfo = new Map<string, { filePath?: string; callMsgId: string; total: number }>();
 	for (const msg of messages) {
 		if (msg.role !== "tool_call") continue;
 		try {
@@ -38,25 +58,34 @@ function buildToolResultFilePathMap(messages: Message[]): Map<string, string> {
 				input?: Record<string, unknown>;
 			}>;
 			if (!Array.isArray(blocks)) continue;
-			for (const block of blocks) {
-				if (block.type !== "tool_use" || !block.id) continue;
-				const filePath = block.input?.file_path;
-				if (typeof filePath === "string") {
-					idToFilePath.set(block.id, filePath);
-				}
+			const uses = blocks.filter(
+				(b): b is { type: "tool_use"; id: string; input?: Record<string, unknown> } =>
+					b.type === "tool_use" && typeof b.id === "string",
+			);
+			for (const block of uses) {
+				const filePath =
+					typeof block.input?.file_path === "string" ? block.input.file_path : undefined;
+				toolUseToInfo.set(block.id, { filePath, callMsgId: msg.id, total: uses.length });
 			}
 		} catch {
 			// Non-parseable content — skip; not all tool_call messages parse cleanly.
 		}
 	}
 
-	const result = new Map<string, string>();
+	// Pass 2: walk results in order. The K-th result for a call (K === total)
+	// is the last in its group; everything before that is mid-group.
+	const seenPerCall = new Map<string, number>();
+	const result = new Map<string, ToolResultMeta>();
 	for (const msg of messages) {
 		if (msg.role !== "tool_result" || !msg.tool_name) continue;
-		const filePath = idToFilePath.get(msg.tool_name);
-		if (filePath) {
-			result.set(msg.id, filePath);
-		}
+		const info = toolUseToInfo.get(msg.tool_name);
+		if (!info) continue;
+		const seen = (seenPerCall.get(info.callMsgId) ?? 0) + 1;
+		seenPerCall.set(info.callMsgId, seen);
+		result.set(msg.id, {
+			filePath: info.filePath,
+			isLastInGroup: seen === info.total,
+		});
 	}
 	return result;
 }
@@ -113,10 +142,11 @@ export function ChatView({
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
 	const { columns: termColumns } = useTerminalSize();
-	// Per-message file_path map for tool_result rendering. Memoized over
-	// the messages array so we walk it only when new messages arrive,
+	// Per-tool_result metadata (file_path for syntax highlighting +
+	// isLastInGroup for parallel-call group margin collapsing). Memoized
+	// over the messages array so we walk it only when new messages arrive,
 	// keeping per-frame cost flat as scrollback grows.
-	const toolResultFilePaths = useMemo(() => buildToolResultFilePathMap(messages), [messages]);
+	const toolResultMeta = useMemo(() => buildToolResultMetaMap(messages), [messages]);
 	// Account for the rounded input frame: 2 cols of border + 2 cols of
 	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
 	// input. Off-by-one here makes the explicit \n breaks emitted by
@@ -188,11 +218,22 @@ export function ChatView({
 			    scrollback messages and the dynamic input area. */}
 			<Box height={0}>
 				<Static items={messages}>
-					{(msg) => (
-						<Box key={msg.id} marginBottom={msg.role === "tool_call" ? 0 : 1}>
-							<MessageBlock message={msg} filePath={toolResultFilePaths.get(msg.id)} />
-						</Box>
-					)}
+					{(msg) => {
+						const meta = toolResultMeta.get(msg.id);
+						// Margin rule: collapse the gap inside a tool group so the blue
+						// stripe runs continuously through call → results.
+						//   - tool_call → next: always 0 (touches its first result, or
+						//     in degenerate cases still fine to abut).
+						//   - tool_result, mid-group: 0 (touches sibling result).
+						//   - tool_result, last in group: 1 (separates from next turn).
+						//   - everything else: 1 (default turn-to-turn separation).
+						const marginBottom = msg.role === "tool_call" ? 0 : meta && !meta.isLastInGroup ? 0 : 1;
+						return (
+							<Box key={msg.id} marginBottom={marginBottom}>
+								<MessageBlock message={msg} filePath={meta?.filePath} />
+							</Box>
+						);
+					}}
 				</Static>
 			</Box>
 
