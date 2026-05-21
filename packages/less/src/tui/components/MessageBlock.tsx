@@ -35,16 +35,45 @@ function summarizeToolArgs(toolName: string, input: Record<string, unknown>): st
 	return parts.join(" ");
 }
 
+/**
+ * Wraps content in a colored left-edge stripe to visually anchor a turn.
+ * User messages get a green stripe; assistant messages and their tool
+ * calls/results share a blue stripe so the eye can follow a single turn
+ * down the page even when it spans many child blocks.
+ */
+function StripeBox({
+	color,
+	children,
+}: {
+	color: string;
+	children: React.ReactNode;
+}): React.ReactElement {
+	return (
+		<Box
+			flexDirection="column"
+			borderStyle="single"
+			borderLeft
+			borderRight={false}
+			borderTop={false}
+			borderBottom={false}
+			borderColor={color}
+			paddingLeft={1}
+		>
+			{children}
+		</Box>
+	);
+}
+
 export interface MessageBlockProps {
 	message: Message;
 }
 
 /**
  * Renders a message based on its role and content.
- * - `"user"`: Green "You:" prefix + content text
- * - `"assistant"`: Blue "Agent:" prefix + content (handle both string and ContentBlock[])
- * - `"tool_call"`: Dimmed tool invocation with tool name and args summary
- * - `"tool_result"`: Indented output with success/error indicator
+ * - `"user"`: green left-stripe, "you" header, content
+ * - `"assistant"`: blue left-stripe, "agent" header, content (string or ContentBlock[])
+ * - `"tool_call"`: blue stripe (continues assistant turn), `⏵ name args` rows
+ * - `"tool_result"`: blue stripe, `✓/✗ name · summary` with truncated body
  * - Pending placeholder: dimmed "Waiting for tool result..." text
  */
 export function MessageBlock({ message }: MessageBlockProps): React.ReactElement {
@@ -82,19 +111,23 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 	// Render based on role
 	if (message.role === "user") {
 		return (
-			<Box flexDirection="column">
-				<Text color="green">You:</Text>
+			<StripeBox color="green">
+				<Text bold color="green">
+					you
+				</Text>
 				{renderContent(parsedContent)}
-			</Box>
+			</StripeBox>
 		);
 	}
 
 	if (message.role === "assistant") {
 		return (
-			<Box flexDirection="column">
-				<Text color="blue">Agent:</Text>
+			<StripeBox color="blue">
+				<Text bold color="blue">
+					agent
+				</Text>
 				{renderContent(parsedContent)}
-			</Box>
+			</StripeBox>
 		);
 	}
 
@@ -124,10 +157,12 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 
 		if (toolUseBlocks.length > 0) {
 			return (
-				<Box flexDirection="column">
+				<StripeBox color="blue">
 					{inlineText && (
 						<Box flexDirection="column" marginBottom={1}>
-							<Text color="blue">Agent:</Text>
+							<Text bold color="blue">
+								agent
+							</Text>
 							<Markdown text={inlineText} />
 						</Box>
 					)}
@@ -135,25 +170,33 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 						const argSummary = summarizeToolArgs(block.name, block.input);
 						// Tools not prefixed with "boundless_" are server-side (remote)
 						const isRemote = !block.name.startsWith("boundless_");
-						const prefix = isRemote ? "[remote] " : "";
 						const name = displayToolName(block.name);
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable
-							<Text key={idx} dimColor>
-								◆ {prefix}
-								{name}
-								{argSummary ? ` ${argSummary}` : ""}
+							<Text key={idx}>
+								<Text color="cyan">⏵ </Text>
+								{isRemote && <Text dimColor>[remote] </Text>}
+								<Text color="cyan" bold>
+									{name}
+								</Text>
+								{argSummary ? <Text dimColor> {argSummary}</Text> : null}
 							</Text>
 						);
 					})}
-				</Box>
+				</StripeBox>
 			);
 		}
 
 		return (
-			<Text dimColor>
-				◆ {displayToolName(message.tool_name || "tool")}: {message.content}
-			</Text>
+			<StripeBox color="blue">
+				<Text>
+					<Text color="cyan">⏵ </Text>
+					<Text color="cyan" bold>
+						{displayToolName(message.tool_name || "tool")}
+					</Text>
+					<Text dimColor>: {message.content}</Text>
+				</Text>
+			</StripeBox>
 		);
 	}
 
@@ -193,27 +236,46 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 		const allLines =
 			firstNonEmpty >= 0 ? rawLines.slice(firstNonEmpty, lastNonEmpty + 1) : rawLines;
 		const truncated = allLines.length > TOOL_RESULT_MAX_LINES;
-		const displayText = truncated
-			? allLines.slice(0, TOOL_RESULT_MAX_LINES).join("\n")
-			: allLines.join("\n");
+		const displayLines = truncated ? allLines.slice(0, TOOL_RESULT_MAX_LINES) : allLines;
 
-		// Render as indented output with a success/error indicator.
-		// The preceding tool_call message already identifies the tool,
-		// so no header or Collapsible wrapper is needed here.
+		// Echo the tool name on the result line so the parent tool_call is
+		// visually re-anchored (especially helpful when results scroll past
+		// the call header in long output).
 		const isError = message.exit_code != null && message.exit_code !== 0;
 		const indicator = isError ? "✗" : "✓";
 		const indicatorColor = isError ? "red" : "green";
+		const toolName = message.tool_name ? displayToolName(message.tool_name) : null;
 
 		return (
-			<Box flexDirection="column" paddingLeft={2}>
-				<Box>
-					<Text color={indicatorColor}>{indicator} </Text>
-					<Text>{displayText}</Text>
+			<StripeBox color="blue">
+				<Box flexDirection="column" paddingLeft={2}>
+					<Text>
+						<Text color={indicatorColor} bold>
+							{indicator}
+						</Text>
+						{toolName ? (
+							<>
+								<Text dimColor> {toolName} · </Text>
+							</>
+						) : (
+							<Text> </Text>
+						)}
+						<Text>{displayLines[0] ?? ""}</Text>
+					</Text>
+					{displayLines.slice(1).map((line, idx) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: result lines are immutable
+						<Text key={idx}>
+							{"  "}
+							{line}
+						</Text>
+					))}
+					{truncated && (
+						<Text dimColor>
+							{"  "}… {allLines.length - TOOL_RESULT_MAX_LINES} more lines
+						</Text>
+					)}
 				</Box>
-				{truncated && (
-					<Text dimColor> ... {allLines.length - TOOL_RESULT_MAX_LINES} more lines</Text>
-				)}
-			</Box>
+			</StripeBox>
 		);
 	}
 

@@ -251,7 +251,7 @@ describe("MessageBlock", () => {
 			expect(frame).toContain("line 1");
 			expect(frame).toContain("line 5");
 			expect(frame).not.toContain("line 6");
-			expect(frame).toContain("... 15 more lines");
+			expect(frame).toContain("… 15 more lines");
 		});
 
 		it("truncates tool_result ContentBlock[] to 5 lines", async () => {
@@ -276,7 +276,7 @@ describe("MessageBlock", () => {
 			expect(frame).toContain("output 1");
 			expect(frame).toContain("output 5");
 			expect(frame).not.toContain("output 6");
-			expect(frame).toContain("... 7 more lines");
+			expect(frame).toContain("… 7 more lines");
 		});
 
 		it("does not truncate tool_result with 5 or fewer lines", async () => {
@@ -332,7 +332,7 @@ describe("MessageBlock", () => {
 			expect(frame).toContain("content 1");
 			expect(frame).toContain("content 5");
 			expect(frame).not.toContain("content 6");
-			expect(frame).toContain("... 5 more lines");
+			expect(frame).toContain("… 5 more lines");
 		});
 
 		it("renders tool_result with ContentBlock array without crashing", async () => {
