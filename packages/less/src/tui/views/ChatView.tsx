@@ -66,8 +66,17 @@ export function ChatView({
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
 	const { columns: termColumns } = useTerminalSize();
-	// "❯ " prompt takes 2 columns
-	const inputColumns = termColumns - 2;
+	// Account for the rounded input frame: 2 cols of border + 1 col of left
+	// padding + 2 cols of "❯ " prompt = 5 cols of chrome around the input.
+	const inputColumns = Math.max(10, termColumns - 5);
+	// Frame color tracks connection health so the most-looked-at part of the
+	// UI surfaces session state without the user having to scan the status bar.
+	const frameColor =
+		connectionState === "connected"
+			? "cyan"
+			: connectionState === "disconnected"
+				? "red"
+				: "yellow";
 
 	/**
 	 * Parse and handle slash commands.
@@ -187,9 +196,9 @@ export function ChatView({
 				</Box>
 			)}
 
-			{/* Input area */}
-			<Box>
-				<Text color="cyan">{"❯ "}</Text>
+			{/* Input area — frame color tracks connection health */}
+			<Box borderStyle="round" borderColor={frameColor} paddingX={1} flexDirection="row">
+				<Text color={frameColor}>{"❯ "}</Text>
 				<Box flexGrow={1} flexShrink={1}>
 					<TextInput
 						placeholder="Enter message or /help"
