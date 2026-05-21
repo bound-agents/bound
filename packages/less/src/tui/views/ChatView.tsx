@@ -66,9 +66,12 @@ export function ChatView({
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
 	const { columns: termColumns } = useTerminalSize();
-	// Account for the rounded input frame: 2 cols of border + 1 col of left
-	// padding + 2 cols of "❯ " prompt = 5 cols of chrome around the input.
-	const inputColumns = Math.max(10, termColumns - 5);
+	// Account for the rounded input frame: 2 cols of border + 2 cols of
+	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
+	// input. Off-by-one here makes the explicit \n breaks emitted by
+	// TextInput overflow the inner Box by 1 col, which the terminal then
+	// soft-wraps — visible as stuttering 1-char overflow rows.
+	const inputColumns = Math.max(10, termColumns - 6);
 	// Frame color tracks connection health so the most-looked-at part of the
 	// UI surfaces session state without the user having to scan the status bar.
 	const frameColor =
