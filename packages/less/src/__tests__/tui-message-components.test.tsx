@@ -7,7 +7,7 @@ import { ToolCallCard } from "../tui/components/ToolCallCard";
 
 describe("Message rendering components", () => {
 	describe("MessageBlock", () => {
-		it("AC9.1: renders user messages with green prefix", async () => {
+		it("AC9.1: renders user messages with role header", async () => {
 			const message: Message = {
 				id: "msg-1",
 				thread_id: "thread-1",
@@ -20,11 +20,11 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			expect(output).toContain("You:");
+			expect(output).toContain("you");
 			expect(output).toContain("Hello there");
 		});
 
-		it("AC9.1: renders assistant messages with blue prefix", async () => {
+		it("AC9.1: renders assistant messages with role header", async () => {
 			const message: Message = {
 				id: "msg-2",
 				thread_id: "thread-1",
@@ -37,11 +37,11 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			expect(output).toContain("Agent:");
+			expect(output).toContain("agent");
 			expect(output).toContain("I can help");
 		});
 
-		it("AC9.1: renders tool_call messages dimmed", async () => {
+		it("AC9.1: renders tool_call messages with ⏵ glyph and tool name", async () => {
 			const message: Message = {
 				id: "msg-3",
 				thread_id: "thread-1",
@@ -54,8 +54,9 @@ describe("Message rendering components", () => {
 
 			const { lastFrame } = render(<MessageBlock message={message} />);
 			const output = lastFrame();
-			// Tool calls render as "◆ <tool>: <content>"
-			expect(output).toContain("◆ read:");
+			// Tool calls render as "⏵ <tool>: <content>" under the assistant stripe
+			expect(output).toContain("⏵");
+			expect(output).toContain("read");
 		});
 
 		it("AC9.1: renders tool_result with success indicator and content", async () => {

@@ -136,9 +136,9 @@ describe("App Component", () => {
 		);
 
 		const output = lastFrame();
-		expect(output).toContain("You:");
+		expect(output).toContain("you");
 		expect(output).toContain("Hello");
-		expect(output).toContain("Agent:");
+		expect(output).toContain("agent");
 		expect(output).toContain("Hi there");
 	});
 
