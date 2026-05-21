@@ -3,8 +3,15 @@ import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
 import { Markdown } from "./Markdown";
+import { computeLineDiff, hunkDiff } from "./lineDiff";
 
 const TOOL_RESULT_MAX_LINES = 5;
+/** Hard cap on rendered diff entries (after hunking) per edit call. */
+const EDIT_DIFF_MAX_LINES = 24;
+/** Lines of unchanged context to keep on either side of a change run. */
+const EDIT_DIFF_CONTEXT = 3;
+/** Preview lines shown under a `boundless_write` call. */
+const WRITE_PREVIEW_MAX_LINES = 8;
 
 /** Strip the "boundless_" prefix from local tool names for cleaner display. */
 function displayToolName(name: string): string {
@@ -33,6 +40,173 @@ function summarizeToolArgs(toolName: string, input: Record<string, unknown>): st
 		return `${k}=${truncated}`;
 	});
 	return parts.join(" ");
+}
+
+/**
+ * Render a unified-diff body for a `boundless_edit` tool call, using the
+ * call's `old_string`/`new_string` args. Lines are color-coded:
+ *   red `- ` for removed, green `+ ` for added, dim `  ` for context.
+ * Long unchanged stretches between changes are collapsed via `hunkDiff`,
+ * and the whole rendering is hard-capped at EDIT_DIFF_MAX_LINES entries.
+ */
+function EditDiffBody({
+	oldString,
+	newString,
+}: {
+	oldString: string;
+	newString: string;
+}): React.ReactElement | null {
+	const diff = computeLineDiff(oldString, newString);
+	const hunked = hunkDiff(diff, EDIT_DIFF_CONTEXT);
+	if (hunked.length === 0) {
+		return null;
+	}
+
+	const truncated = hunked.length > EDIT_DIFF_MAX_LINES;
+	const display = truncated ? hunked.slice(0, EDIT_DIFF_MAX_LINES) : hunked;
+
+	return (
+		<Box flexDirection="column" paddingLeft={2}>
+			{display.map((entry, idx) => {
+				if (entry.kind === "ellipsis") {
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
+						<Text key={idx} dimColor>
+							⋯ {entry.count} unchanged {entry.count === 1 ? "line" : "lines"}
+						</Text>
+					);
+				}
+				if (entry.kind === "remove") {
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
+						<Text key={idx} color="red">
+							- {entry.text}
+						</Text>
+					);
+				}
+				if (entry.kind === "add") {
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
+						<Text key={idx} color="green">
+							+ {entry.text}
+						</Text>
+					);
+				}
+				return (
+					// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
+					<Text key={idx} dimColor>
+						{"  "}
+						{entry.text}
+					</Text>
+				);
+			})}
+			{truncated && (
+				<Text dimColor>
+					⋯ {hunked.length - EDIT_DIFF_MAX_LINES} more diff{" "}
+					{hunked.length - EDIT_DIFF_MAX_LINES === 1 ? "entry" : "entries"}
+				</Text>
+			)}
+		</Box>
+	);
+}
+
+/**
+ * Render a content preview for a `boundless_write` tool call. Since write
+ * replaces (or creates) a file's full contents, every line is conceptually
+ * "added" — we show the first N lines in green with a `+ ` prefix to
+ * mirror the edit-diff rendering.
+ */
+function WritePreviewBody({ content }: { content: string }): React.ReactElement | null {
+	if (content.length === 0) {
+		return null;
+	}
+	const lines = content.split("\n");
+	const truncated = lines.length > WRITE_PREVIEW_MAX_LINES;
+	const display = truncated ? lines.slice(0, WRITE_PREVIEW_MAX_LINES) : lines;
+	return (
+		<Box flexDirection="column" paddingLeft={2}>
+			{display.map((line, idx) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable per render
+				<Text key={idx} color="green">
+					+ {line}
+				</Text>
+			))}
+			{truncated && (
+				<Text dimColor>
+					⋯ {lines.length - WRITE_PREVIEW_MAX_LINES} more{" "}
+					{lines.length - WRITE_PREVIEW_MAX_LINES === 1 ? "line" : "lines"}
+				</Text>
+			)}
+		</Box>
+	);
+}
+
+/**
+ * Render a single tool_use block. Most tools collapse to a single
+ * `⏵ name args` row; `boundless_edit` and `boundless_write` get a richer
+ * header + body rendering so the actual change content is visible inline
+ * with the call (the tool result alone doesn't carry the diff).
+ */
+function ToolCallRow({
+	block,
+}: {
+	block: { name: string; input: Record<string, unknown> };
+}): React.ReactElement {
+	const isRemote = !block.name.startsWith("boundless_");
+	const name = displayToolName(block.name);
+	const filePath = typeof block.input.file_path === "string" ? block.input.file_path : null;
+
+	// boundless_edit: header + colored unified diff
+	if (block.name === "boundless_edit" && filePath) {
+		const oldString = typeof block.input.old_string === "string" ? block.input.old_string : "";
+		const newString = typeof block.input.new_string === "string" ? block.input.new_string : "";
+		return (
+			<Box flexDirection="column">
+				<Text>
+					<Text color="cyan">⏵ </Text>
+					<Text color="cyan" bold>
+						{name}
+					</Text>
+					<Text dimColor> {filePath}</Text>
+				</Text>
+				<EditDiffBody oldString={oldString} newString={newString} />
+			</Box>
+		);
+	}
+
+	// boundless_write: header + first-N-lines content preview as adds
+	if (block.name === "boundless_write" && filePath) {
+		const content = typeof block.input.content === "string" ? block.input.content : "";
+		const lineCount = content.length === 0 ? 0 : content.split("\n").length;
+		return (
+			<Box flexDirection="column">
+				<Text>
+					<Text color="cyan">⏵ </Text>
+					<Text color="cyan" bold>
+						{name}
+					</Text>
+					<Text dimColor>
+						{" "}
+						{filePath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
+					</Text>
+				</Text>
+				<WritePreviewBody content={content} />
+			</Box>
+		);
+	}
+
+	// Generic single-line rendering for everything else.
+	const argSummary = summarizeToolArgs(block.name, block.input);
+	return (
+		<Text>
+			<Text color="cyan">⏵ </Text>
+			{isRemote && <Text dimColor>[remote] </Text>}
+			<Text color="cyan" bold>
+				{name}
+			</Text>
+			{argSummary ? <Text dimColor> {argSummary}</Text> : null}
+		</Text>
+	);
 }
 
 /**
@@ -166,23 +340,10 @@ export function MessageBlock({ message }: MessageBlockProps): React.ReactElement
 							<Markdown text={inlineText} />
 						</Box>
 					)}
-					{toolUseBlocks.map((block, idx) => {
-						const argSummary = summarizeToolArgs(block.name, block.input);
-						// Tools not prefixed with "boundless_" are server-side (remote)
-						const isRemote = !block.name.startsWith("boundless_");
-						const name = displayToolName(block.name);
-						return (
-							// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable
-							<Text key={idx}>
-								<Text color="cyan">⏵ </Text>
-								{isRemote && <Text dimColor>[remote] </Text>}
-								<Text color="cyan" bold>
-									{name}
-								</Text>
-								{argSummary ? <Text dimColor> {argSummary}</Text> : null}
-							</Text>
-						);
-					})}
+					{toolUseBlocks.map((block, idx) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable per render
+						<ToolCallRow key={idx} block={block} />
+					))}
 				</StripeBox>
 			);
 		}
