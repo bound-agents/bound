@@ -163,6 +163,16 @@ interface ParsedResponse {
 		cacheReadTokens: number | null;
 		usageEstimated: boolean;
 	};
+	/**
+	 * Authoritative USD cost for this turn as computed by the executing
+	 * host (the relay hub for delegated inference) and stamped onto the
+	 * `done` StreamChunk. `null` when the chunk did not carry a cost —
+	 * either local (non-relay) inference, or a hub on pre-fix code.
+	 * Consumers (the agent-loop's recordTurn site) prefer this value over
+	 * a local pricing lookup so hub-only spokes don't write 0 for every
+	 * delegated turn (CONTRIBUTING.md invariant #17 amendment).
+	 */
+	costUsdFromHub: number | null;
 }
 
 export class AgentLoop {
@@ -1353,8 +1363,17 @@ export class AgentLoop {
 						this.config.modelId || "unknown",
 					);
 
+					// Prefer hub-computed cost when present. The relay hub stamps
+					// cost_usd onto the `done` StreamChunk using its own backend
+					// pricing — that's authoritative for delegated inference,
+					// because the spoke may be hub-only mode (empty backends
+					// list) and its local calculateTurnCost would return 0
+					// (CONTRIBUTING.md invariant #17). When the chunk carries
+					// no cost (local inference, or a hub on pre-fix code) fall
+					// back to the local pricing lookup.
 					const backends = this.ctx.config?.modelBackends?.backends ?? [];
-					const cost_usd = calculateTurnCost(resolvedModelId, parsed.usage, backends);
+					const cost_usd =
+						parsed.costUsdFromHub ?? calculateTurnCost(resolvedModelId, parsed.usage, backends);
 
 					currentTurnId = recordTurn(
 						this.ctx.db,
@@ -2351,6 +2370,7 @@ export class AgentLoop {
 		let cacheWriteTokens: number | null = null;
 		let cacheReadTokens: number | null = null;
 		let usageEstimated = false;
+		let costUsdFromHub: number | null = null;
 
 		for (const chunk of remappedChunks) {
 			switch (chunk.type) {
@@ -2404,6 +2424,7 @@ export class AgentLoop {
 					cacheWriteTokens = chunk.usage.cache_write_tokens;
 					cacheReadTokens = chunk.usage.cache_read_tokens;
 					usageEstimated = chunk.usage.estimated;
+					costUsdFromHub = chunk.cost_usd ?? null;
 					break;
 				case "error":
 					this.ctx.logger.warn("[agent-loop] Stream error chunk in response", {
@@ -2432,6 +2453,7 @@ export class AgentLoop {
 				cacheReadTokens,
 				usageEstimated,
 			},
+			costUsdFromHub,
 		};
 	}
 

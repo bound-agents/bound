@@ -1121,4 +1121,229 @@ describe("RelayProcessor - executeInference", () => {
 		expect(mockBackend.capturedParams).toHaveLength(1);
 		expect(mockBackend.capturedParams[0].max_tokens).toBe(16384);
 	});
+
+	it("stamps hub-computed cost_usd onto the final done chunk", async () => {
+		// Hub holds the authoritative pricing; spokes that delegate may run
+		// hub-only mode (empty backends) and would otherwise compute 0.
+		// The hub computes cost from its own model_backends config and stamps
+		// it on the done StreamChunk so the spoke records an accurate row.
+		const mockBackend = new MockBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "priced response" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 1000,
+					output_tokens: 500,
+					cache_write_tokens: 200,
+					cache_read_tokens: 800,
+					estimated: false,
+				},
+			};
+		});
+
+		const backends = new Map<string, LLMBackend>();
+		backends.set("priced-model", mockBackend);
+		const mockRouter = new ModelRouter(backends, "priced-model");
+
+		// Stub appCtx with the same pricing the router knows about. The
+		// relay-processor reads pricing from appCtx.config.modelBackends.backends
+		// because that's the raw shared-config shape (price_per_m_*).
+		const appCtxStub = {
+			config: {
+				modelBackends: {
+					default: "priced-model",
+					backends: [
+						{
+							id: "priced-model",
+							provider: "anthropic",
+							model: "priced-model",
+							context_window: 8000,
+							tier: 1,
+							price_per_m_input: 3.0,
+							price_per_m_output: 15.0,
+							price_per_m_cache_read: 0.3,
+							price_per_m_cache_write: 3.75,
+						},
+					],
+				},
+			},
+		} as unknown as Parameters<typeof RelayProcessor>[7];
+
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			mockRouter,
+			new Set(["requester-site"]),
+			createMockLogger(),
+			createMockEventBus(),
+			appCtxStub,
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const inboxEntry: RelayInboxEntry = {
+			id: randomUUID(),
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "priced-model",
+				messages: [{ role: "user" as const, content: "Hello" }],
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+		};
+
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				inboxEntry.id,
+				inboxEntry.source_site_id,
+				inboxEntry.kind,
+				inboxEntry.ref_id,
+				inboxEntry.idempotency_key,
+				inboxEntry.stream_id,
+				inboxEntry.payload,
+				inboxEntry.expires_at,
+				inboxEntry.received_at,
+				inboxEntry.processed,
+			],
+		);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "stream_end not written for cost-stamping test" },
+		);
+		handle.stop();
+
+		// The done chunk lives in the final stream_end payload, not in any
+		// stream_chunk — chunkBuffer is flushed exactly once with isFinal=true
+		// at the end of runInferenceWithTracing.
+		const ends = db
+			.query("SELECT payload FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'")
+			.all(streamId) as Array<{ payload: string }>;
+		expect(ends.length).toBe(1);
+
+		const endPayload = JSON.parse(ends[0].payload) as {
+			chunks: StreamChunk[];
+			seq: number;
+		};
+		const doneChunk = endPayload.chunks.find((c) => c.type === "done");
+		expect(doneChunk).toBeDefined();
+
+		// Expected cost:
+		// input:       1000 * 3.0  / 1M = 0.003000
+		// output:       500 * 15.0 / 1M = 0.007500
+		// cache_read:   800 * 0.3  / 1M = 0.000240
+		// cache_write:  200 * 3.75 / 1M = 0.000750
+		// Total:                          0.011490
+		if (doneChunk?.type === "done") {
+			expect(doneChunk.cost_usd).toBeDefined();
+			expect(doneChunk.cost_usd).toBeCloseTo(0.01149, 8);
+		}
+	});
+
+	it("stamps cost_usd = 0 when hub has no backend pricing for the model", async () => {
+		// Defensive: when the hub's appCtx is missing or the model isn't in
+		// its backends list, calculateTurnCost returns 0 and we still stamp.
+		// This keeps the wire format consistent and lets the spoke fall back
+		// to its own local calc on the spoke side (cost_usd=0 from the hub
+		// is preserved by the ?? operator only when undefined; explicit 0
+		// overrides). This test pins the wire-format guarantee — the
+		// happy-path fallback to local calc is covered by agent-loop tests.
+		const mockBackend = new MockBackend();
+		mockBackend.setTextResponse("ok");
+
+		const backends = new Map<string, LLMBackend>();
+		backends.set("test-model", mockBackend);
+		const mockRouter = new ModelRouter(backends, "test-model");
+
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			mockRouter,
+			new Set(["requester-site"]),
+			createMockLogger(),
+			createMockEventBus(),
+			// No appCtx stub — exercises the `?? []` fallback
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const inboxEntry: RelayInboxEntry = {
+			id: randomUUID(),
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "test-model",
+				messages: [{ role: "user" as const, content: "Hello" }],
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+		};
+
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				inboxEntry.id,
+				inboxEntry.source_site_id,
+				inboxEntry.kind,
+				inboxEntry.ref_id,
+				inboxEntry.idempotency_key,
+				inboxEntry.stream_id,
+				inboxEntry.payload,
+				inboxEntry.expires_at,
+				inboxEntry.received_at,
+				inboxEntry.processed,
+			],
+		);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "stream_end not written" },
+		);
+		handle.stop();
+
+		const ends = db
+			.query("SELECT payload FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'")
+			.all(streamId) as Array<{ payload: string }>;
+		const endPayload = JSON.parse(ends[0].payload) as {
+			chunks: StreamChunk[];
+			seq: number;
+		};
+		const doneChunk = endPayload.chunks.find((c) => c.type === "done");
+		if (doneChunk?.type === "done") {
+			expect(doneChunk.cost_usd).toBe(0);
+		}
+	});
 });

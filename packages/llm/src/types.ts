@@ -189,6 +189,14 @@ export type StreamChunk =
 				cache_read_tokens: number | null;
 				estimated: boolean;
 			};
+			/**
+			 * Authoritative USD cost for this turn, computed on the executing
+			 * host from its local backend pricing. Populated by the relay hub
+			 * for delegated inference; absent for direct/local inference where
+			 * the caller has its own pricing config. Consumers seeing
+			 * `undefined` should fall back to a local pricing lookup.
+			 */
+			cost_usd?: number;
 	  }
 	| { type: "error"; error: string }
 	| { type: "heartbeat" };
