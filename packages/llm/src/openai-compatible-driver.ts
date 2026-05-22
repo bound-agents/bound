@@ -17,7 +17,13 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import { mapChunks, mapError, toModelMessages, toToolSet } from "./ai-sdk-bridge";
+import {
+	PERMISSIVE_ENVELOPE,
+	mapChunks,
+	mapError,
+	toModelMessages,
+	toToolSet,
+} from "./ai-sdk-bridge";
 import { createLoggingFetch } from "./fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
@@ -60,10 +66,15 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		// with 400 "Unknown model:".
 		const modelId = params.model || this.model;
 		// OpenAI-compatible endpoints don't have a cache-breakpoint marker —
-		// drop cache-role messages silently via null cacheProvider.
+		// drop cache-role messages silently via null cacheProvider. They also
+		// don't advertise a tool_call.id charset constraint, so use the
+		// permissive envelope: ids/names round-trip raw, only the length cap
+		// fires as a backstop against runaway upstream leaks (Kimi/Moonshot
+		// template-token leakage in particular).
 		const messages = toModelMessages(params.messages, {
 			cacheProvider: null,
 			resolveFileRef: params.resolveFileRef,
+			targetEnvelope: PERMISSIVE_ENVELOPE,
 		});
 		const tools = toToolSet(params.tools);
 

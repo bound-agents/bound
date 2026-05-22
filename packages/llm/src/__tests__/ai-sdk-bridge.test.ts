@@ -8,9 +8,13 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+	ANTHROPIC_ENVELOPE,
+	BEDROCK_PERMISSIVE_ENVELOPE,
 	MAX_TOOL_USE_ID_LENGTH,
+	PERMISSIVE_ENVELOPE,
 	mapChunks,
 	mapError,
+	sanitizeToolNameForEnvelope,
 	sanitizeToolUseId,
 	toModelMessages,
 	toToolSet,
@@ -1201,6 +1205,155 @@ describe("sanitizeToolUseId — length bound", () => {
 	});
 });
 
+describe("envelope-aware sanitization (rewrite-only-on-violation)", () => {
+	// The envelope shape captures the (provider, model)-dependent wire
+	// validation envelope as data. sanitizeToolUseId/sanitizeToolNameForEnvelope
+	// rewrite ONLY when the input violates the envelope, so an id that's
+	// already legal for the target round-trips byte-identical. This is what
+	// preserves Kimi's native `functions.<name>:<index>` fallback ids on the
+	// bedrock-converse envelope, fixing the regression where universal
+	// rewriting put Kimi out-of-distribution against its own training data.
+
+	describe("sanitizeToolUseId(id, envelope)", () => {
+		const kimiNativeId = "functions.memory:5";
+
+		it("BEDROCK_PERMISSIVE_ENVELOPE preserves `.` and `:` (Kimi's native fallback shape)", () => {
+			expect(sanitizeToolUseId(kimiNativeId, BEDROCK_PERMISSIVE_ENVELOPE)).toBe(kimiNativeId);
+		});
+
+		it("ANTHROPIC_ENVELOPE rewrites `.` and `:` to `_`", () => {
+			expect(sanitizeToolUseId(kimiNativeId, ANTHROPIC_ENVELOPE)).toBe("functions_memory_5");
+		});
+
+		it("PERMISSIVE_ENVELOPE passes arbitrary characters through", () => {
+			expect(sanitizeToolUseId("anything goes !@# $", PERMISSIVE_ENVELOPE)).toBe(
+				"anything goes !@# $",
+			);
+		});
+
+		it("rewrite-only-on-violation: an already-legal id is byte-identical out under every envelope", () => {
+			const safe = "tooluse_abc123";
+			expect(sanitizeToolUseId(safe, ANTHROPIC_ENVELOPE)).toBe(safe);
+			expect(sanitizeToolUseId(safe, BEDROCK_PERMISSIVE_ENVELOPE)).toBe(safe);
+			expect(sanitizeToolUseId(safe, PERMISSIVE_ENVELOPE)).toBe(safe);
+		});
+
+		it("default envelope is ANTHROPIC_ENVELOPE (back-compat with pre-envelope callers)", () => {
+			// Equivalent to the legacy universal-rewrite behavior — important
+			// for any caller that imported sanitizeToolUseId before this revamp.
+			expect(sanitizeToolUseId(kimiNativeId)).toBe(
+				sanitizeToolUseId(kimiNativeId, ANTHROPIC_ENVELOPE),
+			);
+		});
+
+		it("truncates only when exceeding the envelope's idMaxLength", () => {
+			const long = "a".repeat(100);
+			expect(sanitizeToolUseId(long, ANTHROPIC_ENVELOPE).length).toBe(64);
+			expect(sanitizeToolUseId(long, BEDROCK_PERMISSIVE_ENVELOPE).length).toBe(64);
+			expect(sanitizeToolUseId(long, PERMISSIVE_ENVELOPE).length).toBe(100); // 100 < 256 cap
+		});
+
+		it("re-application across envelopes is stable when the result is already legal under both", () => {
+			// Round-trip property: ANTHROPIC output is a strict subset of
+			// BEDROCK_PERMISSIVE, so re-sanitizing under either is a no-op.
+			const out1 = sanitizeToolUseId(kimiNativeId, ANTHROPIC_ENVELOPE);
+			expect(sanitizeToolUseId(out1, BEDROCK_PERMISSIVE_ENVELOPE)).toBe(out1);
+			expect(sanitizeToolUseId(out1, ANTHROPIC_ENVELOPE)).toBe(out1);
+		});
+	});
+
+	describe("sanitizeToolNameForEnvelope(name, envelope)", () => {
+		// tool_use.name is strict on every envelope except PERMISSIVE — names
+		// in our codebase don't carry `.:` in practice, so the variants matter
+		// less here than for ids; the contract test is mainly about parity
+		// with sanitizeToolUseId and the empty-string fallback.
+
+		it("falls back to 'unknown' when sanitization yields an empty string", () => {
+			expect(sanitizeToolNameForEnvelope("", ANTHROPIC_ENVELOPE)).toBe("unknown");
+			expect(sanitizeToolNameForEnvelope("...", ANTHROPIC_ENVELOPE)).toBe("___");
+		});
+
+		it("preserves an already-legal name under every envelope", () => {
+			const safe = "memory_store";
+			expect(sanitizeToolNameForEnvelope(safe, ANTHROPIC_ENVELOPE)).toBe(safe);
+			expect(sanitizeToolNameForEnvelope(safe, BEDROCK_PERMISSIVE_ENVELOPE)).toBe(safe);
+			expect(sanitizeToolNameForEnvelope(safe, PERMISSIVE_ENVELOPE)).toBe(safe);
+		});
+	});
+
+	describe("toModelMessages — targetEnvelope drives id rewriting at the read boundary", () => {
+		// This is the regression test for the Kimi malformed-tool-call fix:
+		// the same input message history must produce DIFFERENT wire ids
+		// depending on the (provider, model) target envelope. kimi-on-bedrock
+		// MUST see its native id shape; claude-on-bedrock and
+		// claude-on-anthropic-direct MUST see a rewritten id.
+
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "functions.memory:5", name: "memory", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "functions.memory:5",
+				content: [{ type: "text", text: "ok" }],
+			},
+		];
+
+		it("kimi-on-bedrock: BEDROCK_PERMISSIVE_ENVELOPE preserves `functions.memory:5`", () => {
+			const out = toModelMessages(messages, { targetEnvelope: BEDROCK_PERMISSIVE_ENVELOPE });
+			const assistantMsg = out.find((m) => m.role === "assistant");
+			const toolMsg = out.find((m) => m.role === "tool");
+			expect((assistantMsg as any)?.content[0].toolCallId).toBe("functions.memory:5");
+			expect((toolMsg as any)?.content[0].toolCallId).toBe("functions.memory:5");
+		});
+
+		it("claude-on-bedrock OR anthropic-direct: ANTHROPIC_ENVELOPE rewrites to `functions_memory_5`", () => {
+			const out = toModelMessages(messages, { targetEnvelope: ANTHROPIC_ENVELOPE });
+			const assistantMsg = out.find((m) => m.role === "assistant");
+			const toolMsg = out.find((m) => m.role === "tool");
+			expect((assistantMsg as any)?.content[0].toolCallId).toBe("functions_memory_5");
+			expect((toolMsg as any)?.content[0].toolCallId).toBe("functions_memory_5");
+		});
+
+		it("default (no targetEnvelope) is ANTHROPIC_ENVELOPE (back-compat)", () => {
+			const out = toModelMessages(messages);
+			const assistantMsg = out.find((m) => m.role === "assistant");
+			expect((assistantMsg as any)?.content[0].toolCallId).toBe("functions_memory_5");
+		});
+
+		it("openai-compatible: PERMISSIVE_ENVELOPE preserves arbitrary upstream id shapes", () => {
+			const oddId = "weird id with spaces and !@#";
+			const odd: LLMMessage[] = [
+				{ role: "user", content: "go" },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: oddId, name: "tool", input: {} }],
+				},
+			];
+			const out = toModelMessages(odd, { targetEnvelope: PERMISSIVE_ENVELOPE });
+			const assistantMsg = out.find((m) => m.role === "assistant");
+			expect((assistantMsg as any)?.content[0].toolCallId).toBe(oddId);
+		});
+
+		it("envelope choice does NOT affect already-legal ids (no spurious rewrites)", () => {
+			const safe: LLMMessage[] = [
+				{ role: "user", content: "go" },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "tooluse_abc", name: "memory", input: {} }],
+				},
+			];
+			for (const env of [ANTHROPIC_ENVELOPE, BEDROCK_PERMISSIVE_ENVELOPE, PERMISSIVE_ENVELOPE]) {
+				const out = toModelMessages(safe, { targetEnvelope: env });
+				const assistantMsg = out.find((m) => m.role === "assistant");
+				expect((assistantMsg as any)?.content[0].toolCallId).toBe("tooluse_abc");
+			}
+		});
+	});
+});
+
 describe("toModelMessages — tool_use.name sanitization (cross-provider portability)", () => {
 	// Same motivating case as the id-sanitization block above: when an upstream
 	// provider streams a malformed tool_use (Kimi/Moonshot template-token
@@ -1437,15 +1590,16 @@ describe("toModelMessages — full recovery on the corrupted shape from thread 8
 	});
 });
 
-describe("mapChunks — tool_use streaming-boundary sanitization", () => {
-	// The streaming boundary is the first place a corrupted upstream tool_use
-	// can be intercepted. Sanitize at this layer so the persisted tool_call
-	// ContentBlock carries already-clean id and name; the read-boundary
-	// sanitization in toModelMessages then becomes a defensive idempotent
-	// no-op for fresh data, with its real value being recovery of historical
-	// rows that pre-date this fix.
+describe("mapChunks — tool_use streaming-boundary semantics", () => {
+	// As of the envelope-aware sanitization revamp, the streaming boundary is
+	// pass-through: ids and names land in the persistence layer raw (no charset
+	// rewrite, no length truncation). All envelope-conditional rewriting now
+	// happens at the read boundary in toModelMessages, where the (provider,
+	// model) pair is known. The streaming layer keeps a length-anomaly warn
+	// log as the only operator-visible signal — that's the leak signature for
+	// Kimi/Moonshot template-token corruption (200+ char ids/names).
 
-	it("sanitizes oversized id and name from tool-input-start", async () => {
+	it("passes oversized id and name through unchanged (length-truncation deferred to read time)", async () => {
 		const corruptedId = "x".repeat(200);
 		const corruptedName = "memory.store:0".padEnd(200, "y");
 		const stream = events(
@@ -1462,24 +1616,23 @@ describe("mapChunks — tool_use streaming-boundary sanitization", () => {
 		const end = chunks.find((c) => c.type === "tool_use_end");
 		expect(start).toBeDefined();
 		if (start && start.type === "tool_use_start") {
-			expect(start.id.length).toBeLessThanOrEqual(64);
-			expect(start.name.length).toBeLessThanOrEqual(64);
-			expect(start.id).toMatch(/^[a-zA-Z0-9_-]+$/);
-			expect(start.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+			// Pass-through: 200 chars in, 200 chars out.
+			expect(start.id).toBe(corruptedId);
+			expect(start.name).toBe(corruptedName);
 		}
-		// delta and end events MUST share the sanitized id with start, or the
-		// agent loop's accumulator drops the args under a different key.
-		expect(args && args.type === "tool_use_args" && args.id).toBe(
-			start && start.type === "tool_use_start" ? start.id : "",
-		);
-		expect(end && end.type === "tool_use_end" && end.id).toBe(
-			start && start.type === "tool_use_start" ? start.id : "",
-		);
+		// All three events MUST share the same id (no rewriting at this layer
+		// means trivial pairing — but the invariant is still worth pinning).
+		expect(args && args.type === "tool_use_args" && args.id).toBe(corruptedId);
+		expect(end && end.type === "tool_use_end" && end.id).toBe(corruptedId);
 	});
 
-	it("preserves pairing across delta chunks when the upstream id is illegal", async () => {
-		// Upstream id contains `.` and `:` — must sanitize to the same value on
-		// every event (start/delta/end) so the agent-loop accumulator pairs them.
+	it("passes an illegal-charset id through unchanged (envelope rewrite is read-time)", async () => {
+		// `functions.memory:5` is the AI SDK fallback shape and Kimi's native
+		// tool_call id format. The streaming layer used to rewrite this to
+		// `functions_memory_5` universally; the envelope-aware revamp moves
+		// that decision to toModelMessages, where the target envelope
+		// determines whether it stays raw (bedrock-converse, permissive) or
+		// gets rewritten (anthropic-strict).
 		const upstreamId = "functions.memory:5";
 		const stream = events(
 			{ type: "tool-input-start", id: upstreamId, toolName: "memory" },
@@ -1497,18 +1650,15 @@ describe("mapChunks — tool_use streaming-boundary sanitization", () => {
 					c.type === "tool_use_start" || c.type === "tool_use_args" || c.type === "tool_use_end",
 			)
 			.map((c) => (c as { id: string }).id);
-		// All four events share the same sanitized id
+		// All four events share the same raw id — no rewriting at this layer.
 		expect(new Set(ids).size).toBe(1);
-		expect(ids[0]).toBe("functions_memory_5");
+		expect(ids[0]).toBe("functions.memory:5");
 	});
 
-	it("does not log when sanitization is charset-only (steady state for AI SDK fallback ids)", async () => {
-		// Pathology signal == length truncation only. A `functions.memory:5` id
-		// that gets charset-rewritten to `functions_memory_5` is normal AI SDK
-		// fallback-id behavior on the OpenAI-compatible path and is NOT worth
-		// surfacing to operators. We assert behavior indirectly: the sanitized
-		// length equals the original length, which is the condition the warn
-		// log gates on.
+	it("does not log when an illegal-charset id passes through within the length cap", async () => {
+		// Pathology signal == length-anomaly only. A 16-char `functions.memory:5`
+		// id is well under the 64-char cap, so no warn fires; that's normal AI
+		// SDK fallback-id behavior on the OpenAI-compatible path.
 		const upstreamId = "functions.memory:5";
 		const upstreamName = "memory";
 		const stream = events(
@@ -1521,8 +1671,10 @@ describe("mapChunks — tool_use streaming-boundary sanitization", () => {
 		const start = chunks.find((c) => c.type === "tool_use_start");
 		expect(start).toBeDefined();
 		if (start && start.type === "tool_use_start") {
-			expect(start.id.length).toBe(upstreamId.length);
-			expect(start.name.length).toBe(upstreamName.length);
+			expect(start.id).toBe(upstreamId);
+			expect(start.name).toBe(upstreamName);
+			expect(start.id.length).toBeLessThanOrEqual(MAX_TOOL_USE_ID_LENGTH);
+			expect(start.name.length).toBeLessThanOrEqual(MAX_TOOL_USE_ID_LENGTH);
 		}
 	});
 });
