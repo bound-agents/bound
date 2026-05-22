@@ -46,6 +46,7 @@ import {
 	rebuildWarmSections,
 } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
+import { resolveAdaptiveTruncationRatio } from "./inflation-ratio";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
 import { createRelayStream$ } from "./relay-stream$";
@@ -439,6 +440,19 @@ export class AgentLoop {
 			);
 			const currentFingerprint = computeToolFingerprint(this.config.tools);
 
+			// Resolve the per-thread adaptive truncation ratio once per assembly.
+			// Thinking-heavy threads have measured tiktoken inflation up to 2.4x;
+			// the base 0.85 ratio leaves the configured forcing budget exposed
+			// when the estimator runs that low. resolveAdaptiveTruncationRatio
+			// reads recent turns' actual/estimated samples and tightens the
+			// ratio proportionally. New threads with insufficient data fall
+			// back to the base ratio.
+			const adaptiveTruncationRatio = resolveAdaptiveTruncationRatio(
+				this.ctx.db,
+				this.config.threadId,
+				TRUNCATION_TARGET_RATIO,
+			);
+
 			// Check if warm path is eligible.
 			// noHistory tasks are stateless across runs — each run should cold-assemble
 			// from only the current claim's messages. Warm cache from a prior run would
@@ -467,6 +481,7 @@ export class AgentLoop {
 				const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
 					attributes: {
 						"context.cache_path": "warm",
+						"context.effective_truncation_ratio": adaptiveTruncationRatio,
 					},
 				});
 
@@ -624,7 +639,7 @@ export class AgentLoop {
 						);
 						const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
 						const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
-						const warmEffectiveBudget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+						const warmEffectiveBudget = Math.floor(contextWindow * adaptiveTruncationRatio);
 						budgetCheckSpan.setAttribute("context.estimated_tokens", estimatedTotal);
 						budgetCheckSpan.setAttribute("context.effective_budget", warmEffectiveBudget);
 
@@ -755,6 +770,7 @@ export class AgentLoop {
 					attributes: {
 						"context.cache_path": "cold",
 						"context.cold_reason": cachePathReason,
+						"context.effective_truncation_ratio": adaptiveTruncationRatio,
 					},
 				});
 
@@ -779,6 +795,7 @@ export class AgentLoop {
 							targetCapabilities: resolvedCaps ?? undefined,
 							toolTokenEstimate,
 							compactToolResults: true,
+							effectiveTruncationRatio: adaptiveTruncationRatio,
 							noHistory: this.config.noHistory,
 							systemPromptAddition: this.config.systemPromptAddition,
 							commandRegistry: this.ctx.commandRegistry,

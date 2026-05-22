@@ -4904,6 +4904,144 @@ This skill reviews pull requests.`;
 	// When messages are truncated, the agent should know context was lost
 	// and how to recover it (query command).
 	// ──────────────────────────────────────────────────────────────────────
+	describe("effectiveTruncationRatio override (adaptive truncation)", () => {
+		it("truncates more aggressively when a tighter override is supplied", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-05-22T17:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Adaptive User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Adaptive Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// Insert enough message tokens to put Stage 7 firmly into truncation
+			// territory (totalTokens > effectiveBudget). With contextWindow=4000
+			// (effective_budget=3920, baseline truncationTarget=3400) and ~30
+			// tokens per message, ~120 messages overflow comfortably; under
+			// the tighter 0.40 override (truncationTarget=1600) Stage 7 must
+			// drop substantially more.
+			for (let i = 0; i < 120; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						role,
+						`msg ${i} ${"x".repeat(80)}`,
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
+				);
+			}
+
+			const baseline = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 4000,
+			});
+			const tighter = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 4000,
+				effectiveTruncationRatio: 0.4,
+			});
+
+			expect(tighter.debug.truncated).toBeGreaterThan(baseline.debug.truncated);
+			expect(tighter.messages.length).toBeLessThan(baseline.messages.length);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("falls back to base TRUNCATION_TARGET_RATIO when no override is supplied", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-05-22T18:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Default Ratio User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Default Ratio Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			for (let i = 0; i < 50; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[randomUUID(), localThreadId, role, `msg ${i}`, null, null, ts, ts, "local"],
+				);
+			}
+
+			const noOverride = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 200000,
+			});
+			const explicitBase = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 200000,
+				effectiveTruncationRatio: TRUNCATION_TARGET_RATIO,
+			});
+
+			expect(noOverride.debug.truncated).toBe(explicitBase.debug.truncated);
+			expect(noOverride.messages.length).toBe(explicitBase.messages.length);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
 	describe("truncation marker injection", () => {
 		it("injects a system message indicating truncation when messages are dropped", () => {
 			const localThreadId = randomUUID();
