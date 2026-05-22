@@ -105,6 +105,16 @@ export interface ContextParams {
 	systemPromptAddition?: string;
 	/** MCP commands to display in orientation block. Passed explicitly from AppContext. */
 	commandRegistry?: readonly CommandRegistryEntry[];
+	/**
+	 * Override for the truncation/headroom ratio applied to contextWindow.
+	 * Defaults to TRUNCATION_TARGET_RATIO (0.85) when omitted. The agent loop
+	 * supplies a per-thread adaptive value derived from the historical
+	 * tiktoken-vs-actual inflation ratio so threads with thinking-heavy
+	 * content (cl100k_base under-counts by 2x+) don't blow the configured
+	 * context window. Honored at both Stage 1.7 thinking-strip threshold
+	 * and Stage 7 truncation target.
+	 */
+	effectiveTruncationRatio?: number;
 }
 
 export interface ContextAssemblyResult {
@@ -719,6 +729,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		relayInfo,
 		platformContext,
 		targetCapabilities,
+		effectiveTruncationRatio = TRUNCATION_TARGET_RATIO,
 	} = params;
 
 	// Debug tracking for ContextAssemblyResult
@@ -868,7 +879,7 @@ Original output was too large for the context window. If you need the full conte
 		// tool_call messages when post-tool_result-compaction size exceeds the
 		// TRUNCATION_TARGET_RATIO threshold. Preserves the model's reasoning
 		// chain on cold assembly when there's headroom.
-		const thinkingThreshold = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+		const thinkingThreshold = Math.floor(contextWindow * effectiveTruncationRatio);
 		let coldEstimate = 0;
 		for (const msg of messages) {
 			coldEstimate += countTokens(msg.content);
@@ -1982,19 +1993,23 @@ Original output was too large for the context window. If you need the full conte
 		// until we hit the remaining token budget. This ensures recent conversations
 		// survive even when bulky tool exchanges sit between them.
 		//
-		// CACHE-FRIENDLY HEADROOM: target 85% of contextWindow so that truncation
-		// fires infrequently. Each truncation shifts the message prefix, breaking
-		// Bedrock/Anthropic's automatic prefix caching. By leaving ~15% headroom,
-		// the prefix stays stable for ~10-20 turns between truncations, enabling
-		// 90%+ cache hit rates on long threads. Additionally, tiktoken cl100k_base
-		// underestimates Claude's actual token count by ~10-15%, so the headroom
-		// also prevents the actual context from exceeding the model's limit.
+		// CACHE-FRIENDLY HEADROOM: target effectiveTruncationRatio of contextWindow
+		// (default 0.85) so that truncation fires infrequently. Each truncation
+		// shifts the message prefix, breaking Bedrock/Anthropic's automatic prefix
+		// caching. By leaving ~15% headroom, the prefix stays stable for ~10-20
+		// turns between truncations, enabling 90%+ cache hit rates on long threads.
+		// Additionally, tiktoken cl100k_base underestimates Claude's actual token
+		// count — typically by 10-15%, but for thinking-heavy threads we've measured
+		// 2x+ inflation. The agent loop supplies a per-thread adaptive ratio
+		// (tightened by the historical actual/estimated mean) so the post-truncation
+		// payload genuinely fits the configured window even when the estimator runs
+		// far below reality.
 		//
-		// The truncation target is clamped to effectiveBudget so that even if a
-		// future change raises TRUNCATION_TARGET_RATIO above (1 - safety ratio),
-		// the post-truncation payload still respects the safety margin.
+		// The truncation target is clamped to effectiveBudget so that even if the
+		// supplied ratio is unusually permissive, the post-truncation payload still
+		// respects the safety margin.
 		const truncationTarget = Math.min(
-			Math.floor(contextWindow * TRUNCATION_TARGET_RATIO),
+			Math.floor(contextWindow * effectiveTruncationRatio),
 			effectiveBudget,
 		);
 
