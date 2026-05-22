@@ -998,6 +998,154 @@ describe("toModelMessages — tool call / result wrapping", () => {
 	});
 });
 
+describe("toModelMessages — tool_use id sanitization (cross-provider id portability)", () => {
+	// Some upstream providers (notably OpenAI-compatible chat-completions
+	// servers fronting Moonshot/Kimi, where the AI SDK synthesizes ids from the
+	// `function.name` field when the server emits no explicit id) persist
+	// `tool_use.id` values like "functions.memory:5". Anthropic enforces
+	// `^[a-zA-Z0-9_-]+$` on tool_use.id and rejects the request outright when
+	// such an id appears in history. Bedrock Converse and OpenAI-compatible
+	// targets accept the broader charset, but we sanitize universally — the
+	// safe charset is a strict subset of every provider's accepted charset, so
+	// rewriting is always lossless on the wire and eliminates the need for
+	// per-provider branching. Pairing between tool_use and tool_result must be
+	// preserved through the rewrite, including when tool_use appears inline on
+	// an assistant content block and when tool_result resolves toolName from
+	// the prior call.
+
+	it("sanitizes illegal characters in tool_use.id on a tool_call message", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "functions.memory:5",
+						name: "memory",
+						input: {},
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			role: string;
+			content: Array<{ type: string; toolCallId: string }>;
+		};
+		expect(assistantMsg.content[0].toolCallId).toBe("functions_memory_5");
+		expect(assistantMsg.content[0].toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+
+	it("sanitizes illegal characters in tool_use.id on an inline assistant tool_use", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "calling" },
+					{
+						type: "tool_use",
+						id: "functions.bash:0",
+						name: "bash",
+						input: { cmd: "ls" },
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			role: string;
+			content: Array<{ type: string; toolCallId?: string }>;
+		};
+		const toolCallPart = assistantMsg.content.find((p) => p.type === "tool-call");
+		expect(toolCallPart?.toolCallId).toBe("functions_bash_0");
+		expect(toolCallPart?.toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+
+	it("sanitizes tool_result.tool_use_id with the same transform so pairing survives", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "functions.memory:5",
+						name: "memory",
+						input: {},
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "functions.memory:5",
+				content: [{ type: "text", text: "ok" }],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ toolCallId: string }>;
+		};
+		const toolMsg = out[2] as {
+			role: string;
+			content: Array<{ toolCallId: string; toolName: string }>;
+		};
+		expect(toolMsg.role).toBe("tool");
+		// Same sanitized id on both sides — pairing preserved.
+		expect(toolMsg.content[0].toolCallId).toBe(assistantMsg.content[0].toolCallId);
+		expect(toolMsg.content[0].toolCallId).toBe("functions_memory_5");
+		// toolName resolution survives sanitization (the index is keyed by
+		// the sanitized id, so tool_result still finds the prior call's name).
+		expect(toolMsg.content[0].toolName).toBe("memory");
+	});
+
+	it("leaves already-safe ids unchanged (no spurious rewriting)", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "tooluse_af647139ca7a41dabdcac6",
+						name: "memory",
+						input: {},
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "tooluse_af647139ca7a41dabdcac6",
+				content: [{ type: "text", text: "ok" }],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ toolCallId: string }>;
+		};
+		const toolMsg = out[2] as {
+			content: Array<{ toolCallId: string }>;
+		};
+		expect(assistantMsg.content[0].toolCallId).toBe("tooluse_af647139ca7a41dabdcac6");
+		expect(toolMsg.content[0].toolCallId).toBe("tooluse_af647139ca7a41dabdcac6");
+	});
+
+	it("sanitizes orphan tool_result tool_use_id (no matching call) so the wire form stays legal", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "hi" },
+			{
+				role: "tool_result",
+				tool_use_id: "functions.query:99",
+				content: [{ type: "text", text: "?" }],
+			},
+		]);
+		const toolMsg = out[1] as {
+			role: string;
+			content: Array<{ toolCallId: string; toolName: string }>;
+		};
+		expect(toolMsg.role).toBe("tool");
+		expect(toolMsg.content[0].toolCallId).toBe("functions_query_99");
+		expect(toolMsg.content[0].toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+});
+
 describe("toModelMessages — tool_result with non-text content", () => {
 	// MCP tools (vision-enabled servers, image-fetching tools, etc.) routinely
 	// emit text + image content blocks in their tool_result. Pre-fix, the
