@@ -1878,7 +1878,7 @@ describe("AgentLoop", () => {
 	});
 
 	describe("context_debug freshness per turn", () => {
-		it("should update context_debug totalEstimated for each turn in a multi-turn loop", async () => {
+		it("should update context_debug actualTotalTokens for each turn in a multi-turn loop", async () => {
 			const mockBackend = new MockLLMBackend();
 
 			// First call: tool use (input_tokens = 100)
@@ -1950,16 +1950,24 @@ describe("AgentLoop", () => {
 			expect(turns[0].context_debug).not.toBeNull();
 			expect(turns[1].context_debug).not.toBeNull();
 
-			const debug1 = JSON.parse(turns[0].context_debug ?? "{}") as { totalEstimated: number };
-			const debug2 = JSON.parse(turns[1].context_debug ?? "{}") as { totalEstimated: number };
+			const debug1 = JSON.parse(turns[0].context_debug ?? "{}") as {
+				totalEstimated: number;
+				actualTotalTokens?: number;
+			};
+			const debug2 = JSON.parse(turns[1].context_debug ?? "{}") as {
+				totalEstimated: number;
+				actualTotalTokens?: number;
+			};
 
-			// The second turn's totalEstimated should reflect the actual input tokens (500),
-			// not be stale from the first assembly. At minimum it should differ from turn 1.
-			expect(debug2.totalEstimated).not.toBe(debug1.totalEstimated);
-
-			// The second turn's totalEstimated should be >= the actual input tokens for that turn
-			// (since the LLM reported 500 input tokens)
-			expect(debug2.totalEstimated).toBeGreaterThanOrEqual(500);
+			// Per-turn freshness invariant: each turn's snapshot must reflect
+			// its OWN LLM-reported usage, not be stale from a prior turn's
+			// applyActualUsage call. Turn 1 saw input_tokens=100; turn 2 saw
+			// input_tokens=500. actualTotalTokens carries that LLM-reported
+			// number (totalEstimated stays as the tiktoken pre-LLM estimate
+			// and is shared across turns of the same assembly).
+			expect(debug1.actualTotalTokens).toBe(100);
+			expect(debug2.actualTotalTokens).toBe(500);
+			expect(debug2.actualTotalTokens).not.toBe(debug1.actualTotalTokens);
 		});
 	});
 

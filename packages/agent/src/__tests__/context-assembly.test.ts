@@ -8601,30 +8601,38 @@ describe("applyActualUsageToContextDebug — defensive deep-clone semantics", ()
 		expect(resultHistory?.children).not.toBe(origHistory?.children);
 	});
 
-	it("updates totalEstimated to actualTokens regardless of delta sign", () => {
+	it("preserves totalEstimated (the tiktoken pre-LLM estimate) regardless of actualTokens", () => {
 		const original = buildDebug({ estimated: 100000 });
 
-		expect(applyActualUsageToContextDebug(original, 105000).totalEstimated).toBe(105000);
+		expect(applyActualUsageToContextDebug(original, 105000).totalEstimated).toBe(100000);
 		expect(applyActualUsageToContextDebug(original, 100000).totalEstimated).toBe(100000);
-		expect(applyActualUsageToContextDebug(original, 95000).totalEstimated).toBe(95000);
+		expect(applyActualUsageToContextDebug(original, 95000).totalEstimated).toBe(100000);
 	});
 
-	it("bumps history.tokens by positive delta (actual exceeded estimate)", () => {
-		const original = buildDebug({ estimated: 100000, historyTokens: 80000 });
-		const result = applyActualUsageToContextDebug(original, 107500);
+	it("records actualTotalTokens as the LLM-reported count separately from the estimate", () => {
+		const original = buildDebug({ estimated: 100000 });
 
-		const historySec = result.sections.find((s) => s.name === "history");
-		expect(historySec?.tokens).toBe(80000 + 7500);
+		expect(applyActualUsageToContextDebug(original, 105000).actualTotalTokens).toBe(105000);
+		expect(applyActualUsageToContextDebug(original, 100000).actualTotalTokens).toBe(100000);
+		expect(applyActualUsageToContextDebug(original, 95000).actualTotalTokens).toBe(95000);
 	});
 
-	it("does NOT bump history.tokens when delta is zero or negative (estimate ran high)", () => {
+	it("does NOT mutate sections.history.tokens — the section breakdown stays in tiktoken units", () => {
+		// The previous behavior bumped history by the positive delta to keep
+		// sections.reduce(sum) consistent with the overwritten totalEstimated.
+		// Now totalEstimated stays as tiktoken's number and actualTotalTokens
+		// carries the LLM-reported number, so no compensating bump is needed
+		// and the per-section breakdown remains in a single coherent unit.
 		const original = buildDebug({ estimated: 100000, historyTokens: 80000 });
 
-		const exactResult = applyActualUsageToContextDebug(original, 100000);
-		expect(exactResult.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+		const overshoot = applyActualUsageToContextDebug(original, 107500);
+		expect(overshoot.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
 
-		const overestimateResult = applyActualUsageToContextDebug(original, 90000);
-		expect(overestimateResult.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+		const exact = applyActualUsageToContextDebug(original, 100000);
+		expect(exact.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+
+		const undershoot = applyActualUsageToContextDebug(original, 90000);
+		expect(undershoot.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
 	});
 
 	it("returns gracefully when sections has no history entry", () => {
@@ -8641,7 +8649,11 @@ describe("applyActualUsageToContextDebug — defensive deep-clone semantics", ()
 		};
 
 		const result = applyActualUsageToContextDebug(debugWithoutHistory, 110000);
-		expect(result.totalEstimated).toBe(110000);
+		// totalEstimated is preserved (tiktoken estimate); actualTotalTokens
+		// carries the LLM-reported number. Missing history section is fine
+		// since we no longer mutate it anyway.
+		expect(result.totalEstimated).toBe(100000);
+		expect(result.actualTotalTokens).toBe(110000);
 		expect(result.sections.find((s) => s.name === "history")).toBeUndefined();
 		// Other sections unchanged in token counts
 		expect(result.sections.find((s) => s.name === "system")?.tokens).toBe(1000);
@@ -8677,12 +8689,19 @@ describe("applyActualUsageToContextDebug — defensive deep-clone semantics", ()
 		const turn1 = applyActualUsageToContextDebug(initial, 105000);
 		const turn2 = applyActualUsageToContextDebug(turn1, 110000);
 
-		// turn1 must reflect its own delta (+5000), not turn2's
-		expect(turn1.totalEstimated).toBe(105000);
-		expect(turn1.sections.find((s) => s.name === "history")?.tokens).toBe(85000);
+		// totalEstimated stays as the original tiktoken estimate across snapshots —
+		// it represents pre-LLM math and shouldn't drift between calls.
+		expect(turn1.totalEstimated).toBe(100000);
+		expect(turn2.totalEstimated).toBe(100000);
 
-		// turn2 must reflect its own delta from turn1 (+5000 more)
-		expect(turn2.totalEstimated).toBe(110000);
-		expect(turn2.sections.find((s) => s.name === "history")?.tokens).toBe(90000);
+		// actualTotalTokens carries the LLM-reported number for each snapshot
+		// independently; turn2 reading from turn1 must NOT have rewritten turn1.
+		expect(turn1.actualTotalTokens).toBe(105000);
+		expect(turn2.actualTotalTokens).toBe(110000);
+
+		// history.tokens is no longer mutated by applyActualUsage, so both
+		// snapshots reflect the original section breakdown.
+		expect(turn1.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+		expect(turn2.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
 	});
 });

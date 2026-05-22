@@ -2301,22 +2301,30 @@ export function rebuildWarmSections(params: {
  * future refactors holding the reference longer, callers reading
  * lastContextDebug directly). The clone removes that latent dependency.
  */
+/**
+ * Records the LLM-reported actual input token count alongside the existing
+ * tiktoken-derived `totalEstimated`, returning a deep-cloned snapshot so
+ * concurrent loop iterations can't share section references.
+ *
+ * Pre-2026-05-22 this function overwrote `totalEstimated` with `actualTokens`
+ * and bumped `sections.history.tokens` by the positive delta to keep the
+ * section sum consistent with the new total. That destroyed the original
+ * tiktoken estimate, making per-thread inflation-ratio analysis impossible
+ * without ad-hoc trace correlation.
+ *
+ * Now both numbers live independently: `totalEstimated` stays as the
+ * pre-LLM tiktoken estimate (per-section breakdown sums to it), and
+ * `actualTotalTokens` carries the LLM-reported number. Visualizers wanting
+ * to surface the gap can render `actualTotalTokens / totalEstimated` as
+ * the inflation ratio.
+ */
 export function applyActualUsageToContextDebug(
 	debug: ContextDebugInfo,
 	actualTokens: number,
 ): ContextDebugInfo {
-	const previousEstimated = debug.totalEstimated;
-	const delta = actualTokens - previousEstimated;
-	const updated: ContextDebugInfo = {
+	return {
 		...debug,
-		totalEstimated: actualTokens,
+		actualTotalTokens: actualTokens,
 		sections: structuredClone(debug.sections),
 	};
-	if (delta > 0) {
-		const historySec = updated.sections.find((s) => s.name === "history");
-		if (historySec) {
-			historySec.tokens += delta;
-		}
-	}
-	return updated;
 }
