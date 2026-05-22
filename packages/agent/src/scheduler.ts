@@ -287,6 +287,53 @@ export function rescheduleHeartbeat(
 	);
 }
 
+/**
+ * Heals heartbeat tasks left in a terminal state with a stale next_run_at.
+ *
+ * The eviction-vs-completion race in phase0 can leave a heartbeat row with
+ * status='completed' or 'failed' AND next_run_at in the past, with no
+ * subsequent code path that resurrects it (phase1 only claims status='pending').
+ * Without a healer, a single race wedges the heartbeat indefinitely — the
+ * cluster stops firing heartbeats entirely until manual intervention.
+ *
+ * Called from phase0 every tick. Re-arms each stuck row via rescheduleHeartbeat,
+ * which is the same write the eviction/completion paths perform — no
+ * cancel-recreate, no schema change, just an idempotent unstick. Honors the
+ * "heartbeat is uncancellable by design" invariant.
+ *
+ * Returns the number of rows healed.
+ */
+export function healStuckHeartbeats(
+	db: AppContext["db"],
+	logger: AppContext["logger"],
+	lastUserInteractionAt: Date,
+): number {
+	const now = new Date().toISOString();
+	const stuck = db
+		.query(
+			`SELECT * FROM tasks
+			WHERE type = 'heartbeat'
+			  AND deleted = 0
+			  AND status IN ('completed', 'failed')
+			  AND next_run_at IS NOT NULL
+			  AND next_run_at < ?`,
+		)
+		.all(now) as Task[];
+
+	for (const task of stuck) {
+		logger.warn("[@bound/agent/scheduler] Healing stuck heartbeat row", {
+			taskId: task.id,
+			previousStatus: task.status,
+			previousError: task.error,
+			staleNextRunAt: task.next_run_at,
+			runCount: task.run_count,
+		});
+		rescheduleHeartbeat(db, task, logger, "stuck-row healer", lastUserInteractionAt);
+	}
+
+	return stuck.length;
+}
+
 const POLL_INTERVAL = 5000; // 5 seconds
 const MAX_EVENT_DEPTH = 5;
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
@@ -545,10 +592,11 @@ export class Scheduler {
 			});
 
 			for (const task of tasksToEvict) {
-				updateRow(
+				const wrote = updateRowIf(
 					this.ctx.db,
 					"tasks",
 					task.id,
+					{ status: "running" },
 					{
 						status: "failed",
 						error: "evicted due to heartbeat timeout",
@@ -556,6 +604,20 @@ export class Scheduler {
 					},
 					this.ctx.siteId,
 				);
+
+				if (!wrote) {
+					// CAS lost: the agent loop's completion path already won the race
+					// and transitioned status='running' → 'completed'. Do NOT trample
+					// the result row with a phantom eviction error, and do NOT call
+					// the reschedule helpers — completion already did. Otherwise the
+					// row would be left looking like both "completed" AND "evicted",
+					// which is the exact stuck-state observed on heartbeat 455a07c1.
+					this.ctx.logger.info(
+						"[scheduler] Eviction CAS lost — task already completed before reaper ran",
+						{ taskId: task.id, type: task.type, triggerSpec: task.trigger_spec },
+					);
+					continue;
+				}
 
 				rescheduleCronTask(
 					this.ctx.db,
@@ -589,6 +651,11 @@ export class Scheduler {
 				}
 			}
 		}
+
+		// (c) Heal heartbeats stuck in a terminal state with stale next_run_at.
+		// Defends against any future eviction-vs-completion race that escapes the
+		// CAS in (b), and recovers existing stuck rows on restart.
+		healStuckHeartbeats(this.ctx.db, this.ctx.logger, this.lastUserInteractionAt);
 	}
 
 	private phase1Schedule(): void {

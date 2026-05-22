@@ -15,7 +15,7 @@ import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { rescheduleHeartbeat } from "../scheduler";
+import { healStuckHeartbeats, rescheduleHeartbeat } from "../scheduler";
 
 describe("rescheduleHeartbeat", () => {
 	let tmpDir: string;
@@ -446,5 +446,253 @@ describe("rescheduleHeartbeat", () => {
 		expect(msUntilNext).toBeLessThanOrEqual(effectiveInterval);
 		// Verify clock-alignment: next_run_at should be on a 45-minute boundary
 		expect(nextDate.getTime() % effectiveInterval).toBe(0);
+	});
+});
+
+describe("healStuckHeartbeats", () => {
+	let tmpDir: string;
+	let db: Database;
+	let siteId: string;
+	let eventBus: TypedEventEmitter;
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), `hb-heal-${randomBytes(4).toString("hex")}-`));
+		const dbPath = join(tmpDir, "test.db");
+		db = createDatabase(dbPath);
+		applySchema(db);
+		applyMetricsSchema(db);
+	});
+
+	beforeEach(() => {
+		siteId = randomUUID();
+		eventBus = new TypedEventEmitter();
+		db.run("DELETE FROM host_meta");
+		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+	});
+
+	afterEach(() => {
+		db.run("DELETE FROM tasks");
+	});
+
+	afterAll(async () => {
+		db.close();
+		await cleanupTmpDir(tmpDir);
+	});
+
+	function makeCtx(): AppContext {
+		return {
+			db,
+			logger: {
+				debug: () => {},
+				info: () => {},
+				warn: () => {},
+				error: () => {},
+			},
+			eventBus,
+			hostName: "test-host",
+			siteId,
+			config: {
+				allowlist: {
+					default_web_user: "test",
+					users: { test: { display_name: "Test" } },
+				},
+				modelBackends: {
+					backends: [
+						{
+							id: "mock",
+							provider: "ollama",
+							model: "mock",
+							base_url: "http://localhost:11434",
+							context_window: 8000,
+							tier: 1,
+							price_per_m_input: 0,
+							price_per_m_output: 0,
+						},
+					],
+					default: "mock",
+					daily_budget_usd: 100,
+				},
+			},
+			optionalConfig: {},
+		};
+	}
+
+	function insertHeartbeat(opts: {
+		status: string;
+		error?: string | null;
+		nextRunAt?: string | null;
+		runCount?: number;
+		intervalMs?: number;
+		deleted?: number;
+	}): string {
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		const triggerSpec = JSON.stringify({
+			type: "heartbeat",
+			interval_ms: opts.intervalMs ?? 30 * 60 * 1000,
+		});
+		db.run(
+			`INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				?, 'heartbeat', ?, ?, NULL, NULL,
+				NULL, NULL, NULL, ?, NULL,
+				?, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, ?, ?, 'system', ?, ?
+			)`,
+			[
+				taskId,
+				opts.status,
+				triggerSpec,
+				opts.nextRunAt ?? null,
+				opts.runCount ?? 0,
+				opts.error ?? null,
+				now,
+				now,
+				opts.deleted ?? 0,
+			],
+		);
+		return taskId;
+	}
+
+	// Reproduces the production stuck-state observed on heartbeat task 455a07c1:
+	// status='completed' AND error='evicted...' AND next_run_at days in the past.
+	// Without the healer, this row is invisible to phase1 (which only claims pending),
+	// so the heartbeat never fires again until manual intervention.
+	it("re-arms a heartbeat row stuck in 'completed' with stale next_run_at (455a07c1 case)", () => {
+		const stalePast = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
+		const taskId = insertHeartbeat({
+			status: "completed",
+			error: "evicted due to heartbeat timeout",
+			nextRunAt: stalePast,
+			runCount: 241,
+		});
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(1);
+		const row = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+			status: string;
+			next_run_at: string;
+		};
+		expect(row.status).toBe("pending");
+		expect(new Date(row.next_run_at).getTime()).toBeGreaterThan(Date.now());
+	});
+
+	it("re-arms a heartbeat row stuck in 'failed' with stale next_run_at", () => {
+		const stalePast = new Date(Date.now() - 60_000).toISOString();
+		const taskId = insertHeartbeat({
+			status: "failed",
+			nextRunAt: stalePast,
+		});
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(1);
+		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string };
+		expect(row.status).toBe("pending");
+	});
+
+	it("ignores heartbeats currently running", () => {
+		const taskId = insertHeartbeat({
+			status: "running",
+			nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+		});
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(0);
+		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string };
+		expect(row.status).toBe("running");
+	});
+
+	it("ignores completed heartbeats whose next_run_at is still in the future", () => {
+		const taskId = insertHeartbeat({
+			status: "completed",
+			nextRunAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+		});
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(0);
+		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string };
+		expect(row.status).toBe("completed");
+	});
+
+	it("does not touch non-heartbeat tasks even when stuck in failed state", () => {
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		const stalePast = new Date(Date.now() - 60_000).toISOString();
+		db.run(
+			`INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				?, 'cron', 'failed', '0 * * * *', NULL, NULL,
+				NULL, NULL, NULL, ?, NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, NULL, ?, 'system', ?, 0
+			)`,
+			[taskId, stalePast, now, now],
+		);
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(0);
+		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string };
+		expect(row.status).toBe("failed");
+	});
+
+	it("ignores heartbeat rows marked deleted", () => {
+		const taskId = insertHeartbeat({
+			status: "completed",
+			nextRunAt: new Date(Date.now() - 60_000).toISOString(),
+			deleted: 1,
+		});
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(0);
+		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string };
+		expect(row.status).toBe("completed");
+	});
+
+	it("heals multiple stuck heartbeats in one call and leaves healthy rows alone", () => {
+		const stalePast = new Date(Date.now() - 60_000).toISOString();
+		const futureRun = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+		const stuck1 = insertHeartbeat({ status: "completed", nextRunAt: stalePast });
+		const stuck2 = insertHeartbeat({ status: "failed", nextRunAt: stalePast });
+		const healthy = insertHeartbeat({ status: "completed", nextRunAt: futureRun });
+		const running = insertHeartbeat({ status: "running", nextRunAt: stalePast });
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(2);
+		const get = (id: string): string =>
+			(db.query("SELECT status FROM tasks WHERE id = ?").get(id) as { status: string }).status;
+		expect(get(stuck1)).toBe("pending");
+		expect(get(stuck2)).toBe("pending");
+		expect(get(healthy)).toBe("completed");
+		expect(get(running)).toBe("running");
 	});
 });
