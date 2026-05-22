@@ -95,6 +95,7 @@ export interface ChatViewProps {
 	threadId: string;
 	model: string | null;
 	connectionState: string;
+	cwd: string;
 	messages: Message[];
 	inFlightTools: Map<string, { toolName: string; startTime: number; stdout?: string }>;
 	mcpServerCount: number;
@@ -124,6 +125,7 @@ export function ChatView({
 	threadId,
 	model,
 	connectionState,
+	cwd,
 	messages,
 	inFlightTools,
 	mcpServerCount,
@@ -310,6 +312,7 @@ export function ChatView({
 				model={model}
 				connectionState={connectionState}
 				mcpServerCount={mcpServerCount}
+				cwd={cwd}
 			/>
 			<ActionBar
 				actions={[

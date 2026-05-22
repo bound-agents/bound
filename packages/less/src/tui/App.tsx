@@ -301,6 +301,7 @@ export function App({
 					threadId={state.threadId}
 					model={state.model}
 					connectionState={client ? "connected" : "disconnected"}
+					cwd={cwd}
 					messages={messages}
 					inFlightTools={inFlightTools}
 					mcpServerCount={mcpServerCount}
