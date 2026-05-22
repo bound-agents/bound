@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
@@ -5,6 +6,22 @@ import type React from "react";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 import { computeLineDiff, hunkDiff } from "./lineDiff";
+
+// Cached at module load — homedir() doesn't change for the life of the process.
+const HOME = homedir();
+const HOME_SLASH = `${HOME}/`;
+
+/**
+ * Replace a leading `$HOME` with `~` for display. The tildified value is for
+ * rendering only — language detection (`langFromPath`) and the basename
+ * extraction in tool_result rendering both still see the original path. We
+ * never round-trip a tildified path back through filesystem APIs.
+ */
+function tildifyPath(p: string): string {
+	if (p === HOME) return "~";
+	if (p.startsWith(HOME_SLASH)) return `~${p.slice(HOME.length)}`;
+	return p;
+}
 
 const TOOL_RESULT_MAX_LINES = 5;
 /** Hard cap on rendered diff entries (after hunking) per edit call. */
@@ -30,7 +47,7 @@ function summarizeToolArgs(toolName: string, input: Record<string, unknown>): st
 		(toolName.endsWith("_read") || toolName.endsWith("_write") || toolName.endsWith("_edit")) &&
 		typeof input.file_path === "string"
 	) {
-		return input.file_path;
+		return tildifyPath(input.file_path);
 	}
 	// For MCP/other tools, show a compact key=value summary
 	const entries = Object.entries(input);
@@ -172,6 +189,10 @@ function ToolCallRow({
 	const isRemote = !block.name.startsWith("boundless_");
 	const name = displayToolName(block.name);
 	const filePath = typeof block.input.file_path === "string" ? block.input.file_path : null;
+	// `displayPath` is the tildified version for header rendering; we keep the
+	// original `filePath` for EditDiffBody / WritePreviewBody, which use it for
+	// syntax-highlighting language detection.
+	const displayPath = filePath ? tildifyPath(filePath) : null;
 
 	// boundless_edit: header + colored unified diff
 	if (block.name === "boundless_edit" && filePath) {
@@ -184,7 +205,7 @@ function ToolCallRow({
 					<Text color="cyan" bold>
 						{name}
 					</Text>
-					<Text dimColor> {filePath}</Text>
+					<Text dimColor> {displayPath}</Text>
 				</Text>
 				<EditDiffBody oldString={oldString} newString={newString} filePath={filePath} />
 			</Box>
@@ -204,7 +225,7 @@ function ToolCallRow({
 					</Text>
 					<Text dimColor>
 						{" "}
-						{filePath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
+						{displayPath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
 					</Text>
 				</Text>
 				<WritePreviewBody content={content} filePath={filePath} />
