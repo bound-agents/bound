@@ -11,10 +11,18 @@ export interface SessionHeaderProps {
  * Splash header rendered once at the top of the session log.
  *
  * Layout: a 7-line ASCII rendering of the bound favicon on the left, with two
- * top-justified lines of text on the right. The favicon (cream square, dark
- * ring, rust-red dot) maps to:
- *   - Outer rounded box-drawing (dimColor) — corresponds to the dark ring
- *   - Inner `●` glyph (red) — corresponds to the rust-red dot
+ * top-justified lines on the right.
+ *
+ * The favicon (cream square, dark ring, solid center dot) maps to:
+ *   - A chunky filled-block ring (▄ ▀ █) for the dark outline. Filled blocks
+ *     instead of single-line box-drawing because a 1-char-thick ring reads as
+ *     a rounded rectangle, not a circle. Width 16 / height 7 compensates for
+ *     terminal cells being ~2:1 tall — equal char counts in both dimensions
+ *     would render visibly squashed.
+ *   - A solid `●` glyph (blue) for the center dot. Color-matched to the rest
+ *     of the TUI's blue accents (tool_call/tool_result stripes) — the favicon
+ *     itself is rust-red, but in the terminal the rest of the chrome is
+ *     monochrome + blue, so a red dot pops out of theme.
  *
  * Right column:
  *   - Line 1: `boundless` (bold) · short commit hash
@@ -27,17 +35,17 @@ export function SessionHeader({ commitHash, cwd }: SessionHeaderProps): React.Re
 	return (
 		<Box flexDirection="row">
 			<Box flexDirection="column" marginRight={2}>
-				<Text dimColor>{"   ╭─────╮"}</Text>
-				<Text dimColor>{"  ╱       ╲"}</Text>
-				<Text dimColor>{" │         │"}</Text>
+				<Text dimColor>{"     ▄▄▄▄▄▄     "}</Text>
+				<Text dimColor>{"   ▄████████▄   "}</Text>
+				<Text dimColor>{"  ███      ███  "}</Text>
 				<Box flexDirection="row">
-					<Text dimColor>{" │    "}</Text>
-					<Text color="red">●</Text>
-					<Text dimColor>{"    │"}</Text>
+					<Text dimColor>{" ██    "}</Text>
+					<Text color="blue">●</Text>
+					<Text dimColor>{"     ██ "}</Text>
 				</Box>
-				<Text dimColor>{" │         │"}</Text>
-				<Text dimColor>{"  ╲       ╱"}</Text>
-				<Text dimColor>{"   ╰─────╯"}</Text>
+				<Text dimColor>{"  ███      ███  "}</Text>
+				<Text dimColor>{"   ▀████████▀   "}</Text>
+				<Text dimColor>{"     ▀▀▀▀▀▀     "}</Text>
 			</Box>
 			<Box flexDirection="column">
 				<Box flexDirection="row">
