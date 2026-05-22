@@ -426,6 +426,8 @@ type LLMMessage = {
 
 `tool_call` and `tool_result` are Bound-internal roles that each driver translates into its provider's native representation before sending the request.
 
+The shared bridge `packages/llm/src/ai-sdk-bridge.ts` (`toModelMessages`) is the single hand-off point from the Bound message shape to the AI SDK / provider message shapes. It exports `sanitizeToolUseId(id)`, which replaces every character outside `[a-zA-Z0-9_-]` with `_` and is applied at all four tool_use id sites: assistant `tool_call`-role tool_use parts, inline assistant content tool_use parts, `tool_result.tool_use_id`, and the `toolNameById` lookup index keys. The transform is deterministic, so pairing between a `tool_use` and its `tool_result` is preserved across the rewrite; the safe charset is a strict subset of every supported provider's accepted charset, so the rewrite is lossless on the wire and avoids per-provider branching. This matters because `tool_use.id` values persist in the `messages` table — a thread that accumulated ids under one provider (e.g. the Kimi/Moonshot OpenAI-compatible path, where the AI SDK synthesizes ids of the shape `functions.<name>:<index>`) must remain routable to a stricter provider (Anthropic enforces `^[a-zA-Z0-9_-]+$` and rejects the entire request otherwise). Tool *names* go through a parallel `sanitizeToolName` helper — see the BedrockDriver section.
+
 #### ContentBlock
 
 ```typescript
