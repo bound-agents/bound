@@ -7,7 +7,14 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { mapChunks, mapError, toModelMessages, toToolSet } from "../ai-sdk-bridge";
+import {
+	MAX_TOOL_USE_ID_LENGTH,
+	mapChunks,
+	mapError,
+	sanitizeToolUseId,
+	toModelMessages,
+	toToolSet,
+} from "../ai-sdk-bridge";
 import type { LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 
@@ -1143,6 +1150,380 @@ describe("toModelMessages — tool_use id sanitization (cross-provider id portab
 		expect(toolMsg.role).toBe("tool");
 		expect(toolMsg.content[0].toolCallId).toBe("functions_query_99");
 		expect(toolMsg.content[0].toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+});
+
+describe("sanitizeToolUseId — length bound", () => {
+	// Bedrock Converse caps toolUseId at 64 chars. Anthropic does not advertise
+	// a documented length cap on tool_use.id but accepts arbitrary lengths;
+	// the 64-char bound is the strict subset across supported providers.
+	// The motivating case for length truncation (vs charset-only) is the
+	// Kimi/Moonshot OpenAI-compatible path occasionally streaming its own
+	// `<|tool_call_argument_begin|>` template token mid-stream, producing
+	// 200+ char ids and names that Bedrock rejects with `Member must have
+	// length less than or equal to 64`.
+
+	it("exposes MAX_TOOL_USE_ID_LENGTH = 64", () => {
+		expect(MAX_TOOL_USE_ID_LENGTH).toBe(64);
+	});
+
+	it("preserves the empty string", () => {
+		expect(sanitizeToolUseId("")).toBe("");
+	});
+
+	it("leaves a 64-char already-safe id unchanged", () => {
+		const id = "a".repeat(64);
+		expect(sanitizeToolUseId(id)).toBe(id);
+	});
+
+	it("truncates an oversized id to 64 chars", () => {
+		const id = "a".repeat(200);
+		const out = sanitizeToolUseId(id);
+		expect(out.length).toBe(64);
+		expect(out).toBe("a".repeat(64));
+	});
+
+	it("truncates AFTER charset rewrite so the wire form remains 64 chars", () => {
+		// Pathological case from thread 81bd5e8d: 200+ chars containing template
+		// tokens (`<|`, `|>`, spaces, braces, quotes). Charset rewrite expands
+		// nothing (every illegal char becomes a single `_`), then truncate.
+		const id = `tooluse_50148b62615141b1aa5faa44d74b17d5 <|tool_call_argument_begin|> {"action": "store"`;
+		const out = sanitizeToolUseId(id);
+		expect(out.length).toBe(64);
+		expect(out).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+
+	it("is idempotent — sanitizing twice yields the same result", () => {
+		const id = `functions.memory:5 <|tool_call_argument_begin|> ${"x".repeat(200)}`;
+		const once = sanitizeToolUseId(id);
+		const twice = sanitizeToolUseId(once);
+		expect(twice).toBe(once);
+	});
+});
+
+describe("toModelMessages — tool_use.name sanitization (cross-provider portability)", () => {
+	// Same motivating case as the id-sanitization block above: when an upstream
+	// provider streams a malformed tool_use (Kimi/Moonshot template-token
+	// leakage on the OpenAI-compatible path), the persisted ContentBlock has a
+	// `name` field that violates Anthropic's `^[a-zA-Z0-9_-]+$` regex AND
+	// Bedrock's 64-char `[a-zA-Z0-9_-]{1,64}` validation. The bridge applies
+	// the same sanitizeToolName transform that stream-utils.ts exports and
+	// that the streaming-boundary path in mapChunks uses, so the wire form is
+	// always within every provider's accepted charset and length cap.
+
+	it("sanitizes illegal characters in tool_use.name on a tool_call message", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "tooluse_aaa",
+						name: "memory.store:0",
+						input: {},
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ type: string; toolName: string }>;
+		};
+		expect(assistantMsg.content[0].toolName).toBe("memory_store_0");
+		expect(assistantMsg.content[0].toolName).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+
+	it("sanitizes tool_use.name on an inline assistant tool_use", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "calling" },
+					{
+						type: "tool_use",
+						id: "tooluse_bbb",
+						name: "bash.exec:0",
+						input: { cmd: "ls" },
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ type: string; toolName?: string }>;
+		};
+		const toolCallPart = assistantMsg.content.find((p) => p.type === "tool-call");
+		expect(toolCallPart?.toolName).toBe("bash_exec_0");
+		expect(toolCallPart?.toolName).toMatch(/^[a-zA-Z0-9_-]+$/);
+	});
+
+	it("truncates an oversized tool_use.name to 64 chars", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "tooluse_ccc",
+						name: "x".repeat(200),
+						input: {},
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ toolName: string }>;
+		};
+		expect(assistantMsg.content[0].toolName.length).toBe(64);
+	});
+
+	it("falls back to 'unknown' when the name sanitizes to empty", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "tooluse_ddd",
+						// All chars get rewritten to `_`, then the toolName fallback
+						// kicks in. (sanitizeToolName: "_____" stays as "_____" — only
+						// the empty-result fallback engages "unknown". This test pins
+						// the spec.)
+						name: "",
+						input: {},
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ toolName: string }>;
+		};
+		expect(assistantMsg.content[0].toolName).toBe("unknown");
+	});
+
+	it("tool_result.toolName resolution survives name sanitization", () => {
+		// The toolNameById index is keyed by sanitized id, valued by sanitized
+		// name. tool_result lookups must resolve to the sanitized name so the
+		// wire shape is consistent.
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: "functions.memory:5",
+						name: "memory.store:0",
+						input: {},
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "functions.memory:5",
+				content: [{ type: "text", text: "ok" }],
+			},
+		]);
+		const toolMsg = out[2] as {
+			role: string;
+			content: Array<{ toolCallId: string; toolName: string }>;
+		};
+		expect(toolMsg.role).toBe("tool");
+		expect(toolMsg.content[0].toolCallId).toBe("functions_memory_5");
+		expect(toolMsg.content[0].toolName).toBe("memory_store_0");
+	});
+});
+
+describe("toModelMessages — full recovery on the corrupted shape from thread 81bd5e8d", () => {
+	// Reproduction of the exact ContentBlock that poisoned thread 81bd5e8d
+	// on 2026-05-21: kimi-k2.5 via OpenAI-compatible Bedrock path leaked its
+	// own `<|tool_call_argument_begin|>` template token into a tool_use,
+	// resulting in a persisted block where both `id` and `name` are 200+ char
+	// strings containing illegal characters (`.`, `:`, `<`, `|`, `>`, `{`,
+	// `}`, `"`, spaces, braces). The next turn rebuilt context, sent to
+	// Bedrock, and Bedrock returned 6 validation errors:
+	//   - toolUse.name > 64 chars and doesn't match [a-zA-Z0-9_-]+
+	//   - toolUseId > 64 chars and doesn't match [a-zA-Z0-9_.:-]+
+	//   - same two for the matching toolResult.toolUseId
+	// The bridge-level read-boundary sanitization is the recovery mechanism:
+	// already-poisoned historical rows self-heal on next assembly without
+	// manual DB surgery or task recreation.
+
+	const corruptedId =
+		'tooluse_50148b62615141b1aa5faa44d74b17d5 <|tool_call_argument_begin|> {"action": "store", "key": "_outcome:webhook-bound-org-maiden-flight-20260521T2321", "value": "STATUS: completed."}';
+	const corruptedName =
+		'tooluse_50148b62615141b1aa5faa44d74b17d5 <|tool_call_argument_begin|> {"action"';
+
+	it("produces wire-legal output for the Anthropic charset", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "ping" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "text",
+						text: "I'll log this as an outcome and complete the task.",
+					},
+					{
+						type: "tool_use",
+						id: corruptedId,
+						name: corruptedName,
+						input: {},
+					},
+				],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: corruptedId,
+				content: [{ type: "text", text: 'Error: unknown tool "tooluse_..."' }],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			role: string;
+			content: Array<{ type: string; toolCallId?: string; toolName?: string }>;
+		};
+		const toolMsg = out[2] as {
+			role: string;
+			content: Array<{ toolCallId: string; toolName: string }>;
+		};
+
+		const toolCall = assistantMsg.content.find((p) => p.type === "tool-call");
+		expect(toolCall).toBeDefined();
+		// Anthropic charset: ^[a-zA-Z0-9_-]+$
+		expect(toolCall?.toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+		expect(toolCall?.toolName).toMatch(/^[a-zA-Z0-9_-]+$/);
+		// Length bound (the hard Bedrock cap; Anthropic accepts longer but
+		// universal sanitization applies the strictest envelope)
+		expect(toolCall?.toolCallId?.length).toBeLessThanOrEqual(64);
+		expect(toolCall?.toolName?.length).toBeLessThanOrEqual(64);
+
+		// Pairing: tool_result resolves to the same sanitized id as the call
+		expect(toolMsg.content[0].toolCallId).toBe(toolCall?.toolCallId);
+		expect(toolMsg.content[0].toolCallId.length).toBeLessThanOrEqual(64);
+		expect(toolMsg.content[0].toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+		// toolName resolution from the prior call survives the rewrite
+		expect(toolMsg.content[0].toolName).toBe(toolCall?.toolName);
+	});
+
+	it("produces wire-legal output for the Bedrock charset", () => {
+		// Bedrock validates toolUseId against [a-zA-Z0-9_.:-]+ and toolUse.name
+		// against [a-zA-Z0-9_-]{1,64}. Our universal sanitization is the strict
+		// subset of both, so the same output satisfies Bedrock.
+		const out = toModelMessages([
+			{ role: "user", content: "ping" },
+			{
+				role: "tool_call",
+				content: [
+					{
+						type: "tool_use",
+						id: corruptedId,
+						name: corruptedName,
+						input: {},
+					},
+				],
+			},
+		]);
+		const assistantMsg = out[1] as {
+			content: Array<{ toolCallId: string; toolName: string }>;
+		};
+		// Bedrock toolUseId: [a-zA-Z0-9_.:-]+, length <= 64
+		expect(assistantMsg.content[0].toolCallId).toMatch(/^[a-zA-Z0-9_.:-]+$/);
+		expect(assistantMsg.content[0].toolCallId.length).toBeLessThanOrEqual(64);
+		// Bedrock toolUse.name: [a-zA-Z0-9_-]+, length <= 64
+		expect(assistantMsg.content[0].toolName).toMatch(/^[a-zA-Z0-9_-]+$/);
+		expect(assistantMsg.content[0].toolName.length).toBeLessThanOrEqual(64);
+	});
+});
+
+describe("mapChunks — tool_use streaming-boundary sanitization", () => {
+	// The streaming boundary is the first place a corrupted upstream tool_use
+	// can be intercepted. Sanitize at this layer so the persisted tool_call
+	// ContentBlock carries already-clean id and name; the read-boundary
+	// sanitization in toModelMessages then becomes a defensive idempotent
+	// no-op for fresh data, with its real value being recovery of historical
+	// rows that pre-date this fix.
+
+	it("sanitizes oversized id and name from tool-input-start", async () => {
+		const corruptedId = "x".repeat(200);
+		const corruptedName = "memory.store:0".padEnd(200, "y");
+		const stream = events(
+			{ type: "tool-input-start", id: corruptedId, toolName: corruptedName },
+			{ type: "tool-input-delta", id: corruptedId, delta: '{"k":1}' },
+			{ type: "tool-input-end", id: corruptedId },
+			{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } },
+		);
+		const chunks: StreamChunk[] = [];
+		for await (const c of mapChunks(stream)) chunks.push(c);
+
+		const start = chunks.find((c) => c.type === "tool_use_start");
+		const args = chunks.find((c) => c.type === "tool_use_args");
+		const end = chunks.find((c) => c.type === "tool_use_end");
+		expect(start).toBeDefined();
+		if (start && start.type === "tool_use_start") {
+			expect(start.id.length).toBeLessThanOrEqual(64);
+			expect(start.name.length).toBeLessThanOrEqual(64);
+			expect(start.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+			expect(start.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+		}
+		// delta and end events MUST share the sanitized id with start, or the
+		// agent loop's accumulator drops the args under a different key.
+		expect(args && args.type === "tool_use_args" && args.id).toBe(
+			start && start.type === "tool_use_start" ? start.id : "",
+		);
+		expect(end && end.type === "tool_use_end" && end.id).toBe(
+			start && start.type === "tool_use_start" ? start.id : "",
+		);
+	});
+
+	it("preserves pairing across delta chunks when the upstream id is illegal", async () => {
+		// Upstream id contains `.` and `:` — must sanitize to the same value on
+		// every event (start/delta/end) so the agent-loop accumulator pairs them.
+		const upstreamId = "functions.memory:5";
+		const stream = events(
+			{ type: "tool-input-start", id: upstreamId, toolName: "memory" },
+			{ type: "tool-input-delta", id: upstreamId, delta: '{"a":' },
+			{ type: "tool-input-delta", id: upstreamId, delta: "1}" },
+			{ type: "tool-input-end", id: upstreamId },
+			{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } },
+		);
+		const chunks: StreamChunk[] = [];
+		for await (const c of mapChunks(stream)) chunks.push(c);
+
+		const ids = chunks
+			.filter(
+				(c) =>
+					c.type === "tool_use_start" || c.type === "tool_use_args" || c.type === "tool_use_end",
+			)
+			.map((c) => (c as { id: string }).id);
+		// All four events share the same sanitized id
+		expect(new Set(ids).size).toBe(1);
+		expect(ids[0]).toBe("functions_memory_5");
+	});
+
+	it("does not log when sanitization is charset-only (steady state for AI SDK fallback ids)", async () => {
+		// Pathology signal == length truncation only. A `functions.memory:5` id
+		// that gets charset-rewritten to `functions_memory_5` is normal AI SDK
+		// fallback-id behavior on the OpenAI-compatible path and is NOT worth
+		// surfacing to operators. We assert behavior indirectly: the sanitized
+		// length equals the original length, which is the condition the warn
+		// log gates on.
+		const upstreamId = "functions.memory:5";
+		const upstreamName = "memory";
+		const stream = events(
+			{ type: "tool-input-start", id: upstreamId, toolName: upstreamName },
+			{ type: "tool-input-end", id: upstreamId },
+			{ type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } },
+		);
+		const chunks: StreamChunk[] = [];
+		for await (const c of mapChunks(stream)) chunks.push(c);
+		const start = chunks.find((c) => c.type === "tool_use_start");
+		expect(start).toBeDefined();
+		if (start && start.type === "tool_use_start") {
+			expect(start.id.length).toBe(upstreamId.length);
+			expect(start.name.length).toBe(upstreamName.length);
+		}
 	});
 });
 
