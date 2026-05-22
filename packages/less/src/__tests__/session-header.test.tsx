@@ -28,7 +28,7 @@ describe("SessionHeader", () => {
 		expect(lastFrame() ?? "").toContain("/etc/hosts");
 	});
 
-	it("renders the favicon ASCII art (blue dot, dimmed chunky ring)", () => {
+	it("renders the favicon ASCII art (all-cyan, chunky-block ring)", () => {
 		const { lastFrame } = render(<SessionHeader commitHash="dev" cwd="/tmp" />);
 		const frame = lastFrame() ?? "";
 		// Chunky filled-block ring (▄ ▀ █) — switched from single-line box-drawing
