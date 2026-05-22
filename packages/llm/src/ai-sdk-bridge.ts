@@ -87,6 +87,33 @@ export interface ToModelMessagesOptions {
  *   cache      → marker only — attached to the previous message via
  *                providerOptions.{cacheProvider}.cachePoint / cacheControl
  */
+/**
+ * Sanitize a tool_use id / tool_use_id to the strictest charset accepted by
+ * any supported provider. Anthropic enforces `^[a-zA-Z0-9_-]+$` on tool_use.id
+ * and rejects the request when an id contains anything else (notably `.` and
+ * `:`, which appear in OpenAI-compatible fallback ids of the shape
+ * `functions.<name>:<index>` synthesized when the upstream server emits no
+ * explicit id). Bedrock Converse and OpenAI-compatible accept the broader
+ * charset, but the safe charset is a strict subset of every provider's
+ * accepted charset, so rewriting universally is lossless on the wire and
+ * eliminates the need for per-provider branching.
+ *
+ * The transform must be deterministic so the same input id sanitizes to the
+ * same output everywhere it appears (assistant tool_use, tool_result.tool_use_id,
+ * the toolNameById index keys). Empty ids are left as the empty string — the
+ * caller's existing fallback behavior handles them.
+ *
+ * Two distinct original ids could in principle collide after sanitization
+ * (e.g. `a.b` and `a:b` both → `a_b`). The OpenAI-compatible fallback shape
+ * uses a per-turn monotonic index, so a collision would already have been a
+ * pre-existing duplicate-id bug in the originating turn; we don't try to
+ * defend against it here.
+ */
+export function sanitizeToolUseId(id: string): string {
+	if (!id) return id;
+	return id.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
 export function toModelMessages(
 	messages: LLMMessage[],
 	opts: ToModelMessagesOptions = {},
@@ -97,13 +124,15 @@ export function toModelMessages(
 	// need the toolName to satisfy ToolResultPart (provider-utils). Bedrock's
 	// Converse path ignores it, but Anthropic direct and other providers wire
 	// it through, and the schema requires it. Index everything up front so
-	// out-of-order or interleaved messages still resolve correctly.
+	// out-of-order or interleaved messages still resolve correctly. Keys are
+	// sanitized so that tool_result lookups (which look up by sanitized id)
+	// still resolve when the original id contained illegal characters.
 	const toolNameById = new Map<string, string>();
 	for (const msg of messages) {
 		if (msg.role !== "assistant" && msg.role !== "tool_call") continue;
 		const blocks = Array.isArray(msg.content) ? msg.content : normalizeBlocks(msg.content);
 		for (const b of blocks) {
-			if (b.type === "tool_use") toolNameById.set(b.id, b.name);
+			if (b.type === "tool_use") toolNameById.set(sanitizeToolUseId(b.id), b.name);
 		}
 	}
 
@@ -150,7 +179,7 @@ export function toModelMessages(
 				} else if (b.type === "tool_use") {
 					parts.push({
 						type: "tool-call",
-						toolCallId: b.id,
+						toolCallId: sanitizeToolUseId(b.id),
 						toolName: b.name,
 						input: b.input,
 					});
@@ -162,7 +191,7 @@ export function toModelMessages(
 
 		if (msg.role === "tool_result") {
 			const blocks = normalizeBlocks(msg.content);
-			const toolCallId = msg.tool_use_id ?? "";
+			const toolCallId = sanitizeToolUseId(msg.tool_use_id ?? "");
 			result.push({
 				role: "tool",
 				content: [
@@ -208,7 +237,7 @@ export function toModelMessages(
 			} else if (b.type === "tool_use") {
 				parts.push({
 					type: "tool-call",
-					toolCallId: b.id,
+					toolCallId: sanitizeToolUseId(b.id),
 					toolName: b.name,
 					input: b.input,
 				});
