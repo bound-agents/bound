@@ -22,6 +22,7 @@ describe("App Component", () => {
 			off: vi.fn(),
 			onToolCall: vi.fn(),
 			sendMessage: vi.fn().mockResolvedValue(undefined),
+			connectionState: "connected",
 		} as unknown as BoundClient;
 
 		mockMcpManager = {

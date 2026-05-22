@@ -35,6 +35,7 @@ export type {
 	CreateMcpThreadResult,
 	ApiErrorBody,
 	BoundClientEvents,
+	ConnectionState,
 	ToolDefinition,
 	ToolCallRequest,
 	ToolCallResult,

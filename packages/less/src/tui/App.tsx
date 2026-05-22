@@ -9,6 +9,7 @@ import type { McpServerManager } from "../mcp/manager";
 import { transitionThread } from "../session/transition";
 import type { ToolHandler } from "../tools/types";
 import { useCancelHandler } from "./hooks/useCancelHandler";
+import { useConnectionState } from "./hooks/useConnectionState";
 import { useMcpServers } from "./hooks/useMcpServers";
 import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
@@ -106,6 +107,7 @@ export function App({
 	);
 	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
+	const connectionState = useConnectionState(client);
 
 	// Ctrl-C hint state
 	const [ctrlCHint, setCtrlCHint] = useState<string | null>(null);
@@ -300,7 +302,7 @@ export function App({
 					client={client}
 					threadId={state.threadId}
 					model={state.model}
-					connectionState={client ? "connected" : "disconnected"}
+					connectionState={connectionState}
 					cwd={cwd}
 					messages={messages}
 					inFlightTools={inFlightTools}

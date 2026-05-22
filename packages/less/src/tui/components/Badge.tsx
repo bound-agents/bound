@@ -1,13 +1,20 @@
 import { Text } from "ink";
 import type React from "react";
 
-export type BadgeStatus = "running" | "failed" | "disabled" | "connected" | "disconnected";
+export type BadgeStatus =
+	| "running"
+	| "failed"
+	| "disabled"
+	| "connected"
+	| "connecting"
+	| "disconnected";
 
 const STATUS_COLORS: Record<BadgeStatus, string> = {
 	running: "green",
 	failed: "red",
 	disabled: "gray",
 	connected: "green",
+	connecting: "cyan",
 	disconnected: "yellow",
 };
 
