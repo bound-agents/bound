@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import type { ConnectionState } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
 import { Badge } from "./Badge";
@@ -6,7 +7,7 @@ import { Badge } from "./Badge";
 export interface StatusBarProps {
 	threadId: string;
 	model: string | null;
-	connectionState: string;
+	connectionState: ConnectionState;
 	mcpServerCount: number;
 	cwd: string;
 }
@@ -51,9 +52,11 @@ export function StatusBar({
 	mcpServerCount,
 	cwd,
 }: StatusBarProps): React.ReactElement {
-	// Map connection state to badge status
-	const badgeStatus: "connected" | "disconnected" =
-		connectionState === "connected" ? "connected" : "disconnected";
+	// ConnectionState's three values ("connecting" | "connected" | "disconnected")
+	// are all valid BadgeStatus values, so the prop passes through directly.
+	// Keeping this as a named binding so the intent — that the badge color reflects
+	// the live WebSocket state — stays visible at the call site.
+	const badgeStatus = connectionState;
 
 	const sep = <Text dimColor> · </Text>;
 

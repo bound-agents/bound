@@ -229,5 +229,27 @@ describe("Message rendering components", () => {
 			// ambiguous across repos, so "packages/less" is the high-signal form.
 			expect(output).toContain("packages/less");
 		});
+
+		it("accepts and renders all three ConnectionState values", async () => {
+			// Smoke test for the wire-through: prior to plumbing real ConnectionState,
+			// only "connected" / "disconnected" were valid. "connecting" would have
+			// been collapsed at the App boundary. We can't assert on the badge color
+			// here because ink-testing-library's stdout isn't a TTY and chalk strips
+			// ANSI codes — every state would render the same "●" glyph in plain text.
+			// The visual mapping is covered by Badge's STATUS_COLORS table; the
+			// transition behavior is covered by BoundClient's state-machine tests.
+			const baseProps = {
+				threadId: "thread-123",
+				model: "claude-opus",
+				mcpServerCount: 0,
+				cwd: "/tmp/work",
+			} as const;
+			for (const state of ["connected", "connecting", "disconnected"] as const) {
+				const { lastFrame } = render(<StatusBar {...baseProps} connectionState={state} />);
+				const frame = lastFrame() ?? "";
+				expect(frame).toContain("●");
+				expect(frame).toContain("thread-123");
+			}
+		});
 	});
 });

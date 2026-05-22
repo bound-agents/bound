@@ -99,6 +99,55 @@ describe("AC2: BoundClient Merges BoundSocket", () => {
 		});
 	});
 
+	describe("connection state machine", () => {
+		it("starts in 'disconnected' before connect() is called", () => {
+			const client = new BoundClient("http://localhost:3001");
+			expect(client.connectionState).toBe("disconnected");
+		});
+
+		it("emits 'connection:state' transitions in order", () => {
+			const client = new BoundClient("http://localhost:3001");
+			const transitions: string[] = [];
+			client.on("connection:state", (state) => {
+				transitions.push(state);
+			});
+
+			// Drive the state machine via the same private helper that
+			// createConnection / ws.onopen / ws.onclose call. We can't open a real
+			// WebSocket in this harness, but the contract under test is the
+			// transition→event mapping, which is independent of the socket.
+			const setState = (
+				client as unknown as { setConnectionState(s: string): void }
+			).setConnectionState.bind(client);
+
+			setState("connecting");
+			setState("connected");
+			setState("disconnected");
+
+			expect(transitions).toEqual(["connecting", "connected", "disconnected"]);
+			expect(client.connectionState).toBe("disconnected");
+		});
+
+		it("does not re-emit 'connection:state' for no-op transitions", () => {
+			const client = new BoundClient("http://localhost:3001");
+			const transitions: string[] = [];
+			client.on("connection:state", (state) => {
+				transitions.push(state);
+			});
+
+			const setState = (
+				client as unknown as { setConnectionState(s: string): void }
+			).setConnectionState.bind(client);
+
+			setState("connecting");
+			setState("connecting"); // duplicate — must not re-fire
+			setState("connected");
+			setState("connected"); // duplicate — must not re-fire
+
+			expect(transitions).toEqual(["connecting", "connected"]);
+		});
+	});
+
 	describe("AC2.4: sendMessage fires over WS; no HTTP POST", () => {
 		it("sendMessage returns void (fire-and-forget)", () => {
 			const client = new BoundClient("http://localhost:3001");

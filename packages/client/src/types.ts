@@ -269,6 +269,17 @@ export interface ToolCancelEvent {
 	reason?: string;
 }
 
+/**
+ * Connection state of a BoundClient's WebSocket.
+ *
+ * - `connecting`: a connection attempt is in flight (initial connect, or a
+ *   reconnect after a drop). The socket exists but `onopen` has not fired.
+ * - `connected`: the socket is open and ready to send/receive.
+ * - `disconnected`: no socket, or the socket closed and we are in the
+ *   reconnect backoff window before the next attempt is scheduled.
+ */
+export type ConnectionState = "connecting" | "connected" | "disconnected";
+
 export interface BoundClientEvents {
 	"message:created": (msg: Message) => void;
 	"task:updated": (data: { taskId: string; status: string }) => void;
@@ -286,4 +297,6 @@ export interface BoundClientEvents {
 	error: (err: Event | Error | { code: string; message: string }) => void;
 	open: () => void;
 	close: () => void;
+	/** Fires whenever the client's connection state transitions. */
+	"connection:state": (state: ConnectionState) => void;
 }

@@ -16,6 +16,7 @@ import type {
 	ApiErrorBody,
 	BoundClientEvents,
 	CancelResult,
+	ConnectionState,
 	ContextDebugTurn,
 	CreateMcpThreadResult,
 	CreateThreadOptions,
@@ -84,6 +85,7 @@ export class BoundClient {
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempt = 0;
 	private configureOptions?: { systemPromptAddition?: string };
+	private _connectionState: ConnectionState = "disconnected";
 	/**
 	 * Long-lived tracing session for the current WS connection. Lazy-initialized
 	 * on the first `tool:call` that carries a trace_context, ended on disconnect /
@@ -229,18 +231,36 @@ export class BoundClient {
 		}
 	}
 
+	/**
+	 * Current connection state of the underlying WebSocket. Mirrors the
+	 * `connection:state` event but lets callers read a snapshot synchronously
+	 * (e.g. on React mount, before any transition events have a chance to fire
+	 * for already-attached clients).
+	 */
+	get connectionState(): ConnectionState {
+		return this._connectionState;
+	}
+
+	private setConnectionState(state: ConnectionState): void {
+		if (this._connectionState === state) return;
+		this._connectionState = state;
+		this.emit("connection:state", state);
+	}
+
 	private createConnection(): void {
 		// Handle case where WebSocket is not available (e.g., in tests)
 		if (typeof WebSocket === "undefined") {
 			return;
 		}
 
+		this.setConnectionState("connecting");
 		const ws = new WebSocket(this.wsUrl);
 
 		ws.onopen = () => {
 			this.reconnectAttempt = 0;
 			this.sendSessionConfigure();
 			this.resendSubscriptions();
+			this.setConnectionState("connected");
 			this.emit("open");
 		};
 
@@ -261,6 +281,7 @@ export class BoundClient {
 				this.tracingSession.end();
 				this.tracingSession = null;
 			}
+			this.setConnectionState("disconnected");
 			this.emit("close");
 			if (this.shouldReconnect) {
 				this.scheduleReconnect();

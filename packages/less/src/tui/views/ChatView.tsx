@@ -1,4 +1,4 @@
-import type { BoundClient } from "@bound/client";
+import type { BoundClient, ConnectionState } from "@bound/client";
 import type { Message } from "@bound/shared";
 import { Box, Static, Text } from "ink";
 import type React from "react";
@@ -94,7 +94,7 @@ export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
 	model: string | null;
-	connectionState: string;
+	connectionState: ConnectionState;
 	cwd: string;
 	messages: Message[];
 	inFlightTools: Map<string, { toolName: string; startTime: number; stdout?: string }>;
