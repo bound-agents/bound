@@ -4665,6 +4665,94 @@ This skill reviews pull requests.`;
 	});
 
 	// ──────────────────────────────────────────────────────────────────────
+	// Stage 1 retrieval covers the entire thread when budget allows.
+	// Root cause: silent-amputation-2026-05-21 — a fixed MESSAGE_LOAD_LIMIT of
+	// 100 in Stage 1 silently dropped the oldest messages on cold reassembly
+	// for any thread with > 100 messages, even when contextWindow had plenty
+	// of room. Stage 7's truncation marker never fired (budget wasn't
+	// exceeded), so the agent had no signal that messages were missing.
+	// ──────────────────────────────────────────────────────────────────────
+	describe("Stage 1 retrieval covers entire thread when budget allows", () => {
+		it("loads all messages from a 200-message thread that fits in budget", () => {
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-05-21T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Amputation User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Amputation Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// 200 messages, ~60 chars each ≈ 15 tokens → ~3k history tokens.
+			// First message has a unique sentinel so we can prove it survived.
+			for (let i = 0; i < 200; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				const sentinel = i === 0 ? "OLDEST_SENTINEL " : "";
+				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						role,
+						`${sentinel}msg ${i} ${"x".repeat(40)}`,
+						null,
+						null,
+						ts,
+						ts,
+						"local",
+					],
+				);
+			}
+
+			const { messages, debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				// 200k window is the prod opus contextWindow; 200 short messages
+				// of ~15 tokens each (~3k total) sit comfortably under any
+				// budget gate. Stage 7 must not fire.
+				contextWindow: 200000,
+			});
+
+			// Stage 7 truncation must not have fired — budget is plentiful.
+			expect(debug.truncated).toBe(0);
+
+			// Critical: the oldest message must be present in the assembled
+			// output. Pre-fix, MESSAGE_LOAD_LIMIT=100 would have silently
+			// dropped it here despite Stage 7 reporting truncated=0, leaving
+			// the agent unaware that 100 messages were missing.
+			const haveSentinel = messages.some(
+				(m) => typeof m.content === "string" && m.content.includes("OLDEST_SENTINEL"),
+			);
+			expect(haveSentinel).toBe(true);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+	});
+
+	// ──────────────────────────────────────────────────────────────────────
 	// Token-aware truncation (replaces hardcoded keep-last-10)
 	// Root cause: context-loss-2026-03-31 — a 4900-msg thread kept only 10
 	// messages, and verbose tool errors crowded out a 30-second-old conversation.
@@ -6189,7 +6277,19 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		}, 15000);
 
-		it("should limit loaded messages to 500", () => {
+		it("loads the entire thread when budget allows; Stage 7 truncates if needed", () => {
+			// Stage 1's MESSAGE_LOAD_LIMIT (formerly 100, originally 500) was
+			// removed in 2026-05-21. It silently dropped the oldest messages
+			// on cold reassembly when the warm cache had grown past the cap,
+			// bypassing Stage 7's truncation marker that tells the agent how
+			// to retrieve older context. See "Stage 1 retrieval covers entire
+			// thread when budget allows" for the regression coverage.
+			//
+			// This test confirms the new contract on a 600-message thread:
+			// when the budget fits, every message is loaded; when the budget
+			// is tight, Stage 7's backward-fill performs the truncation and
+			// emits the "X earlier messages were truncated" marker so the
+			// agent can issue a `query` to recover.
 			const localUserId = randomUUID();
 			const localThreadId = randomUUID();
 			const now = new Date();
@@ -6212,7 +6312,6 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			// Insert 600 messages (exceeds the 500 limit)
 			const insertMsg = db.prepare(
 				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 			);
@@ -6222,29 +6321,47 @@ This skill reviews pull requests.`;
 				insertMsg.run(randomUUID(), localThreadId, role, `Message ${i}`, ts, ts, "localhost", 0);
 			}
 
-			const result = assembleContext({
+			// 200k window: 600 short messages (~1.8k tokens) sit comfortably
+			// under any budget gate. Stage 7 must not fire and every message
+			// should be present.
+			const wide = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
+				contextWindow: 200000,
 			});
+			const wideHistory = wide.messages.filter((m) => m.role === "user" || m.role === "assistant");
+			expect(wideHistory.length).toBe(600);
+			expect(wide.debug.truncated).toBe(0);
+			expect(
+				wideHistory.some((m) => typeof m.content === "string" && m.content === "Message 0"),
+			).toBe(true);
+			expect(
+				wideHistory.some((m) => typeof m.content === "string" && m.content === "Message 599"),
+			).toBe(true);
 
-			// Should have loaded at most 500 history messages (plus any system messages)
-			const historyMessages = result.messages.filter(
+			// Tight window: Stage 7 truncates from the front, keeps the tail,
+			// and injects a developer-role truncation marker for the agent.
+			const tight = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 3000,
+			});
+			const tightHistory = tight.messages.filter(
 				(m) => m.role === "user" || m.role === "assistant",
 			);
-			expect(historyMessages.length).toBeLessThanOrEqual(500);
-
-			// Should have the MOST RECENT messages (not the oldest)
-			const lastHistoryMsg = historyMessages[historyMessages.length - 1];
-			expect(lastHistoryMsg?.content).toContain("Message 599");
-
-			// Should NOT have the oldest messages
-			const hasOldest = historyMessages.some(
-				(m) => typeof m.content === "string" && m.content === "Message 0",
+			expect(tight.debug.truncated).toBeGreaterThan(0);
+			expect(tightHistory.length).toBeLessThan(600);
+			expect(tightHistory[tightHistory.length - 1]?.content).toContain("Message 599");
+			const hasTruncationMarker = tight.messages.some(
+				(m) =>
+					m.role === "developer" &&
+					typeof m.content === "string" &&
+					m.content.includes("truncated to fit the context window"),
 			);
-			expect(hasOldest).toBe(false);
+			expect(hasTruncationMarker).toBe(true);
 
-			// Clean up
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
