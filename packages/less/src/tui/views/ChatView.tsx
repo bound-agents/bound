@@ -7,6 +7,7 @@ import {
 	ActionBar,
 	Banner,
 	MessageBlock,
+	SessionHeader,
 	Spinner,
 	StatusBar,
 	TextInput,
@@ -90,12 +91,42 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 	return result;
 }
 
+/**
+ * Discriminated-union item for the session-log Static.
+ *
+ * Ink's <Static> officially supports only one instance per render tree, so we
+ * can't render the splash header in a separate Static above the message log.
+ * Instead, we prepend a stable splash sentinel to the messages array; the
+ * children renderer discriminates on `kind` and dispatches to the right
+ * component. Static tracks its high-water mark internally and only renders
+ * items at indices >= that mark, so the sentinel commits exactly once at
+ * session start and the messages append in order behind it.
+ */
+type SplashItem = { kind: "splash" };
+type MessageItem = { kind: "message"; msg: Message };
+type StaticItem = SplashItem | MessageItem;
+
+/**
+ * Module-scoped sentinel so its identity is stable across renders. The Static
+ * high-water-mark contract doesn't actually require this (items < mark aren't
+ * re-rendered regardless of identity), but a stable reference is the cheapest
+ * way to make the invariant obvious to anyone reading the file.
+ */
+const SPLASH_ITEM: SplashItem = { kind: "splash" };
+
 export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
 	model: string | null;
 	connectionState: ConnectionState;
 	cwd: string;
+	/**
+	 * Short git SHA of the running build, surfaced in the session-log splash
+	 * header. Plumbed from boundless.tsx → App → here so the header renders
+	 * once at the top of <Static> and scrolls into the terminal's native
+	 * scrollback alongside the rest of the session log.
+	 */
+	commitHash: string;
 	messages: Message[];
 	inFlightTools: Map<string, { toolName: string; startTime: number; stdout?: string }>;
 	mcpServerCount: number;
@@ -126,6 +157,7 @@ export function ChatView({
 	model,
 	connectionState,
 	cwd,
+	commitHash,
 	messages,
 	inFlightTools,
 	mcpServerCount,
@@ -149,6 +181,18 @@ export function ChatView({
 	// over the messages array so we walk it only when new messages arrive,
 	// keeping per-frame cost flat as scrollback grows.
 	const toolResultMeta = useMemo(() => buildToolResultMetaMap(messages), [messages]);
+
+	// Static items: discriminated union of [splash header sentinel, ...messages].
+	// Ink's <Static> tracks rendered indices internally and only renders items at
+	// indices >= its high-water mark on each update. Putting the splash sentinel
+	// at index 0 lets it commit once at session start and scroll into the
+	// terminal's native scrollback alongside the message log, exactly matching
+	// the desired behavior. Messages always append at the tail, so the appended-
+	// only invariant holds.
+	const staticItems = useMemo<StaticItem[]>(
+		() => [SPLASH_ITEM, ...messages.map((msg): StaticItem => ({ kind: "message", msg }))],
+		[messages],
+	);
 	// Account for the rounded input frame: 2 cols of border + 2 cols of
 	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
 	// input. Off-by-one here makes the explicit \n breaks emitted by
@@ -219,8 +263,16 @@ export function ChatView({
 			    into the root output grid, creating a blank gap between the
 			    scrollback messages and the dynamic input area. */}
 			<Box height={0}>
-				<Static items={messages}>
-					{(msg) => {
+				<Static items={staticItems}>
+					{(item) => {
+						if (item.kind === "splash") {
+							return (
+								<Box key="splash" marginBottom={1}>
+									<SessionHeader commitHash={commitHash} cwd={cwd} />
+								</Box>
+							);
+						}
+						const msg = item.msg;
 						const meta = toolResultMeta.get(msg.id);
 						// Margin rule: collapse the gap inside a tool group so the blue
 						// stripe runs continuously through call → results.

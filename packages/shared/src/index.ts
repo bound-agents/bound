@@ -28,6 +28,9 @@ export * from "./hlc.js";
 // Type safety utilities
 export * from "./assert.js";
 export * from "./branded-types.js";
+
+// Build metadata (commit hash, build time) — generated at build time
+export * from "./build-info.js";
 export * from "./parse-json.js";
 export * from "./relay-schemas.js";
 

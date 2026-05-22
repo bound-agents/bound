@@ -33,7 +33,10 @@ export const COMMIT_HASH = "${commitHash}";
 export const BUILD_TIME = "${buildTime}";
 `;
 
-	const outPath = resolve("packages/cli/src/build-info.ts");
+	// Single source of truth in @bound/shared so both `bound` (CLI) and
+	// `boundless` (TUI) can consume identical commit metadata. This file is
+	// gitignored — see ../packages/shared/src/build-info.ts for the wrapper API.
+	const outPath = resolve("packages/shared/src/build-info-generated.ts");
 	writeFileSync(outPath, content, "utf-8");
 
 	console.log(`Generated build info: commit ${commitHash}, built ${buildTime}`);

@@ -26,20 +26,21 @@ import {
 	withChangeLog,
 } from "@bound/core";
 import { installAiSdkWarningHook } from "@bound/llm";
-import { BOUND_NAMESPACE, createLogger, deterministicUUID, formatError } from "@bound/shared";
+import {
+	BOUND_NAMESPACE,
+	createLogger,
+	deterministicUUID,
+	formatError,
+	getBuildInfo,
+	loadBuildInfo,
+} from "@bound/shared";
 import { clearColumnCache, ensureKeypair } from "@bound/sync";
 
-// Build metadata (generated at compile time, gitignored)
-let COMMIT_HASH = "dev";
-let BUILD_TIME = "unknown";
-try {
-	// @ts-ignore build-info.ts is generated at build time and gitignored
-	const buildInfo = await import("../../build-info.js");
-	COMMIT_HASH = buildInfo.COMMIT_HASH;
-	BUILD_TIME = buildInfo.BUILD_TIME;
-} catch {
-	// Running from source without build — use dev values
-}
+// Build metadata (generated at compile time, gitignored). The shared loader
+// idempotently dynamically-imports the generated file with a "dev"/"unknown"
+// fallback when running from source.
+await loadBuildInfo();
+const { commitHash: COMMIT_HASH, buildTime: BUILD_TIME } = getBuildInfo();
 
 const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
 
