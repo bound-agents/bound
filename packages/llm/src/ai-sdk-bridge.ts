@@ -20,7 +20,6 @@
 import { createLogger, formatError } from "@bound/shared";
 import { tool as aiTool, jsonSchema } from "ai";
 import type { ModelMessage, ToolSet } from "ai";
-import { sanitizeToolName } from "./stream-utils";
 import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "./types";
 import { LLMError } from "./types";
 
@@ -66,6 +65,18 @@ export interface ToModelMessagesOptions {
 	 * passthrough is suppressed.
 	 */
 	reasoningProviderOptions?: "bedrock" | "anthropic" | null;
+	/**
+	 * Wire-format envelope for the (provider, model) pair this assembly is
+	 * targeting. Drives rewrite-only-on-violation sanitization of tool_use.id
+	 * and tool_use.name. See WireEnvelope above.
+	 *
+	 * Omit (or undefined) to default to ANTHROPIC_ENVELOPE — the strictest
+	 * envelope and the historical universal-rewrite behavior. Drivers should
+	 * always set this explicitly so model-specific quirks (Kimi's native
+	 * functions.foo:0 fallback id shape on the bedrock-converse envelope) are
+	 * preserved instead of rewritten into model-foreign forms.
+	 */
+	targetEnvelope?: WireEnvelope;
 }
 
 /**
@@ -93,8 +104,71 @@ export interface ToModelMessagesOptions {
 /** Maximum length accepted by Bedrock Converse for toolUseId and toolUse.name.
  * Anthropic does not advertise a documented length cap on tool_use.id but
  * accepts arbitrary lengths; the 64-char bound is the strict subset across
- * supported providers. */
+ * supported providers and the default idMaxLength for every non-permissive
+ * WireEnvelope. */
 export const MAX_TOOL_USE_ID_LENGTH = 64;
+
+// Wire-format envelope describing a target model's accepted tool_use.id and
+// tool_use.name shapes. Consumed by toModelMessages to rewrite an id ONLY
+// when it would otherwise violate the target's validation. This replaces the
+// earlier "rewrite-to-strictest-subset universally" approach, which was
+// lossless on the wire but model-lossy: rewriting an id like
+// functions.foo:0 (Kimi's native AI-SDK fallback shape) to functions_foo_0
+// puts Kimi out of distribution against its own training data and corrupts
+// its next tool call.
+//
+// Envelope is a function of (provider, model), NOT just provider:
+// Claude-on-Bedrock has the same strict charset validation as
+// Claude-on-Anthropic-API, while Kimi/MiniMax/Nova/etc.-on-Bedrock get the
+// looser Bedrock-Converse envelope. Driver call sites pick the envelope with
+// the model id in hand and pass it through ToModelMessagesOptions.
+export interface WireEnvelope {
+	/** Stable tag for log/debug surfaces. */
+	name: string;
+	/** Regex matching characters NOT permitted in tool_use.id. Matched chars
+	 * are replaced with "_" iff any are present. */
+	idIllegalChars: RegExp;
+	/** Regex matching characters NOT permitted in tool_use.name. Same
+	 * rewrite-only-on-violation contract as idIllegalChars. */
+	nameIllegalChars: RegExp;
+	/** Hard cap on tool_use.id length. */
+	idMaxLength: number;
+	/** Hard cap on tool_use.name length. */
+	nameMaxLength: number;
+}
+
+// Anthropic API + Claude-on-Bedrock: strict charset on both id and name.
+export const ANTHROPIC_ENVELOPE: WireEnvelope = {
+	name: "anthropic-strict",
+	idIllegalChars: /[^a-zA-Z0-9_-]/g,
+	nameIllegalChars: /[^a-zA-Z0-9_-]/g,
+	idMaxLength: MAX_TOOL_USE_ID_LENGTH,
+	nameMaxLength: MAX_TOOL_USE_ID_LENGTH,
+};
+
+// Bedrock Converse for non-Anthropic models (Kimi, MiniMax, Nova, GLM, ...).
+// toolUseId allows dot/colon to round-trip Kimi's native fallback id shape;
+// toolUse.name is still strict; both capped at 64 chars.
+export const BEDROCK_PERMISSIVE_ENVELOPE: WireEnvelope = {
+	name: "bedrock-converse",
+	idIllegalChars: /[^a-zA-Z0-9_.:-]/g,
+	nameIllegalChars: /[^a-zA-Z0-9_-]/g,
+	idMaxLength: MAX_TOOL_USE_ID_LENGTH,
+	nameMaxLength: MAX_TOOL_USE_ID_LENGTH,
+};
+
+// OpenAI-compatible providers (Moonshot direct, Cerebras, Z.AI, ...) don't
+// advertise an id-charset constraint and accept arbitrary tool_call.id
+// strings. The (?!) regex never matches, so the rewrite branch never fires;
+// only the length cap survives as a defensive backstop against runaway
+// upstream leaks.
+export const PERMISSIVE_ENVELOPE: WireEnvelope = {
+	name: "permissive",
+	idIllegalChars: /(?!)/g,
+	nameIllegalChars: /(?!)/g,
+	idMaxLength: 256,
+	nameMaxLength: 256,
+};
 
 /**
  * Sanitize a tool_use id / tool_use_id to the strictest charset and length
@@ -122,9 +196,34 @@ export const MAX_TOOL_USE_ID_LENGTH = 64;
  * to defend against either here — the streaming-boundary warn log surfaces the
  * pathology so operators can spot it instead.
  */
-export function sanitizeToolUseId(id: string): string {
+export function sanitizeToolUseId(id: string, envelope: WireEnvelope = ANTHROPIC_ENVELOPE): string {
 	if (!id) return id;
-	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, MAX_TOOL_USE_ID_LENGTH);
+	let out = id;
+	if (envelope.idIllegalChars.test(out)) {
+		// `test` advances lastIndex on /g regexes; reset before replace.
+		envelope.idIllegalChars.lastIndex = 0;
+		out = out.replace(envelope.idIllegalChars, "_");
+	}
+	envelope.idIllegalChars.lastIndex = 0;
+	if (out.length > envelope.idMaxLength) out = out.slice(0, envelope.idMaxLength);
+	return out;
+}
+
+// Envelope-aware sister of stream-utils.sanitizeToolName. Same
+// rewrite-only-on-violation contract as sanitizeToolUseId. Falls back to
+// "unknown" if the result is empty (matches legacy behavior).
+export function sanitizeToolNameForEnvelope(
+	name: string,
+	envelope: WireEnvelope = ANTHROPIC_ENVELOPE,
+): string {
+	let out = name;
+	if (envelope.nameIllegalChars.test(out)) {
+		envelope.nameIllegalChars.lastIndex = 0;
+		out = out.replace(envelope.nameIllegalChars, "_");
+	}
+	envelope.nameIllegalChars.lastIndex = 0;
+	if (out.length > envelope.nameMaxLength) out = out.slice(0, envelope.nameMaxLength);
+	return out || "unknown";
 }
 
 export function toModelMessages(
@@ -132,6 +231,9 @@ export function toModelMessages(
 	opts: ToModelMessagesOptions = {},
 ): ModelMessage[] {
 	const result: ModelMessage[] = [];
+	// Default to the strictest envelope so callers that pre-date envelope
+	// awareness keep their historical universal-rewrite behavior.
+	const envelope = opts.targetEnvelope ?? ANTHROPIC_ENVELOPE;
 
 	// First pass: build a tool-call id → name index. Tool-result messages
 	// need the toolName to satisfy ToolResultPart (provider-utils). Bedrock's
@@ -146,7 +248,10 @@ export function toModelMessages(
 		const blocks = Array.isArray(msg.content) ? msg.content : normalizeBlocks(msg.content);
 		for (const b of blocks) {
 			if (b.type === "tool_use")
-				toolNameById.set(sanitizeToolUseId(b.id), sanitizeToolName(b.name));
+				toolNameById.set(
+					sanitizeToolUseId(b.id, envelope),
+					sanitizeToolNameForEnvelope(b.name, envelope),
+				);
 		}
 	}
 
@@ -193,8 +298,8 @@ export function toModelMessages(
 				} else if (b.type === "tool_use") {
 					parts.push({
 						type: "tool-call",
-						toolCallId: sanitizeToolUseId(b.id),
-						toolName: sanitizeToolName(b.name),
+						toolCallId: sanitizeToolUseId(b.id, envelope),
+						toolName: sanitizeToolNameForEnvelope(b.name, envelope),
 						input: b.input,
 					});
 				}
@@ -205,7 +310,7 @@ export function toModelMessages(
 
 		if (msg.role === "tool_result") {
 			const blocks = normalizeBlocks(msg.content);
-			const toolCallId = sanitizeToolUseId(msg.tool_use_id ?? "");
+			const toolCallId = sanitizeToolUseId(msg.tool_use_id ?? "", envelope);
 			result.push({
 				role: "tool",
 				content: [
@@ -251,8 +356,8 @@ export function toModelMessages(
 			} else if (b.type === "tool_use") {
 				parts.push({
 					type: "tool-call",
-					toolCallId: sanitizeToolUseId(b.id),
-					toolName: sanitizeToolName(b.name),
+					toolCallId: sanitizeToolUseId(b.id, envelope),
+					toolName: sanitizeToolNameForEnvelope(b.name, envelope),
 					input: b.input,
 				});
 			} else if (b.type === "image") {
@@ -850,30 +955,30 @@ export async function* mapChunks(
 				break;
 			}
 			case "tool-input-start": {
-				const rawId = (part.id as string | undefined) ?? "";
-				const rawName = (part.toolName as string | undefined) ?? "";
-				// Sanitize at the streaming boundary so corrupted tool_use values
-				// never reach the persistence layer. The same deterministic
-				// transform is re-applied at the read boundary in toModelMessages
-				// for belt+suspenders, which makes already-poisoned historical
-				// rows self-heal on next assembly.
+				const id = (part.id as string | undefined) ?? "";
+				const name = (part.toolName as string | undefined) ?? "";
+				// Stream-boundary handling is pass-through: ids/names land in
+				// the persistence layer raw. Envelope-aware rewriting happens
+				// at the read boundary in toModelMessages, where the
+				// (provider, model) envelope is known. This preserves Kimi's
+				// native fallback id shape (functions.<name>:<index>) for
+				// kimi-on-bedrock roundtrips, while still rewriting on
+				// cross-provider switches that violate the target envelope.
 				//
-				// Length truncation here = upstream emitted pathologically long
-				// content (the documented case is Kimi/Moonshot leaking its own
-				// `<|tool_call_argument_begin|>` template token on the
-				// OpenAI-compatible path, producing 200+ char ids and names).
-				// Charset-only diffs are expected steady state for the AI SDK's
-				// synthesized fallback ids of shape `functions.<name>:<index>`
-				// and are NOT logged.
-				const id = sanitizeToolUseId(rawId);
-				const name = sanitizeToolName(rawName);
-				if (id.length < rawId.length || name.length < rawName.length) {
-					logger.warn("oversized tool_use streamed; truncated at streaming boundary", {
+				// Length-anomaly warn = upstream pathology (the documented
+				// case is Kimi/Moonshot leaking its tool_call_argument_begin
+				// template token on the OpenAI-compatible path, producing
+				// 200+ char ids/names). We warn but do not enforce here —
+				// toModelMessages length-bounds at read time per the target
+				// envelope. Charset diffs are expected steady state and not
+				// logged.
+				if (id.length > MAX_TOOL_USE_ID_LENGTH || name.length > MAX_TOOL_USE_ID_LENGTH) {
+					logger.warn("oversized tool_use streamed; will be truncated at read boundary", {
 						provider: opts.providerName,
-						originalId: rawId,
-						sanitizedId: id,
-						originalName: rawName,
-						sanitizedName: name,
+						id,
+						name,
+						idLength: id.length,
+						nameLength: name.length,
 					});
 				}
 				toolNameById.set(id, name);
@@ -884,16 +989,14 @@ export async function* mapChunks(
 				break;
 			}
 			case "tool-input-delta": {
-				const rawId = (part.id as string | undefined) ?? "";
-				const id = sanitizeToolUseId(rawId);
+				const id = (part.id as string | undefined) ?? "";
 				const delta = (part.delta as string | undefined) ?? "";
 				toolInputText += delta;
 				yield { type: "tool_use_args", id, partial_json: delta };
 				break;
 			}
 			case "tool-input-end": {
-				const rawId = (part.id as string | undefined) ?? "";
-				const id = sanitizeToolUseId(rawId);
+				const id = (part.id as string | undefined) ?? "";
 				yield { type: "tool_use_end", id };
 				toolNameById.delete(id);
 				break;

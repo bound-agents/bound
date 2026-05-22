@@ -21,7 +21,14 @@ import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
 import { fromIni } from "@aws-sdk/credential-providers";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import { mapChunks, mapError, toModelMessages, toToolSet } from "./ai-sdk-bridge";
+import {
+	ANTHROPIC_ENVELOPE,
+	BEDROCK_PERMISSIVE_ENVELOPE,
+	mapChunks,
+	mapError,
+	toModelMessages,
+	toToolSet,
+} from "./ai-sdk-bridge";
 import { createLoggingFetch } from "./fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
@@ -84,12 +91,17 @@ export class BedrockDriver implements LLMBackend {
 		// Non-Anthropic Bedrock models (Kimi, MiniMax, GLM, Nova, …) reject
 		// `reasoningContent.reasoningText.signature` outright. Detection mirrors
 		// buildReasoningConfig: substring match on "anthropic" in the model id.
+		// The same flag selects the wire envelope: Claude-on-Bedrock has the same
+		// strict tool_use.id charset as Claude-on-Anthropic-API, while everything
+		// else on Bedrock-Converse can carry the looser `[a-zA-Z0-9_.:-]{1,64}`
+		// shape — notably Kimi's native `functions.<name>:<index>` fallback ids.
 		const isAnthropicModel = modelId.includes("anthropic");
 		const messages = toModelMessages(params.messages, {
 			cacheProvider: "bedrock",
 			cacheTtl: params.cache_ttl,
 			resolveFileRef: params.resolveFileRef,
 			reasoningProviderOptions: isAnthropicModel ? "bedrock" : null,
+			targetEnvelope: isAnthropicModel ? ANTHROPIC_ENVELOPE : BEDROCK_PERMISSIVE_ENVELOPE,
 		});
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);
