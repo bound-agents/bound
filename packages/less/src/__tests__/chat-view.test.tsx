@@ -13,6 +13,7 @@ function makeProps(overrides: Partial<ChatViewProps> = {}): ChatViewProps {
 		threadId: "thread-123",
 		model: "gpt-4",
 		connectionState: "connected",
+		cwd: "/tmp/work",
 		messages: [],
 		inFlightTools: new Map(),
 		mcpServerCount: 0,

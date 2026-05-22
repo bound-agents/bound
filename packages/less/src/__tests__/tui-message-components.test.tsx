@@ -160,6 +160,7 @@ describe("Message rendering components", () => {
 					model="claude-opus"
 					connectionState="connected"
 					mcpServerCount={2}
+					cwd="/tmp/work"
 				/>,
 			);
 			const output = lastFrame() ?? "";
@@ -176,6 +177,7 @@ describe("Message rendering components", () => {
 					model="claude-opus"
 					connectionState="connected"
 					mcpServerCount={2}
+					cwd="/tmp/work"
 				/>,
 			);
 			const output = lastFrame();
@@ -189,6 +191,7 @@ describe("Message rendering components", () => {
 					model="claude-opus"
 					connectionState="connected"
 					mcpServerCount={2}
+					cwd="/tmp/work"
 				/>,
 			);
 			const output = lastFrame();
@@ -204,10 +207,27 @@ describe("Message rendering components", () => {
 					model="claude-opus"
 					connectionState="connected"
 					mcpServerCount={3}
+					cwd="/tmp/work"
 				/>,
 			);
 			const output = lastFrame();
 			expect(output).toContain("3");
+		});
+
+		it("renders a short cwd label on the right", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="thread-123"
+					model="claude-opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/Users/operator/Documents/GitHub/bound/packages/less"
+				/>,
+			);
+			const output = lastFrame() ?? "";
+			// Deep subdir collapses to last two segments — repo-leaf alone would be
+			// ambiguous across repos, so "packages/less" is the high-signal form.
+			expect(output).toContain("packages/less");
 		});
 	});
 });
