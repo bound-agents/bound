@@ -86,6 +86,7 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 				<div
 					class="data-row"
 					class:expandable
+					class:clickable={!!onRowClick}
 					style="grid-template-columns: {gridTemplate};
 					{accentColor ? `--row-accent: ${accentColor}` : ''}"
 					class:accented={!!accentColor}
@@ -196,7 +197,8 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 		border-radius: 0 0 1px 1px;
 	}
 
-	.data-row.expandable {
+	.data-row.expandable,
+	.data-row.clickable {
 		cursor: pointer;
 	}
 
