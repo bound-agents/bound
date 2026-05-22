@@ -192,6 +192,28 @@ async function compileBinary(
 		for (const l of result.logs) console.error(l);
 		throw new Error(`build failed for ${outfile}:\n${logs}`);
 	}
+
+	// On macOS, re-sign with a plain adhoc signature. Bun's linker emits an
+	// `adhoc, linker-signed` signature (CodeDirectory flags 0x20002), and on
+	// macOS 26+ AMFI's lazy page-by-page validation will SIGKILL processes
+	// launched from a freshly-copied linker-signed binary when the kernel
+	// page cache holds pages from an older instance at the same path.
+	// Symptom is a bare `[1] <pid> killed boundless ...` with no other output;
+	// the crash report under ~/Library/Logs/DiagnosticReports/ shows
+	// `SIGKILL (Code Signature Invalid)` with `Taskgated Invalid Signature`.
+	// Re-signing with `codesign --force --sign -` produces a non-linker-signed
+	// adhoc signature (flags 0x2) that is robust against this race.
+	if (process.platform === "darwin") {
+		try {
+			execSync(`codesign --force --sign - ${JSON.stringify(outfile)}`, {
+				stdio: ["ignore", "ignore", "pipe"],
+			});
+		} catch (e) {
+			throw new Error(
+				`codesign --force --sign - failed for ${outfile}: ${e instanceof Error ? e.message : e}`,
+			);
+		}
+	}
 }
 
 async function build() {
