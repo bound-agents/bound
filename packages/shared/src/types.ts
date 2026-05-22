@@ -659,6 +659,18 @@ export interface ContextDebugInfo {
 	 */
 	effectiveBudget?: number;
 	totalEstimated: number;
+	/**
+	 * Actual LLM-reported total input tokens for this turn (input_tokens +
+	 * cache_read_tokens + cache_write_tokens). Set post-LLM-call by
+	 * applyActualUsageToContextDebug; undefined for assembly-only debug
+	 * snapshots that haven't been correlated with an LLM response yet.
+	 *
+	 * Preserving this separately from totalEstimated lets us compute the
+	 * tiktoken-vs-actual inflation ratio per turn, which the adaptive
+	 * truncation ratio depends on. Optional so older context_debug rows
+	 * (pre-2026-05-22) still parse.
+	 */
+	actualTotalTokens?: number;
 	model: string;
 	sections: ContextSection[];
 	budgetPressure: boolean;
