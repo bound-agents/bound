@@ -19,7 +19,7 @@ describe("tildifyPath", () => {
 	});
 
 	it("does not match when prefix is similar but not followed by /", () => {
-		// e.g. /Users/lucalc-other should NOT become ~-other
+		// e.g. /Users/user-other should NOT become ~-other
 		const sibling = `${HOME}-other`;
 		expect(tildifyPath(sibling)).toBe(sibling);
 	});

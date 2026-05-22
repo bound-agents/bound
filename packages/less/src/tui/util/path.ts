@@ -33,7 +33,7 @@ export function tildifyPath(p: string): string {
  * `Wrote 1234 bytes to /Users/.../foo.ts`, `Error: ENOENT: ...`, or arbitrary
  * stdout from boundless_bash). The trailing `/` requirement keeps us from
  * mangling fragments that just happen to start with the home prefix
- * (`/Users/lucalc-other`, `/Users/lucalcExtra`) — we only rewrite when the
+ * (`/Users/user-other`, `/Users/userExtra`) — we only rewrite when the
  * next char is `/`, the canonical path-continuation marker.
  */
 export function tildifyText(text: string): string {
