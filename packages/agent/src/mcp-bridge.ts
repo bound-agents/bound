@@ -172,37 +172,85 @@ function coerceArgsFromSchema(
 	inputSchema: Tool["inputSchema"],
 ): Record<string, unknown> {
 	if (!inputSchema || typeof inputSchema !== "object") return args;
+	type JsonSchemaProperty = {
+		type?: string | string[];
+		enum?: string[];
+		items?: JsonSchemaProperty;
+		properties?: Record<string, JsonSchemaProperty>;
+	};
 	const schema = inputSchema as {
-		properties?: Record<string, { type?: string; enum?: string[] }>;
+		properties?: Record<string, JsonSchemaProperty>;
 	};
 	const props = schema.properties;
 	if (!props) return args;
+
+	const hasType = (propSchema: JsonSchemaProperty, type: string): boolean => {
+		const schemaType = propSchema.type;
+		return Array.isArray(schemaType) ? schemaType.includes(type) : schemaType === type;
+	};
+
+	const parseJsonValue = (value: string): unknown => {
+		try {
+			return JSON.parse(value);
+		} catch {
+			return undefined;
+		}
+	};
+
+	const coerceStringValue = (value: string, propSchema: JsonSchemaProperty): unknown => {
+		if (hasType(propSchema, "array")) {
+			const parsed = parseJsonValue(value);
+			if (Array.isArray(parsed)) {
+				if (propSchema.items) {
+					const itemSchema = propSchema.items;
+					return parsed.map((item) =>
+						typeof item === "string" ? coerceStringValue(item, itemSchema) : item,
+					);
+				}
+				return parsed;
+			}
+
+			const item = propSchema.items ? coerceStringValue(value, propSchema.items) : value;
+			return [item];
+		}
+
+		if (hasType(propSchema, "object")) {
+			const parsed = parseJsonValue(value);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return parsed;
+			}
+			return value;
+		}
+
+		// Number coercion
+		if (hasType(propSchema, "number") || hasType(propSchema, "integer")) {
+			const n = Number(value);
+			if (!Number.isNaN(n)) return n;
+			return value;
+		}
+
+		// Boolean coercion
+		if (hasType(propSchema, "boolean")) {
+			if (value === "true") return true;
+			if (value === "false") return false;
+			return value;
+		}
+
+		// Enum case normalization: find case-insensitive match
+		if (propSchema.enum && propSchema.enum.length > 0) {
+			const match = propSchema.enum.find((e) => e.toLowerCase() === value.toLowerCase());
+			if (match) return match;
+		}
+
+		return value;
+	};
 
 	const coerced: Record<string, unknown> = { ...args };
 	for (const [key, value] of Object.entries(coerced)) {
 		if (typeof value !== "string") continue;
 		const propSchema = props[key];
 		if (!propSchema) continue;
-
-		// Number coercion
-		if (propSchema.type === "number" || propSchema.type === "integer") {
-			const n = Number(value);
-			if (!Number.isNaN(n)) coerced[key] = n;
-			continue;
-		}
-
-		// Boolean coercion
-		if (propSchema.type === "boolean") {
-			if (value === "true") coerced[key] = true;
-			else if (value === "false") coerced[key] = false;
-			continue;
-		}
-
-		// Enum case normalization: find case-insensitive match
-		if (propSchema.enum && propSchema.enum.length > 0) {
-			const match = propSchema.enum.find((e) => e.toLowerCase() === value.toLowerCase());
-			if (match) coerced[key] = match;
-		}
+		coerced[key] = coerceStringValue(value, propSchema);
 	}
 	return coerced;
 }
@@ -356,6 +404,7 @@ export async function generateMCPCommands(
 			name: serverName,
 			description: serverDescription,
 			customHelp: true,
+			preserveRepeatedFlags: true,
 			args: [
 				{
 					name: "subcommand",

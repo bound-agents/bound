@@ -407,6 +407,51 @@ describe("MCP Bridge", () => {
 		}
 	});
 
+	it("coerces MCP array and object args from CLI string values", async () => {
+		const client = makeMockClient(
+			{ name: "typed-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "extract",
+					description: "Extract URLs",
+					inputSchema: {
+						properties: {
+							urls: { type: "array", items: { type: "string" } },
+							labels: { type: "array", items: { type: "string" } },
+							options: { type: "object" },
+						},
+						required: ["urls"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["typed-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "typed-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			const mockCtx = createMockCommandContext();
+			const result = await serverCmd.handler(
+				{
+					subcommand: "extract",
+					urls: "https://example.com",
+					labels: JSON.stringify(["bug", "mcp"]),
+					options: JSON.stringify({ depth: 1 }),
+				},
+				mockCtx,
+			);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain('"urls":["https://example.com"]');
+			expect(result.stdout).toContain('"labels":["bug","mcp"]');
+			expect(result.stdout).toContain('"options":{"depth":1}');
+		}
+	});
+
 	// AC1.4: returns error for unknown subcommand
 	it("returns error for unknown subcommand", async () => {
 		const client = makeMockClient(

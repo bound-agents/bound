@@ -51,6 +51,7 @@ export interface CommandDefinition {
 	description: string;
 	helpText?: string;
 	customHelp?: boolean;
+	preserveRepeatedFlags?: boolean;
 	args: Array<{ name: string; required: boolean; description?: string }>;
 	handler: (args: Record<string, string>, ctx: CommandContext) => Promise<CommandResult>;
 }
@@ -99,6 +100,24 @@ export function createDefineCommands(
 			}
 
 			const args: Record<string, string> = {};
+			const setArg = (key: string, value: string) => {
+				if (!def.preserveRepeatedFlags || args[key] === undefined) {
+					args[key] = value;
+					return;
+				}
+
+				let values: string[] = [args[key]];
+				try {
+					const parsed = JSON.parse(args[key]);
+					if (Array.isArray(parsed) && parsed.every((item) => typeof item === "string")) {
+						values = parsed;
+					}
+				} catch {
+					// Existing value is a normal scalar flag.
+				}
+				values.push(value);
+				args[key] = JSON.stringify(values);
+			};
 
 			// Detect if argv uses --key value or key=value format.
 			// Use a strict regex: a key=value token must start with an identifier
@@ -125,18 +144,18 @@ export function createDefineCommands(
 						const next = argv[i + 1];
 						if (next !== undefined && !next.startsWith("--")) {
 							// --flag value: consume next token as the value
-							args[flag] = next;
+							setArg(flag, next);
 							i++;
 						} else {
 							// Bare --flag (last token or followed by another --flag): boolean true
-							args[flag] = "true";
+							setArg(flag, "true");
 						}
 					} else if (/^[^\s=]+=/.test(arg)) {
 						const eqIdx = arg.indexOf("=");
-						args[arg.slice(0, eqIdx)] = arg.slice(eqIdx + 1);
+						setArg(arg.slice(0, eqIdx), arg.slice(eqIdx + 1));
 					} else if (positionalCount < def.args.length) {
 						// Unmatched token — assign to next positional arg slot
-						args[def.args[positionalCount].name] = arg;
+						setArg(def.args[positionalCount].name, arg);
 						positionalCount++;
 					}
 				}

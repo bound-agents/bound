@@ -629,6 +629,46 @@ describe("--help and missing-arg hint", () => {
 		expect(capturedVerbose).toBe("true");
 	});
 
+	test("preserveRepeatedFlags accumulates duplicate flag values as a JSON array string", async () => {
+		let capturedLabels: string | undefined;
+		let capturedTitle: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "mcp-shim",
+				description: "MCP shim",
+				preserveRepeatedFlags: true,
+				args: [],
+				handler: async (args) => {
+					capturedLabels = args.labels;
+					capturedTitle = args.title;
+					return { stdout: "ok\n", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		const result = await commands[0].handler([
+			"--labels",
+			"bug",
+			"--labels",
+			"mcp",
+			"--title",
+			"array support",
+		]);
+
+		expect(result.exitCode).toBe(0);
+		expect(capturedLabels).toBe(JSON.stringify(["bug", "mcp"]));
+		expect(capturedTitle).toBe("array support");
+	});
+
 	// command-discovery-redesign.AC1.6: multiple bare flags resolve to "true"
 	test("AC1.6 (multiple flags): --flag1 --flag2 both resolve to true", async () => {
 		let capturedFlag1: string | undefined;
