@@ -23,6 +23,20 @@ function tildifyPath(p: string): string {
 	return p;
 }
 
+/**
+ * Replace every occurrence of `$HOME/` with `~/` inside freeform text. Used
+ * for tool_result bodies, where absolute paths appear as substrings (e.g.
+ * `Wrote 1234 bytes to /Users/.../foo.ts`, `Error: ENOENT: ...`, or arbitrary
+ * stdout from boundless_bash). The trailing `/` requirement keeps us from
+ * mangling fragments that just happen to start with the home prefix
+ * (`/Users/lucalc-other`, `/Users/lucalcExtra`). Display-only — the underlying
+ * tool_result content sent back to the model still carries canonical paths.
+ */
+function tildifyText(text: string): string {
+	if (!text.includes(HOME_SLASH)) return text;
+	return text.split(HOME_SLASH).join("~/");
+}
+
 const TOOL_RESULT_MAX_LINES = 5;
 /** Hard cap on rendered diff entries (after hunking) per edit call. */
 const EDIT_DIFF_MAX_LINES = 24;
@@ -465,8 +479,8 @@ export function MessageBlock({ message, filePath }: MessageBlockProps): React.Re
 		// gracefully degrades to plain text rendering.
 		const lang = !isError ? langFromPath(filePath) : undefined;
 		const baseName = filePath ? (filePath.split("/").pop() ?? null) : null;
-		const headerLabel = baseName ?? displayLines[0] ?? "";
-		const bodyLines = baseName ? displayLines : displayLines.slice(1);
+		const headerLabel = baseName ?? tildifyText(displayLines[0] ?? "");
+		const bodyLines = (baseName ? displayLines : displayLines.slice(1)).map(tildifyText);
 
 		const lineNumPattern = /^(\s*\d+)\t(.*)$/;
 		const renderResultLine = (line: string, idx: number): React.ReactElement => {
