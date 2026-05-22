@@ -737,18 +737,28 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	let taskDigestLinesSnapshot: string[] = []; // Captured from initial enrichment for budget pressure shedding
 
 	// Stage 1: MESSAGE_RETRIEVAL
-	// Cap loaded messages to avoid unbounded DB reads on massive threads.
-	// Compacted messages are ~80 chars each, so 100 messages is plenty of
-	// conversational structure even after compaction. Backward-fill truncation
-	// (Stage 7) remains as a safety net if the loaded set still exceeds budget.
+	// Load the entire thread. Stage 7's backward-fill truncation is the
+	// authoritative budget gate and emits a user-visible truncation marker
+	// telling the agent to use `query` for older content; an upstream cap
+	// here would silently amputate messages and bypass that signal,
+	// producing the sliding-context-loss sawtooth on threads larger than
+	// the cap.
+	//
+	// The hard ceiling below is a defensive belt against catastrophic
+	// scenarios (e.g. a restored thread with millions of rows) — set well
+	// above any realistic working thread so it never fires under normal
+	// operation. Real DB cost on `(thread_id, created_at)` for tens of
+	// thousands of rows in `bun:sqlite` is in the low-hundreds of ms; the
+	// downstream tiktoken cost is bounded by Stage 7's post-truncation set,
+	// not the raw load.
 	const stage1Span = getTracer().startSpan("context.stage-1-message-retrieval");
-	const MESSAGE_LOAD_LIMIT = 100;
+	const MESSAGE_LOAD_HARD_CEILING = 100_000;
 	const messages: Message[] = [];
 	if (!noHistory) {
 		const query = db.query(
 			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT ?",
 		);
-		const rows = query.all(threadId, MESSAGE_LOAD_LIMIT) as Message[];
+		const rows = query.all(threadId, MESSAGE_LOAD_HARD_CEILING) as Message[];
 		rows.reverse();
 		messages.push(...rows);
 	} else if (params.taskId) {
@@ -2031,7 +2041,7 @@ Original output was too large for the context window. If you need the full conte
 			// Fallback: if no user found in forward scan (e.g. scheduled task threads
 			// with only system wakeup + tool_call/tool_result/assistant cycles, or
 			// long bursts of tool_call/tool_result pairs that pushed every user
-			// message older than MESSAGE_LOAD_LIMIT), try the last user message, or
+			// message out of the kept slice), try the last user message, or
 			// fall back to the original budget-based start. The Bedrock driver
 			// prepends a `<system-notification />` placeholder user message when
 			// the conversation doesn't start with `user`, but that placeholder
