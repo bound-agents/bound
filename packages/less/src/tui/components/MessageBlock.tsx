@@ -1,41 +1,11 @@
-import { homedir } from "node:os";
 import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
+import { tildifyPath, tildifyText } from "../util/path";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 import { computeLineDiff, hunkDiff } from "./lineDiff";
-
-// Cached at module load — homedir() doesn't change for the life of the process.
-const HOME = homedir();
-const HOME_SLASH = `${HOME}/`;
-
-/**
- * Replace a leading `$HOME` with `~` for display. The tildified value is for
- * rendering only — language detection (`langFromPath`) and the basename
- * extraction in tool_result rendering both still see the original path. We
- * never round-trip a tildified path back through filesystem APIs.
- */
-function tildifyPath(p: string): string {
-	if (p === HOME) return "~";
-	if (p.startsWith(HOME_SLASH)) return `~${p.slice(HOME.length)}`;
-	return p;
-}
-
-/**
- * Replace every occurrence of `$HOME/` with `~/` inside freeform text. Used
- * for tool_result bodies, where absolute paths appear as substrings (e.g.
- * `Wrote 1234 bytes to /Users/.../foo.ts`, `Error: ENOENT: ...`, or arbitrary
- * stdout from boundless_bash). The trailing `/` requirement keeps us from
- * mangling fragments that just happen to start with the home prefix
- * (`/Users/user-other`, `/Users/userExtra`). Display-only — the underlying
- * tool_result content sent back to the model still carries canonical paths.
- */
-function tildifyText(text: string): string {
-	if (!text.includes(HOME_SLASH)) return text;
-	return text.split(HOME_SLASH).join("~/");
-}
 
 const TOOL_RESULT_MAX_LINES = 5;
 /** Hard cap on rendered diff entries (after hunking) per edit call. */

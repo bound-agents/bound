@@ -62,6 +62,12 @@ export interface AppProps {
 	threadId: string;
 	configDir: string;
 	cwd: string;
+	/**
+	 * Short git SHA of the running build (or "dev" when running from source).
+	 * Surfaced in the session-log splash header so the operator can identify
+	 * the binary version they're talking to without leaving the TUI.
+	 */
+	commitHash: string;
 	hostname: string;
 	mcpManager: McpServerManager;
 	mcpConfigs: McpServerConfig[];
@@ -82,6 +88,7 @@ export function App({
 	threadId: initialThreadId,
 	configDir,
 	cwd,
+	commitHash,
 	hostname,
 	mcpManager,
 	mcpConfigs,
@@ -304,6 +311,7 @@ export function App({
 					model={state.model}
 					connectionState={connectionState}
 					cwd={cwd}
+					commitHash={commitHash}
 					messages={messages}
 					inFlightTools={inFlightTools}
 					mcpServerCount={mcpServerCount}

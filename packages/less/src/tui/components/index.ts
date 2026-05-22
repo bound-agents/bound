@@ -7,6 +7,9 @@ export type { BadgeProps, BadgeStatus } from "./Badge.js";
 export { Banner } from "./Banner.js";
 export type { BannerProps } from "./Banner.js";
 
+export { SessionHeader } from "./SessionHeader.js";
+export type { SessionHeaderProps } from "./SessionHeader.js";
+
 export { Collapsible } from "./Collapsible.js";
 export type { CollapsibleProps } from "./Collapsible.js";
 

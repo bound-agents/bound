@@ -159,7 +159,7 @@ packages/web/dist/
 test-results/
 
 # Auto-generated build metadata
-packages/cli/src/build-info.ts
+packages/shared/src/build-info-generated.ts
 
 # Docker build artifacts (pre-built binaries staged for COPY)
 binaries/
@@ -167,3 +167,8 @@ binaries/
 .DS_Store
 # Sandbox runtime assets staged from just-bash by scripts/build-sandbox-runtime.ts
 packages/sandbox/src/_runtime/
+
+# pnpm artifacts (this repo uses bun; pnpm gets invoked accidentally for biome
+# and regenerates these — keep them out of the tree)
+pnpm-lock.yaml
+pnpm-workspace.yaml

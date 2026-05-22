@@ -5,7 +5,13 @@ import { homedir } from "node:os";
 import { hostname as getHostname } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
-import { initTelemetry, prewarmHighlighter, shutdownTelemetry } from "@bound/shared";
+import {
+	getBuildInfo,
+	initTelemetry,
+	loadBuildInfo,
+	prewarmHighlighter,
+	shutdownTelemetry,
+} from "@bound/shared";
 import { render } from "ink";
 // biome-ignore lint/correctness/noUnusedImports: React is used implicitly in JSX
 import React from "react";
@@ -75,6 +81,12 @@ async function main(): Promise<void> {
 		// rendered into Ink's <Static> always gets highlighted (Static
 		// commits its items to stdout permanently and cannot reflow).
 		const highlighterReady = prewarmHighlighter();
+
+		// Load build metadata (commit hash, build time) used by the session
+		// splash header. Same fire-now/await-before-render pattern: cheap to
+		// kick off in parallel, must be settled before <App> mounts so the
+		// SessionHeader rendered into <Static> shows the right commit hash.
+		const buildInfoReady = loadBuildInfo();
 
 		// Step 1: Parse arguments
 		let attachArg: string | null = null;
@@ -159,6 +171,8 @@ async function main(): Promise<void> {
 		// In practice this finishes during attach, so the await is usually
 		// a no-op; on a cold start it adds a few hundred ms.
 		await highlighterReady;
+		await buildInfoReady;
+		const { commitHash } = getBuildInfo();
 
 		// Step 9: Render App
 		const { waitUntilExit } = render(
@@ -167,6 +181,7 @@ async function main(): Promise<void> {
 				threadId={threadId}
 				configDir={configDir}
 				cwd={process.cwd()}
+				commitHash={commitHash}
 				hostname={hostname}
 				mcpManager={mcpManager}
 				mcpConfigs={mcpConfig.servers}
