@@ -82,6 +82,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		try {
 			yield* mapChunks(result.fullStream, {
 				estimateInputFromMessages: params.messages,
+				providerName: this.providerName,
 			});
 		} catch (err) {
 			throw mapError(err, this.providerName);

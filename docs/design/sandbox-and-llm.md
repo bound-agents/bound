@@ -426,7 +426,18 @@ type LLMMessage = {
 
 `tool_call` and `tool_result` are Bound-internal roles that each driver translates into its provider's native representation before sending the request.
 
-The shared bridge `packages/llm/src/ai-sdk-bridge.ts` (`toModelMessages`) is the single hand-off point from the Bound message shape to the AI SDK / provider message shapes. It exports `sanitizeToolUseId(id)`, which replaces every character outside `[a-zA-Z0-9_-]` with `_` and is applied at all four tool_use id sites: assistant `tool_call`-role tool_use parts, inline assistant content tool_use parts, `tool_result.tool_use_id`, and the `toolNameById` lookup index keys. The transform is deterministic, so pairing between a `tool_use` and its `tool_result` is preserved across the rewrite; the safe charset is a strict subset of every supported provider's accepted charset, so the rewrite is lossless on the wire and avoids per-provider branching. This matters because `tool_use.id` values persist in the `messages` table — a thread that accumulated ids under one provider (e.g. the Kimi/Moonshot OpenAI-compatible path, where the AI SDK synthesizes ids of the shape `functions.<name>:<index>`) must remain routable to a stricter provider (Anthropic enforces `^[a-zA-Z0-9_-]+$` and rejects the entire request otherwise). Tool *names* go through a parallel `sanitizeToolName` helper — see the BedrockDriver section.
+The shared bridge `packages/llm/src/ai-sdk-bridge.ts` (`toModelMessages`, `mapChunks`) is the single hand-off point from the Bound message shape to the AI SDK / provider message shapes. It exports `sanitizeToolUseId(id)` — `[a-zA-Z0-9_-]` charset rewrite followed by `slice(0, MAX_TOOL_USE_ID_LENGTH)` (64) — and re-uses `sanitizeToolName(name)` from `stream-utils.ts` (`[a-zA-Z0-9_-]{1,64}` with `unknown` empty fallback). Both are deterministic and idempotent so pairing between a `tool_use` and its `tool_result` is preserved across rewrites. The safe charset+length envelope is a strict subset of every supported provider's accepted shape, so the rewrite is lossless on the wire and avoids per-provider branching.
+
+Sanitization runs at two layers, both belt-and-suspenders for different reasons:
+
+1. **Streaming boundary** (`mapChunks`): `tool-input-start` / `-delta` / `-end` events sanitize id and name before yielding the matching `StreamChunk`s, so fresh tool calls land in the DB already wire-legal. A warn log fires only when length truncation occurred (`sanitized.length < input.length`); charset-only diffs stay silent because they're expected steady state for AI SDK fallback ids.
+2. **Read boundary** (`toModelMessages`): same sanitization re-applied at all four tool_use sites — assistant `tool_call`-role tool_use parts, inline assistant content tool_use parts, `tool_result.tool_use_id`, and the `toolNameById` lookup index (keys + values, so tool_result resolution returns the sanitized name). On freshly-sanitized data this is an idempotent no-op; the real value is recovery — already-poisoned historical rows self-heal on next assembly without manual DB surgery.
+
+Two pathologies have been observed in production driving these layers:
+- **Charset (Kimi/Moonshot fallback ids)**: `tool_use.id` values persist in the `messages` table and survive provider switches. A thread that accumulated ids under the OpenAI-compatible path (where the AI SDK synthesizes ids of the shape `functions.<name>:<index>` when the upstream emits no explicit id) must remain routable to a stricter provider (Anthropic enforces `^[a-zA-Z0-9_-]+$` and rejects the entire request otherwise).
+- **Length+charset (Kimi/Moonshot template-token leakage, thread `81bd5e8d` 2026-05-21)**: the same path occasionally streams Moonshot's own `<|tool_call_argument_begin|>` template token mid-stream as plain text, which the AI SDK collapses into a 200+ char synthesized `tool_use.id` and `tool_use.name`. The next turn fails with 6 simultaneous Bedrock validation errors (`length less than or equal to 64`, `must satisfy regular expression pattern`) on both the `toolUse` and the matching `toolResult`. The read-boundary layer recovers such threads without manual intervention.
+
+When adding a new id-bearing or name-bearing field at the bridge boundary, route it through `sanitizeToolUseId` / `sanitizeToolName`.
 
 #### ContentBlock
 
@@ -579,7 +590,7 @@ const driver = new BedrockDriver({
 - Uses `BedrockRuntimeClient.send(new ConverseStreamCommand(...))`; the SDK handles SigV4 signing, endpoint construction, and event-stream framing. The driver iterates the SDK's async event iterator directly.
 - Events are delivered as discriminated objects with camelCase keys: `contentBlockStart` (may carry `start.toolUse`), `contentBlockDelta` (`delta.text`, `delta.toolUse.input`, or `delta.thinking.text`), `contentBlockStop`, and `metadata`.
 - Token usage is reported on the `metadata` event, including `cacheWriteInputTokens` / `cacheReadInputTokens` when prompt caching is active.
-- Tool names are sanitised via `sanitizeToolName` before being sent to Bedrock.
+- Tool ids and names are sanitised at the shared AI SDK bridge (see "Shared bridge" above for both layers and the recovery semantics) — not in the driver itself.
 
 **Capabilities:** streaming, tool use, system prompt, prompt caching, vision, extended thinking.
 

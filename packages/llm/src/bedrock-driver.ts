@@ -121,6 +121,7 @@ export class BedrockDriver implements LLMBackend {
 			yield* mapChunks(result.fullStream, {
 				usageProvider: "bedrock",
 				estimateInputFromMessages: params.messages,
+				providerName: "bedrock",
 			});
 		} catch (err) {
 			throw mapError(err, "bedrock");

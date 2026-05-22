@@ -17,11 +17,14 @@
  * injected by the caller via providerOptions — see the individual drivers.
  */
 
-import { formatError } from "@bound/shared";
+import { createLogger, formatError } from "@bound/shared";
 import { tool as aiTool, jsonSchema } from "ai";
 import type { ModelMessage, ToolSet } from "ai";
+import { sanitizeToolName } from "./stream-utils";
 import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "./types";
 import { LLMError } from "./types";
+
+const logger = createLogger("llm", "ai-sdk-bridge");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Message conversion
@@ -87,16 +90,22 @@ export interface ToModelMessagesOptions {
  *   cache      → marker only — attached to the previous message via
  *                providerOptions.{cacheProvider}.cachePoint / cacheControl
  */
+/** Maximum length accepted by Bedrock Converse for toolUseId and toolUse.name.
+ * Anthropic does not advertise a documented length cap on tool_use.id but
+ * accepts arbitrary lengths; the 64-char bound is the strict subset across
+ * supported providers. */
+export const MAX_TOOL_USE_ID_LENGTH = 64;
+
 /**
- * Sanitize a tool_use id / tool_use_id to the strictest charset accepted by
- * any supported provider. Anthropic enforces `^[a-zA-Z0-9_-]+$` on tool_use.id
- * and rejects the request when an id contains anything else (notably `.` and
- * `:`, which appear in OpenAI-compatible fallback ids of the shape
- * `functions.<name>:<index>` synthesized when the upstream server emits no
- * explicit id). Bedrock Converse and OpenAI-compatible accept the broader
- * charset, but the safe charset is a strict subset of every provider's
- * accepted charset, so rewriting universally is lossless on the wire and
- * eliminates the need for per-provider branching.
+ * Sanitize a tool_use id / tool_use_id to the strictest charset and length
+ * accepted by any supported provider. Anthropic enforces `^[a-zA-Z0-9_-]+$` on
+ * tool_use.id and rejects the request when an id contains anything else
+ * (notably `.` and `:`, which appear in OpenAI-compatible fallback ids of the
+ * shape `functions.<name>:<index>` synthesized when the upstream server emits
+ * no explicit id). Bedrock Converse caps toolUseId at 64 chars and validates
+ * `[a-zA-Z0-9_.:-]+`. The strict subset accepted by every supported provider
+ * is `[a-zA-Z0-9_-]{1,64}`, so rewriting to that envelope universally is
+ * lossless on the wire and eliminates the need for per-provider branching.
  *
  * The transform must be deterministic so the same input id sanitizes to the
  * same output everywhere it appears (assistant tool_use, tool_result.tool_use_id,
@@ -104,14 +113,18 @@ export interface ToModelMessagesOptions {
  * caller's existing fallback behavior handles them.
  *
  * Two distinct original ids could in principle collide after sanitization
- * (e.g. `a.b` and `a:b` both → `a_b`). The OpenAI-compatible fallback shape
- * uses a per-turn monotonic index, so a collision would already have been a
- * pre-existing duplicate-id bug in the originating turn; we don't try to
- * defend against it here.
+ * (e.g. `a.b` and `a:b` both → `a_b`, or two ids that diverge only past char 64).
+ * The OpenAI-compatible fallback shape uses a per-turn monotonic index, so a
+ * charset collision would already have been a pre-existing duplicate-id bug in
+ * the originating turn. Length-truncation collisions are only reachable when
+ * upstream emits pathologically long ids (template-token leakage in the
+ * Kimi/Moonshot OpenAI-compatible path is the documented case); we don't try
+ * to defend against either here — the streaming-boundary warn log surfaces the
+ * pathology so operators can spot it instead.
  */
 export function sanitizeToolUseId(id: string): string {
 	if (!id) return id;
-	return id.replace(/[^a-zA-Z0-9_-]/g, "_");
+	return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, MAX_TOOL_USE_ID_LENGTH);
 }
 
 export function toModelMessages(
@@ -132,7 +145,8 @@ export function toModelMessages(
 		if (msg.role !== "assistant" && msg.role !== "tool_call") continue;
 		const blocks = Array.isArray(msg.content) ? msg.content : normalizeBlocks(msg.content);
 		for (const b of blocks) {
-			if (b.type === "tool_use") toolNameById.set(sanitizeToolUseId(b.id), b.name);
+			if (b.type === "tool_use")
+				toolNameById.set(sanitizeToolUseId(b.id), sanitizeToolName(b.name));
 		}
 	}
 
@@ -180,7 +194,7 @@ export function toModelMessages(
 					parts.push({
 						type: "tool-call",
 						toolCallId: sanitizeToolUseId(b.id),
-						toolName: b.name,
+						toolName: sanitizeToolName(b.name),
 						input: b.input,
 					});
 				}
@@ -238,7 +252,7 @@ export function toModelMessages(
 				parts.push({
 					type: "tool-call",
 					toolCallId: sanitizeToolUseId(b.id),
-					toolName: b.name,
+					toolName: sanitizeToolName(b.name),
 					input: b.input,
 				});
 			} else if (b.type === "image") {
@@ -737,6 +751,13 @@ export interface MapChunksOptions {
 	 * zero-usage guard behavior.
 	 */
 	estimateInputFromMessages?: LLMMessage[];
+	/**
+	 * Provider tag attached to streaming-boundary warn logs. When the upstream
+	 * emits a malformed tool_use (e.g. Kimi/Moonshot template-token leakage on
+	 * the OpenAI-compatible path), the streaming-boundary sanitization warn log
+	 * includes this tag so operators can identify which provider is leaking.
+	 */
+	providerName?: string;
 }
 
 type ProviderMetadata = Record<string, Record<string, unknown>>;
@@ -829,8 +850,32 @@ export async function* mapChunks(
 				break;
 			}
 			case "tool-input-start": {
-				const id = (part.id as string | undefined) ?? "";
-				const name = (part.toolName as string | undefined) ?? "";
+				const rawId = (part.id as string | undefined) ?? "";
+				const rawName = (part.toolName as string | undefined) ?? "";
+				// Sanitize at the streaming boundary so corrupted tool_use values
+				// never reach the persistence layer. The same deterministic
+				// transform is re-applied at the read boundary in toModelMessages
+				// for belt+suspenders, which makes already-poisoned historical
+				// rows self-heal on next assembly.
+				//
+				// Length truncation here = upstream emitted pathologically long
+				// content (the documented case is Kimi/Moonshot leaking its own
+				// `<|tool_call_argument_begin|>` template token on the
+				// OpenAI-compatible path, producing 200+ char ids and names).
+				// Charset-only diffs are expected steady state for the AI SDK's
+				// synthesized fallback ids of shape `functions.<name>:<index>`
+				// and are NOT logged.
+				const id = sanitizeToolUseId(rawId);
+				const name = sanitizeToolName(rawName);
+				if (id.length < rawId.length || name.length < rawName.length) {
+					logger.warn("oversized tool_use streamed; truncated at streaming boundary", {
+						provider: opts.providerName,
+						originalId: rawId,
+						sanitizedId: id,
+						originalName: rawName,
+						sanitizedName: name,
+					});
+				}
 				toolNameById.set(id, name);
 				// Count the tool name towards output size so a plain
 				// tool call without args still gets estimated.
@@ -839,14 +884,16 @@ export async function* mapChunks(
 				break;
 			}
 			case "tool-input-delta": {
-				const id = (part.id as string | undefined) ?? "";
+				const rawId = (part.id as string | undefined) ?? "";
+				const id = sanitizeToolUseId(rawId);
 				const delta = (part.delta as string | undefined) ?? "";
 				toolInputText += delta;
 				yield { type: "tool_use_args", id, partial_json: delta };
 				break;
 			}
 			case "tool-input-end": {
-				const id = (part.id as string | undefined) ?? "";
+				const rawId = (part.id as string | undefined) ?? "";
+				const id = sanitizeToolUseId(rawId);
 				yield { type: "tool_use_end", id };
 				toolNameById.delete(id);
 				break;
