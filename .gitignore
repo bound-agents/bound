@@ -172,3 +172,6 @@ packages/sandbox/src/_runtime/
 # and regenerates these — keep them out of the tree)
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# Letta local agent state (unrelated to bound, machine-local)
+.letta/
