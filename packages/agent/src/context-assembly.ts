@@ -2139,6 +2139,17 @@ Original output was too large for the context window. If you need the full conte
 
 			const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
+			// Stage 7 must record its attributes and end on every return
+			// path. Pre-fix this branch returned without calling .end(),
+			// orphaning the span: BatchSpanProcessor never flushed it,
+			// so Jaeger had zero visibility into truncation events even
+			// though they were the most operationally significant turns
+			// (largest cache invalidations, biggest message drops).
+			stage7Span.setAttribute("context.total_tokens", totalEstimated);
+			stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
+			stage7Span.setAttribute("context.truncated_messages", truncatedCount);
+			stage7Span.end();
+
 			return {
 				messages: truncatedMessages,
 				systemPrompt,
@@ -2166,7 +2177,7 @@ Original output was too large for the context window. If you need the full conte
 
 	const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
-	// Add attributes to stage 7 before ending it
+	// Add attributes to stage 7 before ending it (no-truncation path)
 	stage7Span.setAttribute("context.total_tokens", totalEstimated);
 	stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
 	stage7Span.setAttribute("context.truncated_messages", truncatedCount);

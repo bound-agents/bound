@@ -334,12 +334,16 @@ describe("Context Assembly OTEL Spans", () => {
 		parentSpan.end();
 
 		const spans = exporter.getFinishedSpans();
-		// Just verify that spans were created - the truncation test verifies the span existence
-		expect(spans.length).toBeGreaterThan(0);
 
-		// Verify that at least some context assembly stage spans exist
-		const stageSpans = spans.filter((s) => s.name.startsWith("context.stage"));
-		expect(stageSpans.length).toBeGreaterThan(0);
+		// Stage 7 must FINISH (not leak) on the truncation path, otherwise
+		// BatchSpanProcessor never flushes it and Jaeger has zero visibility
+		// into truncation events. Pre-fix the early-return at the truncation
+		// branch returned without calling stage7Span.end(), so the span
+		// existed in process memory but never reached the exporter.
+		const stage7 = spans.find((s) => s.name === "context.stage-7-budget-validation");
+		expect(stage7).toBeDefined();
+		expect(stage7?.attributes["context.truncated_messages"]).toBeGreaterThan(0);
+		expect(stage7?.attributes["context.total_tokens"]).toBeGreaterThan(0);
 	});
 
 	it("should nest stage spans as children of parent assembleContext span", async () => {
