@@ -24,19 +24,20 @@ export interface SessionHeaderProps {
  *     half-cell off as it would be in any even-width layout. Height 8 so the
  *     17:16 char:cell-pixel ratio (terminal cells are ~2:1 tall) reads as
  *     close to circular; 7 rows was visibly squashed at the new width.
- *   - A solid `●` glyph (cyan) for the center dot. Cyan is the dominant
- *     accent color throughout the rest of the chrome — status bar, key
- *     hints, tool-call headers, slash commands, picker arrows all use it —
- *     so the dot reads as part of the same accent family the operator sees
- *     everywhere else in the session. (The blue stripes on tool_call /
- *     tool_result blocks are a separate visual layer for turn-grouping; the
- *     dot is chrome, not turn-grouping.)
- *
- * 8 rows means the geometric vertical center sits between rows 4 and 5, so
- * a single-glyph dot can't land exactly on the axis. Placing it in row 4
- * puts it slightly above geometric center, which matches optical-centering
- * conventions (dots/symbols typically need to sit a hair above geometric
- * center to look balanced).
+ *   - A half-block diamond (▄███▄ / ▀███▀, cyan) for the center dot. The
+ *     5-cell-wide × 2-row block uses lower-half-blocks at the top corners
+ *     and upper-half-blocks at the bottom corners, which chamfers the
+ *     silhouette into a rounded blob and — more importantly — places the
+ *     dot's visual mass exactly at the boundary between rows 4 and 5,
+ *     which IS the geometric center of an 8-row layout. A single-glyph dot
+ *     in row 4 read as one unit too high; this is centered on the axis.
+ *     Cyan because it's the dominant accent color throughout the rest of
+ *     the chrome — status bar, key hints, tool-call headers, slash
+ *     commands, picker arrows all use it — so the dot reads as part of
+ *     the same accent family the operator sees everywhere else in the
+ *     session. (The blue stripes on tool_call / tool_result blocks are a
+ *     separate visual layer for turn-grouping; the dot is chrome, not
+ *     turn-grouping.)
  *
  * Right column:
  *   - Line 1: (blank, for alignment with top arc)
@@ -54,11 +55,15 @@ export function SessionHeader({ commitHash, cwd }: SessionHeaderProps): React.Re
 				<Text dimColor>{"   ▄█████████▄   "}</Text>
 				<Text dimColor>{"  ███       ███  "}</Text>
 				<Box flexDirection="row">
-					<Text dimColor>{" ██     "}</Text>
-					<Text color="cyan">●</Text>
-					<Text dimColor>{"     ██ "}</Text>
+					<Text dimColor>{" ██   "}</Text>
+					<Text color="cyan">▄███▄</Text>
+					<Text dimColor>{"   ██ "}</Text>
 				</Box>
-				<Text dimColor>{" ██           ██ "}</Text>
+				<Box flexDirection="row">
+					<Text dimColor>{" ██   "}</Text>
+					<Text color="cyan">▀███▀</Text>
+					<Text dimColor>{"   ██ "}</Text>
+				</Box>
 				<Text dimColor>{"  ███       ███  "}</Text>
 				<Text dimColor>{"   ▀█████████▀   "}</Text>
 				<Text dimColor>{"     ▀▀▀▀▀▀▀     "}</Text>

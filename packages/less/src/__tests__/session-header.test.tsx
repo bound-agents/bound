@@ -31,9 +31,6 @@ describe("SessionHeader", () => {
 	it("renders the favicon ASCII art (blue dot, dimmed chunky ring)", () => {
 		const { lastFrame } = render(<SessionHeader commitHash="dev" cwd="/tmp" />);
 		const frame = lastFrame() ?? "";
-		// The ● glyph is the center dot — blue here to match the rest of the
-		// TUI's accent color (tool_call/tool_result stripes).
-		expect(frame).toContain("●");
 		// Chunky filled-block ring (▄ ▀ █) — switched from single-line box-drawing
 		// because a 1-char-thick ring reads as a rounded rectangle in a terminal,
 		// not a circle. The half-block top/bottom + full-block sides give the
