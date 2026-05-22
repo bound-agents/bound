@@ -28,16 +28,19 @@ describe("SessionHeader", () => {
 		expect(lastFrame() ?? "").toContain("/etc/hosts");
 	});
 
-	it("renders the favicon ASCII art (red dot, dimmed ring)", () => {
+	it("renders the favicon ASCII art (blue dot, dimmed chunky ring)", () => {
 		const { lastFrame } = render(<SessionHeader commitHash="dev" cwd="/tmp" />);
 		const frame = lastFrame() ?? "";
-		// The red ● glyph is the rust-red dot in the bound favicon — it's the most
-		// distinctive piece of the ASCII art, and a reliable signal that the
-		// SessionHeader rendered through to the frame.
+		// The ● glyph is the center dot — blue here to match the rest of the
+		// TUI's accent color (tool_call/tool_result stripes).
 		expect(frame).toContain("●");
-		// Box-drawing for the rounded ring.
-		expect(frame).toContain("╭");
-		expect(frame).toContain("╯");
+		// Chunky filled-block ring (▄ ▀ █) — switched from single-line box-drawing
+		// because a 1-char-thick ring reads as a rounded rectangle in a terminal,
+		// not a circle. The half-block top/bottom + full-block sides give the
+		// outline visible thickness.
+		expect(frame).toContain("▄");
+		expect(frame).toContain("▀");
+		expect(frame).toContain("█");
 	});
 
 	it("places the text column to the right of the icon (single row)", () => {
@@ -48,9 +51,9 @@ describe("SessionHeader", () => {
 		const lines = frame.split("\n");
 		const boundlessLine = lines.find((l) => l.includes("boundless"));
 		expect(boundlessLine).toBeDefined();
-		// The favicon's first row is the rounded top: `   ╭─────╮`. That row is
-		// the same physical row as the `boundless` line when laid out as a flex
-		// row with column children.
-		expect(boundlessLine).toContain("╭");
+		// The favicon's first row is the rounded top: `     ▄▄▄▄▄▄     `. That
+		// row is the same physical row as the `boundless` line when laid out as a
+		// flex row with column children.
+		expect(boundlessLine).toContain("▄");
 	});
 });
