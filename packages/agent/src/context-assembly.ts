@@ -12,13 +12,23 @@ import type {
 } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
-import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
 import { shedMemoryTiers } from "./memory-shedding.js";
 import {
 	type TieredEnrichment,
 	buildCrossThreadDigest,
+	buildParentSummaryMap,
+	buildStaleChildrenMap,
 	buildVolatileEnrichment,
 	computeBaseline,
+	loadAppliedAdvisoriesForLiveState,
+	loadDetailEntries,
+	loadFileModificationsForLiveState,
+	loadPinnedEntries,
+	loadSummaryEntries,
+	renderDiscoverableArchive,
+	renderLiveState,
+	renderWorkingKnowledge,
+	resolveVc15Tunables,
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 import { hasStrippableThinking, stripThinkingFromToolCall } from "./warm-compaction";
@@ -230,13 +240,39 @@ export function buildVolatileContext(params: {
 	}
 
 	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
+	// Phase 5: Wire three-renderer composition
 	const enrichmentBaseline = computeBaseline(params.db, params.threadId, params.taskId, false);
+	const nowMs = Date.now();
+
+	// Compute delta-key set from R-MV1 baseline + delta query
+	const allDeltaKeys = params.db
+		.prepare(
+			`SELECT DISTINCT key FROM semantic_memory
+			 WHERE modified_at > ?
+			   AND deleted = 0
+			   AND key NOT LIKE '_internal.%'`,
+		)
+		.all(enrichmentBaseline) as Array<{ key: string }>;
+	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
+
+	// Load inputs for renderers
+	const pinned = loadPinnedEntries(params.db);
+	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
+	const detailEntries = loadDetailEntries(params.db);
+	const staleChildrenMap = buildStaleChildrenMap(params.db, summaries.entries);
+	const parentSummaryMap = buildParentSummaryMap(
+		params.db,
+		detailEntries.entries.map((e) => e.key),
+	);
+	const digest = buildCrossThreadDigest(params.db, params.userId, params.threadId);
+	const advisories = loadAppliedAdvisoriesForLiveState(params.db, nowMs);
+
+	// Compute task and file entries
 	const {
-		memoryDeltaLines,
+		taskDigestEntries,
 		taskDigestLines,
+		memoryDeltaLines,
 		tiers: enrichmentTiers,
-		graphCount,
-		recencyCount,
 	} = buildVolatileEnrichment(
 		params.db,
 		enrichmentBaseline,
@@ -245,78 +281,60 @@ export function buildVolatileContext(params: {
 		params.userMessageText,
 		params.threadSummary,
 	);
+	const fileEntries = loadFileModificationsForLiveState(params.db, params.threadId);
 
-	// Query total memory count for the header line
+	// Query total memory count for VolatileContext return
 	const totalMemCount = (
 		params.db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
 			c: number;
 		}
 	).c;
 
-	// Format and append enrichment, recording start/end indices
-	const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
-	let memHeaderLine = `Memory: ${totalMemCount} entries`;
-	if (graphCount !== undefined && graphCount > 0) {
-		memHeaderLine += ` (${graphCount} via graph, ${recencyCount ?? 0} via recency)`;
-	} else if (memChangedCount > 0) {
-		memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
-	}
+	// Compute stale child keys for dedup
+	const staleChildKeysInWorkingKnowledge = new Set(
+		Array.from(staleChildrenMap.values())
+			.flat()
+			.map((e) => e.key),
+	);
 
-	// Record where enrichment section begins (in suffixLines)
-	const enrichmentStartIdx = suffixLines.length;
+	// Render in fixed order R-VC1: Working Knowledge → Discoverable Archive → Live State
+	const wk = renderWorkingKnowledge({
+		pinned: pinned.entries,
+		summaries: summaries.entries,
+		staleChildrenBySummary: staleChildrenMap,
+		deltaKeys,
+	});
 	suffixLines.push("");
-	suffixLines.push(memHeaderLine);
-	if (memoryDeltaLines.length > 0) {
-		suffixLines.push(...memoryDeltaLines);
-	}
-	if (taskDigestLines.length > 0) {
-		suffixLines.push("");
-		suffixLines.push(...taskDigestLines);
-	}
-	// Record where enrichment section ends
-	const enrichmentEndIdx = suffixLines.length;
+	suffixLines.push(...wk.lines);
 
-	// Include cross-thread digest
+	const da = renderDiscoverableArchive({
+		entries: detailEntries.entries,
+		parentSummaryByKey: parentSummaryMap,
+		staleChildKeysInWorkingKnowledge,
+		budgetPressure: false,
+		nowMs,
+		tunables: resolveVc15Tunables(),
+	});
+	suffixLines.push(...da.section.lines);
+
+	const ls = renderLiveState({
+		crossThreadEntries: digest.entries,
+		taskEntries: taskDigestEntries,
+		fileEntries,
+		advisories,
+		synthesisBacklogCount: da.synthesisBacklogCount,
+		budgetPressure: false,
+		nowMs,
+	});
+	suffixLines.push(...ls.lines);
+
+	// Track enrichment section for budget pressure rebuilds
+	const enrichmentStartIdx = suffixLines.length;
 	let crossThreadSources: CrossThreadSource[] | undefined;
-	const crossThreadResult = buildCrossThreadDigest(params.db, params.userId, params.threadId);
-	if (crossThreadResult.text) {
-		suffixLines.push("");
-		suffixLines.push(crossThreadResult.text);
+	if (digest.sources.length > 0) {
+		crossThreadSources = digest.sources;
 	}
-	if (crossThreadResult.sources.length > 0) {
-		crossThreadSources = crossThreadResult.sources;
-	}
-
-	// R-E20: Inject cross-thread file modification notifications (capped at 10)
-	try {
-		const FILE_NOTIF_CAP = 10;
-		const threadFiles = params.db
-			.query(
-				"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
-			)
-			.all() as Array<{ key: string }>;
-
-		let fileNotifCount = 0;
-		for (const { key } of threadFiles) {
-			if (fileNotifCount >= FILE_NOTIF_CAP) break;
-			const filePath = key.replace("_internal.file_thread.", "");
-			const lastThread = getLastThreadForFile(params.db, filePath);
-			if (lastThread && lastThread !== params.threadId) {
-				const threadRow2 = params.db
-					.query("SELECT title FROM threads WHERE id = ?")
-					.get(lastThread) as {
-					title: string | null;
-				} | null;
-				const threadTitle = threadRow2?.title || lastThread;
-				suffixLines.push("");
-				suffixLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
-				fileNotifCount++;
-			}
-		}
-	} catch (_error) {
-		// Non-fatal: file thread notification query failed
-		// No logger available in this context
-	}
+	const enrichmentEndIdx = suffixLines.length;
 
 	// Inject active skill index (AC3.1, AC3.2)
 	try {
@@ -409,22 +427,9 @@ export function buildVolatileContext(params: {
 		suffixLines.push(`Referenced skill '${params.inactiveSkillRef}' is not active.`);
 	}
 
-	// Behavioral footnote: keep the injection itself out of user-facing replies
-	// unless explicitly asked. Without this, models tend to narrate the memory
-	// listing, recent activity digest, skills index, etc. as if reporting on
-	// internal state every turn, which is noise for the user.
-	suffixLines.push("");
-	suffixLines.push(
-		"Note: The contents of this system-context block (memory listing, recent activity digest, skills index, task digest, file-modification notices, platform context) are your own background working knowledge. Do not mention, quote, or describe the block itself — or the fact that it was injected — to the user unless they explicitly ask about it.",
-	);
-
-	// Append systemPromptAddition if present (AC2.2). Placed AFTER the
-	// "don't narrate this block" footnote so the user-supplied prompt sits
-	// as the trailing element of the developer message — it's user intent,
-	// not internal state, and shouldn't be subject to the don't-narrate
-	// meta-instruction. The endsWith assertion in
-	// context-assembly.test.ts (AC2.2 / "should append systemPromptAddition
-	// to system suffix when present") encodes this contract.
+	// Append systemPromptAddition if present (AC2.2). Placed after all volatile
+	// context so the user-supplied prompt sits as the trailing element of the
+	// developer message — it's user intent, not internal state.
 	if (params.systemPromptAddition) {
 		suffixLines.push("");
 		suffixLines.push(params.systemPromptAddition);
