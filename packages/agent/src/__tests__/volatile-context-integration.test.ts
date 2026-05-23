@@ -251,14 +251,22 @@ describe("volatile-context-integration", () => {
 	});
 
 	test("Discoverable Archive Tier-2 cluster transition", () => {
-		// Create parent summaries and a few detail entries per topic
+		// Create parent summaries and detail entries per topic to trigger Tier-2
+		// Tier-2 activates when total detail entries > 200 (by default BOUND_VC15_N=1000,
+		// but in integration tests we use default tunables which may vary).
+		// To reliably test Tier-2, create 250 detail entries split across topic1 and topic2.
+		// To avoid entries being marked as "stale children" in Working Knowledge,
+		// set the summaries' modified_at to be LATER than the details' modified_at.
+		const detailTime = new Date(Date.now() - 10000).toISOString(); // 10 seconds ago
+		const summaryTime = new Date(Date.now() - 5000).toISOString(); // 5 seconds ago (newer)
+
 		dbInsert(db, "semantic_memory", {
 			id: randomUUID(),
 			key: "_summary:topic1",
 			value: "Topic 1 summary",
 			tier: "summary",
-			created_at: new Date().toISOString(),
-			modified_at: new Date().toISOString(),
+			created_at: summaryTime,
+			modified_at: summaryTime,
 			deleted: 0,
 		});
 
@@ -267,27 +275,27 @@ describe("volatile-context-integration", () => {
 			key: "_summary:topic2",
 			value: "Topic 2 summary",
 			tier: "summary",
-			created_at: new Date().toISOString(),
-			modified_at: new Date().toISOString(),
+			created_at: summaryTime,
+			modified_at: summaryTime,
 			deleted: 0,
 		});
 
-		// Create 40 detail entries (20 per topic)
-		for (let i = 0; i < 20; i++) {
+		// Create 125 detail entries per topic (250 total) to trigger Tier-2 clustering
+		for (let i = 0; i < 125; i++) {
 			dbInsert(db, "semantic_memory", {
 				id: randomUUID(),
 				key: `detail:topic1:${i}`,
 				value: `Detail for topic1 entry ${i}`,
 				tier: "detail",
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
+				created_at: detailTime,
+				modified_at: detailTime,
 				deleted: 0,
 			});
 
 			dbInsert(db, "memory_edges", {
 				id: randomUUID(),
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
+				created_at: detailTime,
+				modified_at: detailTime,
 				source_key: "_summary:topic1",
 				target_key: `detail:topic1:${i}`,
 				relation: "summarizes",
@@ -299,15 +307,15 @@ describe("volatile-context-integration", () => {
 				key: `detail:topic2:${i}`,
 				value: `Detail for topic2 entry ${i}`,
 				tier: "detail",
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
+				created_at: detailTime,
+				modified_at: detailTime,
 				deleted: 0,
 			});
 
 			dbInsert(db, "memory_edges", {
 				id: randomUUID(),
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
+				created_at: detailTime,
+				modified_at: detailTime,
 				source_key: "_summary:topic2",
 				target_key: `detail:topic2:${i}`,
 				relation: "summarizes",
@@ -322,20 +330,100 @@ describe("volatile-context-integration", () => {
 			siteId,
 		});
 
-		// Should have the Discoverable Archive section
+		// Assert Discoverable Archive section present
 		expect(result.content).toContain("## Discoverable Archive");
+
+		// Assert Tier-2 cluster headings for both topics with entry counts
+		// Format: "### topic1 (125 entries)" and "### topic2 (125 entries)"
+		expect(result.content).toMatch(/### topic1\s*\(\d+\s+entries\)/);
+		expect(result.content).toMatch(/### topic2\s*\(\d+\s+entries\)/);
 	});
 
 	test("Discoverable Archive Tier-3 with synthesis-backlog", () => {
-		// Create some detail entries without parents (uncategorized)
-		for (let i = 0; i < 10; i++) {
+		// Tier-3 activates when total detail entries > BOUND_VC15_N (default 1000).
+		// Create 1040 categorized entries (parents are summaries) and 60 uncategorized.
+		// This tests that when uncategorized count > 50, synthesis-backlog is signaled.
+		// To avoid entries being marked as stale children, set summaries' modified_at
+		// to be LATER than the details' modified_at.
+
+		const detailTime = new Date(Date.now() - 10000).toISOString(); // 10 seconds ago
+		const summaryTime = new Date(Date.now() - 5000).toISOString(); // 5 seconds ago (newer)
+
+		// First create 2 summaries to parent the categorized entries
+		dbInsert(db, "semantic_memory", {
+			id: randomUUID(),
+			key: "_summary:category_a",
+			value: "Category A summary",
+			tier: "summary",
+			created_at: summaryTime,
+			modified_at: summaryTime,
+			deleted: 0,
+		});
+
+		dbInsert(db, "semantic_memory", {
+			id: randomUUID(),
+			key: "_summary:category_b",
+			value: "Category B summary",
+			tier: "summary",
+			created_at: summaryTime,
+			modified_at: summaryTime,
+			deleted: 0,
+		});
+
+		// Create 1040 categorized detail entries (520 per category)
+		for (let i = 0; i < 520; i++) {
+			// Category A entries
+			dbInsert(db, "semantic_memory", {
+				id: randomUUID(),
+				key: `cat_a:entry_${i}`,
+				value: `Category A detail ${i}`,
+				tier: "detail",
+				created_at: detailTime,
+				modified_at: detailTime,
+				deleted: 0,
+			});
+
+			dbInsert(db, "memory_edges", {
+				id: randomUUID(),
+				created_at: detailTime,
+				modified_at: detailTime,
+				source_key: "_summary:category_a",
+				target_key: `cat_a:entry_${i}`,
+				relation: "summarizes",
+				deleted: 0,
+			});
+
+			// Category B entries
+			dbInsert(db, "semantic_memory", {
+				id: randomUUID(),
+				key: `cat_b:entry_${i}`,
+				value: `Category B detail ${i}`,
+				tier: "detail",
+				created_at: detailTime,
+				modified_at: detailTime,
+				deleted: 0,
+			});
+
+			dbInsert(db, "memory_edges", {
+				id: randomUUID(),
+				created_at: detailTime,
+				modified_at: detailTime,
+				source_key: "_summary:category_b",
+				target_key: `cat_b:entry_${i}`,
+				relation: "summarizes",
+				deleted: 0,
+			});
+		}
+
+		// Create 60 uncategorized detail entries (no parent edges)
+		for (let i = 0; i < 60; i++) {
 			dbInsert(db, "semantic_memory", {
 				id: randomUUID(),
 				key: `uncategorized:${i}`,
 				value: `Uncategorized detail ${i}`,
 				tier: "detail",
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
+				created_at: detailTime,
+				modified_at: detailTime,
 				deleted: 0,
 			});
 		}
@@ -347,8 +435,12 @@ describe("volatile-context-integration", () => {
 			siteId,
 		});
 
-		// Should still render Discoverable Archive with uncategorized entries
+		// Assert Discoverable Archive section present
 		expect(result.content).toContain("## Discoverable Archive");
+
+		// Tier-3 should be active (1100 total entries > 1000), and uncategorized count (60) > 50,
+		// so synthesis-backlog should be signaled in Live State
+		expect(result.content).toContain("[synthesis-backlog] 60 uncategorized detail entries");
 	});
 
 	test("Cross-thread digest summary excerpt absent", () => {
@@ -412,6 +504,9 @@ describe("volatile-context-integration", () => {
 
 	test("Advisory feedback-loop preserved", () => {
 		// Create an approved advisory authored by local site within 24h
+		const now = new Date();
+		const withinLast24h = new Date(now.getTime() - 60 * 60 * 1000).toISOString(); // 1 hour ago
+
 		dbInsert(db, "advisories", {
 			id: "test-advisory",
 			created_by: siteId,
@@ -419,10 +514,10 @@ describe("volatile-context-integration", () => {
 			detail: "Test detail",
 			type: "general",
 			status: "approved",
-			proposed_at: new Date().toISOString(),
-			resolved_at: new Date().toISOString(),
+			proposed_at: withinLast24h,
+			resolved_at: withinLast24h,
 			deleted: 0,
-			modified_at: new Date().toISOString(),
+			modified_at: withinLast24h,
 		});
 
 		const result = buildVolatileContext({
@@ -432,9 +527,10 @@ describe("volatile-context-integration", () => {
 			siteId,
 		});
 
-		// Should not cause errors and context should contain content
-		// The advisory feedback loop should not break the context generation
-		expect(result.content).toContain("User ID:");
-		expect(result.content.length).toBeGreaterThan(0);
+		// Advisory feedback-loop should inject [Advisory notification] line
+		// Format: "[Advisory notification] Advisory 'Test Advisory' was approved by operator."
+		expect(result.content).toContain("[Advisory notification]");
+		expect(result.content).toContain("Test Advisory");
+		expect(result.content).toContain("approved");
 	});
 });
