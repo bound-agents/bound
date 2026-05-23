@@ -14,6 +14,7 @@ import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { shedMemoryTiers } from "./memory-shedding.js";
 import {
+	type LiveStateTaskEntry,
 	type TieredEnrichment,
 	buildCrossThreadDigest,
 	buildParentSummaryMap,
@@ -171,6 +172,80 @@ ${skills.map(
 </available_skills>`;
 }
 
+/**
+ * Compose volatile sections using the three-section renderer pattern (R-VC1).
+ * Shared helper for all four buildVolatileEnrichment call sites (primary cold path,
+ * no-history task path, budget-pressure rebuild path, warm-sections rebuild).
+ *
+ * Returns { lines, synthesisBacklogCount } where lines are the rendered sections
+ * in fixed order: Working Knowledge → Discoverable Archive → Live State.
+ */
+interface ComposeVolatileSectionsParams {
+	db: Database;
+	pinned: ReturnType<typeof loadPinnedEntries>["entries"];
+	summaries: ReturnType<typeof loadSummaryEntries>["entries"];
+	detailEntries: ReturnType<typeof loadDetailEntries>["entries"];
+	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
+	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
+	deltaKeys: Set<string>;
+	digest: ReturnType<typeof buildCrossThreadDigest>;
+	taskDigestEntries: LiveStateTaskEntry[];
+	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
+	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
+	budgetPressure: boolean;
+	nowMs: number;
+}
+
+function composeVolatileSections(params: ComposeVolatileSectionsParams): {
+	lines: string[];
+	synthesisBacklogCount: number | null;
+} {
+	const lines: string[] = [];
+
+	// Compute stale child keys for dedup
+	const staleChildKeysInWorkingKnowledge = new Set(
+		Array.from(params.staleChildrenMap.values())
+			.flat()
+			.map((e) => e.key),
+	);
+
+	// Render in fixed order R-VC1: Working Knowledge → Discoverable Archive → Live State
+	const wk = renderWorkingKnowledge({
+		pinned: params.pinned,
+		summaries: params.summaries,
+		staleChildrenBySummary: params.staleChildrenMap,
+		deltaKeys: params.deltaKeys,
+	});
+	lines.push("");
+	lines.push(...wk.lines);
+
+	const da = renderDiscoverableArchive({
+		entries: params.detailEntries,
+		parentSummaryByKey: params.parentSummaryMap,
+		staleChildKeysInWorkingKnowledge,
+		budgetPressure: params.budgetPressure,
+		nowMs: params.nowMs,
+		tunables: resolveVc15Tunables(),
+	});
+	lines.push(...da.section.lines);
+
+	const ls = renderLiveState({
+		crossThreadEntries: params.digest.entries,
+		taskEntries: params.taskDigestEntries,
+		fileEntries: params.fileEntries,
+		advisories: params.advisories,
+		synthesisBacklogCount: da.synthesisBacklogCount,
+		budgetPressure: params.budgetPressure,
+		nowMs: params.nowMs,
+	});
+	lines.push(...ls.lines);
+
+	return {
+		lines,
+		synthesisBacklogCount: da.synthesisBacklogCount,
+	};
+}
+
 export function buildVolatileContext(params: {
 	db: Database;
 	threadId: string;
@@ -290,51 +365,31 @@ export function buildVolatileContext(params: {
 		}
 	).c;
 
-	// Compute stale child keys for dedup
-	const staleChildKeysInWorkingKnowledge = new Set(
-		Array.from(staleChildrenMap.values())
-			.flat()
-			.map((e) => e.key),
-	);
-
-	// Render in fixed order R-VC1: Working Knowledge → Discoverable Archive → Live State
-	const wk = renderWorkingKnowledge({
+	// Render the three sections using the shared composer
+	const enrichmentStartIdx = suffixLines.length;
+	const { lines: enrichmentLines } = composeVolatileSections({
+		db: params.db,
 		pinned: pinned.entries,
 		summaries: summaries.entries,
-		staleChildrenBySummary: staleChildrenMap,
+		detailEntries: detailEntries.entries,
+		staleChildrenMap,
+		parentSummaryMap,
 		deltaKeys,
-	});
-	suffixLines.push("");
-	suffixLines.push(...wk.lines);
-
-	const da = renderDiscoverableArchive({
-		entries: detailEntries.entries,
-		parentSummaryByKey: parentSummaryMap,
-		staleChildKeysInWorkingKnowledge,
-		budgetPressure: false,
-		nowMs,
-		tunables: resolveVc15Tunables(),
-	});
-	suffixLines.push(...da.section.lines);
-
-	const ls = renderLiveState({
-		crossThreadEntries: digest.entries,
-		taskEntries: taskDigestEntries,
+		digest,
+		taskDigestEntries,
 		fileEntries,
 		advisories,
-		synthesisBacklogCount: da.synthesisBacklogCount,
 		budgetPressure: false,
 		nowMs,
 	});
-	suffixLines.push(...ls.lines);
+	suffixLines.push(...enrichmentLines);
+	const enrichmentEndIdx = suffixLines.length;
 
-	// Track enrichment section for budget pressure rebuilds
-	const enrichmentStartIdx = suffixLines.length;
+	// Track cross-thread sources for debug
 	let crossThreadSources: CrossThreadSource[] | undefined;
 	if (digest.sources.length > 0) {
 		crossThreadSources = digest.sources;
 	}
-	const enrichmentEndIdx = suffixLines.length;
 
 	// Inject active skill index (AC3.1, AC3.2)
 	try {
@@ -1791,36 +1846,67 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
+		const nowMs = Date.now();
+
+		// Load inputs for renderers with smaller caps (maxMemory=10, maxTasks=5)
+		const pinnedNH = loadPinnedEntries(db);
+		const summariesNH = loadSummaryEntries(db, pinnedNH.exclusionSet);
+		const detailEntriesNH = loadDetailEntries(db);
+		const staleChildrenMapNH = buildStaleChildrenMap(db, summariesNH.entries);
+		const parentSummaryMapNH = buildParentSummaryMap(
+			db,
+			detailEntriesNH.entries.map((e) => e.key),
+		);
+		const digestNH = buildCrossThreadDigest(db, userId, threadId);
+		const advisoriesNH = loadAppliedAdvisoriesForLiveState(db, nowMs);
+
+		// Compute task and file entries
 		const {
-			memoryDeltaLines: noHistDelta,
+			taskDigestEntries: taskEntriesNH,
 			taskDigestLines: noHistTasks,
 			tiers: enrichmentTiersL2,
 		} = buildVolatileEnrichment(db, enrichmentBaseline, 10, 5, undefined, undefined, 10);
+		const fileEntriesNH = loadFileModificationsForLiveState(db, threadId);
+
+		// Compute delta-key set
+		const allDeltaKeysNH = db
+			.prepare(
+				`SELECT DISTINCT key FROM semantic_memory
+				 WHERE modified_at > ?
+				   AND deleted = 0
+				   AND key NOT LIKE '_internal.%'`,
+			)
+			.all(enrichmentBaseline) as Array<{ key: string }>;
+		const deltaKeysNH = new Set(allDeltaKeysNH.map((r) => r.key));
+
 		enrichmentTiers = enrichmentTiersL2;
 		taskDigestLinesSnapshot = noHistTasks;
 
-		if (noHistDelta.length > 0 || noHistTasks.length > 0) {
+		// Compose the three sections using the shared helper
+		const { lines: renderedEnrichmentLines } = composeVolatileSections({
+			db,
+			pinned: pinnedNH.entries,
+			summaries: summariesNH.entries,
+			detailEntries: detailEntriesNH.entries,
+			staleChildrenMap: staleChildrenMapNH,
+			parentSummaryMap: parentSummaryMapNH,
+			deltaKeys: deltaKeysNH,
+			digest: digestNH,
+			taskDigestEntries: taskEntriesNH,
+			fileEntries: fileEntriesNH,
+			advisories: advisoriesNH,
+			budgetPressure: false,
+			nowMs,
+		});
+
+		if (renderedEnrichmentLines.length > 0) {
 			totalMemCount = (
 				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
 					c: number;
 				}
 			).c;
 
-			const noHistMemChangedCount = noHistDelta.filter((l) => l.startsWith("- ")).length;
-			let noHistMemHeader = `Memory: ${totalMemCount} entries`;
-			if (noHistMemChangedCount > 0) {
-				noHistMemHeader += ` (${noHistMemChangedCount} changed since your last run)`;
-			}
-
-			const enrichmentLines: string[] = [];
-			enrichmentLines.push(noHistMemHeader);
-			if (noHistDelta.length > 0) {
-				enrichmentLines.push(...noHistDelta);
-			}
-			if (noHistTasks.length > 0) {
-				enrichmentLines.push("");
-				enrichmentLines.push(...noHistTasks);
-			}
+			const enrichmentLines: string[] = [...renderedEnrichmentLines];
 
 			// Append systemPromptAddition if present (AC2.2 for noHistory path)
 			if (params.systemPromptAddition) {
@@ -1831,12 +1917,9 @@ Original output was too large for the context window. If you need the full conte
 			enrichmentMessageIndex = assembled.length;
 			assembled.push({ role: "developer", content: enrichmentLines.join("\n") });
 
-			// Track noHistory volatile section tokens (memory, task-digest)
-			const noHistMemTokens = noHistDelta.length > 0 ? countTokens(noHistDelta.join("\n")) : 0;
-			const noHistTaskTokens = noHistTasks.length > 0 ? countTokens(noHistTasks.join("\n")) : 0;
-
-			if (noHistMemTokens > 0) sections.push({ name: "memory", tokens: noHistMemTokens });
-			if (noHistTaskTokens > 0) sections.push({ name: "task-digest", tokens: noHistTaskTokens });
+			// Track noHistory volatile section tokens
+			const noHistVolatileTokens = countTokens(renderedEnrichmentLines.join("\n"));
+			sections.push({ name: "volatile-enrichment", tokens: noHistVolatileTokens });
 		}
 	}
 	stage5_5Span.end();
