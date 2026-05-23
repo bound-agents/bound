@@ -1428,3 +1428,112 @@ export function loadAppliedAdvisoriesForLiveState(
 		.all(cutoff) as Array<{ title: string; resolved_at: string }>;
 	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
 }
+
+/**
+ * Live State data type for task digest entries (R-VC5, R-MV6/R-MV7/R-MV8/R-MV9).
+ * Represents a task run from the volatile digest.
+ */
+export interface LiveStateTaskEntry {
+	taskId: string;
+	taskType: string;
+	runCount: number;
+	lastRunAt: string;
+	status: string;
+}
+
+/**
+ * Live State data type for file modification notices (R-VC13, R-E20).
+ * Represents a file modified from a sibling thread.
+ */
+export interface LiveStateFileEntry {
+	path: string;
+	threadTitle: string;
+}
+
+/**
+ * Input to renderLiveState — composed from four subsystems by Phase 5 wiring.
+ * Each field is pre-loaded by the caller; the renderer is a pure function.
+ */
+export interface LiveStateInput {
+	/** Structured per-thread rows from buildCrossThreadDigest.entries */
+	crossThreadEntries: CrossThreadDigestEntry[];
+	/** Task digest rows from buildVolatileEnrichment */
+	taskEntries: LiveStateTaskEntry[];
+	/** File modification notices from context-assembly.ts */
+	fileEntries: LiveStateFileEntry[];
+	/** Applied advisories from loadAppliedAdvisoriesForLiveState */
+	advisories: LiveStateAdvisory[];
+	/** From renderDiscoverableArchive output. Null when Tier 3 inactive or Uncategorized ≤ 50. */
+	synthesisBacklogCount: number | null;
+	/** True when budget pressure is active (R-VC14). */
+	budgetPressure: boolean;
+	/** Wall-clock anchor for relative-time formatting. Pass Date.now() at assembly time. */
+	nowMs: number;
+}
+
+const LIVE_STATE_HEADER = "## Live State — pointers to canonical sources";
+const LIVE_STATE_FOOTER =
+	"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.";
+const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
+
+/**
+ * Renders the Live State section — the third top-level section.
+ * Composes four subsystems (cross-thread, task, file, advisory) in fixed order,
+ * each with an explicit source label, plus the conditional synthesis-backlog line.
+ *
+ * R-VC2: Produces header with exact em-dash character (U+2014).
+ * R-VC5: Each entry renders with explicit source label naming the kind of pointer.
+ * R-VC6: Produces exact footer text.
+ * R-VC7: Cross-thread digest renders title, message count, last-updated timestamp.
+ * R-VC12: Applied advisories render with relative time.
+ * R-VC13: File modification notices render with em-dash separator (U+2014).
+ * R-VC14: Under budget pressure, each subsystem is capped to most-recent-3.
+ * R-VC15: synthesis-backlog line rendered conditionally, not affected by budget cap.
+ * R-VC22: Header uses ## (top-level, uniform across sections).
+ */
+export function renderLiveState(input: LiveStateInput): RenderedSection {
+	const lines: string[] = [];
+	lines.push(LIVE_STATE_HEADER);
+	lines.push("");
+
+	const cap = (arr: unknown[]) =>
+		input.budgetPressure ? arr.slice(0, BUDGET_PRESSURE_SUBSYSTEM_CAP) : arr;
+
+	// §5.3 step 1 — cross-thread entries (R-VC7).
+	for (const e of cap(input.crossThreadEntries) as CrossThreadDigestEntry[]) {
+		lines.push(
+			`- [thread] ${e.title}: ${e.messageCount} messages (last updated ${e.lastUpdatedAt})`,
+		);
+	}
+
+	// §5.3 step 2 — task digest entries (R-MV6/R-MV7/R-MV8/R-MV9).
+	for (const t of cap(input.taskEntries) as LiveStateTaskEntry[]) {
+		lines.push(
+			`- [task] ${t.taskId} (${t.taskType}): run_count=${t.runCount}, last_run_at=${t.lastRunAt}, status=${t.status}`,
+		);
+	}
+
+	// §5.3 step 3 — file modification notices (R-VC13, R-E20).
+	for (const f of cap(input.fileEntries) as LiveStateFileEntry[]) {
+		// em-dash separator U+2014
+		lines.push(`- [file] ${f.path} — last modified by thread "${f.threadTitle}"`);
+	}
+
+	// §5.3 step 4 — applied advisories (R-VC12).
+	for (const a of cap(input.advisories) as LiveStateAdvisory[]) {
+		lines.push(
+			`- [advisory] ${a.title} — applied ${relativeTimeFragment(a.appliedAt, input.nowMs)}`,
+		);
+	}
+
+	// §5.3 trailing rule — synthesis-backlog line (R-VC15).
+	// Not subject to budget cap; singleton line when active.
+	if (input.synthesisBacklogCount !== null) {
+		lines.push(`- [synthesis-backlog] ${input.synthesisBacklogCount} uncategorized detail entries`);
+	}
+
+	lines.push("");
+	lines.push(LIVE_STATE_FOOTER);
+
+	return { lines };
+}
