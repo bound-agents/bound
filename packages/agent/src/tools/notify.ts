@@ -40,7 +40,7 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "notify",
 				description:
-					"Send a proactive notification to another thread. Enqueues a message and triggers inference on the target thread.",
+					"Send a proactive notification to another thread. Enqueues a message and triggers inference on the target thread. When composing messages, use 'we' and 'our' — all threads are the same agent.",
 				parameters: jsonSchema,
 			},
 		},
