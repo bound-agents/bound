@@ -658,7 +658,7 @@ export function buildParentSummaryMap(
 			`SELECT e.target_key AS child, e.source_key AS parent
 			 FROM memory_edges e
 			 WHERE e.relation = 'summarizes'
-			   AND e.deleted IS NOT 1
+			   AND e.deleted = 0
 			   AND e.target_key IN (${placeholders})`,
 		)
 		.all(...keys) as Array<{ child: string; parent: string }>;
@@ -688,9 +688,9 @@ export function buildStaleChildrenMap(
 			`SELECT e.source_key AS parent, e.target_key AS child_key,
 					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
 			 FROM memory_edges e
-			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted IS NOT 1
+			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
 			 WHERE e.relation = 'summarizes'
-			   AND e.deleted IS NOT 1
+			   AND e.deleted = 0
 			   AND e.source_key IN (${placeholders})`,
 		)
 		.all(...summaries.map((s) => s.key)) as Array<{
@@ -1554,8 +1554,9 @@ export function loadFileModificationsForLiveState(
 			}
 		}
 		return entries;
-	} catch (_error) {
-		// Non-fatal: file thread notification query failed
+	} catch (error) {
+		// Non-fatal: file thread notification query failed. Log for visibility.
+		console.warn("loadFileModificationsForLiveState query failed:", error);
 		return [];
 	}
 }
