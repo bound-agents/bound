@@ -361,11 +361,26 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 	}
 }
 
+export interface CrossThreadDigestEntry {
+	title: string;
+	messageCount: number;
+	lastUpdatedAt: string; // ISO-8601 from threads table
+}
+
+export interface CrossThreadDigestResult {
+	/** Existing field preserved for backward compatibility with any non-Live-State caller. */
+	text: string;
+	/** Existing field preserved. */
+	sources: CrossThreadSource[];
+	/** New: structured per-thread rows for Live State composition. */
+	entries: CrossThreadDigestEntry[];
+}
+
 export function buildCrossThreadDigest(
 	db: Database,
 	userId: string,
 	excludeThreadId?: string,
-): { text: string; sources: CrossThreadSource[] } {
+): CrossThreadDigestResult {
 	try {
 		// Get recent threads for user, including the summary field for continuity
 		const hasMessages = "AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)";
@@ -382,14 +397,13 @@ export function buildCrossThreadDigest(
 		}>;
 
 		if (threads.length === 0) {
-			return { text: "No recent activity.", sources: [] };
+			return { text: "No recent activity.", sources: [], entries: [] };
 		}
 
-		// Build digest — include summary so the agent can continue prior conversations
+		// Build digest — populate structured entries for Live State
 		const lines: string[] = [];
 		const sources: CrossThreadSource[] = [];
-		lines.push("Recent Activity Digest:");
-		lines.push("");
+		const entries: CrossThreadDigestEntry[] = [];
 
 		for (const thread of threads) {
 			const title = thread.title || "(untitled)";
@@ -401,13 +415,12 @@ export function buildCrossThreadDigest(
 				`- ${title}: ${messageCount.count} messages (last updated ${thread.last_message_at})`,
 			);
 
-			// Include the thread summary (truncated to 300 chars) when available,
-			// so the agent has conversational context without needing to re-read history.
-			if (thread.summary) {
-				const truncated =
-					thread.summary.length > 300 ? `${thread.summary.slice(0, 297)}...` : thread.summary;
-				lines.push(`  Summary: ${truncated}`);
-			}
+			// Populate structured entry for Live State
+			entries.push({
+				title,
+				messageCount: messageCount.count,
+				lastUpdatedAt: thread.last_message_at,
+			});
 
 			// Only mark threads with summaries as cross-thread sources —
 			// they're the ones whose content was actually injected into context.
@@ -424,9 +437,9 @@ export function buildCrossThreadDigest(
 			}
 		}
 
-		return { text: lines.join("\n"), sources };
+		return { text: lines.join("\n"), sources, entries };
 	} catch {
-		return { text: "Error building digest.", sources: [] };
+		return { text: "Error building digest.", sources: [], entries: [] };
 	}
 }
 
