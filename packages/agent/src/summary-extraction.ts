@@ -541,6 +541,30 @@ export interface TieredEnrichment {
 	L3: StageEntry[];
 }
 
+export interface WorkingKnowledgeInput {
+	/** From loadPinnedEntries — rendered in full text. */
+	pinned: StageEntry[];
+	/** From loadSummaryEntries — rendered with 200-char gloss. */
+	summaries: StageEntry[];
+	/**
+	 * Per-summary stale children, keyed by summary key.
+	 * Populated by Phase 5 wiring via memory_edges 'summarizes' traversal.
+	 * Empty array (or missing key) means no stale children for that summary.
+	 */
+	staleChildrenBySummary: Map<string, StageEntry[]>;
+	/**
+	 * Set of memory keys with modified_at > baseline (R-MV1 delta semantics).
+	 * Computed upstream by the existing R-MV1 baseline logic; passed in here
+	 * so the renderer is pure (no DB access for delta detection).
+	 */
+	deltaKeys: Set<string>;
+}
+
+export interface RenderedSection {
+	/** Section line array, one element per output line. Joined with "\n" by callers. */
+	lines: string[];
+}
+
 /**
  * Formats a single StageEntry for display in memory delta output.
  * Handles tier-aware formatting: L0 is minimal, L1 includes tier tag,
@@ -1087,4 +1111,13 @@ export function loadDetailEntries(db: Database): DetailRetrievalResult {
 		.all() as Array<{ key: string; last_accessed_at: string | null }>;
 
 	return { entries: rows.map((r) => ({ key: r.key, last_accessed_at: r.last_accessed_at })) };
+}
+
+/**
+ * Renders the Working Knowledge section from pinned and summary entries.
+ * A pure function that takes already-loaded data and produces output lines.
+ * No I/O; no DB access; R-VC11(d) structurally guaranteed by signature.
+ */
+export function renderWorkingKnowledge(_input: WorkingKnowledgeInput): RenderedSection {
+	return { lines: [] };
 }
