@@ -8,6 +8,7 @@ import SecretModal from "../components/SecretModal.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
+import { getWebhookEndpointUrl } from "../lib/webhook-utils";
 
 let webhooks: WebhookListEntry[] = $state([]);
 let loading = $state(true);
@@ -425,6 +426,11 @@ function formatDate(iso: string): string {
 					<div class="detail-section">
 						<div class="section-label">Webhook ID</div>
 						<code class="mono-text">{selectedWebhook.id}</code>
+					</div>
+
+					<div class="detail-section">
+						<div class="section-label">Endpoint URL</div>
+						<code class="mono-text">{getWebhookEndpointUrl(selectedWebhook.id, window.location.origin)}</code>
 					</div>
 
 					<div class="detail-section">
