@@ -57,14 +57,19 @@ export function createSkillsRoutes(db: Database): Hono {
 				return c.json({ error: "Skill not found" }, 404);
 			}
 
+			// Use skill_root when set (e.g. seeded skills store files at an absolute VFS path
+			// like /home/user/skills/<name>); fall back to canonical relative path that
+			// importSkillFromFiles uses. Matches the pattern in context-assembly.ts.
+			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
+
 			// Query files for this skill
-			const pattern = `skills/${skill.name}/%`;
+			const pattern = `${skillRoot}/%`;
 			const files = db
 				.query("SELECT id, path, size_bytes FROM files WHERE path LIKE ? AND deleted = 0")
 				.all(pattern) as Array<{ id: string; path: string; size_bytes: number }>;
 
 			// Find SKILL.md content
-			const skillMdPath = `skills/${skill.name}/SKILL.md`;
+			const skillMdPath = `${skillRoot}/SKILL.md`;
 			const skillMdRow = db
 				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
 				.get(skillMdPath) as { content: string } | null;
@@ -73,7 +78,7 @@ export function createSkillsRoutes(db: Database): Hono {
 
 			// Build relative paths
 			const relativeFiles = files.map((f) => {
-				const relativePath = f.path.replace(`skills/${skill.name}/`, "");
+				const relativePath = f.path.replace(`${skillRoot}/`, "");
 				return {
 					path: relativePath,
 					size: f.size_bytes,
