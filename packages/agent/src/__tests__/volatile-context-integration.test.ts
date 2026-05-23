@@ -5,7 +5,8 @@ import { randomUUID } from "@bound/shared";
 import { buildVolatileContext } from "../context-assembly";
 
 /**
- * Direct SQL insert helper - bypass insertRow for tests that don't need sync.
+ * Test-only fixture helper. Bypasses insertRow because these tests exercise rendering,
+ * not sync flow. Production code MUST use insertRow per CONTRIBUTING.md §1.
  */
 function dbInsert(db: Database, table: string, row: Record<string, unknown>) {
 	const cols = Object.keys(row);
