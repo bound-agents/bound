@@ -137,7 +137,7 @@ async function editToolImpl(
 					provenance,
 					{
 						type: "text",
-						text: `Error: ENOENT: no such file or directory: ${file_path}`,
+						text: `Error: File not found: ${file_path}\n\nThis path does not exist. To create a new file, use the write tool instead.`,
 					},
 				],
 				isError: true,

@@ -183,4 +183,23 @@ describe("boundless_edit", () => {
 		const fileContent = readFileSync(testFile, "utf-8");
 		expect(fileContent).toBe("line 1\nreplaced\nline 4\n");
 	});
+
+	it("provides a recovery hint when file does not exist", async () => {
+		const result = await editTool(
+			{
+				file_path: "does-not-exist.ts",
+				old_string: "foo",
+				new_string: "bar",
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(result.content).toHaveLength(2);
+		const errorBlock = result.content[1];
+		expect(errorBlock.type).toBe("text");
+		expect(errorBlock.text).toContain("File not found");
+		expect(errorBlock.text).toContain("write");
+	});
 });
