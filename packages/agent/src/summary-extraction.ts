@@ -638,6 +638,84 @@ export interface DiscoverableArchiveOutput {
 	synthesisBacklogCount: number | null;
 }
 
+/**
+ * For a set of detail-tier keys, look up each key's parent _summary:<topic> via
+ * incoming `summarizes` edges. Used by Phase 3 to compute Discoverable Archive
+ * cluster names.
+ */
+export function buildParentSummaryMap(
+	db: Database,
+	detailKeys: Iterable<string>,
+): Map<string, string> {
+	const result = new Map<string, string>();
+	const keys = Array.from(detailKeys);
+	if (keys.length === 0) return result;
+	const placeholders = keys.map(() => "?").join(",");
+	const rows = db
+		.prepare(
+			`SELECT e.target_key AS child, e.source_key AS parent
+			 FROM memory_edges e
+			 WHERE e.relation = 'summarizes'
+			   AND e.deleted IS NOT 1
+			   AND e.target_key IN (${placeholders})`,
+		)
+		.all(...keys) as Array<{ child: string; parent: string }>;
+	for (const r of rows) {
+		// If multiple summaries claim the same child, the first-seen wins. The spec is
+		// silent on multi-parent semantics; the data model conventionally has one summary
+		// per detail entry.
+		if (!result.has(r.child)) result.set(r.child, r.parent);
+	}
+	return result;
+}
+
+/**
+ * For a set of summary keys, return each summary's outgoing `summarizes` children
+ * whose `modified_at` is later than the summary's own — i.e. R-HM7 stale children.
+ */
+export function buildStaleChildrenMap(
+	db: Database,
+	summaries: StageEntry[],
+): Map<string, StageEntry[]> {
+	const result = new Map<string, StageEntry[]>();
+	if (summaries.length === 0) return result;
+	const summaryKeyToModifiedAt = new Map(summaries.map((s) => [s.key, s.modifiedAt ?? ""]));
+	const placeholders = summaries.map(() => "?").join(",");
+	const rows = db
+		.prepare(
+			`SELECT e.source_key AS parent, e.target_key AS child_key,
+					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
+			 FROM memory_edges e
+			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted IS NOT 1
+			 WHERE e.relation = 'summarizes'
+			   AND e.deleted IS NOT 1
+			   AND e.source_key IN (${placeholders})`,
+		)
+		.all(...summaries.map((s) => s.key)) as Array<{
+		parent: string;
+		child_key: string;
+		child_value: string;
+		child_modified_at: string;
+		tier: string;
+	}>;
+	for (const r of rows) {
+		const parentModifiedAt = summaryKeyToModifiedAt.get(r.parent) ?? "";
+		// R-HM7 staleness: child.modified_at > summary.modified_at.
+		if (r.child_modified_at <= parentModifiedAt) continue;
+		const bucket = result.get(r.parent) ?? [];
+		bucket.push({
+			key: r.child_key,
+			value: r.child_value,
+			source: null,
+			modifiedAt: r.child_modified_at,
+			tier: r.tier as MemoryTier,
+			tag: "[stale-detail]",
+		});
+		result.set(r.parent, bucket);
+	}
+	return result;
+}
+
 const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
 const DISCOVERABLE_FOOTER =
 	"Bodies are accessed via memory search or query against semantic_memory.";
