@@ -1,0 +1,14 @@
+User ID: test-user, Thread ID: 825e4651-d14a-550c-8042-96b4d192fcc0
+
+## Working Knowledge — operational and durable
+
+
+Bodies of summary entries are accessed via memory search using terms from the entry key.
+## Discoverable Archive — title-only; bodies via memory search
+
+
+Bodies are accessed via memory search or query against semantic_memory.
+## Live State — pointers to canonical sources
+
+
+Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.

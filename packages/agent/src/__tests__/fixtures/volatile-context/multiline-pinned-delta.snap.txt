@@ -1,0 +1,36 @@
+User ID: test-user, Thread ID: 24800f53-2df3-5419-8f87-7c0108efae41
+
+## Working Knowledge — operational and durable
+
+- _pinned:0: pinned body 0
+    [changed since last turn]
+- _pinned:1: pinned body 1
+    [changed since last turn]
+- _pinned:2: pinned body 2
+    [changed since last turn]
+- _pinned:3: pinned body 3
+    [changed since last turn]
+- _pinned:4: pinned body 4
+    [changed since last turn]
+- pinned:multiline: This is a pinned entry that spans
+multiple lines
+with detailed information.
+    [changed since last turn]
+- _summary:topic-0: Summary for topic 0: this is a brief overview. [changed since last turn]
+- _summary:topic-1: Summary for topic 1: this is a brief overview. [changed since last turn]
+- _summary:topic-2: Summary for topic 2: this is a brief overview. [changed since last turn]
+
+Bodies of summary entries are accessed via memory search using terms from the entry key.
+## Discoverable Archive — title-only; bodies via memory search
+
+- curiosity:item-0-det000000 (last accessed 1d ago)
+- curiosity:item-1-det000001 (last accessed 1d ago)
+- curiosity:item-2-det000002 (last accessed 1d ago)
+- curiosity:item-3-det000003 (last accessed 1d ago)
+- curiosity:item-4-det000004 (last accessed 1d ago)
+
+Bodies are accessed via memory search or query against semantic_memory.
+## Live State — pointers to canonical sources
+
+
+Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
