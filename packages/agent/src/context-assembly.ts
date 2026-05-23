@@ -12,13 +12,23 @@ import type {
 } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
-import { getFileThreadNotificationMessage, getLastThreadForFile } from "./file-thread-tracker";
-import { shedMemoryTiers } from "./memory-shedding.js";
 import {
+	type LiveStateTaskEntry,
 	type TieredEnrichment,
 	buildCrossThreadDigest,
+	buildParentSummaryMap,
+	buildStaleChildrenMap,
 	buildVolatileEnrichment,
 	computeBaseline,
+	loadAppliedAdvisoriesForLiveState,
+	loadDetailEntries,
+	loadFileModificationsForLiveState,
+	loadPinnedEntries,
+	loadSummaryEntries,
+	renderDiscoverableArchive,
+	renderLiveState,
+	renderWorkingKnowledge,
+	resolveVc15Tunables,
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 import { hasStrippableThinking, stripThinkingFromToolCall } from "./warm-compaction";
@@ -161,6 +171,81 @@ ${skills.map(
 </available_skills>`;
 }
 
+/**
+ * Compose volatile sections using the three-section renderer pattern (R-VC1).
+ * Shared helper for three of four buildVolatileEnrichment call sites: primary cold path,
+ * no-history task path, and budget-pressure rebuild path. rebuildWarmSections does not
+ * render and does not call this helper (warm cache rebuild only re-counts tokens).
+ *
+ * Returns { lines, synthesisBacklogCount } where lines are the rendered sections
+ * in fixed order: Working Knowledge → Discoverable Archive → Live State.
+ */
+interface ComposeVolatileSectionsParams {
+	db: Database;
+	pinned: ReturnType<typeof loadPinnedEntries>["entries"];
+	summaries: ReturnType<typeof loadSummaryEntries>["entries"];
+	detailEntries: ReturnType<typeof loadDetailEntries>["entries"];
+	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
+	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
+	deltaKeys: Set<string>;
+	digest: ReturnType<typeof buildCrossThreadDigest>;
+	taskDigestEntries: LiveStateTaskEntry[];
+	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
+	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
+	budgetPressure: boolean;
+	nowMs: number;
+}
+
+function composeVolatileSections(params: ComposeVolatileSectionsParams): {
+	lines: string[];
+	synthesisBacklogCount: number | null;
+} {
+	const lines: string[] = [];
+
+	// Compute stale child keys for dedup
+	const staleChildKeysInWorkingKnowledge = new Set(
+		Array.from(params.staleChildrenMap.values())
+			.flat()
+			.map((e) => e.key),
+	);
+
+	// Render in fixed order R-VC1: Working Knowledge → Discoverable Archive → Live State
+	const wk = renderWorkingKnowledge({
+		pinned: params.pinned,
+		summaries: params.summaries,
+		staleChildrenBySummary: params.staleChildrenMap,
+		deltaKeys: params.deltaKeys,
+	});
+	lines.push("");
+	lines.push(...wk.lines);
+
+	const da = renderDiscoverableArchive({
+		entries: params.detailEntries,
+		parentSummaryByKey: params.parentSummaryMap,
+		staleChildKeysInWorkingKnowledge,
+		budgetPressure: params.budgetPressure,
+		nowMs: params.nowMs,
+		tunables: resolveVc15Tunables(),
+	});
+	lines.push(...da.section.lines);
+
+	const ls = renderLiveState({
+		crossThreadEntries: params.digest.entries,
+		taskEntries: params.taskDigestEntries,
+		fileEntries: params.fileEntries,
+		advisories: params.advisories,
+		synthesisBacklogCount: da.synthesisBacklogCount,
+		budgetPressure: params.budgetPressure,
+		nowMs: params.nowMs,
+	});
+	lines.push(...ls.lines);
+
+	return {
+		lines,
+		synthesisBacklogCount: da.synthesisBacklogCount,
+	};
+}
+
 export function buildVolatileContext(params: {
 	db: Database;
 	threadId: string;
@@ -230,13 +315,39 @@ export function buildVolatileContext(params: {
 	}
 
 	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
+	// Phase 5: Wire three-renderer composition
 	const enrichmentBaseline = computeBaseline(params.db, params.threadId, params.taskId, false);
+	const nowMs = Date.now();
+
+	// Compute delta-key set from R-MV1 baseline + delta query
+	const allDeltaKeys = params.db
+		.prepare(
+			`SELECT DISTINCT key FROM semantic_memory
+			 WHERE modified_at > ?
+			   AND deleted = 0
+			   AND key NOT LIKE '_internal.%'`,
+		)
+		.all(enrichmentBaseline) as Array<{ key: string }>;
+	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
+
+	// Load inputs for renderers
+	const pinned = loadPinnedEntries(params.db);
+	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
+	const detailEntries = loadDetailEntries(params.db);
+	const staleChildrenMap = buildStaleChildrenMap(params.db, summaries.entries);
+	const parentSummaryMap = buildParentSummaryMap(
+		params.db,
+		detailEntries.entries.map((e) => e.key),
+	);
+	const digest = buildCrossThreadDigest(params.db, params.userId, params.threadId);
+	const advisories = loadAppliedAdvisoriesForLiveState(params.db, nowMs);
+
+	// Compute task and file entries
 	const {
-		memoryDeltaLines,
+		taskDigestEntries,
 		taskDigestLines,
+		memoryDeltaLines,
 		tiers: enrichmentTiers,
-		graphCount,
-		recencyCount,
 	} = buildVolatileEnrichment(
 		params.db,
 		enrichmentBaseline,
@@ -245,77 +356,39 @@ export function buildVolatileContext(params: {
 		params.userMessageText,
 		params.threadSummary,
 	);
+	const fileEntries = loadFileModificationsForLiveState(params.db, params.threadId);
 
-	// Query total memory count for the header line
+	// Query total memory count for VolatileContext return
 	const totalMemCount = (
 		params.db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
 			c: number;
 		}
 	).c;
 
-	// Format and append enrichment, recording start/end indices
-	const memChangedCount = memoryDeltaLines.filter((l) => l.startsWith("- ")).length;
-	let memHeaderLine = `Memory: ${totalMemCount} entries`;
-	if (graphCount !== undefined && graphCount > 0) {
-		memHeaderLine += ` (${graphCount} via graph, ${recencyCount ?? 0} via recency)`;
-	} else if (memChangedCount > 0) {
-		memHeaderLine += ` (${memChangedCount} changed since your last turn in this thread)`;
-	}
-
-	// Record where enrichment section begins (in suffixLines)
+	// Render the three sections using the shared composer
 	const enrichmentStartIdx = suffixLines.length;
-	suffixLines.push("");
-	suffixLines.push(memHeaderLine);
-	if (memoryDeltaLines.length > 0) {
-		suffixLines.push(...memoryDeltaLines);
-	}
-	if (taskDigestLines.length > 0) {
-		suffixLines.push("");
-		suffixLines.push(...taskDigestLines);
-	}
-	// Record where enrichment section ends
+	const { lines: enrichmentLines } = composeVolatileSections({
+		db: params.db,
+		pinned: pinned.entries,
+		summaries: summaries.entries,
+		detailEntries: detailEntries.entries,
+		staleChildrenMap,
+		parentSummaryMap,
+		deltaKeys,
+		digest,
+		taskDigestEntries,
+		fileEntries,
+		advisories,
+		budgetPressure: false,
+		nowMs,
+	});
+	suffixLines.push(...enrichmentLines);
 	const enrichmentEndIdx = suffixLines.length;
 
-	// Include cross-thread digest
+	// Track cross-thread sources for debug
 	let crossThreadSources: CrossThreadSource[] | undefined;
-	const crossThreadResult = buildCrossThreadDigest(params.db, params.userId, params.threadId);
-	if (crossThreadResult.text) {
-		suffixLines.push("");
-		suffixLines.push(crossThreadResult.text);
-	}
-	if (crossThreadResult.sources.length > 0) {
-		crossThreadSources = crossThreadResult.sources;
-	}
-
-	// R-E20: Inject cross-thread file modification notifications (capped at 10)
-	try {
-		const FILE_NOTIF_CAP = 10;
-		const threadFiles = params.db
-			.query(
-				"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
-			)
-			.all() as Array<{ key: string }>;
-
-		let fileNotifCount = 0;
-		for (const { key } of threadFiles) {
-			if (fileNotifCount >= FILE_NOTIF_CAP) break;
-			const filePath = key.replace("_internal.file_thread.", "");
-			const lastThread = getLastThreadForFile(params.db, filePath);
-			if (lastThread && lastThread !== params.threadId) {
-				const threadRow2 = params.db
-					.query("SELECT title FROM threads WHERE id = ?")
-					.get(lastThread) as {
-					title: string | null;
-				} | null;
-				const threadTitle = threadRow2?.title || lastThread;
-				suffixLines.push("");
-				suffixLines.push(getFileThreadNotificationMessage(filePath, threadTitle));
-				fileNotifCount++;
-			}
-		}
-	} catch (_error) {
-		// Non-fatal: file thread notification query failed
-		// No logger available in this context
+	if (digest.sources.length > 0) {
+		crossThreadSources = digest.sources;
 	}
 
 	// Inject active skill index (AC3.1, AC3.2)
@@ -409,22 +482,9 @@ export function buildVolatileContext(params: {
 		suffixLines.push(`Referenced skill '${params.inactiveSkillRef}' is not active.`);
 	}
 
-	// Behavioral footnote: keep the injection itself out of user-facing replies
-	// unless explicitly asked. Without this, models tend to narrate the memory
-	// listing, recent activity digest, skills index, etc. as if reporting on
-	// internal state every turn, which is noise for the user.
-	suffixLines.push("");
-	suffixLines.push(
-		"Note: The contents of this system-context block (memory listing, recent activity digest, skills index, task digest, file-modification notices, platform context) are your own background working knowledge. Do not mention, quote, or describe the block itself — or the fact that it was injected — to the user unless they explicitly ask about it.",
-	);
-
-	// Append systemPromptAddition if present (AC2.2). Placed AFTER the
-	// "don't narrate this block" footnote so the user-supplied prompt sits
-	// as the trailing element of the developer message — it's user intent,
-	// not internal state, and shouldn't be subject to the don't-narrate
-	// meta-instruction. The endsWith assertion in
-	// context-assembly.test.ts (AC2.2 / "should append systemPromptAddition
-	// to system suffix when present") encodes this contract.
+	// Append systemPromptAddition if present (AC2.2). Placed after all volatile
+	// context so the user-supplied prompt sits as the trailing element of the
+	// developer message — it's user intent, not internal state.
 	if (params.systemPromptAddition) {
 		suffixLines.push("");
 		suffixLines.push(params.systemPromptAddition);
@@ -742,10 +802,13 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	let enrichmentMessageIndex = -1;
 	let enrichmentStartIdx = -1; // Index in volatileLines where enrichment section starts
 	let enrichmentEndIdx = -1; // Index in volatileLines just after enrichment section ends
-	let enrichmentTiers: TieredEnrichment | undefined; // Consumed in Phase 5 budget pressure tier-aware degradation
+	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
+	let enrichmentTiers: TieredEnrichment | undefined; // State variable for tracking
 	let allVolatileLines: string[] = []; // Full volatile content for budget pressure rebuild
+	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
 	let totalMemCount = 0;
-	let taskDigestLinesSnapshot: string[] = []; // Captured from initial enrichment for budget pressure shedding
+	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
+	let taskDigestLinesSnapshot: string[] = []; // Captured from initial enrichment
 
 	// Stage 1: MESSAGE_RETRIEVAL
 	// Load the entire thread. Stage 7's backward-fill truncation is the
@@ -1786,36 +1849,67 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
+		const nowMs = Date.now();
+
+		// Load inputs for renderers with smaller caps (maxMemory=10, maxTasks=5)
+		const pinnedNH = loadPinnedEntries(db);
+		const summariesNH = loadSummaryEntries(db, pinnedNH.exclusionSet);
+		const detailEntriesNH = loadDetailEntries(db);
+		const staleChildrenMapNH = buildStaleChildrenMap(db, summariesNH.entries);
+		const parentSummaryMapNH = buildParentSummaryMap(
+			db,
+			detailEntriesNH.entries.map((e) => e.key),
+		);
+		const digestNH = buildCrossThreadDigest(db, userId, threadId);
+		const advisoriesNH = loadAppliedAdvisoriesForLiveState(db, nowMs);
+
+		// Compute task and file entries
 		const {
-			memoryDeltaLines: noHistDelta,
+			taskDigestEntries: taskEntriesNH,
 			taskDigestLines: noHistTasks,
 			tiers: enrichmentTiersL2,
 		} = buildVolatileEnrichment(db, enrichmentBaseline, 10, 5, undefined, undefined, 10);
+		const fileEntriesNH = loadFileModificationsForLiveState(db, threadId);
+
+		// Compute delta-key set
+		const allDeltaKeysNH = db
+			.prepare(
+				`SELECT DISTINCT key FROM semantic_memory
+				 WHERE modified_at > ?
+				   AND deleted = 0
+				   AND key NOT LIKE '_internal.%'`,
+			)
+			.all(enrichmentBaseline) as Array<{ key: string }>;
+		const deltaKeysNH = new Set(allDeltaKeysNH.map((r) => r.key));
+
 		enrichmentTiers = enrichmentTiersL2;
 		taskDigestLinesSnapshot = noHistTasks;
 
-		if (noHistDelta.length > 0 || noHistTasks.length > 0) {
+		// Compose the three sections using the shared helper
+		const { lines: renderedEnrichmentLines } = composeVolatileSections({
+			db,
+			pinned: pinnedNH.entries,
+			summaries: summariesNH.entries,
+			detailEntries: detailEntriesNH.entries,
+			staleChildrenMap: staleChildrenMapNH,
+			parentSummaryMap: parentSummaryMapNH,
+			deltaKeys: deltaKeysNH,
+			digest: digestNH,
+			taskDigestEntries: taskEntriesNH,
+			fileEntries: fileEntriesNH,
+			advisories: advisoriesNH,
+			budgetPressure: false,
+			nowMs,
+		});
+
+		if (renderedEnrichmentLines.length > 0) {
 			totalMemCount = (
 				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
 					c: number;
 				}
 			).c;
 
-			const noHistMemChangedCount = noHistDelta.filter((l) => l.startsWith("- ")).length;
-			let noHistMemHeader = `Memory: ${totalMemCount} entries`;
-			if (noHistMemChangedCount > 0) {
-				noHistMemHeader += ` (${noHistMemChangedCount} changed since your last run)`;
-			}
-
-			const enrichmentLines: string[] = [];
-			enrichmentLines.push(noHistMemHeader);
-			if (noHistDelta.length > 0) {
-				enrichmentLines.push(...noHistDelta);
-			}
-			if (noHistTasks.length > 0) {
-				enrichmentLines.push("");
-				enrichmentLines.push(...noHistTasks);
-			}
+			const enrichmentLines: string[] = [...renderedEnrichmentLines];
 
 			// Append systemPromptAddition if present (AC2.2 for noHistory path)
 			if (params.systemPromptAddition) {
@@ -1826,12 +1920,9 @@ Original output was too large for the context window. If you need the full conte
 			enrichmentMessageIndex = assembled.length;
 			assembled.push({ role: "developer", content: enrichmentLines.join("\n") });
 
-			// Track noHistory volatile section tokens (memory, task-digest)
-			const noHistMemTokens = noHistDelta.length > 0 ? countTokens(noHistDelta.join("\n")) : 0;
-			const noHistTaskTokens = noHistTasks.length > 0 ? countTokens(noHistTasks.join("\n")) : 0;
-
-			if (noHistMemTokens > 0) sections.push({ name: "memory", tokens: noHistMemTokens });
-			if (noHistTaskTokens > 0) sections.push({ name: "task-digest", tokens: noHistTaskTokens });
+			// Track noHistory volatile section tokens
+			const noHistVolatileTokens = countTokens(renderedEnrichmentLines.join("\n"));
+			sections.push({ name: "volatile-enrichment", tokens: noHistVolatileTokens });
 		}
 	}
 	stage5_5Span.end();
@@ -1845,25 +1936,62 @@ Original output was too large for the context window. If you need the full conte
 	// crowds the window.
 	const stage7Span = getTracer().startSpan("context.stage-7-budget-validation");
 
-	// Helper to apply reduced enrichment to the assembled context or developer message
-	const applyReducedEnrichment = (shortDelta: string[], shortDigest: string[]): void => {
-		const shortMemChangedCount = shortDelta.filter((l) => l.startsWith("- ")).length;
-		let shortMemHeader = `Memory: ${totalMemCount} entries`;
-		if (shortMemChangedCount > 0) {
-			shortMemHeader += !params.noHistory
-				? ` (${shortMemChangedCount} changed since your last turn in this thread)`
-				: ` (${shortMemChangedCount} changed since your last run)`;
-		}
+	// Helper to apply reduced enrichment to the assembled context or developer message.
+	// Under budget pressure, re-compose the three sections with reduced (3,3) caps and budgetPressure:true.
+	// This ensures R-VC1 compliance: sections are never merged or conditionally rendered.
+	const applyReducedEnrichment = (): void => {
+		// At this point, enrichmentBaseline is guaranteed to be non-undefined (caller checks it).
+		// biome-ignore lint/style/noNonNullAssertion: Caller checked the condition above
+		const baseline = enrichmentBaseline!;
 
-		// Build reduced enrichment lines
-		const shortEnrichmentLines: string[] = ["", shortMemHeader];
-		if (shortDelta.length > 0) {
-			shortEnrichmentLines.push(...shortDelta);
-		}
-		if (shortDigest.length > 0) {
-			shortEnrichmentLines.push("");
-			shortEnrichmentLines.push(...shortDigest);
-		}
+		// Re-load inputs for renderers with reduced caps (3 task entries, 3 live-state caps per subsystem)
+		const pinnedBP = loadPinnedEntries(db);
+		const summariesBP = loadSummaryEntries(db, pinnedBP.exclusionSet);
+		const detailEntriesBP = loadDetailEntries(db);
+
+		const staleChildrenMapBP = buildStaleChildrenMap(db, summariesBP.entries);
+		const parentSummaryMapBP = buildParentSummaryMap(
+			db,
+			detailEntriesBP.entries.map((e) => e.key),
+		);
+		const digestBP = buildCrossThreadDigest(db, userId, threadId);
+		const advisoriesBP = loadAppliedAdvisoriesForLiveState(db, Date.now());
+
+		// Compute task and file entries with reduced caps (3 tasks, 3 files for Live State)
+		const { taskDigestEntries: taskEntriesBP } = buildVolatileEnrichment(db, baseline, 3, 3);
+		const fileEntriesBP = loadFileModificationsForLiveState(db, threadId);
+
+		// Compute delta-key set
+		const allDeltaKeysBP = db
+			.prepare(
+				`SELECT DISTINCT key FROM semantic_memory
+				 WHERE modified_at > ?
+				   AND deleted = 0
+				   AND key NOT LIKE '_internal.%'`,
+			)
+			.all(baseline) as Array<{ key: string }>;
+		const deltaKeysBP = new Set(allDeltaKeysBP.map((r) => r.key));
+
+		// Compose three sections with budgetPressure:true
+		// R-VC14 §3.3: Pass full memory entries (no pre-cap); renderers handle section-specific capping
+		// - Working Knowledge: full fidelity (no cap)
+		// - Discoverable Archive: all titles preserved (R-VC21), fragment dropped via budgetPressure flag
+		// - Live State: BUDGET_PRESSURE_SUBSYSTEM_CAP (3) applied per subsystem inside renderLiveState
+		const { lines: reducedEnrichmentLines } = composeVolatileSections({
+			db,
+			pinned: pinnedBP.entries,
+			summaries: summariesBP.entries,
+			detailEntries: detailEntriesBP.entries,
+			staleChildrenMap: staleChildrenMapBP,
+			parentSummaryMap: parentSummaryMapBP,
+			deltaKeys: deltaKeysBP,
+			digest: digestBP,
+			taskDigestEntries: taskEntriesBP,
+			fileEntries: fileEntriesBP,
+			advisories: advisoriesBP,
+			budgetPressure: true,
+			nowMs: Date.now(),
+		});
 
 		// Find and update the developer message at the tail
 		let devIdx = -1;
@@ -1873,58 +2001,33 @@ Original output was too large for the context window. If you need the full conte
 				break;
 			}
 		}
+
 		if (devIdx >= 0) {
 			if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
 				// Splice the reduced enrichment into the developer message, preserving
 				// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
 				const rebuiltContent = [
 					...allVolatileLines.slice(0, enrichmentStartIdx),
-					...shortEnrichmentLines,
+					...reducedEnrichmentLines,
 					...allVolatileLines.slice(enrichmentEndIdx),
 				];
 				assembled[devIdx] = { role: "developer", content: rebuiltContent.join("\n") };
 			} else if (params.noHistory) {
-				// For noHistory path, just replace with reduced
-				const shortStandaloneLines: string[] = [shortMemHeader];
-				if (shortDelta.length > 0) {
-					shortStandaloneLines.push(...shortDelta);
-				}
-				if (shortDigest.length > 0) {
-					shortStandaloneLines.push("");
-					shortStandaloneLines.push(...shortDigest);
-				}
+				// For noHistory path, just replace with reduced sections
 				assembled[devIdx] = {
 					role: "developer",
-					content: shortStandaloneLines.join("\n"),
+					content: reducedEnrichmentLines.join("\n"),
 				};
 			}
 		}
 
-		// Re-count memory and task-digest sections after budget pressure rebuild
-		// Find and update the memory, task-digest, and volatile-other entries in sections
-		const shortMemTokens = shortDelta.length > 0 ? countTokens(shortDelta.join("\n")) : 0;
-		const shortTaskTokens = shortDigest.length > 0 ? countTokens(shortDigest.join("\n")) : 0;
-		const preEnrichmentTokens =
-			enrichmentStartIdx > 0
-				? countTokens(allVolatileLines.slice(0, enrichmentStartIdx).join("\n"))
-				: 0;
-		const postEnrichmentTokens =
-			enrichmentEndIdx < allVolatileLines.length
-				? countTokens(allVolatileLines.slice(enrichmentEndIdx).join("\n"))
-				: 0;
-		const shortVolatileOtherTokens =
-			!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0
-				? Math.max(0, preEnrichmentTokens + postEnrichmentTokens)
-				: 0;
+		// Re-count volatile section tokens after budget pressure rebuild
+		const reducedEnrichmentTokens = countTokens(reducedEnrichmentLines.join("\n"));
 
 		// Update sections array to reflect new token counts
 		for (let i = 0; i < sections.length; i++) {
-			if (sections[i].name === "memory") {
-				sections[i] = { ...sections[i], tokens: shortMemTokens };
-			} else if (sections[i].name === "task-digest") {
-				sections[i] = { ...sections[i], tokens: shortTaskTokens };
-			} else if (sections[i].name === "volatile-other") {
-				sections[i] = { ...sections[i], tokens: shortVolatileOtherTokens };
+			if (sections[i].name === "volatile-enrichment") {
+				sections[i] = { ...sections[i], tokens: reducedEnrichmentTokens };
 			}
 		}
 	};
@@ -1942,19 +2045,9 @@ Original output was too large for the context window. If you need the full conte
 
 		if (headroom < 2000) {
 			budgetPressure = true;
-
-			if (enrichmentTiers) {
-				// Tier-aware shedding (Phase 5) — operates on structured data, no DB call
-				const shedResult = shedMemoryTiers(enrichmentTiers, taskDigestLinesSnapshot);
-				// Note: shedResult.warning indicates L0+L1 alone exceed budget threshold (AC5.4).
-				// No truncation occurs — operator visibility deferred to future logging layer.
-				applyReducedEnrichment(shedResult.memoryDeltaLines, shedResult.taskDigestLines);
-			} else {
-				// Fallback: no tiers available (shouldn't happen after Phase 4, but defensive)
-				const { memoryDeltaLines: shortDelta, taskDigestLines: shortDigest } =
-					buildVolatileEnrichment(db, enrichmentBaseline, 3, 3);
-				applyReducedEnrichment(shortDelta, shortDigest);
-			}
+			// Budget-pressure rebuild: re-compose three sections with reduced (3,3) caps and budgetPressure:true
+			// to comply with R-VC1 (sections shall not be merged or conditionally rendered)
+			applyReducedEnrichment();
 		}
 	}
 

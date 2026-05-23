@@ -1,0 +1,76 @@
+User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
+
+## Working Knowledge — operational and durable
+
+- _internal.file_thread.build/output.js: 45926555-c65d-55a4-b439-09c3167e4000
+- _internal.file_thread.config/settings.json: 50777cb5-6d75-5280-9d9a-b8c803869883
+- _internal.file_thread.docs/README.md: 45926555-c65d-55a4-b439-09c3167e4000
+- _internal.file_thread.src/main.ts: 19e2ff49-7e57-5ae2-aafb-5da2182afb37
+- _internal.file_thread.test/fixtures.ts: 19e2ff49-7e57-5ae2-aafb-5da2182afb37
+- _pinned:0: pinned body 0
+    [changed since last turn]
+- _pinned:1: pinned body 1
+    [changed since last turn]
+- _pinned:2: pinned body 2
+    [changed since last turn]
+- _pinned:3: pinned body 3
+    [changed since last turn]
+- _pinned:4: pinned body 4
+    [changed since last turn]
+- _summary:topic-0: Summary for topic 0: this is a brief overview. [changed since last turn]
+- _summary:topic-1: Summary for topic 1: this is a brief overview. [changed since last turn]
+- _summary:topic-2: Summary for topic 2: this is a brief overview. [changed since last turn]
+- _summary:topic-3: Summary for topic 3: this is a brief overview. [changed since last turn]
+- _summary:topic-4: Summary for topic 4: this is a brief overview. [changed since last turn]
+
+Bodies of summary entries are accessed via memory search using terms from the entry key.
+## Discoverable Archive — title-only; bodies via memory search
+
+- curiosity:item-0-det000000
+- curiosity:item-1-det000001
+- curiosity:item-2-det000002
+- curiosity:item-3-det000003
+- curiosity:item-4-det000004
+- curiosity:item-5-det000005
+- curiosity:item-6-det000006
+- curiosity:item-7-det000007
+- curiosity:item-8-det000008
+- curiosity:item-9-det000009
+- curiosity:item-10-det000010
+- curiosity:item-11-det000011
+- curiosity:item-12-det000012
+- curiosity:item-13-det000013
+- curiosity:item-14-det000014
+- curiosity:item-15-det000015
+- curiosity:item-16-det000016
+- curiosity:item-17-det000017
+- curiosity:item-18-det000018
+- curiosity:item-19-det000019
+- curiosity:item-20-det000020
+- curiosity:item-21-det000021
+- curiosity:item-22-det000022
+- curiosity:item-23-det000023
+- curiosity:item-24-det000024
+- curiosity:item-25-det000025
+- curiosity:item-26-det000026
+- curiosity:item-27-det000027
+- curiosity:item-28-det000028
+- curiosity:item-29-det000029
+
+Bodies are accessed via memory search or query against semantic_memory.
+## Live State — pointers to canonical sources
+
+- [thread] sibling-4: 2 messages (last updated 2026-05-21T23:59:59.000Z)
+- [thread] sibling-3: 4 messages (last updated 2026-05-21T23:59:59.000Z)
+- [thread] sibling-2: 1 messages (last updated 2026-05-21T23:59:59.000Z)
+- [task] a56f31a5-3fa2-5c84-8474-674377678c76 (deploy): run_count=1, last_run_at=2026-05-21T23:54:00.000Z, status=ran
+- [task] cf187721-8d56-5a24-9658-593c95ea62e0 (analyze): run_count=1, last_run_at=2026-05-21T23:30:00.000Z, status=ran
+- [task] 690e8dbc-5fc2-5494-a117-763231b71469 (debug): run_count=1, last_run_at=2026-05-21T23:00:00.000Z, status=ran
+- [file] build/output.js — last modified by thread "sibling-1"
+- [file] config/settings.json — last modified by thread "sibling-2"
+- [file] docs/README.md — last modified by thread "sibling-1"
+- [advisory] Advisory D — applied 30m ago
+- [advisory] Advisory B — applied 1h ago
+- [advisory] Advisory A — applied 2h ago
+
+Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
