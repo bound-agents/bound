@@ -100,6 +100,42 @@ describe("Database Schema", () => {
 		// idx_changelog_seq removed in HLC migration — hlc is TEXT PRIMARY KEY
 		expect(indexNames).toContain("idx_memory_modified");
 		expect(indexNames).toContain("idx_tasks_last_run");
+		expect(indexNames).toContain("idx_memory_detail_recency");
+
+		db.close();
+	});
+
+	it("idx_memory_detail_recency exists and supports R-VC4 SELECT predicate", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		// Verify the index exists
+		const indexes = db
+			.query(
+				"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memory_detail_recency'",
+			)
+			.all() as Array<{ name: string }>;
+		expect(indexes).toHaveLength(1);
+
+		// Verify the index has the correct column
+		const indexInfo = db.query("PRAGMA index_info(idx_memory_detail_recency)").all() as Array<{
+			seqno: number;
+			cid: number;
+			name: string;
+		}>;
+
+		// Should have last_accessed_at
+		expect(indexInfo).toHaveLength(1);
+		expect(indexInfo[0].name).toBe("last_accessed_at");
+
+		// Verify the index WHERE clause by querying sqlite_master
+		const indexDef = db
+			.query(
+				"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memory_detail_recency'",
+			)
+			.get() as { sql: string };
+		expect(indexDef.sql).toContain("tier = 'detail'");
+		expect(indexDef.sql).toContain("deleted = 0");
 
 		db.close();
 	});
