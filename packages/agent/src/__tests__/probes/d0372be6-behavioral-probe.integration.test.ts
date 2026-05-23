@@ -22,6 +22,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { type ModelBackendsConfig, createModelRouter } from "@bound/llm";
 import { buildPostRfcOrientation, buildPreRfcOrientation } from "./legacy-orientation-block";
 
 const PROBE_ENABLED = process.env.BOUND_RUN_BEHAVIORAL_PROBE === "1";
@@ -94,26 +95,99 @@ function buildWebhookFixture() {
 }
 
 /**
- * Stub implementation for running an agent loop one turn.
- * In production, this would:
- * 1. Create a temporary database with schema.
- * 2. Insert the conversation history.
- * 3. Call assembleContext with the orientation block as system prompt addition.
- * 4. Route to the configured backend (Anthropic, Bedrock, Ollama, etc.).
- * 5. Collect the assistant's response text.
- * 6. Return the response for predicate checking.
+ * Implementation of running an agent loop one turn against a configured LLM backend.
  *
- * For now, this is a placeholder that will be wired into the real agent-loop machinery.
+ * This directly invokes the backend.chat() method with:
+ * 1. System prompt: orientation block
+ * 2. User message: webhook envelope details
+ * 3. Fixed temperature for deterministic behavior
+ *
+ * Reads from BOUND_MODEL_BACKENDS_JSON environment variable for backend configuration,
+ * or uses a sensible default if not found. Falls back to Ollama if neither is configured.
+ * Throws a clear error if no backend is available.
  */
-async function runAgentLoopOneTurn(_params: {
+async function runAgentLoopOneTurn(params: {
 	orientation: string;
 	conversationHistory: Array<{ role: "user" | "assistant" | "tool_result"; content: string }>;
 	temperature: number;
 }): Promise<string> {
-	// TODO: Wire to real agent-loop machinery
-	// This stub allows typecheck to pass; the probe will skip with BOUND_RUN_BEHAVIORAL_PROBE != "1"
-	console.warn("[behavioral-probe] runAgentLoopOneTurn not yet implemented. Skipping probe run.");
-	return "";
+	// Read backend config from environment or use empty config
+	let backendsConfig: ModelBackendsConfig = { backends: [], default: "" };
+
+	const configJsonEnv = process.env.BOUND_MODEL_BACKENDS_JSON;
+	if (configJsonEnv) {
+		try {
+			backendsConfig = JSON.parse(configJsonEnv) as ModelBackendsConfig;
+		} catch (e) {
+			throw new Error(`[behavioral-probe] Failed to parse BOUND_MODEL_BACKENDS_JSON: ${e}`);
+		}
+	}
+
+	// If no backends configured, check for legacy ollama default
+	if (backendsConfig.backends.length === 0) {
+		const ollamaUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
+		backendsConfig = {
+			backends: [
+				{
+					id: "ollama",
+					provider: "openai-compatible",
+					model: "llama2",
+					baseUrl: ollamaUrl,
+					apiKey: "not-needed",
+					contextWindow: 4096,
+				},
+			],
+			default: "ollama",
+		};
+	}
+
+	// Find the default backend, or the first available
+	const defaultId = backendsConfig.default || backendsConfig.backends[0]?.id;
+	if (!defaultId || backendsConfig.backends.length === 0) {
+		throw new Error(
+			"[behavioral-probe] No LLM backend configured. Set BOUND_MODEL_BACKENDS_JSON or configure Ollama at http://localhost:11434",
+		);
+	}
+
+	// Create router and get the backend
+	const router = createModelRouter(backendsConfig);
+	const backend = router.tryGetBackend(defaultId);
+	if (!backend) {
+		throw new Error(
+			`[behavioral-probe] Backend '${defaultId}' not found. Check BOUND_MODEL_BACKENDS_JSON.`,
+		);
+	}
+
+	// Build messages array
+	const messages = [
+		{
+			role: "user" as const,
+			content: params.orientation,
+		},
+	];
+
+	// Collect response text from stream
+	let assistantText = "";
+	const stream = await backend.chat({
+		messages,
+		temperature: params.temperature,
+		model: defaultId,
+		stream: true,
+	});
+
+	for await (const chunk of stream) {
+		if (chunk.type === "text") {
+			assistantText += chunk.content;
+		}
+	}
+
+	if (!assistantText) {
+		throw new Error(
+			"[behavioral-probe] Backend returned empty response. Check backend configuration and model availability.",
+		);
+	}
+
+	return assistantText;
 }
 
 /**
