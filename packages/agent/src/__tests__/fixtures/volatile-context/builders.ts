@@ -1,12 +1,24 @@
 import type { Database } from "bun:sqlite";
 import { insertRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID, randomUUID } from "@bound/shared";
+import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { upsertEdge } from "../../../graph-queries";
+
+/**
+ * Builder fixtures for volatile-context snapshot tests.
+ *
+ * Note on leading underscore prefixes (_pinned:, _summary:, _internal.file_thread.*):
+ * These prefixes are intentional for test namespacing to avoid collisions with production
+ * memory keys. They work correctly with the current codebase. However, if the project
+ * introduces broader filtering (e.g., `WHERE key LIKE '_%'`) to distinguish internal keys,
+ * all snapshot files will need to be regenerated with the new prefixes.
+ */
 
 export interface BuilderContext {
 	db: Database;
 	siteId: string;
 	nowMs: number;
+	userId?: string;
+	_detailCounter?: { current: number };
 }
 
 /**
@@ -73,10 +85,14 @@ export function makeDetail(
 	count: number,
 	parentKey: string | null = null,
 ): string[] {
+	if (!ctx._detailCounter) {
+		ctx._detailCounter = { current: 0 };
+	}
 	const keys: string[] = [];
 	for (let i = 0; i < count; i++) {
-		const suffix = randomSuffix();
-		const key = `curiosity:item-${i}-${suffix}`;
+		const idx = ctx._detailCounter.current++;
+		const suffix = `det${idx.toString().padStart(6, "0")}`;
+		const key = `curiosity:item-${idx}-${suffix}`;
 		keys.push(key);
 
 		// Stagger timestamps so entries are ordered by last_accessed_at
@@ -114,9 +130,9 @@ export function makeStaleChild(
 	ctx: BuilderContext,
 	parentSummaryKey: string,
 	parentModifiedAt: string,
+	_deterministicSuffix = "det000000",
 ): string {
-	const suffix = randomSuffix();
-	const key = `detail:stale-${suffix}`;
+	const key = `detail:stale-${_deterministicSuffix}`;
 
 	// Child modified AFTER parent
 	const parentMs = new Date(parentModifiedAt).getTime();
@@ -147,6 +163,7 @@ export function makeStaleChild(
 
 /**
  * Create a sibling thread (not the current agent thread) with optional summary.
+ * The thread is created with the same user_id as ctx.userId (if provided), or a unique derived ID.
  * Returns the thread ID.
  */
 export function makeSiblingThread(
@@ -155,10 +172,15 @@ export function makeSiblingThread(
 	messageCount: number,
 	summaryText: string | null,
 ): string {
-	const threadId = randomUUID();
-	const userId = `user-${randomSuffix()}`;
+	const threadKey = `${title}:thread`;
+	const threadId = deterministicUUID(BOUND_NAMESPACE, threadKey);
+	// Use the context's userId if provided, otherwise derive one from the title
+	const userId = ctx.userId || deterministicUUID(BOUND_NAMESPACE, `${title}:user`);
 
 	const now = new Date(ctx.nowMs).toISOString();
+
+	// Calculate last_message_at as the most recent message
+	const lastMessageAt = new Date(ctx.nowMs - (messageCount > 0 ? 1000 : 0)).toISOString();
 
 	insertRow(
 		ctx.db,
@@ -175,7 +197,7 @@ export function makeSiblingThread(
 			summary_model_id: null,
 			extracted_through: null,
 			created_at: now,
-			last_message_at: new Date(ctx.nowMs - messageCount * 1000).toISOString(),
+			last_message_at: lastMessageAt,
 			modified_at: now,
 			deleted: 0,
 			model_hint: null,
@@ -185,7 +207,8 @@ export function makeSiblingThread(
 
 	// Insert N messages
 	for (let i = 0; i < messageCount; i++) {
-		const msgId = randomUUID();
+		const msgKey = `${title}:msg-${i}`;
+		const msgId = deterministicUUID(BOUND_NAMESPACE, msgKey);
 		const msgTime = new Date(ctx.nowMs - (messageCount - i) * 1000).toISOString();
 		insertRow(
 			ctx.db,
@@ -213,20 +236,25 @@ export function makeSiblingThread(
 
 /**
  * Create an advisory with status='applied' and resolved_at set to N hours ago.
+ * If useCurrentTime=true, resolved_at is calculated from Date.now() instead of ctx.nowMs.
+ * This is useful in snapshots where the test may run much later than the fixture time.
  */
 export function makeAppliedAdvisory(
 	ctx: BuilderContext,
 	title: string,
 	appliedHoursAgo: number,
+	useCurrentTime = false,
 ): void {
-	const resolvedAt = new Date(ctx.nowMs - appliedHoursAgo * 3600_000).toISOString();
-	const now = new Date(ctx.nowMs).toISOString();
+	const advisoryKey = `${title}:advisory`;
+	const baseTime = useCurrentTime ? Date.now() : ctx.nowMs;
+	const resolvedAt = new Date(baseTime - appliedHoursAgo * 3600_000).toISOString();
+	const now = new Date(baseTime).toISOString();
 
 	insertRow(
 		ctx.db,
 		"advisories",
 		{
-			id: randomUUID(),
+			id: deterministicUUID(BOUND_NAMESPACE, advisoryKey),
 			type: "general",
 			status: "applied",
 			title,
@@ -247,126 +275,28 @@ export function makeAppliedAdvisory(
 
 /**
  * Record a file modification for the given path.
- * Uses insertRow to create a tracking entry if needed.
+ * Creates a _internal.file_thread.* tracking entry in semantic_memory that points to the last thread
+ * that modified the file. This is the precondition for loadFileModificationsForLiveState to surface
+ * the file in Live State.
  */
-export function makeFileMod(ctx: BuilderContext, path: string, _threadTitle: string): void {
+export function makeFileMod(ctx: BuilderContext, path: string, threadId: string): void {
+	const key = `_internal.file_thread.${path}`;
 	const now = new Date(ctx.nowMs).toISOString();
 
 	insertRow(
 		ctx.db,
-		"files",
+		"semantic_memory",
 		{
-			id: deterministicUUID(BOUND_NAMESPACE, path),
-			path,
-			content: null,
-			is_binary: 0,
-			size_bytes: 1024,
+			id: deterministicUUID(BOUND_NAMESPACE, key),
+			key,
+			value: threadId,
+			tier: "pinned",
+			source: "fixture",
 			created_at: now,
 			modified_at: now,
+			last_accessed_at: now,
 			deleted: 0,
-			created_by: null,
-			host_origin: "fixture-host",
 		},
 		ctx.siteId,
 	);
-}
-
-function randomSuffix(): string {
-	return Math.random().toString(36).slice(2, 8);
-}
-
-/**
- * Smoke test: verify builders work by calling each once and checking row counts.
- * This test runs inline in the builders file to validate the entire set of helpers.
- */
-if (import.meta.main) {
-	const { Database } = await import("bun:sqlite");
-	const { applySchema } = await import("@bound/core");
-
-	console.log("Running builders smoke test...");
-
-	const db = new Database(":memory:");
-	applySchema(db);
-
-	const ctx: BuilderContext = {
-		db,
-		siteId: "test-site",
-		nowMs: new Date("2026-05-22T00:00:00.000Z").getTime(),
-	};
-
-	// Test makePinned
-	makePinned(ctx, 5);
-	let result = db
-		.prepare("SELECT COUNT(*) as count FROM semantic_memory WHERE tier='pinned'")
-		.get() as { count: number };
-	console.log(`makePinned(5): ${result.count} pinned entries`);
-	if (result.count !== 5) throw new Error("makePinned failed");
-
-	// Test makeSummary
-	const summaryKeys = makeSummary(ctx, 3);
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM semantic_memory WHERE tier='summary'")
-		.get() as { count: number };
-	console.log(`makeSummary(3): ${result.count} summary entries`);
-	if (result.count !== 3) throw new Error("makeSummary failed");
-
-	// Test makeDetail
-	const _detailKeys = makeDetail(ctx, 4, summaryKeys[0]);
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM semantic_memory WHERE tier='detail'")
-		.get() as { count: number };
-	console.log(`makeDetail(4): ${result.count} detail entries`);
-	if (result.count !== 4) throw new Error("makeDetail failed");
-
-	// Test memory_edges created by makeDetail
-	result = db.prepare("SELECT COUNT(*) as count FROM memory_edges WHERE deleted=0").get() as {
-		count: number;
-	};
-	console.log(`  with ${result.count} edges linking to parent`);
-	if (result.count !== 4) throw new Error("makeDetail edges failed");
-
-	// Test makeStaleChild
-	const staleKey = makeStaleChild(ctx, summaryKeys[1], new Date(ctx.nowMs - 5000).toISOString());
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM memory_edges WHERE target_key=? AND deleted=0", [
-			staleKey,
-		])
-		.get() as { count: number };
-	console.log(`makeStaleChild: created with ${result.count} edge`);
-	if (result.count !== 1) throw new Error("makeStaleChild failed");
-
-	// Test makeSiblingThread
-	const threadId = makeSiblingThread(ctx, "Test Thread", 3, "Optional summary");
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM threads WHERE id=? AND deleted=0", [threadId])
-		.get() as { count: number };
-	console.log(`makeSiblingThread: ${result.count} thread created`);
-	if (result.count !== 1) throw new Error("makeSiblingThread thread failed");
-
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM messages WHERE thread_id=? AND deleted=0", [threadId])
-		.get() as { count: number };
-	console.log(`  with ${result.count} messages`);
-	if (result.count !== 3) throw new Error("makeSiblingThread messages failed");
-
-	// Test makeAppliedAdvisory
-	makeAppliedAdvisory(ctx, "Test Advisory", 2);
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM advisories WHERE status='applied' AND deleted=0")
-		.get() as { count: number };
-	console.log(`makeAppliedAdvisory: ${result.count} advisory created`);
-	if (result.count !== 1) throw new Error("makeAppliedAdvisory failed");
-
-	// Test makeFileMod
-	makeFileMod(ctx, "/test/file.txt", "Test Thread");
-	result = db
-		.prepare("SELECT COUNT(*) as count FROM files WHERE path=? AND deleted=0", ["/test/file.txt"])
-		.get() as { count: number };
-	console.log(`makeFileMod: ${result.count} file entry created`);
-	if (result.count !== 1) throw new Error("makeFileMod failed");
-
-	db.close();
-
-	console.log("All builders smoke test passed!");
-	process.exit(0);
 }
