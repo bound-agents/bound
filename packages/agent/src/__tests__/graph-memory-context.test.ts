@@ -602,11 +602,9 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			const memoryLines = enrichment.memoryDeltaLines;
 
-			// Should NOT have seed or graph tags (graph search returned no results)
-			const hasSeedTags = memoryLines.some((l) => l.includes("[seed]"));
-			const hasGraphTags = memoryLines.some((l) => l.match(/\[depth \d+/));
+			// Should NOT have graph tags (graph search returned no results)
+			const hasGraphTags = memoryLines.some((l) => l.includes("[graph]"));
 
-			expect(hasSeedTags).toBe(false);
 			expect(hasGraphTags).toBe(false);
 
 			// When keywords are extracted but graph search returns nothing,
@@ -660,12 +658,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// falls back to pure recency (no boost). Should have recency output only.
 			const memoryLines = enrichment.memoryDeltaLines;
 
-			// Should NOT have seed or graph tags (no keywords to seed with)
-			const hasSeedTags = memoryLines.some((l) => l.includes("[seed]"));
-			const hasGraphTags = memoryLines.some((l) => l.match(/\[depth \d+/));
+			// Should NOT have graph tags (no keywords to seed with)
+			const hasGraphTags = memoryLines.some((l) => l.includes("[graph]"));
 			const hasRelevantTags = memoryLines.some((l) => l.includes("[relevant]"));
 
-			expect(hasSeedTags).toBe(false);
 			expect(hasGraphTags).toBe(false);
 			expect(hasRelevantTags).toBe(false);
 
