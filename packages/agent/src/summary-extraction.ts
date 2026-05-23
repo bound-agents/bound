@@ -675,8 +675,31 @@ export function renderDiscoverableArchive(
 		return { section: { lines }, synthesisBacklogCount: null };
 	}
 
-	// Tier 3 lands in subsequent tasks.
-	throw new Error("renderDiscoverableArchive: Tier 3 not yet implemented");
+	// Tier 3: heading-only compression with M most-recent per cluster.
+	const clusters = groupByCluster(visible, input.parentSummaryByKey);
+	const sorted = sortClusters(clusters);
+	let synthesisBacklogCount: number | null = null;
+	for (const cluster of sorted) {
+		const totalCount = cluster.entries.length;
+		const tail = cluster.entries.slice(0, input.tunables.m);
+		lines.push(
+			`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
+		);
+		for (const entry of tail) {
+			lines.push(formatDetailLine(entry, input.budgetPressure, input.nowMs));
+		}
+		lines.push("");
+		if (
+			cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
+			totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
+		) {
+			synthesisBacklogCount = totalCount;
+		}
+	}
+	if (lines[lines.length - 1] === "") lines.pop();
+	lines.push("");
+	lines.push(DISCOVERABLE_FOOTER);
+	return { section: { lines }, synthesisBacklogCount };
 }
 
 interface Cluster {
