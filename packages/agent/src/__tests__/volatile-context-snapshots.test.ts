@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { unlinkSync } from "node:fs";
@@ -277,7 +278,7 @@ describe("volatile-context snapshots", () => {
 			db,
 			"semantic_memory",
 			{
-				id: randomUUID(),
+				id: deterministicUUID(BOUND_NAMESPACE, multilineKey),
 				key: multilineKey,
 				value: "This is a pinned entry that spans\nmultiple lines\nwith detailed information.",
 				tier: "pinned",
@@ -364,7 +365,7 @@ describe("volatile-context snapshots", () => {
 			db,
 			"semantic_memory",
 			{
-				id: randomUUID(),
+				id: deterministicUUID(BOUND_NAMESPACE, "_summary:non-compliant"),
 				key: "_summary:non-compliant",
 				value: "This is a summary without proper sub-topic vocabulary or structure.",
 				tier: "summary",
