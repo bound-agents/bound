@@ -513,7 +513,7 @@ export interface StageEntry {
 	source: string | null;
 	modifiedAt: string;
 	tier: MemoryTier;
-	tag: string; // e.g., "[pinned]", "[summary]", "[stale-detail]", "[seed]", "[recency]"
+	tag: string; // e.g., "[pinned]", "[summary]", "[stale-detail]", "[graph]", "[recency]"
 	taskName?: string | null; // resolved via LEFT JOIN tasks WHERE source = t.id
 	threadId?: string | null; // resolved via LEFT JOIN threads WHERE source = th.id
 	threadTitle?: string | null; // resolved via LEFT JOIN threads
@@ -1082,7 +1082,7 @@ export function loadRecencyEntries(
 export function loadDetailEntries(db: Database): DetailRetrievalResult {
 	const rows = db
 		.prepare(
-			"SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted IS NOT 1 ORDER BY last_accessed_at DESC",
+			"SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
 		)
 		.all() as Array<{ key: string; last_accessed_at: string | null }>;
 
