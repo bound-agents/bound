@@ -2835,8 +2835,8 @@ This skill reviews pull requests.`;
 
 			// Insert a memory entry with modified_at after the task's last_run_at
 			enrichTestDb.run(
-				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), "nohist_key", "nohist_value", null, recentTime, recentTime, 0],
+				"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "nohist_key", "nohist_value", "detail", null, recentTime, recentTime, 0],
 			);
 
 			const { messages } = assembleContext({
@@ -2847,10 +2847,14 @@ This skill reviews pull requests.`;
 				taskId: testTaskId,
 			});
 
-			// Find developer message with enrichment
+			// Find developer message with enrichment (looking for three-section headers)
 			const enrichMsg = messages.find(
 				(m) =>
-					m.role === "developer" && typeof m.content === "string" && m.content.includes("Memory:"),
+					m.role === "developer" &&
+					typeof m.content === "string" &&
+					(m.content.includes("## Working Knowledge") ||
+						m.content.includes("## Discoverable Archive") ||
+						m.content.includes("## Live State")),
 			);
 
 			expect(enrichMsg).toBeDefined();
