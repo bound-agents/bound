@@ -525,6 +525,15 @@ export interface StageResult {
 	exclusionSet: Set<string>;
 }
 
+export interface DetailEntry {
+	key: string;
+	last_accessed_at: string | null;
+}
+
+export interface DetailRetrievalResult {
+	entries: DetailEntry[];
+}
+
 export interface TieredEnrichment {
 	L0: StageEntry[];
 	L1: StageEntry[];
@@ -1058,4 +1067,24 @@ export function loadRecencyEntries(
 	}
 
 	return { entries, exclusionSet: newExclusion };
+}
+
+/**
+ * Retrieval stage for R-VC4: Discoverable Archive.
+ * Enumerates every non-deleted detail-tier entry in last_accessed_at DESC order.
+ * Independent of R-HM6's slot accounting and tag dispatch.
+ *
+ * The query is intentionally unbounded: R-VC15's three-tier compression (Phase 3)
+ * bounds the rendered output, not the underlying retrieval.
+ *
+ * Verifies R-MV5 (delta reads must not update last_accessed_at) by being a pure SELECT.
+ */
+export function loadDetailEntries(db: Database): DetailRetrievalResult {
+	const rows = db
+		.prepare(
+			"SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted IS NOT 1 ORDER BY last_accessed_at DESC",
+		)
+		.all() as Array<{ key: string; last_accessed_at: string | null }>;
+
+	return { entries: rows.map((r) => ({ key: r.key, last_accessed_at: r.last_accessed_at })) };
 }
