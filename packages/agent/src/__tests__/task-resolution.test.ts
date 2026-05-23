@@ -12,6 +12,7 @@ import {
 	computeNextRunAt,
 	isDependencySatisfied,
 	seedCronTasks,
+	verifyLeaseStillHeld,
 } from "../task-resolution";
 
 describe("task-resolution", () => {
@@ -491,6 +492,118 @@ describe("task-resolution", () => {
 				.c;
 
 			expect(countAfterFirst).toBe(countAfterSecond);
+		});
+	});
+
+	describe("verifyLeaseStillHeld", () => {
+		// Helper: insert a task row in the running state with the given fields.
+		function insertRunningTask(
+			id: string,
+			claimedBy: string,
+			leaseId: string,
+			opts?: { status?: string; deleted?: number },
+		): void {
+			const now = new Date().toISOString();
+			const status = opts?.status ?? "running";
+			const deleted = opts?.deleted ?? 0;
+			db.exec(`
+				INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					'${id}', 'cron', '${status}', '0 * * * *', NULL, NULL,
+					'${claimedBy}', '${now}', '${leaseId}', NULL, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					'${now}', NULL, NULL, '${now}', 'test', '${now}', ${deleted}
+				)
+			`);
+		}
+
+		it("returns held=true when claimed_by, lease_id, and status all match", () => {
+			const id = randomUUID();
+			const siteId = randomUUID();
+			const leaseId = randomUUID();
+			insertRunningTask(id, siteId, leaseId);
+
+			const result = verifyLeaseStillHeld(db, id, siteId, leaseId);
+			expect(result.held).toBe(true);
+		});
+
+		it("returns held=false with row_missing when no row exists", () => {
+			const result = verifyLeaseStillHeld(db, randomUUID(), randomUUID(), randomUUID());
+			expect(result.held).toBe(false);
+			if (!result.held) {
+				expect(result.reason).toBe("row_missing");
+				expect(result.actual).toBeNull();
+			}
+		});
+
+		it("returns held=false with row_deleted when the row is tombstoned", () => {
+			const id = randomUUID();
+			const siteId = randomUUID();
+			const leaseId = randomUUID();
+			insertRunningTask(id, siteId, leaseId, { deleted: 1 });
+
+			const result = verifyLeaseStillHeld(db, id, siteId, leaseId);
+			expect(result.held).toBe(false);
+			if (!result.held) {
+				expect(result.reason).toBe("row_deleted");
+			}
+		});
+
+		it("returns held=false with claimed_by_mismatch when another host won LWW", () => {
+			// Models the cross-host race: two replicas each won their local CAS,
+			// but sync converged on the peer's claim.
+			const id = randomUUID();
+			const ourSiteId = randomUUID();
+			const peerSiteId = randomUUID();
+			const ourLeaseId = randomUUID();
+			const peerLeaseId = randomUUID();
+			insertRunningTask(id, peerSiteId, peerLeaseId);
+
+			const result = verifyLeaseStillHeld(db, id, ourSiteId, ourLeaseId);
+			expect(result.held).toBe(false);
+			if (!result.held) {
+				expect(result.reason).toBe("claimed_by_mismatch");
+				expect(result.actual?.claimed_by).toBe(peerSiteId);
+			}
+		});
+
+		it("returns held=false with lease_id_mismatch when same site re-claimed with a new lease", () => {
+			// Models a stale runTask: this host won the original CAS, then a later
+			// claim on the same host (e.g., after eviction-completion race) bumped lease_id.
+			const id = randomUUID();
+			const siteId = randomUUID();
+			const oldLeaseId = randomUUID();
+			const newLeaseId = randomUUID();
+			insertRunningTask(id, siteId, newLeaseId);
+
+			const result = verifyLeaseStillHeld(db, id, siteId, oldLeaseId);
+			expect(result.held).toBe(false);
+			if (!result.held) {
+				expect(result.reason).toBe("lease_id_mismatch");
+				expect(result.actual?.lease_id).toBe(newLeaseId);
+			}
+		});
+
+		it("returns held=false with status_not_running when status is not 'running'", () => {
+			const id = randomUUID();
+			const siteId = randomUUID();
+			const leaseId = randomUUID();
+			insertRunningTask(id, siteId, leaseId, { status: "completed" });
+
+			const result = verifyLeaseStillHeld(db, id, siteId, leaseId);
+			expect(result.held).toBe(false);
+			if (!result.held) {
+				expect(result.reason).toBe("status_not_running");
+				expect(result.actual?.status).toBe("completed");
+			}
 		});
 	});
 });
