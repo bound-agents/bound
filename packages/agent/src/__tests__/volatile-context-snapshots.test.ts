@@ -177,24 +177,55 @@ describe("volatile-context snapshots", () => {
 		const nowMs = new Date("2026-05-22T00:00:00.000Z").getTime();
 
 		const ctx = makeBuilderContext(db, siteId, nowMs);
+		ctx.userId = userId; // Ensure sibling threads are created with same user for digest inclusion
 
-		// Create scenario with many entries to trigger budget pressure
-		makePinned(ctx, 100);
-		const summaryKeys = makeSummary(ctx, 100);
-		for (let i = 0; i < 1000; i++) {
+		// Create scenario with multiple entries to trigger budget pressure while remaining reviewable
+		// Working Knowledge should preserve full fidelity (R-VC14 §3.3)
+		makePinned(ctx, 5);
+		const summaryKeys = makeSummary(ctx, 5);
+		for (let i = 0; i < 30; i++) {
 			makeDetail(ctx, 1, summaryKeys[i % summaryKeys.length]);
 		}
 
-		// Call assembleContext with tight contextWindow (2500) to fire applyReducedEnrichment.
-		// With large memory state (100 pinned, 100 summary, 1000 detail), the volatile enrichment
-		// alone will exceed headroom, triggering budget-pressure rebuild with maxMemory=3, maxTasks=3 caps.
+		// Create additional subsystem entries so Live State demonstrates BUDGET_PRESSURE_SUBSYSTEM_CAP (3) per subsystem
+		// R-VC14 + R-MV13 mandate cap of most-recent-3 per subsystem in Live State
+		const siblingThread0 = makeSiblingThread(ctx, "sibling-0", 2, "Summary of sibling thread 0");
+		const siblingThread1 = makeSiblingThread(ctx, "sibling-1", 3, "Summary of sibling thread 1");
+		const siblingThread2 = makeSiblingThread(ctx, "sibling-2", 1, "Summary of sibling thread 2");
+		makeSiblingThread(ctx, "sibling-3", 4, null);
+		makeSiblingThread(ctx, "sibling-4", 2, "Summary of sibling thread 4");
+
+		// Use current time for advisories so they fall within the 24-hour window checked by loadAppliedAdvisoriesForLiveState
+		makeAppliedAdvisory(ctx, "Advisory A", 2, true);
+		makeAppliedAdvisory(ctx, "Advisory B", 1, true);
+		makeAppliedAdvisory(ctx, "Advisory C", 3, true);
+		makeAppliedAdvisory(ctx, "Advisory D", 0.5, true);
+		makeAppliedAdvisory(ctx, "Advisory E", 4, true);
+
+		makeTask(ctx, "debug", "Task Alpha", 1);
+		makeTask(ctx, "analyze", "Task Beta", 0.5);
+		makeTask(ctx, "monitor", "Task Gamma", 2);
+		makeTask(ctx, "deploy", "Task Delta", 0.1);
+		makeTask(ctx, "verify", "Task Epsilon", 3);
+
+		// File modifications must be from OTHER threads to show in Live State (R-E20)
+		makeFileMod(ctx, "src/main.ts", siblingThread0);
+		makeFileMod(ctx, "docs/README.md", siblingThread1);
+		makeFileMod(ctx, "config/settings.json", siblingThread2);
+		makeFileMod(ctx, "test/fixtures.ts", siblingThread0);
+		makeFileMod(ctx, "build/output.js", siblingThread1);
+
+		// Call assembleContext with tight contextWindow (1500) to fire applyReducedEnrichment.
+		// With memory state (5 pinned, 5 summary, 30 detail) plus multiple Live State entries,
+		// the volatile enrichment will exceed headroom, triggering budget-pressure rebuild
+		// with applyReducedEnrichment path (Live State subsystems capped to 3 each).
 		// Extract only the developer message portion which contains the volatile context.
 		const result = assembleContext({
 			db,
 			threadId,
 			userId,
 			siteId,
-			contextWindow: 2500, // Tight constraint to force budget-pressure path
+			contextWindow: 1500, // Tight constraint to force budget-pressure path
 			messages: [],
 			tools: [],
 		});

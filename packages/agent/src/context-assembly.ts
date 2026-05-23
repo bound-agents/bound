@@ -1944,25 +1944,20 @@ Original output was too large for the context window. If you need the full conte
 		// biome-ignore lint/style/noNonNullAssertion: Caller checked the condition above
 		const baseline = enrichmentBaseline!;
 
-		// Re-load inputs for renderers with reduced caps (3 memory entries, 3 task entries)
+		// Re-load inputs for renderers with reduced caps (3 task entries, 3 live-state caps per subsystem)
 		const pinnedBP = loadPinnedEntries(db);
 		const summariesBP = loadSummaryEntries(db, pinnedBP.exclusionSet);
 		const detailEntriesBP = loadDetailEntries(db);
 
-		// Apply reduced caps: limit to 3 pinned, 3 summary, 3 detail entries under budget pressure
-		const pinnedBPCapped = pinnedBP.entries.slice(0, 3);
-		const summariesBPCapped = summariesBP.entries.slice(0, 3);
-		const detailBPCapped = detailEntriesBP.entries.slice(0, 3);
-
-		const staleChildrenMapBP = buildStaleChildrenMap(db, summariesBPCapped);
+		const staleChildrenMapBP = buildStaleChildrenMap(db, summariesBP.entries);
 		const parentSummaryMapBP = buildParentSummaryMap(
 			db,
-			detailBPCapped.map((e) => e.key),
+			detailEntriesBP.entries.map((e) => e.key),
 		);
 		const digestBP = buildCrossThreadDigest(db, userId, threadId);
 		const advisoriesBP = loadAppliedAdvisoriesForLiveState(db, Date.now());
 
-		// Compute task and file entries with reduced caps
+		// Compute task and file entries with reduced caps (3 tasks, 3 files for Live State)
 		const { taskDigestEntries: taskEntriesBP } = buildVolatileEnrichment(db, baseline, 3, 3);
 		const fileEntriesBP = loadFileModificationsForLiveState(db, threadId);
 
@@ -1978,11 +1973,15 @@ Original output was too large for the context window. If you need the full conte
 		const deltaKeysBP = new Set(allDeltaKeysBP.map((r) => r.key));
 
 		// Compose three sections with budgetPressure:true
+		// R-VC14 §3.3: Pass full memory entries (no pre-cap); renderers handle section-specific capping
+		// - Working Knowledge: full fidelity (no cap)
+		// - Discoverable Archive: all titles preserved (R-VC21), fragment dropped via budgetPressure flag
+		// - Live State: BUDGET_PRESSURE_SUBSYSTEM_CAP (3) applied per subsystem inside renderLiveState
 		const { lines: reducedEnrichmentLines } = composeVolatileSections({
 			db,
-			pinned: pinnedBPCapped,
-			summaries: summariesBPCapped,
-			detailEntries: detailBPCapped,
+			pinned: pinnedBP.entries,
+			summaries: summariesBP.entries,
+			detailEntries: detailEntriesBP.entries,
 			staleChildrenMap: staleChildrenMapBP,
 			parentSummaryMap: parentSummaryMapBP,
 			deltaKeys: deltaKeysBP,
