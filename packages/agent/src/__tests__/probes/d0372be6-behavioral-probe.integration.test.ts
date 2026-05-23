@@ -98,9 +98,10 @@ function buildWebhookFixture() {
  * Implementation of running an agent loop one turn against a configured LLM backend.
  *
  * This directly invokes the backend.chat() method with:
- * 1. System prompt: orientation block
- * 2. User message: webhook envelope details
- * 3. Fixed temperature for deterministic behavior
+ * 1. Developer message: orientation block
+ * 2. Tool result message: envelope JSON
+ * 3. User message: request to summarize the event
+ * 4. Fixed temperature for deterministic behavior
  *
  * Reads from BOUND_MODEL_BACKENDS_JSON environment variable for backend configuration,
  * or uses a sensible default if not found. Falls back to Ollama if neither is configured.
@@ -108,7 +109,7 @@ function buildWebhookFixture() {
  */
 async function runAgentLoopOneTurn(params: {
 	orientation: string;
-	conversationHistory: Array<{ role: "user" | "assistant" | "tool_result"; content: string }>;
+	envelope: Record<string, unknown>;
 	temperature: number;
 }): Promise<string> {
 	// Read backend config from environment or use empty config
@@ -158,11 +159,20 @@ async function runAgentLoopOneTurn(params: {
 		);
 	}
 
-	// Build messages array
+	// Build messages array: developer message (orientation) + tool_result (envelope) + user request
 	const messages = [
 		{
-			role: "user" as const,
+			role: "developer" as const,
 			content: params.orientation,
+		},
+		{
+			role: "tool_result" as const,
+			content: JSON.stringify(params.envelope),
+			tool_use_id: "fixture-tool-call-1",
+		},
+		{
+			role: "user" as const,
+			content: "Summarize this webhook event.",
 		},
 	];
 
@@ -209,7 +219,7 @@ async function runProbe(
 
 		const assistantText = await runAgentLoopOneTurn({
 			orientation,
-			conversationHistory: fixture.conversationHistory,
+			envelope: fixture.envelope,
 			temperature: TEMPERATURE,
 		});
 

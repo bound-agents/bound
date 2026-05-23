@@ -21,8 +21,13 @@ export interface EnvelopeFixture {
 /**
  * Build the pre-RFC orientation block for a given webhook envelope fixture.
  * This template matches the shape from pre-Phase-5 context-assembly.ts.
+ *
+ * Note: The envelope parameter is accepted for signature consistency with buildPostRfcOrientation
+ * and is available for future use. The pre-RFC orientation is static and does not reference
+ * envelope content directly; the envelope is passed as a separate tool_result message in the
+ * conversation history.
  */
-export function buildPreRfcOrientation(_envelope: EnvelopeFixture): string {
+export function buildPreRfcOrientation(envelope: EnvelopeFixture): string {
 	const lines: string[] = [];
 
 	// Preface (model, platform context)
@@ -51,8 +56,12 @@ export function buildPreRfcOrientation(_envelope: EnvelopeFixture): string {
  * Build the post-RFC orientation block for a given webhook envelope fixture.
  * This template matches the shape from the volatile-context RFC (Phase 5+).
  * Includes structural labels and explicit provenance markers.
+ *
+ * Note: The envelope parameter is accepted for signature consistency and documented
+ * availability. The post-RFC orientation is static and does not reference envelope content
+ * directly; the envelope is passed as a separate tool_result message in the conversation history.
  */
-export function buildPostRfcOrientation(_envelope: EnvelopeFixture): string {
+export function buildPostRfcOrientation(envelope: EnvelopeFixture): string {
 	const lines: string[] = [];
 
 	// Preface
