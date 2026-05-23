@@ -14,17 +14,71 @@ export interface TextInputProps {
 }
 
 /**
- * Break a string into lines of at most `cols` characters each.
- * Each element is a substring; concatenating them with "" reproduces the
- * original string. Exported for testing.
+ * Break a string into lines of at most `cols` characters each, preferring
+ * word-boundary breaks (last space at or before the column limit). Falls back
+ * to a hard character break when no space exists in the window (for long words
+ * that exceed the column width). The trailing space of a word is included in
+ * the current line so every character in `value` maps to exactly one position
+ * in the returned lines — this keeps cursor arithmetic correct.
+ * Exported for testing.
  */
 export function breakLines(value: string, cols: number): string[] {
 	if (value.length === 0) return [""];
 	const lines: string[] = [];
-	for (let i = 0; i < value.length; i += cols) {
-		lines.push(value.slice(i, i + cols));
+	let start = 0;
+
+	while (start < value.length) {
+		const remaining = value.length - start;
+		if (remaining <= cols) {
+			lines.push(value.slice(start));
+			break;
+		}
+
+		// Find the last space within the first `cols` characters.
+		// Including the space in the current line keeps the character-position
+		// mapping simple for findCursorInLines().
+		let breakAt = -1;
+		for (let i = start + cols - 1; i >= start; i--) {
+			if (value[i] === " ") {
+				breakAt = i + 1; // include the space in this line
+				break;
+			}
+		}
+
+		if (breakAt === -1) {
+			// No space found — hard break at column boundary (long word case).
+			lines.push(value.slice(start, start + cols));
+			start += cols;
+		} else {
+			lines.push(value.slice(start, breakAt));
+			start = breakAt;
+		}
 	}
+
 	return lines;
+}
+
+/**
+ * Given the lines produced by breakLines() and a cursor position `pos` in the
+ * original string, returns the (line index, column within that line) pair for
+ * the cursor. Works correctly when lines have different lengths (word-boundary
+ * breaks produce variable-length lines, so the old `Math.floor(pos / cols)`
+ * arithmetic is wrong).
+ * Exported for testing.
+ */
+export function findCursorInLines(
+	lines: string[],
+	pos: number,
+): { cursorLine: number; cursorCol: number } {
+	let offset = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const lineEnd = offset + lines[i].length;
+		if (pos < lineEnd || i === lines.length - 1) {
+			return { cursorLine: i, cursorCol: pos - offset };
+		}
+		offset = lineEnd;
+	}
+	return { cursorLine: lines.length - 1, cursorCol: lines[lines.length - 1].length };
 }
 
 /**
@@ -297,8 +351,7 @@ export function TextInput({
 	// corresponds to a logical line in Ink's output.
 	if (columns != null && columns > 0) {
 		const lines = breakLines(value, columns);
-		const cursorLine = Math.floor(pos / columns);
-		const cursorCol = pos % columns;
+		const { cursorLine, cursorCol } = findCursorInLines(lines, pos);
 
 		return (
 			<Box flexDirection="column">

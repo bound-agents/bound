@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { useState } from "react";
-import { TextInput } from "../tui/components/TextInput";
+import { TextInput, breakLines, findCursorInLines } from "../tui/components/TextInput";
 
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
@@ -539,5 +539,94 @@ describe("TextInput", () => {
 		await tick();
 
 		expect(lastFrame()).toContain("submitted:a🐻Xc");
+	});
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Pure-function unit tests for breakLines (word-boundary) and findCursorInLines
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe("breakLines — word-boundary wrapping", () => {
+	it("breaks at the last space before the column limit, not mid-word", () => {
+		// Old character-boundary impl: ["hello w", "orld"]  (splits "world")
+		// New word-boundary impl:      ["hello ", "world"]  (breaks at space)
+		expect(breakLines("hello world", 7)).toEqual(["hello ", "world"]);
+	});
+
+	it("hard-breaks long words that exceed the column limit", () => {
+		expect(breakLines("internationalization", 8)).toEqual(["internat", "ionaliza", "tion"]);
+	});
+
+	it("handles a sentence with multiple word boundaries", () => {
+		expect(breakLines("hello world test", 8)).toEqual(["hello ", "world ", "test"]);
+	});
+
+	it("returns a single-element array when text fits within columns", () => {
+		expect(breakLines("hello", 5)).toEqual(["hello"]);
+		expect(breakLines("hi", 10)).toEqual(["hi"]);
+	});
+
+	it("returns [''] for an empty string", () => {
+		expect(breakLines("", 5)).toEqual([""]);
+	});
+
+	it("includes the trailing space in the current line (preserves character mapping)", () => {
+		// The space must be included so every char in value maps to a line position,
+		// which keeps findCursorInLines arithmetic correct.
+		const lines = breakLines("hello world", 7);
+		const joined = lines.join("");
+		expect(joined).toBe("hello world");
+	});
+});
+
+describe("findCursorInLines", () => {
+	it("places cursor at the start of the string", () => {
+		expect(findCursorInLines(["hello ", "world"], 0)).toEqual({
+			cursorLine: 0,
+			cursorCol: 0,
+		});
+	});
+
+	it("places cursor within the first line", () => {
+		expect(findCursorInLines(["hello ", "world"], 3)).toEqual({
+			cursorLine: 0,
+			cursorCol: 3,
+		});
+	});
+
+	it("places cursor on the trailing space of the first line", () => {
+		// "hello " is 6 chars; pos=5 is the space character
+		expect(findCursorInLines(["hello ", "world"], 5)).toEqual({
+			cursorLine: 0,
+			cursorCol: 5,
+		});
+	});
+
+	it("places cursor at the start of the second line", () => {
+		// "hello " is 6 chars; pos=6 is first char of "world"
+		expect(findCursorInLines(["hello ", "world"], 6)).toEqual({
+			cursorLine: 1,
+			cursorCol: 0,
+		});
+	});
+
+	it("places cursor at end-of-string position (past end)", () => {
+		// "hello " + "world" = 11 chars total; pos=11 is past the end
+		expect(findCursorInLines(["hello ", "world"], 11)).toEqual({
+			cursorLine: 1,
+			cursorCol: 5,
+		});
+	});
+
+	it("works correctly across three lines", () => {
+		// ["hello ", "world ", "test"] — cumulative offsets: 0, 6, 12
+		expect(findCursorInLines(["hello ", "world ", "test"], 12)).toEqual({
+			cursorLine: 2,
+			cursorCol: 0,
+		});
+		expect(findCursorInLines(["hello ", "world ", "test"], 14)).toEqual({
+			cursorLine: 2,
+			cursorCol: 2,
+		});
 	});
 });
