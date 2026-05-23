@@ -18,6 +18,7 @@ import {
 	makeSiblingThread,
 	makeStaleChild,
 	makeSummary,
+	makeTask,
 } from "./fixtures/volatile-context/index";
 
 function createTempDb(): Database {
@@ -444,8 +445,13 @@ describe("volatile-context snapshots", () => {
 		makeAppliedAdvisory(ctx, "Advisory 1", 1, true);
 		makeAppliedAdvisory(ctx, "Advisory 2", 2, true);
 
+		// Add tasks (must have status='running' and last_run_at within recent window).
+		// Tasks are included in the digest if they were recently active (within ~24h based on buildVolatileEnrichment logic).
+		makeTask(ctx, "webhook", "Task 1", 0.5);
+		makeTask(ctx, "cron", "Task 2", 1);
+
 		// Note: buildVolatileContext uses Date.now() for timestamp filtering, so advisories,
-		// cross-thread entries, and file mods reflect the current moment. This demonstrates
+		// cross-thread entries, file mods, and tasks reflect the current moment. This demonstrates
 		// that all subsystems in Live State render correctly when preconditions are met.
 		const result = buildVolatileContext({
 			db,
