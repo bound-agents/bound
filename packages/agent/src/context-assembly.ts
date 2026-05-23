@@ -1948,10 +1948,16 @@ Original output was too large for the context window. If you need the full conte
 		const pinnedBP = loadPinnedEntries(db);
 		const summariesBP = loadSummaryEntries(db, pinnedBP.exclusionSet);
 		const detailEntriesBP = loadDetailEntries(db);
-		const staleChildrenMapBP = buildStaleChildrenMap(db, summariesBP.entries);
+
+		// Apply reduced caps: limit to 3 pinned, 3 summary, 3 detail entries under budget pressure
+		const pinnedBPCapped = pinnedBP.entries.slice(0, 3);
+		const summariesBPCapped = summariesBP.entries.slice(0, 3);
+		const detailBPCapped = detailEntriesBP.entries.slice(0, 3);
+
+		const staleChildrenMapBP = buildStaleChildrenMap(db, summariesBPCapped);
 		const parentSummaryMapBP = buildParentSummaryMap(
 			db,
-			detailEntriesBP.entries.map((e) => e.key),
+			detailBPCapped.map((e) => e.key),
 		);
 		const digestBP = buildCrossThreadDigest(db, userId, threadId);
 		const advisoriesBP = loadAppliedAdvisoriesForLiveState(db, Date.now());
@@ -1974,9 +1980,9 @@ Original output was too large for the context window. If you need the full conte
 		// Compose three sections with budgetPressure:true
 		const { lines: reducedEnrichmentLines } = composeVolatileSections({
 			db,
-			pinned: pinnedBP.entries,
-			summaries: summariesBP.entries,
-			detailEntries: detailEntriesBP.entries,
+			pinned: pinnedBPCapped,
+			summaries: summariesBPCapped,
+			detailEntries: detailBPCapped,
 			staleChildrenMap: staleChildrenMapBP,
 			parentSummaryMap: parentSummaryMapBP,
 			deltaKeys: deltaKeysBP,

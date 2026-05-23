@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { insertRow } from "@bound/core";
+import type { TaskType } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { upsertEdge } from "../../../graph-queries";
 
@@ -299,4 +300,63 @@ export function makeFileMod(ctx: BuilderContext, path: string, threadId: string)
 		},
 		ctx.siteId,
 	);
+}
+
+/**
+ * Create a task that will surface in Live State when buildVolatileEnrichment includes it.
+ * Tasks are included in the digest if: status='running' AND last_run_at within recent window.
+ * Returns the task ID.
+ */
+export function makeTask(
+	ctx: BuilderContext,
+	taskType: TaskType,
+	title: string,
+	hoursAgo = 0,
+): string {
+	const taskKey = `${title}:task`;
+	const taskId = deterministicUUID(BOUND_NAMESPACE, taskKey);
+	const lastRunAt = new Date(ctx.nowMs - hoursAgo * 3600_000).toISOString();
+	const now = new Date(ctx.nowMs).toISOString();
+
+	insertRow(
+		ctx.db,
+		"tasks",
+		{
+			id: taskId,
+			type: taskType,
+			status: "running",
+			trigger_spec: "fixture",
+			payload: JSON.stringify({ title }),
+			created_at: now,
+			created_by: null,
+			thread_id: null,
+			claimed_by: null,
+			claimed_at: null,
+			lease_id: null,
+			next_run_at: null,
+			last_run_at: lastRunAt,
+			run_count: 1,
+			max_runs: null,
+			requires: null,
+			model_hint: null,
+			no_history: 0,
+			inject_mode: "results",
+			depends_on: null,
+			require_success: 0,
+			alert_threshold: 3,
+			consecutive_failures: 0,
+			event_depth: 0,
+			no_quiescence: 0,
+			heartbeat_at: null,
+			result: null,
+			error: null,
+			modified_at: now,
+			deleted: 0,
+			origin_thread_id: null,
+			system_prompt_addition: null,
+		},
+		ctx.siteId,
+	);
+
+	return taskId;
 }

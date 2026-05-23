@@ -7,5 +7,6 @@ export {
 	makeSiblingThread,
 	makeAppliedAdvisory,
 	makeFileMod,
+	makeTask,
 	type BuilderContext,
 } from "./builders";
