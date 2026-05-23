@@ -1113,11 +1113,67 @@ export function loadDetailEntries(db: Database): DetailRetrievalResult {
 	return { entries: rows.map((r) => ({ key: r.key, last_accessed_at: r.last_accessed_at })) };
 }
 
+const WORKING_KNOWLEDGE_HEADER = "## Working Knowledge — operational and durable";
+const WORKING_KNOWLEDGE_FOOTER =
+	"Bodies of summary entries are accessed via memory search using terms from the entry key.";
+const SUMMARY_GLOSS_MAX = 200;
+const STALE_CHILD_GLOSS_MAX = 200;
+const DELTA_MARKER = "[changed since last turn]";
+const PINNED_DELTA_INDENT = "    "; // four spaces, per R-VC11(b)
+
+/**
+ * Truncates a string to maximum length and appends "..." if truncated.
+ * Matches the existing convention in formatMemoryEntry (line 577).
+ */
+function truncateGloss(s: string, max: number): string {
+	if (s.length <= max) return s;
+	return `${safeSlice(s, 0, max)}...`;
+}
+
 /**
  * Renders the Working Knowledge section from pinned and summary entries.
  * A pure function that takes already-loaded data and produces output lines.
  * No I/O; no DB access; R-VC11(d) structurally guaranteed by signature.
+ *
+ * R-VC2: Produces header line with exact em-dash character (U+2014).
+ * R-VC3: Pinned entries rendered in full text; summary entries with 200-char gloss.
+ * R-VC6: Produces exact footer text.
+ * R-VC10: Stale children indented beneath parent summary.
+ * R-VC11(a-c): Delta markers placed according to entry type and staleness.
+ * R-VC22: Header uses ## (top-level, uniform across sections).
  */
-export function renderWorkingKnowledge(_input: WorkingKnowledgeInput): RenderedSection {
-	return { lines: [] };
+export function renderWorkingKnowledge(input: WorkingKnowledgeInput): RenderedSection {
+	const lines: string[] = [];
+	lines.push(WORKING_KNOWLEDGE_HEADER);
+	lines.push("");
+
+	// R-VC3: pinned entries in full text. R-VC11(b): delta marker on indented new line.
+	for (const entry of input.pinned) {
+		lines.push(`- ${entry.key}: ${entry.value}`);
+		if (input.deltaKeys.has(entry.key)) {
+			lines.push(`${PINNED_DELTA_INDENT}${DELTA_MARKER}`);
+		}
+	}
+
+	// R-VC3: summary entries with 200-char gloss. R-VC11(a): delta marker on same line.
+	for (const summary of input.summaries) {
+		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
+		const summaryDelta = input.deltaKeys.has(summary.key) ? ` ${DELTA_MARKER}` : "";
+		lines.push(`- ${summary.key}: ${gloss}${summaryDelta}`);
+
+		// R-VC10: stale children indented beneath their parent.
+		const staleChildren = input.staleChildrenBySummary.get(summary.key) ?? [];
+		for (const child of staleChildren) {
+			const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
+			const staleMarker = `[stale child of ${summary.key}]`;
+			// R-VC11(c): when stale + delta, fixed order is [stale child …] [changed since last turn].
+			const childDelta = input.deltaKeys.has(child.key) ? ` ${DELTA_MARKER}` : "";
+			lines.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+		}
+	}
+
+	lines.push("");
+	lines.push(WORKING_KNOWLEDGE_FOOTER);
+
+	return { lines };
 }
