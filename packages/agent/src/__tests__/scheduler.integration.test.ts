@@ -737,4 +737,126 @@ describe("Scheduler Integration", () => {
 		expect(finalTask?.status).toBe("failed");
 		expect(finalTask?.consecutive_failures).toBe(2);
 	}, 5_000);
+
+	it("aborts runTask via lease verification when peer wins LWW between CAS and verification (split-brain defense)", async () => {
+		// Models the split-brain race documented in
+		// _outcome:heartbeat-2026052[23]T*: two replicas both succeed at their
+		// local phase1/phase3 CAS because each replica's SQLite sees status='pending'
+		// independently. The post-CAS verification re-reads the row and bails if
+		// LWW resolution has converged on a peer's claim.
+		//
+		// BOUND_LEASE_VERIFY_SETTLE_MS=0 (set in test preload) makes the verification
+		// fire on the next setImmediate tick, so we can deterministically stage the
+		// "peer wins LWW" outcome by directly mutating the row right after runTask.
+
+		const taskId = randomUUID();
+		const threadId = randomUUID();
+		const userId = randomUUID();
+		const ourSiteId = (appContext as any).siteId as string;
+		const peerSiteId = randomUUID();
+		const peerLeaseId = randomUUID();
+		const nowStr = new Date().toISOString();
+
+		// Seed the user, thread, and a task already in the 'claimed' state by us
+		// (i.e., phase1 has succeeded locally; phase3 has not yet been called).
+		db.exec(`
+			INSERT OR IGNORE INTO users (id, display_name, first_seen_at, modified_at, deleted)
+			VALUES ('${userId}', 'lease-verify-test', '${nowStr}', '${nowStr}', 0)
+		`);
+		db.exec(`
+			INSERT INTO threads (
+				id, user_id, interface, host_origin, created_at,
+				last_message_at, modified_at, deleted
+			) VALUES (
+				'${threadId}', '${userId}', 'cron', '${ourSiteId}', '${nowStr}',
+				'${nowStr}', '${nowStr}', 0
+			)
+		`);
+		db.exec(`
+			INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				'${taskId}', 'cron', 'claimed', '0 * * * *', NULL, '${threadId}',
+				'${ourSiteId}', '${nowStr}', '${randomUUID()}', '${nowStr}', NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				'${nowStr}', NULL, NULL, '${nowStr}', 'system', '${nowStr}', 0
+			)
+		`);
+
+		let agentLoopRunCount = 0;
+		const agentLoopFactory = (): { run: () => Promise<AgentLoopResult> } => ({
+			run: async (): Promise<AgentLoopResult> => {
+				agentLoopRunCount += 1;
+				return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 };
+			},
+		});
+
+		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
+
+		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as
+			| Record<string, unknown>
+			| undefined;
+		expect(task).toBeDefined();
+
+		// Drive runTask directly. This performs the local claimed→running CAS
+		// synchronously, then schedules verification + agent-loop launch via
+		// setImmediate. We stage the peer-wins overwrite *before* the setImmediate
+		// callback fires so verification observes peer ownership.
+		(scheduler as unknown as { runTask: (t: unknown) => void }).runTask(task);
+
+		// Confirm the local CAS succeeded (we wrote 'running' + a fresh lease_id).
+		const afterCas = db
+			.query("SELECT status, claimed_by, lease_id FROM tasks WHERE id = ?")
+			.get(taskId) as { status: string; claimed_by: string; lease_id: string };
+		expect(afterCas.status).toBe("running");
+		expect(afterCas.claimed_by).toBe(ourSiteId);
+		const ourLeaseId = afterCas.lease_id;
+
+		// Simulate sync delivering a peer's winning LWW write: the peer's CAS
+		// also succeeded locally on their side, replicated to us, and resolved
+		// to the higher HLC. After convergence, our row reflects the peer.
+		db.exec(`
+			UPDATE tasks
+			SET claimed_by = '${peerSiteId}', lease_id = '${peerLeaseId}'
+			WHERE id = '${taskId}'
+		`);
+
+		// Yield the event loop a few times for setImmediate to fire and the
+		// verification body to complete. With BOUND_LEASE_VERIFY_SETTLE_MS=0
+		// there is no settle delay; the verification runs on the next tick.
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		await sleep(50);
+
+		// Verification should have observed the peer's claimed_by, bailed before
+		// any agent-loop side effects, and removed the task from runningTasks.
+		expect(agentLoopRunCount).toBe(0);
+		expect(
+			(scheduler as unknown as { runningTasks: Map<string, unknown> }).runningTasks.has(taskId),
+		).toBe(false);
+
+		// And no [Task wakeup] developer message should have been inserted on
+		// the loser side — that insert happens *after* the verification check.
+		const wakeupRows = db
+			.query(
+				"SELECT id FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%Task wakeup%'",
+			)
+			.all(threadId);
+		expect(wakeupRows).toHaveLength(0);
+
+		// Sanity: the row still reflects the peer's ownership (we did not undo it).
+		const finalRow = db
+			.query("SELECT claimed_by, lease_id FROM tasks WHERE id = ?")
+			.get(taskId) as { claimed_by: string; lease_id: string };
+		expect(finalRow.claimed_by).toBe(peerSiteId);
+		expect(finalRow.lease_id).toBe(peerLeaseId);
+		expect(finalRow.lease_id).not.toBe(ourLeaseId);
+	});
 });

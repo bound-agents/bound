@@ -15,12 +15,32 @@ import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
-import { canRunHere, computeNextRunAt } from "./task-resolution";
+import { canRunHere, computeNextRunAt, verifyLeaseStillHeld } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
 
 const getTracer = () => trace.getTracer("bound.scheduler");
 
 const LEASE_DURATION = 300000; // 5 minutes
+
+/**
+ * Settle window before re-verifying lease ownership in `runTask`.
+ *
+ * The phase1/phase3 CAS updates (`pending → claimed → running`) are local-only
+ * on each replica's SQLite. In a multi-master cluster, two hosts polling
+ * concurrently can each succeed at their local CAS. After this delay we
+ * re-read the row; LWW resolution should have converged on a single winner
+ * and the loser bails before any agent-loop side effects.
+ *
+ * Heuristic, not consensus — tracks sync RTT. Tests can set
+ * BOUND_LEASE_VERIFY_SETTLE_MS=0 to disable the wait and exercise the
+ * verification path synchronously.
+ */
+const LEASE_VERIFY_SETTLE_MS = (() => {
+	const raw = process.env.BOUND_LEASE_VERIFY_SETTLE_MS;
+	if (raw === undefined) return 250;
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : 250;
+})();
 
 /**
  * Extracts the raw cron expression from a trigger_spec string.
@@ -812,6 +832,34 @@ export class Scheduler {
 
 		// Create agent loop and run asynchronously
 		setImmediate(async () => {
+			// Cross-host lease verification: the phase1/phase3 CAS updates above
+			// (`pending → claimed → running`) are local-only on each replica's
+			// SQLite. In a multi-master cluster, two hosts polling concurrently
+			// can both succeed at their local CAS, both proceed to runTask, and
+			// both insert `[Task wakeup]` developer rows on the same thread.
+			//
+			// Wait for sync to settle, re-read the row, and bail if LWW resolution
+			// has overwritten our claim with a peer's. This is defense-in-depth —
+			// the settle wait is heuristic (sync RTT-bound), not consensus. The
+			// proper fix is cluster-wide singleton coordination (tracked separately).
+			if (LEASE_VERIFY_SETTLE_MS > 0) {
+				await new Promise<void>((resolve) => setTimeout(resolve, LEASE_VERIFY_SETTLE_MS));
+			}
+			const verification = verifyLeaseStillHeld(this.ctx.db, task.id, this.ctx.siteId, leaseId);
+			if (!verification.held) {
+				this.ctx.logger.warn(
+					"[scheduler] Lease verification failed after settle; aborting runTask to avoid split-brain",
+					{
+						taskId: task.id,
+						leaseId,
+						reason: verification.reason,
+						actual: verification.actual,
+					},
+				);
+				this.runningTasks.delete(task.id);
+				return;
+			}
+
 			try {
 				let threadId = task.thread_id || randomUUID();
 				const taskNow = new Date().toISOString();

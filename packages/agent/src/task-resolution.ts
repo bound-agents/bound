@@ -181,6 +181,72 @@ export function isDependencySatisfied(db: Database, task: Task): boolean {
 	return true;
 }
 
+/**
+ * Verify that the lease on `taskId` is still held by `(siteId, leaseId)`.
+ *
+ * The phase1 (`pending → claimed`) and phase3 (`claimed → running`) CAS updates
+ * are local-only on each replica's SQLite. In a multi-master cluster, two hosts
+ * polling concurrently can each see `status='pending'` in their local DB and
+ * each succeed at their local CAS — both then proceed to `runTask`, both insert
+ * `[Task wakeup]` developer rows, both launch agent loops on the same thread.
+ *
+ * This helper closes that window: after the local `claimed → running` CAS,
+ * `runTask` waits for sync to settle and re-reads the row. If LWW resolution
+ * has overwritten our claim with a peer's, we observe a mismatch here and bail
+ * before any agent-loop side effects (developer message inserts, tool runs).
+ *
+ * NOT race-free: the settle wait is heuristic. A sync RTT exceeding the wait
+ * still slips through. This is defense-in-depth, not consensus — the proper
+ * fix is cluster-wide singleton coordination (tracked separately).
+ */
+export function verifyLeaseStillHeld(
+	db: Database,
+	taskId: string,
+	expectedSiteId: string,
+	expectedLeaseId: string,
+):
+	| { held: true }
+	| {
+			held: false;
+			reason:
+				| "row_missing"
+				| "row_deleted"
+				| "claimed_by_mismatch"
+				| "lease_id_mismatch"
+				| "status_not_running";
+			actual: {
+				claimed_by: string | null;
+				lease_id: string | null;
+				status: string;
+				deleted: number;
+			} | null;
+	  } {
+	const row = db
+		.query("SELECT claimed_by, lease_id, status, deleted FROM tasks WHERE id = ?")
+		.get(taskId) as {
+		claimed_by: string | null;
+		lease_id: string | null;
+		status: string;
+		deleted: number;
+	} | null;
+	if (!row) {
+		return { held: false, reason: "row_missing", actual: null };
+	}
+	if (row.deleted) {
+		return { held: false, reason: "row_deleted", actual: row };
+	}
+	if (row.claimed_by !== expectedSiteId) {
+		return { held: false, reason: "claimed_by_mismatch", actual: row };
+	}
+	if (row.lease_id !== expectedLeaseId) {
+		return { held: false, reason: "lease_id_mismatch", actual: row };
+	}
+	if (row.status !== "running") {
+		return { held: false, reason: "status_not_running", actual: row };
+	}
+	return { held: true };
+}
+
 export function canRunHere(db: Database, task: Task, hostName: string, siteId: string): boolean {
 	// Check dependency satisfaction
 	if (!isDependencySatisfied(db, task)) {
