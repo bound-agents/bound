@@ -4,6 +4,7 @@ import { insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
+import { getLastThreadForFile } from "./file-thread-tracker";
 import { graphSeededRetrieval } from "./graph-queries";
 
 /**
@@ -515,6 +516,7 @@ export function computeBaseline(
 export interface VolatileEnrichment {
 	memoryDeltaLines: string[];
 	taskDigestLines: string[];
+	taskDigestEntries: LiveStateTaskEntry[]; // Structured task entries for Live State renderer
 	tiers: TieredEnrichment; // L0→L1→L2→L3 tiered entries (now required after Task 2 rewrite)
 	graphCount?: number; // entries retrieved via graph (seed + traversal)
 	recencyCount?: number; // entries retrieved via recency fallback
@@ -1027,7 +1029,7 @@ export function buildVolatileEnrichment(
 	// Task digest query — fetch maxTasks+1 to detect overflow
 	const taskRows = db
 		.prepare(
-			`SELECT t.trigger_spec, t.last_run_at, t.consecutive_failures, t.claimed_by,
+			`SELECT t.id, t.type, t.trigger_spec, t.last_run_at, t.run_count, t.consecutive_failures, t.claimed_by,
 			        h.host_name
 			 FROM   tasks t
 			 LEFT JOIN hosts h ON t.claimed_by = h.site_id
@@ -1038,8 +1040,11 @@ export function buildVolatileEnrichment(
 			 LIMIT  ?`,
 		)
 		.all(baseline, maxTasks + 1) as Array<{
+		id: string;
+		type: string;
 		trigger_spec: string;
 		last_run_at: string;
+		run_count: number;
 		consecutive_failures: number;
 		claimed_by: string | null;
 		host_name: string | null;
@@ -1049,11 +1054,19 @@ export function buildVolatileEnrichment(
 	const visibleTaskRows = hasMoreTasks ? taskRows.slice(0, maxTasks) : taskRows;
 
 	const taskDigestLines: string[] = [];
+	const taskDigestEntries: LiveStateTaskEntry[] = [];
 	for (const row of visibleTaskRows) {
 		const status = row.consecutive_failures === 0 ? "ran" : "failed";
 		const hostLabel = row.host_name ?? (row.claimed_by ? row.claimed_by.slice(0, 8) : "unknown");
 		const relTime = relativeTime(row.last_run_at);
 		taskDigestLines.push(`- ${row.trigger_spec} ${status} (${relTime} on ${hostLabel})`);
+		taskDigestEntries.push({
+			taskId: row.id,
+			taskType: row.type,
+			runCount: row.run_count,
+			lastRunAt: row.last_run_at,
+			status,
+		});
 	}
 	if (hasMoreTasks) {
 		taskDigestLines.push(`... and ${taskRows.length - maxTasks} more (query tasks for full list)`);
@@ -1062,6 +1075,7 @@ export function buildVolatileEnrichment(
 	return {
 		memoryDeltaLines,
 		taskDigestLines,
+		taskDigestEntries,
 		tiers,
 		graphCount: l2.entries.length,
 		recencyCount: l3.entries.length,
@@ -1505,6 +1519,45 @@ export function loadAppliedAdvisoriesForLiveState(
 		)
 		.all(cutoff) as Array<{ title: string; resolved_at: string }>;
 	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
+}
+
+/**
+ * Loads file modification notices for Live State rendering (R-VC13, R-E20).
+ * Queries _internal.file_thread.* entries and returns structured file entries
+ * pointing to the last thread that modified each file, capped at 10 total.
+ *
+ * Non-fatal: query errors are swallowed; empty array returned on failure.
+ */
+export function loadFileModificationsForLiveState(
+	db: Database,
+	currentThreadId: string,
+): LiveStateFileEntry[] {
+	try {
+		const FILE_NOTIF_CAP = 10;
+		const threadFiles = db
+			.query(
+				"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
+			)
+			.all() as Array<{ key: string }>;
+
+		const entries: LiveStateFileEntry[] = [];
+		for (const { key } of threadFiles) {
+			if (entries.length >= FILE_NOTIF_CAP) break;
+			const filePath = key.replace("_internal.file_thread.", "");
+			const lastThread = getLastThreadForFile(db, filePath);
+			if (lastThread && lastThread !== currentThreadId) {
+				const threadRow = db.query("SELECT title FROM threads WHERE id = ?").get(lastThread) as {
+					title: string | null;
+				} | null;
+				const threadTitle = threadRow?.title || lastThread;
+				entries.push({ path: filePath, threadTitle });
+			}
+		}
+		return entries;
+	} catch (_error) {
+		// Non-fatal: file thread notification query failed
+		return [];
+	}
 }
 
 /**

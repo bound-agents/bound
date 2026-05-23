@@ -2659,10 +2659,10 @@ This skill reviews pull requests.`;
 				],
 			);
 
-			// Insert a memory entry with modified_at after the thread's last_message_at
+			// Insert a memory entry with modified_at after the thread's last_message_at (tier=pinned so it shows in Working Knowledge)
 			enrichTestDb.run(
-				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), "test_key", "test_value", null, recentTime, recentTime, 0],
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, tier, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "pinned:test_key", "test_value", null, recentTime, recentTime, "pinned", 0],
 			);
 
 			const result = assembleContext({
@@ -2673,11 +2673,10 @@ This skill reviews pull requests.`;
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
-			// Memory delta should be in systemSuffix
+			// Memory delta should be in systemSuffix (now in Working Knowledge section)
 			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("changed since your last turn");
-			expect(systemSuffix).toContain("test_key");
-			expect(systemSuffix).toContain("1 entries");
+			expect(systemSuffix).toContain("pinned:test_key");
+			expect(systemSuffix).toContain("Working Knowledge");
 		});
 
 		it("AC8.2: does not include raw 'Semantic Memory:' format in any assembled message", () => {
@@ -2785,10 +2784,10 @@ This skill reviews pull requests.`;
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
-			// Task digest should be in systemSuffix
+			// Task digest should be in systemSuffix (now in Live State section)
 			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("daily_check");
-			expect(systemSuffix).toContain(" ran ");
+			expect(systemSuffix).toContain("[task]");
+			expect(systemSuffix).toContain("manual");
 		});
 
 		it("AC1.3: noHistory=true: pushes standalone enrichment system message when delta is non-empty", () => {
@@ -4185,8 +4184,8 @@ This skill reviews pull requests.`;
 			// Should be present due to toolTokenEstimate > 0
 			expect(sectionNames).toContain("tools");
 
-			// Should be present due to semantic_memory entries
-			expect(sectionNames).toContain("memory");
+			// Volatile content (including three sections: Working Knowledge, Discoverable Archive, Live State)
+			expect(sectionNames).toContain("volatile-other");
 
 			// Verify history has all three children: user, assistant, tool_result
 			const historySection = result.debug.sections.find((s) => s.name === "history");
