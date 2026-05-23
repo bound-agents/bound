@@ -3,6 +3,7 @@ import type { ThreadListEntry } from "@bound/client";
 import { onMount } from "svelte";
 import { formatRelativeTime, isToday } from "../lib/format-time";
 import { getLineColor, getLineName } from "../lib/metro-lines";
+import { lineRoute } from "../lib/route-utils";
 import LineBadge from "./LineBadge.svelte";
 
 interface Props {
@@ -195,18 +196,6 @@ onMount(() => {
 	ro.observe(scrollEl);
 	return () => ro.disconnect();
 });
-
-function handleThreadClick(id: string): void {
-	onSelectThread?.(id);
-	onNavigateThread?.(id);
-}
-
-function handleThreadKeydown(e: KeyboardEvent, id: string): void {
-	if (e.key === "Enter" || e.key === " ") {
-		e.preventDefault();
-		handleThreadClick(id);
-	}
-}
 </script>
 
 <div class="thread-list" bind:this={scrollEl} onscroll={onScroll}>
@@ -232,15 +221,17 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 						{@const maxActivity = Math.max(1, ...activity)}
 						{@const totalActivity = activity.reduce((a, b) => a + b, 0)}
 						{@const isActive = threadStatuses.get(thread.id)?.active ?? false}
-						<div
+						<a
 							class="thread-card"
 							class:selected
-							onclick={() => handleThreadClick(thread.id)}
+							href={`#${lineRoute(thread.id)}`}
+							onclick={(e) => {
+								if (e.ctrlKey || e.metaKey) return;
+								onSelectThread?.(thread.id);
+								onNavigateThread?.(thread.id);
+							}}
 							onmouseenter={() => onHoverThread?.(thread.id)}
 							onmouseleave={() => onHoverThread?.(null)}
-							onkeydown={(e) => handleThreadKeydown(e, thread.id)}
-							role="button"
-							tabindex="0"
 						>
 							<div class="rail" style="background: {color}"></div>
 
@@ -292,7 +283,7 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 								<div class="spacer"></div>
 								<span class="turn-count mono">{totalActivity} turns / 24h</span>
 							</div>
-						</div>
+						</a>
 					{/if}
 				</div>
 			{/each}
@@ -351,6 +342,9 @@ function handleThreadKeydown(e: KeyboardEvent, id: string): void {
 		height: 100%;
 		box-sizing: border-box;
 		overflow: hidden;
+		display: block;
+		text-decoration: none;
+		color: inherit;
 	}
 
 	.thread-card:hover {

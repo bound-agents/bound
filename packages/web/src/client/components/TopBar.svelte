@@ -2,10 +2,6 @@
 import { onDestroy, onMount } from "svelte";
 import { client } from "../lib/bound";
 
-function navigate(hash: string): void {
-	window.location.hash = hash;
-}
-
 let currentHash = $state(window.location.hash);
 
 function isActive(hash: string): boolean {
@@ -80,9 +76,9 @@ onDestroy(() => {
 
 <header class="top-bar">
 	<!-- Brandmark block — black ink against paper -->
-	<button
+	<a
 		class="brand"
-		onclick={() => navigate("#/")}
+		href="#/"
 		aria-label="Bound home"
 	>
 		<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
@@ -90,15 +86,15 @@ onDestroy(() => {
 			<circle cx="9" cy="9" r="2.4" fill="currentColor" />
 		</svg>
 		BOUND
-	</button>
+	</a>
 
 	<nav class="nav-links">
 		{#each NAV as item}
 			{@const active = isActive(item.hash)}
-			<button
+			<a
 				class="nav-btn"
+				href={item.hash}
 				class:active
-				onclick={() => navigate(item.hash)}
 			>
 				<span class="route">{item.route}</span>
 				<span class="label">{item.label}</span>
@@ -108,7 +104,7 @@ onDestroy(() => {
 				{#if active}
 					<span class="active-rail"></span>
 				{/if}
-			</button>
+			</a>
 		{/each}
 	</nav>
 
@@ -144,6 +140,7 @@ onDestroy(() => {
 		font-size: 18px;
 		font-weight: 700;
 		letter-spacing: 0.04em;
+		text-decoration: none;
 	}
 
 	.brand:focus-visible {
@@ -168,6 +165,7 @@ onDestroy(() => {
 		gap: 10px;
 		color: var(--ink-2);
 		transition: background 0.12s ease;
+		text-decoration: none;
 	}
 
 	.nav-btn:hover:not(.active) {
