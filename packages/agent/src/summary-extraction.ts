@@ -565,6 +565,72 @@ export interface RenderedSection {
 	lines: string[];
 }
 
+export interface DiscoverableArchiveInput {
+	/** From loadDetailEntries — already sorted by last_accessed_at DESC. */
+	entries: DetailEntry[];
+	/**
+	 * Map from a detail-tier entry key to its parent summary key (e.g.
+	 * "_summary:transit-systems"). Built by Phase 5 wiring from memory_edges
+	 * 'summarizes' edges. Entries without a parent are absent from the map.
+	 */
+	parentSummaryByKey: Map<string, string>;
+	/**
+	 * Set of detail-tier keys already routed to Working Knowledge as R-HM7
+	 * stale children. These are dropped from Discoverable Archive output to
+	 * prevent duplicate rendering (§6.4 dedup rule).
+	 */
+	staleChildKeysInWorkingKnowledge: Set<string>;
+	/** True when the upstream budget gate (R-VC14) signals critical pressure. */
+	budgetPressure: boolean;
+	/** Wall-clock anchor for relative-time formatting. Pass Date.now() at assembly time. */
+	nowMs: number;
+	/** Resolved at assembly time from BOUND_VC15_N / BOUND_VC15_M (see resolveVc15Tunables). */
+	tunables: Vc15Tunables;
+}
+
+export interface Vc15Tunables {
+	/** BOUND_VC15_N — Tier 2/3 boundary. Default 1000. */
+	n: number;
+	/** BOUND_VC15_M — Tier 3 per-cluster cap. Default 20. */
+	m: number;
+}
+
+export const VC15_DEFAULT_N = 1000;
+export const VC15_DEFAULT_M = 20;
+export const VC15_TIER1_THRESHOLD = 200;
+export const VC15_UNCATEGORIZED_BACKLOG_THRESHOLD = 50;
+export const UNCATEGORIZED_CLUSTER_NAME = "Uncategorized";
+
+export function resolveVc15Tunables(env: NodeJS.ProcessEnv = process.env): Vc15Tunables {
+	const n = parsePositiveInt(env.BOUND_VC15_N, VC15_DEFAULT_N);
+	const m = parsePositiveInt(env.BOUND_VC15_M, VC15_DEFAULT_M);
+	return { n, m };
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+	if (!raw) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+	return parsed;
+}
+
+export interface DiscoverableArchiveOutput {
+	section: RenderedSection;
+	/**
+	 * When Tier 3 is active and the Uncategorized cluster exceeds the backlog
+	 * threshold, this carries the count for Phase 4 / Phase 5 to fold into
+	 * Live State as `- [synthesis-backlog] {N} uncategorized detail entries`.
+	 * `null` otherwise.
+	 */
+	synthesisBacklogCount: number | null;
+}
+
+export function renderDiscoverableArchive(
+	_input: DiscoverableArchiveInput,
+): DiscoverableArchiveOutput {
+	return { section: { lines: [] }, synthesisBacklogCount: null };
+}
+
 /**
  * Formats a single StageEntry for display in memory delta output.
  * Handles tier-aware formatting: L0 is minimal, L1 includes tier tag,
