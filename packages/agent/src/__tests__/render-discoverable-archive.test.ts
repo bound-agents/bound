@@ -541,3 +541,324 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 });
+
+describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-cap + synthesis-backlog)", () => {
+	it("test 20: Just over BOUND_VC15_N (tunables.n=210, 211 entries → Tier 3)", () => {
+		const entries = Array.from({ length: 211 }, (_, i) => ({
+			key: `entry-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 210, m: 3 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+		const output = result.section.lines.join("\n");
+
+		// Should use Tier 3 heading format with "showing M most recent"
+		expect(output).toContain("showing 3 most recent");
+		// Should be Uncategorized since no parents
+		expect(output).toContain(`### ${UNCATEGORIZED_CLUSTER_NAME}`);
+	});
+
+	it("test 21: M-cap respected — each cluster renders only M most-recent entries", () => {
+		const entries = Array.from({ length: 215 }, (_, i) => ({
+			key: `entry-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 210, m: 3 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+
+		// Count entry lines (lines starting with "- ")
+		const entryLines = result.section.lines.filter((l) => l.startsWith("- "));
+		// Should have only 3 entries rendered (M-cap)
+		expect(entryLines.length).toBe(3);
+	});
+
+	it("test 22: Header includes total count and M — cluster of 100 with m=5", () => {
+		const entries = Array.from({ length: 210 }, (_, i) => ({
+			key: `entry-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+
+		const parentMap = new Map<string, string>();
+		for (let i = 0; i < 210; i++) {
+			parentMap.set(`entry-${i}`, "_summary:foo");
+		}
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: parentMap,
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 200, m: 5 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+		const output = result.section.lines.join("\n");
+
+		// Should have heading with total count (210) and M (5)
+		expect(output).toContain("### foo (210 entries, showing 5 most recent)");
+	});
+
+	it("test 23: Within-cluster ordering by last_accessed_at DESC — slice(0, m) takes most-recent", () => {
+		const now = new Date("2026-05-23T12:00:00Z").getTime();
+		// Need >200 entries to reach Tier 3 with n=200
+		// Create sorted DESC entries within a cooking cluster
+		const entries: DetailEntry[] = [
+			{ key: "most-recent", last_accessed_at: new Date(now - 1 * 60_000).toISOString() },
+			{ key: "middle", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
+			{ key: "oldest", last_accessed_at: new Date(now - 10 * 60_000).toISOString() },
+			// Add filler entries to reach >200 total (all uncategorized)
+			...Array.from({ length: 210 }, (_, i) => ({
+				key: `filler-${i}`,
+				last_accessed_at: new Date(now - 100 * 60_000).toISOString(),
+			})),
+		];
+
+		const parentMap = new Map<string, string>();
+		parentMap.set("most-recent", "_summary:cooking");
+		parentMap.set("middle", "_summary:cooking");
+		parentMap.set("oldest", "_summary:cooking");
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: parentMap,
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: now,
+			tunables: { n: 200, m: 3 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+
+		// Find the cooking cluster section
+		const lines = result.section.lines;
+		const cookingHeadingIdx = lines.findIndex((l) => l.includes("### cooking"));
+		expect(cookingHeadingIdx).toBeGreaterThanOrEqual(0);
+
+		// Extract entry lines after cooking heading until next cluster or footer
+		const entryLines = [];
+		for (let i = cookingHeadingIdx + 1; i < lines.length; i++) {
+			if (lines[i].startsWith("###") || lines[i].includes("Bodies are accessed")) {
+				break;
+			}
+			if (lines[i].startsWith("- ")) {
+				entryLines.push(lines[i]);
+			}
+		}
+
+		// Should be only 3 entries rendered (M-cap)
+		expect(entryLines.length).toBe(3);
+		// Should be the three most recent
+		expect(entryLines[0]).toContain("most-recent");
+		expect(entryLines[1]).toContain("middle");
+		expect(entryLines[2]).toContain("oldest");
+	});
+
+	it("test 24: synthesisBacklogCount raised when Uncategorized > 50 in Tier 3", () => {
+		const uncategorizedEntries = Array.from({ length: 60 }, (_, i) => ({
+			key: `uncategorized-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+		const categorizedEntries = Array.from({ length: 155 }, (_, i) => ({
+			key: `cooking-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+		const entries = [...uncategorizedEntries, ...categorizedEntries];
+
+		const parentMap = new Map<string, string>();
+		for (let i = 0; i < 155; i++) {
+			parentMap.set(`cooking-${i}`, "_summary:cooking");
+		}
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: parentMap,
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 200, m: 10 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+
+		// Should be Tier 3 (215 > 200) and Uncategorized has 60 entries (> 50)
+		expect(result.synthesisBacklogCount).toBe(60);
+	});
+
+	it("test 25: synthesisBacklogCount NOT raised when Uncategorized ≤ 50", () => {
+		const uncategorizedEntries = Array.from({ length: 30 }, (_, i) => ({
+			key: `uncategorized-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+		const categorizedEntries = Array.from({ length: 185 }, (_, i) => ({
+			key: `cooking-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+		const entries = [...uncategorizedEntries, ...categorizedEntries];
+
+		const parentMap = new Map<string, string>();
+		for (let i = 0; i < 185; i++) {
+			parentMap.set(`cooking-${i}`, "_summary:cooking");
+		}
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: parentMap,
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 200, m: 10 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+
+		// Tier 3 (215 > 200) but Uncategorized has 30 entries (≤ 50)
+		expect(result.synthesisBacklogCount).toBe(null);
+	});
+
+	it("test 26: synthesisBacklogCount NOT raised when no Uncategorized cluster", () => {
+		// All entries have parents
+		const entries: DetailEntry[] = Array.from({ length: 220 }, (_, i) => ({
+			key: `entry-${i}`,
+			last_accessed_at: new Date(0).toISOString(),
+		}));
+
+		const parentMap = new Map<string, string>();
+		for (let i = 0; i < 220; i++) {
+			parentMap.set(`entry-${i}`, "_summary:topic");
+		}
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: parentMap,
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 200, m: 10 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+
+		// Tier 3 (220 > 200) but no Uncategorized cluster (all have parents)
+		expect(result.synthesisBacklogCount).toBe(null);
+	});
+
+	it("test 27: Budget-pressure mode preserves cluster sub-headers and M-cap, drops per-entry context", () => {
+		const entries: DetailEntry[] = Array.from({ length: 220 }, (_, i) => ({
+			key: `entry-${i}`,
+			last_accessed_at: new Date(100_000).toISOString(),
+		}));
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: true,
+			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
+			tunables: { n: 200, m: 3 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+		const output = result.section.lines.join("\n");
+
+		// Cluster sub-header should still be present
+		expect(output).toContain("###");
+		// Should show "showing M most recent"
+		expect(output).toContain("showing 3 most recent");
+		// Entries should be present but WITHOUT (last accessed ...) fragment
+		const entryLines = result.section.lines.filter((l) => l.startsWith("- entry-"));
+		expect(entryLines.length).toBe(3);
+		for (const line of entryLines) {
+			expect(line).not.toContain("(last accessed");
+		}
+	});
+
+	it("test 28: R-VC21 — every rendered entry title is present across all clusters", () => {
+		// Create a multi-cluster Tier 3 setup with enough entries to trigger Tier 3 (>n)
+		const now = new Date("2026-05-23T12:00:00Z").getTime();
+		// Need >200 entries to enter Tier 3 (with n=200). Create 3 clusters of 75 entries each = 225
+		const entries: DetailEntry[] = [
+			// Cluster 1 (cooking, 75 entries): will render m=2 most recent
+			{ key: "cooking-newest", last_accessed_at: new Date(now - 1 * 60_000).toISOString() },
+			{ key: "cooking-second", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
+			...Array.from({ length: 73 }, (_, i) => ({
+				key: `cooking-filler-${i}`,
+				last_accessed_at: new Date(now - (100 + i) * 60_000).toISOString(),
+			})),
+			// Cluster 2 (transit, 75 entries): will render m=2 most recent
+			{ key: "transit-newest", last_accessed_at: new Date(now - 2 * 60_000).toISOString() },
+			{ key: "transit-second", last_accessed_at: new Date(now - 6 * 60_000).toISOString() },
+			...Array.from({ length: 73 }, (_, i) => ({
+				key: `transit-filler-${i}`,
+				last_accessed_at: new Date(now - (100 + i) * 60_000).toISOString(),
+			})),
+			// Cluster 3 (other, 75 entries): will render m=2 most recent
+			{ key: "other-newest", last_accessed_at: new Date(now - 3 * 60_000).toISOString() },
+			{ key: "other-second", last_accessed_at: new Date(now - 7 * 60_000).toISOString() },
+			...Array.from({ length: 73 }, (_, i) => ({
+				key: `other-filler-${i}`,
+				last_accessed_at: new Date(now - (100 + i) * 60_000).toISOString(),
+			})),
+		];
+
+		const parentMap = new Map<string, string>();
+		parentMap.set("cooking-newest", "_summary:cooking");
+		parentMap.set("cooking-second", "_summary:cooking");
+		for (let i = 0; i < 73; i++) {
+			parentMap.set(`cooking-filler-${i}`, "_summary:cooking");
+		}
+		parentMap.set("transit-newest", "_summary:transit");
+		parentMap.set("transit-second", "_summary:transit");
+		for (let i = 0; i < 73; i++) {
+			parentMap.set(`transit-filler-${i}`, "_summary:transit");
+		}
+		parentMap.set("other-newest", "_summary:other");
+		parentMap.set("other-second", "_summary:other");
+		for (let i = 0; i < 73; i++) {
+			parentMap.set(`other-filler-${i}`, "_summary:other");
+		}
+
+		const input: DiscoverableArchiveInput = {
+			entries,
+			parentSummaryByKey: parentMap,
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			nowMs: now,
+			tunables: { n: 200, m: 2 },
+		};
+
+		const result = renderDiscoverableArchive(input);
+		const output = result.section.lines.join("\n");
+
+		// All M-tail entries (first 2 per cluster) should appear verbatim
+		expect(output).toContain("cooking-newest");
+		expect(output).toContain("cooking-second");
+		expect(output).toContain("transit-newest");
+		expect(output).toContain("transit-second");
+		expect(output).toContain("other-newest");
+		expect(output).toContain("other-second");
+
+		// Filler entries (outside M-tail) should NOT appear
+		expect(output).not.toContain("cooking-filler-0");
+		expect(output).not.toContain("transit-filler-0");
+		expect(output).not.toContain("other-filler-0");
+	});
+});
