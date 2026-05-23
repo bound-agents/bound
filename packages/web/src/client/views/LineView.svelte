@@ -296,7 +296,7 @@ function turnPreview(content: string): string {
 					</button>
 				</div>
 				<div class="input-meta">
-					<ModelSelector />
+					<ModelSelector modelHint={thread?.model_hint} />
 					<label class="attach">
 						<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
 							<path d="M12 4l-6 6c-1 1-1 3 0 4s3 1 4 0l6-6c2-2 2-5 0-7s-5-2-7 0l-7 7c-3 3-3 7 0 10s7 3 10 0l5-5" />
