@@ -965,7 +965,7 @@ export function loadGraphEntries(
 		if (newExclusion.has(r.key)) continue;
 		if (entries.length >= maxSlots) break;
 
-		const tag = r.retrievalMethod === "seed" ? "[seed]" : `[depth ${r.depth}, ${r.viaRelation}]`;
+		const tag = "[graph]";
 
 		// Preserve the original tier (default or orphaned detail)
 		const tier = r.tier ? (r.tier as MemoryTier) : "default";
