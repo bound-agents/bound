@@ -2,6 +2,8 @@ User ID: test-user, Thread ID: d2a1fd52-a74d-56e8-a7da-2f81b9b5feb0
 
 ## Working Knowledge — operational and durable
 
+- _internal.file_thread./src/main.ts: 42af641e-0efb-5b68-ad3d-5734ccacc69e
+- _internal.file_thread./src/utils.ts: 8d46c412-1f7f-5fe5-9702-cfe97e720551
 - _pinned:0: pinned body 0
     [changed since last turn]
 - _pinned:1: pinned body 1
@@ -45,5 +47,11 @@ Bodies of summary entries are accessed via memory search using terms from the en
 Bodies are accessed via memory search or query against semantic_memory.
 ## Live State — pointers to canonical sources
 
+- [thread] Related Thread 2: 2 messages (last updated 2026-05-21T23:59:59.000Z)
+- [thread] Related Thread 1: 2 messages (last updated 2026-05-21T23:59:59.000Z)
+- [file] /src/main.ts — last modified by thread "Related Thread 1"
+- [file] /src/utils.ts — last modified by thread "Related Thread 2"
+- [advisory] Advisory 1 — applied 1h ago
+- [advisory] Advisory 2 — applied 2h ago
 
 Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
