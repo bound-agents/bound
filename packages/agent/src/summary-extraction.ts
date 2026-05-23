@@ -657,8 +657,67 @@ export function renderDiscoverableArchive(
 		return { section: { lines }, synthesisBacklogCount: null };
 	}
 
-	// Tier 2 and Tier 3 land in subsequent tasks.
-	throw new Error("renderDiscoverableArchive: Tier 2/3 not yet implemented");
+	if (total <= input.tunables.n) {
+		// Tier 2: cluster compression.
+		const clusters = groupByCluster(visible, input.parentSummaryByKey);
+		const sorted = sortClusters(clusters);
+		for (const cluster of sorted) {
+			lines.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
+			for (const entry of cluster.entries) {
+				lines.push(formatDetailLine(entry, input.budgetPressure, input.nowMs));
+			}
+			lines.push(""); // blank line between clusters for readability
+		}
+		// Drop trailing blank if any cluster was rendered.
+		if (lines[lines.length - 1] === "") lines.pop();
+		lines.push("");
+		lines.push(DISCOVERABLE_FOOTER);
+		return { section: { lines }, synthesisBacklogCount: null };
+	}
+
+	// Tier 3 lands in subsequent tasks.
+	throw new Error("renderDiscoverableArchive: Tier 3 not yet implemented");
+}
+
+interface Cluster {
+	name: string;
+	entries: DetailEntry[];
+}
+
+function clusterNameForEntry(entry: DetailEntry, parentSummaryByKey: Map<string, string>): string {
+	const parent = parentSummaryByKey.get(entry.key);
+	if (!parent) return UNCATEGORIZED_CLUSTER_NAME;
+	// Parent key shape is "_summary:<topic>" per R-HM1 / R-HM3. Strip the prefix.
+	const colonIdx = parent.indexOf(":");
+	if (colonIdx < 0) return UNCATEGORIZED_CLUSTER_NAME; // defensive
+	return parent.slice(colonIdx + 1) || UNCATEGORIZED_CLUSTER_NAME;
+}
+
+function groupByCluster(
+	entries: DetailEntry[],
+	parentSummaryByKey: Map<string, string>,
+): Cluster[] {
+	const map = new Map<string, DetailEntry[]>();
+	for (const entry of entries) {
+		const name = clusterNameForEntry(entry, parentSummaryByKey);
+		const bucket = map.get(name) ?? [];
+		bucket.push(entry);
+		map.set(name, bucket);
+	}
+	// Within-cluster ordering is preserved from `entries`, which is already
+	// last_accessed_at DESC from the R-VC4 SELECT. R-VC15 Tier 2 step (d).
+	return Array.from(map.entries()).map(([name, entries]) => ({ name, entries }));
+}
+
+function sortClusters(clusters: Cluster[]): Cluster[] {
+	return clusters.slice().sort((a, b) => {
+		// Primary: entry count descending.
+		if (a.entries.length !== b.entries.length) {
+			return b.entries.length - a.entries.length;
+		}
+		// Tiebreak: cluster name ascending.
+		return a.name.localeCompare(b.name);
+	});
 }
 
 function formatDetailLine(entry: DetailEntry, budgetPressure: boolean, nowMs: number): string {
