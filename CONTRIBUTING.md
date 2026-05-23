@@ -95,6 +95,8 @@ For design rationale per package, see `docs/design/` — six topic files coverin
 - **Mock LLM**: implement the `LLMBackend` interface with `setTextResponse()` / `setToolThenTextResponse()` — see existing tests in `packages/agent`.
 - **Typecheck in tests**: the typecheck config excludes `__tests__/` directories, so missing fields on test-only fixtures can be silent. Mirror production shapes precisely when constructing `StreamChunk.done.usage` etc.
 
+**Behavioral probes.** Tests under `packages/agent/src/__tests__/probes/` exercise real LLM drivers and consume inference budget. They are gated behind `BOUND_RUN_BEHAVIORAL_PROBE=1` and run on a separate cadence (weekly via the behavioral-probe workflow) rather than per-PR. Per-PR CI skips them. See `docs/test-plans/2026-05-22-volatile-context-probe.md` for the §8.6 procedure and operator workflow setup instructions.
+
 ## Critical Invariants
 
 These rules exist because violating them has historically caused real production incidents (sync loss, SQL injection risk, cache misses, hot loops). Read each one before writing code that touches the subject.
