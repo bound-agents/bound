@@ -65,6 +65,9 @@ The orientation block is restructured into three top-level sections — Working 
 | Cross-thread digest (`buildCrossThreadDigest`) | Entries gain a fixed footer: `[summary stubs of sibling threads — current-thread event payloads live in your tool_results]`. The 300-character per-thread summary excerpt is removed; sibling-thread summary content is accessed via `query` against the threads table when relevant. |
 | Trailing meta-instruction ("Do not mention…") | Removed. |
 | Memory key authoring contract | Memory keys produced by the synthesis layer function as search seeds — see R-VC9. The synthesis pipeline is updated separately; this RFC defines the contract. |
+| `semantic_memory` indexes | New partial index `idx_memory_detail_recency ON semantic_memory(last_accessed_at DESC) WHERE tier='detail' AND deleted=0` ships alongside the rendering change to support R-VC4's unbounded SELECT (§4.1). Existing indexes are unchanged. |
+| `loadGraphEntries` tag emission | Normalized to a single `[graph]` tag at the loader boundary (`summary-extraction.ts:959`), replacing the prior `[seed]` and `` `[depth ${depth}, ${relation}]` `` outputs. Consumed only by the rendering layer; no other call sites depend on the visible tag string. |
+| File modification notice format | Reformatted from the current paragraph form (`File ${filePath} was modified from thread "${threadTitle}".`) to the Live State line shape `[file] <path> — last modified by thread "<thread_title>"` (R-VC13). |
 
 ### 2.3 Behavioral Overview
 
@@ -162,7 +165,19 @@ When Tier 3 is active, the `Uncategorized` cluster surfaces a `[synthesis-backlo
 
 ### 4.1 Schema
 
-No schema changes. This RFC is a presentation-layer revision and reuses existing data:
+One additive index, no table-shape changes. The RFC is otherwise a presentation-layer revision and reuses existing data:
+
+**New index (required by R-VC4):**
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_memory_detail_recency
+    ON semantic_memory(last_accessed_at DESC)
+    WHERE tier = 'detail' AND deleted = 0;
+```
+
+R-VC4's SELECT (`tier='detail' AND deleted IS NOT 1 ORDER BY last_accessed_at DESC`) runs unbounded on every assembly. Existing indexes (`idx_memory_key`, `idx_memory_modified`, `idx_memory_tier`) do not support the ordering, so without this index the query degrades to a full tablescan + sort on each turn. The partial-index predicate matches the SELECT's WHERE clause exactly, keeping the index small and write-cost low. The index ships in the same migration as the rendering-layer change.
+
+**Existing data reused:**
 
 | Field | Source | Notes |
 |---|---|---|
@@ -318,7 +333,7 @@ This RFC operates downstream of R-HM6's four-stage retrieval pipeline. R-HM6 pro
 | R-HM3 (`summarizes` edge relation) | Unchanged; used for stale-child detection (R-VC10), topical clustering (R-VC15 Tier 2/3), and parent-summary lookup for R-VC9b cluster gloss validation. |
 | R-HM6 (L0/L1/L2/L3 stages) | Unchanged at the retrieval layer. The `loadPinnedEntries`, `loadSummaryEntries`, `loadGraphEntries`, `loadRecencyEntries` functions in `packages/agent/src/summary-extraction.ts` (`:747`, `:800`, `:898`, `:992`) continue to drive Working Knowledge selection. R-VC4 adds a new sibling retrieval stage that enumerates detail-tier entries directly via `SELECT ... WHERE tier='detail' AND deleted IS NOT 1 ORDER BY last_accessed_at DESC`, independent of R-HM6's slot accounting. The new stage produces Discoverable Archive content; R-HM6 produces Working Knowledge content. The two pipelines do not share slot budgets. |
 | R-HM7 (stale children loaded with summary) | Preserved with new rendering: stale children render indented beneath their parent in Working Knowledge (R-VC10). When a stale child is also a delta (R-VC11), both markers render per the R-VC11(c) composition rule. |
-| R-HM8 (stage tagging) | Preserved at the data layer. The visible `[pinned]` / `[summary]` / `[stale-detail]` / `[graph]` / `[recency]` tags emitted by `formatMemoryEntry` (`:542`) are removed from the rendered output; section assignment carries the same information. |
+| R-HM8 (stage tagging) | Preserved at the data layer, with one normalization. `loadGraphEntries` (`packages/agent/src/summary-extraction.ts:898`) currently emits `"[seed]"` or `` `[depth ${depth}, ${relation}]` `` (e.g. `[depth 2, informs]`) per `:959`; this is normalized to a single `"[graph]"` tag at the loader boundary so the §6.4 dispatch table can route on a flat tag set. The seed-vs-depth provenance is retrievable from the `memory_edges` graph if a future caller needs it; the visible string is dropped from rendered output regardless (section assignment carries the role). The other tags (`[pinned]` `:784`, `[summary]` `:837`, `[stale-detail]` `:881`, `[recency]` `:1051`) are unchanged. |
 | R-HM9 (graceful degradation: shed recency first, then graph) | Preserved at the retrieval layer for R-HM6's pipeline. R-VC14 adds a presentation-layer shedding rule (drop per-entry context fragments before dropping titles) that runs after R-HM9 for Working Knowledge content. The R-VC4 sibling retrieval stage uses R-VC15's tier compression (Tier 1/2/3) for its own scaling, not R-HM9. |
 | R-HM10 (`maxMemory` budget) | Unchanged for R-HM6's pipeline. The `maxMemory` parameter on `buildVolatileEnrichment` continues to bound stage 3 + stage 4 entry counts. R-VC4's sibling stage is bounded by R-VC15 tunables (`BOUND_VC15_N`, `BOUND_VC15_M`), not `maxMemory`. |
 
@@ -362,9 +377,9 @@ After this RFC:
 
 `formatMemoryEntry` (`:542`) is replaced by three rendering helpers, one per section. The `tag` field on `StageEntry` (`:510`) drives the dispatch for R-HM6-sourced entries; the new R-VC4 retrieval stage produces its own entry list that bypasses `tag` dispatch entirely and routes directly to the Discoverable Archive renderer:
 
-- `pinned` and `summary` tags route to the Working Knowledge renderer (full-text or 200-char-gloss output).
-- `stale-detail` tag (R-HM7 stale children loaded alongside their parent summary) routes to the Working Knowledge renderer as an indented entry beneath the parent.
-- `graph` and `recency` tags route to the Discoverable Archive renderer (title-only).
+- `[pinned]` and `[summary]` tags route to the Working Knowledge renderer (full-text or 200-char-gloss output).
+- `[stale-detail]` tag (R-HM7 stale children loaded alongside their parent summary) routes to the Working Knowledge renderer as an indented entry beneath the parent.
+- `[graph]` and `[recency]` tags route to the Discoverable Archive renderer (title-only). `[graph]` is the normalized tag emitted by `loadGraphEntries` after this RFC; the prior `[seed]` / `[depth N, relation]` variants (`:959`) are folded into the single `[graph]` value as part of the §6.1 R-HM8 normalization.
 - R-VC4 sibling-stage entries (`tier='detail' AND deleted IS NOT 1`) route to the Discoverable Archive renderer (title-only). De-duplication: when the same key appears in both R-HM7 stale-children output and R-VC4 sibling-stage output, the R-HM7 path wins (entry renders in Working Knowledge as indented stale child; R-VC4 path drops the duplicate).
 
 `buildCrossThreadDigest` (`:364`) is modified at the body construction (`:391–:430`):
@@ -463,6 +478,8 @@ The integration of the three assemblers into `buildVolatileContext` is covered b
 - Memory state with task digest entries rendering under Live State alongside cross-thread / file / advisory entries (verifying R-VC5's four subsystems render in their fixed order with correct source labels).
 
 Snapshot fixtures live in `packages/agent/src/__tests__/fixtures/volatile-context/` with one `.snap.txt` per scenario. Snapshot updates require explicit reviewer approval. Tunables `BOUND_VC15_N` and `BOUND_VC15_M` are overridden per-fixture via environment variables to exercise tier transitions deterministically.
+
+**Convention note.** The `packages/agent` test suite is currently assertion-based; this RFC introduces snapshot-style `.snap.txt` fixtures as a new convention. The choice is justified by the §8.2 contract being whole-rendered-block format equivalence — exactly what snapshot tests express cleanly. Per-rule unit tests (§8.1) remain assertion-based to keep failure messages localized when individual rules regress; snapshots cover composite behavior across rules. Snapshot files are committed to the repository; updating one is a deliberate review gate equivalent to changing user-visible prompt text.
 
 ### 8.3 Regression Test: d0372be6 Confabulation Pattern
 
