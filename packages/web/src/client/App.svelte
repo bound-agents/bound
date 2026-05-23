@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import TopBar from "./components/TopBar.svelte";
+import { parseLineRoute } from "./lib/route-utils";
 import AdvisoryView from "./views/AdvisoryView.svelte";
 import FilesView from "./views/FilesView.svelte";
 import LineView from "./views/LineView.svelte";
@@ -40,7 +41,8 @@ function screenLabel(r: string): string {
 			{#if route === "/" || route === ""}
 				<SystemMap />
 			{:else if route.startsWith("/line/")}
-				<LineView threadId={route.split("/")[2]} />
+				{@const lineRoute = parseLineRoute(route)}
+				<LineView threadId={lineRoute.threadId} from={lineRoute.from} />
 			{:else if route === "/timetable"}
 				<Timetable />
 			{:else if route === "/network"}

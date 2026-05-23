@@ -265,7 +265,7 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 											<span class="detail-kicker kicker">Thread</span>
 											<button
 												class="thread-link mono"
-												onclick={() => navigateTo(`/line/${threadId}`)}
+												onclick={() => navigateTo(`/line/${threadId}?from=/timetable`)}
 											>
 												{threadId.slice(0, 10)}
 												<span>→</span>
