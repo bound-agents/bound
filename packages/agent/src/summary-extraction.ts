@@ -625,10 +625,66 @@ export interface DiscoverableArchiveOutput {
 	synthesisBacklogCount: number | null;
 }
 
+const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
+const DISCOVERABLE_FOOTER =
+	"Bodies are accessed via memory search or query against semantic_memory.";
+
 export function renderDiscoverableArchive(
-	_input: DiscoverableArchiveInput,
+	input: DiscoverableArchiveInput,
 ): DiscoverableArchiveOutput {
-	return { section: { lines: [] }, synthesisBacklogCount: null };
+	const lines: string[] = [];
+	lines.push(DISCOVERABLE_HEADER);
+	lines.push("");
+
+	// §5.2 step 2 — drop entries also rendered as stale children in Working Knowledge.
+	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
+
+	const total = visible.length;
+
+	if (total === 0) {
+		lines.push("");
+		lines.push(DISCOVERABLE_FOOTER);
+		return { section: { lines }, synthesisBacklogCount: null };
+	}
+
+	if (total <= VC15_TIER1_THRESHOLD) {
+		// Tier 1: flat list, last_accessed_at DESC (already sorted upstream by R-VC4 SELECT).
+		for (const entry of visible) {
+			lines.push(formatDetailLine(entry, input.budgetPressure, input.nowMs));
+		}
+		lines.push("");
+		lines.push(DISCOVERABLE_FOOTER);
+		return { section: { lines }, synthesisBacklogCount: null };
+	}
+
+	// Tier 2 and Tier 3 land in subsequent tasks.
+	throw new Error("renderDiscoverableArchive: Tier 2/3 not yet implemented");
+}
+
+function formatDetailLine(entry: DetailEntry, budgetPressure: boolean, nowMs: number): string {
+	if (budgetPressure) {
+		return `- ${entry.key}`;
+	}
+	const fragment = relativeTimeFragment(entry.last_accessed_at, nowMs);
+	return `- ${entry.key} (last accessed ${fragment})`;
+}
+
+function relativeTimeFragment(iso: string | null, nowMs: number): string {
+	if (!iso) return "never";
+	const ts = Date.parse(iso);
+	if (!Number.isFinite(ts)) return "never";
+	const deltaMs = nowMs - ts;
+	if (deltaMs < 60_000) return "just now";
+	const minutes = Math.floor(deltaMs / 60_000);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	if (days < 30) return `${days}d ago`;
+	const months = Math.floor(days / 30);
+	if (months < 12) return `${months}mo ago`;
+	const years = Math.floor(months / 12);
+	return `${years}y ago`;
 }
 
 /**
