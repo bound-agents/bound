@@ -23,6 +23,11 @@ export {
  * Procedure: split on the first colon, take the right-hand side, split on `-`, `_`, `:`,
  * and digit boundaries; lower-case; drop tokens shorter than 3 characters; drop ISO-8601
  * date stamps.
+ *
+ * Note: This validation does NOT filter common stopwords (e.g., 'and', 'the'). The corpus
+ * frequency filter (MIN_TOKEN_FREQ = 5) is intended to catch most noise, but slugs comprising
+ * only stopwords could pass R-VC9 spuriously. Pass is necessary, not sufficient. The spec
+ * explicitly does not filter stopwords; future tightening lives outside this RFC.
  */
 export function extractSlugTokens(key: string): string[] {
 	const colonIdx = key.indexOf(":");
@@ -48,9 +53,9 @@ export function extractSlugTokens(key: string): string[] {
  * distinct entries containing the token.
  */
 export function buildTokenFrequencyTable(db: Database): Map<string, number> {
-	const rows = db
-		.prepare("SELECT value FROM semantic_memory WHERE deleted IS NOT 1")
-		.all() as Array<{ value: string }>;
+	const rows = db.prepare("SELECT value FROM semantic_memory WHERE deleted = 0").all() as Array<{
+		value: string;
+	}>;
 	const freq = new Map<string, number>();
 	for (const row of rows) {
 		const seenInThisEntry = new Set<string>();
@@ -78,6 +83,13 @@ export interface Vc9CheckResult {
 	pass: boolean;
 }
 
+/**
+ * Check if a memory entry passes R-VC9 compliance.
+ *
+ * Verifies that at least 3 slug tokens appear in the value body AND have corpus frequency ≥ 5.
+ * Note: extractSlugTokens does not filter stopwords; slugs containing only stopwords could pass
+ * spuriously. The frequency threshold mitigates most noise. Pass is necessary, not sufficient.
+ */
 export function checkR_VC9(key: string, value: string, freq: Map<string, number>): Vc9CheckResult {
 	const slugTokens = extractSlugTokens(key);
 	const lowerValue = value.toLowerCase();
@@ -110,8 +122,8 @@ export function checkR_VC9b(db: Database, parentKey: string, parentValue: string
 		.prepare(
 			`SELECT m.key AS key, m.value AS value
              FROM memory_edges e
-             JOIN semantic_memory m ON m.key = e.target_key AND m.deleted IS NOT 1
-             WHERE e.relation = 'summarizes' AND e.deleted IS NOT 1 AND e.source_key = ?`,
+             JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
+             WHERE e.relation = 'summarizes' AND e.deleted = 0 AND e.source_key = ?`,
 		)
 		.all(parentKey) as Array<{ key: string; value: string }>;
 	const failing: string[] = [];
