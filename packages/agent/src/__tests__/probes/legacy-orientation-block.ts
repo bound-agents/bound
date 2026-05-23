@@ -27,7 +27,7 @@ export interface EnvelopeFixture {
  * envelope content directly; the envelope is passed as a separate tool_result message in the
  * conversation history.
  */
-export function buildPreRfcOrientation(envelope: EnvelopeFixture): string {
+export function buildPreRfcOrientation(_envelope: EnvelopeFixture): string {
 	const lines: string[] = [];
 
 	// Preface (model, platform context)
@@ -61,7 +61,7 @@ export function buildPreRfcOrientation(envelope: EnvelopeFixture): string {
  * availability. The post-RFC orientation is static and does not reference envelope content
  * directly; the envelope is passed as a separate tool_result message in the conversation history.
  */
-export function buildPostRfcOrientation(envelope: EnvelopeFixture): string {
+export function buildPostRfcOrientation(_envelope: EnvelopeFixture): string {
 	const lines: string[] = [];
 
 	// Preface
