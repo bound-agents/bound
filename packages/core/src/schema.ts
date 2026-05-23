@@ -770,9 +770,10 @@ export function applySchema(db: Database): void {
 	`);
 
 	// Partial index for R-VC4 detail-tier retrieval (unbounded SELECT ordered by recency)
+	// COVERING index: includes `key` column so planner can satisfy SELECT without table lookup
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_memory_detail_recency
-			ON semantic_memory(last_accessed_at DESC)
+			ON semantic_memory(last_accessed_at DESC, key)
 			WHERE tier = 'detail' AND deleted = 0
 	`);
 
