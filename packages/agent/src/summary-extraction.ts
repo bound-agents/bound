@@ -1394,3 +1394,37 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): RenderedSe
 
 	return { lines };
 }
+
+/**
+ * Live State data type for applied advisories (R-VC12).
+ * Advisories where status = 'applied' within the prior 24 hours.
+ */
+export interface LiveStateAdvisory {
+	title: string;
+	/** ISO-8601 timestamp of the apply-status transition. */
+	appliedAt: string;
+}
+
+/**
+ * Loads applied advisories within the 24-hour window for Live State rendering (R-VC12).
+ *
+ * This query is distinct from the advisory feedback-loop in context-assembly.ts:362–:389,
+ * which serves operator-feedback notifications. Here, we surface all applied advisories
+ * (not authored-site-gated) and do not de-dupe by title (each application is independently
+ * relevant as a pointer).
+ *
+ * CONTRIBUTING.md gotcha: never use SQLite datetime('now', '-N hours') against ISO-8601;
+ * compute the cutoff in JS and pass as a parameter.
+ */
+export function loadAppliedAdvisoriesForLiveState(
+	db: Database,
+	nowMs: number,
+): LiveStateAdvisory[] {
+	const cutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+	const rows = db
+		.prepare(
+			"SELECT title, resolved_at FROM advisories WHERE status = 'applied' AND deleted IS NOT 1 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
+		)
+		.all(cutoff) as Array<{ title: string; resolved_at: string }>;
+	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
+}
