@@ -3,21 +3,43 @@ import type { ClusterModelInfo } from "@bound/client";
 import { Cpu } from "lucide-svelte";
 import { onMount } from "svelte";
 import { client } from "../lib/bound";
+import { resolveInitialModel } from "../lib/model-hint";
 import { modelStore } from "../lib/modelStore";
+
+const { modelHint = undefined } = $props<{ modelHint?: string | null }>();
 
 let selectedModel = $state("");
 let models = $state<ClusterModelInfo[]>([]);
+// Tracks whether the hint has been applied so we don't override user's
+// subsequent manual selection if the thread data arrives after models load.
+let hintApplied = $state(false);
 
 onMount(async () => {
 	try {
 		const data = await client.listModels();
 		models = data.models;
-		// Match default model to the full option value (id@host)
-		const defaultMatch = data.models.find((m) => m.id === data.default);
-		selectedModel = defaultMatch ? `${defaultMatch.id}@${defaultMatch.host}` : data.default;
-		modelStore.setModel(data.default);
+		const resolved = resolveInitialModel(data.models, data.default, modelHint);
+		selectedModel = resolved.selectedModel;
+		modelStore.setModel(resolved.modelId);
+		if (modelHint && resolved.modelId === modelHint) {
+			hintApplied = true;
+		}
 	} catch (error) {
 		console.error("Failed to load models:", error);
+	}
+});
+
+// Handle the case where modelHint arrives after models have loaded.
+// Common path: LineView's onMount fetches the thread (which has model_hint)
+// asynchronously, so ModelSelector may already be mounted with no hint yet.
+$effect(() => {
+	if (modelHint && models.length > 0 && !hintApplied) {
+		const hintMatch = models.find((m) => m.id === modelHint);
+		if (hintMatch) {
+			selectedModel = `${hintMatch.id}@${hintMatch.host}`;
+			modelStore.setModel(hintMatch.id);
+			hintApplied = true;
+		}
 	}
 });
 
