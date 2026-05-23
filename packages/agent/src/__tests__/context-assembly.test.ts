@@ -3029,32 +3029,26 @@ This skill reviews pull requests.`;
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
-			// Memory should be in systemSuffix
+			// Budget pressure should trigger re-composition with three sections (R-VC1)
 			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("Memory:");
+			expect(systemSuffix).toContain("## Working Knowledge");
+			expect(systemSuffix).toContain("## Discoverable Archive");
+			expect(systemSuffix).toContain("## Live State");
 
-			// Count memory entry lines ONLY (lines that are part of the memory delta, starting with "- " but before any blank line that separates memory from tasks)
-			const lines = systemSuffix.split("\n");
-			let memoryCount = 0;
-			let inMemorySection = false;
+			// Memory deltas should be inline with [changed since] markers, not standalone "Memory:" header
+			expect(systemSuffix.match(/^Memory:\s+/m)).toBeNull();
 
-			for (const line of lines) {
-				if (line.includes("Memory:")) {
-					inMemorySection = true;
-					continue;
-				}
-				// Stop counting when we hit a blank line (separation between sections)
-				if (inMemorySection && line.trim() === "") {
-					break;
-				}
-				// Count lines starting with "- " but exclude overflow line
-				if (inMemorySection && line.startsWith("- ") && !line.startsWith("... and")) {
-					memoryCount++;
-				}
+			// Check that Working Knowledge contains at most 3 pinned or summary entries
+			// (budget pressure applies reduced (3,3) caps through the three-section composition)
+			const wkStart = systemSuffix.indexOf("## Working Knowledge");
+			const daStart = systemSuffix.indexOf("## Discoverable Archive");
+			if (wkStart >= 0 && daStart >= 0) {
+				const wkSection = systemSuffix.substring(wkStart, daStart);
+				// Count entries (lines with prefixes like [pinned], [summary], etc. or [changed since] markers)
+				const entryLines = wkSection.split("\n").filter((l) => l.match(/^\s*-/));
+				// Should be <= 3 summary/pinned entries in budget-pressure Working Knowledge
+				expect(entryLines.length).toBeLessThanOrEqual(3);
 			}
-
-			// Should be <= 3 memory entries when budget pressure reduces to 3+3
-			expect(memoryCount).toBeLessThanOrEqual(3);
 		});
 
 		it("metro-interchange-ui.AC3.2: populates debug.crossThreadSources when cross-thread context is present", () => {
