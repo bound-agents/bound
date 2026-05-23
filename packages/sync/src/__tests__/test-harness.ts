@@ -216,7 +216,8 @@ const FULL_SCHEMA = `
 		defer_until TEXT,
 		resolved_at TEXT,
 		created_by TEXT NOT NULL,
-		modified_at TEXT NOT NULL
+		modified_at TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE turns (

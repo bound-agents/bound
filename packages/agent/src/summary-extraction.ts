@@ -409,7 +409,7 @@ export function buildCrossThreadDigest(
 		for (const thread of threads) {
 			const title = thread.title || "(untitled)";
 			const messageCount = db
-				.prepare("SELECT COUNT(*) as count FROM messages WHERE thread_id = ?")
+				.prepare("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
 				.get(thread.id) as { count: number };
 
 			lines.push(
@@ -1032,7 +1032,7 @@ export function buildVolatileEnrichment(
 			`SELECT t.id, t.type, t.trigger_spec, t.last_run_at, t.run_count, t.consecutive_failures, t.claimed_by,
 			        h.host_name
 			 FROM   tasks t
-			 LEFT JOIN hosts h ON t.claimed_by = h.site_id
+			 LEFT JOIN hosts h ON t.claimed_by = h.site_id AND h.deleted = 0
 			 WHERE  t.last_run_at > ?
 			   AND  t.last_run_at IS NOT NULL
 			   AND  t.deleted = 0
@@ -1096,7 +1096,7 @@ export function loadPinnedEntries(db: Database): StageResult {
 			        th_src.id          AS thread_id,
 			        th_src.title       AS thread_title
 			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE m.deleted = 0
 			   AND (m.tier = 'pinned'
@@ -1148,7 +1148,7 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 			        th_src.id          AS thread_id,
 			        th_src.title       AS thread_title
 			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE m.tier = 'summary' AND m.deleted = 0
 			 ORDER BY m.key ASC`,
@@ -1192,7 +1192,7 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 				        th_src.title       AS thread_title
 				 FROM memory_edges e
 				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-				 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+				 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
 				 ORDER BY m.key ASC`,
@@ -1274,7 +1274,7 @@ export function loadGraphEntries(
 				        th_src.id          AS thread_id,
 				        th_src.title       AS thread_title
 				 FROM semantic_memory m
-				 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+				 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 				 WHERE m.key IN (${placeholders})`,
 			)
@@ -1351,7 +1351,7 @@ export function loadRecencyEntries(
 			        th_src.id          AS thread_id,
 			        th_src.title       AS thread_title
 			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id
+			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE m.modified_at > ?
 			   AND m.key NOT LIKE '_internal.%'
@@ -1515,7 +1515,7 @@ export function loadAppliedAdvisoriesForLiveState(
 	const cutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
 	const rows = db
 		.prepare(
-			"SELECT title, resolved_at FROM advisories WHERE status = 'applied' AND deleted IS NOT 1 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
+			"SELECT title, resolved_at FROM advisories WHERE status = 'applied' AND deleted = 0 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
 		)
 		.all(cutoff) as Array<{ title: string; resolved_at: string }>;
 	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
