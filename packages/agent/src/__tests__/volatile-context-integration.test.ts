@@ -173,8 +173,8 @@ describe("volatile-context-integration", () => {
 		);
 	});
 
-	test("Budget-pressure path produces shed Live State", () => {
-		// Create 10 sibling threads to trigger budget pressure
+	test("Three sections persist with many sibling threads", () => {
+		// Create 10 sibling threads to exercise multi-thread rendering
 		for (let i = 0; i < 10; i++) {
 			dbInsert(db, "threads", {
 				id: `thread-${i}`,
@@ -199,8 +199,6 @@ describe("volatile-context-integration", () => {
 			});
 		}
 
-		// Simulate budget pressure by checking the assembleContext logic
-		// For now, verify that the structure is preserved even with many threads
 		const result = buildVolatileContext({
 			db,
 			threadId,
@@ -208,7 +206,7 @@ describe("volatile-context-integration", () => {
 			siteId,
 		});
 
-		// Should still have the three sections
+		// Should have the three sections
 		expect(result.content).toContain("## Working Knowledge");
 		expect(result.content).toContain("## Live State");
 
@@ -216,7 +214,7 @@ describe("volatile-context-integration", () => {
 		expect(result.content).toContain("[thread]");
 	});
 
-	test("Working Knowledge preserved at full fidelity under budget pressure", () => {
+	test("Working Knowledge entries render with full content", () => {
 		// Insert pinned and summary entries
 		dbInsert(db, "semantic_memory", {
 			id: randomUUID(),
@@ -245,7 +243,7 @@ describe("volatile-context-integration", () => {
 			siteId,
 		});
 
-		// Both pinned and summary should be present
+		// Both pinned and summary should be present with full content
 		expect(result.content).toContain("pinned:important");
 		expect(result.content).toContain("_summary:always-show");
 	});
