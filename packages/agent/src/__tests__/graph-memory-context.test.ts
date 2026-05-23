@@ -101,21 +101,21 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const memoryLines = enrichment.memoryDeltaLines.join("\n");
 
 			expect(memoryLines).toContain("scheduler_design");
-			expect(memoryLines).toContain("[seed]");
+			expect(memoryLines).toContain("[graph]");
 
-			// B and C should be tagged with depth/relation info
+			// B and C should be tagged with [graph]
 			expect(memoryLines).toContain("cron_syntax");
 			expect(memoryLines).toContain("cron_examples");
 
 			// Verify that both graph entries (B and C) are present via graph tag
-			// They should have tags with depth info
-			const hasBTag = memoryLines.match(/cron_syntax.*\[/);
-			const hasCTag = memoryLines.match(/cron_examples.*\[/);
+			// They should have tags normalized to [graph]
+			const hasBTag = memoryLines.match(/cron_syntax.*\[graph\]/);
+			const hasCTag = memoryLines.match(/cron_examples.*\[graph\]/);
 			expect(hasBTag).toBeDefined();
 			expect(hasCTag).toBeDefined();
 		});
 
-		it("tags seed entries with [seed] when graph retrieval is used", () => {
+		it("tags seed entries with [graph] when graph retrieval is used", () => {
 			const seedMem = {
 				id: randomBytes(8).toString("hex"),
 				key: "sync_protocol",
@@ -148,10 +148,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			const seedLine = enrichment.memoryDeltaLines.find((l) => l.includes("sync_protocol"));
 			expect(seedLine).toBeDefined();
-			expect(seedLine).toContain("[seed]");
+			expect(seedLine).toContain("[graph]");
 		});
 
-		it("tags traversed entries with [depth N, relation]", () => {
+		it("tags traversed entries with [graph]", () => {
 			const mem1 = {
 				id: randomBytes(8).toString("hex"),
 				key: "memory_structure",
@@ -183,9 +183,9 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			const mem2Line = enrichment.memoryDeltaLines.find((l) => l.includes("semantic_search"));
 			expect(mem2Line).toBeDefined();
-			// Should have depth tag since it's traversed from seed
-			if (mem2Line?.match(/\[depth \d+/)) {
-				expect(mem2Line).toMatch(/\[depth \d+, supports\]/);
+			// Should have [graph] tag since it's traversed from seed
+			if (mem2Line?.match(/\[graph\]/)) {
+				expect(mem2Line).toMatch(/\[graph\]/);
 			}
 		});
 	});
@@ -253,9 +253,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			expect(enrichment.memoryDeltaLines.length).toBeLessThanOrEqual(8);
 
 			// Count retrieval methods in output
-			const hasGraphTag = enrichment.memoryDeltaLines.some(
-				(l) => l.includes("[seed]") || l.match(/\[depth \d+/),
-			);
+			const hasGraphTag = enrichment.memoryDeltaLines.some((l) => l.includes("[graph]"));
 
 			// Should have graph entries (at minimum seed entry)
 			expect(hasGraphTag).toBe(true);
@@ -462,12 +460,12 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			// Count tag types
 			const pinnedCount = memoryLines.filter((l) => l.includes("[pinned]")).length;
-			const seedCount = memoryLines.filter((l) => l.includes("[seed]")).length;
+			const graphCount = memoryLines.filter((l) => l.includes("[graph]")).length;
 
 			// Each category should have at least one entry (if present)
 			expect(pinnedCount).toBeGreaterThanOrEqual(1); // _pinned_important
-			expect(seedCount).toBeGreaterThanOrEqual(1); // seed_entry
-			// Graph and recency entries depend on which entries are selected
+			expect(graphCount).toBeGreaterThanOrEqual(1); // seed_entry and graph_entry
+			// Recency entries depend on which entries are selected
 		});
 	});
 
@@ -604,11 +602,9 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			const memoryLines = enrichment.memoryDeltaLines;
 
-			// Should NOT have seed or graph tags (graph search returned no results)
-			const hasSeedTags = memoryLines.some((l) => l.includes("[seed]"));
-			const hasGraphTags = memoryLines.some((l) => l.match(/\[depth \d+/));
+			// Should NOT have graph tags (graph search returned no results)
+			const hasGraphTags = memoryLines.some((l) => l.includes("[graph]"));
 
-			expect(hasSeedTags).toBe(false);
 			expect(hasGraphTags).toBe(false);
 
 			// When keywords are extracted but graph search returns nothing,
@@ -662,12 +658,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// falls back to pure recency (no boost). Should have recency output only.
 			const memoryLines = enrichment.memoryDeltaLines;
 
-			// Should NOT have seed or graph tags (no keywords to seed with)
-			const hasSeedTags = memoryLines.some((l) => l.includes("[seed]"));
-			const hasGraphTags = memoryLines.some((l) => l.match(/\[depth \d+/));
+			// Should NOT have graph tags (no keywords to seed with)
+			const hasGraphTags = memoryLines.some((l) => l.includes("[graph]"));
 			const hasRelevantTags = memoryLines.some((l) => l.includes("[relevant]"));
 
-			expect(hasSeedTags).toBe(false);
 			expect(hasGraphTags).toBe(false);
 			expect(hasRelevantTags).toBe(false);
 

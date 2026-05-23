@@ -100,6 +100,103 @@ describe("Database Schema", () => {
 		// idx_changelog_seq removed in HLC migration — hlc is TEXT PRIMARY KEY
 		expect(indexNames).toContain("idx_memory_modified");
 		expect(indexNames).toContain("idx_tasks_last_run");
+		expect(indexNames).toContain("idx_memory_detail_recency");
+
+		db.close();
+	});
+
+	it("idx_memory_detail_recency exists and supports R-VC4 SELECT predicate", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		// Verify the index exists
+		const indexes = db
+			.query(
+				"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memory_detail_recency'",
+			)
+			.all() as Array<{ name: string }>;
+		expect(indexes).toHaveLength(1);
+
+		// Verify the index is COVERING by including key column (for planner to prefer it)
+		const indexInfo = db.query("PRAGMA index_info(idx_memory_detail_recency)").all() as Array<{
+			seqno: number;
+			cid: number;
+			name: string;
+		}>;
+
+		// Should have last_accessed_at and key (covering index)
+		expect(indexInfo).toHaveLength(2);
+		expect(indexInfo[0].name).toBe("last_accessed_at");
+		expect(indexInfo[1].name).toBe("key");
+
+		// Verify the index WHERE clause by querying sqlite_master
+		const indexDef = db
+			.query(
+				"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_memory_detail_recency'",
+			)
+			.get() as { sql: string };
+		expect(indexDef.sql).toContain("tier = 'detail'");
+		expect(indexDef.sql).toContain("deleted = 0");
+
+		// Insert large dataset (1000+ rows) to make planner favor the specialized index
+		// Mix of tiers to exercise the partial index WHERE clause filtering
+		for (let i = 0; i < 1200; i++) {
+			const tier = i % 10 < 4 ? "detail" : i % 10 < 7 ? "summary" : "pinned";
+			const deleted = i === 42 ? 1 : 0; // soft-delete one detail row
+			db.run(`
+				INSERT INTO semantic_memory (
+					id, key, value, tier, source, created_at, last_accessed_at, modified_at, deleted
+				) VALUES (
+					'test-id-${i}',
+					'test-key-${i}',
+					'test-value-${i}',
+					'${tier}',
+					'test-source',
+					datetime('now'),
+					datetime('now', '-${1200 - i} seconds'),
+					datetime('now'),
+					${deleted}
+				)
+			`);
+		}
+
+		// Run ANALYZE so the query planner has statistics to make decisions
+		db.run("ANALYZE");
+
+		// Verify that the query with the correct predicate (deleted = 0) returns expected results
+		// Rows with tier='detail' and deleted=0 should be returned, ordered by recency
+		const results = db
+			.prepare(
+				"SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
+			)
+			.all() as Array<{ key: string; last_accessed_at: string | null }>;
+
+		// Should have ~480 detail rows (1200 * 0.4 ≈ 480, minus 1 deleted)
+		expect(results.length).toBeGreaterThan(400);
+		expect(results.length).toBeLessThan(500);
+		// Verify they are sorted by last_accessed_at descending
+		for (let i = 1; i < results.length; i++) {
+			const prev = results[i - 1].last_accessed_at;
+			const curr = results[i].last_accessed_at;
+			if (prev !== null && curr !== null) {
+				// Timestamps are ISO 8601 strings, which sort lexicographically in descending order
+				expect(prev >= curr).toBe(true);
+			}
+		}
+
+		// CRITICAL: Verify the EXPLAIN QUERY PLAN shows idx_memory_detail_recency is selected
+		// The covering index must be used (not idx_memory_tier), and no TEMP B-TREE sort
+		const queryPlan = db
+			.prepare(
+				"EXPLAIN QUERY PLAN SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
+			)
+			.all() as Array<{ detail: string }>;
+		const planText = queryPlan.map((row) => row.detail).join(" ");
+
+		// Regression guard: must use the covering partial index for recency ordering
+		expect(planText).toContain("idx_memory_detail_recency");
+		// Must NOT require a temporary B-tree for sorting (would indicate wrong index)
+		expect(planText).not.toContain("TEMP B-TREE");
 
 		db.close();
 	});

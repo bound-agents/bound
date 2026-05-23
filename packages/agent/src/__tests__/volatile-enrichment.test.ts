@@ -1109,7 +1109,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		);
 	}
 
-	it("includes thread summary when populated", () => {
+	it("includes thread title and message count when populated", () => {
 		const threadId = `digest-thread-${Math.random().toString(36).slice(2, 8)}`;
 		const summary = "The user and assistant discussed cross-thread memory persistence.";
 		db.run(
@@ -1133,10 +1133,12 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		);
 		addMessage(threadId);
 
-		const { text, sources } = buildCrossThreadDigest(db, userId);
+		const { text, sources, entries } = buildCrossThreadDigest(db, userId);
 
-		// Summary content must appear in the digest so the agent can continue the conversation
-		expect(text).toContain(summary);
+		// Thread title must appear in the digest
+		expect(text).toContain("Memory Discussion");
+		// Should NOT contain the summary excerpt (R-VC23)
+		expect(text).not.toContain("Summary:");
 		// Verify sources array contains the thread
 		expect(sources).toHaveLength(1);
 		expect(sources[0].threadId).toBe(threadId);
@@ -1144,6 +1146,11 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		expect(sources[0].color).toBe(0);
 		expect(sources[0]).toHaveProperty("messageCount");
 		expect(sources[0]).toHaveProperty("lastMessageAt");
+		// Verify structured entries are populated
+		expect(entries).toHaveLength(1);
+		expect(entries[0].title).toBe("Memory Discussion");
+		expect(entries[0].messageCount).toBe(1);
+		expect(entries[0].lastUpdatedAt).toBe(now);
 	});
 
 	it("still works when thread has no summary (null)", () => {
@@ -1169,13 +1176,18 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		);
 		addMessage(threadId);
 
-		const { text, sources } = buildCrossThreadDigest(db, userId);
+		const { text, sources, entries } = buildCrossThreadDigest(db, userId);
 		expect(text).toContain("Untitled Thread");
 		// No crash when summary is null
 		expect(text).not.toBeNull();
+		// Should NOT contain summary excerpt line
+		expect(text).not.toContain("Summary:");
 		// Thread without summary appears in text but NOT in sources
 		// (only threads with summaries contribute real cross-thread context)
 		expect(sources).toHaveLength(0);
+		// But it DOES appear in entries (structured rows)
+		expect(entries).toHaveLength(1);
+		expect(entries[0].title).toBe("Untitled Thread");
 	});
 
 	it("returns array with correct color values for different threads", () => {
@@ -1183,6 +1195,10 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		const threadId1 = `digest-thread-color1-${Math.random().toString(36).slice(2, 8)}`;
 		const threadId2 = `digest-thread-color2-${Math.random().toString(36).slice(2, 8)}`;
 		const threadId3 = `digest-thread-color3-${Math.random().toString(36).slice(2, 8)}`;
+
+		const ts1 = new Date(Date.now() + 1000).toISOString();
+		const ts2 = new Date(Date.now() + 2000).toISOString();
+		const ts3 = new Date(Date.now() + 3000).toISOString();
 
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1198,7 +1214,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				null,
 				null,
 				now,
-				new Date(Date.now() + 1000).toISOString(),
+				ts1,
 				now,
 				0,
 			],
@@ -1218,7 +1234,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				null,
 				null,
 				now,
-				new Date(Date.now() + 2000).toISOString(),
+				ts2,
 				now,
 				0,
 			],
@@ -1238,30 +1254,38 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				null,
 				null,
 				now,
-				new Date(Date.now() + 3000).toISOString(),
+				ts3,
 				now,
 				0,
 			],
 		);
 		addMessage(threadId3);
 
-		const { sources } = buildCrossThreadDigest(db, userId);
+		const { sources, entries, text } = buildCrossThreadDigest(db, userId);
 		expect(sources).toHaveLength(3);
 		// Most recent first (by last_message_at DESC)
 		expect(sources[0].color).toBe(7);
 		expect(sources[1].color).toBe(3);
 		expect(sources[2].color).toBe(0);
+		// Verify entries are populated
+		expect(entries).toHaveLength(3);
+		// Verify no Summary lines in text (R-VC23)
+		expect(text).not.toContain("Summary:");
 	});
 
 	it("returns empty sources when no threads exist", () => {
-		const { text, sources } = buildCrossThreadDigest(db, userId);
+		const { text, sources, entries } = buildCrossThreadDigest(db, userId);
 		expect(text).toBe("No recent activity.");
 		expect(sources).toHaveLength(0);
+		expect(entries).toHaveLength(0);
 	});
 
 	it("excludes specified thread when excludeThreadId is provided", () => {
 		const threadIdA = `digest-thread-a-${Math.random().toString(36).slice(2, 8)}`;
 		const threadIdB = `digest-thread-b-${Math.random().toString(36).slice(2, 8)}`;
+
+		const tsA = new Date(Date.now() + 1000).toISOString();
+		const tsB = new Date(Date.now() + 2000).toISOString();
 
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1277,7 +1301,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				null,
 				null,
 				now,
-				new Date(Date.now() + 1000).toISOString(),
+				tsA,
 				now,
 				0,
 			],
@@ -1297,7 +1321,7 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 				null,
 				null,
 				now,
-				new Date(Date.now() + 2000).toISOString(),
+				tsB,
 				now,
 				0,
 			],
@@ -1305,11 +1329,14 @@ describe("buildCrossThreadDigest — includes thread summaries", () => {
 		addMessage(threadIdB);
 
 		// Call with excludeThreadId set to threadIdA
-		const { sources } = buildCrossThreadDigest(db, userId, threadIdA);
+		const { sources, entries } = buildCrossThreadDigest(db, userId, threadIdA);
 		// Should only return threadIdB
 		expect(sources).toHaveLength(1);
 		expect(sources[0].threadId).toBe(threadIdB);
 		expect(sources[0].title).toBe("Thread B");
 		expect(sources[0].color).toBe(2);
+		// Entries should also exclude the thread
+		expect(entries).toHaveLength(1);
+		expect(entries[0].title).toBe("Thread B");
 	});
 });

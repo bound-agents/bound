@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { pruneResolvedAdvisories } from "./advisories";
+import { runR_VC9Validation, shouldRunR_VC9Validation } from "./validation/run-r-vc9-validation";
 
 const DEFAULT_INSTRUCTIONS =
 	"Review system state. If advisories need attention, address them. If tasks have failed, investigate. Otherwise, note what you observed.";
@@ -15,6 +16,23 @@ export function buildHeartbeatContext(
 		const { pruned } = pruneResolvedAdvisories(db, options.siteId);
 		if (pruned > 0) {
 			options.logger?.info(`[heartbeat] Pruned ${pruned} resolved advisories`);
+		}
+	}
+
+	// Run R-VC9 validation daily
+	if (options?.siteId && shouldRunR_VC9Validation(db, Date.now())) {
+		try {
+			const report = runR_VC9Validation(db, options.siteId, Date.now());
+			if (report.rVc9NonCompliantCount > 0 || report.rVc9bNonCompliantCount > 0) {
+				options.logger?.info(
+					`[heartbeat] R-VC9 validation: ${report.rVc9NonCompliantCount} non-compliant entries, ${report.rVc9bNonCompliantCount} R-VC9b issues detected`,
+				);
+			}
+		} catch (validationError) {
+			// Validation is advisory — errors do not break the heartbeat
+			options.logger?.warn("[heartbeat] R-VC9 validation error (advisory, non-blocking)", {
+				error: String(validationError),
+			});
 		}
 	}
 

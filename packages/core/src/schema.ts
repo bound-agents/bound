@@ -769,6 +769,14 @@ export function applySchema(db: Database): void {
 		WHERE deleted = 0
 	`);
 
+	// Partial index for R-VC4 detail-tier retrieval (unbounded SELECT ordered by recency)
+	// COVERING index: includes `key` column so planner can satisfy SELECT without table lookup
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_memory_detail_recency
+			ON semantic_memory(last_accessed_at DESC, key)
+			WHERE tier = 'detail' AND deleted = 0
+	`);
+
 	// Backfill: prefix-keyed entries → pinned tier (idempotent — only updates default tier)
 	// IMPORTANT: Use the EXACT same ESCAPE syntax as summary-extraction.ts lines 467-470.
 	// Do NOT derive the escaping from scratch — copy the pattern from the existing codebase.
