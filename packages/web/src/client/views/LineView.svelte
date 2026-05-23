@@ -20,7 +20,7 @@ import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
 import { shouldClearWaiting } from "../utils/waiting";
 
-const { threadId } = $props<{ threadId: string }>();
+const { threadId, from } = $props<{ threadId: string; from?: string }>();
 
 interface LocalMessage {
 	id: string;
@@ -174,7 +174,7 @@ async function handleFileChange(e: Event): Promise<void> {
 }
 
 function handleBackClick(): void {
-	navigateTo("/");
+	navigateTo(from ?? "/");
 }
 
 function handleKeydown(e: KeyboardEvent): void {
