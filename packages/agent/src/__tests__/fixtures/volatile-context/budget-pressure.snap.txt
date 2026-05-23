@@ -1,0 +1,1513 @@
+User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
+
+## Working Knowledge — operational and durable
+
+- _pinned:0: pinned body 0
+    [changed since last turn]
+- _pinned:1: pinned body 1
+    [changed since last turn]
+- _pinned:10: pinned body 10
+    [changed since last turn]
+- _pinned:11: pinned body 11
+    [changed since last turn]
+- _pinned:12: pinned body 12
+    [changed since last turn]
+- _pinned:13: pinned body 13
+    [changed since last turn]
+- _pinned:14: pinned body 14
+    [changed since last turn]
+- _pinned:15: pinned body 15
+    [changed since last turn]
+- _pinned:16: pinned body 16
+    [changed since last turn]
+- _pinned:17: pinned body 17
+    [changed since last turn]
+- _pinned:18: pinned body 18
+    [changed since last turn]
+- _pinned:19: pinned body 19
+    [changed since last turn]
+- _pinned:2: pinned body 2
+    [changed since last turn]
+- _pinned:20: pinned body 20
+    [changed since last turn]
+- _pinned:21: pinned body 21
+    [changed since last turn]
+- _pinned:22: pinned body 22
+    [changed since last turn]
+- _pinned:23: pinned body 23
+    [changed since last turn]
+- _pinned:24: pinned body 24
+    [changed since last turn]
+- _pinned:25: pinned body 25
+    [changed since last turn]
+- _pinned:26: pinned body 26
+    [changed since last turn]
+- _pinned:27: pinned body 27
+    [changed since last turn]
+- _pinned:28: pinned body 28
+    [changed since last turn]
+- _pinned:29: pinned body 29
+    [changed since last turn]
+- _pinned:3: pinned body 3
+    [changed since last turn]
+- _pinned:30: pinned body 30
+    [changed since last turn]
+- _pinned:31: pinned body 31
+    [changed since last turn]
+- _pinned:32: pinned body 32
+    [changed since last turn]
+- _pinned:33: pinned body 33
+    [changed since last turn]
+- _pinned:34: pinned body 34
+    [changed since last turn]
+- _pinned:35: pinned body 35
+    [changed since last turn]
+- _pinned:36: pinned body 36
+    [changed since last turn]
+- _pinned:37: pinned body 37
+    [changed since last turn]
+- _pinned:38: pinned body 38
+    [changed since last turn]
+- _pinned:39: pinned body 39
+    [changed since last turn]
+- _pinned:4: pinned body 4
+    [changed since last turn]
+- _pinned:40: pinned body 40
+    [changed since last turn]
+- _pinned:41: pinned body 41
+    [changed since last turn]
+- _pinned:42: pinned body 42
+    [changed since last turn]
+- _pinned:43: pinned body 43
+    [changed since last turn]
+- _pinned:44: pinned body 44
+    [changed since last turn]
+- _pinned:45: pinned body 45
+    [changed since last turn]
+- _pinned:46: pinned body 46
+    [changed since last turn]
+- _pinned:47: pinned body 47
+    [changed since last turn]
+- _pinned:48: pinned body 48
+    [changed since last turn]
+- _pinned:49: pinned body 49
+    [changed since last turn]
+- _pinned:5: pinned body 5
+    [changed since last turn]
+- _pinned:50: pinned body 50
+    [changed since last turn]
+- _pinned:51: pinned body 51
+    [changed since last turn]
+- _pinned:52: pinned body 52
+    [changed since last turn]
+- _pinned:53: pinned body 53
+    [changed since last turn]
+- _pinned:54: pinned body 54
+    [changed since last turn]
+- _pinned:55: pinned body 55
+    [changed since last turn]
+- _pinned:56: pinned body 56
+    [changed since last turn]
+- _pinned:57: pinned body 57
+    [changed since last turn]
+- _pinned:58: pinned body 58
+    [changed since last turn]
+- _pinned:59: pinned body 59
+    [changed since last turn]
+- _pinned:6: pinned body 6
+    [changed since last turn]
+- _pinned:60: pinned body 60
+    [changed since last turn]
+- _pinned:61: pinned body 61
+    [changed since last turn]
+- _pinned:62: pinned body 62
+    [changed since last turn]
+- _pinned:63: pinned body 63
+    [changed since last turn]
+- _pinned:64: pinned body 64
+    [changed since last turn]
+- _pinned:65: pinned body 65
+    [changed since last turn]
+- _pinned:66: pinned body 66
+    [changed since last turn]
+- _pinned:67: pinned body 67
+    [changed since last turn]
+- _pinned:68: pinned body 68
+    [changed since last turn]
+- _pinned:69: pinned body 69
+    [changed since last turn]
+- _pinned:7: pinned body 7
+    [changed since last turn]
+- _pinned:70: pinned body 70
+    [changed since last turn]
+- _pinned:71: pinned body 71
+    [changed since last turn]
+- _pinned:72: pinned body 72
+    [changed since last turn]
+- _pinned:73: pinned body 73
+    [changed since last turn]
+- _pinned:74: pinned body 74
+    [changed since last turn]
+- _pinned:75: pinned body 75
+    [changed since last turn]
+- _pinned:76: pinned body 76
+    [changed since last turn]
+- _pinned:77: pinned body 77
+    [changed since last turn]
+- _pinned:78: pinned body 78
+    [changed since last turn]
+- _pinned:79: pinned body 79
+    [changed since last turn]
+- _pinned:8: pinned body 8
+    [changed since last turn]
+- _pinned:80: pinned body 80
+    [changed since last turn]
+- _pinned:81: pinned body 81
+    [changed since last turn]
+- _pinned:82: pinned body 82
+    [changed since last turn]
+- _pinned:83: pinned body 83
+    [changed since last turn]
+- _pinned:84: pinned body 84
+    [changed since last turn]
+- _pinned:85: pinned body 85
+    [changed since last turn]
+- _pinned:86: pinned body 86
+    [changed since last turn]
+- _pinned:87: pinned body 87
+    [changed since last turn]
+- _pinned:88: pinned body 88
+    [changed since last turn]
+- _pinned:89: pinned body 89
+    [changed since last turn]
+- _pinned:9: pinned body 9
+    [changed since last turn]
+- _pinned:90: pinned body 90
+    [changed since last turn]
+- _pinned:91: pinned body 91
+    [changed since last turn]
+- _pinned:92: pinned body 92
+    [changed since last turn]
+- _pinned:93: pinned body 93
+    [changed since last turn]
+- _pinned:94: pinned body 94
+    [changed since last turn]
+- _pinned:95: pinned body 95
+    [changed since last turn]
+- _pinned:96: pinned body 96
+    [changed since last turn]
+- _pinned:97: pinned body 97
+    [changed since last turn]
+- _pinned:98: pinned body 98
+    [changed since last turn]
+- _pinned:99: pinned body 99
+    [changed since last turn]
+- _summary:topic-0: Summary for topic 0: this is a brief overview. [changed since last turn]
+- _summary:topic-1: Summary for topic 1: this is a brief overview. [changed since last turn]
+- _summary:topic-10: Summary for topic 10: this is a brief overview. [changed since last turn]
+- _summary:topic-11: Summary for topic 11: this is a brief overview. [changed since last turn]
+- _summary:topic-12: Summary for topic 12: this is a brief overview. [changed since last turn]
+- _summary:topic-13: Summary for topic 13: this is a brief overview. [changed since last turn]
+- _summary:topic-14: Summary for topic 14: this is a brief overview. [changed since last turn]
+- _summary:topic-15: Summary for topic 15: this is a brief overview. [changed since last turn]
+- _summary:topic-16: Summary for topic 16: this is a brief overview. [changed since last turn]
+- _summary:topic-17: Summary for topic 17: this is a brief overview. [changed since last turn]
+- _summary:topic-18: Summary for topic 18: this is a brief overview. [changed since last turn]
+- _summary:topic-19: Summary for topic 19: this is a brief overview. [changed since last turn]
+- _summary:topic-2: Summary for topic 2: this is a brief overview. [changed since last turn]
+- _summary:topic-20: Summary for topic 20: this is a brief overview. [changed since last turn]
+- _summary:topic-21: Summary for topic 21: this is a brief overview. [changed since last turn]
+- _summary:topic-22: Summary for topic 22: this is a brief overview. [changed since last turn]
+- _summary:topic-23: Summary for topic 23: this is a brief overview. [changed since last turn]
+- _summary:topic-24: Summary for topic 24: this is a brief overview. [changed since last turn]
+- _summary:topic-25: Summary for topic 25: this is a brief overview. [changed since last turn]
+- _summary:topic-26: Summary for topic 26: this is a brief overview. [changed since last turn]
+- _summary:topic-27: Summary for topic 27: this is a brief overview. [changed since last turn]
+- _summary:topic-28: Summary for topic 28: this is a brief overview. [changed since last turn]
+- _summary:topic-29: Summary for topic 29: this is a brief overview. [changed since last turn]
+- _summary:topic-3: Summary for topic 3: this is a brief overview. [changed since last turn]
+- _summary:topic-30: Summary for topic 30: this is a brief overview. [changed since last turn]
+- _summary:topic-31: Summary for topic 31: this is a brief overview. [changed since last turn]
+- _summary:topic-32: Summary for topic 32: this is a brief overview. [changed since last turn]
+- _summary:topic-33: Summary for topic 33: this is a brief overview. [changed since last turn]
+- _summary:topic-34: Summary for topic 34: this is a brief overview. [changed since last turn]
+- _summary:topic-35: Summary for topic 35: this is a brief overview. [changed since last turn]
+- _summary:topic-36: Summary for topic 36: this is a brief overview. [changed since last turn]
+- _summary:topic-37: Summary for topic 37: this is a brief overview. [changed since last turn]
+- _summary:topic-38: Summary for topic 38: this is a brief overview. [changed since last turn]
+- _summary:topic-39: Summary for topic 39: this is a brief overview. [changed since last turn]
+- _summary:topic-4: Summary for topic 4: this is a brief overview. [changed since last turn]
+- _summary:topic-40: Summary for topic 40: this is a brief overview. [changed since last turn]
+- _summary:topic-41: Summary for topic 41: this is a brief overview. [changed since last turn]
+- _summary:topic-42: Summary for topic 42: this is a brief overview. [changed since last turn]
+- _summary:topic-43: Summary for topic 43: this is a brief overview. [changed since last turn]
+- _summary:topic-44: Summary for topic 44: this is a brief overview. [changed since last turn]
+- _summary:topic-45: Summary for topic 45: this is a brief overview. [changed since last turn]
+- _summary:topic-46: Summary for topic 46: this is a brief overview. [changed since last turn]
+- _summary:topic-47: Summary for topic 47: this is a brief overview. [changed since last turn]
+- _summary:topic-48: Summary for topic 48: this is a brief overview. [changed since last turn]
+- _summary:topic-49: Summary for topic 49: this is a brief overview. [changed since last turn]
+- _summary:topic-5: Summary for topic 5: this is a brief overview. [changed since last turn]
+- _summary:topic-50: Summary for topic 50: this is a brief overview. [changed since last turn]
+- _summary:topic-51: Summary for topic 51: this is a brief overview. [changed since last turn]
+- _summary:topic-52: Summary for topic 52: this is a brief overview. [changed since last turn]
+- _summary:topic-53: Summary for topic 53: this is a brief overview. [changed since last turn]
+- _summary:topic-54: Summary for topic 54: this is a brief overview. [changed since last turn]
+- _summary:topic-55: Summary for topic 55: this is a brief overview. [changed since last turn]
+- _summary:topic-56: Summary for topic 56: this is a brief overview. [changed since last turn]
+- _summary:topic-57: Summary for topic 57: this is a brief overview. [changed since last turn]
+- _summary:topic-58: Summary for topic 58: this is a brief overview. [changed since last turn]
+- _summary:topic-59: Summary for topic 59: this is a brief overview. [changed since last turn]
+- _summary:topic-6: Summary for topic 6: this is a brief overview. [changed since last turn]
+- _summary:topic-60: Summary for topic 60: this is a brief overview. [changed since last turn]
+- _summary:topic-61: Summary for topic 61: this is a brief overview. [changed since last turn]
+- _summary:topic-62: Summary for topic 62: this is a brief overview. [changed since last turn]
+- _summary:topic-63: Summary for topic 63: this is a brief overview. [changed since last turn]
+- _summary:topic-64: Summary for topic 64: this is a brief overview. [changed since last turn]
+- _summary:topic-65: Summary for topic 65: this is a brief overview. [changed since last turn]
+- _summary:topic-66: Summary for topic 66: this is a brief overview. [changed since last turn]
+- _summary:topic-67: Summary for topic 67: this is a brief overview. [changed since last turn]
+- _summary:topic-68: Summary for topic 68: this is a brief overview. [changed since last turn]
+- _summary:topic-69: Summary for topic 69: this is a brief overview. [changed since last turn]
+- _summary:topic-7: Summary for topic 7: this is a brief overview. [changed since last turn]
+- _summary:topic-70: Summary for topic 70: this is a brief overview. [changed since last turn]
+- _summary:topic-71: Summary for topic 71: this is a brief overview. [changed since last turn]
+- _summary:topic-72: Summary for topic 72: this is a brief overview. [changed since last turn]
+- _summary:topic-73: Summary for topic 73: this is a brief overview. [changed since last turn]
+- _summary:topic-74: Summary for topic 74: this is a brief overview. [changed since last turn]
+- _summary:topic-75: Summary for topic 75: this is a brief overview. [changed since last turn]
+- _summary:topic-76: Summary for topic 76: this is a brief overview. [changed since last turn]
+- _summary:topic-77: Summary for topic 77: this is a brief overview. [changed since last turn]
+- _summary:topic-78: Summary for topic 78: this is a brief overview. [changed since last turn]
+- _summary:topic-79: Summary for topic 79: this is a brief overview. [changed since last turn]
+- _summary:topic-8: Summary for topic 8: this is a brief overview. [changed since last turn]
+- _summary:topic-80: Summary for topic 80: this is a brief overview. [changed since last turn]
+- _summary:topic-81: Summary for topic 81: this is a brief overview. [changed since last turn]
+- _summary:topic-82: Summary for topic 82: this is a brief overview. [changed since last turn]
+- _summary:topic-83: Summary for topic 83: this is a brief overview. [changed since last turn]
+- _summary:topic-84: Summary for topic 84: this is a brief overview. [changed since last turn]
+- _summary:topic-85: Summary for topic 85: this is a brief overview. [changed since last turn]
+- _summary:topic-86: Summary for topic 86: this is a brief overview. [changed since last turn]
+- _summary:topic-87: Summary for topic 87: this is a brief overview. [changed since last turn]
+- _summary:topic-88: Summary for topic 88: this is a brief overview. [changed since last turn]
+- _summary:topic-89: Summary for topic 89: this is a brief overview. [changed since last turn]
+- _summary:topic-9: Summary for topic 9: this is a brief overview. [changed since last turn]
+- _summary:topic-90: Summary for topic 90: this is a brief overview. [changed since last turn]
+- _summary:topic-91: Summary for topic 91: this is a brief overview. [changed since last turn]
+- _summary:topic-92: Summary for topic 92: this is a brief overview. [changed since last turn]
+- _summary:topic-93: Summary for topic 93: this is a brief overview. [changed since last turn]
+- _summary:topic-94: Summary for topic 94: this is a brief overview. [changed since last turn]
+- _summary:topic-95: Summary for topic 95: this is a brief overview. [changed since last turn]
+- _summary:topic-96: Summary for topic 96: this is a brief overview. [changed since last turn]
+- _summary:topic-97: Summary for topic 97: this is a brief overview. [changed since last turn]
+- _summary:topic-98: Summary for topic 98: this is a brief overview. [changed since last turn]
+- _summary:topic-99: Summary for topic 99: this is a brief overview. [changed since last turn]
+
+Bodies of summary entries are accessed via memory search using terms from the entry key.
+## Discoverable Archive — title-only; bodies via memory search
+
+### topic-0 (10 entries)
+- curiosity:item-0-det000000 (last accessed 1d ago)
+- curiosity:item-100-det000100 (last accessed 1d ago)
+- curiosity:item-200-det000200 (last accessed 1d ago)
+- curiosity:item-300-det000300 (last accessed 1d ago)
+- curiosity:item-400-det000400 (last accessed 1d ago)
+- curiosity:item-500-det000500 (last accessed 1d ago)
+- curiosity:item-600-det000600 (last accessed 1d ago)
+- curiosity:item-700-det000700 (last accessed 1d ago)
+- curiosity:item-800-det000800 (last accessed 1d ago)
+- curiosity:item-900-det000900 (last accessed 1d ago)
+
+### topic-1 (10 entries)
+- curiosity:item-1-det000001 (last accessed 1d ago)
+- curiosity:item-101-det000101 (last accessed 1d ago)
+- curiosity:item-201-det000201 (last accessed 1d ago)
+- curiosity:item-301-det000301 (last accessed 1d ago)
+- curiosity:item-401-det000401 (last accessed 1d ago)
+- curiosity:item-501-det000501 (last accessed 1d ago)
+- curiosity:item-601-det000601 (last accessed 1d ago)
+- curiosity:item-701-det000701 (last accessed 1d ago)
+- curiosity:item-801-det000801 (last accessed 1d ago)
+- curiosity:item-901-det000901 (last accessed 1d ago)
+
+### topic-10 (10 entries)
+- curiosity:item-10-det000010 (last accessed 1d ago)
+- curiosity:item-110-det000110 (last accessed 1d ago)
+- curiosity:item-210-det000210 (last accessed 1d ago)
+- curiosity:item-310-det000310 (last accessed 1d ago)
+- curiosity:item-410-det000410 (last accessed 1d ago)
+- curiosity:item-510-det000510 (last accessed 1d ago)
+- curiosity:item-610-det000610 (last accessed 1d ago)
+- curiosity:item-710-det000710 (last accessed 1d ago)
+- curiosity:item-810-det000810 (last accessed 1d ago)
+- curiosity:item-910-det000910 (last accessed 1d ago)
+
+### topic-11 (10 entries)
+- curiosity:item-11-det000011 (last accessed 1d ago)
+- curiosity:item-111-det000111 (last accessed 1d ago)
+- curiosity:item-211-det000211 (last accessed 1d ago)
+- curiosity:item-311-det000311 (last accessed 1d ago)
+- curiosity:item-411-det000411 (last accessed 1d ago)
+- curiosity:item-511-det000511 (last accessed 1d ago)
+- curiosity:item-611-det000611 (last accessed 1d ago)
+- curiosity:item-711-det000711 (last accessed 1d ago)
+- curiosity:item-811-det000811 (last accessed 1d ago)
+- curiosity:item-911-det000911 (last accessed 1d ago)
+
+### topic-12 (10 entries)
+- curiosity:item-12-det000012 (last accessed 1d ago)
+- curiosity:item-112-det000112 (last accessed 1d ago)
+- curiosity:item-212-det000212 (last accessed 1d ago)
+- curiosity:item-312-det000312 (last accessed 1d ago)
+- curiosity:item-412-det000412 (last accessed 1d ago)
+- curiosity:item-512-det000512 (last accessed 1d ago)
+- curiosity:item-612-det000612 (last accessed 1d ago)
+- curiosity:item-712-det000712 (last accessed 1d ago)
+- curiosity:item-812-det000812 (last accessed 1d ago)
+- curiosity:item-912-det000912 (last accessed 1d ago)
+
+### topic-13 (10 entries)
+- curiosity:item-13-det000013 (last accessed 1d ago)
+- curiosity:item-113-det000113 (last accessed 1d ago)
+- curiosity:item-213-det000213 (last accessed 1d ago)
+- curiosity:item-313-det000313 (last accessed 1d ago)
+- curiosity:item-413-det000413 (last accessed 1d ago)
+- curiosity:item-513-det000513 (last accessed 1d ago)
+- curiosity:item-613-det000613 (last accessed 1d ago)
+- curiosity:item-713-det000713 (last accessed 1d ago)
+- curiosity:item-813-det000813 (last accessed 1d ago)
+- curiosity:item-913-det000913 (last accessed 1d ago)
+
+### topic-14 (10 entries)
+- curiosity:item-14-det000014 (last accessed 1d ago)
+- curiosity:item-114-det000114 (last accessed 1d ago)
+- curiosity:item-214-det000214 (last accessed 1d ago)
+- curiosity:item-314-det000314 (last accessed 1d ago)
+- curiosity:item-414-det000414 (last accessed 1d ago)
+- curiosity:item-514-det000514 (last accessed 1d ago)
+- curiosity:item-614-det000614 (last accessed 1d ago)
+- curiosity:item-714-det000714 (last accessed 1d ago)
+- curiosity:item-814-det000814 (last accessed 1d ago)
+- curiosity:item-914-det000914 (last accessed 1d ago)
+
+### topic-15 (10 entries)
+- curiosity:item-15-det000015 (last accessed 1d ago)
+- curiosity:item-115-det000115 (last accessed 1d ago)
+- curiosity:item-215-det000215 (last accessed 1d ago)
+- curiosity:item-315-det000315 (last accessed 1d ago)
+- curiosity:item-415-det000415 (last accessed 1d ago)
+- curiosity:item-515-det000515 (last accessed 1d ago)
+- curiosity:item-615-det000615 (last accessed 1d ago)
+- curiosity:item-715-det000715 (last accessed 1d ago)
+- curiosity:item-815-det000815 (last accessed 1d ago)
+- curiosity:item-915-det000915 (last accessed 1d ago)
+
+### topic-16 (10 entries)
+- curiosity:item-16-det000016 (last accessed 1d ago)
+- curiosity:item-116-det000116 (last accessed 1d ago)
+- curiosity:item-216-det000216 (last accessed 1d ago)
+- curiosity:item-316-det000316 (last accessed 1d ago)
+- curiosity:item-416-det000416 (last accessed 1d ago)
+- curiosity:item-516-det000516 (last accessed 1d ago)
+- curiosity:item-616-det000616 (last accessed 1d ago)
+- curiosity:item-716-det000716 (last accessed 1d ago)
+- curiosity:item-816-det000816 (last accessed 1d ago)
+- curiosity:item-916-det000916 (last accessed 1d ago)
+
+### topic-17 (10 entries)
+- curiosity:item-17-det000017 (last accessed 1d ago)
+- curiosity:item-117-det000117 (last accessed 1d ago)
+- curiosity:item-217-det000217 (last accessed 1d ago)
+- curiosity:item-317-det000317 (last accessed 1d ago)
+- curiosity:item-417-det000417 (last accessed 1d ago)
+- curiosity:item-517-det000517 (last accessed 1d ago)
+- curiosity:item-617-det000617 (last accessed 1d ago)
+- curiosity:item-717-det000717 (last accessed 1d ago)
+- curiosity:item-817-det000817 (last accessed 1d ago)
+- curiosity:item-917-det000917 (last accessed 1d ago)
+
+### topic-18 (10 entries)
+- curiosity:item-18-det000018 (last accessed 1d ago)
+- curiosity:item-118-det000118 (last accessed 1d ago)
+- curiosity:item-218-det000218 (last accessed 1d ago)
+- curiosity:item-318-det000318 (last accessed 1d ago)
+- curiosity:item-418-det000418 (last accessed 1d ago)
+- curiosity:item-518-det000518 (last accessed 1d ago)
+- curiosity:item-618-det000618 (last accessed 1d ago)
+- curiosity:item-718-det000718 (last accessed 1d ago)
+- curiosity:item-818-det000818 (last accessed 1d ago)
+- curiosity:item-918-det000918 (last accessed 1d ago)
+
+### topic-19 (10 entries)
+- curiosity:item-19-det000019 (last accessed 1d ago)
+- curiosity:item-119-det000119 (last accessed 1d ago)
+- curiosity:item-219-det000219 (last accessed 1d ago)
+- curiosity:item-319-det000319 (last accessed 1d ago)
+- curiosity:item-419-det000419 (last accessed 1d ago)
+- curiosity:item-519-det000519 (last accessed 1d ago)
+- curiosity:item-619-det000619 (last accessed 1d ago)
+- curiosity:item-719-det000719 (last accessed 1d ago)
+- curiosity:item-819-det000819 (last accessed 1d ago)
+- curiosity:item-919-det000919 (last accessed 1d ago)
+
+### topic-2 (10 entries)
+- curiosity:item-2-det000002 (last accessed 1d ago)
+- curiosity:item-102-det000102 (last accessed 1d ago)
+- curiosity:item-202-det000202 (last accessed 1d ago)
+- curiosity:item-302-det000302 (last accessed 1d ago)
+- curiosity:item-402-det000402 (last accessed 1d ago)
+- curiosity:item-502-det000502 (last accessed 1d ago)
+- curiosity:item-602-det000602 (last accessed 1d ago)
+- curiosity:item-702-det000702 (last accessed 1d ago)
+- curiosity:item-802-det000802 (last accessed 1d ago)
+- curiosity:item-902-det000902 (last accessed 1d ago)
+
+### topic-20 (10 entries)
+- curiosity:item-20-det000020 (last accessed 1d ago)
+- curiosity:item-120-det000120 (last accessed 1d ago)
+- curiosity:item-220-det000220 (last accessed 1d ago)
+- curiosity:item-320-det000320 (last accessed 1d ago)
+- curiosity:item-420-det000420 (last accessed 1d ago)
+- curiosity:item-520-det000520 (last accessed 1d ago)
+- curiosity:item-620-det000620 (last accessed 1d ago)
+- curiosity:item-720-det000720 (last accessed 1d ago)
+- curiosity:item-820-det000820 (last accessed 1d ago)
+- curiosity:item-920-det000920 (last accessed 1d ago)
+
+### topic-21 (10 entries)
+- curiosity:item-21-det000021 (last accessed 1d ago)
+- curiosity:item-121-det000121 (last accessed 1d ago)
+- curiosity:item-221-det000221 (last accessed 1d ago)
+- curiosity:item-321-det000321 (last accessed 1d ago)
+- curiosity:item-421-det000421 (last accessed 1d ago)
+- curiosity:item-521-det000521 (last accessed 1d ago)
+- curiosity:item-621-det000621 (last accessed 1d ago)
+- curiosity:item-721-det000721 (last accessed 1d ago)
+- curiosity:item-821-det000821 (last accessed 1d ago)
+- curiosity:item-921-det000921 (last accessed 1d ago)
+
+### topic-22 (10 entries)
+- curiosity:item-22-det000022 (last accessed 1d ago)
+- curiosity:item-122-det000122 (last accessed 1d ago)
+- curiosity:item-222-det000222 (last accessed 1d ago)
+- curiosity:item-322-det000322 (last accessed 1d ago)
+- curiosity:item-422-det000422 (last accessed 1d ago)
+- curiosity:item-522-det000522 (last accessed 1d ago)
+- curiosity:item-622-det000622 (last accessed 1d ago)
+- curiosity:item-722-det000722 (last accessed 1d ago)
+- curiosity:item-822-det000822 (last accessed 1d ago)
+- curiosity:item-922-det000922 (last accessed 1d ago)
+
+### topic-23 (10 entries)
+- curiosity:item-23-det000023 (last accessed 1d ago)
+- curiosity:item-123-det000123 (last accessed 1d ago)
+- curiosity:item-223-det000223 (last accessed 1d ago)
+- curiosity:item-323-det000323 (last accessed 1d ago)
+- curiosity:item-423-det000423 (last accessed 1d ago)
+- curiosity:item-523-det000523 (last accessed 1d ago)
+- curiosity:item-623-det000623 (last accessed 1d ago)
+- curiosity:item-723-det000723 (last accessed 1d ago)
+- curiosity:item-823-det000823 (last accessed 1d ago)
+- curiosity:item-923-det000923 (last accessed 1d ago)
+
+### topic-24 (10 entries)
+- curiosity:item-24-det000024 (last accessed 1d ago)
+- curiosity:item-124-det000124 (last accessed 1d ago)
+- curiosity:item-224-det000224 (last accessed 1d ago)
+- curiosity:item-324-det000324 (last accessed 1d ago)
+- curiosity:item-424-det000424 (last accessed 1d ago)
+- curiosity:item-524-det000524 (last accessed 1d ago)
+- curiosity:item-624-det000624 (last accessed 1d ago)
+- curiosity:item-724-det000724 (last accessed 1d ago)
+- curiosity:item-824-det000824 (last accessed 1d ago)
+- curiosity:item-924-det000924 (last accessed 1d ago)
+
+### topic-25 (10 entries)
+- curiosity:item-25-det000025 (last accessed 1d ago)
+- curiosity:item-125-det000125 (last accessed 1d ago)
+- curiosity:item-225-det000225 (last accessed 1d ago)
+- curiosity:item-325-det000325 (last accessed 1d ago)
+- curiosity:item-425-det000425 (last accessed 1d ago)
+- curiosity:item-525-det000525 (last accessed 1d ago)
+- curiosity:item-625-det000625 (last accessed 1d ago)
+- curiosity:item-725-det000725 (last accessed 1d ago)
+- curiosity:item-825-det000825 (last accessed 1d ago)
+- curiosity:item-925-det000925 (last accessed 1d ago)
+
+### topic-26 (10 entries)
+- curiosity:item-26-det000026 (last accessed 1d ago)
+- curiosity:item-126-det000126 (last accessed 1d ago)
+- curiosity:item-226-det000226 (last accessed 1d ago)
+- curiosity:item-326-det000326 (last accessed 1d ago)
+- curiosity:item-426-det000426 (last accessed 1d ago)
+- curiosity:item-526-det000526 (last accessed 1d ago)
+- curiosity:item-626-det000626 (last accessed 1d ago)
+- curiosity:item-726-det000726 (last accessed 1d ago)
+- curiosity:item-826-det000826 (last accessed 1d ago)
+- curiosity:item-926-det000926 (last accessed 1d ago)
+
+### topic-27 (10 entries)
+- curiosity:item-27-det000027 (last accessed 1d ago)
+- curiosity:item-127-det000127 (last accessed 1d ago)
+- curiosity:item-227-det000227 (last accessed 1d ago)
+- curiosity:item-327-det000327 (last accessed 1d ago)
+- curiosity:item-427-det000427 (last accessed 1d ago)
+- curiosity:item-527-det000527 (last accessed 1d ago)
+- curiosity:item-627-det000627 (last accessed 1d ago)
+- curiosity:item-727-det000727 (last accessed 1d ago)
+- curiosity:item-827-det000827 (last accessed 1d ago)
+- curiosity:item-927-det000927 (last accessed 1d ago)
+
+### topic-28 (10 entries)
+- curiosity:item-28-det000028 (last accessed 1d ago)
+- curiosity:item-128-det000128 (last accessed 1d ago)
+- curiosity:item-228-det000228 (last accessed 1d ago)
+- curiosity:item-328-det000328 (last accessed 1d ago)
+- curiosity:item-428-det000428 (last accessed 1d ago)
+- curiosity:item-528-det000528 (last accessed 1d ago)
+- curiosity:item-628-det000628 (last accessed 1d ago)
+- curiosity:item-728-det000728 (last accessed 1d ago)
+- curiosity:item-828-det000828 (last accessed 1d ago)
+- curiosity:item-928-det000928 (last accessed 1d ago)
+
+### topic-29 (10 entries)
+- curiosity:item-29-det000029 (last accessed 1d ago)
+- curiosity:item-129-det000129 (last accessed 1d ago)
+- curiosity:item-229-det000229 (last accessed 1d ago)
+- curiosity:item-329-det000329 (last accessed 1d ago)
+- curiosity:item-429-det000429 (last accessed 1d ago)
+- curiosity:item-529-det000529 (last accessed 1d ago)
+- curiosity:item-629-det000629 (last accessed 1d ago)
+- curiosity:item-729-det000729 (last accessed 1d ago)
+- curiosity:item-829-det000829 (last accessed 1d ago)
+- curiosity:item-929-det000929 (last accessed 1d ago)
+
+### topic-3 (10 entries)
+- curiosity:item-3-det000003 (last accessed 1d ago)
+- curiosity:item-103-det000103 (last accessed 1d ago)
+- curiosity:item-203-det000203 (last accessed 1d ago)
+- curiosity:item-303-det000303 (last accessed 1d ago)
+- curiosity:item-403-det000403 (last accessed 1d ago)
+- curiosity:item-503-det000503 (last accessed 1d ago)
+- curiosity:item-603-det000603 (last accessed 1d ago)
+- curiosity:item-703-det000703 (last accessed 1d ago)
+- curiosity:item-803-det000803 (last accessed 1d ago)
+- curiosity:item-903-det000903 (last accessed 1d ago)
+
+### topic-30 (10 entries)
+- curiosity:item-30-det000030 (last accessed 1d ago)
+- curiosity:item-130-det000130 (last accessed 1d ago)
+- curiosity:item-230-det000230 (last accessed 1d ago)
+- curiosity:item-330-det000330 (last accessed 1d ago)
+- curiosity:item-430-det000430 (last accessed 1d ago)
+- curiosity:item-530-det000530 (last accessed 1d ago)
+- curiosity:item-630-det000630 (last accessed 1d ago)
+- curiosity:item-730-det000730 (last accessed 1d ago)
+- curiosity:item-830-det000830 (last accessed 1d ago)
+- curiosity:item-930-det000930 (last accessed 1d ago)
+
+### topic-31 (10 entries)
+- curiosity:item-31-det000031 (last accessed 1d ago)
+- curiosity:item-131-det000131 (last accessed 1d ago)
+- curiosity:item-231-det000231 (last accessed 1d ago)
+- curiosity:item-331-det000331 (last accessed 1d ago)
+- curiosity:item-431-det000431 (last accessed 1d ago)
+- curiosity:item-531-det000531 (last accessed 1d ago)
+- curiosity:item-631-det000631 (last accessed 1d ago)
+- curiosity:item-731-det000731 (last accessed 1d ago)
+- curiosity:item-831-det000831 (last accessed 1d ago)
+- curiosity:item-931-det000931 (last accessed 1d ago)
+
+### topic-32 (10 entries)
+- curiosity:item-32-det000032 (last accessed 1d ago)
+- curiosity:item-132-det000132 (last accessed 1d ago)
+- curiosity:item-232-det000232 (last accessed 1d ago)
+- curiosity:item-332-det000332 (last accessed 1d ago)
+- curiosity:item-432-det000432 (last accessed 1d ago)
+- curiosity:item-532-det000532 (last accessed 1d ago)
+- curiosity:item-632-det000632 (last accessed 1d ago)
+- curiosity:item-732-det000732 (last accessed 1d ago)
+- curiosity:item-832-det000832 (last accessed 1d ago)
+- curiosity:item-932-det000932 (last accessed 1d ago)
+
+### topic-33 (10 entries)
+- curiosity:item-33-det000033 (last accessed 1d ago)
+- curiosity:item-133-det000133 (last accessed 1d ago)
+- curiosity:item-233-det000233 (last accessed 1d ago)
+- curiosity:item-333-det000333 (last accessed 1d ago)
+- curiosity:item-433-det000433 (last accessed 1d ago)
+- curiosity:item-533-det000533 (last accessed 1d ago)
+- curiosity:item-633-det000633 (last accessed 1d ago)
+- curiosity:item-733-det000733 (last accessed 1d ago)
+- curiosity:item-833-det000833 (last accessed 1d ago)
+- curiosity:item-933-det000933 (last accessed 1d ago)
+
+### topic-34 (10 entries)
+- curiosity:item-34-det000034 (last accessed 1d ago)
+- curiosity:item-134-det000134 (last accessed 1d ago)
+- curiosity:item-234-det000234 (last accessed 1d ago)
+- curiosity:item-334-det000334 (last accessed 1d ago)
+- curiosity:item-434-det000434 (last accessed 1d ago)
+- curiosity:item-534-det000534 (last accessed 1d ago)
+- curiosity:item-634-det000634 (last accessed 1d ago)
+- curiosity:item-734-det000734 (last accessed 1d ago)
+- curiosity:item-834-det000834 (last accessed 1d ago)
+- curiosity:item-934-det000934 (last accessed 1d ago)
+
+### topic-35 (10 entries)
+- curiosity:item-35-det000035 (last accessed 1d ago)
+- curiosity:item-135-det000135 (last accessed 1d ago)
+- curiosity:item-235-det000235 (last accessed 1d ago)
+- curiosity:item-335-det000335 (last accessed 1d ago)
+- curiosity:item-435-det000435 (last accessed 1d ago)
+- curiosity:item-535-det000535 (last accessed 1d ago)
+- curiosity:item-635-det000635 (last accessed 1d ago)
+- curiosity:item-735-det000735 (last accessed 1d ago)
+- curiosity:item-835-det000835 (last accessed 1d ago)
+- curiosity:item-935-det000935 (last accessed 1d ago)
+
+### topic-36 (10 entries)
+- curiosity:item-36-det000036 (last accessed 1d ago)
+- curiosity:item-136-det000136 (last accessed 1d ago)
+- curiosity:item-236-det000236 (last accessed 1d ago)
+- curiosity:item-336-det000336 (last accessed 1d ago)
+- curiosity:item-436-det000436 (last accessed 1d ago)
+- curiosity:item-536-det000536 (last accessed 1d ago)
+- curiosity:item-636-det000636 (last accessed 1d ago)
+- curiosity:item-736-det000736 (last accessed 1d ago)
+- curiosity:item-836-det000836 (last accessed 1d ago)
+- curiosity:item-936-det000936 (last accessed 1d ago)
+
+### topic-37 (10 entries)
+- curiosity:item-37-det000037 (last accessed 1d ago)
+- curiosity:item-137-det000137 (last accessed 1d ago)
+- curiosity:item-237-det000237 (last accessed 1d ago)
+- curiosity:item-337-det000337 (last accessed 1d ago)
+- curiosity:item-437-det000437 (last accessed 1d ago)
+- curiosity:item-537-det000537 (last accessed 1d ago)
+- curiosity:item-637-det000637 (last accessed 1d ago)
+- curiosity:item-737-det000737 (last accessed 1d ago)
+- curiosity:item-837-det000837 (last accessed 1d ago)
+- curiosity:item-937-det000937 (last accessed 1d ago)
+
+### topic-38 (10 entries)
+- curiosity:item-38-det000038 (last accessed 1d ago)
+- curiosity:item-138-det000138 (last accessed 1d ago)
+- curiosity:item-238-det000238 (last accessed 1d ago)
+- curiosity:item-338-det000338 (last accessed 1d ago)
+- curiosity:item-438-det000438 (last accessed 1d ago)
+- curiosity:item-538-det000538 (last accessed 1d ago)
+- curiosity:item-638-det000638 (last accessed 1d ago)
+- curiosity:item-738-det000738 (last accessed 1d ago)
+- curiosity:item-838-det000838 (last accessed 1d ago)
+- curiosity:item-938-det000938 (last accessed 1d ago)
+
+### topic-39 (10 entries)
+- curiosity:item-39-det000039 (last accessed 1d ago)
+- curiosity:item-139-det000139 (last accessed 1d ago)
+- curiosity:item-239-det000239 (last accessed 1d ago)
+- curiosity:item-339-det000339 (last accessed 1d ago)
+- curiosity:item-439-det000439 (last accessed 1d ago)
+- curiosity:item-539-det000539 (last accessed 1d ago)
+- curiosity:item-639-det000639 (last accessed 1d ago)
+- curiosity:item-739-det000739 (last accessed 1d ago)
+- curiosity:item-839-det000839 (last accessed 1d ago)
+- curiosity:item-939-det000939 (last accessed 1d ago)
+
+### topic-4 (10 entries)
+- curiosity:item-4-det000004 (last accessed 1d ago)
+- curiosity:item-104-det000104 (last accessed 1d ago)
+- curiosity:item-204-det000204 (last accessed 1d ago)
+- curiosity:item-304-det000304 (last accessed 1d ago)
+- curiosity:item-404-det000404 (last accessed 1d ago)
+- curiosity:item-504-det000504 (last accessed 1d ago)
+- curiosity:item-604-det000604 (last accessed 1d ago)
+- curiosity:item-704-det000704 (last accessed 1d ago)
+- curiosity:item-804-det000804 (last accessed 1d ago)
+- curiosity:item-904-det000904 (last accessed 1d ago)
+
+### topic-40 (10 entries)
+- curiosity:item-40-det000040 (last accessed 1d ago)
+- curiosity:item-140-det000140 (last accessed 1d ago)
+- curiosity:item-240-det000240 (last accessed 1d ago)
+- curiosity:item-340-det000340 (last accessed 1d ago)
+- curiosity:item-440-det000440 (last accessed 1d ago)
+- curiosity:item-540-det000540 (last accessed 1d ago)
+- curiosity:item-640-det000640 (last accessed 1d ago)
+- curiosity:item-740-det000740 (last accessed 1d ago)
+- curiosity:item-840-det000840 (last accessed 1d ago)
+- curiosity:item-940-det000940 (last accessed 1d ago)
+
+### topic-41 (10 entries)
+- curiosity:item-41-det000041 (last accessed 1d ago)
+- curiosity:item-141-det000141 (last accessed 1d ago)
+- curiosity:item-241-det000241 (last accessed 1d ago)
+- curiosity:item-341-det000341 (last accessed 1d ago)
+- curiosity:item-441-det000441 (last accessed 1d ago)
+- curiosity:item-541-det000541 (last accessed 1d ago)
+- curiosity:item-641-det000641 (last accessed 1d ago)
+- curiosity:item-741-det000741 (last accessed 1d ago)
+- curiosity:item-841-det000841 (last accessed 1d ago)
+- curiosity:item-941-det000941 (last accessed 1d ago)
+
+### topic-42 (10 entries)
+- curiosity:item-42-det000042 (last accessed 1d ago)
+- curiosity:item-142-det000142 (last accessed 1d ago)
+- curiosity:item-242-det000242 (last accessed 1d ago)
+- curiosity:item-342-det000342 (last accessed 1d ago)
+- curiosity:item-442-det000442 (last accessed 1d ago)
+- curiosity:item-542-det000542 (last accessed 1d ago)
+- curiosity:item-642-det000642 (last accessed 1d ago)
+- curiosity:item-742-det000742 (last accessed 1d ago)
+- curiosity:item-842-det000842 (last accessed 1d ago)
+- curiosity:item-942-det000942 (last accessed 1d ago)
+
+### topic-43 (10 entries)
+- curiosity:item-43-det000043 (last accessed 1d ago)
+- curiosity:item-143-det000143 (last accessed 1d ago)
+- curiosity:item-243-det000243 (last accessed 1d ago)
+- curiosity:item-343-det000343 (last accessed 1d ago)
+- curiosity:item-443-det000443 (last accessed 1d ago)
+- curiosity:item-543-det000543 (last accessed 1d ago)
+- curiosity:item-643-det000643 (last accessed 1d ago)
+- curiosity:item-743-det000743 (last accessed 1d ago)
+- curiosity:item-843-det000843 (last accessed 1d ago)
+- curiosity:item-943-det000943 (last accessed 1d ago)
+
+### topic-44 (10 entries)
+- curiosity:item-44-det000044 (last accessed 1d ago)
+- curiosity:item-144-det000144 (last accessed 1d ago)
+- curiosity:item-244-det000244 (last accessed 1d ago)
+- curiosity:item-344-det000344 (last accessed 1d ago)
+- curiosity:item-444-det000444 (last accessed 1d ago)
+- curiosity:item-544-det000544 (last accessed 1d ago)
+- curiosity:item-644-det000644 (last accessed 1d ago)
+- curiosity:item-744-det000744 (last accessed 1d ago)
+- curiosity:item-844-det000844 (last accessed 1d ago)
+- curiosity:item-944-det000944 (last accessed 1d ago)
+
+### topic-45 (10 entries)
+- curiosity:item-45-det000045 (last accessed 1d ago)
+- curiosity:item-145-det000145 (last accessed 1d ago)
+- curiosity:item-245-det000245 (last accessed 1d ago)
+- curiosity:item-345-det000345 (last accessed 1d ago)
+- curiosity:item-445-det000445 (last accessed 1d ago)
+- curiosity:item-545-det000545 (last accessed 1d ago)
+- curiosity:item-645-det000645 (last accessed 1d ago)
+- curiosity:item-745-det000745 (last accessed 1d ago)
+- curiosity:item-845-det000845 (last accessed 1d ago)
+- curiosity:item-945-det000945 (last accessed 1d ago)
+
+### topic-46 (10 entries)
+- curiosity:item-46-det000046 (last accessed 1d ago)
+- curiosity:item-146-det000146 (last accessed 1d ago)
+- curiosity:item-246-det000246 (last accessed 1d ago)
+- curiosity:item-346-det000346 (last accessed 1d ago)
+- curiosity:item-446-det000446 (last accessed 1d ago)
+- curiosity:item-546-det000546 (last accessed 1d ago)
+- curiosity:item-646-det000646 (last accessed 1d ago)
+- curiosity:item-746-det000746 (last accessed 1d ago)
+- curiosity:item-846-det000846 (last accessed 1d ago)
+- curiosity:item-946-det000946 (last accessed 1d ago)
+
+### topic-47 (10 entries)
+- curiosity:item-47-det000047 (last accessed 1d ago)
+- curiosity:item-147-det000147 (last accessed 1d ago)
+- curiosity:item-247-det000247 (last accessed 1d ago)
+- curiosity:item-347-det000347 (last accessed 1d ago)
+- curiosity:item-447-det000447 (last accessed 1d ago)
+- curiosity:item-547-det000547 (last accessed 1d ago)
+- curiosity:item-647-det000647 (last accessed 1d ago)
+- curiosity:item-747-det000747 (last accessed 1d ago)
+- curiosity:item-847-det000847 (last accessed 1d ago)
+- curiosity:item-947-det000947 (last accessed 1d ago)
+
+### topic-48 (10 entries)
+- curiosity:item-48-det000048 (last accessed 1d ago)
+- curiosity:item-148-det000148 (last accessed 1d ago)
+- curiosity:item-248-det000248 (last accessed 1d ago)
+- curiosity:item-348-det000348 (last accessed 1d ago)
+- curiosity:item-448-det000448 (last accessed 1d ago)
+- curiosity:item-548-det000548 (last accessed 1d ago)
+- curiosity:item-648-det000648 (last accessed 1d ago)
+- curiosity:item-748-det000748 (last accessed 1d ago)
+- curiosity:item-848-det000848 (last accessed 1d ago)
+- curiosity:item-948-det000948 (last accessed 1d ago)
+
+### topic-49 (10 entries)
+- curiosity:item-49-det000049 (last accessed 1d ago)
+- curiosity:item-149-det000149 (last accessed 1d ago)
+- curiosity:item-249-det000249 (last accessed 1d ago)
+- curiosity:item-349-det000349 (last accessed 1d ago)
+- curiosity:item-449-det000449 (last accessed 1d ago)
+- curiosity:item-549-det000549 (last accessed 1d ago)
+- curiosity:item-649-det000649 (last accessed 1d ago)
+- curiosity:item-749-det000749 (last accessed 1d ago)
+- curiosity:item-849-det000849 (last accessed 1d ago)
+- curiosity:item-949-det000949 (last accessed 1d ago)
+
+### topic-5 (10 entries)
+- curiosity:item-5-det000005 (last accessed 1d ago)
+- curiosity:item-105-det000105 (last accessed 1d ago)
+- curiosity:item-205-det000205 (last accessed 1d ago)
+- curiosity:item-305-det000305 (last accessed 1d ago)
+- curiosity:item-405-det000405 (last accessed 1d ago)
+- curiosity:item-505-det000505 (last accessed 1d ago)
+- curiosity:item-605-det000605 (last accessed 1d ago)
+- curiosity:item-705-det000705 (last accessed 1d ago)
+- curiosity:item-805-det000805 (last accessed 1d ago)
+- curiosity:item-905-det000905 (last accessed 1d ago)
+
+### topic-50 (10 entries)
+- curiosity:item-50-det000050 (last accessed 1d ago)
+- curiosity:item-150-det000150 (last accessed 1d ago)
+- curiosity:item-250-det000250 (last accessed 1d ago)
+- curiosity:item-350-det000350 (last accessed 1d ago)
+- curiosity:item-450-det000450 (last accessed 1d ago)
+- curiosity:item-550-det000550 (last accessed 1d ago)
+- curiosity:item-650-det000650 (last accessed 1d ago)
+- curiosity:item-750-det000750 (last accessed 1d ago)
+- curiosity:item-850-det000850 (last accessed 1d ago)
+- curiosity:item-950-det000950 (last accessed 1d ago)
+
+### topic-51 (10 entries)
+- curiosity:item-51-det000051 (last accessed 1d ago)
+- curiosity:item-151-det000151 (last accessed 1d ago)
+- curiosity:item-251-det000251 (last accessed 1d ago)
+- curiosity:item-351-det000351 (last accessed 1d ago)
+- curiosity:item-451-det000451 (last accessed 1d ago)
+- curiosity:item-551-det000551 (last accessed 1d ago)
+- curiosity:item-651-det000651 (last accessed 1d ago)
+- curiosity:item-751-det000751 (last accessed 1d ago)
+- curiosity:item-851-det000851 (last accessed 1d ago)
+- curiosity:item-951-det000951 (last accessed 1d ago)
+
+### topic-52 (10 entries)
+- curiosity:item-52-det000052 (last accessed 1d ago)
+- curiosity:item-152-det000152 (last accessed 1d ago)
+- curiosity:item-252-det000252 (last accessed 1d ago)
+- curiosity:item-352-det000352 (last accessed 1d ago)
+- curiosity:item-452-det000452 (last accessed 1d ago)
+- curiosity:item-552-det000552 (last accessed 1d ago)
+- curiosity:item-652-det000652 (last accessed 1d ago)
+- curiosity:item-752-det000752 (last accessed 1d ago)
+- curiosity:item-852-det000852 (last accessed 1d ago)
+- curiosity:item-952-det000952 (last accessed 1d ago)
+
+### topic-53 (10 entries)
+- curiosity:item-53-det000053 (last accessed 1d ago)
+- curiosity:item-153-det000153 (last accessed 1d ago)
+- curiosity:item-253-det000253 (last accessed 1d ago)
+- curiosity:item-353-det000353 (last accessed 1d ago)
+- curiosity:item-453-det000453 (last accessed 1d ago)
+- curiosity:item-553-det000553 (last accessed 1d ago)
+- curiosity:item-653-det000653 (last accessed 1d ago)
+- curiosity:item-753-det000753 (last accessed 1d ago)
+- curiosity:item-853-det000853 (last accessed 1d ago)
+- curiosity:item-953-det000953 (last accessed 1d ago)
+
+### topic-54 (10 entries)
+- curiosity:item-54-det000054 (last accessed 1d ago)
+- curiosity:item-154-det000154 (last accessed 1d ago)
+- curiosity:item-254-det000254 (last accessed 1d ago)
+- curiosity:item-354-det000354 (last accessed 1d ago)
+- curiosity:item-454-det000454 (last accessed 1d ago)
+- curiosity:item-554-det000554 (last accessed 1d ago)
+- curiosity:item-654-det000654 (last accessed 1d ago)
+- curiosity:item-754-det000754 (last accessed 1d ago)
+- curiosity:item-854-det000854 (last accessed 1d ago)
+- curiosity:item-954-det000954 (last accessed 1d ago)
+
+### topic-55 (10 entries)
+- curiosity:item-55-det000055 (last accessed 1d ago)
+- curiosity:item-155-det000155 (last accessed 1d ago)
+- curiosity:item-255-det000255 (last accessed 1d ago)
+- curiosity:item-355-det000355 (last accessed 1d ago)
+- curiosity:item-455-det000455 (last accessed 1d ago)
+- curiosity:item-555-det000555 (last accessed 1d ago)
+- curiosity:item-655-det000655 (last accessed 1d ago)
+- curiosity:item-755-det000755 (last accessed 1d ago)
+- curiosity:item-855-det000855 (last accessed 1d ago)
+- curiosity:item-955-det000955 (last accessed 1d ago)
+
+### topic-56 (10 entries)
+- curiosity:item-56-det000056 (last accessed 1d ago)
+- curiosity:item-156-det000156 (last accessed 1d ago)
+- curiosity:item-256-det000256 (last accessed 1d ago)
+- curiosity:item-356-det000356 (last accessed 1d ago)
+- curiosity:item-456-det000456 (last accessed 1d ago)
+- curiosity:item-556-det000556 (last accessed 1d ago)
+- curiosity:item-656-det000656 (last accessed 1d ago)
+- curiosity:item-756-det000756 (last accessed 1d ago)
+- curiosity:item-856-det000856 (last accessed 1d ago)
+- curiosity:item-956-det000956 (last accessed 1d ago)
+
+### topic-57 (10 entries)
+- curiosity:item-57-det000057 (last accessed 1d ago)
+- curiosity:item-157-det000157 (last accessed 1d ago)
+- curiosity:item-257-det000257 (last accessed 1d ago)
+- curiosity:item-357-det000357 (last accessed 1d ago)
+- curiosity:item-457-det000457 (last accessed 1d ago)
+- curiosity:item-557-det000557 (last accessed 1d ago)
+- curiosity:item-657-det000657 (last accessed 1d ago)
+- curiosity:item-757-det000757 (last accessed 1d ago)
+- curiosity:item-857-det000857 (last accessed 1d ago)
+- curiosity:item-957-det000957 (last accessed 1d ago)
+
+### topic-58 (10 entries)
+- curiosity:item-58-det000058 (last accessed 1d ago)
+- curiosity:item-158-det000158 (last accessed 1d ago)
+- curiosity:item-258-det000258 (last accessed 1d ago)
+- curiosity:item-358-det000358 (last accessed 1d ago)
+- curiosity:item-458-det000458 (last accessed 1d ago)
+- curiosity:item-558-det000558 (last accessed 1d ago)
+- curiosity:item-658-det000658 (last accessed 1d ago)
+- curiosity:item-758-det000758 (last accessed 1d ago)
+- curiosity:item-858-det000858 (last accessed 1d ago)
+- curiosity:item-958-det000958 (last accessed 1d ago)
+
+### topic-59 (10 entries)
+- curiosity:item-59-det000059 (last accessed 1d ago)
+- curiosity:item-159-det000159 (last accessed 1d ago)
+- curiosity:item-259-det000259 (last accessed 1d ago)
+- curiosity:item-359-det000359 (last accessed 1d ago)
+- curiosity:item-459-det000459 (last accessed 1d ago)
+- curiosity:item-559-det000559 (last accessed 1d ago)
+- curiosity:item-659-det000659 (last accessed 1d ago)
+- curiosity:item-759-det000759 (last accessed 1d ago)
+- curiosity:item-859-det000859 (last accessed 1d ago)
+- curiosity:item-959-det000959 (last accessed 1d ago)
+
+### topic-6 (10 entries)
+- curiosity:item-6-det000006 (last accessed 1d ago)
+- curiosity:item-106-det000106 (last accessed 1d ago)
+- curiosity:item-206-det000206 (last accessed 1d ago)
+- curiosity:item-306-det000306 (last accessed 1d ago)
+- curiosity:item-406-det000406 (last accessed 1d ago)
+- curiosity:item-506-det000506 (last accessed 1d ago)
+- curiosity:item-606-det000606 (last accessed 1d ago)
+- curiosity:item-706-det000706 (last accessed 1d ago)
+- curiosity:item-806-det000806 (last accessed 1d ago)
+- curiosity:item-906-det000906 (last accessed 1d ago)
+
+### topic-60 (10 entries)
+- curiosity:item-60-det000060 (last accessed 1d ago)
+- curiosity:item-160-det000160 (last accessed 1d ago)
+- curiosity:item-260-det000260 (last accessed 1d ago)
+- curiosity:item-360-det000360 (last accessed 1d ago)
+- curiosity:item-460-det000460 (last accessed 1d ago)
+- curiosity:item-560-det000560 (last accessed 1d ago)
+- curiosity:item-660-det000660 (last accessed 1d ago)
+- curiosity:item-760-det000760 (last accessed 1d ago)
+- curiosity:item-860-det000860 (last accessed 1d ago)
+- curiosity:item-960-det000960 (last accessed 1d ago)
+
+### topic-61 (10 entries)
+- curiosity:item-61-det000061 (last accessed 1d ago)
+- curiosity:item-161-det000161 (last accessed 1d ago)
+- curiosity:item-261-det000261 (last accessed 1d ago)
+- curiosity:item-361-det000361 (last accessed 1d ago)
+- curiosity:item-461-det000461 (last accessed 1d ago)
+- curiosity:item-561-det000561 (last accessed 1d ago)
+- curiosity:item-661-det000661 (last accessed 1d ago)
+- curiosity:item-761-det000761 (last accessed 1d ago)
+- curiosity:item-861-det000861 (last accessed 1d ago)
+- curiosity:item-961-det000961 (last accessed 1d ago)
+
+### topic-62 (10 entries)
+- curiosity:item-62-det000062 (last accessed 1d ago)
+- curiosity:item-162-det000162 (last accessed 1d ago)
+- curiosity:item-262-det000262 (last accessed 1d ago)
+- curiosity:item-362-det000362 (last accessed 1d ago)
+- curiosity:item-462-det000462 (last accessed 1d ago)
+- curiosity:item-562-det000562 (last accessed 1d ago)
+- curiosity:item-662-det000662 (last accessed 1d ago)
+- curiosity:item-762-det000762 (last accessed 1d ago)
+- curiosity:item-862-det000862 (last accessed 1d ago)
+- curiosity:item-962-det000962 (last accessed 1d ago)
+
+### topic-63 (10 entries)
+- curiosity:item-63-det000063 (last accessed 1d ago)
+- curiosity:item-163-det000163 (last accessed 1d ago)
+- curiosity:item-263-det000263 (last accessed 1d ago)
+- curiosity:item-363-det000363 (last accessed 1d ago)
+- curiosity:item-463-det000463 (last accessed 1d ago)
+- curiosity:item-563-det000563 (last accessed 1d ago)
+- curiosity:item-663-det000663 (last accessed 1d ago)
+- curiosity:item-763-det000763 (last accessed 1d ago)
+- curiosity:item-863-det000863 (last accessed 1d ago)
+- curiosity:item-963-det000963 (last accessed 1d ago)
+
+### topic-64 (10 entries)
+- curiosity:item-64-det000064 (last accessed 1d ago)
+- curiosity:item-164-det000164 (last accessed 1d ago)
+- curiosity:item-264-det000264 (last accessed 1d ago)
+- curiosity:item-364-det000364 (last accessed 1d ago)
+- curiosity:item-464-det000464 (last accessed 1d ago)
+- curiosity:item-564-det000564 (last accessed 1d ago)
+- curiosity:item-664-det000664 (last accessed 1d ago)
+- curiosity:item-764-det000764 (last accessed 1d ago)
+- curiosity:item-864-det000864 (last accessed 1d ago)
+- curiosity:item-964-det000964 (last accessed 1d ago)
+
+### topic-65 (10 entries)
+- curiosity:item-65-det000065 (last accessed 1d ago)
+- curiosity:item-165-det000165 (last accessed 1d ago)
+- curiosity:item-265-det000265 (last accessed 1d ago)
+- curiosity:item-365-det000365 (last accessed 1d ago)
+- curiosity:item-465-det000465 (last accessed 1d ago)
+- curiosity:item-565-det000565 (last accessed 1d ago)
+- curiosity:item-665-det000665 (last accessed 1d ago)
+- curiosity:item-765-det000765 (last accessed 1d ago)
+- curiosity:item-865-det000865 (last accessed 1d ago)
+- curiosity:item-965-det000965 (last accessed 1d ago)
+
+### topic-66 (10 entries)
+- curiosity:item-66-det000066 (last accessed 1d ago)
+- curiosity:item-166-det000166 (last accessed 1d ago)
+- curiosity:item-266-det000266 (last accessed 1d ago)
+- curiosity:item-366-det000366 (last accessed 1d ago)
+- curiosity:item-466-det000466 (last accessed 1d ago)
+- curiosity:item-566-det000566 (last accessed 1d ago)
+- curiosity:item-666-det000666 (last accessed 1d ago)
+- curiosity:item-766-det000766 (last accessed 1d ago)
+- curiosity:item-866-det000866 (last accessed 1d ago)
+- curiosity:item-966-det000966 (last accessed 1d ago)
+
+### topic-67 (10 entries)
+- curiosity:item-67-det000067 (last accessed 1d ago)
+- curiosity:item-167-det000167 (last accessed 1d ago)
+- curiosity:item-267-det000267 (last accessed 1d ago)
+- curiosity:item-367-det000367 (last accessed 1d ago)
+- curiosity:item-467-det000467 (last accessed 1d ago)
+- curiosity:item-567-det000567 (last accessed 1d ago)
+- curiosity:item-667-det000667 (last accessed 1d ago)
+- curiosity:item-767-det000767 (last accessed 1d ago)
+- curiosity:item-867-det000867 (last accessed 1d ago)
+- curiosity:item-967-det000967 (last accessed 1d ago)
+
+### topic-68 (10 entries)
+- curiosity:item-68-det000068 (last accessed 1d ago)
+- curiosity:item-168-det000168 (last accessed 1d ago)
+- curiosity:item-268-det000268 (last accessed 1d ago)
+- curiosity:item-368-det000368 (last accessed 1d ago)
+- curiosity:item-468-det000468 (last accessed 1d ago)
+- curiosity:item-568-det000568 (last accessed 1d ago)
+- curiosity:item-668-det000668 (last accessed 1d ago)
+- curiosity:item-768-det000768 (last accessed 1d ago)
+- curiosity:item-868-det000868 (last accessed 1d ago)
+- curiosity:item-968-det000968 (last accessed 1d ago)
+
+### topic-69 (10 entries)
+- curiosity:item-69-det000069 (last accessed 1d ago)
+- curiosity:item-169-det000169 (last accessed 1d ago)
+- curiosity:item-269-det000269 (last accessed 1d ago)
+- curiosity:item-369-det000369 (last accessed 1d ago)
+- curiosity:item-469-det000469 (last accessed 1d ago)
+- curiosity:item-569-det000569 (last accessed 1d ago)
+- curiosity:item-669-det000669 (last accessed 1d ago)
+- curiosity:item-769-det000769 (last accessed 1d ago)
+- curiosity:item-869-det000869 (last accessed 1d ago)
+- curiosity:item-969-det000969 (last accessed 1d ago)
+
+### topic-7 (10 entries)
+- curiosity:item-7-det000007 (last accessed 1d ago)
+- curiosity:item-107-det000107 (last accessed 1d ago)
+- curiosity:item-207-det000207 (last accessed 1d ago)
+- curiosity:item-307-det000307 (last accessed 1d ago)
+- curiosity:item-407-det000407 (last accessed 1d ago)
+- curiosity:item-507-det000507 (last accessed 1d ago)
+- curiosity:item-607-det000607 (last accessed 1d ago)
+- curiosity:item-707-det000707 (last accessed 1d ago)
+- curiosity:item-807-det000807 (last accessed 1d ago)
+- curiosity:item-907-det000907 (last accessed 1d ago)
+
+### topic-70 (10 entries)
+- curiosity:item-70-det000070 (last accessed 1d ago)
+- curiosity:item-170-det000170 (last accessed 1d ago)
+- curiosity:item-270-det000270 (last accessed 1d ago)
+- curiosity:item-370-det000370 (last accessed 1d ago)
+- curiosity:item-470-det000470 (last accessed 1d ago)
+- curiosity:item-570-det000570 (last accessed 1d ago)
+- curiosity:item-670-det000670 (last accessed 1d ago)
+- curiosity:item-770-det000770 (last accessed 1d ago)
+- curiosity:item-870-det000870 (last accessed 1d ago)
+- curiosity:item-970-det000970 (last accessed 1d ago)
+
+### topic-71 (10 entries)
+- curiosity:item-71-det000071 (last accessed 1d ago)
+- curiosity:item-171-det000171 (last accessed 1d ago)
+- curiosity:item-271-det000271 (last accessed 1d ago)
+- curiosity:item-371-det000371 (last accessed 1d ago)
+- curiosity:item-471-det000471 (last accessed 1d ago)
+- curiosity:item-571-det000571 (last accessed 1d ago)
+- curiosity:item-671-det000671 (last accessed 1d ago)
+- curiosity:item-771-det000771 (last accessed 1d ago)
+- curiosity:item-871-det000871 (last accessed 1d ago)
+- curiosity:item-971-det000971 (last accessed 1d ago)
+
+### topic-72 (10 entries)
+- curiosity:item-72-det000072 (last accessed 1d ago)
+- curiosity:item-172-det000172 (last accessed 1d ago)
+- curiosity:item-272-det000272 (last accessed 1d ago)
+- curiosity:item-372-det000372 (last accessed 1d ago)
+- curiosity:item-472-det000472 (last accessed 1d ago)
+- curiosity:item-572-det000572 (last accessed 1d ago)
+- curiosity:item-672-det000672 (last accessed 1d ago)
+- curiosity:item-772-det000772 (last accessed 1d ago)
+- curiosity:item-872-det000872 (last accessed 1d ago)
+- curiosity:item-972-det000972 (last accessed 1d ago)
+
+### topic-73 (10 entries)
+- curiosity:item-73-det000073 (last accessed 1d ago)
+- curiosity:item-173-det000173 (last accessed 1d ago)
+- curiosity:item-273-det000273 (last accessed 1d ago)
+- curiosity:item-373-det000373 (last accessed 1d ago)
+- curiosity:item-473-det000473 (last accessed 1d ago)
+- curiosity:item-573-det000573 (last accessed 1d ago)
+- curiosity:item-673-det000673 (last accessed 1d ago)
+- curiosity:item-773-det000773 (last accessed 1d ago)
+- curiosity:item-873-det000873 (last accessed 1d ago)
+- curiosity:item-973-det000973 (last accessed 1d ago)
+
+### topic-74 (10 entries)
+- curiosity:item-74-det000074 (last accessed 1d ago)
+- curiosity:item-174-det000174 (last accessed 1d ago)
+- curiosity:item-274-det000274 (last accessed 1d ago)
+- curiosity:item-374-det000374 (last accessed 1d ago)
+- curiosity:item-474-det000474 (last accessed 1d ago)
+- curiosity:item-574-det000574 (last accessed 1d ago)
+- curiosity:item-674-det000674 (last accessed 1d ago)
+- curiosity:item-774-det000774 (last accessed 1d ago)
+- curiosity:item-874-det000874 (last accessed 1d ago)
+- curiosity:item-974-det000974 (last accessed 1d ago)
+
+### topic-75 (10 entries)
+- curiosity:item-75-det000075 (last accessed 1d ago)
+- curiosity:item-175-det000175 (last accessed 1d ago)
+- curiosity:item-275-det000275 (last accessed 1d ago)
+- curiosity:item-375-det000375 (last accessed 1d ago)
+- curiosity:item-475-det000475 (last accessed 1d ago)
+- curiosity:item-575-det000575 (last accessed 1d ago)
+- curiosity:item-675-det000675 (last accessed 1d ago)
+- curiosity:item-775-det000775 (last accessed 1d ago)
+- curiosity:item-875-det000875 (last accessed 1d ago)
+- curiosity:item-975-det000975 (last accessed 1d ago)
+
+### topic-76 (10 entries)
+- curiosity:item-76-det000076 (last accessed 1d ago)
+- curiosity:item-176-det000176 (last accessed 1d ago)
+- curiosity:item-276-det000276 (last accessed 1d ago)
+- curiosity:item-376-det000376 (last accessed 1d ago)
+- curiosity:item-476-det000476 (last accessed 1d ago)
+- curiosity:item-576-det000576 (last accessed 1d ago)
+- curiosity:item-676-det000676 (last accessed 1d ago)
+- curiosity:item-776-det000776 (last accessed 1d ago)
+- curiosity:item-876-det000876 (last accessed 1d ago)
+- curiosity:item-976-det000976 (last accessed 1d ago)
+
+### topic-77 (10 entries)
+- curiosity:item-77-det000077 (last accessed 1d ago)
+- curiosity:item-177-det000177 (last accessed 1d ago)
+- curiosity:item-277-det000277 (last accessed 1d ago)
+- curiosity:item-377-det000377 (last accessed 1d ago)
+- curiosity:item-477-det000477 (last accessed 1d ago)
+- curiosity:item-577-det000577 (last accessed 1d ago)
+- curiosity:item-677-det000677 (last accessed 1d ago)
+- curiosity:item-777-det000777 (last accessed 1d ago)
+- curiosity:item-877-det000877 (last accessed 1d ago)
+- curiosity:item-977-det000977 (last accessed 1d ago)
+
+### topic-78 (10 entries)
+- curiosity:item-78-det000078 (last accessed 1d ago)
+- curiosity:item-178-det000178 (last accessed 1d ago)
+- curiosity:item-278-det000278 (last accessed 1d ago)
+- curiosity:item-378-det000378 (last accessed 1d ago)
+- curiosity:item-478-det000478 (last accessed 1d ago)
+- curiosity:item-578-det000578 (last accessed 1d ago)
+- curiosity:item-678-det000678 (last accessed 1d ago)
+- curiosity:item-778-det000778 (last accessed 1d ago)
+- curiosity:item-878-det000878 (last accessed 1d ago)
+- curiosity:item-978-det000978 (last accessed 1d ago)
+
+### topic-79 (10 entries)
+- curiosity:item-79-det000079 (last accessed 1d ago)
+- curiosity:item-179-det000179 (last accessed 1d ago)
+- curiosity:item-279-det000279 (last accessed 1d ago)
+- curiosity:item-379-det000379 (last accessed 1d ago)
+- curiosity:item-479-det000479 (last accessed 1d ago)
+- curiosity:item-579-det000579 (last accessed 1d ago)
+- curiosity:item-679-det000679 (last accessed 1d ago)
+- curiosity:item-779-det000779 (last accessed 1d ago)
+- curiosity:item-879-det000879 (last accessed 1d ago)
+- curiosity:item-979-det000979 (last accessed 1d ago)
+
+### topic-8 (10 entries)
+- curiosity:item-8-det000008 (last accessed 1d ago)
+- curiosity:item-108-det000108 (last accessed 1d ago)
+- curiosity:item-208-det000208 (last accessed 1d ago)
+- curiosity:item-308-det000308 (last accessed 1d ago)
+- curiosity:item-408-det000408 (last accessed 1d ago)
+- curiosity:item-508-det000508 (last accessed 1d ago)
+- curiosity:item-608-det000608 (last accessed 1d ago)
+- curiosity:item-708-det000708 (last accessed 1d ago)
+- curiosity:item-808-det000808 (last accessed 1d ago)
+- curiosity:item-908-det000908 (last accessed 1d ago)
+
+### topic-80 (10 entries)
+- curiosity:item-80-det000080 (last accessed 1d ago)
+- curiosity:item-180-det000180 (last accessed 1d ago)
+- curiosity:item-280-det000280 (last accessed 1d ago)
+- curiosity:item-380-det000380 (last accessed 1d ago)
+- curiosity:item-480-det000480 (last accessed 1d ago)
+- curiosity:item-580-det000580 (last accessed 1d ago)
+- curiosity:item-680-det000680 (last accessed 1d ago)
+- curiosity:item-780-det000780 (last accessed 1d ago)
+- curiosity:item-880-det000880 (last accessed 1d ago)
+- curiosity:item-980-det000980 (last accessed 1d ago)
+
+### topic-81 (10 entries)
+- curiosity:item-81-det000081 (last accessed 1d ago)
+- curiosity:item-181-det000181 (last accessed 1d ago)
+- curiosity:item-281-det000281 (last accessed 1d ago)
+- curiosity:item-381-det000381 (last accessed 1d ago)
+- curiosity:item-481-det000481 (last accessed 1d ago)
+- curiosity:item-581-det000581 (last accessed 1d ago)
+- curiosity:item-681-det000681 (last accessed 1d ago)
+- curiosity:item-781-det000781 (last accessed 1d ago)
+- curiosity:item-881-det000881 (last accessed 1d ago)
+- curiosity:item-981-det000981 (last accessed 1d ago)
+
+### topic-82 (10 entries)
+- curiosity:item-82-det000082 (last accessed 1d ago)
+- curiosity:item-182-det000182 (last accessed 1d ago)
+- curiosity:item-282-det000282 (last accessed 1d ago)
+- curiosity:item-382-det000382 (last accessed 1d ago)
+- curiosity:item-482-det000482 (last accessed 1d ago)
+- curiosity:item-582-det000582 (last accessed 1d ago)
+- curiosity:item-682-det000682 (last accessed 1d ago)
+- curiosity:item-782-det000782 (last accessed 1d ago)
+- curiosity:item-882-det000882 (last accessed 1d ago)
+- curiosity:item-982-det000982 (last accessed 1d ago)
+
+### topic-83 (10 entries)
+- curiosity:item-83-det000083 (last accessed 1d ago)
+- curiosity:item-183-det000183 (last accessed 1d ago)
+- curiosity:item-283-det000283 (last accessed 1d ago)
+- curiosity:item-383-det000383 (last accessed 1d ago)
+- curiosity:item-483-det000483 (last accessed 1d ago)
+- curiosity:item-583-det000583 (last accessed 1d ago)
+- curiosity:item-683-det000683 (last accessed 1d ago)
+- curiosity:item-783-det000783 (last accessed 1d ago)
+- curiosity:item-883-det000883 (last accessed 1d ago)
+- curiosity:item-983-det000983 (last accessed 1d ago)
+
+### topic-84 (10 entries)
+- curiosity:item-84-det000084 (last accessed 1d ago)
+- curiosity:item-184-det000184 (last accessed 1d ago)
+- curiosity:item-284-det000284 (last accessed 1d ago)
+- curiosity:item-384-det000384 (last accessed 1d ago)
+- curiosity:item-484-det000484 (last accessed 1d ago)
+- curiosity:item-584-det000584 (last accessed 1d ago)
+- curiosity:item-684-det000684 (last accessed 1d ago)
+- curiosity:item-784-det000784 (last accessed 1d ago)
+- curiosity:item-884-det000884 (last accessed 1d ago)
+- curiosity:item-984-det000984 (last accessed 1d ago)
+
+### topic-85 (10 entries)
+- curiosity:item-85-det000085 (last accessed 1d ago)
+- curiosity:item-185-det000185 (last accessed 1d ago)
+- curiosity:item-285-det000285 (last accessed 1d ago)
+- curiosity:item-385-det000385 (last accessed 1d ago)
+- curiosity:item-485-det000485 (last accessed 1d ago)
+- curiosity:item-585-det000585 (last accessed 1d ago)
+- curiosity:item-685-det000685 (last accessed 1d ago)
+- curiosity:item-785-det000785 (last accessed 1d ago)
+- curiosity:item-885-det000885 (last accessed 1d ago)
+- curiosity:item-985-det000985 (last accessed 1d ago)
+
+### topic-86 (10 entries)
+- curiosity:item-86-det000086 (last accessed 1d ago)
+- curiosity:item-186-det000186 (last accessed 1d ago)
+- curiosity:item-286-det000286 (last accessed 1d ago)
+- curiosity:item-386-det000386 (last accessed 1d ago)
+- curiosity:item-486-det000486 (last accessed 1d ago)
+- curiosity:item-586-det000586 (last accessed 1d ago)
+- curiosity:item-686-det000686 (last accessed 1d ago)
+- curiosity:item-786-det000786 (last accessed 1d ago)
+- curiosity:item-886-det000886 (last accessed 1d ago)
+- curiosity:item-986-det000986 (last accessed 1d ago)
+
+### topic-87 (10 entries)
+- curiosity:item-87-det000087 (last accessed 1d ago)
+- curiosity:item-187-det000187 (last accessed 1d ago)
+- curiosity:item-287-det000287 (last accessed 1d ago)
+- curiosity:item-387-det000387 (last accessed 1d ago)
+- curiosity:item-487-det000487 (last accessed 1d ago)
+- curiosity:item-587-det000587 (last accessed 1d ago)
+- curiosity:item-687-det000687 (last accessed 1d ago)
+- curiosity:item-787-det000787 (last accessed 1d ago)
+- curiosity:item-887-det000887 (last accessed 1d ago)
+- curiosity:item-987-det000987 (last accessed 1d ago)
+
+### topic-88 (10 entries)
+- curiosity:item-88-det000088 (last accessed 1d ago)
+- curiosity:item-188-det000188 (last accessed 1d ago)
+- curiosity:item-288-det000288 (last accessed 1d ago)
+- curiosity:item-388-det000388 (last accessed 1d ago)
+- curiosity:item-488-det000488 (last accessed 1d ago)
+- curiosity:item-588-det000588 (last accessed 1d ago)
+- curiosity:item-688-det000688 (last accessed 1d ago)
+- curiosity:item-788-det000788 (last accessed 1d ago)
+- curiosity:item-888-det000888 (last accessed 1d ago)
+- curiosity:item-988-det000988 (last accessed 1d ago)
+
+### topic-89 (10 entries)
+- curiosity:item-89-det000089 (last accessed 1d ago)
+- curiosity:item-189-det000189 (last accessed 1d ago)
+- curiosity:item-289-det000289 (last accessed 1d ago)
+- curiosity:item-389-det000389 (last accessed 1d ago)
+- curiosity:item-489-det000489 (last accessed 1d ago)
+- curiosity:item-589-det000589 (last accessed 1d ago)
+- curiosity:item-689-det000689 (last accessed 1d ago)
+- curiosity:item-789-det000789 (last accessed 1d ago)
+- curiosity:item-889-det000889 (last accessed 1d ago)
+- curiosity:item-989-det000989 (last accessed 1d ago)
+
+### topic-9 (10 entries)
+- curiosity:item-9-det000009 (last accessed 1d ago)
+- curiosity:item-109-det000109 (last accessed 1d ago)
+- curiosity:item-209-det000209 (last accessed 1d ago)
+- curiosity:item-309-det000309 (last accessed 1d ago)
+- curiosity:item-409-det000409 (last accessed 1d ago)
+- curiosity:item-509-det000509 (last accessed 1d ago)
+- curiosity:item-609-det000609 (last accessed 1d ago)
+- curiosity:item-709-det000709 (last accessed 1d ago)
+- curiosity:item-809-det000809 (last accessed 1d ago)
+- curiosity:item-909-det000909 (last accessed 1d ago)
+
+### topic-90 (10 entries)
+- curiosity:item-90-det000090 (last accessed 1d ago)
+- curiosity:item-190-det000190 (last accessed 1d ago)
+- curiosity:item-290-det000290 (last accessed 1d ago)
+- curiosity:item-390-det000390 (last accessed 1d ago)
+- curiosity:item-490-det000490 (last accessed 1d ago)
+- curiosity:item-590-det000590 (last accessed 1d ago)
+- curiosity:item-690-det000690 (last accessed 1d ago)
+- curiosity:item-790-det000790 (last accessed 1d ago)
+- curiosity:item-890-det000890 (last accessed 1d ago)
+- curiosity:item-990-det000990 (last accessed 1d ago)
+
+### topic-91 (10 entries)
+- curiosity:item-91-det000091 (last accessed 1d ago)
+- curiosity:item-191-det000191 (last accessed 1d ago)
+- curiosity:item-291-det000291 (last accessed 1d ago)
+- curiosity:item-391-det000391 (last accessed 1d ago)
+- curiosity:item-491-det000491 (last accessed 1d ago)
+- curiosity:item-591-det000591 (last accessed 1d ago)
+- curiosity:item-691-det000691 (last accessed 1d ago)
+- curiosity:item-791-det000791 (last accessed 1d ago)
+- curiosity:item-891-det000891 (last accessed 1d ago)
+- curiosity:item-991-det000991 (last accessed 1d ago)
+
+### topic-92 (10 entries)
+- curiosity:item-92-det000092 (last accessed 1d ago)
+- curiosity:item-192-det000192 (last accessed 1d ago)
+- curiosity:item-292-det000292 (last accessed 1d ago)
+- curiosity:item-392-det000392 (last accessed 1d ago)
+- curiosity:item-492-det000492 (last accessed 1d ago)
+- curiosity:item-592-det000592 (last accessed 1d ago)
+- curiosity:item-692-det000692 (last accessed 1d ago)
+- curiosity:item-792-det000792 (last accessed 1d ago)
+- curiosity:item-892-det000892 (last accessed 1d ago)
+- curiosity:item-992-det000992 (last accessed 1d ago)
+
+### topic-93 (10 entries)
+- curiosity:item-93-det000093 (last accessed 1d ago)
+- curiosity:item-193-det000193 (last accessed 1d ago)
+- curiosity:item-293-det000293 (last accessed 1d ago)
+- curiosity:item-393-det000393 (last accessed 1d ago)
+- curiosity:item-493-det000493 (last accessed 1d ago)
+- curiosity:item-593-det000593 (last accessed 1d ago)
+- curiosity:item-693-det000693 (last accessed 1d ago)
+- curiosity:item-793-det000793 (last accessed 1d ago)
+- curiosity:item-893-det000893 (last accessed 1d ago)
+- curiosity:item-993-det000993 (last accessed 1d ago)
+
+### topic-94 (10 entries)
+- curiosity:item-94-det000094 (last accessed 1d ago)
+- curiosity:item-194-det000194 (last accessed 1d ago)
+- curiosity:item-294-det000294 (last accessed 1d ago)
+- curiosity:item-394-det000394 (last accessed 1d ago)
+- curiosity:item-494-det000494 (last accessed 1d ago)
+- curiosity:item-594-det000594 (last accessed 1d ago)
+- curiosity:item-694-det000694 (last accessed 1d ago)
+- curiosity:item-794-det000794 (last accessed 1d ago)
+- curiosity:item-894-det000894 (last accessed 1d ago)
+- curiosity:item-994-det000994 (last accessed 1d ago)
+
+### topic-95 (10 entries)
+- curiosity:item-95-det000095 (last accessed 1d ago)
+- curiosity:item-195-det000195 (last accessed 1d ago)
+- curiosity:item-295-det000295 (last accessed 1d ago)
+- curiosity:item-395-det000395 (last accessed 1d ago)
+- curiosity:item-495-det000495 (last accessed 1d ago)
+- curiosity:item-595-det000595 (last accessed 1d ago)
+- curiosity:item-695-det000695 (last accessed 1d ago)
+- curiosity:item-795-det000795 (last accessed 1d ago)
+- curiosity:item-895-det000895 (last accessed 1d ago)
+- curiosity:item-995-det000995 (last accessed 1d ago)
+
+### topic-96 (10 entries)
+- curiosity:item-96-det000096 (last accessed 1d ago)
+- curiosity:item-196-det000196 (last accessed 1d ago)
+- curiosity:item-296-det000296 (last accessed 1d ago)
+- curiosity:item-396-det000396 (last accessed 1d ago)
+- curiosity:item-496-det000496 (last accessed 1d ago)
+- curiosity:item-596-det000596 (last accessed 1d ago)
+- curiosity:item-696-det000696 (last accessed 1d ago)
+- curiosity:item-796-det000796 (last accessed 1d ago)
+- curiosity:item-896-det000896 (last accessed 1d ago)
+- curiosity:item-996-det000996 (last accessed 1d ago)
+
+### topic-97 (10 entries)
+- curiosity:item-97-det000097 (last accessed 1d ago)
+- curiosity:item-197-det000197 (last accessed 1d ago)
+- curiosity:item-297-det000297 (last accessed 1d ago)
+- curiosity:item-397-det000397 (last accessed 1d ago)
+- curiosity:item-497-det000497 (last accessed 1d ago)
+- curiosity:item-597-det000597 (last accessed 1d ago)
+- curiosity:item-697-det000697 (last accessed 1d ago)
+- curiosity:item-797-det000797 (last accessed 1d ago)
+- curiosity:item-897-det000897 (last accessed 1d ago)
+- curiosity:item-997-det000997 (last accessed 1d ago)
+
+### topic-98 (10 entries)
+- curiosity:item-98-det000098 (last accessed 1d ago)
+- curiosity:item-198-det000198 (last accessed 1d ago)
+- curiosity:item-298-det000298 (last accessed 1d ago)
+- curiosity:item-398-det000398 (last accessed 1d ago)
+- curiosity:item-498-det000498 (last accessed 1d ago)
+- curiosity:item-598-det000598 (last accessed 1d ago)
+- curiosity:item-698-det000698 (last accessed 1d ago)
+- curiosity:item-798-det000798 (last accessed 1d ago)
+- curiosity:item-898-det000898 (last accessed 1d ago)
+- curiosity:item-998-det000998 (last accessed 1d ago)
+
+### topic-99 (10 entries)
+- curiosity:item-99-det000099 (last accessed 1d ago)
+- curiosity:item-199-det000199 (last accessed 1d ago)
+- curiosity:item-299-det000299 (last accessed 1d ago)
+- curiosity:item-399-det000399 (last accessed 1d ago)
+- curiosity:item-499-det000499 (last accessed 1d ago)
+- curiosity:item-599-det000599 (last accessed 1d ago)
+- curiosity:item-699-det000699 (last accessed 1d ago)
+- curiosity:item-799-det000799 (last accessed 1d ago)
+- curiosity:item-899-det000899 (last accessed 1d ago)
+- curiosity:item-999-det000999 (last accessed 1d ago)
+
+Bodies are accessed via memory search or query against semantic_memory.
+## Live State — pointers to canonical sources
+
+
+Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.

@@ -1,0 +1,49 @@
+User ID: test-user, Thread ID: d2a1fd52-a74d-56e8-a7da-2f81b9b5feb0
+
+## Working Knowledge — operational and durable
+
+- _pinned:0: pinned body 0
+    [changed since last turn]
+- _pinned:1: pinned body 1
+    [changed since last turn]
+- _pinned:2: pinned body 2
+    [changed since last turn]
+- _pinned:3: pinned body 3
+    [changed since last turn]
+- _pinned:4: pinned body 4
+    [changed since last turn]
+- _pinned:5: pinned body 5
+    [changed since last turn]
+- _pinned:6: pinned body 6
+    [changed since last turn]
+- _pinned:7: pinned body 7
+    [changed since last turn]
+- _pinned:8: pinned body 8
+    [changed since last turn]
+- _pinned:9: pinned body 9
+    [changed since last turn]
+- _summary:topic-0: Summary for topic 0: this is a brief overview. [changed since last turn]
+- _summary:topic-1: Summary for topic 1: this is a brief overview. [changed since last turn]
+- _summary:topic-2: Summary for topic 2: this is a brief overview. [changed since last turn]
+- _summary:topic-3: Summary for topic 3: this is a brief overview. [changed since last turn]
+- _summary:topic-4: Summary for topic 4: this is a brief overview. [changed since last turn]
+
+Bodies of summary entries are accessed via memory search using terms from the entry key.
+## Discoverable Archive — title-only; bodies via memory search
+
+- curiosity:item-0-det000000 (last accessed 1d ago)
+- curiosity:item-1-det000001 (last accessed 1d ago)
+- curiosity:item-2-det000002 (last accessed 1d ago)
+- curiosity:item-3-det000003 (last accessed 1d ago)
+- curiosity:item-4-det000004 (last accessed 1d ago)
+- curiosity:item-5-det000005 (last accessed 1d ago)
+- curiosity:item-6-det000006 (last accessed 1d ago)
+- curiosity:item-7-det000007 (last accessed 1d ago)
+- curiosity:item-8-det000008 (last accessed 1d ago)
+- curiosity:item-9-det000009 (last accessed 1d ago)
+
+Bodies are accessed via memory search or query against semantic_memory.
+## Live State — pointers to canonical sources
+
+
+Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
