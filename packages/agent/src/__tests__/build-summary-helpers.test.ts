@@ -798,4 +798,195 @@ describe("buildStaleChildrenMap", () => {
 		expect(staleChildren).toBeDefined();
 		expect(staleChildren?.[0].tag).toBe("[stale-detail]");
 	});
+
+	test("EXPLAIN: buildParentSummaryMap uses idx_edges_target partial index", () => {
+		// Populate with 1000+ edges to ensure ANALYZE computes proper selectivity
+		const topicCount = 10;
+		const detailPerTopic = 110;
+
+		// Insert summary entries
+		for (let t = 0; t < topicCount; t++) {
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: `parent-${t}`,
+					key: `_summary:topic${t}`,
+					value: `Summary ${t}`,
+					source: null,
+					created_at: "2026-05-23T00:00:00.000Z",
+					modified_at: "2026-05-23T00:00:00.000Z",
+					tier: "summary",
+					deleted: 0,
+				},
+				TEST_SITE_ID,
+			);
+		}
+
+		// Insert detail entries and edges
+		for (let t = 0; t < topicCount; t++) {
+			for (let d = 0; d < detailPerTopic; d++) {
+				const key = `detail:topic${t}_item${d}`;
+				insertRow(
+					db,
+					"semantic_memory",
+					{
+						id: `child-${t}-${d}`,
+						key,
+						value: `Detail ${t}/${d}`,
+						source: null,
+						created_at: "2026-05-23T00:00:00.000Z",
+						modified_at: "2026-05-23T00:00:00.000Z",
+						tier: "detail",
+						deleted: 0,
+					},
+					TEST_SITE_ID,
+				);
+
+				insertRow(
+					db,
+					"memory_edges",
+					{
+						id: `edge-${t}-${d}`,
+						source_key: `_summary:topic${t}`,
+						target_key: key,
+						relation: "summarizes",
+						weight: 1.0,
+						created_at: "2026-05-23T00:00:00.000Z",
+						modified_at: "2026-05-23T00:00:00.000Z",
+						deleted: 0,
+					},
+					TEST_SITE_ID,
+				);
+			}
+		}
+
+		// Run ANALYZE to compute selectivity for the query planner
+		db.exec("ANALYZE");
+
+		// Execute buildParentSummaryMap with a sample of keys
+		const sampleKeys = Array.from(
+			{ length: 50 },
+			(_, i) => `detail:topic${i % topicCount}_item${i}`,
+		);
+		const result = buildParentSummaryMap(db, sampleKeys);
+
+		// Verify results are correct
+		expect(result.size).toBeGreaterThan(0);
+
+		// Check the query plan: the WHERE clause uses `deleted = 0` which matches the partial index predicate
+		const explainResult = db
+			.prepare(
+				`EXPLAIN QUERY PLAN
+			 SELECT e.target_key AS child, e.source_key AS parent
+			 FROM memory_edges e
+			 WHERE e.relation = 'summarizes'
+			   AND e.deleted = 0
+			   AND e.target_key IN ('detail:topic0_item0')`,
+			)
+			.all() as Array<{ detail: string }>;
+
+		// The plan should mention idx_edges_target (indicating partial index is used)
+		// Format: "SEARCH e USING INDEX idx_edges_target"
+		const planText = JSON.stringify(explainResult);
+		expect(planText).toContain("idx_edges_target");
+		expect(planText).not.toContain("SCAN e");
+	});
+
+	test("EXPLAIN: buildStaleChildrenMap uses idx_edges_source partial index", () => {
+		const summaryTime = "2026-05-23T00:00:00.000Z";
+		const staleTime = "2026-05-24T00:00:00.000Z"; // One day later (stale)
+
+		// Insert test data
+		for (let i = 0; i < 100; i++) {
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: `summary-${i}`,
+					key: `_summary:topic${i}`,
+					value: `Summary ${i}`,
+					source: null,
+					created_at: summaryTime,
+					modified_at: summaryTime,
+					tier: "summary",
+					deleted: 0,
+				},
+				TEST_SITE_ID,
+			);
+
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: `detail-${i}`,
+					key: `detail:${i}`,
+					value: `Detail ${i}`,
+					source: null,
+					created_at: summaryTime,
+					modified_at: staleTime, // Details modified after summary = stale children
+					tier: "detail",
+					deleted: 0,
+				},
+				TEST_SITE_ID,
+			);
+
+			insertRow(
+				db,
+				"memory_edges",
+				{
+					id: `edge-${i}`,
+					source_key: `_summary:topic${i}`,
+					target_key: `detail:${i}`,
+					relation: "summarizes",
+					weight: 1.0,
+					created_at: summaryTime,
+					modified_at: summaryTime,
+					deleted: 0,
+				},
+				TEST_SITE_ID,
+			);
+		}
+
+		// Run ANALYZE to compute selectivity for the query planner
+		db.exec("ANALYZE");
+
+		// Build summaries list with summaryTime
+		const summaries: StageEntry[] = Array.from({ length: 50 }, (_, i) => ({
+			key: `_summary:topic${i}`,
+			value: `Summary ${i}`,
+			source: null,
+			modifiedAt: summaryTime,
+			tier: "summary",
+			tag: "[summary]",
+		}));
+
+		const result = buildStaleChildrenMap(db, summaries);
+
+		// Verify results work (all 50 summaries should have stale children)
+		expect(result.size).toBeGreaterThan(0);
+
+		// Check the query plan: WHERE uses `deleted = 0` on both edges and semantic_memory
+		const explainResult = db
+			.prepare(
+				`EXPLAIN QUERY PLAN
+			 SELECT e.source_key AS parent, e.target_key AS child_key,
+					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
+			 FROM memory_edges e
+			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
+			 WHERE e.relation = 'summarizes'
+			   AND e.deleted = 0
+			   AND e.source_key IN ('_summary:topic0')`,
+			)
+			.all() as Array<{ detail: string }>;
+
+		// The plan should NOT do a full table scan on edges (e)
+		// It should use either idx_edges_source or a covering index like idx_edges_triple
+		const planText = JSON.stringify(explainResult);
+		expect(planText).not.toContain("SCAN e");
+		// Should use an index on source_key
+		const hasSourceIndex =
+			planText.includes("idx_edges_source") || planText.includes("idx_edges_triple");
+		expect(hasSourceIndex).toBe(true);
+	});
 });
