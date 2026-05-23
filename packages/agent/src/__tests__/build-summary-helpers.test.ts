@@ -804,62 +804,68 @@ describe("buildStaleChildrenMap", () => {
 		const topicCount = 10;
 		const detailPerTopic = 110;
 
-		// Insert summary entries
-		for (let t = 0; t < topicCount; t++) {
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: `parent-${t}`,
-					key: `_summary:topic${t}`,
-					value: `Summary ${t}`,
-					source: null,
-					created_at: "2026-05-23T00:00:00.000Z",
-					modified_at: "2026-05-23T00:00:00.000Z",
-					tier: "summary",
-					deleted: 0,
-				},
-				TEST_SITE_ID,
-			);
-		}
-
-		// Insert detail entries and edges
-		for (let t = 0; t < topicCount; t++) {
-			for (let d = 0; d < detailPerTopic; d++) {
-				const key = `detail:topic${t}_item${d}`;
+		// Wrap bulk inserts in a single outer transaction so the per-insertRow
+		// inner transactions become savepoints and the workload commits once
+		// instead of 2210 times. Without this, slow CI runners exceed the 5s
+		// per-test timeout (observed 9.5s on ubuntu-latest).
+		db.transaction(() => {
+			// Insert summary entries
+			for (let t = 0; t < topicCount; t++) {
 				insertRow(
 					db,
 					"semantic_memory",
 					{
-						id: `child-${t}-${d}`,
-						key,
-						value: `Detail ${t}/${d}`,
+						id: `parent-${t}`,
+						key: `_summary:topic${t}`,
+						value: `Summary ${t}`,
 						source: null,
 						created_at: "2026-05-23T00:00:00.000Z",
 						modified_at: "2026-05-23T00:00:00.000Z",
-						tier: "detail",
-						deleted: 0,
-					},
-					TEST_SITE_ID,
-				);
-
-				insertRow(
-					db,
-					"memory_edges",
-					{
-						id: `edge-${t}-${d}`,
-						source_key: `_summary:topic${t}`,
-						target_key: key,
-						relation: "summarizes",
-						weight: 1.0,
-						created_at: "2026-05-23T00:00:00.000Z",
-						modified_at: "2026-05-23T00:00:00.000Z",
+						tier: "summary",
 						deleted: 0,
 					},
 					TEST_SITE_ID,
 				);
 			}
-		}
+
+			// Insert detail entries and edges
+			for (let t = 0; t < topicCount; t++) {
+				for (let d = 0; d < detailPerTopic; d++) {
+					const key = `detail:topic${t}_item${d}`;
+					insertRow(
+						db,
+						"semantic_memory",
+						{
+							id: `child-${t}-${d}`,
+							key,
+							value: `Detail ${t}/${d}`,
+							source: null,
+							created_at: "2026-05-23T00:00:00.000Z",
+							modified_at: "2026-05-23T00:00:00.000Z",
+							tier: "detail",
+							deleted: 0,
+						},
+						TEST_SITE_ID,
+					);
+
+					insertRow(
+						db,
+						"memory_edges",
+						{
+							id: `edge-${t}-${d}`,
+							source_key: `_summary:topic${t}`,
+							target_key: key,
+							relation: "summarizes",
+							weight: 1.0,
+							created_at: "2026-05-23T00:00:00.000Z",
+							modified_at: "2026-05-23T00:00:00.000Z",
+							deleted: 0,
+						},
+						TEST_SITE_ID,
+					);
+				}
+			}
+		})();
 
 		// Run ANALYZE to compute selectivity for the query planner
 		db.exec("ANALYZE");
@@ -897,56 +903,59 @@ describe("buildStaleChildrenMap", () => {
 		const summaryTime = "2026-05-23T00:00:00.000Z";
 		const staleTime = "2026-05-24T00:00:00.000Z"; // One day later (stale)
 
-		// Insert test data
-		for (let i = 0; i < 100; i++) {
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: `summary-${i}`,
-					key: `_summary:topic${i}`,
-					value: `Summary ${i}`,
-					source: null,
-					created_at: summaryTime,
-					modified_at: summaryTime,
-					tier: "summary",
-					deleted: 0,
-				},
-				TEST_SITE_ID,
-			);
+		// Insert test data — wrapped in an outer transaction so the per-insertRow
+		// inner transactions become savepoints with a single final commit.
+		db.transaction(() => {
+			for (let i = 0; i < 100; i++) {
+				insertRow(
+					db,
+					"semantic_memory",
+					{
+						id: `summary-${i}`,
+						key: `_summary:topic${i}`,
+						value: `Summary ${i}`,
+						source: null,
+						created_at: summaryTime,
+						modified_at: summaryTime,
+						tier: "summary",
+						deleted: 0,
+					},
+					TEST_SITE_ID,
+				);
 
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: `detail-${i}`,
-					key: `detail:${i}`,
-					value: `Detail ${i}`,
-					source: null,
-					created_at: summaryTime,
-					modified_at: staleTime, // Details modified after summary = stale children
-					tier: "detail",
-					deleted: 0,
-				},
-				TEST_SITE_ID,
-			);
+				insertRow(
+					db,
+					"semantic_memory",
+					{
+						id: `detail-${i}`,
+						key: `detail:${i}`,
+						value: `Detail ${i}`,
+						source: null,
+						created_at: summaryTime,
+						modified_at: staleTime, // Details modified after summary = stale children
+						tier: "detail",
+						deleted: 0,
+					},
+					TEST_SITE_ID,
+				);
 
-			insertRow(
-				db,
-				"memory_edges",
-				{
-					id: `edge-${i}`,
-					source_key: `_summary:topic${i}`,
-					target_key: `detail:${i}`,
-					relation: "summarizes",
-					weight: 1.0,
-					created_at: summaryTime,
-					modified_at: summaryTime,
-					deleted: 0,
-				},
-				TEST_SITE_ID,
-			);
-		}
+				insertRow(
+					db,
+					"memory_edges",
+					{
+						id: `edge-${i}`,
+						source_key: `_summary:topic${i}`,
+						target_key: `detail:${i}`,
+						relation: "summarizes",
+						weight: 1.0,
+						created_at: summaryTime,
+						modified_at: summaryTime,
+						deleted: 0,
+					},
+					TEST_SITE_ID,
+				);
+			}
+		})();
 
 		// Run ANALYZE to compute selectivity for the query planner
 		db.exec("ANALYZE");
