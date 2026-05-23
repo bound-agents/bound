@@ -49,7 +49,7 @@ export function extractSlugTokens(key: string): string[] {
 /**
  * §8.4 step 1 — corpus-wide token frequency table.
  * For each token (alphanumeric runs of length ≥3 with ISO-8601 date stamps stripped) in
- * `semantic_memory.value` across all rows where `deleted IS NOT 1`, count the number of
+ * `semantic_memory.value` across all rows where `deleted = 0`, count the number of
  * distinct entries containing the token.
  */
 export function buildTokenFrequencyTable(db: Database): Map<string, number> {
