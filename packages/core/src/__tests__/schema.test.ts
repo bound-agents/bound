@@ -137,6 +137,61 @@ describe("Database Schema", () => {
 		expect(indexDef.sql).toContain("tier = 'detail'");
 		expect(indexDef.sql).toContain("deleted = 0");
 
+		// Insert sample data: mix of tiers with some deleted rows
+		// This allows us to verify the query works correctly with the fixed predicate
+		for (let i = 0; i < 20; i++) {
+			const tier = i < 5 ? "detail" : i < 15 ? "summary" : "pinned";
+			const deleted = i === 2 ? 1 : 0; // soft-delete one detail row
+			db.run(`
+				INSERT INTO semantic_memory (
+					id, key, value, tier, source, created_at, last_accessed_at, modified_at, deleted
+				) VALUES (
+					'test-id-${i}',
+					'test-key-${i}',
+					'test-value-${i}',
+					'${tier}',
+					'test-source',
+					datetime('now'),
+					datetime('now', '-${20 - i} minutes'),
+					datetime('now'),
+					${deleted}
+				)
+			`);
+		}
+
+		// Verify that the query with the correct predicate (deleted = 0) returns expected results
+		// Rows with tier='detail' and deleted=0 should be returned, ordered by recency
+		const results = db
+			.prepare(
+				"SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
+			)
+			.all() as Array<{ key: string; last_accessed_at: string | null }>;
+
+		// Should have exactly 4 detail rows (5 total, minus 1 deleted)
+		expect(results).toHaveLength(4);
+		// Verify they are sorted by last_accessed_at descending
+		for (let i = 1; i < results.length; i++) {
+			const prev = results[i - 1].last_accessed_at;
+			const curr = results[i].last_accessed_at;
+			if (prev !== null && curr !== null) {
+				// Timestamps are ISO 8601 strings, which sort lexicographically in descending order
+				expect(prev >= curr).toBe(true);
+			}
+		}
+
+		// Verify the EXPLAIN QUERY PLAN shows the index predicate is matched
+		// The query planner may choose different indexes based on statistics, but the index
+		// definition must match the query predicate for it to be eligible. Verify both are consistent.
+		const queryPlan = db
+			.prepare(
+				"EXPLAIN QUERY PLAN SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
+			)
+			.all() as Array<{ detail: string }>;
+		const planText = queryPlan.map((row) => row.detail).join(" ");
+		// The query plan should show an index is being used (either the partial index or idx_memory_tier)
+		// The critical fix is that `deleted = 0` (matching the partial index WHERE) is used instead of `deleted IS NOT 1`
+		expect(planText).toMatch(/SEARCH.*semantic_memory.*USING INDEX|USING COVERING INDEX/);
+
 		db.close();
 	});
 
