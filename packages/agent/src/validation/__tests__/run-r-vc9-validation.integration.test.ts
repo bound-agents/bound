@@ -260,6 +260,93 @@ describe("runR_VC9Validation (integration)", () => {
 		expect(shouldRun).toBe(true);
 	});
 
+	it("[regression] last-run row created on empty corpus (Important-1)", () => {
+		// Empty corpus: no semantic_memory entries
+		expect(
+			db.prepare("SELECT COUNT(*) as cnt FROM semantic_memory WHERE deleted = 0").get() as {
+				cnt: number;
+			},
+		).toEqual({ cnt: 0 });
+
+		// Run validation on empty corpus
+		const report1 = runR_VC9Validation(db, SITE_ID, NOW);
+		expect(report1.sampledKeys).toBe(0);
+
+		// Verify last-run was written even with empty corpus
+		const shouldRun = shouldRunR_VC9Validation(db, NOW);
+		expect(shouldRun).toBe(false); // Should be false because we just ran
+
+		// Wait 24 hours and verify it returns true
+		const afterDay = NOW + 24 * 60 * 60 * 1000 + 1000;
+		const shouldRunAfterDay = shouldRunR_VC9Validation(db, afterDay);
+		expect(shouldRunAfterDay).toBe(true);
+	});
+
+	it("[regression] idempotent updateRow on second run (Important-2)", () => {
+		// Setup: one freq-5+ token
+		for (let i = 0; i < 5; i++) {
+			db.prepare(
+				"INSERT INTO semantic_memory (id, key, value, tier, deleted, modified_at, created_at, last_accessed_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			).run(
+				`freq-obscure-${i}`,
+				`_detail:content-${i}`,
+				"obscure unknown absent",
+				"detail",
+				0,
+				new Date(NOW).toISOString(),
+				new Date(NOW).toISOString(),
+				new Date(NOW).toISOString(),
+				"test",
+			);
+		}
+
+		// Non-compliant key
+		db.prepare(
+			"INSERT INTO semantic_memory (id, key, value, tier, deleted, modified_at, created_at, last_accessed_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		).run(
+			"noncompliant",
+			"_detail:obscure-unknown-absent",
+			"This entry talks about something else",
+			"detail",
+			0,
+			new Date(NOW).toISOString(),
+			new Date(NOW).toISOString(),
+			new Date(NOW).toISOString(),
+			"test",
+		);
+
+		// First run: creates outcome entry
+		const report1 = runR_VC9Validation(db, SITE_ID, NOW);
+		expect(report1.rVc9NonCompliantCount).toBeGreaterThan(0);
+
+		const outcome1 = db
+			.prepare(
+				"SELECT value FROM semantic_memory WHERE key LIKE '_validation:r-vc9-non-compliance:%' AND deleted = 0",
+			)
+			.get() as { value: string } | null;
+		expect(outcome1).toBeTruthy();
+
+		// Second run: should idempotently update, not throw UNIQUE constraint
+		const later = NOW + 1000;
+		const report2 = runR_VC9Validation(db, SITE_ID, later);
+		expect(report2.rVc9NonCompliantCount).toBeGreaterThan(0);
+
+		// Verify the outcome entry was updated
+		const outcome2 = db
+			.prepare(
+				"SELECT value FROM semantic_memory WHERE key LIKE '_validation:r-vc9-non-compliance:%' AND deleted = 0",
+			)
+			.get() as { value: string } | null;
+		expect(outcome2).toBeTruthy();
+
+		if (outcome1 && outcome2) {
+			const parsed1 = JSON.parse(outcome1.value);
+			const parsed2 = JSON.parse(outcome2.value);
+			// Timestamp should be updated to the later time
+			expect(parsed2.checkedAt).not.toBe(parsed1.checkedAt);
+		}
+	});
+
 	it("shouldRunR_VC9Validation returns false within 24 hours", () => {
 		// Set up a recent last-run timestamp
 		const recentTime = NOW - 1 * 60 * 60 * 1000; // 1 hour ago
