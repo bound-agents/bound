@@ -58,9 +58,9 @@ export function runR_VC9Validation(
 				},
 				siteId,
 			);
-		} catch (_insertErr) {
-			// Silently ignore — last-run tracking is advisory
-			// and doesn't break the validation pass
+		} catch (insertErr) {
+			// Advisory only — log and continue
+			console.warn("[r-vc9-validation] last-run entry write failed:", insertErr);
 		}
 	}
 
@@ -134,8 +134,9 @@ export function runR_VC9Validation(
 						},
 						siteId,
 					);
-				} catch (_insertErr) {
-					// Silently ignore if both update and insert fail
+				} catch (insertErr) {
+					// Advisory only — log and continue
+					console.warn("[r-vc9-validation] R-VC9 outcome entry write failed:", insertErr);
 				}
 			}
 		}
@@ -187,8 +188,9 @@ export function runR_VC9Validation(
 							},
 							siteId,
 						);
-					} catch (_insertErr) {
-						// Silently ignore if both update and insert fail
+					} catch (insertErr) {
+						// Advisory only — log and continue
+						console.warn("[r-vc9-validation] R-VC9b outcome entry write failed:", insertErr);
 					}
 				}
 			}
