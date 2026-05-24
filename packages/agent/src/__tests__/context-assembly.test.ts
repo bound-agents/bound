@@ -4183,8 +4183,17 @@ This skill reviews pull requests.`;
 			// Should be present due to toolTokenEstimate > 0
 			expect(sectionNames).toContain("tools");
 
-			// Volatile content (including three sections: Working Knowledge, Discoverable Archive, Live State)
-			expect(sectionNames).toContain("volatile-other");
+			// Volatile content is grouped under volatile-tail; the three legacy
+			// sub-sections (memory, task-digest, volatile-other) are now drill-down
+			// children so the web debugger can render them without double-counting.
+			expect(sectionNames).toContain("volatile-tail");
+			const tailSection = result.debug.sections.find((s) => s.name === "volatile-tail");
+			expect(tailSection?.children).toBeDefined();
+			const tailChildNames = tailSection?.children?.map((c) => c.name) ?? [];
+			// At least volatile-other should be present (the system prompt itself
+			// always produces some non-memory, non-task-digest content in the
+			// varying tail).
+			expect(tailChildNames).toContain("volatile-other");
 
 			// Verify history has all three children: user, assistant, tool_result
 			const historySection = result.debug.sections.find((s) => s.name === "history");
@@ -8547,9 +8556,12 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			volatileCtx,
 		});
 
-		const memory = result.find((s) => s.name === "memory");
-		const taskDigest = result.find((s) => s.name === "task-digest");
-		const other = result.find((s) => s.name === "volatile-other");
+		const tailSection = result.find((s) => s.name === "volatile-tail");
+		expect(tailSection).toBeDefined();
+		const tailChildren = tailSection?.children ?? [];
+		const memory = tailChildren.find((s) => s.name === "memory");
+		const taskDigest = tailChildren.find((s) => s.name === "task-digest");
+		const other = tailChildren.find((s) => s.name === "volatile-other");
 
 		// Recomputed sections must match what countTokens would produce for the
 		// fresh volatileCtx — NOT the cached snapshot's 50/30/10.
@@ -8594,7 +8606,7 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 		expect(result.find((s) => s.name === "volatile-other")).toBeUndefined();
 	});
 
-	it("emits sections in canonical order: system → skill-context → history → memory → task-digest → volatile-other → tools", () => {
+	it("emits sections in canonical order: system → skill-context → history → volatile-tail → tools (memory/task-digest/volatile-other are children of volatile-tail)", () => {
 		const volatileCtx = buildVolatileCtx({
 			memoryText: "memory content here",
 			taskDigestText: "task digest content here",
@@ -8615,11 +8627,16 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			"system",
 			"skill-context",
 			"history",
-			"memory",
-			"task-digest",
-			"volatile-other",
+			"volatile-tail",
 			"tools",
 		]);
+
+		// volatile-tail aggregates memory/task-digest/volatile-other as drill-down
+		// children. Children render expandable in the debugger but do NOT sum
+		// into totalEstimated (the debugger sums top-level section tokens only).
+		const tail = result.find((s) => s.name === "volatile-tail");
+		const childNames = tail?.children?.map((c) => c.name) ?? [];
+		expect(childNames).toEqual(["memory", "task-digest", "volatile-other"]);
 	});
 
 	it("gracefully handles a sparse cached snapshot (e.g. no skill-context)", () => {
@@ -8722,7 +8739,11 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			volatileCtx,
 		});
 
-		const memorySection = result.find((s) => s.name === "memory");
+		// Memory now lives as a child of volatile-tail (drill-down structure;
+		// see canonical-order test for rationale).
+		const tailSection = result.find((s) => s.name === "volatile-tail");
+		expect(tailSection).toBeDefined();
+		const memorySection = tailSection?.children?.find((s) => s.name === "memory");
 		expect(memorySection).toBeDefined();
 		if (!memorySection) throw new Error("unreachable: memory section missing");
 
