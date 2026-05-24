@@ -155,7 +155,32 @@ export function compactStoredMessagesInPlace(
 	let compacted = false;
 	let tokensSaved = 0;
 
-	const compactionBoundary = Math.max(0, messages.length - opts.recentWindow);
+	// Anchor the compaction boundary to the index of the LAST user message.
+	// This is critical for prefix-cache stability: without it, the boundary
+	// `messages.length - recentWindow` slides forward by 2 every warm turn
+	// as new assistant + tool_result messages append, which mutates a
+	// previously-preserved tool_result's bytes and busts the provider's
+	// cached prefix.
+	//
+	// Anchoring to lastUserIdx keeps the boundary STABLE for every LLM round
+	// inside a single user request. Tool_results between an old user message
+	// and the most recent one get stubbed once and stay stubbed; tool_results
+	// after the most recent user message are in-flight and stay intact.
+	// The boundary only moves when the user sends a new message — at which
+	// point a one-time cache invalidation is the natural break point anyway.
+	//
+	// Fallback: if no user message exists (rare — task wakeups before any
+	// human turn), fall back to the original sliding boundary so we still
+	// compact in degenerate cases.
+	let lastUserIdx = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "user") {
+			lastUserIdx = i;
+			break;
+		}
+	}
+	const compactionBoundary =
+		lastUserIdx >= 0 ? lastUserIdx : Math.max(0, messages.length - opts.recentWindow);
 
 	// Step 1: tool_result truncation.
 	for (let i = 0; i < compactionBoundary; i++) {
