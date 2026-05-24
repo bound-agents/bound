@@ -232,6 +232,13 @@ describe("warm-compaction", () => {
 			expect(messages[0].content).toBe(before);
 		});
 
+		// 15s timeout (3x bun:test default): each compaction pass over the
+		// 5000-char tool_result fixtures invokes tiktoken cl100k_base via
+		// countContentTokens, which is markedly slower on GitHub-hosted
+		// ubuntu-latest runners than on local hardware. Observed CI cost:
+		// 5.2-5.5s per test (tail-of-distribution flake at the 5s default).
+		// The other compaction tests in this file run a single pass and
+		// finish in ~2.7s; only the two that do TWO passes need the bump.
 		it("is idempotent: calling twice produces identical content (provider-cache stable)", () => {
 			// The whole point of warm-path in-place compaction is that the
 			// resulting byte-prefix is byte-equal to whatever the provider
@@ -264,7 +271,7 @@ describe("warm-compaction", () => {
 			for (let i = 0; i < messages.length; i++) {
 				expect(messages[i].content).toBe(snapshot[i]);
 			}
-		});
+		}, 15000);
 
 		it("strips thinking from tool_call only when the post-compaction estimate exceeds the threshold", () => {
 			// Same budget-driven gating as cold-path Stage 1.7. Below
@@ -429,6 +436,6 @@ describe("warm-compaction", () => {
 			for (let i = 0; i < preAppendLength; i++) {
 				expect(messages[i].content).toBe(turn1Snapshot[i]);
 			}
-		});
+		}, 15000); // See timeout note on the idempotence test above.
 	});
 });
