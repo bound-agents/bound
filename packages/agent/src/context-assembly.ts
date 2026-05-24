@@ -1976,12 +1976,13 @@ Original output was too large for the context window. If you need the full conte
 		totalMemCount = volatileCtx.totalMemCount;
 		taskDigestLinesSnapshot = volatileCtx.taskDigestLines;
 
-		// Track volatile section tokens (memory, task-digest, volatile-other,
-		// volatile-tail). The first three are retained for backward compat
-		// with existing debugger views. `volatile-tail` is the new aggregate
-		// covering the varying-tail developer message that follows history;
-		// SECTION_COLORS exposes it as a distinct bracket between history and
-		// tools.
+		// Track volatile-tail tokens (the trailing developer message that
+		// follows history, uncached). `volatile-tail` is the parent aggregate;
+		// memory, task-digest, and volatile-other are nested as drill-down
+		// children. The web debugger sums top-level section tokens only --
+		// children render expandable but do not contribute to the total --
+		// so this nesting avoids the double-count that pushing all four as
+		// peers would produce.
 		//
 		// IMPORTANT: slice allVaryingLines (not allVolatileLines), using
 		// varyingEnrichmentStartIdx/varyingEnrichmentEndIdx (not the
@@ -1989,6 +1990,11 @@ Original output was too large for the context window. If you need the full conte
 		// memory section double-counts stable Working Knowledge bodies that
 		// have been promoted into the prefix, inflating context_debug totals
 		// well above actual on-wire tokens_in.
+		//
+		// Likewise, volatile-other = varyingTokenEstimate - memoryTokens -
+		// taskDigestTokens (NOT tokenEstimate, which is the union including
+		// the stable prefix); using the union would leak the stable Working
+		// Knowledge slab into volatile-other.
 		const memoryLines = volatileCtx.allVaryingLines.slice(
 			volatileCtx.varyingEnrichmentStartIdx,
 			volatileCtx.varyingEnrichmentEndIdx,
@@ -2000,17 +2006,19 @@ Original output was too large for the context window. If you need the full conte
 				? countTokens(volatileCtx.taskDigestLines.join("\n"))
 				: 0;
 
-		const totalVolatileTokens = volatileCtx.tokenEstimate;
-		const volatileOtherTokens = totalVolatileTokens - memoryTokens - taskDigestTokens;
+		const volatileOtherTokens = volatileCtx.varyingTokenEstimate - memoryTokens - taskDigestTokens;
 
-		if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
-		if (taskDigestTokens > 0) sections.push({ name: "task-digest", tokens: taskDigestTokens });
-		if (volatileOtherTokens > 0)
-			sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
 		if (volatileCtx.varyingTokenEstimate > 0) {
+			const tailChildren: ContextSection[] = [];
+			if (memoryTokens > 0) tailChildren.push({ name: "memory", tokens: memoryTokens });
+			if (taskDigestTokens > 0)
+				tailChildren.push({ name: "task-digest", tokens: taskDigestTokens });
+			if (volatileOtherTokens > 0)
+				tailChildren.push({ name: "volatile-other", tokens: volatileOtherTokens });
 			sections.push({
 				name: "volatile-tail",
 				tokens: volatileCtx.varyingTokenEstimate,
+				children: tailChildren.length > 0 ? tailChildren : undefined,
 			});
 		}
 	}
@@ -2580,13 +2588,19 @@ export function rebuildWarmSections(params: {
 	});
 
 	// Volatile sections: recompute from the freshly-built volatile context.
-	// Mirrors the cold-path computation in assembleContext.
+	// Mirrors the cold-path computation in assembleContext (parent
+	// volatile-tail with memory/task-digest/volatile-other as drill-down
+	// children).
 	//
 	// IMPORTANT: slice allVaryingLines (not allVolatileLines), using
 	// varyingEnrichmentStartIdx/varyingEnrichmentEndIdx (not the
 	// union-relative enrichmentStartIdx/enrichmentEndIdx). Otherwise the
 	// memory section double-counts stable Working Knowledge bodies that
 	// have been promoted into the prefix.
+	//
+	// Likewise, volatile-other subtracts from varyingTokenEstimate (varying
+	// only) -- using tokenEstimate (the union including the stable prefix)
+	// would leak the stable Working Knowledge slab into volatile-other.
 	const memoryLines = params.volatileCtx.allVaryingLines.slice(
 		params.volatileCtx.varyingEnrichmentStartIdx,
 		params.volatileCtx.varyingEnrichmentEndIdx,
@@ -2596,12 +2610,21 @@ export function rebuildWarmSections(params: {
 		params.volatileCtx.taskDigestLines.length > 0
 			? countTokens(params.volatileCtx.taskDigestLines.join("\n"))
 			: 0;
-	const volatileOtherTokens = params.volatileCtx.tokenEstimate - memoryTokens - taskDigestTokens;
+	const volatileOtherTokens =
+		params.volatileCtx.varyingTokenEstimate - memoryTokens - taskDigestTokens;
 
-	if (memoryTokens > 0) sections.push({ name: "memory", tokens: memoryTokens });
-	if (taskDigestTokens > 0) sections.push({ name: "task-digest", tokens: taskDigestTokens });
-	if (volatileOtherTokens > 0)
-		sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
+	if (params.volatileCtx.varyingTokenEstimate > 0) {
+		const tailChildren: ContextSection[] = [];
+		if (memoryTokens > 0) tailChildren.push({ name: "memory", tokens: memoryTokens });
+		if (taskDigestTokens > 0) tailChildren.push({ name: "task-digest", tokens: taskDigestTokens });
+		if (volatileOtherTokens > 0)
+			tailChildren.push({ name: "volatile-other", tokens: volatileOtherTokens });
+		sections.push({
+			name: "volatile-tail",
+			tokens: params.volatileCtx.varyingTokenEstimate,
+			children: tailChildren.length > 0 ? tailChildren : undefined,
+		});
+	}
 
 	// Tools: copy from cached snapshot — toolFingerprint match in the warm
 	// gate guarantees the tool set is unchanged from the cold build.
