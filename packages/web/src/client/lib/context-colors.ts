@@ -26,3 +26,16 @@ export const SECTION_COLORS: Record<string, string> = {
 };
 
 export const FREE_SPACE_COLOR = "var(--paper-3)";
+
+// Per-state colors for cache breakpoint tick markers overlaid on the breakdown
+// bar. State derives from the per-turn cache_read / cache_write totals on the
+// `turns` row (the AI SDK aggregates so we can't attribute per-marker reliably;
+// see ContextBar.svelte for the heuristic). Reuses existing semantic CSS
+// custom properties so the palette stays consistent with the rest of the
+// debugger and tracks future theme changes.
+export const CACHE_MARKER_COLORS = {
+	hit: "var(--ok)", // cache_read > 0 — warm-path hit
+	write: "var(--warn)", // cache_write > 0 — cold-path seeded a fresh entry
+	disabled: "var(--idle)", // capability_enabled === false on the resolved backend
+	idle: "var(--ink-4)", // capability on, but no read/write attributable this turn
+};

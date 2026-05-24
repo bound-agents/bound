@@ -676,6 +676,63 @@ export interface ContextDebugInfo {
 	budgetPressure: boolean;
 	truncated: number;
 	crossThreadSources?: CrossThreadSource[];
+	/**
+	 * Cache breakpoint descriptors for this turn. Up to two entries:
+	 *
+	 * - `kind: "system"` — boundary at the end of the stable system-prompt prefix
+	 *   (system + skill-context + volatile-prefix per R-VC24). The system-level
+	 *   `cache_control` / `cachePoint` rides this boundary on every turn.
+	 * - `kind: "message"` — boundary placed by `maybePlaceCacheMarker` at
+	 *   `messages[length - 2]`, just before the volatile-tail developer message.
+	 *   `variant: "fixed"` for cold-path placements; `variant: "rolling"` for
+	 *   warm-path re-placements.
+	 *
+	 * `positionTokens` is a cumulative-token offset into the breakdown bar so the
+	 * UI can render a tick at the correct percentage of `contextWindow` without
+	 * having to re-derive it from `sections`.
+	 *
+	 * Absent (undefined) on rows persisted before this field was added; absent on
+	 * turns where the resolved backend has `prompt_caching: false` and the loop
+	 * skipped placement entirely. When the backend supports caching but a marker
+	 * was structurally suppressed (e.g., `messages.length < 2`), the loop still
+	 * records the descriptor with `capabilityEnabled: true` so the UI can show
+	 * the intended position with a disabled state if needed.
+	 */
+	cacheMarkers?: CacheMarker[];
+}
+
+export interface CacheMarker {
+	kind: "system" | "message";
+	/**
+	 * Cumulative-token offset (0..contextWindow) at the breakpoint boundary,
+	 * measured against the same totals shown in the breakdown bar. The UI
+	 * converts to a percentage as `positionTokens / contextWindow`.
+	 *
+	 * - System markers: sum of `system + skill-context + volatile-prefix` section tokens.
+	 * - Message markers: above plus `history.tokens` (the boundary sits just before
+	 *   the volatile-tail developer message).
+	 */
+	positionTokens: number;
+	/**
+	 * `"fixed"` for cold-path placements (the marker is part of a freshly assembled
+	 * prefix and seeds a write); `"rolling"` for warm-path placements (the marker
+	 * is rewritten each turn just before the volatile tail). System markers are
+	 * always `"fixed"` — the system prefix doesn't roll.
+	 */
+	variant: "fixed" | "rolling";
+	/**
+	 * Resolved cache TTL for the turn. Sourced from the agent loop's resolved
+	 * cache_ttl (per critical invariant #17). Stored on the marker so the UI
+	 * can label the tier without re-resolving backend config.
+	 */
+	ttl: "5m" | "1h";
+	/**
+	 * `true` when the resolved backend's `prompt_caching` capability is on AND
+	 * a marker was actually emitted on the wire. `false` when caching was
+	 * gated out (e.g., MiniMax on Bedrock). The UI renders disabled markers
+	 * as informational ticks only.
+	 */
+	capabilityEnabled: boolean;
 }
 
 /** Minimal shape for commands displayed in the agent's orientation block. */

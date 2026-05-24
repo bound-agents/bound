@@ -41,7 +41,7 @@ import {
 	parseToolResultContent,
 	shouldRetryRelayCall,
 } from "./agent-loop-utils";
-import { maybePlaceCacheMarker } from "./cache-marker";
+import { buildCacheMarkers, maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
@@ -599,12 +599,17 @@ export class AgentLoop {
 						// Fall through to the cold path by leaving usedWarmPath=false.
 					}
 
+					let rollingPlacement: ReturnType<typeof maybePlaceCacheMarker> | null = null;
 					if (!warmOrphanedToolCall) {
 						// 4. Place rolling cache message at messages[length-2] (before last delta
 						//    message). Gated on effective backend capabilities — skipped when
 						//    prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock)
 						//    to avoid the 403 "unsupported model / prompt caching not allowed".
-						maybePlaceCacheMarker(storedMessages, "rolling", cacheMarkerCaps ?? undefined);
+						rollingPlacement = maybePlaceCacheMarker(
+							storedMessages,
+							"rolling",
+							cacheMarkerCaps ?? undefined,
+						);
 
 						// 5. Inject fresh volatile developer message at tail
 						const volatileContext = buildVolatileContext({
@@ -770,6 +775,16 @@ export class AgentLoop {
 								sections: warmSections,
 								budgetPressure: false,
 								truncated: 0,
+								cacheMarkers: buildCacheMarkers({
+									sections: warmSections,
+									messagePlacement: rollingPlacement ?? {
+										placed: false,
+										variant: "rolling",
+										index: -1,
+										reason: "too-short",
+									},
+									ttl: cacheTtl,
+								}),
 							};
 						}
 					}
@@ -857,12 +872,24 @@ export class AgentLoop {
 				// effective backend capabilities — skipped when prompt_caching is
 				// explicitly disabled (e.g. MiniMax on Bedrock) to avoid the 403
 				// "unsupported model / prompt caching not allowed" from AWS.
-				const placedFixedMarker = maybePlaceCacheMarker(
+				const fixedPlacement = maybePlaceCacheMarker(
 					contextMessages,
 					"fixed",
 					cacheMarkerCaps ?? undefined,
 				);
-				const fixedCacheIdx = placedFixedMarker ? contextMessages.length - 2 : -1;
+				const placedFixedMarker = fixedPlacement.placed;
+				const fixedCacheIdx = fixedPlacement.placed ? fixedPlacement.index : -1;
+
+				// Annotate contextDebug with the cache breakpoints recorded for this
+				// turn so the web debugger can render truthful tick positions on the
+				// breakdown bar. The system breakpoint always rides the system param;
+				// the message breakpoint sits at messages[length-2] (just before the
+				// volatile-tail developer message) when capability allows.
+				contextDebug.cacheMarkers = buildCacheMarkers({
+					sections: contextDebug.sections,
+					messagePlacement: fixedPlacement,
+					ttl: cacheTtl,
+				});
 
 				// Query last message created_at for delta queries
 				const lastRow = this.ctx.db

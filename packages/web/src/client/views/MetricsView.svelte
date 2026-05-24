@@ -39,6 +39,17 @@ const totalTokens = $derived(
 	data ? data.tokens.totals.tokens_in + data.tokens.totals.tokens_out : 0,
 );
 
+// `tokens.totals` only carries tokens_in/tokens_out/cost. Cache totals live
+// per-model on `tokens.byModel`, so sum them client-side rather than wiring a
+// dedicated `cache_totals` field through the metrics route. The byModel rows
+// are already in the response and are typically small (≤ a dozen entries).
+const totalCacheRead = $derived(
+	data?.tokens.byModel.reduce((sum, m) => sum + m.cache_read, 0) ?? 0,
+);
+const totalCacheWrite = $derived(
+	data?.tokens.byModel.reduce((sum, m) => sum + m.cache_write, 0) ?? 0,
+);
+
 async function loadMetrics(): Promise<void> {
 	// store.load() synchronously sets refreshing/initialLoading before awaiting fetch.
 	// We start it, sync the in-flight flags, then await completion and sync the result.
@@ -252,6 +263,18 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 								<span class="metric-unit">msgs</span>
 							{/snippet}
 						</MetroCard>
+
+						<MetroCard accentColor={totalCacheRead > 0 ? "var(--ok)" : "var(--idle)"}>
+							{#snippet children()}
+								<span class="metric-label">Cache Tokens</span>
+								<span class="metric-value cache-card-value">
+									<span class="cache-card-read mono tnum">↑ {totalCacheRead.toLocaleString()}</span>
+									<span class="cache-card-sep">/</span>
+									<span class="cache-card-write mono tnum">↓ {totalCacheWrite.toLocaleString()}</span>
+								</span>
+								<span class="metric-unit">read / write</span>
+							{/snippet}
+						</MetroCard>
 					</div>
 
 					<CacheHitTimeline data={data.context.timeline} />
@@ -335,6 +358,29 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 		color: var(--ink-3);
 		margin-top: 4px;
 		text-transform: capitalize;
+	}
+
+	.cache-card-value {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 6px;
+		font-size: 18px;
+		font-weight: 600;
+	}
+
+	.cache-card-read {
+		color: var(--ok);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.cache-card-write {
+		color: var(--warn);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.cache-card-sep {
+		color: var(--ink-4);
+		font-size: 14px;
 	}
 
 	.sparkline-row {
