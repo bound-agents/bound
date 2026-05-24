@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import type { StageEntry, WorkingKnowledgeInput } from "../summary-extraction";
 import { renderWorkingKnowledge } from "../summary-extraction";
 
-describe("renderWorkingKnowledge", () => {
+describe("renderWorkingKnowledge — stable/varying split", () => {
 	describe("Empty input", () => {
-		it("should output header, blank lines, and footer", () => {
+		it("emits stable header+footer and no varying lines", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [],
@@ -14,18 +14,18 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.lines.length).toBe(4);
-			expect(result.lines[0]).toBe("## Working Knowledge — operational and durable");
-			expect(result.lines[1]).toBe("");
-			expect(result.lines[2]).toBe("");
-			expect(result.lines[3]).toBe(
+			expect(result.stableLines).toEqual([
+				"## Working Knowledge — operational and durable",
+				"",
+				"",
 				"Bodies of summary entries are accessed via memory search using terms from the entry key.",
-			);
+			]);
+			expect(result.varyingLines).toEqual([]);
 		});
 	});
 
 	describe("Pinned only, no deltas", () => {
-		it("should render pinned entries in full text without delta markers", () => {
+		it("renders pinned bodies on the stable side and emits no varying lines", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [
 					{
@@ -52,13 +52,18 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.lines[2]).toBe("- stand_rule_one: Always validate input before processing");
-			expect(result.lines[3]).toBe("- stand_rule_two: Logging must include timestamp and level");
+			expect(result.stableLines).toContain(
+				"- stand_rule_one: Always validate input before processing",
+			);
+			expect(result.stableLines).toContain(
+				"- stand_rule_two: Logging must include timestamp and level",
+			);
+			expect(result.varyingLines).toEqual([]);
 		});
 	});
 
 	describe("Summary only, no deltas, no stale children", () => {
-		it("should render summary entries with 200-char gloss", () => {
+		it("renders summary bodies with 200-char gloss on the stable side and no varying lines", () => {
 			const longText =
 				"This is a very long summary that exceeds two hundred characters and should be truncated to exactly two hundred characters plus an ellipsis marker to indicate that content has been cut off. The full text continues here but will not be visible in the rendered output because it exceeds the maximum length.";
 
@@ -80,19 +85,18 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const summaryLine = result.lines[2];
-			expect(summaryLine).toMatch(/^- summary_key_1: /);
-			// Check that it's truncated to 200 chars + "..."
-			const valueStart = "- summary_key_1: ".length;
-			const truncatedValue = summaryLine.substring(valueStart);
+			const summaryLine = result.stableLines.find((line) => line.startsWith("- summary_key_1: "));
+			expect(summaryLine).toBeDefined();
+			const truncatedValue = (summaryLine ?? "").substring("- summary_key_1: ".length);
 			expect(truncatedValue).toContain("...");
 			const beforeEllipsis = truncatedValue.substring(0, truncatedValue.length - 3);
 			expect(beforeEllipsis.length).toBe(200);
+			expect(result.varyingLines).toEqual([]);
 		});
 	});
 
 	describe("Summary with stale children", () => {
-		it("should indent children beneath parent with [stale child of] marker", () => {
+		it("keeps parent body stable; child + [stale child of] live in varying", () => {
 			const staleChild = {
 				key: "stale_detail_1",
 				value: "This is a stale child entry that was updated after the summary",
@@ -120,17 +124,23 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const parentLine = result.lines[2];
-			expect(parentLine).toContain("- parent_summary: Parent summary entry");
+			expect(result.stableLines).toContain("- parent_summary: Parent summary entry");
+			// No marker in stable section.
+			for (const line of result.stableLines) {
+				expect(line).not.toContain("[stale child of");
+			}
 
-			const childLine = result.lines[3];
+			// Varying side: header + the child reference.
+			expect(result.varyingLines[0]).toBe("## Working Knowledge — updates");
+			const childLine = result.varyingLines.find((line) => line.includes("stale_detail_1"));
+			expect(childLine).toBeDefined();
 			expect(childLine).toContain("  - stale_detail_1:");
 			expect(childLine).toContain("[stale child of parent_summary]");
 		});
 	});
 
 	describe("Delta on a summary entry (R-VC11(a))", () => {
-		it("should append [changed since last turn] marker on same line", () => {
+		it("keeps body stable; emits keyed [changed since last turn] on the varying side", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [
@@ -149,14 +159,16 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const summaryLine = result.lines[2];
-			expect(summaryLine).toContain("- changed_summary: This summary was recently updated");
-			expect(summaryLine).toMatch(/\[changed since last turn\]$/);
+			expect(result.stableLines).toContain("- changed_summary: This summary was recently updated");
+			for (const line of result.stableLines) {
+				expect(line).not.toContain("[changed since last turn]");
+			}
+			expect(result.varyingLines).toContain("- changed_summary [changed since last turn]");
 		});
 	});
 
-	describe("Delta on a single-line pinned entry (R-VC11(b))", () => {
-		it("should render delta marker on separate indented line beneath pinned entry", () => {
+	describe("Delta on a pinned entry (R-VC11(b))", () => {
+		it("keeps body stable; emits keyed [changed since last turn] on the varying side", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [
 					{
@@ -175,16 +187,16 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const pinnedLine = result.lines[2];
-			expect(pinnedLine).toBe("- changed_pinned: This pinned rule was just updated");
-
-			const markerLine = result.lines[3];
-			expect(markerLine).toBe("    [changed since last turn]");
+			expect(result.stableLines).toContain("- changed_pinned: This pinned rule was just updated");
+			for (const line of result.stableLines) {
+				expect(line).not.toContain("[changed since last turn]");
+			}
+			expect(result.varyingLines).toContain("- changed_pinned [changed since last turn]");
 		});
 	});
 
 	describe("Delta on a multi-line pinned entry (R-VC11(b) edge case)", () => {
-		it("should render delta marker on new indented line even for multi-line pinned content", () => {
+		it("keeps full multi-line value stable; emits single-line keyed marker on varying side", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [
 					{
@@ -203,21 +215,17 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			// First line should contain the full multi-line value
-			const pinnedLine = result.lines[2];
-			expect(pinnedLine).toContain("- multi_line_pinned:");
-			expect(pinnedLine).toContain(
+			const stableJoined = result.stableLines.join("\n");
+			expect(stableJoined).toContain("- multi_line_pinned:");
+			expect(stableJoined).toContain(
 				"Line 1 of the pinned rule\nLine 2 of the pinned rule\nLine 3 continues",
 			);
-
-			// Delta marker should be on next line, indented
-			const markerLine = result.lines[3];
-			expect(markerLine).toBe("    [changed since last turn]");
+			expect(result.varyingLines).toContain("- multi_line_pinned [changed since last turn]");
 		});
 	});
 
 	describe("Stale child + delta composition (R-VC11(c))", () => {
-		it("should render markers in fixed order [stale child of] [changed since last turn]", () => {
+		it("renders [stale child of] before [changed since last turn] on the varying side", () => {
 			const staleChild = {
 				key: "stale_and_changed",
 				value: "This child is both stale and changed",
@@ -245,11 +253,11 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const childLine = result.lines[3];
-			expect(childLine).toContain("  - stale_and_changed:");
-			// Verify exact order: stale first, delta second
-			const staleIndex = childLine.indexOf("[stale child of parent]");
-			const deltaIndex = childLine.indexOf("[changed since last turn]");
+			const childLine = result.varyingLines.find((line) => line.includes("stale_and_changed"));
+			expect(childLine).toBeDefined();
+			const line = childLine ?? "";
+			const staleIndex = line.indexOf("[stale child of parent]");
+			const deltaIndex = line.indexOf("[changed since last turn]");
 			expect(staleIndex).toBeGreaterThan(-1);
 			expect(deltaIndex).toBeGreaterThan(-1);
 			expect(staleIndex).toBeLessThan(deltaIndex);
@@ -257,7 +265,7 @@ describe("renderWorkingKnowledge", () => {
 	});
 
 	describe("Stale child without delta (R-VC11(c) negative case)", () => {
-		it("should render only [stale child of] marker when child is not in deltaKeys", () => {
+		it("emits only [stale child of] on the varying side when child is not in deltaKeys", () => {
 			const staleChild = {
 				key: "stale_not_changed",
 				value: "This child is stale but not changed this turn",
@@ -280,19 +288,21 @@ describe("renderWorkingKnowledge", () => {
 					} as StageEntry,
 				],
 				staleChildrenBySummary: new Map([["parent", [staleChild]]]),
-				deltaKeys: new Set(), // Child NOT in deltaKeys
+				deltaKeys: new Set(),
 			};
 
 			const result = renderWorkingKnowledge(input);
 
-			const childLine = result.lines[3];
-			expect(childLine).toContain("[stale child of parent]");
-			expect(childLine).not.toContain("[changed since last turn]");
+			const childLine = result.varyingLines.find((line) => line.includes("stale_not_changed"));
+			expect(childLine).toBeDefined();
+			const line = childLine ?? "";
+			expect(line).toContain("[stale child of parent]");
+			expect(line).not.toContain("[changed since last turn]");
 		});
 	});
 
 	describe("Full mixed input", () => {
-		it("should handle pinned + summary + stale children + deltas combined", () => {
+		it("partitions all bodies into stable and all annotations into varying", () => {
 			const staleChild1 = {
 				key: "stale_detail_alpha",
 				value: "First stale child under summary A",
@@ -354,42 +364,54 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			// Verify structure: header, pinned entries, summaries with stale children, footer
-			expect(result.lines[0]).toBe("## Working Knowledge — operational and durable");
-			expect(result.lines[1]).toBe("");
+			const stable = result.stableLines.join("\n");
+			expect(stable).toStartWith("## Working Knowledge — operational and durable");
+			expect(stable).toContain("stand_pinned_1");
+			expect(stable).toContain("stand_pinned_2");
+			expect(stable).toContain("summary_A");
+			expect(stable).toContain("summary_B");
+			expect(stable).not.toContain("[changed since last turn]");
+			expect(stable).not.toContain("[stale child of");
 
-			// Verify no exceptions and all sections present
-			const output = result.lines.join("\n");
-			expect(output).toContain("stand_pinned_1");
-			expect(output).toContain("stand_pinned_2");
-			expect(output).toContain("[changed since last turn]");
-			expect(output).toContain("summary_A");
-			expect(output).toContain("summary_B");
-			expect(output).toContain("stale_detail_alpha");
-			expect(output).toContain("stale_detail_beta");
-			expect(output).toContain("[stale child of summary_A]");
+			const varying = result.varyingLines.join("\n");
+			expect(varying).toContain("- stand_pinned_2 [changed since last turn]");
+			expect(varying).toContain("- summary_B [changed since last turn]");
+			expect(varying).toContain("stale_detail_alpha");
+			expect(varying).toContain("stale_detail_beta");
+			expect(varying).toContain("[stale child of summary_A]");
 		});
 	});
 
 	describe("Header typography uniformity (R-VC22)", () => {
-		it("should use ## (not ### or #) for top-level header", () => {
+		it("uses ## (not ### or #) for both top-level headers", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
-				summaries: [],
+				summaries: [
+					{
+						key: "k",
+						value: "v",
+						source: null,
+						modifiedAt: "2026-05-22T10:00:00Z",
+						tier: "summary",
+						tag: "[summary]",
+					} as StageEntry,
+				],
 				staleChildrenBySummary: new Map(),
-				deltaKeys: new Set(),
+				deltaKeys: new Set(["k"]),
 			};
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.lines[0]).toBe("## Working Knowledge — operational and durable");
-			expect(result.lines[0]).not.toContain("###");
-			expect(result.lines[0]).not.toMatch(/^#[^#]/);
+			expect(result.stableLines[0]).toBe("## Working Knowledge — operational and durable");
+			expect(result.varyingLines[0]).toBe("## Working Knowledge — updates");
+			for (const line of [...result.stableLines, ...result.varyingLines]) {
+				expect(line).not.toContain("###");
+			}
 		});
 	});
 
 	describe("Footer text (R-VC6)", () => {
-		it("should render exact footer text", () => {
+		it("renders exact footer text on the stable side", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [],
@@ -399,15 +421,15 @@ describe("renderWorkingKnowledge", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const lastLine = result.lines[result.lines.length - 1];
-			expect(lastLine).toBe(
+			const lastStable = result.stableLines[result.stableLines.length - 1];
+			expect(lastStable).toBe(
 				"Bodies of summary entries are accessed via memory search using terms from the entry key.",
 			);
 		});
 	});
 
 	describe("R-VC11(d) — no last_accessed_at side effects", () => {
-		it("should accept frozen input and produce output with no DB access", () => {
+		it("accepts plain input and produces output with no DB access", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [
 					{
@@ -424,17 +446,14 @@ describe("renderWorkingKnowledge", () => {
 				deltaKeys: new Set(),
 			};
 
-			// The function should accept the input and produce output without throwing
-			// or attempting any DB access (which would fail since no Database is provided).
-			// This is structurally guaranteed by the function signature accepting only
-			// WorkingKnowledgeInput (plain data), not a Database parameter.
 			expect(() => {
 				renderWorkingKnowledge(input);
 			}).not.toThrow();
 
 			const result = renderWorkingKnowledge(input);
 			expect(result).toBeDefined();
-			expect(result.lines).toBeArray();
+			expect(result.stableLines).toBeArray();
+			expect(result.varyingLines).toBeArray();
 		});
 	});
 });

@@ -1960,17 +1960,16 @@ describe("Context Assembly Pipeline", () => {
 				threadId: threadId2,
 				userId: userId2,
 			});
-			const devMsg = result.messages.find((m) => m.role === "developer");
-			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-
-			// Skill index should be in systemSuffix
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("<available_skills>");
-			expect(systemSuffix).toContain("<skill>");
-			expect(systemSuffix).toContain("<name>pr-review</name>");
-			expect(systemSuffix).toContain("<description>Review GitHub PRs</description>");
-			expect(systemSuffix).toContain("</skill>");
-			expect(systemSuffix).toContain("</available_skills>");
+			// Skill index lives on the cacheable stable prefix (systemPrompt),
+			// not the varying developer tail, so it can be reused across turns
+			// and across threads.
+			const stablePrefix = result.systemPrompt;
+			expect(stablePrefix).toContain("<available_skills>");
+			expect(stablePrefix).toContain("<skill>");
+			expect(stablePrefix).toContain("<name>pr-review</name>");
+			expect(stablePrefix).toContain("<description>Review GitHub PRs</description>");
+			expect(stablePrefix).toContain("</skill>");
+			expect(stablePrefix).toContain("</available_skills>");
 		});
 
 		it("AC3.2: should not inject SKILLS block when no active skills exist", () => {
@@ -1981,12 +1980,8 @@ describe("Context Assembly Pipeline", () => {
 				threadId: threadId2,
 				userId: userId2,
 			});
-			const devMsg = result.messages.find((m) => m.role === "developer");
-			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-
-			// Should not contain skills block
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).not.toContain("<available_skills>");
+			// Skill index lives on the stable prefix; absence is asserted there.
+			expect(result.systemPrompt).not.toContain("<available_skills>");
 		});
 
 		it("AC3.3: should inject task-referenced skill body when skill is active", () => {
@@ -2057,16 +2052,16 @@ This skill reviews pull requests.`;
 			expect(systemPrompt).toContain("PR Review Skill");
 			expect(systemPrompt).toContain(skillMdContent);
 
-			// The skill index should appear in developer message
-			const devMsg = messages.find((m) => m.role === "developer");
-			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
-			expect(devContent).toBeDefined();
-			expect(devContent).toContain("<available_skills>");
-			expect(devContent).toContain("<skill>");
-			expect(devContent).toContain("<name>pr-review</name>");
-			expect(devContent).toContain("<description>Review GitHub PRs</description>");
-			expect(devContent).toContain("</skill>");
-			expect(devContent).toContain("</available_skills>");
+			// The skill index also lives on the cacheable stable prefix.
+			expect(systemPrompt).toContain("<available_skills>");
+			expect(systemPrompt).toContain("<skill>");
+			expect(systemPrompt).toContain("<name>pr-review</name>");
+			expect(systemPrompt).toContain("<description>Review GitHub PRs</description>");
+			expect(systemPrompt).toContain("</skill>");
+			expect(systemPrompt).toContain("</available_skills>");
+			// `messages` retained for prior assertions on developer tail content,
+			// but the skill index assertions now live on systemPrompt.
+			void messages;
 		});
 
 		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
@@ -2839,7 +2834,7 @@ This skill reviews pull requests.`;
 				[randomUUID(), "nohist_key", "nohist_value", "detail", null, recentTime, recentTime, 0],
 			);
 
-			const { messages } = assembleContext({
+			const { messages, systemPrompt } = assembleContext({
 				db: enrichTestDb,
 				threadId: testThreadId,
 				userId: enrichTestUserId,
@@ -2847,18 +2842,22 @@ This skill reviews pull requests.`;
 				taskId: testTaskId,
 			});
 
-			// Find developer message with enrichment (looking for three-section headers)
-			const enrichMsg = messages.find(
-				(m) =>
-					m.role === "developer" &&
-					typeof m.content === "string" &&
-					(m.content.includes("## Working Knowledge") ||
-						m.content.includes("## Discoverable Archive") ||
-						m.content.includes("## Live State")),
-			);
-
-			expect(enrichMsg).toBeDefined();
-			expect(enrichMsg?.content).toContain("nohist_key");
+			// After the suffix-prefix split, the stable subsections (Working
+			// Knowledge bodies + Discoverable Archive titles) live on
+			// systemPrompt; the varying tail (Live State + Working Knowledge
+			// updates) lives in the developer tail message. The volatile
+			// content for the nohist_key entry (detail tier → Discoverable
+			// Archive, stable side) is reachable via either; assert the union
+			// to keep the test robust to entry-tier choice.
+			const devMsg = messages.find((m) => m.role === "developer" && typeof m.content === "string");
+			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+			const combined = `${systemPrompt}\n${devContent}`;
+			expect(
+				combined.includes("## Working Knowledge") ||
+					combined.includes("## Discoverable Archive") ||
+					combined.includes("## Live State"),
+			).toBe(true);
+			expect(combined).toContain("nohist_key");
 		});
 
 		it("AC1.4: noHistory=true: no enrichment message when delta and digest are both empty", () => {
@@ -3027,26 +3026,28 @@ This skill reviews pull requests.`;
 				contextWindow: 500,
 			});
 			const devMsg = result.messages.find((m) => m.role === "developer");
-			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
+			const varyingTail = typeof devMsg?.content === "string" ? devMsg.content : "";
+			// After the suffix-prefix split, WK bodies + DA titles fold into
+			// systemPrompt; the varying tail carries WK update markers and Live
+			// State. Combine both for the section-presence assertions.
+			const combined = `${result.systemPrompt}\n${varyingTail}`;
 
 			// Budget pressure should trigger re-composition with three sections (R-VC1)
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("## Working Knowledge");
-			expect(systemSuffix).toContain("## Discoverable Archive");
-			expect(systemSuffix).toContain("## Live State");
+			expect(combined).toContain("## Working Knowledge");
+			expect(combined).toContain("## Discoverable Archive");
+			expect(combined).toContain("## Live State");
 
 			// Memory deltas should be inline with [changed since] markers, not standalone "Memory:" header
-			expect(systemSuffix.match(/^Memory:\s+/m)).toBeNull();
+			expect(combined.match(/^Memory:\s+/m)).toBeNull();
 
 			// Check that Working Knowledge contains at most 3 pinned or summary entries
-			// (budget pressure applies reduced (3,3) caps through the three-section composition)
-			const wkStart = systemSuffix.indexOf("## Working Knowledge");
-			const daStart = systemSuffix.indexOf("## Discoverable Archive");
+			// (budget pressure applies reduced (3,3) caps through the three-section composition).
+			// The WK bodies are on systemPrompt; assert against the stable side.
+			const wkStart = result.systemPrompt.indexOf("## Working Knowledge");
+			const daStart = result.systemPrompt.indexOf("## Discoverable Archive");
 			if (wkStart >= 0 && daStart >= 0) {
-				const wkSection = systemSuffix.substring(wkStart, daStart);
-				// Count entries (lines with prefixes like [pinned], [summary], etc. or [changed since] markers)
+				const wkSection = result.systemPrompt.substring(wkStart, daStart);
 				const entryLines = wkSection.split("\n").filter((l) => l.match(/^\s*-/));
-				// Should be <= 3 summary/pinned entries in budget-pressure Working Knowledge
 				expect(entryLines.length).toBeLessThanOrEqual(3);
 			}
 		});
@@ -6622,22 +6623,24 @@ This skill reviews pull requests.`;
 			// Should have budget pressure
 			expect(result.debug.budgetPressure).toBe(true);
 
-			// L3 (recency) entries should be entirely shed from the context
-			// Check both system messages and developer message
+			// L3 (recency) entries should be entirely shed from the context.
+			// The cacheable stable prefix lives on result.systemPrompt; the
+			// varying developer tail lives on the developer message. Combine
+			// both when asserting presence/absence.
 			const systemText = result.messages
 				.filter((m) => m.role === "system")
 				.map((m) => (typeof m.content === "string" ? m.content : ""))
 				.join("\n");
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
-			const contextText = `${systemText}\n${devContent}`;
+			const contextText = `${result.systemPrompt}\n${systemText}\n${devContent}`;
 
 			// L3 entries have keys "recency_key_N" — should not appear
 			for (let i = 0; i < 10; i++) {
 				expect(contextText).not.toContain(`recency_key_${i}`);
 			}
 
-			// L0, L1 should always be present
+			// L0, L1 should always be present (now on the stable prefix)
 			expect(contextText).toContain("[pinned:context");
 			expect(contextText).toContain("summary_key");
 			// L2 may be shedded under extreme budget pressure, but L0+L1 never are

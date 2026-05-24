@@ -159,6 +159,17 @@ When Tier 3 is active, the `Uncategorized` cluster surfaces a `[synthesis-backlo
 
 **R-VC23.** The cross-thread digest shall not render any sibling thread's summary excerpt; only title, message count, and last-updated timestamp are rendered (R-VC7). This is the structural fix for the d0372be6 confabulation pattern (§1.3) — the typographic similarity between summary excerpts and ground-truth content is what enables the agent to mistake digest stubs for live state.
 
+**R-VC24 (suffix-prefix split).** The volatile context block shall be partitioned at render time into a stable prefix and a varying tail, dispatched to the LLM driver across the cache boundary.
+
+- **Stable prefix** (cacheable, sent on the `system` provider param): Working Knowledge bodies (pinned + summary entries, no markers), Discoverable Archive titles, and the active skill index.
+- **Varying tail** (uncached, sent as a `developer`-role message after history): Working Knowledge update markers (`[changed since last turn]`, `[stale child of <parent>]`), the entire Live State section (cross-thread digest, task digest, file modifications, applied advisories, synthesis backlog), the User/Thread ID line, relay/platform/model context, retired-skill notifications, advisory feedback notifications, inactive-skill references, and any operator-supplied `system_prompt_addition`.
+
+The split is structural: each renderer (`renderWorkingKnowledge`, `renderDiscoverableArchive`, `renderLiveState`) is responsible for emitting its content into the correct channel. `renderWorkingKnowledge` returns `{ stableLines, varyingLines }` where varying carries keyed update references (`- <key> [changed since last turn]`, `- <key>: <gloss> [stale child of <parent>]`); the stable side carries plain bodies. `renderDiscoverableArchive` is fully stable (titles only). `renderLiveState` is fully varying.
+
+The contract holds across all three composer call sites: the primary cold-path (`buildVolatileContext`), the no-history task path, and the budget-pressure rebuild path. Under budget pressure (R-VC14), the rebuild rewrites only the varying tail; the stable prefix is preserved verbatim because it is bounded (full-fidelity Working Knowledge is finite per the presence invariant; Discoverable Archive titles are bounded by R-VC15 tunables) and editing systemPrompt mid-assembly is structurally infeasible.
+
+**Why folded into systemPrompt rather than a pre-history developer message.** The bridge layer (`packages/llm/src/ai-sdk-bridge.ts`) merges `developer`-role messages into the next adjacent user message wrapped in `<system-context>`. A pre-history developer message would therefore alter the first user message's content and lose byte stability across threads, defeating cross-thread cache reuse. Folding stable lines into `systemParts` places them inside the existing system-level cache breakpoint, which the driver applies at the end of the `system` param. This delivers genuine cross-thread cache reuse: cron tasks running in the same TTL window over different threads share an identical cached prefix.
+
 ---
 
 ## 4. Data Model Changes
@@ -372,6 +383,10 @@ After this RFC:
 - The cross-thread digest output, file modification notices, applied advisories, and the task run digest all become subsystems of the Live State section.
 - The trailing meta-instruction is removed. Each section ends with its own footer (R-VC6).
 - The `rebuildWarmSections` path (`:2229`) follows the same section structure.
+
+**Suffix-prefix split (R-VC24).** `composeVolatileSections` returns `{ stableLines, varyingLines, synthesisBacklogCount }`. `buildVolatileContext` accumulates separate `stableLines` and `varyingLines` buffers in addition to the legacy `suffixLines` (the union of both, retained for snapshot fixtures, debug accounting, and the budget-pressure splice). `assembleContext` defers building `systemPrompt` until after both Stage 5.5 (no-history) and Stage 6 (primary) have run, so the volatile stable subsection (Working Knowledge bodies + Discoverable Archive titles + skill index) can be appended to `systemParts` before serialization. The varying tail rides as a single developer-role message at the assembled tail. The driver receives `system: systemPrompt` and `messages: [...history, dev(varying)]`; the system-level cache breakpoint covers the stable prefix automatically.
+
+The budget-pressure rebuild path (`applyReducedEnrichment`) uses the varying-only enrichment indices (`varyingEnrichmentStartIdx` / `varyingEnrichmentEndIdx`) into `allVaryingLines` to splice ONLY the varying tail. The stable prefix is not edited under budget pressure: it is bounded (Working Knowledge runs at full fidelity per the presence invariant; Discoverable Archive titles are bounded by R-VC15 tunables) and `systemPrompt` is already serialized by that stage.
 
 ### 6.4 Memory Rendering — `packages/agent/src/summary-extraction.ts`
 
