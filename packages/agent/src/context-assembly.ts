@@ -1982,9 +1982,16 @@ Original output was too large for the context window. If you need the full conte
 		// covering the varying-tail developer message that follows history;
 		// SECTION_COLORS exposes it as a distinct bracket between history and
 		// tools.
-		const memoryLines = volatileCtx.allVolatileLines.slice(
-			volatileCtx.enrichmentStartIdx,
-			volatileCtx.enrichmentEndIdx,
+		//
+		// IMPORTANT: slice allVaryingLines (not allVolatileLines), using
+		// varyingEnrichmentStartIdx/varyingEnrichmentEndIdx (not the
+		// union-relative enrichmentStartIdx/enrichmentEndIdx). Otherwise the
+		// memory section double-counts stable Working Knowledge bodies that
+		// have been promoted into the prefix, inflating context_debug totals
+		// well above actual on-wire tokens_in.
+		const memoryLines = volatileCtx.allVaryingLines.slice(
+			volatileCtx.varyingEnrichmentStartIdx,
+			volatileCtx.varyingEnrichmentEndIdx,
 		);
 		const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
 
@@ -2574,9 +2581,15 @@ export function rebuildWarmSections(params: {
 
 	// Volatile sections: recompute from the freshly-built volatile context.
 	// Mirrors the cold-path computation in assembleContext.
-	const memoryLines = params.volatileCtx.allVolatileLines.slice(
-		params.volatileCtx.enrichmentStartIdx,
-		params.volatileCtx.enrichmentEndIdx,
+	//
+	// IMPORTANT: slice allVaryingLines (not allVolatileLines), using
+	// varyingEnrichmentStartIdx/varyingEnrichmentEndIdx (not the
+	// union-relative enrichmentStartIdx/enrichmentEndIdx). Otherwise the
+	// memory section double-counts stable Working Knowledge bodies that
+	// have been promoted into the prefix.
+	const memoryLines = params.volatileCtx.allVaryingLines.slice(
+		params.volatileCtx.varyingEnrichmentStartIdx,
+		params.volatileCtx.varyingEnrichmentEndIdx,
 	);
 	const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
 	const taskDigestTokens =

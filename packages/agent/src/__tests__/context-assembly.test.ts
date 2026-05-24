@@ -8440,14 +8440,27 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 		const enrichmentStartIdx = otherLines.length + taskDigestLines.length;
 		const enrichmentEndIdx = allVolatileLines.length;
 		const content = allVolatileLines.join("\n");
+		const tokenEstimate = countTokens(content);
+		// Legacy helper: everything is "varying" (no stable WK promoted to prefix).
+		// Mirror the union view as the varying view so the new
+		// allVaryingLines / varyingEnrichment* fields satisfy required typing
+		// without changing observable per-section token math.
 		return {
 			content,
-			tokenEstimate: countTokens(content),
+			stableContent: "",
+			varyingContent: content,
+			tokenEstimate,
+			stableTokenEstimate: 0,
+			varyingTokenEstimate: tokenEstimate,
 			enrichmentStartIdx,
 			enrichmentEndIdx,
+			varyingEnrichmentStartIdx: enrichmentStartIdx,
+			varyingEnrichmentEndIdx: enrichmentEndIdx,
 			allVolatileLines,
+			allVaryingLines: [...allVolatileLines],
 			memoryDeltaLines: memoryLines,
 			taskDigestLines,
+			totalMemCount: 0,
 		};
 	}
 
@@ -8550,12 +8563,20 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 	it("omits memory/task-digest/volatile-other when their tokens are zero", () => {
 		const volatileCtx: VolatileContext = {
 			content: "",
+			stableContent: "",
+			varyingContent: "",
 			tokenEstimate: 0,
+			stableTokenEstimate: 0,
+			varyingTokenEstimate: 0,
 			enrichmentStartIdx: 0,
 			enrichmentEndIdx: 0,
+			varyingEnrichmentStartIdx: 0,
+			varyingEnrichmentEndIdx: 0,
 			allVolatileLines: [],
+			allVaryingLines: [],
 			memoryDeltaLines: [],
 			taskDigestLines: [],
+			totalMemCount: 0,
 		};
 		const storedMessages: LLMMessage[] = [
 			{ role: "user", content: "hi" },
@@ -8642,6 +8663,73 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 		const history = result.find((s) => s.name === "history");
 		// Should equal exactly the user message tokens — cache markers ignored.
 		expect(history?.tokens).toBe(countContentTokens(userText));
+	});
+
+	it("memory section reports varying-only enrichment tokens, not stable+varying union (regression: section accounting double-counts stable bodies)", () => {
+		// BUG: rebuildWarmSections (and the assembleContext primary path) compute
+		// memoryLines from volatileCtx.allVolatileLines (stable + varying union)
+		// sliced by enrichmentStartIdx/enrichmentEndIdx (also union-relative).
+		// When stable Working Knowledge bodies have been promoted into the prefix
+		// (v0.0.161/162 stable-slab work), this over-reports memory tokens by the
+		// stable enrichment size. context_debug ends up ~stable-slab tokens above
+		// the actual on-wire tokens_in.
+		//
+		// FIX: slice volatileCtx.allVaryingLines using
+		//      volatileCtx.varyingEnrichmentStartIdx / volatileCtx.varyingEnrichmentEndIdx.
+
+		// Stable enrichment is the simulated Working Knowledge bodies in the prefix.
+		const stableBody = "PINNED_BODY_FIXTURE_LONG_LONG_LONG ".repeat(40);
+		// Varying enrichment is the simulated WK update markers in the tail.
+		const varyingBody = "DELTA";
+
+		const stableLines = [stableBody];
+		const varyingLines = [varyingBody];
+		const allVolatileLines = [...stableLines, ...varyingLines];
+		const allVaryingLines = [...varyingLines];
+
+		const stableContent = stableLines.join("\n");
+		const varyingContent = varyingLines.join("\n");
+		const stableTokenEstimate = countTokens(stableContent);
+		const varyingTokenEstimate = countTokens(varyingContent);
+
+		// Sanity-check: stable should be much larger than varying so the bug is observable.
+		expect(stableTokenEstimate).toBeGreaterThan(50);
+		expect(varyingTokenEstimate).toBeLessThan(5);
+
+		const volatileCtx: VolatileContext = {
+			content: `${stableContent}\n${varyingContent}`,
+			stableContent,
+			varyingContent,
+			tokenEstimate: stableTokenEstimate + varyingTokenEstimate,
+			stableTokenEstimate,
+			varyingTokenEstimate,
+			// Union-relative indices: cover BOTH stable and varying enrichment.
+			enrichmentStartIdx: 0,
+			enrichmentEndIdx: allVolatileLines.length,
+			// Varying-relative indices: cover ONLY varying enrichment.
+			varyingEnrichmentStartIdx: 0,
+			varyingEnrichmentEndIdx: allVaryingLines.length,
+			allVolatileLines,
+			allVaryingLines,
+			memoryDeltaLines: [varyingBody],
+			taskDigestLines: [],
+			totalMemCount: 0,
+		};
+
+		const result = rebuildWarmSections({
+			cachedSections: fullCachedSections,
+			storedMessages: [{ role: "developer", content: "" }],
+			volatileCtx,
+		});
+
+		const memorySection = result.find((s) => s.name === "memory");
+		expect(memorySection).toBeDefined();
+		if (!memorySection) throw new Error("unreachable: memory section missing");
+
+		// AFTER FIX: memory section ≈ varyingTokenEstimate (small, just the delta marker).
+		// BEFORE FIX: memory section ≈ stableTokenEstimate + varyingTokenEstimate (over-counts).
+		expect(memorySection.tokens).toBeLessThan(stableTokenEstimate);
+		expect(memorySection.tokens).toBeLessThanOrEqual(varyingTokenEstimate + 2);
 	});
 });
 
