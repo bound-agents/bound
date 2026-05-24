@@ -1428,7 +1428,6 @@ const WORKING_KNOWLEDGE_FOOTER =
 const SUMMARY_GLOSS_MAX = 200;
 const STALE_CHILD_GLOSS_MAX = 200;
 const DELTA_MARKER = "[changed since last turn]";
-const PINNED_DELTA_INDENT = "    "; // four spaces, per R-VC11(b)
 
 /**
  * Truncates a string to maximum length and appends "..." if truncated.
@@ -1440,51 +1439,104 @@ function truncateGloss(s: string, max: number): string {
 }
 
 /**
+ * Header line emitted on the varying side when there are any updates to
+ * report (deltas, stale children). Distinct from WORKING_KNOWLEDGE_HEADER so
+ * the agent can visually pair updates with the stable bodies above without
+ * re-parsing the section title.
+ */
+const WORKING_KNOWLEDGE_UPDATES_HEADER = "## Working Knowledge — updates";
+
+/**
  * Renders the Working Knowledge section from pinned and summary entries.
  * A pure function that takes already-loaded data and produces output lines.
  * No I/O; no DB access; R-VC11(d) structurally guaranteed by signature.
  *
+ * Output is split into two channels (stable / varying) so the stable bodies
+ * can sit before history as a cacheable developer prefix and the varying
+ * markers ride in the uncached tail (RFC 2026-05-22-volatile-context §
+ * suffix-prefix split).
+ *
+ *   stableLines  — header + plain pinned + summary bodies + footer.
+ *                  Cacheable across turns until a body itself is rewritten.
+ *   varyingLines — per-key [changed since last turn] markers and stale-child
+ *                  sub-bullets ([stale child of <parent>], optionally with
+ *                  the delta marker). Empty when no deltas / no stale children.
+ *
  * R-VC2: Produces header line with exact em-dash character (U+2014).
  * R-VC3: Pinned entries rendered in full text; summary entries with 200-char gloss.
  * R-VC6: Produces exact footer text.
- * R-VC10: Stale children indented beneath parent summary.
- * R-VC11(a-c): Delta markers placed according to entry type and staleness.
+ * R-VC10: Stale children referenced via [stale child of <parent>] in the
+ *         varying channel; the parent's body remains stable.
+ * R-VC11(a-c): Delta markers emitted into the varying channel, keyed back to
+ *         the entry by name. Ordering for stale + delta on the same child is
+ *         preserved: [stale child of …] [changed since last turn].
  * R-VC22: Header uses ## (top-level, uniform across sections).
  */
-export function renderWorkingKnowledge(input: WorkingKnowledgeInput): RenderedSection {
-	const lines: string[] = [];
-	lines.push(WORKING_KNOWLEDGE_HEADER);
-	lines.push("");
+export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
+	stableLines: string[];
+	varyingLines: string[];
+} {
+	const stableLines: string[] = [];
+	stableLines.push(WORKING_KNOWLEDGE_HEADER);
+	stableLines.push("");
 
-	// R-VC3: pinned entries in full text. R-VC11(b): delta marker on indented new line.
+	// R-VC3: pinned bodies in full text, no inline markers.
 	for (const entry of input.pinned) {
-		lines.push(`- ${entry.key}: ${entry.value}`);
-		if (input.deltaKeys.has(entry.key)) {
-			lines.push(`${PINNED_DELTA_INDENT}${DELTA_MARKER}`);
-		}
+		stableLines.push(`- ${entry.key}: ${entry.value}`);
 	}
 
-	// R-VC3: summary entries with 200-char gloss. R-VC11(a): delta marker on same line.
+	// R-VC3: summary bodies with 200-char gloss, no inline markers.
 	for (const summary of input.summaries) {
 		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
-		const summaryDelta = input.deltaKeys.has(summary.key) ? ` ${DELTA_MARKER}` : "";
-		lines.push(`- ${summary.key}: ${gloss}${summaryDelta}`);
+		stableLines.push(`- ${summary.key}: ${gloss}`);
+	}
 
-		// R-VC10: stale children indented beneath their parent.
-		const staleChildren = input.staleChildrenBySummary.get(summary.key) ?? [];
-		for (const child of staleChildren) {
-			const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
-			const staleMarker = `[stale child of ${summary.key}]`;
-			// R-VC11(c): when stale + delta, fixed order is [stale child …] [changed since last turn].
-			const childDelta = input.deltaKeys.has(child.key) ? ` ${DELTA_MARKER}` : "";
-			lines.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+	stableLines.push("");
+	stableLines.push(WORKING_KNOWLEDGE_FOOTER);
+
+	const varyingLines: string[] = [];
+
+	// Collect all per-key annotations (deltas + stale children) on the varying side.
+	const pinnedDeltas = input.pinned.filter((e) => input.deltaKeys.has(e.key));
+	const summaryDeltas = input.summaries.filter((s) => input.deltaKeys.has(s.key));
+	let hasStaleChildren = false;
+	for (const summary of input.summaries) {
+		const children = input.staleChildrenBySummary.get(summary.key);
+		if (children && children.length > 0) {
+			hasStaleChildren = true;
+			break;
 		}
 	}
 
-	lines.push("");
-	lines.push(WORKING_KNOWLEDGE_FOOTER);
+	if (pinnedDeltas.length > 0 || summaryDeltas.length > 0 || hasStaleChildren) {
+		varyingLines.push(WORKING_KNOWLEDGE_UPDATES_HEADER);
+		varyingLines.push("");
 
-	return { lines };
+		// R-VC11(b): pinned delta — keyed reference (body lives in stable).
+		for (const entry of pinnedDeltas) {
+			varyingLines.push(`- ${entry.key} ${DELTA_MARKER}`);
+		}
+
+		// R-VC11(a): summary delta — keyed reference (body lives in stable).
+		for (const summary of summaryDeltas) {
+			varyingLines.push(`- ${summary.key} ${DELTA_MARKER}`);
+		}
+
+		// R-VC10/R-VC11(c): stale children referenced under their parent. The
+		// child gloss travels with the marker because the staleness signal is
+		// what makes it relevant — it would not appear otherwise.
+		for (const summary of input.summaries) {
+			const staleChildren = input.staleChildrenBySummary.get(summary.key) ?? [];
+			for (const child of staleChildren) {
+				const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
+				const staleMarker = `[stale child of ${summary.key}]`;
+				const childDelta = input.deltaKeys.has(child.key) ? ` ${DELTA_MARKER}` : "";
+				varyingLines.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+			}
+		}
+	}
+
+	return { stableLines, varyingLines };
 }
 
 /**

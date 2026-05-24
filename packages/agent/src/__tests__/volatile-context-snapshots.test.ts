@@ -219,7 +219,12 @@ describe("volatile-context snapshots", () => {
 		// With memory state (5 pinned, 5 summary, 30 detail) plus multiple Live State entries,
 		// the volatile enrichment will exceed headroom, triggering budget-pressure rebuild
 		// with applyReducedEnrichment path (Live State subsystems capped to 3 each).
-		// Extract only the developer message portion which contains the volatile context.
+		// After the suffix-prefix split, volatile content is split across the
+		// stable system prompt (Working Knowledge bodies + Discoverable Archive
+		// titles + skill index) and the developer tail (Working Knowledge update
+		// markers + Live State + advisory/skill notifications + suffix). Extract
+		// the volatile portion from systemPrompt by slicing from the first
+		// volatile section header, then concatenate with the developer tail.
 		const result = assembleContext({
 			db,
 			threadId,
@@ -230,7 +235,13 @@ describe("volatile-context snapshots", () => {
 			tools: [],
 		});
 
-		// Find the developer message and extract its content
+		// Stable volatile portion: everything from the first volatile section
+		// header onward (the section headers are stable identifiers).
+		const stableMarker = "## Working Knowledge — operational and durable";
+		const stableMarkerIdx = result.systemPrompt.indexOf(stableMarker);
+		const stableVolatile = stableMarkerIdx >= 0 ? result.systemPrompt.slice(stableMarkerIdx) : "";
+
+		// Varying tail: the developer message at the assembled tail.
 		let devContent = "";
 		for (const msg of result.messages) {
 			if (msg.role === "developer") {
@@ -239,8 +250,10 @@ describe("volatile-context snapshots", () => {
 			}
 		}
 
+		const combined = `${stableVolatile}\n\n--- VARYING TAIL ---\n${devContent}`;
+
 		await assertSnapshot(
-			devContent,
+			combined,
 			join(__dirname, "fixtures/volatile-context/budget-pressure.snap.txt"),
 		);
 

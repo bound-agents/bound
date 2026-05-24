@@ -3,61 +3,73 @@ User ID: test-user, Thread ID: 5f701ca6-b4be-5dee-a78f-fdf680addb1d
 ## Working Knowledge — operational and durable
 
 - _pinned:0: pinned body 0
-    [changed since last turn]
 - _pinned:1: pinned body 1
-    [changed since last turn]
 - _pinned:2: pinned body 2
-    [changed since last turn]
 - _pinned:3: pinned body 3
-    [changed since last turn]
 - _pinned:4: pinned body 4
-    [changed since last turn]
 - _pinned:5: pinned body 5
-    [changed since last turn]
 - _pinned:6: pinned body 6
-    [changed since last turn]
 - _pinned:7: pinned body 7
-    [changed since last turn]
 - _pinned:8: pinned body 8
-    [changed since last turn]
 - _pinned:9: pinned body 9
-    [changed since last turn]
-- _summary:topic-0: Summary for topic 0: this is a brief overview. [changed since last turn]
-- _summary:topic-1: Summary for topic 1: this is a brief overview. [changed since last turn]
-- _summary:topic-2: Summary for topic 2: this is a brief overview. [changed since last turn]
-- _summary:topic-3: Summary for topic 3: this is a brief overview. [changed since last turn]
-- _summary:topic-4: Summary for topic 4: this is a brief overview. [changed since last turn]
-- _summary:topic-5: Summary for topic 5: this is a brief overview. [changed since last turn]
-- _summary:topic-6: Summary for topic 6: this is a brief overview. [changed since last turn]
-- _summary:topic-7: Summary for topic 7: this is a brief overview. [changed since last turn]
-- _summary:topic-8: Summary for topic 8: this is a brief overview. [changed since last turn]
-- _summary:topic-9: Summary for topic 9: this is a brief overview. [changed since last turn]
+- _summary:topic-0: Summary for topic 0: this is a brief overview.
+- _summary:topic-1: Summary for topic 1: this is a brief overview.
+- _summary:topic-2: Summary for topic 2: this is a brief overview.
+- _summary:topic-3: Summary for topic 3: this is a brief overview.
+- _summary:topic-4: Summary for topic 4: this is a brief overview.
+- _summary:topic-5: Summary for topic 5: this is a brief overview.
+- _summary:topic-6: Summary for topic 6: this is a brief overview.
+- _summary:topic-7: Summary for topic 7: this is a brief overview.
+- _summary:topic-8: Summary for topic 8: this is a brief overview.
+- _summary:topic-9: Summary for topic 9: this is a brief overview.
 
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search
 
-- curiosity:item-0-det000000 (last accessed 1d ago)
-- curiosity:item-1-det000001 (last accessed 1d ago)
-- curiosity:item-2-det000002 (last accessed 1d ago)
-- curiosity:item-3-det000003 (last accessed 1d ago)
-- curiosity:item-4-det000004 (last accessed 1d ago)
-- curiosity:item-5-det000005 (last accessed 1d ago)
-- curiosity:item-6-det000006 (last accessed 1d ago)
-- curiosity:item-7-det000007 (last accessed 1d ago)
-- curiosity:item-8-det000008 (last accessed 1d ago)
-- curiosity:item-9-det000009 (last accessed 1d ago)
-- curiosity:item-10-det000010 (last accessed 1d ago)
-- curiosity:item-11-det000011 (last accessed 1d ago)
-- curiosity:item-12-det000012 (last accessed 1d ago)
-- curiosity:item-13-det000013 (last accessed 1d ago)
-- curiosity:item-14-det000014 (last accessed 1d ago)
-- curiosity:item-15-det000015 (last accessed 1d ago)
-- curiosity:item-16-det000016 (last accessed 1d ago)
-- curiosity:item-17-det000017 (last accessed 1d ago)
-- curiosity:item-18-det000018 (last accessed 1d ago)
-- curiosity:item-19-det000019 (last accessed 1d ago)
+- curiosity:item-0-det000000 (last accessed 2d ago)
+- curiosity:item-1-det000001 (last accessed 2d ago)
+- curiosity:item-2-det000002 (last accessed 2d ago)
+- curiosity:item-3-det000003 (last accessed 2d ago)
+- curiosity:item-4-det000004 (last accessed 2d ago)
+- curiosity:item-5-det000005 (last accessed 2d ago)
+- curiosity:item-6-det000006 (last accessed 2d ago)
+- curiosity:item-7-det000007 (last accessed 2d ago)
+- curiosity:item-8-det000008 (last accessed 2d ago)
+- curiosity:item-9-det000009 (last accessed 2d ago)
+- curiosity:item-10-det000010 (last accessed 2d ago)
+- curiosity:item-11-det000011 (last accessed 2d ago)
+- curiosity:item-12-det000012 (last accessed 2d ago)
+- curiosity:item-13-det000013 (last accessed 2d ago)
+- curiosity:item-14-det000014 (last accessed 2d ago)
+- curiosity:item-15-det000015 (last accessed 2d ago)
+- curiosity:item-16-det000016 (last accessed 2d ago)
+- curiosity:item-17-det000017 (last accessed 2d ago)
+- curiosity:item-18-det000018 (last accessed 2d ago)
+- curiosity:item-19-det000019 (last accessed 2d ago)
 
 Bodies are accessed via memory search or query against semantic_memory.
+## Working Knowledge — updates
+
+- _pinned:0 [changed since last turn]
+- _pinned:1 [changed since last turn]
+- _pinned:2 [changed since last turn]
+- _pinned:3 [changed since last turn]
+- _pinned:4 [changed since last turn]
+- _pinned:5 [changed since last turn]
+- _pinned:6 [changed since last turn]
+- _pinned:7 [changed since last turn]
+- _pinned:8 [changed since last turn]
+- _pinned:9 [changed since last turn]
+- _summary:topic-0 [changed since last turn]
+- _summary:topic-1 [changed since last turn]
+- _summary:topic-2 [changed since last turn]
+- _summary:topic-3 [changed since last turn]
+- _summary:topic-4 [changed since last turn]
+- _summary:topic-5 [changed since last turn]
+- _summary:topic-6 [changed since last turn]
+- _summary:topic-7 [changed since last turn]
+- _summary:topic-8 [changed since last turn]
+- _summary:topic-9 [changed since last turn]
 ## Live State — pointers to canonical sources
 
 

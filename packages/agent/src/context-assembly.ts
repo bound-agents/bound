@@ -137,16 +137,54 @@ export interface ContextAssemblyResult {
 }
 
 export interface VolatileContext {
-	/** Joined content string of all volatile context lines */
+	/**
+	 * Joined content string of all volatile context lines (stable + varying
+	 * concatenated). Retained for snapshot tests and any consumer that only
+	 * needs a single rendered string.
+	 */
 	content: string;
-	/** Token estimate for the volatile context */
+	/**
+	 * Stable lines: thread-agnostic content that does not change turn-to-turn
+	 * under steady state. Working Knowledge bodies, Discoverable Archive
+	 * titles, and the skill index. Joined and emitted as a developer message
+	 * BEFORE history so prompt caching can reuse the prefix across turns and
+	 * across threads (cross-thread cache reuse for cron tasks in the same TTL
+	 * window).
+	 */
+	stableContent: string;
+	/**
+	 * Varying lines: per-thread / per-turn content. Working Knowledge update
+	 * markers, Live State (cross-thread digest, task digest, file
+	 * modifications, applied advisories), retired-skill notifications,
+	 * advisory feedback notifications, inactive-skill references, the
+	 * User/Thread ID line, relay/platform/model context, and any
+	 * systemPromptAddition. Emitted as a developer message AFTER history;
+	 * uncached.
+	 */
+	varyingContent: string;
+	/** Token estimate for the combined volatile context (stable + varying). */
 	tokenEstimate: number;
-	/** Enrichment section start index for budget pressure rebuild */
+	/** Token estimate for the stable portion only (for cache accounting). */
+	stableTokenEstimate: number;
+	/** Token estimate for the varying portion only (driver suffix budgeting). */
+	varyingTokenEstimate: number;
+	/**
+	 * Enrichment section start index in `allVolatileLines` (combined buffer)
+	 * for budget-pressure rebuild splicing.
+	 */
 	enrichmentStartIdx: number;
-	/** Enrichment section end index for budget pressure rebuild */
+	/** Enrichment section end index in `allVolatileLines` (combined buffer). */
 	enrichmentEndIdx: number;
-	/** Snapshot of all volatile lines for budget pressure splicing */
+	/**
+	 * Enrichment section start/end indices into the varying buffer alone.
+	 * Used by budget-pressure rebuild to splice ONLY the varying tail.
+	 */
+	varyingEnrichmentStartIdx: number;
+	varyingEnrichmentEndIdx: number;
+	/** Snapshot of combined volatile lines (stable then varying) for splicing */
 	allVolatileLines: string[];
+	/** Snapshot of varying-only volatile lines (mirror of `varyingContent`). */
+	allVaryingLines: string[];
 	/** Memory delta lines for tier-aware shedding */
 	memoryDeltaLines: string[];
 	/** Task digest lines for tier-aware shedding */
@@ -196,11 +234,32 @@ interface ComposeVolatileSectionsParams {
 	nowMs: number;
 }
 
+/**
+ * Composes the three volatile renderers (Working Knowledge, Discoverable
+ * Archive, Live State) into stable and varying line buffers per the
+ * suffix-prefix split (RFC 2026-05-22-volatile-context).
+ *
+ *   stableLines  — content that does not change turn-to-turn under steady
+ *                  state. Working Knowledge bodies (pinned + summary, no
+ *                  markers) and Discoverable Archive titles. Sits before
+ *                  history as a cacheable developer prefix.
+ *   varyingLines — content that does change turn-to-turn: Working Knowledge
+ *                  delta markers and stale-child references, plus the entire
+ *                  Live State section (cross-thread digest, task digest, file
+ *                  modifications, applied advisories, synthesis backlog).
+ *                  Sits after history; uncached.
+ *
+ * Section ordering inside each buffer mirrors R-VC1 (WK → DA → LS), so
+ * concatenating stableLines + varyingLines produces the same logical
+ * sequence the agent saw before the split.
+ */
 function composeVolatileSections(params: ComposeVolatileSectionsParams): {
-	lines: string[];
+	stableLines: string[];
+	varyingLines: string[];
 	synthesisBacklogCount: number | null;
 } {
-	const lines: string[] = [];
+	const stableLines: string[] = [];
+	const varyingLines: string[] = [];
 
 	// Compute stale child keys for dedup
 	const staleChildKeysInWorkingKnowledge = new Set(
@@ -216,8 +275,8 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		staleChildrenBySummary: params.staleChildrenMap,
 		deltaKeys: params.deltaKeys,
 	});
-	lines.push("");
-	lines.push(...wk.lines);
+	stableLines.push("");
+	stableLines.push(...wk.stableLines);
 
 	const da = renderDiscoverableArchive({
 		entries: params.detailEntries,
@@ -227,7 +286,11 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		nowMs: params.nowMs,
 		tunables: resolveVc15Tunables(),
 	});
-	lines.push(...da.section.lines);
+	stableLines.push(...da.section.lines);
+
+	if (wk.varyingLines.length > 0) {
+		varyingLines.push(...wk.varyingLines);
+	}
 
 	const ls = renderLiveState({
 		crossThreadEntries: params.digest.entries,
@@ -238,10 +301,11 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		budgetPressure: params.budgetPressure,
 		nowMs: params.nowMs,
 	});
-	lines.push(...ls.lines);
+	varyingLines.push(...ls.lines);
 
 	return {
-		lines,
+		stableLines,
+		varyingLines,
 		synthesisBacklogCount: da.synthesisBacklogCount,
 	};
 }
@@ -264,14 +328,36 @@ export function buildVolatileContext(params: {
 	/** Referenced inactive skill name, if any */
 	inactiveSkillRef?: string;
 }): VolatileContext {
+	// Suffix-prefix split (RFC 2026-05-22-volatile-context):
+	//   varyingLines  — per-thread / per-turn content. Driver places these
+	//                   AFTER history; uncached. Includes the User/Thread ID
+	//                   line, relay/platform/model context, Live State,
+	//                   Working Knowledge update markers, advisory and skill
+	//                   notifications, inactive-skill references, and any
+	//                   systemPromptAddition.
+	//   stableLines   — content that does not change turn-to-turn under
+	//                   steady state. Driver places these BEFORE history so
+	//                   prompt caching reuses the prefix across turns and
+	//                   across threads (cron-task cache reuse in the same
+	//                   TTL window). Includes Working Knowledge bodies,
+	//                   Discoverable Archive titles, and the skill index.
+	//
+	// During this build we accumulate into both arrays plus a combined
+	// `suffixLines` array so existing single-message consumers (snapshot
+	// fixtures, debug accounting, budget-pressure splice) keep working.
+	const stableLines: string[] = [];
+	const varyingLines: string[] = [];
 	const suffixLines: string[] = [];
+
+	// --- VARYING: User/Thread ID, relay info, platform context, current model ---
 	suffixLines.push(`User ID: ${params.userId}, Thread ID: ${params.threadId}`);
+	varyingLines.push(`User ID: ${params.userId}, Thread ID: ${params.threadId}`);
 
 	// AC5.4: Model location when inference is relayed
 	if (params.relayInfo) {
-		suffixLines.push(
-			`You are: ${params.relayInfo.model} (via ${params.relayInfo.provider} on host ${params.relayInfo.remoteHost}, relayed from ${params.relayInfo.localHost})`,
-		);
+		const relayLine = `You are: ${params.relayInfo.model} (via ${params.relayInfo.provider} on host ${params.relayInfo.remoteHost}, relayed from ${params.relayInfo.localHost})`;
+		suffixLines.push(relayLine);
+		varyingLines.push(relayLine);
 	}
 
 	// Platform silence semantics: user only sees what you explicitly send.
@@ -280,25 +366,21 @@ export function buildVolatileContext(params: {
 			params.platformContext.toolNames && params.platformContext.toolNames.length > 0
 				? params.platformContext.toolNames.map((n) => `\`${n}\``).join(" or ")
 				: "the platform send tool";
-		suffixLines.push("");
-		suffixLines.push(`## Platform Context: ${params.platformContext.platform}`);
-		suffixLines.push(
+		const platformLines: string[] = [
+			"",
+			`## Platform Context: ${params.platformContext.platform}`,
 			"The user of this conversation is on an external platform and cannot see your responses directly.",
-		);
-		suffixLines.push(
 			`To send a message to the user, call ${toolRef}. If you do not call it, the user sees nothing (silence).`,
-		);
-		suffixLines.push(
 			"Each call to the tool produces one separate message to the user. " +
 				"Multiple calls are allowed and delivered in order.",
-		);
+		];
 
 		// Platform-specific formatting constraints
 		if (
 			params.platformContext.platform === "discord" ||
 			params.platformContext.platform === "discord-interaction"
 		) {
-			suffixLines.push(
+			platformLines.push(
 				"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
 					"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
 					"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
@@ -307,11 +389,17 @@ export function buildVolatileContext(params: {
 					"Messages over 2000 characters are rejected; split long content across multiple calls.",
 			);
 		}
+
+		suffixLines.push(...platformLines);
+		varyingLines.push(...platformLines);
 	}
 
-	// Include current model name (moved out of orientation for cache stability)
+	// Include current model name (moved out of orientation for cache stability).
+	// Stays varying because model_hint can switch turn-to-turn.
 	if (params.currentModel) {
-		suffixLines.push(`Current Model: ${params.currentModel}`);
+		const modelLine = `Current Model: ${params.currentModel}`;
+		suffixLines.push(modelLine);
+		varyingLines.push(modelLine);
 	}
 
 	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
@@ -365,25 +453,33 @@ export function buildVolatileContext(params: {
 		}
 	).c;
 
-	// Render the three sections using the shared composer
+	// Render the three sections using the shared composer.
+	// Stable side: WK bodies + DA titles. Varying side: WK update markers +
+	// Live State.
 	const enrichmentStartIdx = suffixLines.length;
-	const { lines: enrichmentLines } = composeVolatileSections({
-		db: params.db,
-		pinned: pinned.entries,
-		summaries: summaries.entries,
-		detailEntries: detailEntries.entries,
-		staleChildrenMap,
-		parentSummaryMap,
-		deltaKeys,
-		digest,
-		taskDigestEntries,
-		fileEntries,
-		advisories,
-		budgetPressure: false,
-		nowMs,
-	});
+	const varyingEnrichmentStartIdx = varyingLines.length;
+	const { stableLines: enrichmentStableLines, varyingLines: enrichmentVaryingLines } =
+		composeVolatileSections({
+			db: params.db,
+			pinned: pinned.entries,
+			summaries: summaries.entries,
+			detailEntries: detailEntries.entries,
+			staleChildrenMap,
+			parentSummaryMap,
+			deltaKeys,
+			digest,
+			taskDigestEntries,
+			fileEntries,
+			advisories,
+			budgetPressure: false,
+			nowMs,
+		});
+	const enrichmentLines: string[] = [...enrichmentStableLines, ...enrichmentVaryingLines];
+	stableLines.push(...enrichmentStableLines);
+	varyingLines.push(...enrichmentVaryingLines);
 	suffixLines.push(...enrichmentLines);
 	const enrichmentEndIdx = suffixLines.length;
+	const varyingEnrichmentEndIdx = varyingLines.length;
 
 	// Track cross-thread sources for debug
 	let crossThreadSources: CrossThreadSource[] | undefined;
@@ -391,7 +487,10 @@ export function buildVolatileContext(params: {
 		crossThreadSources = digest.sources;
 	}
 
-	// Inject active skill index (AC3.1, AC3.2)
+	// --- STABLE: active skill index (AC3.1, AC3.2) ---
+	// Skill index is keyed off the active skill set; a skill flipping
+	// active/retired or being newly imported invalidates the prefix, but
+	// steady state (no skill churn) keeps it cacheable across turns.
 	try {
 		const activeSkills = params.db
 			.query(
@@ -400,14 +499,16 @@ export function buildVolatileContext(params: {
 			.all() as Array<{ name: string; description: string }>;
 
 		if (activeSkills.length > 0) {
-			suffixLines.push(...buildSkillIndex(activeSkills).split("\n"));
+			const skillIndexLines = buildSkillIndex(activeSkills).split("\n");
+			stableLines.push(...skillIndexLines);
+			suffixLines.push(...skillIndexLines);
 		}
 	} catch (_error) {
 		// Non-fatal: active skills query failed
 		// No logger available in this context
 	}
 
-	// Inject operator retirement notifications (24h window) (AC3.6, AC3.7)
+	// --- VARYING: operator retirement notifications (24h window) (AC3.6, AC3.7) ---
 	try {
 		const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 		const retiredByOperator = params.db
@@ -422,18 +523,20 @@ export function buildVolatileContext(params: {
 
 		for (const s of retiredByOperator) {
 			const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
+			const line = `[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`;
 			suffixLines.push("");
-			suffixLines.push(
-				`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`,
-			);
+			suffixLines.push(line);
+			varyingLines.push("");
+			varyingLines.push(line);
 		}
 	} catch (_error) {
 		// Non-fatal: retired skills query failed
 		// No logger available in this context
 	}
 
-	// Inject advisory resolution notifications (24h window, capped at 5, deduped by title).
-	// Closes the feedback loop so the agent knows when its advisories were acted on.
+	// --- VARYING: advisory resolution notifications (24h window, capped at 5,
+	// deduped by title). Closes the feedback loop so the agent knows when its
+	// advisories were acted on. ---
 	if (params.siteId) {
 		try {
 			const ADVISORY_NOTIF_CAP = 5;
@@ -464,10 +567,11 @@ export function buildVolatileContext(params: {
 			for (const [title, { status, count }] of titleGroups) {
 				if (notifCount >= ADVISORY_NOTIF_CAP) break;
 				const countStr = count > 1 ? ` (×${count})` : "";
+				const line = `[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`;
 				suffixLines.push("");
-				suffixLines.push(
-					`[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`,
-				);
+				suffixLines.push(line);
+				varyingLines.push("");
+				varyingLines.push(line);
 				notifCount++;
 			}
 		} catch (_error) {
@@ -476,33 +580,52 @@ export function buildVolatileContext(params: {
 		}
 	}
 
-	// Inject inactive skill reference note (AC3.4)
+	// --- VARYING: inactive skill reference note (AC3.4) ---
 	if (params.inactiveSkillRef) {
+		const line = `Referenced skill '${params.inactiveSkillRef}' is not active.`;
 		suffixLines.push("");
-		suffixLines.push(`Referenced skill '${params.inactiveSkillRef}' is not active.`);
+		suffixLines.push(line);
+		varyingLines.push("");
+		varyingLines.push(line);
 	}
 
-	// Append systemPromptAddition if present (AC2.2). Placed after all volatile
-	// context so the user-supplied prompt sits as the trailing element of the
-	// developer message — it's user intent, not internal state.
+	// --- VARYING: systemPromptAddition (AC2.2) ---
+	// Operator-supplied per-task instruction. Treated as varying because a
+	// task can be reconfigured between runs; placing it in the cached prefix
+	// would silently freeze old text. Keeps it as the trailing element of the
+	// varying tail (user intent, not internal state).
 	if (params.systemPromptAddition) {
 		suffixLines.push("");
 		suffixLines.push(params.systemPromptAddition);
+		varyingLines.push("");
+		varyingLines.push(params.systemPromptAddition);
 	}
 
 	// Capture full content for return
 	const allVolatileLines = [...suffixLines];
+	const allVaryingLines = [...varyingLines];
 	const content = suffixLines.join("\n");
+	const stableContent = stableLines.join("\n");
+	const varyingContent = varyingLines.join("\n");
 
-	// Calculate token estimate
+	// Calculate token estimates
 	const tokenEstimate = countTokens(content);
+	const stableTokenEstimate = stableContent.length > 0 ? countTokens(stableContent) : 0;
+	const varyingTokenEstimate = varyingContent.length > 0 ? countTokens(varyingContent) : 0;
 
 	return {
 		content,
+		stableContent,
+		varyingContent,
 		tokenEstimate,
+		stableTokenEstimate,
+		varyingTokenEstimate,
 		enrichmentStartIdx,
 		enrichmentEndIdx,
+		varyingEnrichmentStartIdx,
+		varyingEnrichmentEndIdx,
 		allVolatileLines,
+		allVaryingLines,
 		memoryDeltaLines,
 		taskDigestLines,
 		tiers: enrichmentTiers,
@@ -800,11 +923,14 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	// Enrichment state — shared between Stage 6 volatile context and Stage 7 budget check
 	let enrichmentBaseline: string | undefined;
 	let enrichmentMessageIndex = -1;
-	let enrichmentStartIdx = -1; // Index in volatileLines where enrichment section starts
-	let enrichmentEndIdx = -1; // Index in volatileLines just after enrichment section ends
+	// Indices into the varying-only buffer (used by budget-pressure splice
+	// after the suffix-prefix split, because the developer tail message now
+	// holds varying content only).
+	let varyingEnrichmentStartIdx = -1;
+	let varyingEnrichmentEndIdx = -1;
 	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
 	let enrichmentTiers: TieredEnrichment | undefined; // State variable for tracking
-	let allVolatileLines: string[] = []; // Full volatile content for budget pressure rebuild
+	let allVaryingLines: string[] = []; // Varying-only volatile content for tail rebuild
 	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
 	let totalMemCount = 0;
 	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
@@ -1728,10 +1854,15 @@ Original output was too large for the context window. If you need the full conte
 		}
 	}
 
-	// Build the final system prompt string
-	const systemPrompt = systemParts.join("\n\n");
-
-	// Track system section tokens (parts before skill injection)
+	// Track system section tokens (parts before skill injection).
+	// Build the system prompt string AFTER the volatile-context build so the
+	// stable prefix (Working Knowledge bodies + Discoverable Archive titles +
+	// skill index) can be folded into systemParts. That gets it onto the
+	// `system` provider param where the existing system-level cache breakpoint
+	// covers it cross-thread (the cron-task cache reuse goal called out in the
+	// historical line-1774 comment). The bridge would otherwise merge a
+	// pre-history developer message into the first user message and lose
+	// cross-thread byte stability.
 	const systemTokens = systemParts
 		.slice(0, systemPartCountBeforeSkill)
 		.reduce((sum, part) => sum + countTokens(part), 0);
@@ -1744,6 +1875,13 @@ Original output was too large for the context window. If you need the full conte
 			sections.push({ name: "skill-context", tokens: skillTokens });
 		}
 	}
+
+	// Reserve a placeholder index for the stable volatile prefix (folded into
+	// systemParts below in Stage 6). Pushed pre-history per R-VC24 so the
+	// debugger renders stable subsections in the same physical position the
+	// LLM driver receives them.
+	const volatilePrefixSectionIndex = sections.length;
+	sections.push({ name: "volatile-prefix", tokens: 0 });
 
 	// Add message history
 	assembled.push(...finalAnnotated);
@@ -1771,9 +1909,19 @@ Original output was too large for the context window. If you need the full conte
 		children: historyChildren.length > 0 ? historyChildren : undefined,
 	});
 
-	// Add volatile context — split into stable system message (cached) and varying suffix (uncached)
-	// The suffix is returned separately so the LLM driver can place it after the cache boundary,
-	// enabling cross-thread prompt cache reuse for cron tasks in the same 5-minute window.
+	// Add volatile context. Per R-VC24 (suffix-prefix split):
+	//   - Stable lines (Working Knowledge bodies + Discoverable Archive titles
+	//     + skill index) fold into systemParts and ride the system-level cache
+	//     breakpoint. This is what enables cross-thread cache reuse for cron
+	//     tasks in the same TTL window — the prefix is byte-identical across
+	//     threads.
+	//   - Varying lines (WK update markers, Live State, advisory and skill
+	//     notifications, User/Thread ID, relay/platform/model context, and
+	//     systemPromptAddition) ride as a developer-role message after history.
+	//     The bridge merges them into the next adjacent user message wrapped
+	//     in <system-context>; uncached.
+	// `suffixContent` below tracks the varying tail's content for budget
+	// accounting and warm-path token reuse.
 	let crossThreadSources: CrossThreadSource[] | undefined;
 	let suffixContent: string | undefined;
 	if (!noHistory) {
@@ -1803,21 +1951,37 @@ Original output was too large for the context window. If you need the full conte
 			inactiveSkillRef,
 		});
 
-		// Append volatile context as developer message at tail
-		assembled.push({ role: "developer", content: volatileCtx.content });
+		// STABLE PREFIX: fold WK bodies + DA titles + skill index into systemParts.
+		// Sits behind the system-level cache breakpoint, so steady-state runs reuse
+		// the prefix across turns and across threads.
+		if (volatileCtx.stableContent.length > 0) {
+			systemParts.push(volatileCtx.stableContent);
+			sections[volatilePrefixSectionIndex] = {
+				name: "volatile-prefix",
+				tokens: volatileCtx.stableTokenEstimate,
+			};
+		}
 
-		suffixContent = volatileCtx.content;
+		// VARYING TAIL: developer message after history. Bridge merges it into
+		// an adjacent user message wrapped in <system-context>; uncached.
+		assembled.push({ role: "developer", content: volatileCtx.varyingContent });
+
+		suffixContent = volatileCtx.varyingContent;
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, false);
 		enrichmentTiers = volatileCtx.tiers;
 		crossThreadSources = volatileCtx.crossThreadSources;
-		enrichmentStartIdx = volatileCtx.enrichmentStartIdx;
-		enrichmentEndIdx = volatileCtx.enrichmentEndIdx;
-		allVolatileLines = volatileCtx.allVolatileLines;
+		varyingEnrichmentStartIdx = volatileCtx.varyingEnrichmentStartIdx;
+		varyingEnrichmentEndIdx = volatileCtx.varyingEnrichmentEndIdx;
+		allVaryingLines = volatileCtx.allVaryingLines;
 		totalMemCount = volatileCtx.totalMemCount;
 		taskDigestLinesSnapshot = volatileCtx.taskDigestLines;
 
-		// Track volatile section tokens (memory, task-digest, volatile-other)
-		// These now live in the developer message but are still tracked for debug
+		// Track volatile section tokens (memory, task-digest, volatile-other,
+		// volatile-tail). The first three are retained for backward compat
+		// with existing debugger views. `volatile-tail` is the new aggregate
+		// covering the varying-tail developer message that follows history;
+		// SECTION_COLORS exposes it as a distinct bracket between history and
+		// tools.
 		const memoryLines = volatileCtx.allVolatileLines.slice(
 			volatileCtx.enrichmentStartIdx,
 			volatileCtx.enrichmentEndIdx,
@@ -1836,6 +2000,12 @@ Original output was too large for the context window. If you need the full conte
 		if (taskDigestTokens > 0) sections.push({ name: "task-digest", tokens: taskDigestTokens });
 		if (volatileOtherTokens > 0)
 			sections.push({ name: "volatile-other", tokens: volatileOtherTokens });
+		if (volatileCtx.varyingTokenEstimate > 0) {
+			sections.push({
+				name: "volatile-tail",
+				tokens: volatileCtx.varyingTokenEstimate,
+			});
+		}
 	}
 
 	// Track tools section (from ContextParams)
@@ -1885,8 +2055,11 @@ Original output was too large for the context window. If you need the full conte
 		enrichmentTiers = enrichmentTiersL2;
 		taskDigestLinesSnapshot = noHistTasks;
 
-		// Compose the three sections using the shared helper
-		const { lines: renderedEnrichmentLines } = composeVolatileSections({
+		// Compose the three sections using the shared helper. The noHistory
+		// path mirrors the primary path's split: stable subsections fold into
+		// systemParts (cacheable cross-thread), varying tail rides as a
+		// developer message at the assembled tail.
+		const { stableLines: nhStable, varyingLines: nhVarying } = composeVolatileSections({
 			db,
 			pinned: pinnedNH.entries,
 			summaries: summariesNH.entries,
@@ -1901,6 +2074,7 @@ Original output was too large for the context window. If you need the full conte
 			budgetPressure: false,
 			nowMs,
 		});
+		const renderedEnrichmentLines: string[] = [...nhStable, ...nhVarying];
 
 		if (renderedEnrichmentLines.length > 0) {
 			totalMemCount = (
@@ -1909,23 +2083,45 @@ Original output was too large for the context window. If you need the full conte
 				}
 			).c;
 
-			const enrichmentLines: string[] = [...renderedEnrichmentLines];
-
-			// Append systemPromptAddition if present (AC2.2 for noHistory path)
-			if (params.systemPromptAddition) {
-				enrichmentLines.push("");
-				enrichmentLines.push(params.systemPromptAddition);
+			if (nhStable.length > 0) {
+				systemParts.push(nhStable.join("\n"));
 			}
 
-			enrichmentMessageIndex = assembled.length;
-			assembled.push({ role: "developer", content: enrichmentLines.join("\n") });
+			const varyingTailLines: string[] = [...nhVarying];
+			// In noHistory the varying tail begins with nhVarying (no
+			// User/Thread ID prefix lines), so the enrichment section sits
+			// at indices [0, nhVarying.length).
+			varyingEnrichmentStartIdx = 0;
+			varyingEnrichmentEndIdx = nhVarying.length;
 
-			// Track noHistory volatile section tokens
+			// Append systemPromptAddition if present (AC2.2 for noHistory path).
+			// Operator-supplied per-task instruction stays varying (re-runnable).
+			if (params.systemPromptAddition) {
+				varyingTailLines.push("");
+				varyingTailLines.push(params.systemPromptAddition);
+			}
+
+			if (varyingTailLines.length > 0) {
+				enrichmentMessageIndex = assembled.length;
+				assembled.push({ role: "developer", content: varyingTailLines.join("\n") });
+				allVaryingLines = varyingTailLines;
+			}
+
+			// Track noHistory volatile section tokens (combined for debug parity)
 			const noHistVolatileTokens = countTokens(renderedEnrichmentLines.join("\n"));
 			sections.push({ name: "volatile-enrichment", tokens: noHistVolatileTokens });
 		}
 	}
 	stage5_5Span.end();
+
+	// Build the final system prompt string. Deferred until after both Stage 6
+	// (history path) and Stage 5.5 (noHistory path) have appended any stable
+	// volatile content (Working Knowledge bodies + Discoverable Archive titles
+	// + skill index). Folding these into the `system` provider param keeps
+	// them inside the system-level cache breakpoint, so steady-state turns
+	// reuse the prefix across turns AND across threads (cron-task cache reuse
+	// goal called out in the historical line-1774 comment).
+	const systemPrompt = systemParts.join("\n\n");
 
 	// Stage 7: BUDGET_VALIDATION
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens.
@@ -1977,7 +2173,7 @@ Original output was too large for the context window. If you need the full conte
 		// - Working Knowledge: full fidelity (no cap)
 		// - Discoverable Archive: all titles preserved (R-VC21), fragment dropped via budgetPressure flag
 		// - Live State: BUDGET_PRESSURE_SUBSYSTEM_CAP (3) applied per subsystem inside renderLiveState
-		const { lines: reducedEnrichmentLines } = composeVolatileSections({
+		const { stableLines: bpStable, varyingLines: bpVarying } = composeVolatileSections({
 			db,
 			pinned: pinnedBP.entries,
 			summaries: summariesBP.entries,
@@ -1992,6 +2188,7 @@ Original output was too large for the context window. If you need the full conte
 			budgetPressure: true,
 			nowMs: Date.now(),
 		});
+		const reducedEnrichmentLines: string[] = [...bpStable, ...bpVarying];
 
 		// Find and update the developer message at the tail
 		let devIdx = -1;
@@ -2003,20 +2200,35 @@ Original output was too large for the context window. If you need the full conte
 		}
 
 		if (devIdx >= 0) {
-			if (!params.noHistory && enrichmentStartIdx >= 0 && enrichmentEndIdx >= 0) {
-				// Splice the reduced enrichment into the developer message, preserving
-				// all post-enrichment content (cross-thread digest, file notifications, skill index, etc.)
-				const rebuiltContent = [
-					...allVolatileLines.slice(0, enrichmentStartIdx),
-					...reducedEnrichmentLines,
-					...allVolatileLines.slice(enrichmentEndIdx),
+			if (!params.noHistory && varyingEnrichmentStartIdx >= 0 && varyingEnrichmentEndIdx >= 0) {
+				// Splice the reduced VARYING enrichment into the developer
+				// tail message. The stable prefix (WK bodies + DA titles +
+				// skill index) is already folded into systemPrompt and is not
+				// edited under budget pressure: it is bounded by R-VC14 §3.3
+				// (WK full-fidelity / presence invariant) and VC15 tunables
+				// (DA titles), so leaving it stable is acceptable. The
+				// shedding effect lives on the varying tail (Live State
+				// subsystem caps + the WK update markers), which is exactly
+				// what bpVarying re-renders.
+				const rebuiltVarying = [
+					...allVaryingLines.slice(0, varyingEnrichmentStartIdx),
+					...bpVarying,
+					...allVaryingLines.slice(varyingEnrichmentEndIdx),
 				];
-				assembled[devIdx] = { role: "developer", content: rebuiltContent.join("\n") };
+				assembled[devIdx] = { role: "developer", content: rebuiltVarying.join("\n") };
 			} else if (params.noHistory) {
-				// For noHistory path, just replace with reduced sections
+				// noHistory: developer tail is varying-only by construction.
+				// Replace with reduced varying lines + trailing
+				// systemPromptAddition (preserved verbatim from the unreduced
+				// path's tail).
+				const noHistVaryingLines: string[] = [...bpVarying];
+				if (params.systemPromptAddition) {
+					noHistVaryingLines.push("");
+					noHistVaryingLines.push(params.systemPromptAddition);
+				}
 				assembled[devIdx] = {
 					role: "developer",
-					content: reducedEnrichmentLines.join("\n"),
+					content: noHistVaryingLines.join("\n"),
 				};
 			}
 		}
