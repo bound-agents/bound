@@ -1,6 +1,6 @@
 # Contributing to Bound
 
-Last verified: 2026-05-21
+Last verified: 2026-05-24
 
 Thanks for your interest in contributing! This document is the developer-facing companion to [README.md](README.md) — if you're running `bun test` and touching SQL, this is the file you want.
 
@@ -177,6 +177,7 @@ Accumulated the hard way — check here before writing a bug report.
 - **`bound-mcp` polling**: `polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
 - **bound CLI config dir**: defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
 - **Stale binaries**: `bun run build && cp dist/bound* ~/.local/bin/` is the install step. Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
+- **Universal 256 KiB tool-result cap**: every tool result, regardless of `kind`, is bounded by `capToolResultContent` (from `@bound/shared/strings.ts`, `MAX_TOOL_RESULT_BYTES = 256 * 1024`) at two boundaries — the agent-loop dispatch return (covers platform/sandbox/builtin and the legacy fallback) and `handleToolResult` in `packages/web/src/server/websocket.ts` (covers WS-deferred client tools from boundless / bound-mcp / external `BoundClient` consumers). Truncation is middle-cut with the marker `[truncated N bytes from middle; tool result exceeded 262144-byte cap — re-run with a narrower scope or pipe through head/grep]`; the marker's byte width is subtracted from the half-budgets so the function is idempotent and the output is guaranteed ≤ cap. If a tool result looks like it's missing a chunk, grep for the marker — that's the cap firing, not a bug. Per-tool caps still run first; this is a backstop, not the primary ceiling.
 - **`query` accepts PRAGMAs**: the agent `query` tool allows `SELECT` plus a small read-only PRAGMA allowlist (`table_info`, `index_list`, `foreign_key_list`, `integrity_check`, etc.; see `SAFE_PRAGMA_ALLOWLIST` in `packages/agent/src/tools/query.ts`). The `PRAGMA x = y` assignment form is rejected regardless of name. Anything else (INSERT/UPDATE/DELETE/ATTACH/unknown PRAGMA) errors out. `LIMIT 1000` is still auto-appended to SELECTs but skipped for PRAGMAs.
 - **Thread `interface` tag**: POST `/api/threads` accepts an optional body `{ interface?: string }` (default `"web"`, regex `/^[a-z0-9-]+$/i`, ≤32 chars; 400 otherwise). The value lives in `threads.interface` and flows into the agent's volatile context as a platform tag. `isUserFacingInterface()` in `packages/cli/src/commands/start/server.ts` is the single gate for "should the agent see `platform: <name>`?" — currently allows everything except `scheduler`, `mcp`, and `webhook`. Adding a new user-facing surface usually needs no code change beyond setting the tag on thread creation; adding a new system-driven surface means extending the filter. `BoundClient.createThread(options?: { interface?: string })` is the client-side counterpart — `boundless` sets `interface: "boundless"`.
 - **Cross-provider `tool_use` portability (id and name)**: `tool_use.id` and `tool_use.name` values persist in the `messages` table and survive provider switches. Anthropic enforces `^[a-zA-Z0-9_-]+$` on `tool_use.id` and rejects the entire request when a historical id contains anything else; Bedrock Converse caps both `toolUseId` and `toolUse.name` at 64 chars and validates them against `[a-zA-Z0-9_.:-]+` and `[a-zA-Z0-9_-]{1,64}` respectively. Two pathologies have been observed in production:
@@ -219,6 +220,7 @@ Accumulated the hard way — check here before writing a bug report.
 4. Register the factory in `packages/agent/src/tools/index.ts` by adding it to the `createAgentTools()` array.
 5. Add unit tests under `packages/agent/src/tools/__tests__/` — use real temp SQLite DBs, minimal `ToolContext` stubs.
 6. For grouped tools (multiple operations), use an `action` enum parameter to dispatch (see memory, skill tools).
+7. You don't need a per-tool byte cap for correctness — a universal 256 KiB backstop runs at the dispatch return (see `capToolResultContent` in the Common Gotchas list). But adding a per-tool cap with a domain-specific truncation message (like `read`'s line-aware cap or `query`'s row-aware cap) gives the LLM a more actionable error than the generic middle-truncation marker, so prefer it for tools whose outputs commonly approach the cap.
 
 ## PR Expectations
 
