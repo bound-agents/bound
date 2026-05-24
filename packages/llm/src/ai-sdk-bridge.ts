@@ -875,7 +875,33 @@ interface FinishState {
 		reasoningTokens?: number;
 		totalTokens?: number;
 	};
-	providerMetadata?: ProviderMetadata;
+	/**
+	 * Sum of `cacheWriteInputTokens` (Bedrock) or `cacheCreationInputTokens`
+	 * (Anthropic) across every finish-step in the turn. Null when no step
+	 * reported a value. See readStepCacheWriteTokens.
+	 */
+	cacheWriteTokens?: number | null;
+}
+
+/**
+ * Pull a step's cache-write tokens out of providerMetadata. Returns null if
+ * the field isn't present or the provider isn't recognized — distinguishes
+ * "no cache write on this step" (return 0) from "metric not reported"
+ * (return null) so the caller can decide whether to record null vs 0.
+ */
+function readStepCacheWriteTokens(
+	meta: ProviderMetadata | undefined,
+	usageProvider: "bedrock" | "anthropic" | null | undefined,
+): number | null {
+	if (!meta) return null;
+	if (usageProvider === "bedrock") {
+		const bedrockUsage = meta.bedrock?.usage as { cacheWriteInputTokens?: number } | undefined;
+		return bedrockUsage?.cacheWriteInputTokens ?? null;
+	}
+	if (usageProvider === "anthropic") {
+		return (meta.anthropic?.cacheCreationInputTokens as number | undefined) ?? null;
+	}
+	return null;
 }
 
 /**
@@ -914,9 +940,15 @@ export async function* mapChunks(
 	let toolInputText = "";
 	// Track tool-input-start names since tool-input-delta only carries the id.
 	const toolNameById = new Map<string, string>();
-	// Accumulate providerMetadata across finish-step events so we have it
-	// available when the terminal `finish` fires.
-	let lastStepMetadata: ProviderMetadata | undefined;
+	// Sum cache-write tokens across all finish-step events. Multi-step turns
+	// (tool-use rounds) emit one finish-step per step, each with that step's
+	// cacheWriteInputTokens. The cache write typically lands on the FIRST
+	// step (prompt prefix) and subsequent steps may report null/zero. Holding
+	// only the last step's metadata would drop the metric entirely. Thread
+	// c879be2b on 2026-05-24 had 13/23 turns recording tokens_cache_write =
+	// NULL because of this; summing recovers them.
+	let cacheWriteAccum = 0;
+	let cacheWriteSeen = false;
 
 	for await (const raw of stream) {
 		const part = raw as { type: string } & Record<string, unknown>;
@@ -1002,9 +1034,15 @@ export async function* mapChunks(
 				break;
 			}
 			case "finish-step": {
-				// Capture per-step providerMetadata so finish can use it.
+				// Per-step cache-write metadata. Sum across steps because the
+				// terminal `finish` event carries no providerMetadata, and a
+				// single step's value may be null/zero on prefix-cache hits.
 				const meta = part.providerMetadata as ProviderMetadata | undefined;
-				if (meta) lastStepMetadata = meta;
+				const stepCacheWrite = readStepCacheWriteTokens(meta, opts.usageProvider);
+				if (stepCacheWrite !== null) {
+					cacheWriteAccum += stepCacheWrite;
+					cacheWriteSeen = true;
+				}
 				break;
 			}
 			case "finish": {
@@ -1012,7 +1050,10 @@ export async function* mapChunks(
 				yield {
 					type: "done",
 					usage: extractUsage(
-						{ totalUsage, providerMetadata: lastStepMetadata },
+						{
+							totalUsage,
+							cacheWriteTokens: cacheWriteSeen ? cacheWriteAccum : null,
+						},
 						{ text: outputText, reasoning: reasoningText, toolInput: toolInputText },
 						opts,
 					),
@@ -1071,19 +1112,10 @@ function extractUsage(
 	let inputTokens = u.inputTokens ?? 0;
 	let outputTokens = u.outputTokens ?? 0;
 	const cacheReadTokens = u.cachedInputTokens ?? null;
-
-	// Cache-write tokens aren't part of the standardized usage shape — they
-	// live in providerMetadata. Pull per-provider.
-	let cacheWriteTokens: number | null = null;
-	const meta = finish.providerMetadata;
-	if (meta) {
-		if (opts.usageProvider === "bedrock") {
-			const bedrockUsage = meta.bedrock?.usage as { cacheWriteInputTokens?: number } | undefined;
-			cacheWriteTokens = bedrockUsage?.cacheWriteInputTokens ?? null;
-		} else if (opts.usageProvider === "anthropic") {
-			cacheWriteTokens = (meta.anthropic?.cacheCreationInputTokens as number | undefined) ?? null;
-		}
-	}
+	// Cache-write tokens are summed by the caller across all finish-step
+	// events because the terminal `finish` carries no providerMetadata and
+	// each step reports its own value (null on prefix-cache hits).
+	const cacheWriteTokens = finish.cacheWriteTokens ?? null;
 
 	// Zero-usage guard — widened to cover any observable output, not just
 	// text. Responses that only emitted tool calls (haiku cron turns that
