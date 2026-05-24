@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSkillTool } from "@bound/agent";
 import { applySchema, createDatabase } from "@bound/core";
+import { hydrateWorkspace } from "@bound/sandbox";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { InMemoryFs, MountableFs } from "just-bash";
 import { skillImport, skillList, skillRetire, skillView } from "../commands/skill.js";
 
 describe("boundctl skill commands", () => {
@@ -291,7 +294,7 @@ This skill was imported.`;
 			// Verify files table has entries
 			const files = db
 				.query("SELECT path FROM files WHERE path LIKE ? AND deleted = 0 ORDER BY path")
-				.all("skills/imported-skill/%") as Array<{ path: string }>;
+				.all("/home/user/skills/imported-skill/%") as Array<{ path: string }>;
 
 			expect(files.length).toBeGreaterThan(0);
 			const skillMdFile = files.find((f) => f.path.endsWith("SKILL.md"));
@@ -328,6 +331,72 @@ This skill was imported.`;
 			await expect(async () => {
 				await skillImport(db, siteId, skillDir);
 			}).toThrow(/frontmatter/i);
+		});
+	});
+
+	describe("boundctl skillImport → skill activate tool (integration)", () => {
+		it("should activate a skill imported via boundctl after VFS hydration", async () => {
+			// Step 1: Import a skill via boundctl (same path as `boundctl skill import`).
+			const skillDir = mkdtempSync(join(tempDir, "cli-skill-source-"));
+			const skillName = "cli-imported-skill";
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				`---
+name: ${skillName}
+description: A skill imported via boundctl
+compatibility: 1.0.0
+---
+
+# CLI Imported Skill
+
+This skill was imported using boundctl.
+`,
+			);
+			writeFileSync(join(skillDir, "helper.ts"), "export function help() {}");
+
+			spyOn(console, "log").mockImplementation(() => {});
+			await skillImport(db, siteId, skillDir);
+
+			// Verify files landed at the VFS-canonical path, not the old relative path.
+			const dbFile = db
+				.query("SELECT path FROM files WHERE path LIKE ? AND deleted = 0")
+				.get(`%${skillName}%`) as { path: string } | null;
+			expect(dbFile).not.toBeNull();
+			expect(dbFile?.path).toBe(`/home/user/skills/${skillName}/SKILL.md`);
+
+			// Step 2: Hydrate a fresh VFS from the DB, as the production startup does.
+			const baseFs = new InMemoryFs();
+			const vfs = new MountableFs({ base: baseFs });
+			vfs.mount("/home/user", new InMemoryFs());
+			await hydrateWorkspace(vfs, db);
+
+			// Step 3: Call "skill activate" with this hydrated VFS.
+			const toolCtx = {
+				db,
+				siteId,
+				eventBus: {
+					on: () => {},
+					off: () => {},
+					emit: () => {},
+					once: () => {},
+				} as any,
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
+				fs: vfs,
+			};
+
+			const tool = createSkillTool(toolCtx);
+			const execute = tool.execute;
+			if (!execute) throw new Error("Tool execute is required");
+
+			const result = await execute({ action: "activate", name: skillName });
+
+			expect(typeof result).toBe("string");
+			expect(result).toMatch(/activated successfully/i);
 		});
 	});
 });

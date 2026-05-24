@@ -78,17 +78,17 @@ This skill has references.`,
 			// Check both files exist in files table
 			const skillMd = db
 				.prepare("SELECT id, path FROM files WHERE id = ? AND deleted = 0")
-				.get("skills/multi-file-skill/SKILL.md") as any;
+				.get("/home/user/skills/multi-file-skill/SKILL.md") as any;
 
 			const refFile = db
 				.prepare("SELECT id, path FROM files WHERE id = ? AND deleted = 0")
-				.get("skills/multi-file-skill/references/format.md") as any;
+				.get("/home/user/skills/multi-file-skill/references/format.md") as any;
 
 			expect(skillMd).toBeDefined();
-			expect(skillMd.path).toBe("skills/multi-file-skill/SKILL.md");
+			expect(skillMd.path).toBe("/home/user/skills/multi-file-skill/SKILL.md");
 
 			expect(refFile).toBeDefined();
-			expect(refFile.path).toBe("skills/multi-file-skill/references/format.md");
+			expect(refFile.path).toBe("/home/user/skills/multi-file-skill/references/format.md");
 		});
 	});
 
@@ -507,7 +507,7 @@ Test content for file`,
 
 			const file = db
 				.prepare("SELECT * FROM files WHERE id = ? AND deleted = 0")
-				.get("skills/metadata-skill/SKILL.md") as any;
+				.get("/home/user/skills/metadata-skill/SKILL.md") as any;
 
 			// File should exist with proper metadata
 			expect(file).toBeDefined();
