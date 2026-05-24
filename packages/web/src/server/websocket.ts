@@ -8,7 +8,12 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
-import { formatFileAttachment, getTraceExporter, reExportSpans } from "@bound/shared";
+import {
+	capToolResultContent,
+	formatFileAttachment,
+	getTraceExporter,
+	reExportSpans,
+} from "@bound/shared";
 import type {
 	Message,
 	SerializedSpan,
@@ -620,6 +625,14 @@ export function createWebSocketHandler(
 				// AC10.2: Persist ContentBlock array verbatim
 				persistedContent = JSON.stringify(msg.content);
 			}
+
+			// Universal tool-result cap. Backstop for client-side tools that don't
+			// enforce their own byte caps (or for misbehaving clients writing
+			// arbitrary content). Per-tool caps in well-behaved client tools
+			// (e.g., boundless_bash's 50KB/half) run first; this catches the gap.
+			// The truncation marker embedded in the content is itself observable
+			// in the persisted messages row, so no separate log is emitted here.
+			persistedContent = capToolResultContent(persistedContent);
 
 			insertRow(
 				db,
