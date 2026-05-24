@@ -14,7 +14,13 @@ import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bo
 import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
-import { countContentTokens, countTokens, formatError, injectTraceContext } from "@bound/shared";
+import {
+	capToolResultContent,
+	countContentTokens,
+	countTokens,
+	formatError,
+	injectTraceContext,
+} from "@bound/shared";
 import type { Context } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
@@ -2265,9 +2271,25 @@ export class AgentLoop {
 					}
 				}
 
+				// Universal tool-result cap. Per-tool caps run first inside their
+				// implementations and produce more informative truncation; this is the
+				// final backstop for tools that don't enforce their own (native bash
+				// passthrough, uncapped MCP-bridged results, etc.).
+				const rawOutputSize = result.content.length;
+				const cappedContent = capToolResultContent(result.content);
+				if (cappedContent !== result.content) {
+					this.ctx.logger.warn("[agent-loop] Tool result exceeded universal cap", {
+						toolName: toolCall.name,
+						toolKind: tool.kind,
+						rawSize: rawOutputSize,
+					});
+					result = { content: cappedContent, exitCode: result.exitCode };
+				}
+
 				// Record I/O sizes for trace analysis
 				toolSpan.setAttribute("tool.input_size", JSON.stringify(toolCall.input).length);
 				toolSpan.setAttribute("tool.output_size", result.content.length);
+				toolSpan.setAttribute("tool.output_size_raw", rawOutputSize);
 
 				// Set span status based on execution result
 				if (result.exitCode !== 0) {
@@ -2314,10 +2336,13 @@ export class AgentLoop {
 				const hasError = result.some(
 					(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
 				);
-				return { content: JSON.stringify(result), exitCode: hasError ? 1 : 0 };
+				return {
+					content: capToolResultContent(JSON.stringify(result)),
+					exitCode: hasError ? 1 : 0,
+				};
 			}
 			const exitCode = result.startsWith("Error:") ? 1 : 0;
-			return { content: result, exitCode };
+			return { content: capToolResultContent(result), exitCode };
 		}
 
 		if (!this.sandbox.exec) {
@@ -2342,7 +2367,9 @@ export class AgentLoop {
 		}
 
 		return {
-			content: buildCommandOutput(result.stdout, result.stderr, result.exitCode),
+			content: capToolResultContent(
+				buildCommandOutput(result.stdout, result.stderr, result.exitCode),
+			),
 			exitCode: result.exitCode,
 		};
 	}
