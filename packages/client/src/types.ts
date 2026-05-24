@@ -146,6 +146,23 @@ export interface CrossThreadSource {
 	lastMessageAt: string;
 }
 
+export interface CacheMarker {
+	kind: "system" | "message";
+	/**
+	 * Cumulative-token offset into the breakdown bar at the breakpoint boundary.
+	 * UI converts to a bar percentage via `positionTokens / contextWindow`.
+	 */
+	positionTokens: number;
+	/** "fixed" = cold-path placement; "rolling" = warm-path re-placement. */
+	variant: "fixed" | "rolling";
+	ttl: "5m" | "1h";
+	/**
+	 * `true` when the backend's prompt_caching capability is on AND a marker
+	 * was emitted on the wire; `false` when caching was gated out.
+	 */
+	capabilityEnabled: boolean;
+}
+
 export interface ContextDebugInfo {
 	contextWindow: number;
 	totalEstimated: number;
@@ -154,6 +171,12 @@ export interface ContextDebugInfo {
 	budgetPressure: boolean;
 	truncated: number;
 	crossThreadSources?: CrossThreadSource[];
+	/**
+	 * Cache breakpoint descriptors recorded by the agent loop after marker
+	 * placement. Absent on turns persisted before this field existed and on
+	 * turns where the backend disabled caching entirely.
+	 */
+	cacheMarkers?: CacheMarker[];
 }
 
 export interface ContextDebugTurn {
@@ -161,6 +184,18 @@ export interface ContextDebugTurn {
 	model_id: string;
 	tokens_in: number;
 	tokens_out: number;
+	/**
+	 * Cache-read tokens reported by the LLM driver for this turn. Sum of cache
+	 * hits across all breakpoints (the AI SDK aggregates). Null on rows from
+	 * before cache reporting was wired up; 0 on turns with no cache hits.
+	 */
+	tokens_cache_read: number | null;
+	/**
+	 * Cache-write tokens reported by the LLM driver for this turn. Indicates a
+	 * breakpoint seeded a fresh cache entry. Null on rows from before cache
+	 * reporting was wired up; 0 on turns with no cache writes.
+	 */
+	tokens_cache_write: number | null;
 	context_debug: ContextDebugInfo;
 	created_at: string;
 }

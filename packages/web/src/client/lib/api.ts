@@ -60,11 +60,21 @@ export interface MemoryGraphResponse {
 	edges: MemoryGraphEdge[];
 }
 
+export interface CacheMarker {
+	kind: "system" | "message";
+	positionTokens: number;
+	variant: "fixed" | "rolling";
+	ttl: "5m" | "1h";
+	capabilityEnabled: boolean;
+}
+
 export interface ContextDebugTurn {
 	turn_id: string;
 	model_id: string;
 	tokens_in: number;
 	tokens_out: number;
+	tokens_cache_read: number | null;
+	tokens_cache_write: number | null;
 	context_debug: {
 		contextWindow: number;
 		totalEstimated: number;
@@ -83,6 +93,7 @@ export interface ContextDebugTurn {
 			messageCount: number;
 			lastMessageAt: string;
 		}>;
+		cacheMarkers?: CacheMarker[];
 	};
 	created_at: string;
 }

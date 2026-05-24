@@ -32,6 +32,7 @@ export type {
 	CrossThreadSource,
 	ContextDebugInfo,
 	ContextDebugTurn,
+	CacheMarker,
 	CreateMcpThreadResult,
 	ApiErrorBody,
 	BoundClientEvents,

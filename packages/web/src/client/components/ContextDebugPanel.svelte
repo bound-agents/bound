@@ -182,9 +182,47 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			</div>
 
+			{#if selectedTurn.tokens_cache_read !== null && selectedTurn.tokens_cache_write !== null && (selectedTurn.context_debug.cacheMarkers || selectedTurn.tokens_cache_read > 0 || selectedTurn.tokens_cache_write > 0)}
+				{@const cacheRead = selectedTurn.tokens_cache_read ?? 0}
+				{@const cacheWrite = selectedTurn.tokens_cache_write ?? 0}
+				{@const markers = selectedTurn.context_debug.cacheMarkers ?? []}
+				{@const ttl = markers[0]?.ttl ?? null}
+				{@const variant = markers.find((m) => m.kind === "message")?.variant ?? null}
+				{@const capabilityOff = markers.length > 0 && markers.every((m) => !m.capabilityEnabled)}
+				<div
+					class="cache-row"
+					title="Per-marker attribution is heuristic: the AI SDK reports cache_read / cache_write at the request level, so the bar's tick labels are signposting rather than exact accounting. Totals here are authoritative."
+				>
+					<span class="cache-kicker">Cache</span>
+					{#if capabilityOff}
+						<span class="cache-state cache-disabled mono">disabled</span>
+						<span class="cache-detail">backend lacks prompt_caching</span>
+					{:else}
+						<span class="cache-num cache-read mono tnum" class:cache-zero={cacheRead === 0}>
+							↑ {cacheRead.toLocaleString()}
+						</span>
+						<span class="cache-sep">·</span>
+						<span class="cache-num cache-write mono tnum" class:cache-zero={cacheWrite === 0}>
+							↓ {cacheWrite.toLocaleString()}
+						</span>
+						{#if ttl}
+							<span class="cache-sep">·</span>
+							<span class="cache-meta mono">{ttl} TTL</span>
+						{/if}
+						{#if variant}
+							<span class="cache-sep">·</span>
+							<span class="cache-meta mono">{variant}</span>
+						{/if}
+					{/if}
+				</div>
+			{/if}
+
 			<ContextBar
 				sections={selectedTurn.context_debug.sections}
 				contextWindow={selectedTurn.context_debug.contextWindow}
+				cacheMarkers={selectedTurn.context_debug.cacheMarkers}
+				cacheReadTokens={selectedTurn.tokens_cache_read}
+				cacheWriteTokens={selectedTurn.tokens_cache_write}
 			/>
 
 			{#if selectedTurn.context_debug.budgetPressure || selectedTurn.context_debug.truncated > 0}
@@ -354,6 +392,71 @@ function openCrossThread(src: CrossThreadSource): void {
 
 	.turn-summary {
 		margin-bottom: 10px;
+	}
+
+	.cache-row {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		padding: 4px 8px;
+		margin-bottom: 8px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-faint);
+		font-size: 11.5px;
+		cursor: help;
+	}
+
+	.cache-kicker {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+
+	.cache-num {
+		font-family: var(--font-mono);
+		font-size: 11.5px;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.cache-read {
+		color: var(--ok);
+	}
+
+	.cache-write {
+		color: var(--warn);
+	}
+
+	.cache-zero {
+		color: var(--ink-4);
+	}
+
+	.cache-sep {
+		color: var(--ink-4);
+	}
+
+	.cache-meta {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--ink-3);
+	}
+
+	.cache-state {
+		font-family: var(--font-mono);
+		font-size: 11.5px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+	}
+
+	.cache-disabled {
+		color: var(--idle);
+	}
+
+	.cache-detail {
+		color: var(--ink-3);
+		font-style: italic;
+		font-size: 11px;
 	}
 
 	.summary-row-total {

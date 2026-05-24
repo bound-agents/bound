@@ -297,7 +297,8 @@ export function createThreadsRoutes(
 
 			const rows = db
 				.query(
-					`SELECT id, model_id, tokens_in, tokens_out, context_debug, created_at
+					`SELECT id, model_id, tokens_in, tokens_out, tokens_cache_read,
+					        tokens_cache_write, context_debug, created_at
 					 FROM turns
 					 WHERE thread_id = ? AND context_debug IS NOT NULL
 					 ORDER BY created_at ASC`,
@@ -307,6 +308,8 @@ export function createThreadsRoutes(
 				model_id: string;
 				tokens_in: number;
 				tokens_out: number;
+				tokens_cache_read: number | null;
+				tokens_cache_write: number | null;
 				context_debug: string;
 				created_at: string;
 			}>;
@@ -319,6 +322,8 @@ export function createThreadsRoutes(
 							model_id: row.model_id,
 							tokens_in: row.tokens_in,
 							tokens_out: row.tokens_out,
+							tokens_cache_read: row.tokens_cache_read,
+							tokens_cache_write: row.tokens_cache_write,
 							context_debug: JSON.parse(row.context_debug),
 							created_at: row.created_at,
 						};

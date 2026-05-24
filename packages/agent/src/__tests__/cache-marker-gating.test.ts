@@ -19,7 +19,8 @@
 
 import { describe, expect, it } from "bun:test";
 import type { BackendCapabilities, LLMMessage } from "@bound/llm";
-import { maybePlaceCacheMarker } from "../cache-marker";
+import type { ContextSection } from "@bound/shared";
+import { buildCacheMarkers, maybePlaceCacheMarker } from "../cache-marker";
 
 const CACHING_CAPS: BackendCapabilities = {
 	streaming: true,
@@ -37,24 +38,30 @@ const NO_CACHING_CAPS: BackendCapabilities = {
 };
 
 describe("maybePlaceCacheMarker — fixed (cold path)", () => {
-	it("places a cache marker at length-1 when caps allow caching", () => {
+	it("places a cache marker at length-2 when caps allow caching", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "msg1" },
 			{ role: "assistant", content: "msg2" },
 		];
-		const placed = maybePlaceCacheMarker(messages, "fixed", CACHING_CAPS);
-		expect(placed).toBe(true);
+		const placement = maybePlaceCacheMarker(messages, "fixed", CACHING_CAPS);
+		expect(placement.placed).toBe(true);
+		expect(placement.variant).toBe("fixed");
+		expect(placement.index).toBe(1);
+		expect(placement.reason).toBeUndefined();
 		expect(messages).toHaveLength(3);
 		expect(messages[1]).toEqual({ role: "cache", content: "" });
 	});
 
-	it("skips marker when caps.prompt_caching is false", () => {
+	it("skips marker when caps.prompt_caching is false and reports capability-disabled", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "msg1" },
 			{ role: "assistant", content: "msg2" },
 		];
-		const placed = maybePlaceCacheMarker(messages, "fixed", NO_CACHING_CAPS);
-		expect(placed).toBe(false);
+		const placement = maybePlaceCacheMarker(messages, "fixed", NO_CACHING_CAPS);
+		expect(placement.placed).toBe(false);
+		expect(placement.variant).toBe("fixed");
+		expect(placement.index).toBe(-1);
+		expect(placement.reason).toBe("capability-disabled");
 		expect(messages).toHaveLength(2);
 		expect(messages.some((m) => m.role === "cache")).toBe(false);
 	});
@@ -64,11 +71,11 @@ describe("maybePlaceCacheMarker — fixed (cold path)", () => {
 			{ role: "user", content: "msg1" },
 			{ role: "assistant", content: "msg2" },
 		];
-		const placed = maybePlaceCacheMarker(messages, "fixed", undefined);
+		const placement = maybePlaceCacheMarker(messages, "fixed", undefined);
 		// Undefined means "no caps info at all" (rare — misconfigured cluster).
 		// Historically permissive; the relay-processor receiver-side strip now
 		// catches unsupported markers before they reach AWS.
-		expect(placed).toBe(true);
+		expect(placement.placed).toBe(true);
 	});
 
 	it("accepts a partial capabilities shape (EligibleHost.capabilities) and skips when prompt_caching:false", () => {
@@ -83,8 +90,9 @@ describe("maybePlaceCacheMarker — fixed (cold path)", () => {
 			{ role: "assistant", content: "msg2" },
 		];
 		const remoteCaps = { prompt_caching: false };
-		const placed = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
-		expect(placed).toBe(false);
+		const placement = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
+		expect(placement.placed).toBe(false);
+		expect(placement.reason).toBe("capability-disabled");
 		expect(messages.some((m) => m.role === "cache")).toBe(false);
 	});
 
@@ -94,8 +102,8 @@ describe("maybePlaceCacheMarker — fixed (cold path)", () => {
 			{ role: "assistant", content: "msg2" },
 		];
 		const remoteCaps = { prompt_caching: true };
-		const placed = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
-		expect(placed).toBe(true);
+		const placement = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
+		expect(placement.placed).toBe(true);
 	});
 
 	it("places marker when partial caps omit prompt_caching (unknown → permissive)", () => {
@@ -108,28 +116,31 @@ describe("maybePlaceCacheMarker — fixed (cold path)", () => {
 		// "unknown, place optimistically" — defense-in-depth strip on the
 		// receiver side catches mismatches.
 		const remoteCaps = { streaming: true };
-		const placed = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
-		expect(placed).toBe(true);
+		const placement = maybePlaceCacheMarker(messages, "fixed", remoteCaps);
+		expect(placement.placed).toBe(true);
 	});
 
-	it("does not place when messages.length < 2", () => {
+	it("does not place when messages.length < 2 and reports too-short", () => {
 		const messages: LLMMessage[] = [{ role: "user", content: "hi" }];
-		const placed = maybePlaceCacheMarker(messages, "fixed", CACHING_CAPS);
-		expect(placed).toBe(false);
+		const placement = maybePlaceCacheMarker(messages, "fixed", CACHING_CAPS);
+		expect(placement.placed).toBe(false);
+		expect(placement.reason).toBe("too-short");
 		expect(messages).toHaveLength(1);
 	});
 });
 
 describe("maybePlaceCacheMarker — rolling (warm path)", () => {
-	it("places rolling marker at length-1 when caps allow caching", () => {
+	it("places rolling marker at length-2 when caps allow caching", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "msg1" },
 			{ role: "cache", content: "" },
 			{ role: "assistant", content: "msg2" },
 			{ role: "user", content: "msg3" },
 		];
-		const placed = maybePlaceCacheMarker(messages, "rolling", CACHING_CAPS);
-		expect(placed).toBe(true);
+		const placement = maybePlaceCacheMarker(messages, "rolling", CACHING_CAPS);
+		expect(placement.placed).toBe(true);
+		expect(placement.variant).toBe("rolling");
+		expect(placement.index).toBe(3);
 		expect(messages).toHaveLength(5);
 		// Rolling marker inserted before the last message
 		expect(messages[3]).toEqual({ role: "cache", content: "" });
@@ -142,17 +153,113 @@ describe("maybePlaceCacheMarker — rolling (warm path)", () => {
 			{ role: "assistant", content: "msg2" },
 			{ role: "user", content: "msg3" },
 		];
-		const placed = maybePlaceCacheMarker(messages, "rolling", NO_CACHING_CAPS);
-		expect(placed).toBe(false);
+		const placement = maybePlaceCacheMarker(messages, "rolling", NO_CACHING_CAPS);
+		expect(placement.placed).toBe(false);
+		expect(placement.variant).toBe("rolling");
+		expect(placement.reason).toBe("capability-disabled");
 		expect(messages).toHaveLength(3);
 		expect(messages.some((m) => m.role === "cache")).toBe(false);
 	});
 
 	it("skips when messages.length < 2", () => {
 		const messages: LLMMessage[] = [{ role: "user", content: "msg1" }];
-		const placed = maybePlaceCacheMarker(messages, "rolling", CACHING_CAPS);
-		expect(placed).toBe(false);
+		const placement = maybePlaceCacheMarker(messages, "rolling", CACHING_CAPS);
+		expect(placement.placed).toBe(false);
+		expect(placement.reason).toBe("too-short");
 		expect(messages).toHaveLength(1);
+	});
+});
+
+describe("buildCacheMarkers", () => {
+	const sections: ContextSection[] = [
+		{ name: "system", tokens: 5000 },
+		{ name: "skill-context", tokens: 1500 },
+		{ name: "volatile-prefix", tokens: 3500 },
+		{ name: "history", tokens: 80000 },
+		{ name: "volatile-tail", tokens: 4000 },
+		{ name: "tools", tokens: 2000 },
+	];
+	// stable prefix: 5000 + 1500 + 3500 = 10000
+	// message boundary: 10000 + 80000 = 90000
+
+	it("emits system + message markers when message placement succeeded (cold path)", () => {
+		const markers = buildCacheMarkers({
+			sections,
+			messagePlacement: { placed: true, variant: "fixed", index: 14 },
+			ttl: "1h",
+		});
+		expect(markers).toHaveLength(2);
+		expect(markers[0]).toEqual({
+			kind: "system",
+			positionTokens: 10000,
+			variant: "fixed",
+			ttl: "1h",
+			capabilityEnabled: true,
+		});
+		expect(markers[1]).toEqual({
+			kind: "message",
+			positionTokens: 90000,
+			variant: "fixed",
+			ttl: "1h",
+			capabilityEnabled: true,
+		});
+	});
+
+	it("emits markers with rolling variant when message placement was warm-path", () => {
+		const markers = buildCacheMarkers({
+			sections,
+			messagePlacement: { placed: true, variant: "rolling", index: 18 },
+			ttl: "5m",
+		});
+		expect(markers).toHaveLength(2);
+		expect(markers[0].variant).toBe("fixed"); // system marker doesn't roll
+		expect(markers[0].ttl).toBe("5m");
+		expect(markers[1].variant).toBe("rolling");
+		expect(markers[1].ttl).toBe("5m");
+	});
+
+	it("emits zero markers when capability is explicitly disabled", () => {
+		const markers = buildCacheMarkers({
+			sections,
+			messagePlacement: {
+				placed: false,
+				variant: "fixed",
+				index: -1,
+				reason: "capability-disabled",
+			},
+			ttl: "1h",
+		});
+		expect(markers).toEqual([]);
+	});
+
+	it("still emits markers when placement was structurally suppressed (too-short)", () => {
+		// On a brand-new thread the message-level marker can't be placed yet,
+		// but the backend supports caching in principle. The UI should still see
+		// the position so it can render an idle tick at the right offset.
+		const markers = buildCacheMarkers({
+			sections,
+			messagePlacement: { placed: false, variant: "fixed", index: -1, reason: "too-short" },
+			ttl: "1h",
+		});
+		expect(markers).toHaveLength(2);
+		expect(markers[0].capabilityEnabled).toBe(true);
+		expect(markers[1].capabilityEnabled).toBe(true);
+	});
+
+	it("treats missing optional sections as zero tokens (no NaN, no skip)", () => {
+		// skill-context is optional; on threads with no skills it's absent.
+		const sparseSections: ContextSection[] = [
+			{ name: "system", tokens: 5000 },
+			{ name: "volatile-prefix", tokens: 3500 },
+			{ name: "history", tokens: 80000 },
+		];
+		const markers = buildCacheMarkers({
+			sections: sparseSections,
+			messagePlacement: { placed: true, variant: "fixed", index: 5 },
+			ttl: "1h",
+		});
+		expect(markers[0].positionTokens).toBe(8500); // 5000 + 0 + 3500
+		expect(markers[1].positionTokens).toBe(88500); // 8500 + 80000
 	});
 });
 
