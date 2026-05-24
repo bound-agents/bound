@@ -1026,7 +1026,33 @@ Original output was too large for the context window. If you need the full conte
 	const stage1_7Span = getTracer().startSpan("context.stage-1.7-history-compaction");
 	if (params.compactToolResults && messages.length > 0) {
 		const recentWindow = params.compactRecentWindow ?? computeRecentWindow(contextWindow);
-		const compactionBoundary = Math.max(0, messages.length - recentWindow);
+		// Anchor the compaction boundary to the index of the LAST user message,
+		// with fallback to the sliding boundary when no user message exists.
+		// This is critical for prefix-cache stability: without it, the boundary
+		// `messages.length - recentWindow` slides forward by 2 every warm/cold
+		// pass as new assistant + tool_result messages append, which mutates a
+		// previously-preserved tool_result's bytes and busts the provider's
+		// cached prefix.
+		//
+		// Anchoring to lastUserIdx keeps the boundary STABLE for every LLM round
+		// inside a single user request. Tool_results between an old user message
+		// and the most recent one get stubbed once and stay stubbed; tool_results
+		// after the most recent user message are in-flight and stay intact.
+		// The boundary only moves when the user sends a new message — at which
+		// point a one-time cache invalidation is the natural break point.
+		//
+		// Cold and warm paths must use the SAME anchor logic; otherwise warm-
+		// after-cold misses cache because the two produce different stub sets.
+		// See packages/agent/src/warm-compaction.ts for the warm-path twin.
+		let lastUserIdx = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i].role === "user") {
+				lastUserIdx = i;
+				break;
+			}
+		}
+		const compactionBoundary =
+			lastUserIdx >= 0 ? lastUserIdx : Math.max(0, messages.length - recentWindow);
 
 		// Inject thread summary if available
 		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {

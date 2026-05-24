@@ -191,11 +191,15 @@ describe("warm-compaction", () => {
 			expect(messages[0].content as string).toContain("call_old");
 		});
 
-		it("preserves tool_result inside the recent window even when over threshold", () => {
+		it("preserves tool_result after the last user message even when over threshold", () => {
+			// In-flight tool_result (after the most recent user message) must NEVER
+			// be stubbed in-place — that would mutate the prefix that the LLM is
+			// actively reasoning over. The compaction boundary anchors to the last
+			// user message index; everything past it is preserved.
 			const messages: LLMMessage[] = [
 				{ role: "user", content: "old" },
-				makeToolResult("call_recent", 5000),
 				{ role: "user", content: "now" },
+				makeToolResult("call_recent", 5000),
 			];
 
 			compactStoredMessagesInPlace(messages, {
@@ -204,8 +208,8 @@ describe("warm-compaction", () => {
 				effectiveTruncationRatio: 0.85,
 			});
 
-			// Recent-window tool_result kept intact.
-			expect(messages[1].content.length).toBe(5000);
+			// In-flight tool_result kept intact.
+			expect(messages[2].content.length).toBe(5000);
 		});
 
 		it("does not touch tool_results below the threshold", () => {
@@ -347,6 +351,84 @@ describe("warm-compaction", () => {
 			});
 
 			expect((messages[0].content as string).length).toBe(5000);
+		});
+
+		it("preserves prefix byte-stability across multiple turns within a single user message (regression: compactionBoundary used to slide forward by 2 per turn, busting prefix cache)", () => {
+			// Setup: a tool-call cycle following one current user message, with an
+			// older completed user/tool sequence in front. recentWindow=2 so without
+			// the fix the boundary lands well past the most recent user message.
+			//
+			// Indices:    0           1         2          3 (LARGE)         4 (recent)        5         6          7 (LARGE)        8         9          10 (LARGE)
+			// Roles:      user_old    asst      tool_call  tool_result_old   user_recent       asst      tool_call  tool_result_1    asst      tool_call  tool_result_2
+			//
+			// Bug: turn 1 boundary = 11 - 2 = 9. Stubs at 0..8. tool_result_old (3)
+			//      and tool_result_1 (7) stubbed. tool_result_2 (10) preserved.
+			//      Turn 2 appends 3 new messages (length=14). Boundary = 12.
+			//      tool_result_2 (10) is NOW eligible and gets newly stubbed —
+			//      byte change at index 10 → cache bust on the next API call.
+			//
+			// Fix: anchor compactionBoundary to lastUserIdx = 4. Stubs only at 0..3.
+			//      Indices 5..10 stay intact across both calls. Bytes 0..10 remain
+			//      identical between turn 1 and turn 2 → cache prefix stable.
+			const initial: LLMMessage[] = [
+				{ role: "user", content: "older user message" },
+				{ role: "assistant", content: "older assistant" },
+				{
+					role: "tool_call",
+					content: JSON.stringify([{ type: "tool_use", id: "tu_old", name: "foo", input: {} }]),
+					tool_use_id: "tu_old",
+				},
+				{ role: "tool_result", content: "old".repeat(2000), tool_use_id: "tu_old" },
+				{ role: "user", content: "current user message" },
+				{ role: "assistant", content: "responding" },
+				{
+					role: "tool_call",
+					content: JSON.stringify([{ type: "tool_use", id: "tu_1", name: "foo", input: {} }]),
+					tool_use_id: "tu_1",
+				},
+				{ role: "tool_result", content: "x".repeat(2000), tool_use_id: "tu_1" },
+				{ role: "assistant", content: "another step" },
+				{
+					role: "tool_call",
+					content: JSON.stringify([{ type: "tool_use", id: "tu_2", name: "foo", input: {} }]),
+					tool_use_id: "tu_2",
+				},
+				{ role: "tool_result", content: "y".repeat(2000), tool_use_id: "tu_2" },
+			];
+
+			const messages: LLMMessage[] = initial.map((m) => ({ ...m }));
+
+			compactStoredMessagesInPlace(messages, {
+				recentWindow: 2,
+				contextWindow: 200_000,
+				effectiveTruncationRatio: 0.85,
+			});
+
+			const turn1Snapshot = messages.map((m) => m.content);
+			const preAppendLength = messages.length;
+
+			// Simulate next LLM round: assistant reasons, calls a new tool, gets a
+			// large tool_result. This is the typical 2-3 message append per warm turn.
+			messages.push({ role: "assistant", content: "next step" });
+			messages.push({
+				role: "tool_call",
+				content: JSON.stringify([{ type: "tool_use", id: "tu_3", name: "foo", input: {} }]),
+				tool_use_id: "tu_3",
+			});
+			messages.push({ role: "tool_result", content: "z".repeat(2000), tool_use_id: "tu_3" });
+
+			compactStoredMessagesInPlace(messages, {
+				recentWindow: 2,
+				contextWindow: 200_000,
+				effectiveTruncationRatio: 0.85,
+			});
+
+			// CORE INVARIANT: every message that existed before the append must
+			// have byte-identical content after the second compaction pass.
+			// If this fails, the provider's prefix cache will miss on every turn.
+			for (let i = 0; i < preAppendLength; i++) {
+				expect(messages[i].content).toBe(turn1Snapshot[i]);
+			}
 		});
 	});
 });
