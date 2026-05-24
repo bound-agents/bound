@@ -557,7 +557,7 @@ This is from a zip.`;
 					"to-activate",
 					"A skill to activate",
 					"retired",
-					"skills/to-activate",
+					"/home/user/skills/to-activate",
 					"hash123",
 					null,
 					null,
@@ -586,7 +586,7 @@ description: A skill to activate
 				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				[
 					fileId1,
-					"skills/to-activate/SKILL.md",
+					"/home/user/skills/to-activate/SKILL.md",
 					skillMdContent.length,
 					skillMdContent,
 					new Date().toISOString(),

@@ -56,6 +56,7 @@ export { createRelayOutboxEntry } from "./relay-router";
 
 // Export native tools
 export { createAgentTools } from "./tools/index";
+export { createSkillTool } from "./tools/skill";
 
 // Export MCP client and bridge
 export { MCPClient } from "./mcp-client";

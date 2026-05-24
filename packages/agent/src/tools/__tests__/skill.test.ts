@@ -484,8 +484,7 @@ This skill was created via the web UI.
 				.prepare("SELECT path FROM files WHERE path LIKE ? AND deleted = 0")
 				.get(`%${skillName}%`) as { path: string } | null;
 			expect(dbFile).not.toBeNull();
-			// Web UI stores at "skills/{name}/SKILL.md" — relative, no /home/user prefix
-			expect(dbFile?.path).toBe(`skills/${skillName}/SKILL.md`);
+			expect(dbFile?.path).toBe(`/home/user/skills/${skillName}/SKILL.md`);
 
 			// Step 2: Hydrate a fresh VFS from the DB, as the production startup does.
 			const baseFs = new InMemoryFs();
@@ -495,8 +494,8 @@ This skill was created via the web UI.
 			await hydrateWorkspace(vfs, db);
 
 			// Step 3: Call "skill activate" with this hydrated VFS.
-			// The tool looks for files under "/home/user/skills/{name}/" in the VFS,
-			// but hydration wrote them to "skills/{name}/SKILL.md" (no /home/user prefix).
+			// importSkillFromFiles now stores at "/home/user/skills/{name}/", so hydration
+			// writes the file to the same path the tool searches.
 			const webToolContext: ToolContext = {
 				db,
 				siteId,

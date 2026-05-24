@@ -305,8 +305,10 @@ export function createSkillsRoutes(db: Database): Hono {
 				return c.json({ error: "Skill not found" }, 404);
 			}
 
-			// Query skill files
-			const pattern = `skills/${skill.name}/%`;
+			// Query skill files using skill_root to handle both old relative paths
+			// ("skills/{name}") and new absolute paths ("/home/user/skills/{name}").
+			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
+			const pattern = `${skillRoot}/%`;
 			const files = db
 				.query("SELECT path, content FROM files WHERE path LIKE ? AND deleted = 0")
 				.all(pattern) as Array<{ path: string; content: string }>;
@@ -320,9 +322,9 @@ export function createSkillsRoutes(db: Database): Hono {
 				);
 			}
 
-			// Convert to SkillFileEntry[], stripping prefix
+			// Convert to SkillFileEntry[], stripping the skill_root prefix
 			const skillFiles: SkillFileEntry[] = files.map((f) => ({
-				path: f.path.replace(`skills/${skill.name}/`, ""),
+				path: f.path.replace(`${skillRoot}/`, ""),
 				content: f.content,
 			}));
 
