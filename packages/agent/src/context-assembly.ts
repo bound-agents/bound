@@ -31,7 +31,12 @@ import {
 	resolveVc15Tunables,
 } from "./summary-extraction.js";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
-import { hasStrippableThinking, stripThinkingFromToolCall } from "./warm-compaction";
+import {
+	COLD_COMPACTION_THRESHOLD,
+	computeRecentWindow,
+	hasStrippableThinking,
+	stripThinkingFromToolCall,
+} from "./warm-compaction";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -1020,10 +1025,8 @@ Original output was too large for the context window. If you need the full conte
 	// more recent working memory, they just tolerate it).
 	const stage1_7Span = getTracer().startSpan("context.stage-1.7-history-compaction");
 	if (params.compactToolResults && messages.length > 0) {
-		const defaultRecentWindow = Math.max(4, Math.min(20, Math.floor(contextWindow / 2500)));
-		const recentWindow = params.compactRecentWindow ?? defaultRecentWindow;
+		const recentWindow = params.compactRecentWindow ?? computeRecentWindow(contextWindow);
 		const compactionBoundary = Math.max(0, messages.length - recentWindow);
-		const COLD_COMPACTION_THRESHOLD = 500;
 
 		// Inject thread summary if available
 		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
