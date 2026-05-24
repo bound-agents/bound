@@ -2263,6 +2263,112 @@ describe("mapChunks — finish / usage", () => {
 		expect(done?.usage.cache_write_tokens).toBe(500);
 	});
 
+	it("accumulates cache-write tokens across multiple finish-step events (bedrock multi-step)", async () => {
+		// AI SDK emits one finish-step per step in multi-step turns (tool-use
+		// rounds). Each step's providerMetadata carries that step's
+		// cacheWriteInputTokens. The cache write typically lands on the FIRST
+		// step (prompt prefix) and subsequent tool-use steps may report no
+		// cache write because the prefix is already cached.
+		//
+		// Pre-fix: holding only `lastStepMetadata` overwrote step 1's
+		// cacheWriteInputTokens with step 2's null, dropping the metric.
+		// 13/23 turns on thread c879be2b reported tokens_cache_write = NULL
+		// because of this. Post-fix: accumulate across steps.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "thinking..." },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: { usage: { cacheWriteInputTokens: 240000 } },
+						},
+					},
+					{ type: "tool-input-start", id: "t1", toolName: "bash" },
+					{ type: "tool-input-delta", id: "t1", delta: '{"cmd":"ls"}' },
+					{ type: "tool-input-end", id: "t1" },
+					{
+						type: "finish-step",
+						// Step 2 has no cache_write (prefix already cached).
+						providerMetadata: { bedrock: { usage: {} } },
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: {
+							inputTokens: 245000,
+							outputTokens: 100,
+							cachedInputTokens: 0,
+						},
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		// MUST be 240000, NOT null (the value from step 2's metadata).
+		expect(done?.usage.cache_write_tokens).toBe(240000);
+	});
+
+	it("accumulates cache-write tokens across multiple finish-step events (anthropic multi-step)", async () => {
+		// Same regression for the anthropic-direct provider path.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "thinking..." },
+					{
+						type: "finish-step",
+						providerMetadata: { anthropic: { cacheCreationInputTokens: 500 } },
+					},
+					{
+						type: "finish-step",
+						providerMetadata: { anthropic: { cacheCreationInputTokens: 0 } },
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 600, outputTokens: 50 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(500);
+	});
+
+	it("sums cache-write tokens when both finish-steps report them (multiple cache writes)", async () => {
+		// Less common but possible: each step writes to its own cache prefix.
+		// Sum so the persisted metric reflects total tokens billed.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "step 1" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: { usage: { cacheWriteInputTokens: 100 } },
+						},
+					},
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: { usage: { cacheWriteInputTokens: 50 } },
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 200, outputTokens: 30 },
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(150);
+	});
+
 	it("reports null cache tokens when provider metadata absent", async () => {
 		const out = await collect(
 			mapChunks(
