@@ -1,9 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
-import { InMemoryFs } from "just-bash";
+import { hydrateWorkspace } from "@bound/sandbox";
+import { InMemoryFs, MountableFs } from "just-bash";
 import type { ToolContext } from "../../types";
 import { createSkillTool } from "../skill";
+import { importSkillFromFiles } from "../skill-utils";
 
 function getExecute(tool: ReturnType<typeof createSkillTool>) {
 	const execute = tool.execute;
@@ -450,6 +452,77 @@ Content here.`;
 			expect(result).toMatch(/list/i);
 			expect(result).toMatch(/read/i);
 			expect(result).toMatch(/retire/i);
+		});
+	});
+
+	describe("web UI skill → skill activate tool (integration)", () => {
+		it("should activate a skill created via the web UI after VFS hydration", async () => {
+			// Step 1: Simulate web UI creating a skill.
+			// The web route calls importSkillFromFiles(), which stores files in the
+			// DB at "skills/{name}/SKILL.md" (relative path, no /home/user prefix).
+			const skillName = "web-ui-skill";
+			const skillMdContent = `---
+name: ${skillName}
+description: A skill created via the web UI
+compatibility: 1.0.0
+---
+
+# Web UI Skill
+
+This skill was created via the web UI.
+`;
+			const webImportResult = await importSkillFromFiles(
+				db,
+				siteId,
+				[{ path: "SKILL.md", content: skillMdContent }],
+				{},
+			);
+			expect(webImportResult.ok).toBe(true); // Web UI creation must succeed
+
+			// Verify where the file was stored in DB
+			const dbFile = db
+				.prepare("SELECT path FROM files WHERE path LIKE ? AND deleted = 0")
+				.get(`%${skillName}%`) as { path: string } | null;
+			expect(dbFile).not.toBeNull();
+			// Web UI stores at "skills/{name}/SKILL.md" — relative, no /home/user prefix
+			expect(dbFile?.path).toBe(`skills/${skillName}/SKILL.md`);
+
+			// Step 2: Hydrate a fresh VFS from the DB, as the production startup does.
+			const baseFs = new InMemoryFs();
+			const vfs = new MountableFs({ base: baseFs });
+			const homeUserFs = new InMemoryFs();
+			vfs.mount("/home/user", homeUserFs);
+			await hydrateWorkspace(vfs, db);
+
+			// Step 3: Call "skill activate" with this hydrated VFS.
+			// The tool looks for files under "/home/user/skills/{name}/" in the VFS,
+			// but hydration wrote them to "skills/{name}/SKILL.md" (no /home/user prefix).
+			const webToolContext: ToolContext = {
+				db,
+				siteId,
+				eventBus: {
+					on: () => {},
+					off: () => {},
+					emit: () => {},
+					once: () => {},
+				} as any,
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: () => {},
+					error: () => {},
+				},
+				fs: vfs,
+			};
+
+			const tool = createSkillTool(webToolContext);
+			const activateResult = await getExecute(tool)({
+				action: "activate",
+				name: skillName,
+			});
+
+			expect(typeof activateResult).toBe("string");
+			expect(activateResult).toMatch(/activated successfully/i);
 		});
 	});
 });
