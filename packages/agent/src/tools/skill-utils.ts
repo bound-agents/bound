@@ -129,6 +129,8 @@ export async function importSkillFromFiles(
 		// Step 10: Check existing skill
 		const now = new Date().toISOString();
 
+		const skillRoot = `/home/user/skills/${name}`;
+
 		if (existingSkill) {
 			const existingAsSkill = existingSkill as Record<string, unknown> & {
 				status: string;
@@ -143,6 +145,7 @@ export async function importSkillFromFiles(
 					{
 						status: "active",
 						content_hash: contentHash,
+						skill_root: skillRoot,
 						activation_count: existingAsSkill.activation_count + 1,
 						last_activated_at: now,
 						activated_at: now,
@@ -164,6 +167,7 @@ export async function importSkillFromFiles(
 					skillId,
 					{
 						content_hash: contentHash,
+						skill_root: skillRoot,
 						modified_at: now,
 						description,
 						allowed_tools: data.allowed_tools ?? null,
@@ -185,7 +189,7 @@ export async function importSkillFromFiles(
 					name,
 					description,
 					status: "active",
-					skill_root: `skills/${name}`,
+					skill_root: skillRoot,
 					content_hash: contentHash,
 					allowed_tools: data.allowed_tools ?? null,
 					compatibility: data.compatibility ?? null,
@@ -205,7 +209,7 @@ export async function importSkillFromFiles(
 
 		// Step 11: Persist files
 		for (const entry of files) {
-			const filePath = `skills/${name}/${entry.path}`;
+			const filePath = `${skillRoot}/${entry.path}`;
 			const fileId = filePath;
 			const sizeBytes = Buffer.byteLength(entry.content, "utf8");
 
