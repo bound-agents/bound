@@ -214,4 +214,105 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		expect(computeInflationRatio(db, threadId)).toBeCloseTo(1.1, 5);
 		expect(computeInflationRatio(db, otherThread)).toBeCloseTo(5.0, 5);
 	});
+
+	// Regression: thread c879be2b-fe29-421d-b1a6-b9b1579e5648 (2026-05-24).
+	// The pre-fix agent-loop wrote actualTotalTokens = inputTokens +
+	// cacheReadTokens + cacheWriteTokens. Both AI SDK Bedrock@4.x and
+	// Anthropic@3.x already sum (raw_input + cR + cW) into the standardized
+	// `inputTokens` they yield, so this addition was double-counting on every
+	// cache-write turn. The result was a recorded inflation of ~2.7x on
+	// cache-write turns (live data) versus ~1.4x on no-cache turns —
+	// poisoning the EMA, monotonically tightening the adaptive truncation
+	// ratio, and forcing warm-path budget bails forever.
+	//
+	// This test pins the EMA's healthy band against a synthetic Bedrock-like
+	// turn sequence where actualTotalTokens has been recorded correctly.
+	// Inflation should stay in 1.3-1.5x (legit tiktoken-vs-Bedrock drift on
+	// opus), and effective truncation ratio should NOT collapse below 0.5.
+	it("inflation EMA stays in healthy band when actualTotalTokens excludes double-counting", () => {
+		const t0 = new Date("2026-05-23T20:00:00Z");
+
+		// Realistic turn sequence inspired by the live thread: 10 turns
+		// alternating cache-write and cache-read, all opus, with a
+		// consistent tiktoken-vs-actual ratio of ~1.4x.
+		// Each turn's `actual` is what the agent loop NOW writes:
+		// just `inputTokens` (which the AI SDK provider already summed
+		// to include cached tokens).
+		const turns = [
+			// Cold turn: cache_write only
+			{ estimated: 167666, actualTotal: 248613 }, // ratio 1.483
+			// Warm turn: cache_read only — same total prompt size, so
+			// actualTotal stays close to the cold turn value.
+			{ estimated: 175352, actualTotal: 249804 }, // ratio 1.425
+			{ estimated: 169302, actualTotal: 247599 }, // ratio 1.462
+			{ estimated: 166950, actualTotal: 247101 }, // ratio 1.480
+			{ estimated: 168000, actualTotal: 248000 }, // ratio 1.476
+			{ estimated: 170000, actualTotal: 245000 }, // ratio 1.441
+			{ estimated: 172000, actualTotal: 250000 }, // ratio 1.453
+			{ estimated: 174000, actualTotal: 248000 }, // ratio 1.425
+			{ estimated: 176000, actualTotal: 252000 }, // ratio 1.432
+			{ estimated: 178000, actualTotal: 250000 }, // ratio 1.404
+		];
+		for (let i = 0; i < turns.length; i++) {
+			insertTurn(new Date(t0.getTime() + i * 1000), turns[i]);
+		}
+
+		const ratio = computeInflationRatio(db, threadId);
+		// Healthy band — pre-fix this would have spiked to 2.0+ on the
+		// cache-write turns (due to actualTotalTokens being doubled).
+		expect(ratio).not.toBeNull();
+		// biome-ignore lint/style/noNonNullAssertion: just asserted above
+		expect(ratio!).toBeGreaterThan(1.3);
+		// biome-ignore lint/style/noNonNullAssertion: just asserted above
+		expect(ratio!).toBeLessThan(1.55);
+
+		// Adaptive truncation ratio derived from this EMA must stay
+		// well above 0.5. If it drops below, the spiral has returned.
+		const adaptive = resolveAdaptiveTruncationRatio(db, threadId, 0.85);
+		expect(adaptive).toBeGreaterThan(0.55);
+		// And of course it should still be tightened from the base
+		// (otherwise we'd be ignoring the legit drift entirely).
+		expect(adaptive).toBeLessThan(0.65);
+	});
+
+	// Regression: pre-fix simulation of the SAME thread WITH the
+	// double-counting bug active. This test documents what the bad
+	// numerator looked like — included for forensic clarity. The
+	// adaptive ratio collapse below 0.5 it produces is what the live
+	// thread experienced, and what the cache-aware EMA fix prevents.
+	it("documents the pre-fix collapse: doubled actualTotalTokens drives ratio below 0.5", () => {
+		const t0 = new Date("2026-05-23T21:00:00Z");
+
+		// What pre-fix would have written: input + cR + cW = ~2x the
+		// real prompt size on cache-write turns.
+		const turns = [
+			{ estimated: 167666, actualTotal: 248613 }, // cold (matches post-fix)
+			{ estimated: 175352, actualTotal: 495000 }, // cache-write turn DOUBLED
+			{ estimated: 169302, actualTotal: 480000 }, // cache-write turn DOUBLED
+			{ estimated: 166950, actualTotal: 247101 }, // cold
+			{ estimated: 168000, actualTotal: 490000 }, // cache-write turn DOUBLED
+			{ estimated: 170000, actualTotal: 245000 }, // cold
+			{ estimated: 172000, actualTotal: 500000 }, // cache-write turn DOUBLED
+			{ estimated: 174000, actualTotal: 248000 }, // cold
+			{ estimated: 176000, actualTotal: 510000 }, // cache-write turn DOUBLED
+			{ estimated: 178000, actualTotal: 250000 }, // cold
+		];
+		for (let i = 0; i < turns.length; i++) {
+			insertTurn(new Date(t0.getTime() + i * 1000), turns[i]);
+		}
+
+		const ratio = computeInflationRatio(db, threadId);
+		// Pre-fix EMA would land near 2.0x — the average of ~1.4 cold
+		// turns and ~2.8 cache-write turns. This is the BAD state we
+		// fixed; if the EMA reads this on real data, the double-count
+		// bug has been re-introduced.
+		expect(ratio).not.toBeNull();
+		// biome-ignore lint/style/noNonNullAssertion: just asserted above
+		expect(ratio!).toBeGreaterThan(1.8);
+
+		// And the adaptive ratio collapses past 0.5 — the warm-path
+		// budget bails on every turn under this load.
+		const adaptive = resolveAdaptiveTruncationRatio(db, threadId, 0.85);
+		expect(adaptive).toBeLessThan(0.5);
+	});
 });

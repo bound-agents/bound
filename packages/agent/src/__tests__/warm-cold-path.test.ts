@@ -1338,5 +1338,207 @@ describe("warm-cold-path", () => {
 				expect(inToolCall).toBe(false);
 			}
 		});
+
+		it("compacts oversized tool_results in place when warm-path budget would otherwise bail", async () => {
+			// Regression for thread c879be2b-fe29-421d-b1a6-b9b1579e5648
+			// (2026-05-24). When the warm-path budget gate fails because
+			// stored tool_results have grown past the effective budget, we
+			// must NOT immediately clear CachedTurnState and bail to a cold
+			// rebuild. The cold rebuild produces a different byte-prefix,
+			// so the provider's prefix cache misses on the next turn,
+			// turning every "warm" turn into a fresh cache_write. This
+			// caused a 4.7x cache_write/cache_read imbalance on the live
+			// thread.
+			//
+			// Fix: before clearing state and bailing, run the same
+			// Stage 1.7 compaction the cold path runs (tool_result →
+			// retrieval-pointer stub). Re-check budget. Only fall through
+			// to cold if compaction wasn't enough.
+			globalDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					globalThreadId,
+					globalUserId,
+					"web",
+					"local",
+					0,
+					"Warm Compaction Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Seed a single user message in the DB so cold path has work.
+			const userMsgId = randomUUID();
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					userMsgId,
+					globalThreadId,
+					"user",
+					"Hello",
+					null,
+					null,
+					new Date(Date.now() - 10_000).toISOString(),
+					new Date(Date.now() - 10_000).toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const oversizedToolUseId = "tooluse_warm_compact_test_id_x1";
+
+			// Pre-seed CachedTurnState directly to bypass the cold-pass
+			// setup mechanics. We're testing the warm-path budget gate
+			// logic, not the end-to-end cold→warm transition. The
+			// previously-seeded state simulates "after several rounds of
+			// cold+warm turns, an oversized tool_result is sitting in the
+			// cached storedMessages array".
+			const sharedStore = new InMemoryTurnStateStore();
+			// 800k chars ≈ 200k tokens. Against a 200k contextWindow at
+			// 0.85 ratio = 170k effective budget, this guarantees the
+			// budget gate fires. Compaction shrinks it to a ~few-hundred
+			// char stub, so post-compaction we're back under budget.
+			//
+			// We use a varied-character pattern (not all "X") because
+			// js-tiktoken collapses long runs of identical characters into
+			// short token sequences, and an 800k-char "X" string would
+			// only count as ~few hundred tokens — not enough to trip the
+			// budget gate.
+			const buildVariedContent = (size: number) => {
+				const chunks: string[] = [];
+				const pattern = "the quick brown fox jumps over the lazy dog. ";
+				while (chunks.join("").length < size) {
+					chunks.push(pattern);
+				}
+				return chunks.join("").slice(0, size);
+			};
+			const inflatedToolResultContent = buildVariedContent(800_000);
+			// At 200k contextWindow the cold-path Stage 1.7 default
+			// recent-window is 20 messages. Seed enough recent-window
+			// padding that the oversized tool_result lands well outside
+			// it, otherwise compaction has no eligible messages and bails.
+			const recentWindowPadding: LLMMessage[] = [];
+			for (let i = 0; i < 25; i++) {
+				recentWindowPadding.push({
+					role: i % 2 === 0 ? "user" : "assistant",
+					content: `padding turn ${i}`,
+				});
+			}
+			const seededMessages: LLMMessage[] = [
+				{ role: "user", content: "Run a big tool" },
+				{
+					role: "tool_call",
+					content: JSON.stringify([
+						{
+							type: "tool_use",
+							id: oversizedToolUseId,
+							name: "bash",
+							input: { command: "ls /huge" },
+						},
+					]),
+				},
+				{
+					role: "tool_result",
+					tool_use_id: oversizedToolUseId,
+					content: inflatedToolResultContent,
+				},
+				...recentWindowPadding,
+				{ role: "cache", content: "" },
+			];
+			sharedStore.set(globalThreadId, {
+				messages: seededMessages,
+				systemPrompt: "You are an assistant.",
+				cacheMessagePositions: [seededMessages.length - 1],
+				fixedCacheIdx: seededMessages.length - 1,
+				lastMessageCreatedAt: new Date(Date.now() - 5_000).toISOString(),
+				toolFingerprint: computeToolFingerprint(undefined),
+				debugSections: [],
+			});
+
+			// Insert a fresh user message *after* lastMessageCreatedAt so
+			// the warm-path delta fetch finds something to append. Also
+			// insert a synthetic prior turn with cache_write_tokens > 0 so
+			// predictCacheState returns "warm".
+			globalDb.run(
+				`INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, tokens_cache_write, tokens_cache_read, cost_usd, created_at, status, modified_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					randomUUID(),
+					globalThreadId,
+					"claude-opus",
+					100,
+					5,
+					100, // cache_write > 0 so predictCacheState says "warm"
+					0,
+					0,
+					new Date(Date.now() - 5_000).toISOString(),
+					"ok",
+					new Date(Date.now() - 5_000).toISOString(),
+				],
+			);
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					"Follow-up after seed",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const mockBackend = new MockLLMBackend();
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Warm + compacted" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 20,
+						output_tokens: 10,
+						cache_write_tokens: 0,
+						cache_read_tokens: 100,
+						estimated: false,
+					},
+				};
+			});
+
+			const pathLogs: CachePathLog[] = [];
+			const ctx = makeCtx(pathLogs, sharedStore);
+			const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+				threadId: globalThreadId,
+				userId: globalUserId,
+			});
+			await loop.run();
+
+			// THE KEY ASSERTION: warm path was used despite the inflated
+			// stored array. Pre-fix this would log path=cold,
+			// reason=budget-exceeded.
+			expect(pathLogs[0]?.path).toBe("warm");
+
+			// And the cached state's tool_result was actually compacted
+			// in-place. The stub references the tool_use_id so the agent
+			// can recover full content.
+			const cachedAfterWarm = sharedStore.get(globalThreadId);
+			expect(cachedAfterWarm).toBeDefined();
+			const compactedToolResult = cachedAfterWarm?.messages.find(
+				(m) => m.role === "tool_result" && m.tool_use_id === oversizedToolUseId,
+			);
+			expect(compactedToolResult).toBeDefined();
+			expect(typeof compactedToolResult?.content).toBe("string");
+			expect((compactedToolResult?.content as string).length).toBeLessThan(800_000);
+			expect(compactedToolResult?.content as string).toContain(oversizedToolUseId);
+		});
 	});
 });

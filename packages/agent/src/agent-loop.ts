@@ -70,6 +70,7 @@ import type {
 	ClientToolCallRequest,
 } from "./types";
 import { VALID_TRANSITIONS, isClientToolCallRequest } from "./types";
+import { compactStoredMessagesInPlace, computeRecentWindow } from "./warm-compaction";
 // Thinking-block compaction now lives exclusively in context-assembly.ts (Stage 1.7).
 // The warm path no longer mutates stored messages — see agent-loop.ts step 3a comment.
 
@@ -644,13 +645,48 @@ export class AgentLoop {
 							0,
 						);
 						const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
-						const estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
+						let estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
 						const warmEffectiveBudget = Math.floor(contextWindow * adaptiveTruncationRatio);
 						budgetCheckSpan.setAttribute("context.estimated_tokens", estimatedTotal);
 						budgetCheckSpan.setAttribute("context.effective_budget", warmEffectiveBudget);
 
+						// When the warm-path budget would fail, compact in-place
+						// instead of bailing to cold reassembly. Cold rebuild
+						// produces a different byte-prefix the provider's cache
+						// misses; in-place compaction keeps the prefix stable.
+						// Regression coverage: warm-cold-path.test.ts and
+						// inflation-ratio.test.ts.
 						if (estimatedTotal > warmEffectiveBudget) {
-							// High-water mark exceeded — fall through to cold path
+							const compactionResult = compactStoredMessagesInPlace(storedMessages, {
+								recentWindow: computeRecentWindow(contextWindow),
+								contextWindow,
+								effectiveTruncationRatio: adaptiveTruncationRatio,
+								// We just summed countContentTokens over storedMessages
+								// to derive `storedTokens`. Pass it through so Step 2
+								// of the helper doesn't re-tokenize the same array.
+								precomputedEstimate: storedTokens,
+							});
+							if (compactionResult.compacted) {
+								estimatedTotal -= compactionResult.tokensSaved;
+								budgetCheckSpan.setAttribute(
+									"context.warm_compaction_saved",
+									compactionResult.tokensSaved,
+								);
+								budgetCheckSpan.setAttribute(
+									"context.estimated_tokens_post_compaction",
+									estimatedTotal,
+								);
+								this.ctx.logger.info("[agent-loop] Warm path applied in-place compaction", {
+									tokensSaved: compactionResult.tokensSaved,
+									estimatedTotalPostCompaction: estimatedTotal,
+									effectiveBudget: warmEffectiveBudget,
+								});
+							}
+						}
+
+						if (estimatedTotal > warmEffectiveBudget) {
+							// Even after compaction, budget still exceeded —
+							// fall through to cold path.
 							budgetCheckSpan.setAttribute("context.budget_exceeded", true);
 							budgetCheckSpan.end();
 							assembleContextSpan.setAttribute("context.warm_bail_reason", "budget-exceeded");
@@ -1465,18 +1501,17 @@ export class AgentLoop {
 					}
 				}
 
-				// Update context debug with actual LLM-reported token counts
-				// (inputTokens may exclude cached tokens on Bedrock).
+				// AI SDK provider packages (@ai-sdk/amazon-bedrock@4.x,
+				// @ai-sdk/anthropic@3.x) already sum raw_input + cache_read +
+				// cache_write into the standardized `inputTokens` field. Adding
+				// the cache fields again here would double-count and poison the
+				// inflation EMA. See agent-loop.test.ts regression.
 				// applyActualUsageToContextDebug deep-clones sections so per-turn
 				// snapshots remain independent across loop iterations.
 				if (this.lastContextDebug && parsed.usage.inputTokens > 0) {
-					const actualTokens =
-						parsed.usage.inputTokens +
-						(parsed.usage.cacheReadTokens ?? 0) +
-						(parsed.usage.cacheWriteTokens ?? 0);
 					this.lastContextDebug = applyActualUsageToContextDebug(
 						this.lastContextDebug,
-						actualTokens,
+						parsed.usage.inputTokens,
 					);
 				}
 

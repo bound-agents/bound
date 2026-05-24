@@ -1969,6 +1969,61 @@ describe("AgentLoop", () => {
 			expect(debug2.actualTotalTokens).toBe(500);
 			expect(debug2.actualTotalTokens).not.toBe(debug1.actualTotalTokens);
 		});
+
+		it("does not double-count cached tokens already summed by AI SDK providers", async () => {
+			// Both AI SDK provider packages (@ai-sdk/amazon-bedrock@4.x,
+			// @ai-sdk/anthropic@3.x) sum input + cache_read + cache_write into
+			// the standardized `inputTokens` field they yield to the runtime.
+			// Our extractUsage forwards that as `input_tokens`. If the agent
+			// loop adds cache_read_tokens / cache_write_tokens on top of that,
+			// cache-write turns report ~2x the real prompt size, which poisons
+			// the inflation EMA (`actualTotalTokens / totalEstimated`) and
+			// monotonically tightens the per-thread effectiveTruncationRatio
+			// until warm-path budget checks fail forever.
+			//
+			// This test pins the wire contract: actualTotalTokens MUST equal
+			// the runtime's input_tokens, regardless of cache_write/cache_read.
+			const mockBackend = new MockLLMBackend();
+
+			// Simulate a cache-write turn: AI SDK Bedrock provider already
+			// summed (raw_input + cR + cW) into input_tokens. The driver yields
+			// cache_write_tokens separately for billing/observability — but
+			// adding it back to input_tokens is double-counting.
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "ok" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 200_000, // already includes cW
+						output_tokens: 50,
+						cache_write_tokens: 180_000,
+						cache_read_tokens: 0,
+						estimated: false,
+					},
+				};
+			});
+
+			const ctx = makeCtx();
+			const agentLoop = new AgentLoop(
+				ctx,
+				createMockSandbox(() => ({ stdout: "", stderr: "", exitCode: 0 })),
+				createMockRouter(mockBackend),
+				{ threadId, userId: "test-user" },
+			);
+
+			await agentLoop.run();
+
+			const turn = db
+				.query("SELECT context_debug FROM turns WHERE thread_id = ? ORDER BY rowid DESC LIMIT 1")
+				.get(threadId) as { context_debug: string | null };
+
+			const debug = JSON.parse(turn.context_debug ?? "{}") as {
+				actualTotalTokens?: number;
+			};
+
+			// MUST be 200_000, NOT 200_000 + 180_000 = 380_000
+			expect(debug.actualTotalTokens).toBe(200_000);
+		});
 	});
 
 	describe("spoke node (no local backends)", () => {
