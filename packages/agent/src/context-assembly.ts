@@ -10,9 +10,14 @@ import type {
 	CrossThreadSource,
 	Message,
 } from "@bound/shared";
-import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
+import { countContentTokens, countTokens } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { truncateHistoryToBudget } from "./budget-truncate";
+import {
+	compactToolResultsBeforeBoundary,
+	computeCompactionBoundary,
+	stripThinkingBeforeBoundary,
+} from "./history-compaction";
 import {
 	hashStableVolatileInputs,
 	hashSystemPromptString,
@@ -44,12 +49,7 @@ import {
 } from "./summary-extraction.js";
 import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
-import {
-	COLD_COMPACTION_THRESHOLD,
-	computeRecentWindow,
-	hasStrippableThinking,
-	stripThinkingFromToolCall,
-} from "./warm-compaction";
+import { computeRecentWindow } from "./warm-compaction";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -1256,33 +1256,13 @@ Original output was too large for the context window. If you need the full conte
 	const stage1_7Span = getTracer().startSpan("context.stage-1.7-history-compaction");
 	if (params.compactToolResults && messages.length > 0) {
 		const recentWindow = params.compactRecentWindow ?? computeRecentWindow(contextWindow);
-		// Anchor the compaction boundary to the index of the LAST user message,
-		// with fallback to the sliding boundary when no user message exists.
-		// This is critical for prefix-cache stability: without it, the boundary
-		// `messages.length - recentWindow` slides forward by 2 every warm/cold
-		// pass as new assistant + tool_result messages append, which mutates a
-		// previously-preserved tool_result's bytes and busts the provider's
-		// cached prefix.
-		//
-		// Anchoring to lastUserIdx keeps the boundary STABLE for every LLM round
-		// inside a single user request. Tool_results between an old user message
-		// and the most recent one get stubbed once and stay stubbed; tool_results
-		// after the most recent user message are in-flight and stay intact.
-		// The boundary only moves when the user sends a new message — at which
-		// point a one-time cache invalidation is the natural break point.
-		//
-		// Cold and warm paths must use the SAME anchor logic; otherwise warm-
-		// after-cold misses cache because the two produce different stub sets.
-		// See packages/agent/src/warm-compaction.ts for the warm-path twin.
-		let lastUserIdx = -1;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			if (messages[i].role === "user") {
-				lastUserIdx = i;
-				break;
-			}
-		}
-		const compactionBoundary =
-			lastUserIdx >= 0 ? lastUserIdx : Math.max(0, messages.length - recentWindow);
+
+		// Anchor the compaction boundary to the index of the LAST user
+		// message — see `history-compaction/index.ts` H2 for the cache-
+		// stability rationale. The boundary stays put across LLM round-
+		// trips within a single user request so the prefix bytes don't
+		// mutate underneath the provider's cache.
+		const compactionBoundary = computeCompactionBoundary(messages, recentWindow);
 
 		// Inject thread summary if available
 		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
@@ -1305,45 +1285,17 @@ Original output was too large for the context window. If you need the full conte
 			} as Message);
 		}
 
-		// Compact old tool results (everything before the recent window)
-		// The boundary shifts by 1 if we prepended the summary message.
-		// - tool_result: replace with pointer + short preview (always, for space)
-		// - tool_call thinking: budget-driven — only strip when context exceeds
-		//   TRUNCATION_TARGET_RATIO of the window. Preserves the model's reasoning
-		//   chain on cold assembly when there's room, preventing reorientation.
-		// - assistant: NOT compacted — the LLM mimics the compaction format
-		// - user: kept intact (ground truth)
+		// The boundary shifts by 1 if we prepended the summary message
+		// (it was computed against the pre-prepend indices).
 		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
-		for (let i = 0; i < adjustedBoundary; i++) {
-			const msg = messages[i];
-			if (msg.role === "tool_result" && msg.content.length > COLD_COMPACTION_THRESHOLD) {
-				const originalLength = msg.content.length;
-				const preview = safeSlice(msg.content, 0, 200).trimEnd();
-				msg.content = `[Tool result truncated for inline display — ${originalLength} chars stored. Full content: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
-			}
-		}
 
-		// Budget-driven thinking compaction: only strip thinking blocks from
-		// tool_call messages when post-tool_result-compaction size exceeds the
-		// TRUNCATION_TARGET_RATIO threshold. Preserves the model's reasoning
-		// chain on cold assembly when there's headroom.
+		// Compaction primitives — see `history-compaction/`:
+		//   - tool_result: stub if content > COLD_COMPACTION_THRESHOLD
+		//   - tool_call thinking: budget-driven strip when over threshold
+		//   - assistant / user: untouched
+		compactToolResultsBeforeBoundary(messages, adjustedBoundary);
 		const thinkingThreshold = Math.floor(contextWindow * effectiveTruncationRatio);
-		let coldEstimate = 0;
-		for (const msg of messages) {
-			coldEstimate += countTokens(msg.content);
-		}
-		if (coldEstimate > thinkingThreshold) {
-			for (let i = 0; i < adjustedBoundary; i++) {
-				if (coldEstimate <= thinkingThreshold) break;
-				const msg = messages[i];
-				if (msg.role === "tool_call" && hasStrippableThinking(msg.content)) {
-					const before = countTokens(msg.content);
-					msg.content = stripThinkingFromToolCall(msg.content);
-					const after = countTokens(msg.content);
-					coldEstimate -= before - after;
-				}
-			}
-		}
+		stripThinkingBeforeBoundary(messages, adjustedBoundary, thinkingThreshold);
 	}
 	stage1_7Span.end();
 
