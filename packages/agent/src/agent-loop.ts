@@ -53,7 +53,7 @@ import {
 	rebuildWarmSections,
 } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
-import { resolveAdaptiveTruncationRatio } from "./inflation-ratio";
+import { resolveAdaptiveTruncation } from "./inflation-ratio";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
 import { createRelayStream$ } from "./relay-stream$";
@@ -626,11 +626,8 @@ export class AgentLoop {
 			// reads recent turns' actual/estimated samples and tightens the
 			// ratio proportionally. New threads with insufficient data fall
 			// back to the base ratio.
-			const adaptiveTruncationRatio = resolveAdaptiveTruncationRatio(
-				this.ctx.db,
-				this.config.threadId,
-				TRUNCATION_TARGET_RATIO,
-			);
+			const { ratio: adaptiveTruncationRatio, inflation: measuredInflation } =
+				resolveAdaptiveTruncation(this.ctx.db, this.config.threadId, TRUNCATION_TARGET_RATIO);
 
 			// Check if warm path is eligible.
 			// noHistory tasks are stateless across runs — each run should cold-assemble
@@ -653,6 +650,18 @@ export class AgentLoop {
 			let llmMessages: import("@bound/llm").LLMMessage[] = [];
 			let usedWarmPath = false;
 			let deltaMessageCount = 0;
+			// Tracks the specific reason a warm-eligible attempt bailed. Stays
+			// `null` when the warm path either succeeded or was never eligible
+			// (the latter is captured by the eligibility predicate below).
+			// Distinguishing orphaned-tool-call from budget-exceeded matters
+			// because the two bails have different remedies — the former is a
+			// structural sanitization issue, the latter is genuine pressure.
+			let warmBailReason: "orphaned-tool-call" | "budget-exceeded" | null = null;
+			// Tokens reclaimed by `compactStoredMessagesInPlace` on this turn.
+			// Recorded onto contextDebug for the warm-success branch so the
+			// "warm path applied in-place compaction" event is visible without
+			// log scraping. `0` means compaction was not invoked.
+			let warmCompactionTokensSaved = 0;
 
 			const cachedForWarm = this.getCachedTurnState();
 			if (isWarmPathEligible && cachedForWarm) {
@@ -767,6 +776,7 @@ export class AgentLoop {
 							},
 						);
 						assembleContextSpan.setAttribute("context.warm_bail_reason", "orphaned-tool-call");
+						warmBailReason = "orphaned-tool-call";
 						this.clearCachedTurnState();
 						// Fall through to the cold path by leaving usedWarmPath=false.
 					}
@@ -845,6 +855,7 @@ export class AgentLoop {
 							});
 							if (compactionResult.compacted) {
 								estimatedTotal -= compactionResult.tokensSaved;
+								warmCompactionTokensSaved = compactionResult.tokensSaved;
 								budgetCheckSpan.setAttribute(
 									"context.warm_compaction_saved",
 									compactionResult.tokensSaved,
@@ -867,6 +878,7 @@ export class AgentLoop {
 							budgetCheckSpan.setAttribute("context.budget_exceeded", true);
 							budgetCheckSpan.end();
 							assembleContextSpan.setAttribute("context.warm_bail_reason", "budget-exceeded");
+							warmBailReason = "budget-exceeded";
 							this.ctx.logger.info(
 								"[agent-loop] Warm path exceeded context budget, triggering cold reassembly",
 								{
@@ -947,6 +959,11 @@ export class AgentLoop {
 								sections: warmSections,
 								budgetPressure: false,
 								truncated: 0,
+								cachePath: "warm",
+								cachePathReason: "warm-eligible",
+								effectiveTruncationRatio: adaptiveTruncationRatio,
+								measuredInflation,
+								warmCompactionTokensSaved,
 								cacheMarkers: buildCacheMarkers({
 									sections: warmSections,
 									messagePlacement: rollingPlacement ?? {
@@ -965,16 +982,29 @@ export class AgentLoop {
 				assembleContextSpan.end();
 			}
 
-			// Compute path decision reason (used in log and cold-path span attribute)
-			const cachePathReason: string = !this.getCachedTurnState()
-				? "no-stored-state"
-				: cacheState === "cold"
-					? "cache-expired"
-					: !isWarmPathEligible && this.getCachedTurnState()?.toolFingerprint !== currentFingerprint
-						? "tool-change"
-						: usedWarmPath === false
-							? "budget-exceeded"
-							: "warm-eligible";
+			// Compute path decision reason (used in log, cold-path span attribute,
+			// and the recorded `context_debug.cachePathReason`). The branch order
+			// matters: noHistory short-circuits before any cached-state inspection
+			// because the eligibility predicate forces cold regardless of cache
+			// freshness, and the warm-bail reasons (orphaned-tool-call /
+			// budget-exceeded) are meaningless in that branch. After noHistory,
+			// the warmBailReason captured during the warm attempt takes priority
+			// over derived reasons since it reflects the actual control-flow
+			// decision rather than a structural inference.
+			const cachePathReason: ContextDebugInfo["cachePathReason"] = this.config.noHistory
+				? "no-history"
+				: warmBailReason !== null
+					? warmBailReason
+					: !this.getCachedTurnState()
+						? "no-stored-state"
+						: cacheState === "cold"
+							? "cache-expired"
+							: !isWarmPathEligible &&
+									this.getCachedTurnState()?.toolFingerprint !== currentFingerprint
+								? "tool-change"
+								: usedWarmPath === false
+									? "budget-exceeded"
+									: "warm-eligible";
 
 			// Log warm/cold path decision with reason and counts
 			this.ctx.logger.info("[agent-loop] Cache path selected", {
@@ -1062,6 +1092,16 @@ export class AgentLoop {
 					messagePlacement: fixedPlacement,
 					ttl: cacheTtl,
 				});
+
+				// Stamp cache-path provenance fields onto the cold-path debug
+				// record. `assembleContext` builds the rest of contextDebug; the
+				// agent loop owns the routing decision (warm vs cold, which
+				// reason fired, what truncation ratio applied), so those fields
+				// are attached here rather than threaded through assembleContext.
+				contextDebug.cachePath = "cold";
+				contextDebug.cachePathReason = cachePathReason;
+				contextDebug.effectiveTruncationRatio = adaptiveTruncationRatio;
+				contextDebug.measuredInflation = measuredInflation;
 
 				// Query last message created_at for delta queries
 				const lastRow = this.ctx.db

@@ -677,6 +677,87 @@ export interface ContextDebugInfo {
 	truncated: number;
 	crossThreadSources?: CrossThreadSource[];
 	/**
+	 * Which assembly path produced this turn's wire payload.
+	 *
+	 * - `"warm"` — `CachedTurnState` was reused; only the volatile-tail
+	 *   developer message and (when caching is supported) a rolling cache
+	 *   marker were rebuilt.
+	 * - `"cold"` — full `assembleContext()` ran. The next warm turn will
+	 *   read this turn's stored state.
+	 *
+	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 */
+	cachePath?: "warm" | "cold";
+	/**
+	 * Why `cachePath` resolved the way it did. Mirrors the
+	 * `[agent-loop] Cache path selected` log line so post-hoc analysis of
+	 * cache-thrash threads doesn't require log scraping.
+	 *
+	 * Cold-side reasons:
+	 * - `"no-stored-state"` — first turn on this thread, or warm cache evicted.
+	 * - `"cache-expired"` — `predictCacheState()` returned `"cold"` (TTL elapsed).
+	 * - `"tool-change"` — `computeToolFingerprint` mismatch with cached state.
+	 * - `"orphaned-tool-call"` — warm path detected an unanswered `tool_use`
+	 *   and bailed so Stage 3 sanitization could synthesize the missing
+	 *   `tool_result`. Distinct from `"budget-exceeded"` because the remedy
+	 *   is structural, not size-driven.
+	 * - `"budget-exceeded"` — warm-path estimate exceeded
+	 *   `effectiveTruncationRatio * contextWindow` even after in-place
+	 *   compaction fired (or none was applicable).
+	 * - `"no-history"` — `noHistory` task threads always cold-assemble.
+	 *
+	 * Warm-side reasons:
+	 * - `"warm-eligible"` — warm path ran to completion within budget.
+	 *
+	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 */
+	cachePathReason?:
+		| "no-stored-state"
+		| "cache-expired"
+		| "tool-change"
+		| "orphaned-tool-call"
+		| "budget-exceeded"
+		| "no-history"
+		| "warm-eligible";
+	/**
+	 * Per-thread adaptive truncation ratio resolved at the start of this
+	 * assembly. `TRUNCATION_TARGET_RATIO` (0.85) divided by the EMA of
+	 * actual/estimated inflation over the recent `turns` lookback window
+	 * (clamped so inflation < 1.0 doesn't loosen the gate). Falls back to
+	 * the base ratio on threads with insufficient samples.
+	 *
+	 * Recording it lets us correlate budget-gate decisions with the ratio
+	 * that drove them on the same turn — without it, debugging "why didn't
+	 * truncation fire?" requires re-running the EMA computation against
+	 * the same row history.
+	 *
+	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 */
+	effectiveTruncationRatio?: number;
+	/**
+	 * The raw inflation EMA (mean of `actual / estimated` over recent valid
+	 * turns) that fed into `effectiveTruncationRatio`. `null` when the
+	 * thread has fewer than the minimum sample count and the resolver fell
+	 * back to the base ratio. Storing it separately from
+	 * `effectiveTruncationRatio` lets us tell "estimator is accurate" from
+	 * "we don't know yet" — both currently surface as the base ratio.
+	 *
+	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 */
+	measuredInflation?: number | null;
+	/**
+	 * Tokens saved by `compactStoredMessagesInPlace` on this warm turn.
+	 * `0` when compaction was not invoked (warm path stayed under budget
+	 * before compaction was considered). `undefined` on cold turns and on
+	 * older rows.
+	 *
+	 * Visible warm-path compaction is the signal that the high-water gate
+	 * fired without forcing a cold rebuild — the prefix stayed byte-stable
+	 * and the cache survived. Without this field, that successful path is
+	 * indistinguishable from "warm path stayed comfortably under budget".
+	 */
+	warmCompactionTokensSaved?: number;
+	/**
 	 * Cache breakpoint descriptors for this turn. Up to two entries:
 	 *
 	 * - `kind: "system"` — boundary at the end of the stable system-prompt prefix
