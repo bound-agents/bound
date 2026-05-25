@@ -11,6 +11,7 @@ import type {
 } from "@bound/shared";
 import { countContentTokens, countTokens } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
+import { annotateMessages } from "./annotation";
 import { truncateHistoryToBudget } from "./budget-truncate";
 import { substituteUnsupportedBlocks } from "./content-substitution";
 import {
@@ -1196,138 +1197,12 @@ Original output was too large for the context window. If you need the full conte
 	stage4Span.setAttribute("stage.implicit", true);
 	stage4Span.end();
 
-	// Stage 5: ANNOTATION
-	// Convert Message to LLMMessage format with annotations
-	// Also detect model switches between consecutive assistant messages per spec R-U11
-	// Defense-in-depth: filter non-LLM roles in case any survived Stage 2.5
+	// Stage 5: ANNOTATION — model-switch markers, tool_use_id
+	// propagation, content-block parsing, user-message timestamp
+	// annotation. See `annotation/` for the full contract;
+	// property-tested at annotation/__tests__/annotate.property.test.ts.
 	const stage5Span = getTracer().startSpan("context.stage-5-annotation");
-	const LLM_COMPATIBLE_ROLES = new Set([
-		"user",
-		"assistant",
-		"system",
-		"developer",
-		"tool_call",
-		"tool_result",
-	]);
-
-	// Build a map from tool_call message ID to the tool_use IDs contained within,
-	// so we can propagate tool_use_id to the subsequent tool_result messages.
-	// Also collect all known tool_use IDs so we can validate tool_result.tool_name
-	// against actual IDs (tool_name may contain a tool name instead of an ID due
-	// to historical data from before the toolCallId fix).
-	const toolCallIdToToolUseId = new Map<string, string>();
-	const knownToolUseIds = new Set<string>();
-	for (const m of sanitized) {
-		if (m.role === "tool_call") {
-			try {
-				const blocks = JSON.parse(m.content);
-				if (Array.isArray(blocks)) {
-					for (const block of blocks) {
-						if (block.id) {
-							knownToolUseIds.add(block.id);
-						}
-					}
-					if (blocks.length > 0 && blocks[0].id) {
-						toolCallIdToToolUseId.set(m.id, blocks[0].id);
-					}
-				}
-			} catch (_error) {
-				// Content may not be JSON (e.g. synthetic tool_call)
-				// No logger available in this context
-			}
-		}
-	}
-
-	const annotated: LLMMessage[] = [];
-	let lastAssistantModel: string | null = null;
-	let lastToolCallMsgId: string | null = null;
-	let modelSwitchCount = 0;
-	const MODEL_SWITCH_CAP = 3;
-
-	for (let i = 0; i < sanitized.length; i++) {
-		const m = sanitized[i];
-
-		// Skip non-LLM roles (alert, purge, etc.)
-		if (!LLM_COMPATIBLE_ROLES.has(m.role)) {
-			continue;
-		}
-
-		// Track the last tool_call message ID for tool_use_id propagation
-		if (m.role === "tool_call") {
-			lastToolCallMsgId = m.id;
-		}
-
-		// Check for model switch on assistant messages; cap at MODEL_SWITCH_CAP
-		// to prevent long threads with many switches from flooding the context.
-		if (m.role === "assistant" && m.model_id) {
-			if (lastAssistantModel && lastAssistantModel !== m.model_id) {
-				if (modelSwitchCount < MODEL_SWITCH_CAP) {
-					annotated.push({
-						role: "developer",
-						content: `Model switched from ${lastAssistantModel} to ${m.model_id}`,
-					});
-					modelSwitchCount++;
-				}
-			}
-			lastAssistantModel = m.model_id;
-		}
-
-		// Parse JSON ContentBlock[] strings back into arrays.
-		// The DB stores image/document messages as JSON-serialized ContentBlock[].
-		// Parse them here so Stage 5b substitution and drivers receive proper arrays.
-		let annotatedContent: string | ContentBlock[] = m.content;
-		if (
-			typeof m.content === "string" &&
-			(m.role === "user" || m.role === "assistant" || m.role === "tool_result")
-		) {
-			try {
-				const parsed = JSON.parse(m.content);
-				if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type) {
-					annotatedContent = parsed as ContentBlock[];
-				}
-			} catch (_error) {
-				// Not JSON — keep as plain text string
-				// No logger available in this context
-			}
-		}
-
-		// Annotate user messages with absolute timestamps so the agent can
-		// detect session boundaries and temporal gaps. Only user messages are
-		// annotated — annotating assistant messages caused the LLM to echo
-		// the timestamp format as its entire response (producing noise like
-		// "[Apr 5, 07:25]" persisted as real assistant messages).
-		// Uses absolute format (e.g. "[Apr 4, 14:30]") instead of relative
-		// (e.g. "[5m ago]") to avoid busting the LLM prompt cache prefix.
-		// Only annotate when the message is >= 1 minute old (no value for very recent).
-		if (m.role === "user" && m.created_at) {
-			const ageMs = Date.now() - new Date(m.created_at).getTime();
-			if (ageMs >= 60_000 && typeof annotatedContent === "string") {
-				const ts = formatTimestamp(m.created_at);
-				annotatedContent = `${ts} ${annotatedContent}`;
-			}
-		}
-
-		const msg: LLMMessage = {
-			role: m.role as LLMMessage["role"],
-			content: annotatedContent,
-			model_id: m.model_id || undefined,
-			host_origin: m.host_origin,
-		};
-
-		// Propagate tool_use_id for tool_result messages
-		// In the DB, tool_name stores the tool_use_id for tool_result messages.
-		// Validate that tool_name is an actual tool_use ID (not a tool name like
-		// "retrieve_task" from historical data before the toolCallId fix).
-		if (m.role === "tool_result") {
-			const toolUseId =
-				(m.tool_name && knownToolUseIds.has(m.tool_name) ? m.tool_name : null) ||
-				(lastToolCallMsgId ? toolCallIdToToolUseId.get(lastToolCallMsgId) : null) ||
-				`synthetic-${m.id}`;
-			msg.tool_use_id = toolUseId;
-		}
-
-		annotated.push(msg);
-	}
+	const annotated = annotateMessages({ messages: sanitized });
 	stage5Span.end();
 
 	// Stage 5b: CONTENT_SUBSTITUTION
