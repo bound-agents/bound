@@ -13,7 +13,7 @@ import {
 import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
-import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
+import type { ContextDebugInfo, ContextSection, EventMap, SyncConfig } from "@bound/shared";
 import {
 	capToolResultContent,
 	countContentTokens,
@@ -49,6 +49,7 @@ import {
 	applyActualUsageToContextDebug,
 	assembleContext,
 	buildVolatileContext,
+	computeVolatileTailSection,
 	rebuildWarmSections,
 } from "./context-assembly";
 import { trackFilePath } from "./file-thread-tracker";
@@ -78,6 +79,54 @@ export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
 /** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+
+/**
+ * Token count threshold above which `fastApproxContentTokens` falls back
+ * to a character-based approximation instead of running tiktoken.
+ *
+ * tiktoken's BPE has pathological behavior on highly-repetitive content:
+ * a 49k-character string of repeated single characters (e.g. a tool
+ * output that's mostly whitespace or 'x's) takes 144+ seconds to
+ * tokenize on cl100k_base. Real-world tool_result content is diverse
+ * enough that tiktoken stays fast at this size, but synthetic test
+ * fixtures and pathological dumps have triggered the slow path.
+ *
+ * The threshold is chosen below the 50K offload threshold so any
+ * tool_result that survives offload (≤50K chars) skips the fallback if
+ * it's small enough, and uses the fallback if it's near the boundary.
+ */
+const FAST_TOKEN_APPROX_THRESHOLD = 32_000;
+
+/**
+ * Cheap token count for content that may be pathologically slow under
+ * tiktoken. Falls back to a 4-char-per-token approximation when content
+ * exceeds {@link FAST_TOKEN_APPROX_THRESHOLD}; uses real tiktoken
+ * otherwise for fidelity.
+ *
+ * The approximation matches tiktoken's typical 3.5–4 chars/token on
+ * diverse English content within ±15%; under-estimates on highly
+ * repetitive content (where tiktoken can produce ~1 token/char) but
+ * that mismatch is acceptable for per-turn debug accounting and avoids
+ * the worst-case hang.
+ */
+function fastApproxContentTokens(content: string | ContentBlock[]): number {
+	if (typeof content === "string") {
+		if (content.length > FAST_TOKEN_APPROX_THRESHOLD) {
+			return Math.ceil(content.length / 4);
+		}
+		return countContentTokens(content);
+	}
+	let sum = 0;
+	for (const block of content) {
+		const blockJson = JSON.stringify(block);
+		if (blockJson.length > FAST_TOKEN_APPROX_THRESHOLD) {
+			sum += Math.ceil(blockJson.length / 4);
+		} else {
+			sum += countContentTokens([block]);
+		}
+	}
+	return sum;
+}
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -238,6 +287,129 @@ export class AgentLoop {
 
 	private clearCachedTurnState(): void {
 		this.ctx.turnStateStore?.delete(this.config.threadId);
+	}
+
+	/**
+	 * Inner-loop volatile-tail refresh.
+	 *
+	 * Cold-path entry (assembleContext) and warm-path entry both produce a
+	 * developer-role volatile-tail message inserted into llmMessages. The
+	 * inner `while (continueLoop)` loop then appends tool_call/tool_result
+	 * pairs after each LLM response, but does NOT rebuild the volatile
+	 * content. Across multi-call inner-loop runs, the tail's snapshot ages
+	 * relative to the agent's own state mutations (memorize, file writes,
+	 * applied advisories, purges, etc.), and the next LLM call reads the
+	 * stale snapshot — visible on thread 25687e6c as the agent re-stating
+	 * "the user is asking me to delete /Users again" on every inner-loop
+	 * turn even after its own tool calls had already deleted the row.
+	 *
+	 * The recorded `context_debug.totalEstimated` and section breakdown
+	 * suffer the same staleness: every inner-loop turn writes the cold-
+	 * frame estimate while `actualTotalTokens` climbs with each appended
+	 * tool roundtrip. The mismatch poisons the per-thread inflation EMA
+	 * (see resolveAdaptiveTruncationRatio) and drives the adaptive ratio
+	 * down for no real reason.
+	 *
+	 * This helper rebuilds the varying volatile tail and refreshes
+	 * `lastContextDebug.{totalEstimated,sections}` to reflect the current
+	 * wire payload. The dev message is replaced in place; the bridge
+	 * tail-emits dev regardless of array position so positional
+	 * invariance is fine. Stable prefix sections (system, skill-context,
+	 * volatile-prefix, tools) are preserved unchanged.
+	 *
+	 * Called from the top of each inner-loop iteration after the first
+	 * (turnCount > 1). The first iteration uses the cold/warm-path
+	 * snapshot directly.
+	 */
+	private refreshVolatileTailForNextTurn(
+		llmMessages: import("@bound/llm").LLMMessage[],
+		relayInfo:
+			| { remoteHost: string; localHost: string; model: string; provider: string }
+			| undefined,
+		resolvedModelForDebug: string | undefined,
+	): void {
+		const freshVol = buildVolatileContext({
+			db: this.ctx.db,
+			threadId: this.config.threadId,
+			taskId: this.config.taskId,
+			userId: this.config.userId,
+			siteId: this.ctx.siteId,
+			hostName: this.ctx.hostName,
+			currentModel: resolvedModelForDebug,
+			relayInfo,
+			platformContext: this.config.platform ? { platform: this.config.platform } : undefined,
+			systemPromptAddition: this.config.systemPromptAddition,
+		});
+
+		// Replace the existing developer-role tail in place. The bridge
+		// (ai-sdk-bridge.toModelMessages) tail-emits dev content into a
+		// trailing user message wrapped in <system-context>, so position
+		// inside llmMessages is wire-irrelevant — only content matters.
+		const devIdx = llmMessages.findIndex((m) => m.role === "developer");
+		if (devIdx >= 0) {
+			llmMessages[devIdx] = {
+				role: "developer",
+				content: freshVol.varyingContent,
+			};
+		}
+
+		if (!this.lastContextDebug) return;
+
+		// Recompute history. Excludes cache markers AND the dev tail
+		// wherever it sits — the dev's tokens are accounted for under
+		// volatile-tail below. Uses the cheap-on-pathological-content
+		// helper because tool_result payloads can occasionally be near
+		// the offload threshold (50k chars), and tiktoken's BPE has
+		// pathological O(n²)-ish behavior on highly-repetitive content
+		// (e.g. mostly-whitespace tool dumps). The character-based
+		// fallback caps refresh latency at O(n) regardless of content
+		// shape; accuracy stays ±15% for typical diverse content.
+		let userTokens = 0;
+		let assistantTokens = 0;
+		let toolResultTokens = 0;
+		for (const m of llmMessages) {
+			if (m.role === "cache" || m.role === "developer") continue;
+			const tokens = fastApproxContentTokens(m.content);
+			if (m.role === "user") userTokens += tokens;
+			else if (m.role === "assistant" || m.role === "tool_call") assistantTokens += tokens;
+			else if (m.role === "tool_result") toolResultTokens += tokens;
+		}
+
+		const historyChildren: ContextSection[] = [];
+		if (userTokens > 0) historyChildren.push({ name: "user", tokens: userTokens });
+		if (assistantTokens > 0) historyChildren.push({ name: "assistant", tokens: assistantTokens });
+		if (toolResultTokens > 0)
+			historyChildren.push({ name: "tool_result", tokens: toolResultTokens });
+		const historyTokens = userTokens + assistantTokens + toolResultTokens;
+
+		// Volatile-tail subsection: shared with cold-path and warm-rebuild
+		// via computeVolatileTailSection (memory + task-digest +
+		// volatile-other under a parent). When the rebuild yields a null
+		// tail (varyingTokenEstimate is 0), preserve the existing section
+		// shape to avoid spurious churn in the recorded debug breakdown.
+		const tailSection = computeVolatileTailSection(freshVol);
+
+		const newSections = this.lastContextDebug.sections.map((s) => {
+			if (s.name === "history") {
+				return {
+					name: "history",
+					tokens: historyTokens,
+					children: historyChildren.length > 0 ? historyChildren : undefined,
+				};
+			}
+			if (s.name === "volatile-tail" && tailSection) {
+				return tailSection;
+			}
+			return s;
+		});
+
+		const newTotalEstimated = newSections.reduce((sum, s) => sum + s.tokens, 0);
+
+		this.lastContextDebug = {
+			...this.lastContextDebug,
+			totalEstimated: newTotalEstimated,
+			sections: newSections,
+		};
 	}
 
 	constructor(
@@ -975,6 +1147,27 @@ export class AgentLoop {
 				const turnCtx = trace.setSpan(context.active(), turnSpan);
 
 				this.transition("LLM_CALL");
+
+				// After the first iteration of this run(), refresh the
+				// volatile-tail to reflect any state mutations the prior
+				// iteration's tool dispatches produced. Without this, the
+				// dev tail in llmMessages ages relative to DB reality and
+				// the recorded context_debug.totalEstimated stays frozen
+				// at the cold-frame value while actualTotalTokens climbs,
+				// poisoning the inflation EMA. See
+				// inner-loop-temporal-frame.test.ts for the regression
+				// suite covering this requirement.
+				//
+				// Perf debt: buildVolatileContext runs ~13 DB queries each
+				// call. For a 10-turn inner loop that's ~130 extra queries
+				// per run() — bounded but not free. A future optimization
+				// can add a staleness fast-path (skip rebuild when no
+				// tracked source has mutated since last refresh) and cache
+				// per-message tokenizations to avoid O(N²) re-counting of
+				// unchanged history messages.
+				if (turnCount > 1) {
+					this.refreshVolatileTailForNextTurn(llmMessages, relayInfo, resolvedModelForDebug);
+				}
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: string | null = null;
 				let resolvedModelId: string | null = null;
