@@ -135,6 +135,179 @@ export function maybePlaceCacheMarker(
 }
 
 /**
+ * Bucket-aligned stable cache marker placement.
+ *
+ * Background. Bedrock's prompt cache is keyed by the EXACT byte position of
+ * each `cachePoint` from the start of the request, with a ~20-content-block
+ * lookback for the simplified-cache mode (see Bedrock prompt-caching docs).
+ * The "rolling" placement that pinned the marker right before the trailing
+ * volatile-tail thrashed: every turn placed the cachePoint at a new byte
+ * position because message history grew, so cached prefixes from prior turns
+ * were never matched. Live evidence: thread `7453d60b-…` post-bridge-aware
+ * fix held cache_read at the system-prefix size on every turn after
+ * priming, with cache_write climbing to 60k+ tokens per turn that the next
+ * turn never read back. One serendipitous hit (cr=141,991) confirmed the
+ * lookback DOES work when consecutive turns happen to land within the
+ * window; the other turns missed because position drift exceeded the
+ * window.
+ *
+ * Bucket-aligned placement. Round the marker's cumulative-token position
+ * DOWN to the nearest `bucketTokens` boundary. The marker advances only
+ * when message history grows past the next bucket boundary — bounded,
+ * predictable hysteresis. Within a bucket, consecutive turns land the
+ * cachePoint at the same byte position and Bedrock matches reliably.
+ *
+ * Cumulative cache lifecycle:
+ *   turn 1: history = 12k tokens. Below bucket → no message marker (system
+ *           anchor still rides the cache).
+ *   turn 5: history = 32k tokens, bucket = 10k → target 30k. Marker lands
+ *           at the latest message boundary ≤ 30k cumulative. cache_write
+ *           seeds the new prefix.
+ *   turn 6-9: history = 35-39k tokens, bucket-aligned target stays at 30k.
+ *             Marker at SAME byte position. cache_read = 30k every turn.
+ *   turn 10: history = 41k tokens, bucket-aligned target advances to 40k.
+ *            Marker advances forward; one cache_write to seed the new
+ *            prefix; subsequent turns in the 40k bucket cache-hit.
+ *
+ * Pure function — depends only on its arguments. No DB, no clock, no
+ * ambient state. The token estimator is injected so the production caller
+ * uses tiktoken while tests use a deterministic char-based estimator.
+ */
+
+export interface StableCacheMarkerParams {
+	messages: ReadonlyArray<LLMMessage>;
+	/**
+	 * Bucket size in tokens. The marker advances in chunks of this size.
+	 * Larger values = fewer cache_write events but smaller cached prefix
+	 * relative to history. Recommended: 10,000 tokens.
+	 */
+	bucketTokens: number;
+	/**
+	 * Token estimator. Pure and deterministic. The function is called once
+	 * per non-marker message; its result is summed cumulatively.
+	 */
+	estimateTokens: (msg: LLMMessage) => number;
+}
+
+export interface StableCacheMarkerPlacement {
+	placed: boolean;
+	/** Splice index for the marker. -1 when not placed. */
+	index: number;
+	/** Cumulative tokens BEFORE the marker (= bytes that get cached). 0 when not placed. */
+	positionTokens: number;
+	/** Bucket-aligned target the marker is at-or-below. 0 when not placed. */
+	targetTokens: number;
+	/** Reason for non-placement. */
+	reason?: "capability-disabled" | "below-bucket" | "no-eligible-anchor";
+}
+
+/**
+ * Compute the stable-position cache marker placement for `messages`.
+ *
+ * Behavior:
+ * - Skips messages with role `"cache"` when accumulating tokens (existing
+ *   markers don't count toward the cumulative position).
+ * - Returns `placed: false, reason: "below-bucket"` when total cumulative
+ *   tokens < `bucketTokens` (nothing useful to cache yet — system-level
+ *   anchor handles this regime).
+ * - Returns `placed: false, reason: "capability-disabled"` when caps
+ *   explicitly disable prompt caching.
+ * - Otherwise returns the LATEST splice index whose cumulative-tokens-
+ *   before-marker is ≤ `floor(totalTokens / bucketTokens) * bucketTokens`.
+ *
+ * The function does NOT mutate `messages`. Use `placeStableCacheMarker`
+ * for the mutating version.
+ */
+export function computeStableCacheMarkerPlacement(
+	params: StableCacheMarkerParams,
+	caps: CacheMarkerCaps | undefined,
+): StableCacheMarkerPlacement {
+	if (caps && caps.prompt_caching === false) {
+		return {
+			placed: false,
+			index: -1,
+			positionTokens: 0,
+			targetTokens: 0,
+			reason: "capability-disabled",
+		};
+	}
+
+	const { messages, bucketTokens, estimateTokens } = params;
+
+	// Walk forward, tracking cumulative tokens and candidate splice indices.
+	// A "candidate" splice index sits IMMEDIATELY AFTER a non-marker, non-
+	// developer message — that's where a cache marker can land such that the
+	// bridge will attach the cachePoint to that preceding message. Trailing
+	// developer messages are excluded because the bridge merges them onto an
+	// adjacent user, mutating the cachePoint target's bytes (the bug pinned
+	// by `computeCacheMarkerIndex`).
+	let cumulative = 0;
+	const candidates: Array<{ index: number; cumulative: number }> = [];
+	for (let i = 0; i < messages.length; i++) {
+		const m = messages[i];
+		if (m.role === "cache") continue;
+		if (m.role === "developer") continue;
+		cumulative += estimateTokens(m);
+		// Candidate splice index = i + 1 (insert AFTER this message).
+		candidates.push({ index: i + 1, cumulative });
+	}
+
+	const totalTokens = cumulative;
+	if (totalTokens < bucketTokens) {
+		return {
+			placed: false,
+			index: -1,
+			positionTokens: 0,
+			targetTokens: 0,
+			reason: "below-bucket",
+		};
+	}
+
+	const targetTokens = Math.floor(totalTokens / bucketTokens) * bucketTokens;
+
+	// Find the LATEST candidate whose cumulative ≤ target.
+	let best: { index: number; cumulative: number } | null = null;
+	for (const c of candidates) {
+		if (c.cumulative <= targetTokens) best = c;
+		else break;
+	}
+
+	if (!best || best.index === 0) {
+		return {
+			placed: false,
+			index: -1,
+			positionTokens: 0,
+			targetTokens,
+			reason: "no-eligible-anchor",
+		};
+	}
+
+	return {
+		placed: true,
+		index: best.index,
+		positionTokens: best.cumulative,
+		targetTokens,
+	};
+}
+
+/**
+ * Splice a stable-position cache marker into `messages` per
+ * `computeStableCacheMarkerPlacement`. Mutates `messages` in place when a
+ * marker is placed; leaves it untouched otherwise.
+ */
+export function placeStableCacheMarker(
+	messages: LLMMessage[],
+	params: Omit<StableCacheMarkerParams, "messages">,
+	caps: CacheMarkerCaps | undefined,
+): StableCacheMarkerPlacement {
+	const placement = computeStableCacheMarkerPlacement({ ...params, messages }, caps);
+	if (placement.placed) {
+		messages.splice(placement.index, 0, { role: "cache", content: "" });
+	}
+	return placement;
+}
+
+/**
  * Build the `cacheMarkers` array recorded on `ContextDebugInfo` for a turn.
  *
  * Two breakpoint kinds are emitted (when the resolved backend supports prompt
