@@ -16,6 +16,7 @@ import {
 	hashStableVolatileInputs,
 	hashSystemPromptString,
 	projectStableVolatileInputs,
+	renderSkillIndex,
 } from "./stable-prefix";
 import {
 	type LiveStateTaskEntry,
@@ -271,18 +272,6 @@ function computeStablePrefixInputFingerprint(args: {
 			tunables: resolveVc15Tunables(),
 		}),
 	);
-}
-
-function buildSkillIndex(skills: { name: string; description: string }[]): string {
-	return `<available_skills>
-${skills.map(
-	(skill) => `<skill>
-<name>${skill.name}</name>
-<description>${skill.description}</description>
-</skill>
-`,
-)}
-</available_skills>`;
 }
 
 /**
@@ -646,7 +635,7 @@ export function buildVolatileContext(params: {
 			.all() as Array<{ name: string; description: string }>;
 
 		if (activeSkills.length > 0) {
-			const skillIndexLines = buildSkillIndex(activeSkills).split("\n");
+			const skillIndexLines = renderSkillIndex(activeSkills).split("\n");
 			stableLines.push(...skillIndexLines);
 			suffixLines.push(...skillIndexLines);
 		}

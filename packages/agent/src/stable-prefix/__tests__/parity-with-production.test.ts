@@ -31,7 +31,7 @@ import {
 	renderDiscoverableArchive,
 	renderWorkingKnowledge,
 } from "../../summary-extraction";
-import { composeStableVolatileSubsection } from "../compose";
+import { composeStableVolatileSubsection, renderSkillIndex } from "../compose";
 import type { StableVolatileInputs } from "../types";
 
 function makeStageEntry(key: string, value: string): StageEntry {
@@ -163,15 +163,12 @@ function renderProductionStableConcat(inputs: StableVolatileInputs): string {
 	};
 	const da = renderDiscoverableArchive(daInput);
 
-	const skillIndex = `<available_skills>
-${inputs.skillIndex.map(
-	(skill) => `<skill>
-<name>${skill.name}</name>
-<description>${skill.description}</description>
-</skill>
-`,
-)}
-</available_skills>`;
+	// Use the shared `renderSkillIndex` — same function the production
+	// path calls. Hand-rolling the XML here would be a parallel
+	// implementation that could silently drift; this test is now
+	// purely about orchestration (order + concatenation), not about
+	// the skill-index byte layout.
+	const skillIndex = renderSkillIndex(inputs.skillIndex);
 
 	const lines = ["", ...wk.stableLines, ...da.section.lines, ...skillIndex.split("\n")];
 	return lines.join("\n");
