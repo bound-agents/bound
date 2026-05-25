@@ -13,6 +13,11 @@
  * rationale.
  */
 
+export {
+	collectStableVolatileInputs,
+	type LoadedStableInputs,
+	projectStableVolatileInputs,
+} from "./collect";
 export { composeStableVolatileSubsection } from "./compose";
 export { hashStableVolatileInputs, hashSystemPromptString } from "./hash";
 export type {

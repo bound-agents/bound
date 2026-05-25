@@ -12,7 +12,11 @@ import type {
 } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
-import { hashStableVolatileInputs, hashSystemPromptString } from "./stable-prefix";
+import {
+	hashStableVolatileInputs,
+	hashSystemPromptString,
+	projectStableVolatileInputs,
+} from "./stable-prefix";
 import {
 	type LiveStateTaskEntry,
 	RECENT_MEMORY_HEADER,
@@ -241,31 +245,32 @@ export interface VolatileContext {
  * `stable-prefix/types.ts` for the contract.
  */
 function computeStablePrefixInputFingerprint(args: {
-	pinned: ReadonlyArray<{ key: string; value: string }>;
-	summaries: ReadonlyArray<{ key: string; value: string }>;
+	pinned: ReadonlyArray<StageEntry>;
+	summaries: ReadonlyArray<StageEntry>;
 	detailEntries: ReadonlyArray<{ key: string; last_accessed_at: string | null }>;
 	parentSummaryMap: ReadonlyMap<string, string>;
 	staleChildrenMap: ReadonlyMap<string, ReadonlyArray<{ key: string }>>;
 	budgetPressure: boolean;
 	activeSkills: ReadonlyArray<{ name: string; description: string }>;
 }): string {
-	return hashStableVolatileInputs({
-		pinned: args.pinned.map((e) => ({ key: e.key, value: e.value })),
-		summaries: args.summaries.map((e) => ({ key: e.key, value: e.value })),
-		detailEntries: args.detailEntries.map((e) => ({
-			key: e.key,
-			last_accessed_at: e.last_accessed_at,
-		})),
-		parentSummaryByKey: args.parentSummaryMap,
-		staleChildKeysInWorkingKnowledge: new Set(
-			Array.from(args.staleChildrenMap.values())
-				.flat()
-				.map((e) => e.key),
-		),
-		budgetPressure: args.budgetPressure,
-		tunables: resolveVc15Tunables(),
-		skillIndex: args.activeSkills.map((s) => ({ name: s.name, description: s.description })),
-	});
+	// Route every fingerprint computation through the same pure
+	// projector (`projectStableVolatileInputs` in `stable-prefix/`).
+	// Without this seam, each call site reimplemented the projection
+	// inline and silently diverged — the drift detector's "leak in
+	// compose" classification would then false-positive when paths
+	// disagreed.
+	return hashStableVolatileInputs(
+		projectStableVolatileInputs({
+			pinned: args.pinned,
+			summaries: args.summaries,
+			detailEntries: args.detailEntries,
+			parentSummaryMap: args.parentSummaryMap,
+			staleChildrenMap: args.staleChildrenMap,
+			budgetPressure: args.budgetPressure,
+			activeSkills: args.activeSkills,
+			tunables: resolveVc15Tunables(),
+		}),
+	);
 }
 
 function buildSkillIndex(skills: { name: string; description: string }[]): string {
