@@ -53,7 +53,11 @@
 import { describe, expect, it } from "bun:test";
 import type { BackendCapabilities, LLMMessage } from "@bound/llm";
 import fc from "fast-check";
-import { computeStableCacheMarkerPlacement, placeStableCacheMarker } from "../cache-marker";
+import {
+	coldPathPlaceCacheMarker,
+	computeStableCacheMarkerPlacement,
+	placeStableCacheMarker,
+} from "../cache-marker";
 
 const CAPS: BackendCapabilities = {
 	streaming: true,
@@ -465,6 +469,119 @@ describe("computeStableCacheMarkerPlacement — multi-turn simulation (the regre
 					`Bucket ${target}: expected 1 unique placement, got ${keys.size}: ${[...keys].join(", ")}`,
 				);
 			}
+		}
+	});
+});
+
+/**
+ * Compute the cumulative byte-position of the cache marker after placement.
+ * Returns the sum of `charEstimate` over all messages BEFORE the cache marker.
+ * Mirrors what Bedrock sees: the prefix bytes leading up to the cachePoint.
+ */
+function bytePositionOfMarker(messages: LLMMessage[]): number | null {
+	let sum = 0;
+	for (const m of messages) {
+		if (m.role === "cache") return sum;
+		sum += charEstimate(m);
+	}
+	return null;
+}
+
+/**
+ * The agent-loop's cold-path simulator. Builds a fresh LLMMessage[] each
+ * "turn" mimicking how the cold path runs:
+ *   - history grows by `growthChars` per turn (one user + one assistant)
+ *   - a trailing developer message represents the volatile-tail
+ *   - call the supplied placer to splice the cache marker
+ *   - return the byte-position of the marker
+ *
+ * The same baseHistory is reused across turns (a real agent's persistent
+ * history). The growth represents a new turn's exchange added at the end.
+ */
+function simulateColdPathTurn(
+	baseHistory: LLMMessage[],
+	growthMessages: LLMMessage[],
+	placer: (messages: LLMMessage[]) => void,
+): { messages: LLMMessage[]; markerBytePos: number | null } {
+	const messages: LLMMessage[] = [
+		...baseHistory,
+		...growthMessages,
+		// Trailing developer = the volatile-tail injected by buildVolatileContext.
+		{ role: "developer", content: "x".repeat(800) },
+	];
+	placer(messages);
+	return { messages, markerBytePos: bytePositionOfMarker(messages) };
+}
+
+/**
+ * Production cold-path regression sentry.
+ *
+ * Tracks the placer the agent-loop currently invokes at the cold-path call
+ * site (agent-loop.ts ~1080). Asserts the property production needs for
+ * cache_read to fire on consecutive Bedrock calls: byte-position stability
+ * across same-bucket turns.
+ *
+ * History:
+ *   - Pre-wire-up (commits up to and including 3aa63819): the cold-path
+ *     placer was `maybePlaceCacheMarker`, which anchored at the array's
+ *     tail and thrashed across turns. This test was committed in a known-
+ *     FAILING state to document the bug operationally.
+ *   - Wire-up commit: swapped the cold-path call site to
+ *     `coldPathPlaceCacheMarker` (delegating to `placeStableCacheMarker`)
+ *     AND updated this test to invoke the same wrapper. Transition is
+ *     atomic — the failing assertion went green in the same commit.
+ *
+ * If you change the cold-path placer in agent-loop.ts, update the
+ * `currentColdPathPlacer` local below to match. The test should track the
+ * actual production code path so a regression flips it red.
+ */
+describe("Cold-path cachePoint byte-stability — production regression sentry", () => {
+	it("agent-loop's cold-path placer must produce stable byte positions across same-bucket turns", () => {
+		// The placer the agent-loop currently calls. Mirror this with the
+		// agent-loop's call-site invocation when changing the placer.
+		const currentColdPathPlacer = (messages: LLMMessage[]) => {
+			coldPathPlaceCacheMarker(
+				messages,
+				{ bucketTokens: 10000, estimateTokens: charEstimate },
+				CAPS,
+			);
+		};
+
+		// 25k char baseline → just inside the 20k bucket with a 10k bucket
+		// size. Three turns each add ~1500 chars, all keeping us in the
+		// 20k bucket. Property: all three placements must share a byte
+		// position so Bedrock's cachePoint matches across the consecutive
+		// requests.
+		const baseHistory: LLMMessage[] = [];
+		for (let i = 0; i < 5; i++) {
+			baseHistory.push(makeMsg("user", 2500, `u${i}`));
+			baseHistory.push(makeMsg("assistant", 2500, `a${i}`));
+		}
+		const turnGrowths: LLMMessage[][] = [
+			[makeMsg("user", 750, "q1"), makeMsg("assistant", 750, "r1")],
+			[makeMsg("user", 750, "q2"), makeMsg("assistant", 750, "r2")],
+			[makeMsg("user", 750, "q3"), makeMsg("assistant", 750, "r3")],
+		];
+
+		const cumulativeGrowth: LLMMessage[] = [];
+		const positions: Array<number | null> = [];
+		for (const growth of turnGrowths) {
+			cumulativeGrowth.push(...growth);
+			const { markerBytePos } = simulateColdPathTurn(
+				baseHistory,
+				cumulativeGrowth,
+				currentColdPathPlacer,
+			);
+			positions.push(markerBytePos);
+		}
+
+		// All three same-bucket placements MUST share a byte position.
+		const distinct = new Set(positions);
+		if (distinct.size !== 1) {
+			const positionList = [...distinct].join(", ");
+			throw new Error(
+				`Cold-path cachePoint thrashing detected: turns landed at distinct byte positions ${positionList} despite all being in the 20k bucket. Bedrock's prefix cache will miss on every turn — see live evidence on thread 7453d60b (cr stuck at 86,041 system-anchor only across 30+ turns).`,
+			);
 		}
 	});
 });

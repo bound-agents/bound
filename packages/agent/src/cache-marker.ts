@@ -47,6 +47,15 @@ export interface CacheMarkerPlacement {
 	variant: CacheMarkerKind;
 	/** Index of the spliced marker, or -1 when not placed. */
 	index: number;
+	/**
+	 * Cumulative tokens BEFORE the marker. Set by the stable-position placer
+	 * (`coldPathPlaceCacheMarker`) when caching is enabled — represents the
+	 * actual bytes Bedrock will see riding the cachePoint, distinct from the
+	 * section-aggregate fallback used in legacy paths. Undefined when not
+	 * provided by the placer; `buildCacheMarkers` then falls back to summing
+	 * `system + skill-context + volatile-prefix + history` section tokens.
+	 */
+	positionTokens?: number;
 	reason?: "capability-disabled" | "too-short";
 }
 
@@ -308,6 +317,45 @@ export function placeStableCacheMarker(
 }
 
 /**
+ * Cold-path cache marker placer — the production entry point invoked by the
+ * agent-loop's cold path. Delegates to `placeStableCacheMarker` for bucket-
+ * aligned byte-position stability across consecutive same-bucket turns, and
+ * adapts the result to the legacy `CacheMarkerPlacement` shape consumed by
+ * the agent-loop's bookkeeping (cached turn state, context debug, web
+ * debugger marker rendering) so the integration is a single call-site swap.
+ *
+ * Reason mapping. `placeStableCacheMarker` emits richer reason codes
+ * (`below-bucket`, `no-eligible-anchor`) than the legacy placement;
+ * downstream code already gracefully handles `too-short`, so the wrapper
+ * collapses both new reasons into `too-short`. `capability-disabled`
+ * passes through unchanged.
+ *
+ * positionTokens. The stable-position placer's `positionTokens` field is
+ * propagated onto the returned `CacheMarkerPlacement` so `buildCacheMarkers`
+ * can record the on-wire cachePoint position truthfully — distinct from the
+ * section-aggregate fallback. Without this, the web debugger's marker tick
+ * would show a position that doesn't match what Bedrock actually sees.
+ */
+export function coldPathPlaceCacheMarker(
+	messages: LLMMessage[],
+	params: Omit<StableCacheMarkerParams, "messages">,
+	caps: CacheMarkerCaps | undefined,
+): CacheMarkerPlacement {
+	const placement = placeStableCacheMarker(messages, params, caps);
+	if (placement.placed) {
+		return {
+			placed: true,
+			variant: "fixed",
+			index: placement.index,
+			positionTokens: placement.positionTokens,
+		};
+	}
+	const reason: CacheMarkerPlacement["reason"] =
+		placement.reason === "capability-disabled" ? "capability-disabled" : "too-short";
+	return { placed: false, variant: "fixed", index: -1, reason };
+}
+
+/**
  * Build the `cacheMarkers` array recorded on `ContextDebugInfo` for a turn.
  *
  * Two breakpoint kinds are emitted (when the resolved backend supports prompt
@@ -349,7 +397,15 @@ export function buildCacheMarkers(args: {
 
 	const stablePrefixTokens =
 		tokensFor("system") + tokensFor("skill-context") + tokensFor("volatile-prefix");
-	const messageBoundaryTokens = stablePrefixTokens + tokensFor("history");
+	// Prefer the placer-supplied positionTokens (set by `coldPathPlaceCacheMarker`,
+	// represents the actual on-wire bytes leading up to the cachePoint) over the
+	// section-aggregate fallback. The fallback covers legacy/warm-path paths that
+	// don't carry the stable-placer metadata, and matches the historical "marker
+	// just before volatile-tail" semantic.
+	const messageBoundaryTokens =
+		messagePlacement.placed && messagePlacement.positionTokens !== undefined
+			? stablePrefixTokens + messagePlacement.positionTokens
+			: stablePrefixTokens + tokensFor("history");
 
 	// `capabilityEnabled` reports whether a marker WOULD have been emitted on
 	// the wire if structural conditions were met. The system breakpoint and

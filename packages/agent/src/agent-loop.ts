@@ -41,7 +41,7 @@ import {
 	parseToolResultContent,
 	shouldRetryRelayCall,
 } from "./agent-loop-utils";
-import { buildCacheMarkers, maybePlaceCacheMarker } from "./cache-marker";
+import { buildCacheMarkers, coldPathPlaceCacheMarker, maybePlaceCacheMarker } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
@@ -126,6 +126,26 @@ function fastApproxContentTokens(content: string | ContentBlock[]): number {
 		}
 	}
 	return sum;
+}
+
+/**
+ * Bucket size for the cold-path cache marker. The stable-position placer
+ * rounds the marker's cumulative-token position DOWN to the nearest multiple
+ * of this value, so consecutive turns whose history grows within the same
+ * bucket land the cachePoint at the SAME byte position. Bedrock's prefix
+ * cache then matches on every turn within the bucket; advancement to the
+ * next bucket pays a single cache_write to seed the new prefix.
+ *
+ * 10,000 tokens is the operating point. Larger values reduce cache_write
+ * frequency at the cost of a smaller cached-prefix-relative-to-history
+ * ratio. Smaller values increase the cached-prefix ratio but pay more
+ * cache_write events per thread.
+ */
+const STABLE_CACHE_BUCKET_TOKENS = 10_000;
+
+/** Per-message token estimator passed to `coldPathPlaceCacheMarker`. */
+function estimateMessageTokens(msg: import("@bound/llm").LLMMessage): number {
+	return fastApproxContentTokens(msg.content);
 }
 
 /** Lazily get the tracer to ensure tests can register their provider first */
@@ -1070,13 +1090,22 @@ export class AgentLoop {
 				const systemPrompt = result.systemPrompt;
 				contextDebug = result.debug;
 
-				// Place fixed cache marker before the last message. Gated on
-				// effective backend capabilities — skipped when prompt_caching is
-				// explicitly disabled (e.g. MiniMax on Bedrock) to avoid the 403
-				// "unsupported model / prompt caching not allowed" from AWS.
-				const fixedPlacement = maybePlaceCacheMarker(
+				// Place the cold-path cache marker at the latest bucket-aligned
+				// stable byte position. Bucket alignment ensures consecutive same-
+				// bucket turns land the cachePoint at the SAME byte position so
+				// Bedrock's prefix cache matches reliably. The legacy "rolling"
+				// placement (always at messages.length - 1) thrashed because each
+				// turn's marker landed at a different position as message history
+				// grew — see thread 7453d60b post-deploy data (cache_read stuck at
+				// system-anchor floor despite cache_write growing per turn).
+				// Gated on effective backend capabilities; skipped when
+				// prompt_caching is explicitly disabled (e.g. MiniMax on Bedrock).
+				const fixedPlacement = coldPathPlaceCacheMarker(
 					contextMessages,
-					"fixed",
+					{
+						bucketTokens: STABLE_CACHE_BUCKET_TOKENS,
+						estimateTokens: estimateMessageTokens,
+					},
 					cacheMarkerCaps ?? undefined,
 				);
 				const placedFixedMarker = fixedPlacement.placed;
