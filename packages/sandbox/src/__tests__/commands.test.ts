@@ -869,3 +869,173 @@ describe("--help and missing-arg hint", () => {
 		expect(result.stdout).toContain("defer");
 	});
 });
+
+describe("preserveRepeatedFlags — MCP array param accumulation", () => {
+	const mockLogger: Logger = {
+		info: () => {},
+		warn: () => {},
+		error: () => {},
+		debug: () => {},
+	};
+
+	const mockEventBus: TypedEventEmitter = {
+		on: () => {},
+		emit: () => {},
+		off: () => {},
+	};
+
+	test("without preserveRepeatedFlags, repeated --flag uses last-wins", async () => {
+		let capturedTag: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "server",
+				description: "test",
+				customHelp: true,
+				args: [{ name: "subcommand", required: false }],
+				handler: async (args) => {
+					capturedTag = args.tag;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		await commands[0].handler(["subtool", "--tag", "first", "--tag", "second"]);
+
+		// Without preserveRepeatedFlags, last value wins
+		expect(capturedTag).toBe("second");
+	});
+
+	test("with preserveRepeatedFlags, repeated --flag accumulates as JSON array", async () => {
+		let capturedTag: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "server",
+				description: "test",
+				customHelp: true,
+				preserveRepeatedFlags: true,
+				args: [{ name: "subcommand", required: false }],
+				handler: async (args) => {
+					capturedTag = args.tag;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		await commands[0].handler(["subtool", "--tag", "first", "--tag", "second"]);
+
+		expect(capturedTag).toBe(JSON.stringify(["first", "second"]));
+	});
+
+	test("with preserveRepeatedFlags, single --flag value is not wrapped in array", async () => {
+		let capturedTag: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "server",
+				description: "test",
+				customHelp: true,
+				preserveRepeatedFlags: true,
+				args: [{ name: "subcommand", required: false }],
+				handler: async (args) => {
+					capturedTag = args.tag;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		await commands[0].handler(["subtool", "--tag", "only"]);
+
+		// Single occurrence: plain string, not wrapped in an array
+		expect(capturedTag).toBe("only");
+	});
+
+	test("with preserveRepeatedFlags, three occurrences accumulate in order", async () => {
+		let capturedTags: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "server",
+				description: "test",
+				customHelp: true,
+				preserveRepeatedFlags: true,
+				args: [{ name: "subcommand", required: false }],
+				handler: async (args) => {
+					capturedTags = args.tags;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		await commands[0].handler(["subtool", "--tags", "a", "--tags", "b", "--tags", "c"]);
+
+		expect(capturedTags).toBe(JSON.stringify(["a", "b", "c"]));
+	});
+
+	test("with preserveRepeatedFlags, different flags are independent", async () => {
+		let capturedA: string | undefined;
+		let capturedB: string | undefined;
+
+		const definitions: CommandDefinition[] = [
+			{
+				name: "server",
+				description: "test",
+				customHelp: true,
+				preserveRepeatedFlags: true,
+				args: [{ name: "subcommand", required: false }],
+				handler: async (args) => {
+					capturedA = args.a;
+					capturedB = args.b;
+					return { stdout: "", stderr: "", exitCode: 0 };
+				},
+			},
+		];
+
+		const context = {
+			db: createDatabase(":memory:"),
+			siteId: "test-site",
+			eventBus: mockEventBus,
+			logger: mockLogger,
+		};
+
+		const commands = createDefineCommands(definitions, context);
+		await commands[0].handler(["subtool", "--a", "x", "--b", "y", "--a", "z"]);
+
+		// --a accumulated, --b single value
+		expect(capturedA).toBe(JSON.stringify(["x", "z"]));
+		expect(capturedB).toBe("y");
+	});
+});
