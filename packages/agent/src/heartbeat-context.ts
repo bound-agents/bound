@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { pruneResolvedAdvisories } from "./advisories";
+import {
+	runOutboxAuditValidation,
+	shouldRunOutboxAuditValidation,
+} from "./validation/run-outbox-audit-validation";
 import { runR_VC9Validation, shouldRunR_VC9Validation } from "./validation/run-r-vc9-validation";
 import {
 	runStablePrefixDriftValidation,
@@ -35,6 +39,28 @@ export function buildHeartbeatContext(
 		} catch (validationError) {
 			// Validation is advisory — errors do not break the heartbeat
 			options.logger?.warn("[heartbeat] R-VC9 validation error (advisory, non-blocking)", {
+				error: String(validationError),
+			});
+		}
+	}
+
+	// Run outbox audit hourly. Surfaces synced-table rows whose
+	// modified_at has no matching change_log entry — a runtime
+	// detector for direct writes that bypass the
+	// insertRow/updateRow/softDelete helpers. The static check at
+	// `scripts/validate-outbox-invariant.ts` catches the common
+	// raw-SQL-string case at commit time; this catches dynamic
+	// constructions and library-introduced bypasses at runtime.
+	if (options?.siteId && shouldRunOutboxAuditValidation(db, Date.now())) {
+		try {
+			const report = runOutboxAuditValidation(db, options.siteId, Date.now());
+			if (report.violationsFound > 0) {
+				options.logger?.info(
+					`[heartbeat] Outbox audit: ${report.violationsFound} violations across ${report.tablesScanned} tables (${report.rowsExamined} rows examined)`,
+				);
+			}
+		} catch (validationError) {
+			options.logger?.warn("[heartbeat] Outbox audit validation error (advisory, non-blocking)", {
 				error: String(validationError),
 			});
 		}
