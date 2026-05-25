@@ -21,6 +21,7 @@ import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
 import { fromIni } from "@aws-sdk/credential-providers";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
+import type { ModelMessage } from "ai";
 import {
 	ANTHROPIC_ENVELOPE,
 	BEDROCK_PERMISSIVE_ENVELOPE,
@@ -37,6 +38,88 @@ interface BedrockReasoningConfig {
 	budgetTokens?: number;
 	maxReasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 	display?: "omitted" | "summarized";
+}
+
+/**
+ * Bedrock system-block builder.
+ *
+ * Background. Bedrock's Converse API supports a `cachePoint` on the system
+ * blocks array, which anchors a stable cache entry to the byte-stable system
+ * prefix (R-VC25). The AI SDK's top-level `streamText({system: <string>})`
+ * parameter normalizes the value into a system block WITHOUT `providerOptions`,
+ * so no `cachePoint` reaches the wire and the only cache anchor lives at the
+ * message-level marker — which moves every turn as message history grows,
+ * orphaning prior cache entries. See `@ai-sdk/amazon-bedrock@4.0.96` index.mjs
+ * line 432-440 (the `case "system":` branch reads `cachePoint` from
+ * `message.providerOptions`).
+ *
+ * The fix is to pass the system content as a `role: "system"` `ModelMessage` at
+ * index 0 of the messages array, with `providerOptions.bedrock.cachePoint`
+ * attached. This routes the system block through the SDK's per-message
+ * `providerOptions` plumbing, where the `cachePoint` survives normalization.
+ *
+ * Cache-anchor gating. The `cachePoint` is attached only when caching is
+ * already enabled for this turn (signaled by the agent-loop having placed a
+ * message-level cache marker upstream — detected here by the presence of any
+ * `providerOptions.bedrock.cachePoint` on a non-system message after
+ * `toModelMessages` has run). When caching is disabled (e.g. capability gate
+ * fired in `cache-marker.ts`), the system block is still emitted via the
+ * messages array but without a `cachePoint`, preserving wire compatibility
+ * for non-caching models.
+ */
+export interface BuildBedrockSystemMessageParams {
+	/** The system prompt text. When falsy/empty, no system block is produced. */
+	system?: string;
+	/**
+	 * Whether to attach a `providerOptions.bedrock.cachePoint` to the system
+	 * block. Should mirror the agent-loop's caching decision for this turn.
+	 */
+	cacheEnabled: boolean;
+	/** Optional TTL forwarded to `cachePoint.ttl`. */
+	cacheTtl?: "5m" | "1h";
+}
+
+/**
+ * Builds the Bedrock system message that opens the messages array.
+ *
+ * Returns `null` when `system` is empty/missing — the caller should pass
+ * the messages array unchanged in that case. Returns a `ModelMessage` with
+ * `role: "system"` otherwise; the `providerOptions.bedrock.cachePoint` is
+ * present iff `cacheEnabled` is true.
+ *
+ * Pure: depends only on its arguments. The result is byte-stable for the
+ * same inputs (R-VC25-aligned).
+ */
+export function buildBedrockSystemMessage(
+	params: BuildBedrockSystemMessageParams,
+): ModelMessage | null {
+	if (!params.system) return null;
+	const message: ModelMessage = {
+		role: "system",
+		content: params.system,
+	};
+	if (params.cacheEnabled) {
+		const cachePoint: { type: "default"; ttl?: "5m" | "1h" } = { type: "default" };
+		if (params.cacheTtl) cachePoint.ttl = params.cacheTtl;
+		message.providerOptions = { bedrock: { cachePoint } };
+	}
+	return message;
+}
+
+/**
+ * Detects whether any non-system message in the post-bridge `ModelMessage[]`
+ * carries a Bedrock `cachePoint`. Used to mirror the agent-loop's caching
+ * decision into the system-block placement: when the message-level cache
+ * marker was placed (caching enabled), we also anchor the system block; when
+ * it was suppressed (capability gate), we skip the system anchor too.
+ *
+ * Exported for unit-test use only.
+ */
+export function hasBedrockMessageCachePoint(messages: ModelMessage[]): boolean {
+	return messages.some((m) => {
+		const opts = m.providerOptions as { bedrock?: { cachePoint?: unknown } } | undefined;
+		return opts?.bedrock?.cachePoint !== undefined;
+	});
 }
 
 export class BedrockDriver implements LLMBackend {
@@ -96,13 +179,25 @@ export class BedrockDriver implements LLMBackend {
 		// else on Bedrock-Converse can carry the looser `[a-zA-Z0-9_.:-]{1,64}`
 		// shape — notably Kimi's native `functions.<name>:<index>` fallback ids.
 		const isAnthropicModel = modelId.includes("anthropic");
-		const messages = toModelMessages(params.messages, {
+		const bridgeMessages = toModelMessages(params.messages, {
 			cacheProvider: "bedrock",
 			cacheTtl: params.cache_ttl,
 			resolveFileRef: params.resolveFileRef,
 			reasoningProviderOptions: isAnthropicModel ? "bedrock" : null,
 			targetEnvelope: isAnthropicModel ? ANTHROPIC_ENVELOPE : BEDROCK_PERMISSIVE_ENVELOPE,
 		});
+		// Inject the system prompt as a `role: "system"` ModelMessage at index 0
+		// rather than via streamText's top-level `system: string` parameter.
+		// The latter does not carry providerOptions through the AI SDK's
+		// normalization, so a Bedrock `cachePoint` would never reach the wire
+		// and the byte-stable system prefix (R-VC25) would have no cache anchor.
+		// See `buildBedrockSystemMessage` for the full rationale.
+		const systemMessage = buildBedrockSystemMessage({
+			system: params.system,
+			cacheEnabled: hasBedrockMessageCachePoint(bridgeMessages),
+			cacheTtl: params.cache_ttl,
+		});
+		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);
 
@@ -114,7 +209,6 @@ export class BedrockDriver implements LLMBackend {
 		const result = streamText({
 			model: this.provider.languageModel(modelId),
 			messages,
-			...(params.system && { system: params.system }),
 			...(tools && { tools }),
 			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 			// Reasoning requests disallow temperature on Anthropic; only set it
