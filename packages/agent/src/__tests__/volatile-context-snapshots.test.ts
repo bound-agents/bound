@@ -56,12 +56,14 @@ describe("volatile-context snapshots", () => {
 		const userId = "test-user";
 		const threadId = deterministicUUID(BOUND_NAMESPACE, "test:scenario:1");
 		const siteId = "test-site";
+		const nowMs = new Date("2026-05-22T00:00:00.000Z").getTime();
 
 		const result = buildVolatileContext({
 			db,
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -91,6 +93,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -122,6 +125,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -156,6 +160,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		// Add note about the override
@@ -281,6 +286,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -313,6 +319,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -361,6 +368,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -398,6 +406,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -448,6 +457,7 @@ describe("volatile-context snapshots", () => {
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(
@@ -483,25 +493,23 @@ describe("volatile-context snapshots", () => {
 		makeFileMod(ctx, "/src/main.ts", siblingThread1);
 		makeFileMod(ctx, "/src/utils.ts", siblingThread2);
 
-		// Add advisories (must have status='applied' and resolved_at within 24h of NOW).
-		// Use useCurrentTime=true so advisories are within the 24h window when the test runs,
-		// not relative to the fixture time.
-		makeAppliedAdvisory(ctx, "Advisory 1", 1, true);
-		makeAppliedAdvisory(ctx, "Advisory 2", 2, true);
+		// Add advisories (must have status='applied' and resolved_at within 24h
+		// of the assembly's `nowMs`). Anchor to ctx.nowMs (the injected fixture
+		// time) so the 24h window check inside buildVolatileContext — which
+		// receives the SAME nowMs — finds them deterministically across days.
+		makeAppliedAdvisory(ctx, "Advisory 1", 1, false);
+		makeAppliedAdvisory(ctx, "Advisory 2", 2, false);
 
 		// Add tasks (must have status='running' and last_run_at within recent window).
 		// Tasks are included in the digest if they were recently active (within ~24h based on buildVolatileEnrichment logic).
 		makeTask(ctx, "webhook", "Task 1", 0.5);
 		makeTask(ctx, "cron", "Task 2", 1);
-
-		// Note: buildVolatileContext uses Date.now() for timestamp filtering, so advisories,
-		// cross-thread entries, file mods, and tasks reflect the current moment. This demonstrates
-		// that all subsystems in Live State render correctly when preconditions are met.
 		const result = buildVolatileContext({
 			db,
 			threadId,
 			userId,
 			siteId,
+			nowMs,
 		});
 
 		await assertSnapshot(

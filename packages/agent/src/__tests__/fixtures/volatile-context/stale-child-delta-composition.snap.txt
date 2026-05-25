@@ -14,7 +14,7 @@ User ID: test-user, Thread ID: 0f529918-4b1c-52d8-b90d-e0c8f2f1f6e9
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search
 
-- detail:stale-det000000 (last accessed 2d ago)
+- detail:stale-det000000 (last accessed just now)
 
 Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
