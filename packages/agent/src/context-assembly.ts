@@ -14,12 +14,16 @@ import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import {
 	type LiveStateTaskEntry,
+	RECENT_MEMORY_HEADER,
+	type StageEntry,
 	type TieredEnrichment,
 	buildCrossThreadDigest,
 	buildParentSummaryMap,
 	buildStaleChildrenMap,
 	buildVolatileEnrichment,
 	computeBaseline,
+	flattenRecencyEntries,
+	formatMemoryEntry,
 	loadAppliedAdvisoriesForLiveState,
 	loadDetailEntries,
 	loadFileModificationsForLiveState,
@@ -235,6 +239,23 @@ interface ComposeVolatileSectionsParams {
 	taskDigestEntries: LiveStateTaskEntry[];
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
 	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
+	/**
+	 * L2 (graph-seeded) + L3 (recency) entries from
+	 * `buildVolatileEnrichment.tiers`. Rendered into the varying tail
+	 * via `formatMemoryEntry` so `tier='default'` memorizes that the
+	 * three R-VC24 renderers (WK / DA / LS) wouldn't surface still
+	 * reach the agent on the wire.
+	 *
+	 * Without this rendering hook, `tier='default'` entries are
+	 * structurally invisible — the post-R-VC24 design folded
+	 * `pinned`/`summary` into `renderWorkingKnowledge`, `detail` into
+	 * `renderDiscoverableArchive`, and left `default`/orphaned-detail
+	 * entries with no rendering path despite being computed by
+	 * `loadRecencyEntries` and tracked in `tiers.{L2,L3}`. Live
+	 * evidence: thread d0372be6's recent `bound:issue:*` and
+	 * `_outcome:*` memorizes never appeared in volatile context.
+	 */
+	recencyEntries: StageEntry[];
 	budgetPressure: boolean;
 	nowMs: number;
 }
@@ -295,6 +316,28 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 
 	if (wk.varyingLines.length > 0) {
 		varyingLines.push(...wk.varyingLines);
+	}
+
+	// Recency block: L2 (graph-seeded) + L3 (recency) entries with
+	// `tier='default'` that loadRecencyEntries / loadGraphEntries
+	// surfaced. These are the entries the post-R-VC24 pipeline
+	// otherwise has no rendering path for: WK owns pinned + summary,
+	// DA owns detail, LS doesn't read semantic_memory. We filter to
+	// `tier='default'` rather than rendering everything in tiers.L2 +
+	// tiers.L3 because:
+	//   - pinned/summary entries from L2's graph traversal would
+	//     double-render against renderWorkingKnowledge
+	//   - detail entries (including orphaned) from L3's
+	//     `OR (tier='detail' AND NOT EXISTS summarizes-edge)` clause
+	//     would double-render against renderDiscoverableArchive
+	const recentDefaults = params.recencyEntries.filter((e) => e.tier === "default");
+	if (recentDefaults.length > 0) {
+		varyingLines.push("");
+		varyingLines.push(RECENT_MEMORY_HEADER);
+		varyingLines.push("");
+		for (const entry of recentDefaults) {
+			varyingLines.push(formatMemoryEntry(entry));
+		}
 	}
 
 	const ls = renderLiveState({
@@ -490,6 +533,7 @@ export function buildVolatileContext(params: {
 			taskDigestEntries,
 			fileEntries,
 			advisories,
+			recencyEntries: flattenRecencyEntries(enrichmentTiers),
 			budgetPressure: false,
 			nowMs,
 		});
@@ -2090,6 +2134,7 @@ Original output was too large for the context window. If you need the full conte
 			taskDigestEntries: taskEntriesNH,
 			fileEntries: fileEntriesNH,
 			advisories: advisoriesNH,
+			recencyEntries: flattenRecencyEntries(enrichmentTiersL2),
 			budgetPressure: false,
 			nowMs,
 		});
@@ -2173,7 +2218,12 @@ Original output was too large for the context window. If you need the full conte
 		const advisoriesBP = loadAppliedAdvisoriesForLiveState(db, Date.now());
 
 		// Compute task and file entries with reduced caps (3 tasks, 3 files for Live State)
-		const { taskDigestEntries: taskEntriesBP } = buildVolatileEnrichment(db, baseline, 3, 3);
+		const { taskDigestEntries: taskEntriesBP, tiers: tiersBP } = buildVolatileEnrichment(
+			db,
+			baseline,
+			3,
+			3,
+		);
 		const fileEntriesBP = loadFileModificationsForLiveState(db, threadId);
 
 		// Compute delta-key set
@@ -2192,6 +2242,11 @@ Original output was too large for the context window. If you need the full conte
 		// - Working Knowledge: full fidelity (no cap)
 		// - Discoverable Archive: all titles preserved (R-VC21), fragment dropped via budgetPressure flag
 		// - Live State: BUDGET_PRESSURE_SUBSYSTEM_CAP (3) applied per subsystem inside renderLiveState
+		// Cap recency entries under budget pressure to mirror the
+		// per-subsystem-cap-3 convention applied inside renderLiveState.
+		// Even under pressure the agent needs to see fresh memory
+		// activity, so don't drop the section entirely — just trim.
+		const recencyBP = flattenRecencyEntries(tiersBP).slice(0, 3);
 		const { stableLines: bpStable, varyingLines: bpVarying } = composeVolatileSections({
 			db,
 			pinned: pinnedBP.entries,
@@ -2204,6 +2259,7 @@ Original output was too large for the context window. If you need the full conte
 			taskDigestEntries: taskEntriesBP,
 			fileEntries: fileEntriesBP,
 			advisories: advisoriesBP,
+			recencyEntries: recencyBP,
 			budgetPressure: true,
 			nowMs: Date.now(),
 		});
