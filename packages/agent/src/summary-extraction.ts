@@ -287,6 +287,31 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 			};
 		}
 
+		// Confabulation guard (Class D / F2a): when the thread has no
+		// `role='assistant'` message, the summarizer LLM is reasoning
+		// from prompt + tool_results alone and produces plausible but
+		// fabricated first-person reasoning attributions ("I recognized
+		// this as ...", "I resolved that ..."). Live evidence: the
+		// 2026-04-26 model trial battery, where 5 threads with EOF
+		// after the initial tool_result surfaced "I recognized this
+		// as a model characterization trial" facts even though the
+		// model never reasoned about anything — inference errored
+		// before producing any real assistant turn. Skip extraction
+		// rather than persist confabulation as memory.
+		const assistantTurnCount = (
+			db
+				.prepare(
+					"SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0",
+				)
+				.get(threadId) as { count: number }
+		).count;
+		if (assistantTurnCount === 0) {
+			return {
+				ok: true,
+				value: { summaryGenerated: summary.length > 0, memoriesExtracted: 0 },
+			};
+		}
+
 		// Bug #5: previously stored the literal placeholder "Extracted from conversation".
 		const factChunks: string[] = [];
 		try {
