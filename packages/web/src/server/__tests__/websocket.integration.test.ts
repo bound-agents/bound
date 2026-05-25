@@ -238,6 +238,40 @@ describe("WebSocket Handler", () => {
 		expect(parsed.data.debug).toEqual(debugInfo);
 	});
 
+	it("includes thread_id in context:debug payload so clients can filter by thread", async () => {
+		// Regression test: the payload previously omitted thread_id, causing the
+		// client-side filter (debugData.thread_id === threadId) to always fail and
+		// the context debugger to never update reactively.
+		const messages: string[] = [];
+		const mockWs = {
+			readyState: WebSocket.OPEN,
+			send(data: string): void {
+				messages.push(data);
+			},
+		} as unknown as WebSocket;
+
+		handler.open(mockWs);
+		handler.message(mockWs, JSON.stringify({ type: "thread:subscribe", thread_id: "thread-1" }));
+
+		eventBus.emit("context:debug", {
+			thread_id: "thread-1",
+			turn_id: "turn-abc",
+			debug: {
+				contextWindow: 100000,
+				totalEstimated: 5000,
+				sections: [],
+				budgetPressure: false,
+				truncated: 0,
+			},
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		expect(messages.length).toBe(1);
+		const parsed = JSON.parse(messages[0]);
+		expect(parsed.data.thread_id).toBe("thread-1");
+	});
+
 	it("does not broadcast context:debug to clients not subscribed to thread", async () => {
 		const messages: string[] = [];
 		const mockWs = {
