@@ -73,7 +73,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 		const inputs: StableVolatileInputs = {
 			pinned: [
 				{ key: "_standing:tone", value: "be terse and factual" },
-				{ key: "_pinned:user-name", value: "luca" },
+				{ key: "_pinned:user-name", value: "user" },
 			],
 			summaries: [
 				{ key: "_summary:transit", value: "notes on the local transit network and connections" },
