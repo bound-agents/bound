@@ -173,7 +173,6 @@ export async function extractSummaryAndMemories(
 		}
 
 		const summaryThrough = thread.summary_through || "1970-01-01T00:00:00Z";
-		const previousSummary = thread.summary;
 
 		// Get messages after summary_through with role for delta formatting
 		const messages = db
@@ -187,6 +186,40 @@ export async function extractSummaryAndMemories(
 				ok: true,
 				value: { summaryGenerated: false, memoriesExtracted: 0 },
 			};
+		}
+
+		// Boundary-aware throttle. Skip regeneration when the compaction
+		// boundary (the index of the latest user message — see
+		// `history-compaction/compact.ts`) has NOT advanced past the
+		// current `summary_through`. In that regime nothing new has been
+		// compacted into stubs since the last summary, so the summary
+		// doesn't need to absorb anything new — and regenerating would
+		// only produce slightly different LLM output, mutating the bytes
+		// at the head of the wire request and breaking Bedrock's prefix
+		// cache match for the message-level cachePoint.
+		//
+		// Triggering condition: regen is needed when there exists a
+		// `role: "user"` message strictly after `summary_through`. That's
+		// equivalent to "a new user message has arrived since the last
+		// summary, so the boundary now sits at a position that includes
+		// previously-uncompacted assistant + tool_result content from
+		// the prior turn — those messages are about to be absorbed."
+		//
+		// Live evidence (thread `7339231f-…`, 2026-05-25): two cold-path
+		// assemblies 22 seconds apart sent different msg[0] bytes
+		// because the summary regenerated mid-turn — the second turn was
+		// an inner-loop tool round with no new user message. The
+		// message-level cachePoint's prefix-match missed even though the
+		// bucket-aligned placer held its byte-position stable.
+		const previousSummary = thread.summary;
+		if (previousSummary) {
+			const hasNewUserMessage = messages.some((m) => m.role === "user");
+			if (!hasNewUserMessage) {
+				return {
+					ok: true,
+					value: { summaryGenerated: false, memoriesExtracted: 0 },
+				};
+			}
 		}
 
 		// Format delta messages for the summarization prompt.
