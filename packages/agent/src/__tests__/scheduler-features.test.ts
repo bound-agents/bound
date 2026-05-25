@@ -19,8 +19,9 @@ import type { AgentLoopConfig, AgentLoopResult } from "@bound/agent";
 import { applyMetricsSchema, applySchema, createDatabase, recordTurn } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+import type { Task } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { Scheduler } from "../scheduler";
+import { Scheduler, rescheduleHeartbeat } from "../scheduler";
 import { seedCronTasks } from "../task-resolution";
 import { sleep, waitFor } from "./helpers";
 
@@ -645,6 +646,93 @@ describe("Scheduler features", () => {
 				consecutive_failures: number;
 			} | null;
 			expect(task?.consecutive_failures).toBe(0);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("clears task error field on successful run", async () => {
+			const taskId = randomUUID();
+			// Task previously failed (e.g. relay site-ID error) — stale error on record
+			insertTask(taskId, { consecutiveFailures: 2, alertThreshold: 5 });
+			db.run("UPDATE tasks SET error = 'Unknown source site: abc123' WHERE id = ?", [taskId]);
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+			await waitFor(
+				() => {
+					const row = db.query("SELECT error, run_count FROM tasks WHERE id = ?").get(taskId) as {
+						error: string | null;
+						run_count: number;
+					} | null;
+					// Wait until the task has actually completed a successful run
+					return (row?.run_count ?? 0) > 0 && (row?.error ?? "") === "";
+				},
+				{ message: "task error not cleared after successful run" },
+			);
+			stop();
+
+			const task = db.query("SELECT error FROM tasks WHERE id = ?").get(taskId) as {
+				error: string | null;
+			} | null;
+			expect(task?.error ?? "").toBe("");
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// rescheduleHeartbeat error clearing (unit — no scheduler timing)
+	// -----------------------------------------------------------------------
+	describe("rescheduleHeartbeat error clearing", () => {
+		function insertHeartbeatTask(id: string, errorStr: string) {
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'heartbeat', 'running', '{"type":"heartbeat","interval_ms":1800000}', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					1, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 3,
+					1, 0, 0,
+					NULL, NULL, ?, ?, 'system', ?, 0
+				)`,
+				[id, pastTime, errorStr, now, now],
+			);
+		}
+
+		it("clears error field when context is 'completion'", () => {
+			const taskId = randomUUID();
+			insertHeartbeatTask(taskId, "Unknown source site: abc123");
+
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+			const ctx = makeCtx();
+			rescheduleHeartbeat(ctx.db, task, ctx.logger, "completion", new Date());
+
+			const after = db.query("SELECT error FROM tasks WHERE id = ?").get(taskId) as {
+				error: string | null;
+			} | null;
+			expect(after?.error ?? "").toBe("");
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("preserves error field for non-completion contexts", () => {
+			const taskId = randomUUID();
+			insertHeartbeatTask(taskId, "Unknown source site: abc123");
+
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+			const ctx = makeCtx();
+			rescheduleHeartbeat(ctx.db, task, ctx.logger, "soft error", new Date());
+
+			const after = db.query("SELECT error FROM tasks WHERE id = ?").get(taskId) as {
+				error: string | null;
+			} | null;
+			expect(after?.error).toBe("Unknown source site: abc123");
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 	});
