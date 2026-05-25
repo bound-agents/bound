@@ -19,6 +19,7 @@ import {
 	computeCompactionBoundary,
 	stripThinkingBeforeBoundary,
 } from "./history-compaction";
+import { loadNotificationInputs, renderNotifications } from "./notifications";
 import { substitutePurgedMessages } from "./purge-substitution";
 import {
 	hashStableVolatileInputs,
@@ -754,76 +755,16 @@ export function buildVolatileContext(params: {
 		// No logger available in this context
 	}
 
-	// --- VARYING: operator retirement notifications (24h window) (AC3.6, AC3.7) ---
-	try {
-		const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-		const retiredByOperator = params.db
-			.query(
-				`SELECT name, retired_reason FROM skills
-				 WHERE status = 'retired'
-				   AND retired_by = 'operator'
-				   AND modified_at > ?
-				   AND deleted = 0`,
-			)
-			.all(cutoff24h) as Array<{ name: string; retired_reason: string | null }>;
-
-		for (const s of retiredByOperator) {
-			const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
-			const line = `[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`;
-			suffixLines.push("");
-			suffixLines.push(line);
-			varyingLines.push("");
-			varyingLines.push(line);
-		}
-	} catch (_error) {
-		// Non-fatal: retired skills query failed
-		// No logger available in this context
-	}
-
-	// --- VARYING: advisory resolution notifications (24h window, capped at 5,
-	// deduped by title). Closes the feedback loop so the agent knows when its
-	// advisories were acted on. ---
-	if (params.siteId) {
-		try {
-			const ADVISORY_NOTIF_CAP = 5;
-			const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-			const resolvedAdvisories = params.db
-				.query(
-					`SELECT title, status FROM advisories
-					 WHERE created_by = ?
-					   AND status IN ('approved', 'applied', 'dismissed')
-					   AND resolved_at > ?
-					   AND deleted = 0
-					 ORDER BY resolved_at DESC`,
-				)
-				.all(params.siteId, cutoff24h) as Array<{ title: string; status: string }>;
-
-			// Deduplicate by title — group identical titles and emit a counted line.
-			const titleGroups = new Map<string, { status: string; count: number }>();
-			for (const adv of resolvedAdvisories) {
-				const existing = titleGroups.get(adv.title);
-				if (existing) {
-					existing.count++;
-				} else {
-					titleGroups.set(adv.title, { status: adv.status, count: 1 });
-				}
-			}
-
-			let notifCount = 0;
-			for (const [title, { status, count }] of titleGroups) {
-				if (notifCount >= ADVISORY_NOTIF_CAP) break;
-				const countStr = count > 1 ? ` (×${count})` : "";
-				const line = `[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`;
-				suffixLines.push("");
-				suffixLines.push(line);
-				varyingLines.push("");
-				varyingLines.push(line);
-				notifCount++;
-			}
-		} catch (_error) {
-			// Non-fatal: resolved advisories query failed
-			// No logger available in this context
-		}
+	// --- VARYING: operator-feedback notifications (24h window). Surfaces
+	// recent operator actions on this site's skills + advisories so the
+	// agent learns when its proposals were acted on. See `notifications/`. ---
+	const notifInputs = loadNotificationInputs({ db: params.db, siteId: params.siteId });
+	const notifLines = renderNotifications(notifInputs);
+	for (const line of notifLines) {
+		suffixLines.push("");
+		suffixLines.push(line);
+		varyingLines.push("");
+		varyingLines.push(line);
 	}
 
 	// --- VARYING: inactive skill reference note (AC3.4) ---
