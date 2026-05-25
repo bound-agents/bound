@@ -89,7 +89,14 @@ export interface MetricsResponse {
 	};
 	context: {
 		totals: {
-			avg_cache_hit_rate: number;
+			/**
+			 * Cache hit rate from the most recent turn in the range whose
+			 * `tokens_cache_read + tokens_in > 0` (i.e., a denominator-defined
+			 * turn). Averaging across a window hides whether caching is
+			 * actually working *now*, which is what the operator wants to
+			 * see at a glance. `0` when no qualifying turn exists.
+			 */
+			last_cache_hit_rate: number;
 			budget_pressure_count: number;
 			avg_truncated_tokens: number;
 			total_turns_with_debug: number;
@@ -388,15 +395,13 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				expired_count: totalRelayExpired,
 			};
 
-			// Query context metrics
+			// Query context metrics. Cache hit rate is pulled separately (most
+			// recent denominator-defined turn) because averaging it across the
+			// window hides whether caching is currently effective.
 			const contextTotalsRow = _db
 				.prepare(
 					`SELECT
 					COUNT(*) as total_turns_with_debug,
-					AVG(
-						CAST(COALESCE(tokens_cache_read, 0) AS REAL) /
-						NULLIF(COALESCE(tokens_cache_read, 0) + tokens_in, 0)
-					) as cache_hit_rate,
 					SUM(CASE WHEN json_extract(context_debug, '$.budgetPressure') = 1 THEN 1 ELSE 0 END) as budget_pressure_count,
 					AVG(COALESCE(CAST(json_extract(context_debug, '$.truncated') AS INTEGER), 0)) as avg_truncated_tokens
 				FROM turns
@@ -404,10 +409,28 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				)
 				.get(fromISO, toISO) as {
 				total_turns_with_debug: number | null;
-				cache_hit_rate: number | null;
 				budget_pressure_count: number | null;
 				avg_truncated_tokens: number | null;
 			};
+
+			// Most recent turn whose cache_hit_rate has a defined denominator
+			// (`tokens_cache_read + tokens_in > 0`). Excluding zero-denominator
+			// turns avoids surfacing a NULL/NaN as the headline rate when the
+			// most recent turn happened to have no input tokens at all.
+			const lastCacheHitRow = _db
+				.prepare(
+					`SELECT
+					CAST(COALESCE(tokens_cache_read, 0) AS REAL) /
+						(COALESCE(tokens_cache_read, 0) + tokens_in) as cache_hit_rate
+				FROM turns
+				WHERE created_at BETWEEN ? AND ?
+					AND context_debug IS NOT NULL
+					AND deleted = 0
+					AND COALESCE(tokens_cache_read, 0) + tokens_in > 0
+				ORDER BY created_at DESC
+				LIMIT 1`,
+				)
+				.get(fromISO, toISO) as { cache_hit_rate: number | null } | null;
 
 			// Query context timeline
 			const contextTimelineRows = _db
@@ -511,7 +534,7 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				},
 				context: {
 					totals: {
-						avg_cache_hit_rate: contextTotalsRow?.cache_hit_rate ?? 0,
+						last_cache_hit_rate: lastCacheHitRow?.cache_hit_rate ?? 0,
 						budget_pressure_count: contextTotalsRow?.budget_pressure_count ?? 0,
 						avg_truncated_tokens: contextTotalsRow?.avg_truncated_tokens ?? 0,
 						total_turns_with_debug: contextTotalsRow?.total_turns_with_debug ?? 0,

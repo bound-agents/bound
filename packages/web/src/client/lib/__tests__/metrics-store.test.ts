@@ -50,7 +50,7 @@ function makeMetricsResponse(overrides?: Partial<MetricsResponse>): MetricsRespo
 		},
 		context: {
 			totals: {
-				avg_cache_hit_rate: 0.85,
+				last_cache_hit_rate: 0.85,
 				budget_pressure_count: 1,
 				avg_truncated_tokens: 2.5,
 				total_turns_with_debug: 10,
