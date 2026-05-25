@@ -51,8 +51,63 @@ export interface CacheMarkerPlacement {
 }
 
 /**
- * Splice a `{ role: "cache", content: "" }` marker into `messages` at
- * `messages.length - 1` (i.e. before the last entry).
+ * Compute the splice index for a cache marker, taking the trailing-developer
+ * merge into account.
+ *
+ * Background. The AI SDK bridge merges a trailing run of `developer` messages
+ * onto the preceding user message (`appendDevToUser` in `ai-sdk-bridge.ts`).
+ * The volatile-tail injection always lands as a trailing `developer`, so the
+ * bridge mutates the user message that would otherwise be the cachePoint
+ * target — the cached-prefix bytes then change every turn because the
+ * volatile-tail varies. Live evidence: thread `927d4562-…` post-system-anchor
+ * fix held `tokens_cache_read` at exactly the system-prefix size (86,041) on
+ * every turn after the first, with `tokens_cache_write` climbing to 60k+
+ * without ever reading back — the message-level marker writing fresh cache
+ * each turn that the next turn never matches because the user-N bytes shifted.
+ *
+ * Placement rule. Walk backwards from the end:
+ *   - If the last message is NOT a developer, fall back to the original
+ *     position (`length - 1`). The bridge does not merge in this case, so
+ *     a cachePoint on the second-to-last message rides stable bytes.
+ *   - If the last message IS a developer, scan past the trailing-developer
+ *     run. The first non-developer encountered is the merge-target candidate.
+ *     If it's a user, place the marker BEFORE that user — cachePoint then
+ *     attaches to whatever precedes it (a stable prior-turn message).
+ *     If it's not a user (e.g., `assistant` or `tool_result` followed by a
+ *     trailing developer), the bridge will emit the developer as a NEW
+ *     trailing user rather than mutating an existing one; the original
+ *     position immediately after the last non-dev is safe.
+ *
+ * The function is pure: depends only on `messages` and never mutates the
+ * input. The caller decides whether to splice based on the returned index.
+ */
+function computeCacheMarkerIndex(messages: LLMMessage[]): number {
+	const lastIdx = messages.length - 1;
+	if (messages[lastIdx].role !== "developer") {
+		return lastIdx;
+	}
+	// Skip trailing developer run.
+	let i = lastIdx - 1;
+	while (i >= 0 && messages[i].role === "developer") i--;
+	// Last non-developer position.
+	if (i >= 0 && messages[i].role === "user") {
+		// Bridge will merge the trailing developers into this user. Anchor
+		// before it so the cachePoint lands on stable bytes.
+		return i;
+	}
+	// Last non-dev isn't a user — bridge appends a new trailing user for
+	// the developer content. Original semantics apply at i + 1 (the start
+	// of the trailing-dev run, which is now safely outside the cachePoint).
+	return i + 1;
+}
+
+/**
+ * Splice a `{ role: "cache", content: "" }` marker into `messages`.
+ *
+ * The splice position respects the bridge's trailing-developer merge: when
+ * the input ends with a developer message (the volatile-tail), the marker is
+ * placed BEFORE the user message the bridge will merge into. See
+ * `computeCacheMarkerIndex` for the full placement rationale.
  *
  * @returns A `CacheMarkerPlacement` describing whether the marker was placed,
  *          its variant, the splice index, and (when not placed) the reason.
@@ -68,7 +123,13 @@ export function maybePlaceCacheMarker(
 	if (messages.length < 2) {
 		return { placed: false, variant: kind, index: -1, reason: "too-short" };
 	}
-	const insertAt = messages.length - 1;
+	const insertAt = computeCacheMarkerIndex(messages);
+	// A marker spliced at index 0 has no preceding message for the bridge to
+	// attach the cachePoint onto — the bridge silently drops it. Treat that
+	// as too-short rather than emit a misleading `placed: true`.
+	if (insertAt === 0) {
+		return { placed: false, variant: kind, index: -1, reason: "too-short" };
+	}
 	messages.splice(insertAt, 0, { role: "cache", content: "" });
 	return { placed: true, variant: kind, index: insertAt };
 }
