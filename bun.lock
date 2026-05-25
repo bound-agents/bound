@@ -116,6 +116,9 @@
         "ai": "^6.0.168",
         "zod": "^4.0.0",
       },
+      "devDependencies": {
+        "fast-check": "^4.8.0",
+      },
     },
     "packages/mcp-server": {
       "name": "@bound/mcp-server",
@@ -174,6 +177,9 @@
         "shiki": "^4.0.2",
         "zod": "^4.0.0",
       },
+      "devDependencies": {
+        "fast-check": "^4.8.0",
+      },
     },
     "packages/sync": {
       "name": "@bound/sync",
@@ -188,6 +194,7 @@
       },
       "devDependencies": {
         "@bound/agent": "workspace:*",
+        "fast-check": "^4.8.0",
       },
     },
     "packages/web": {

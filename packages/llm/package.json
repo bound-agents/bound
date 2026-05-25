@@ -13,5 +13,8 @@
 		"@bound/shared": "workspace:*",
 		"ai": "^6.0.168",
 		"zod": "^4.0.0"
+	},
+	"devDependencies": {
+		"fast-check": "^4.8.0"
 	}
 }

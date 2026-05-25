@@ -14,6 +14,7 @@
 		"hono": "^4.0.0"
 	},
 	"devDependencies": {
-		"@bound/agent": "workspace:*"
+		"@bound/agent": "workspace:*",
+		"fast-check": "^4.8.0"
 	}
 }
