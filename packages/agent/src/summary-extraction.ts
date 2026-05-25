@@ -483,15 +483,50 @@ function stalenessTag(isoString: string): string {
 /**
  * Computes the baseline timestamp (ISO string) for delta queries.
  * Implements the R-MV4 fallback chain:
- *   noHistory=false → thread.last_message_at ?? thread.created_at
+ *   noHistory=false → MAX(last user-role message OR thread.created_at, NOW - 24h)
  *   noHistory=true + taskId → task.last_run_at ?? task.created_at
  *   noHistory=true + no taskId → epoch
+ *
+ * The non-noHistory branch anchors to the most-recent **user-role**
+ * message — not `thread.last_message_at` — and applies a 24-hour
+ * wallclock floor. This handles two cases that the prior
+ * `thread.last_message_at` implementation collapsed:
+ *
+ *  1. **Self-driving threads.** Webhook-bound event tasks and
+ *     scheduler-spawned threads emit `developer`-role `[Task wakeup]`
+ *     messages into the same thread on every tick, advancing
+ *     `last_message_at` continuously. The recency baseline therefore
+ *     advanced past every memorize that landed *between* wakeups,
+ *     structurally excluding those entries from L3 recency rendering.
+ *     Live evidence: thread d0372be6 with 558 wakeups had recent
+ *     `bound:issue:*` and `_outcome:*` memorizes that never surfaced
+ *     in volatile context, leading the agent to repeatedly report
+ *     "Working knowledge is months stale" while in fact the entries
+ *     were 0.9–1.9 days old.
+ *
+ *  2. **User threads where the agent persists assistant messages
+ *     between user turns.** Each agent turn that persists an
+ *     assistant or tool_result row advances `last_message_at` past
+ *     any memorize that ran during the same turn, excluding it from
+ *     the next turn's L3 recency. The user-message anchor avoids
+ *     this by tracking the real conversational boundary.
+ *
+ * The 24h wallclock floor ensures autonomous threads (no user
+ * message ever) and dormant user threads still surface roughly the
+ * last 24 hours of memory activity rather than collapsing on
+ * `thread.created_at` (which can be days or weeks old).
+ *
+ * `nowMs` is parameterized so tests can pin floor calculation to a
+ * fixed timestamp; defaults to `Date.now()` for production callers.
  */
+const RECENCY_FLOOR_MS = 24 * 60 * 60 * 1000;
+
 export function computeBaseline(
 	db: Database,
 	threadId: string,
 	taskId?: string,
 	noHistory?: boolean,
+	nowMs: number = Date.now(),
 ): string {
 	const EPOCH = "1970-01-01T00:00:00.000Z";
 
@@ -506,11 +541,26 @@ export function computeBaseline(
 		return EPOCH;
 	}
 
-	const row = db
-		.prepare("SELECT last_message_at, created_at FROM threads WHERE id = ?")
-		.get(threadId) as { last_message_at: string | null; created_at: string } | null;
-	if (row === null) return EPOCH;
-	return row.last_message_at ?? row.created_at;
+	const threadRow = db.prepare("SELECT created_at FROM threads WHERE id = ?").get(threadId) as {
+		created_at: string;
+	} | null;
+	if (threadRow === null) return EPOCH;
+
+	// Anchor to the most-recent user-role message; fall back to
+	// thread.created_at when the thread has never had a user turn
+	// (autonomous webhook/scheduler threads).
+	const userRow = db
+		.prepare(
+			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+		)
+		.get(threadId) as { created_at: string } | null;
+	const anchor = userRow?.created_at ?? threadRow.created_at;
+
+	// MAX(anchor, floor): pick the LATER of the two so dormant threads
+	// don't surface stale entries (cap at 24h of recency) but
+	// continuously-active autonomous threads still see fresh activity.
+	const floor = new Date(nowMs - RECENCY_FLOOR_MS).toISOString();
+	return anchor > floor ? anchor : floor;
 }
 
 export interface VolatileEnrichment {
