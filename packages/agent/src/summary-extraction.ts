@@ -772,6 +772,24 @@ const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via 
 const DISCOVERABLE_FOOTER =
 	"Bodies are accessed via memory search or query against semantic_memory.";
 
+/**
+ * Section header for `tier='default'` L2 (graph-seeded) + L3 (recency)
+ * entries that the three R-VC24 renderers (WK / DA / LS) don't surface.
+ * Rendered into the varying tail by `composeVolatileSections`.
+ */
+export const RECENT_MEMORY_HEADER = "## Recent memory — graph + recency";
+
+/**
+ * Flatten a `TieredEnrichment` into the L2 + L3 tail used by
+ * `composeVolatileSections` for the recency rendering block. Three
+ * call sites (primary, no-history task, budget-pressure rebuild)
+ * compose this same shape; centralized here so the spread pattern
+ * doesn't drift across paths.
+ */
+export function flattenRecencyEntries(tiers: TieredEnrichment): StageEntry[] {
+	return [...tiers.L2, ...tiers.L3];
+}
+
 export function renderDiscoverableArchive(
 	input: DiscoverableArchiveInput,
 ): DiscoverableArchiveOutput {
