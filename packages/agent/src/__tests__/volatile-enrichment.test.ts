@@ -30,11 +30,23 @@ afterEach(() => {
 });
 
 describe("computeBaseline", () => {
-	it("AC4.1: returns thread.last_message_at when noHistory is false", () => {
+	it("AC4.1: returns the most-recent user-role message timestamp when newer than the 24h floor", () => {
+		// Post-2026-05-24 contract change: baseline anchors to the
+		// last user-role message (the real conversational boundary)
+		// rather than thread.last_message_at. The latter advances on
+		// every persisted assistant/tool/developer row, which on
+		// self-driving threads collapses L3 recency to "nothing newer
+		// than seconds ago" and excludes any memorize that landed
+		// between wakeups (live evidence: thread d0372be6).
 		const threadId = randomBytes(8).toString("hex");
 		const userId = randomBytes(8).toString("hex");
 		const siteId = randomBytes(8).toString("hex");
-		const lastMessageAt = "2026-03-20T12:00:00.000Z";
+
+		// Pin nowMs so the 24h floor is deterministic. We pick a
+		// recent user message (5 minutes before nowMs), which is
+		// strictly newer than the floor → baseline = user message.
+		const nowMs = Date.parse("2026-05-24T12:00:00.000Z");
+		const userMessageAt = "2026-05-24T11:55:00.000Z"; // 5 min before nowMs
 
 		insertRow(
 			db,
@@ -47,40 +59,71 @@ describe("computeBaseline", () => {
 				color: 0,
 				title: "Test Thread",
 				created_at: "2026-03-01T00:00:00.000Z",
-				last_message_at: lastMessageAt,
+				last_message_at: userMessageAt,
 				modified_at: new Date().toISOString(),
 				deleted: 0,
 			},
 			siteId,
 		);
 
-		const baseline = computeBaseline(db, threadId);
-		expect(baseline).toBe(lastMessageAt);
+		insertRow(
+			db,
+			"messages",
+			{
+				id: randomBytes(8).toString("hex"),
+				thread_id: threadId,
+				role: "user",
+				content: "test user message",
+				model_id: null,
+				tool_name: null,
+				created_at: userMessageAt,
+				modified_at: userMessageAt,
+				host_origin: "test",
+				deleted: 0,
+				exit_code: null,
+				metadata: null,
+			},
+			siteId,
+		);
+
+		const baseline = computeBaseline(db, threadId, undefined, false, nowMs);
+		expect(baseline).toBe(userMessageAt);
 	});
 
-	it("AC4.2: returns thread.created_at when last_message_at is null (defensive path)", () => {
+	it("AC4.2: returns the 24h wallclock floor when no user message has landed within the last 24h", () => {
+		// Autonomous threads (webhook handlers, scheduler-driven
+		// tasks) and dormant user threads where the user hasn't typed
+		// in over a day collapse to thread.created_at under the
+		// fallback chain. The floor caps how far back recency reaches
+		// — preventing autonomous threads from rendering days or
+		// weeks of stale memory delta.
 		const threadId = randomBytes(8).toString("hex");
 		const userId = randomBytes(8).toString("hex");
-		const createdAt = "2026-03-01T00:00:00.000Z";
+		const siteId = randomBytes(8).toString("hex");
+		const nowMs = Date.parse("2026-05-24T12:00:00.000Z");
+		const floor = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+		const ancientCreatedAt = "2026-03-01T00:00:00.000Z"; // way before floor
 
-		// Attempt to insert a thread with last_message_at = NULL to test the defensive fallback.
-		// This tests the R-MV4 fallback chain even though STRICT table mode prevents
-		// last_message_at from being NULL in practice.
-		try {
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'test', 0, ?, NULL, ?, 0)",
-				[threadId, userId, createdAt, new Date().toISOString()],
-			);
-			// If the insertion succeeds, verify the fallback works
-			const baseline = computeBaseline(db, threadId);
-			expect(baseline).toBe(createdAt);
-		} catch (err) {
-			// STRICT table mode rejects NULL on NOT NULL column.
-			// This is expected behavior; the defensive fallback is dead code in practice
-			// because the schema enforces last_message_at NOT NULL. Document and pass.
-			const errMsg = err instanceof Error ? err.message : String(err);
-			expect(errMsg).toContain("NOT NULL constraint failed");
-		}
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: userId,
+				interface: "webhook",
+				host_origin: "test",
+				color: 0,
+				title: "Autonomous Thread",
+				created_at: ancientCreatedAt,
+				last_message_at: ancientCreatedAt,
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const baseline = computeBaseline(db, threadId, undefined, false, nowMs);
+		expect(baseline).toBe(floor);
 	});
 
 	it("AC4.3: returns task.last_run_at when noHistory is true and taskId given", () => {

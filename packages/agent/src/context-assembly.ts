@@ -417,8 +417,14 @@ export function buildVolatileContext(params: {
 
 	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
 	// Phase 5: Wire three-renderer composition
-	const enrichmentBaseline = computeBaseline(params.db, params.threadId, params.taskId, false);
 	const nowMs = params.nowMs ?? Date.now();
+	const enrichmentBaseline = computeBaseline(
+		params.db,
+		params.threadId,
+		params.taskId,
+		false,
+		nowMs,
+	);
 
 	// Compute delta-key set from R-MV1 baseline + delta query
 	const allDeltaKeys = params.db
