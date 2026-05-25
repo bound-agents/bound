@@ -18,6 +18,7 @@ import {
 	computeCompactionBoundary,
 	stripThinkingBeforeBoundary,
 } from "./history-compaction";
+import { substitutePurgedMessages } from "./purge-substitution";
 import {
 	hashStableVolatileInputs,
 	hashSystemPromptString,
@@ -1300,132 +1301,15 @@ Original output was too large for the context window. If you need the full conte
 	stage1_7Span.end();
 
 	// Stage 2: PURGE_SUBSTITUTION
-	// Find any purge messages and replace targeted IDs with summaries
+	// Replace purge-targeted messages with summary developer stubs.
+	// Tool-pair symmetric expansion + provenance prefix on the
+	// summary live in `purge-substitution/`. Property-tested for
+	// purge-message dropout, symmetric expansion, single-summary-
+	// per-group, provenance prefix, non-purged survival,
+	// determinism, malformed-metadata graceful skip, and empty
+	// input — see purge-substitution/__tests__/purge.property.test.ts.
 	const stage2Span = getTracer().startSpan("context.stage-2-purge-substitution");
-	const purgeMessages = messages.filter((m) => m.role === "purge");
-	const purgeIdToSummary = new Map<string, string>();
-	const purgeGroups: Array<{ ids: Set<string>; summary: string }> = [];
-
-	for (const purgeMsg of purgeMessages) {
-		try {
-			const purgeData = JSON.parse(purgeMsg.content);
-			const targetIds: string[] = purgeData.target_ids || [];
-			const summary: string = purgeData.summary || "Messages purged from conversation";
-
-			if (targetIds.length > 0) {
-				const group = { ids: new Set(targetIds), summary };
-				purgeGroups.push(group);
-
-				for (const id of targetIds) {
-					purgeIdToSummary.set(id, summary);
-				}
-			}
-		} catch (_error) {
-			// Ignore purge metadata parse errors — no logger available in this context
-			// Malformed purge messages are silently skipped
-		}
-	}
-
-	// Build a map of tool_call IDs to their paired tool_result IDs
-	const toolCallToPair = new Map<string, string>();
-	const toolResultToPair = new Map<string, string>();
-
-	for (let i = 0; i < messages.length; i++) {
-		const msg = messages[i];
-		if (msg.role === "tool_call") {
-			// Find the next tool_result
-			for (let j = i + 1; j < messages.length; j++) {
-				if (messages[j].role === "tool_result") {
-					toolCallToPair.set(msg.id, messages[j].id);
-					toolResultToPair.set(messages[j].id, msg.id);
-					break;
-				}
-			}
-		}
-	}
-
-	// Expand purge groups to include paired tool messages
-	for (const group of purgeGroups) {
-		const additionalIds = new Set<string>();
-		for (const id of Array.from(group.ids)) {
-			// If this is a tool_call, include its paired tool_result
-			const pairedResult = toolCallToPair.get(id);
-			if (pairedResult && !group.ids.has(pairedResult)) {
-				additionalIds.add(pairedResult);
-			}
-			// If this is a tool_result, include its paired tool_call
-			const pairedCall = toolResultToPair.get(id);
-			if (pairedCall && !group.ids.has(pairedCall)) {
-				additionalIds.add(pairedCall);
-			}
-		}
-		// Add the additional IDs to the group
-		for (const id of Array.from(additionalIds)) {
-			group.ids.add(id);
-			purgeIdToSummary.set(id, group.summary);
-		}
-	}
-
-	// Build the list of messages to process, replacing purge groups with summaries
-	const messagesAfterPurge: Message[] = [];
-	const processedPurgeGroups = new Set<number>();
-	const purgeMessageIds = new Set(purgeMessages.map((m) => m.id));
-
-	for (let i = 0; i < messages.length; i++) {
-		const msg = messages[i];
-
-		// Skip purge messages themselves
-		if (purgeMessageIds.has(msg.id)) {
-			continue;
-		}
-
-		// Check if this message is part of a purge group
-		const purgedSummary = purgeIdToSummary.get(msg.id);
-		if (purgedSummary) {
-			// Find which purge group this belongs to
-			const groupIndex = purgeGroups.findIndex((g) => g.ids.has(msg.id));
-			if (groupIndex !== -1 && !processedPurgeGroups.has(groupIndex)) {
-				// This is the first message in this purge group - replace it with a summary
-				const group = purgeGroups[groupIndex];
-				processedPurgeGroups.add(groupIndex);
-
-				// Create a developer message with the purge summary, flagged
-				// as an agent-authored claim. The summary text comes from
-				// the agent's own input to the `purge` tool — there's no
-				// system verification of its truthfulness at write time.
-				// On read, the bridge wraps developer messages in
-				// <system-context>...</system-context>; without an explicit
-				// provenance marker the agent re-reads its own past summary
-				// as authoritative system state and gate-dismisses real
-				// events that contradict it (live evidence: thread d0372be6
-				// 2026-05-24, where the agent's confabulated "Issues #20-36
-				// captured" claim drove ~50 turns of "stand down" decisions
-				// against actual fresh webhook deliveries). The provenance
-				// prefix asks the agent to verify against ground truth
-				// (messages / semantic_memory / files tables) before
-				// relying on the summary's claims.
-				messagesAfterPurge.push({
-					id: `purge-summary-${groupIndex}`,
-					thread_id: threadId,
-					role: "developer",
-					content: `(purged ${group.ids.size} messages — agent-authored summary, unverified; verify against source tables before relying) ${group.summary}`,
-					model_id: null,
-					tool_name: null,
-					created_at: msg.created_at,
-					modified_at: msg.modified_at,
-					host_origin: "local",
-					deleted: 0,
-					exit_code: null,
-					metadata: null,
-				});
-			}
-			// Skip this message (and all subsequent messages in the same purge group)
-			continue;
-		}
-
-		// Not purged - include it
-		messagesAfterPurge.push(msg);
-	}
+	const messagesAfterPurge = substitutePurgedMessages({ messages, threadId });
 	stage2Span.end();
 
 	// Stage 2.5: NON-LLM ROLE FILTERING
