@@ -248,15 +248,16 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 				{:else}
 					<div class="metrics-cards">
 						<MetroCard
-							accentColor={data.context.totals.avg_cache_hit_rate >= 0.8
+							accentColor={data.context.totals.last_cache_hit_rate >= 0.8
 								? "var(--ok)"
-								: data.context.totals.avg_cache_hit_rate >= 0.5
+								: data.context.totals.last_cache_hit_rate >= 0.5
 									? "var(--warn)"
 									: "var(--err)"}
 						>
 							{#snippet children()}
 								<span class="metric-label">Cache Hit Rate</span>
-								<span class="metric-value">{(data.context.totals.avg_cache_hit_rate * 100).toFixed(1)}%</span>
+								<span class="metric-value">{(data.context.totals.last_cache_hit_rate * 100).toFixed(1)}%</span>
+								<span class="metric-unit">last turn</span>
 							{/snippet}
 						</MetroCard>
 
@@ -279,12 +280,17 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 						<MetroCard accentColor={totalCacheRead > 0 ? "var(--ok)" : "var(--idle)"}>
 							{#snippet children()}
 								<span class="metric-label">Cache Tokens</span>
-								<span class="metric-value cache-card-value">
-									<span class="cache-card-read mono tnum">↑ {totalCacheRead.toLocaleString()}</span>
-									<span class="cache-card-sep">/</span>
-									<span class="cache-card-write mono tnum">↓ {totalCacheWrite.toLocaleString()}</span>
-								</span>
-								<span class="metric-unit">read / write</span>
+								<span class="metric-value">{(totalCacheRead + totalCacheWrite).toLocaleString()}</span>
+								<div class="token-breakdown">
+									<div class="token-row">
+										<span class="token-row-label token-row-cache-read">↑ Read</span>
+										<span class="token-row-value mono tnum">{totalCacheRead.toLocaleString()}</span>
+									</div>
+									<div class="token-row">
+										<span class="token-row-label token-row-cache-write">↓ Write</span>
+										<span class="token-row-value mono tnum">{totalCacheWrite.toLocaleString()}</span>
+									</div>
+								</div>
 							{/snippet}
 						</MetroCard>
 					</div>
@@ -410,29 +416,6 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 	.token-row-value {
 		color: var(--ink);
 		font-variant-numeric: tabular-nums;
-	}
-
-	.cache-card-value {
-		display: inline-flex;
-		align-items: baseline;
-		gap: 6px;
-		font-size: 18px;
-		font-weight: 600;
-	}
-
-	.cache-card-read {
-		color: var(--ok);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.cache-card-write {
-		color: var(--warn);
-		font-variant-numeric: tabular-nums;
-	}
-
-	.cache-card-sep {
-		color: var(--ink-4);
-		font-size: 14px;
 	}
 
 	.sparkline-row {

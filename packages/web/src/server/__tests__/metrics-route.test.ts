@@ -706,9 +706,10 @@ describe("metrics routes", () => {
 			const totals = context.totals as Record<string, unknown>;
 
 			expect(totals.total_turns_with_debug).toBe(2);
-			// Cache hit rate: (200 + 100) / (200 + 100 + 1000 + 500) = 300 / 1800 ≈ 0.167
-			expect(totals.avg_cache_hit_rate).toBeGreaterThan(0);
-			expect(totals.avg_cache_hit_rate).toBeLessThan(1);
+			// last_cache_hit_rate is taken from the most recent denominator-defined
+			// turn — turn-2 here (13:00): 100 / (100 + 500) ≈ 0.1667.
+			expect(totals.last_cache_hit_rate).toBeGreaterThan(0);
+			expect(totals.last_cache_hit_rate).toBeLessThan(1);
 		});
 
 		it("counts budget pressure events from JSON", async () => {
@@ -1591,7 +1592,7 @@ describe("metrics routes", () => {
 		});
 
 		describe("AC4.6 (zero cache edge case)", () => {
-			it("returns avg_cache_hit_rate of 0 exactly when tokens_cache_read is 0", async () => {
+			it("returns last_cache_hit_rate of 0 exactly when the latest denominator-defined turn has tokens_cache_read = 0", async () => {
 				const app = createMetricsRoutes(db);
 
 				// Seed turn with zero cache read and valid tokens_in
@@ -1631,9 +1632,115 @@ describe("metrics routes", () => {
 				const context = json.context as Record<string, unknown>;
 				const totals = context.totals as Record<string, unknown>;
 
-				// avg_cache_hit_rate should be exactly 0 (not NaN, not null, not undefined)
-				expect(totals.avg_cache_hit_rate).toBe(0);
-				expect(Number.isNaN(totals.avg_cache_hit_rate as number)).toBe(false);
+				// last_cache_hit_rate should be exactly 0 (not NaN, not null, not undefined)
+				expect(totals.last_cache_hit_rate).toBe(0);
+				expect(Number.isNaN(totals.last_cache_hit_rate as number)).toBe(false);
+			});
+
+			it("returns last_cache_hit_rate of 0 when no turn in the range has a defined denominator", async () => {
+				const app = createMetricsRoutes(db);
+
+				// All-zero token counts → no turn qualifies for last_cache_hit_rate
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-empty",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"claude-opus",
+					0,
+					0,
+					0,
+					0,
+					0,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 0,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const totals = (json.context as Record<string, unknown>).totals as Record<string, unknown>;
+				expect(totals.last_cache_hit_rate).toBe(0);
+				expect(totals.total_turns_with_debug).toBe(1);
+			});
+
+			it("returns last_cache_hit_rate from the most recent qualifying turn (not the average across the range)", async () => {
+				const app = createMetricsRoutes(db);
+
+				// Earlier turn: hit rate = 800 / (800 + 200) = 0.8
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-old",
+					"thread-1",
+					"2026-05-18T10:00:00Z",
+					"claude-opus",
+					200,
+					100,
+					800,
+					0,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+				// Later turn: hit rate = 100 / (100 + 900) = 0.1
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug, deleted)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-new",
+					"thread-1",
+					"2026-05-18T14:00:00Z",
+					"claude-opus",
+					900,
+					200,
+					100,
+					0,
+					0.05,
+					"ok",
+					JSON.stringify({
+						budgetPressure: false,
+						truncated: 0,
+						totalEstimated: 1000,
+						contextWindow: 8000,
+					}),
+					0,
+				);
+
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const totals = (json.context as Record<string, unknown>).totals as Record<string, unknown>;
+				// Should be the most recent turn's rate (0.1), NOT the average (0.45).
+				expect(totals.last_cache_hit_rate).toBeCloseTo(0.1, 6);
 			});
 		});
 
