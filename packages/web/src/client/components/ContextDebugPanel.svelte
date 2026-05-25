@@ -35,6 +35,26 @@ async function fetchData(): Promise<void> {
 	loading = false;
 }
 
+/**
+ * Silently re-fetch turns on a live update (WS event). Does not show the
+ * loading spinner and preserves the user's current turn selection: if they
+ * were already on the latest turn, advance to the new latest; if they had
+ * navigated to an older turn, leave selectedTurnIdx unchanged so it still
+ * points at the same entry (turns are only appended, never removed).
+ */
+async function refreshTurns(): Promise<void> {
+	try {
+		const wasLatest = isLatest;
+		const data = await client.getContextDebug(threadId);
+		turns = data;
+		if (wasLatest && turns.length > 0) {
+			selectedTurnIdx = turns.length - 1;
+		}
+	} catch (error) {
+		console.error("Failed to refresh context debug data:", error);
+	}
+}
+
 $effect(() => {
 	const _tid = threadId;
 	turns = [];
@@ -55,14 +75,15 @@ $effect(() => {
 			typeof last.data === "object" &&
 			last.data !== null
 		) {
-			const debugData = last.data as ContextDebugTurn & { thread_id?: string };
+			// The server includes thread_id in the payload so we can filter to
+			// the current thread. The payload shape is { turn_id, debug, thread_id }
+			// — not a full ContextDebugTurn — so we use it only as a trigger to
+			// re-fetch the complete, properly-typed data from the REST endpoint.
+			const debugData = last.data as { turn_id: string; thread_id?: string };
 			if (debugData.thread_id === threadId) {
 				const exists = turns.some((t: ContextDebugTurn) => t.turn_id === debugData.turn_id);
 				if (!exists) {
-					turns = [...turns, debugData];
-					if (selectedTurnIdx < 0 || selectedTurnIdx === turns.length - 2) {
-						selectedTurnIdx = turns.length - 1;
-					}
+					refreshTurns();
 				}
 			}
 		}

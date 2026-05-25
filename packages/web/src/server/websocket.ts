@@ -328,7 +328,7 @@ export function createWebSocketHandler(
 			if (conn.subscriptions.has(data.thread_id)) {
 				const message = JSON.stringify({
 					type: "context:debug",
-					data: { turn_id: data.turn_id, debug: data.debug },
+					data: { turn_id: data.turn_id, debug: data.debug, thread_id: data.thread_id },
 				});
 				if (ws.readyState === 1) {
 					ws.send(message);
