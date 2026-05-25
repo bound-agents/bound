@@ -2014,50 +2014,11 @@ Original output was too large for the context window. If you need the full conte
 		taskDigestLinesSnapshot = volatileCtx.taskDigestLines;
 
 		// Track volatile-tail tokens (the trailing developer message that
-		// follows history, uncached). `volatile-tail` is the parent aggregate;
-		// memory, task-digest, and volatile-other are nested as drill-down
-		// children. The web debugger sums top-level section tokens only --
-		// children render expandable but do not contribute to the total --
-		// so this nesting avoids the double-count that pushing all four as
-		// peers would produce.
-		//
-		// IMPORTANT: slice allVaryingLines (not allVolatileLines), using
-		// varyingEnrichmentStartIdx/varyingEnrichmentEndIdx (not the
-		// union-relative enrichmentStartIdx/enrichmentEndIdx). Otherwise the
-		// memory section double-counts stable Working Knowledge bodies that
-		// have been promoted into the prefix, inflating context_debug totals
-		// well above actual on-wire tokens_in.
-		//
-		// Likewise, volatile-other = varyingTokenEstimate - memoryTokens -
-		// taskDigestTokens (NOT tokenEstimate, which is the union including
-		// the stable prefix); using the union would leak the stable Working
-		// Knowledge slab into volatile-other.
-		const memoryLines = volatileCtx.allVaryingLines.slice(
-			volatileCtx.varyingEnrichmentStartIdx,
-			volatileCtx.varyingEnrichmentEndIdx,
-		);
-		const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
-
-		const taskDigestTokens =
-			volatileCtx.taskDigestLines.length > 0
-				? countTokens(volatileCtx.taskDigestLines.join("\n"))
-				: 0;
-
-		const volatileOtherTokens = volatileCtx.varyingTokenEstimate - memoryTokens - taskDigestTokens;
-
-		if (volatileCtx.varyingTokenEstimate > 0) {
-			const tailChildren: ContextSection[] = [];
-			if (memoryTokens > 0) tailChildren.push({ name: "memory", tokens: memoryTokens });
-			if (taskDigestTokens > 0)
-				tailChildren.push({ name: "task-digest", tokens: taskDigestTokens });
-			if (volatileOtherTokens > 0)
-				tailChildren.push({ name: "volatile-other", tokens: volatileOtherTokens });
-			sections.push({
-				name: "volatile-tail",
-				tokens: volatileCtx.varyingTokenEstimate,
-				children: tailChildren.length > 0 ? tailChildren : undefined,
-			});
-		}
+		// follows history, uncached). See computeVolatileTailSection for
+		// the shape and accounting rules — shared with rebuildWarmSections
+		// and agent-loop's per-inner-loop refresh.
+		const tailSection = computeVolatileTailSection(volatileCtx);
+		if (tailSection) sections.push(tailSection);
 	}
 
 	// Track tools section (from ContextParams)
@@ -2575,6 +2536,54 @@ Original output was too large for the context window. If you need the full conte
 }
 
 /**
+ * Build the `volatile-tail` ContextSection from a freshly-rendered
+ * VolatileContext. Returns null when the varying half is empty (no tail
+ * section should be emitted).
+ *
+ * The varying tail is rendered as a parent `volatile-tail` section with
+ * memory/task-digest/volatile-other children that drill down into the
+ * three subsystem token totals. The web debugger sums TOP-LEVEL section
+ * tokens only — children render expandable but don't contribute to the
+ * total — so this nesting avoids the double-count that flat peers would
+ * produce.
+ *
+ * Notes that protect against off-by-one accounting:
+ *  - Slices `allVaryingLines` (not `allVolatileLines`) using the varying-
+ *    relative indices (`varyingEnrichmentStartIdx/EndIdx`). The
+ *    union-relative indices would over-count stable Working Knowledge
+ *    bodies that have been promoted into the prefix.
+ *  - `volatile-other = varyingTokenEstimate - memory - task-digest`. Using
+ *    `tokenEstimate` (the union including the stable prefix) would leak
+ *    the stable Working Knowledge slab into volatile-other.
+ *
+ * Used by cold-path assembleContext, rebuildWarmSections, and the
+ * per-inner-loop refresh in agent-loop's refreshVolatileTailForNextTurn.
+ */
+export function computeVolatileTailSection(volatileCtx: VolatileContext): ContextSection | null {
+	if (volatileCtx.varyingTokenEstimate <= 0) return null;
+	const memoryLines = volatileCtx.allVaryingLines.slice(
+		volatileCtx.varyingEnrichmentStartIdx,
+		volatileCtx.varyingEnrichmentEndIdx,
+	);
+	const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
+	const taskDigestTokens =
+		volatileCtx.taskDigestLines.length > 0
+			? countTokens(volatileCtx.taskDigestLines.join("\n"))
+			: 0;
+	const volatileOtherTokens = volatileCtx.varyingTokenEstimate - memoryTokens - taskDigestTokens;
+	const tailChildren: ContextSection[] = [];
+	if (memoryTokens > 0) tailChildren.push({ name: "memory", tokens: memoryTokens });
+	if (taskDigestTokens > 0) tailChildren.push({ name: "task-digest", tokens: taskDigestTokens });
+	if (volatileOtherTokens > 0)
+		tailChildren.push({ name: "volatile-other", tokens: volatileOtherTokens });
+	return {
+		name: "volatile-tail",
+		tokens: volatileCtx.varyingTokenEstimate,
+		children: tailChildren.length > 0 ? tailChildren : undefined,
+	};
+}
+
+/**
  * Rebuild context_debug.sections for a warm-path turn. Reuses stable-prefix
  * sections from the cold-path snapshot (system, skill-context, tools) and
  * recomputes the dynamic ones (history, memory, task-digest, volatile-other)
@@ -2625,43 +2634,8 @@ export function rebuildWarmSections(params: {
 	});
 
 	// Volatile sections: recompute from the freshly-built volatile context.
-	// Mirrors the cold-path computation in assembleContext (parent
-	// volatile-tail with memory/task-digest/volatile-other as drill-down
-	// children).
-	//
-	// IMPORTANT: slice allVaryingLines (not allVolatileLines), using
-	// varyingEnrichmentStartIdx/varyingEnrichmentEndIdx (not the
-	// union-relative enrichmentStartIdx/enrichmentEndIdx). Otherwise the
-	// memory section double-counts stable Working Knowledge bodies that
-	// have been promoted into the prefix.
-	//
-	// Likewise, volatile-other subtracts from varyingTokenEstimate (varying
-	// only) -- using tokenEstimate (the union including the stable prefix)
-	// would leak the stable Working Knowledge slab into volatile-other.
-	const memoryLines = params.volatileCtx.allVaryingLines.slice(
-		params.volatileCtx.varyingEnrichmentStartIdx,
-		params.volatileCtx.varyingEnrichmentEndIdx,
-	);
-	const memoryTokens = memoryLines.length > 0 ? countTokens(memoryLines.join("\n")) : 0;
-	const taskDigestTokens =
-		params.volatileCtx.taskDigestLines.length > 0
-			? countTokens(params.volatileCtx.taskDigestLines.join("\n"))
-			: 0;
-	const volatileOtherTokens =
-		params.volatileCtx.varyingTokenEstimate - memoryTokens - taskDigestTokens;
-
-	if (params.volatileCtx.varyingTokenEstimate > 0) {
-		const tailChildren: ContextSection[] = [];
-		if (memoryTokens > 0) tailChildren.push({ name: "memory", tokens: memoryTokens });
-		if (taskDigestTokens > 0) tailChildren.push({ name: "task-digest", tokens: taskDigestTokens });
-		if (volatileOtherTokens > 0)
-			tailChildren.push({ name: "volatile-other", tokens: volatileOtherTokens });
-		sections.push({
-			name: "volatile-tail",
-			tokens: params.volatileCtx.varyingTokenEstimate,
-			children: tailChildren.length > 0 ? tailChildren : undefined,
-		});
-	}
+	const tailSection = computeVolatileTailSection(params.volatileCtx);
+	if (tailSection) sections.push(tailSection);
 
 	// Tools: copy from cached snapshot — toolFingerprint match in the warm
 	// gate guarantees the tool set is unchanged from the cold build.
