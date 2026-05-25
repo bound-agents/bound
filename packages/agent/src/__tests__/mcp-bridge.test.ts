@@ -1228,3 +1228,214 @@ describe("MCP Bridge — binary resources and resource_link passthrough", () => 
 		});
 	});
 });
+
+describe("MCP Bridge — coerceArgsFromSchema extended types", () => {
+	// Helper: extract the JSON args object from a callTool stdout message.
+	// The mock callTool returns: "Tool <name> called with args: <json>"
+	function extractArgs(stdout: string): Record<string, unknown> {
+		return JSON.parse(stdout.slice(stdout.indexOf("{")));
+	}
+
+	it("coerces JSON array string to array for array-typed params", async () => {
+		const client = makeMockClient(
+			{ name: "arr-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "search",
+					description: "Search with filters",
+					inputSchema: {
+						properties: {
+							query: { type: "string" },
+							tags: { type: "array" },
+						},
+						required: ["query"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["arr-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion via find + defined check
+		const serverCmd = commands.find((c) => c.name === "arr-server")!;
+		expect(serverCmd).toBeDefined();
+
+		const ctx = createMockCommandContext();
+		// Simulates what preserveRepeatedFlags produces for: --tag a --tag b --tag c
+		const result = await serverCmd.handler(
+			{ subcommand: "search", query: "hello", tags: '["a","b","c"]' },
+			ctx,
+		);
+
+		expect(result.exitCode).toBe(0);
+		const calledArgs = extractArgs(result.stdout);
+		expect(calledArgs.query).toBe("hello");
+		expect(calledArgs.tags).toEqual(["a", "b", "c"]);
+	});
+
+	it("wraps a lone non-array string in a single-element array for array-typed params", async () => {
+		const client = makeMockClient(
+			{ name: "arr-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "tag_item",
+					description: "Tag an item",
+					inputSchema: {
+						properties: { tags: { type: "array" } },
+						required: ["tags"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["arr-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion via find + defined check
+		const serverCmd = commands.find((c) => c.name === "arr-server")!;
+		expect(serverCmd).toBeDefined();
+
+		const ctx = createMockCommandContext();
+		// Single value for an array-typed param — should be wrapped in a one-element array
+		const result = await serverCmd.handler({ subcommand: "tag_item", tags: "only" }, ctx);
+
+		expect(result.exitCode).toBe(0);
+		const calledArgs = extractArgs(result.stdout);
+		expect(calledArgs.tags).toEqual(["only"]);
+	});
+
+	it("coerces JSON object string to object for object-typed params", async () => {
+		const client = makeMockClient(
+			{ name: "obj-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "configure",
+					description: "Configure something",
+					inputSchema: {
+						properties: { options: { type: "object" } },
+						required: [],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["obj-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion via find + defined check
+		const serverCmd = commands.find((c) => c.name === "obj-server")!;
+		expect(serverCmd).toBeDefined();
+
+		const ctx = createMockCommandContext();
+		const result = await serverCmd.handler(
+			{ subcommand: "configure", options: '{"key":"value","count":3}' },
+			ctx,
+		);
+
+		expect(result.exitCode).toBe(0);
+		const calledArgs = extractArgs(result.stdout);
+		expect(calledArgs.options).toEqual({ key: "value", count: 3 });
+	});
+
+	it('coerces number for union-type params (type: ["number", "null"])', async () => {
+		const client = makeMockClient(
+			{ name: "union-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "paginate",
+					description: "Paginate results",
+					inputSchema: {
+						properties: { limit: { type: ["number", "null"] } },
+						required: [],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["union-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion via find + defined check
+		const serverCmd = commands.find((c) => c.name === "union-server")!;
+		expect(serverCmd).toBeDefined();
+
+		const ctx = createMockCommandContext();
+		const result = await serverCmd.handler({ subcommand: "paginate", limit: "10" }, ctx);
+
+		expect(result.exitCode).toBe(0);
+		const calledArgs = extractArgs(result.stdout);
+		expect(calledArgs.limit).toBe(10);
+	});
+
+	it("safety: JSON array string for string-typed param falls back to last element (last-wins)", async () => {
+		const client = makeMockClient(
+			{ name: "scalar-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "greet",
+					description: "Greet someone",
+					inputSchema: {
+						properties: { name: { type: "string" } },
+						required: ["name"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["scalar-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion via find + defined check
+		const serverCmd = commands.find((c) => c.name === "scalar-server")!;
+		expect(serverCmd).toBeDefined();
+
+		const ctx = createMockCommandContext();
+		// Simulates accidental --name foo --name bar on a string param:
+		// preserveRepeatedFlags produces '["foo","bar"]' — must NOT reach the tool raw.
+		const result = await serverCmd.handler({ subcommand: "greet", name: '["foo","bar"]' }, ctx);
+
+		expect(result.exitCode).toBe(0);
+		const calledArgs = extractArgs(result.stdout);
+		// Last element wins; raw JSON array string is never forwarded
+		expect(calledArgs.name).toBe("bar");
+	});
+
+	it("safety: JSON array string for number-typed param falls back to last element and coerces to number", async () => {
+		const client = makeMockClient(
+			{ name: "num-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "calculate",
+					description: "Do math",
+					inputSchema: {
+						properties: { count: { type: "number" } },
+						required: ["count"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+
+		const clients = new Map([["num-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		// biome-ignore lint/style/noNonNullAssertion: test assertion via find + defined check
+		const serverCmd = commands.find((c) => c.name === "num-server")!;
+		expect(serverCmd).toBeDefined();
+
+		const ctx = createMockCommandContext();
+		// --count 5 --count 10 with preserveRepeatedFlags → '["5","10"]'; schema is number.
+		// Safety: extract last element "10", coerce to number 10.
+		const result = await serverCmd.handler({ subcommand: "calculate", count: '["5","10"]' }, ctx);
+
+		expect(result.exitCode).toBe(0);
+		const calledArgs = extractArgs(result.stdout);
+		expect(calledArgs.count).toBe(10);
+	});
+});

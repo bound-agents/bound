@@ -161,20 +161,100 @@ function buildToolResultContentBlocks(
 	return blocks;
 }
 
+/** Attempt to parse a string as JSON; returns undefined on failure. */
+function parseJsonValue(value: string): unknown {
+	try {
+		return JSON.parse(value);
+	} catch {
+		return undefined;
+	}
+}
+
+/** JSON Schema property with the fields we care about for coercion. */
+type PropSchema = { type?: string | string[]; enum?: string[]; items?: unknown };
+
+/**
+ * Check whether a JSON Schema property definition declares a given type.
+ * Handles both scalar (`type: "string"`) and union (`type: ["string", "null"]`) forms.
+ */
+function hasType(propSchema: PropSchema, typeName: string): boolean {
+	const { type } = propSchema;
+	if (!type) return false;
+	return Array.isArray(type) ? type.includes(typeName) : type === typeName;
+}
+
+/**
+ * Coerce a single string value to the JS type declared by a JSON Schema property.
+ *
+ * Handles: array, object, number/integer, boolean, enum, and a safety case for
+ * scalar params that received a JSON array string via preserveRepeatedFlags.
+ */
+function coerceStringValue(value: string, propSchema: PropSchema): unknown {
+	// Array: parse JSON array string, or wrap a lone value in a single-element array.
+	if (hasType(propSchema, "array")) {
+		const parsed = parseJsonValue(value);
+		if (Array.isArray(parsed)) return parsed;
+		return [value];
+	}
+
+	// Object: parse JSON object string, fall back to original string on failure.
+	if (hasType(propSchema, "object")) {
+		const parsed = parseJsonValue(value);
+		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+		return value;
+	}
+
+	// Safety: value is a JSON array string but the schema type is scalar.
+	// preserveRepeatedFlags may have accumulated --flag a --flag b as '["a","b"]'.
+	// Extract the last element (preserving last-wins semantics) and recurse so
+	// that the underlying type coercions still apply to the extracted value.
+	const parsedSafety = parseJsonValue(value);
+	if (Array.isArray(parsedSafety) && parsedSafety.length > 0) {
+		const last = parsedSafety[parsedSafety.length - 1];
+		return typeof last === "string" ? coerceStringValue(last, propSchema) : last;
+	}
+
+	// Number / integer
+	if (hasType(propSchema, "number") || hasType(propSchema, "integer")) {
+		const n = Number(value);
+		if (!Number.isNaN(n)) return n;
+		return value;
+	}
+
+	// Boolean
+	if (hasType(propSchema, "boolean")) {
+		if (value === "true") return true;
+		if (value === "false") return false;
+		return value;
+	}
+
+	// Enum: case-insensitive match
+	if (propSchema.enum && propSchema.enum.length > 0) {
+		const match = propSchema.enum.find((e) => e.toLowerCase() === value.toLowerCase());
+		if (match !== undefined) return match;
+	}
+
+	return value;
+}
+
 /**
  * Coerce string argument values to the types declared in an MCP tool's input schema.
  * The bash --key value parser produces strings for all values; MCP servers validate
  * against their JSON Schema and reject e.g. "10" when number is expected. This function
  * uses the schema's property types and enum values to convert args in place.
+ *
+ * When the command was generated with preserveRepeatedFlags: true, repeated flags
+ * like --tag a --tag b arrive as a JSON array string '["a","b"]'. For array-typed
+ * params this is decoded to a JS array; for scalar-typed params the last element is
+ * extracted, preserving last-wins semantics and preventing raw JSON strings from
+ * reaching the tool.
  */
 function coerceArgsFromSchema(
 	args: Record<string, unknown>,
 	inputSchema: Tool["inputSchema"],
 ): Record<string, unknown> {
 	if (!inputSchema || typeof inputSchema !== "object") return args;
-	const schema = inputSchema as {
-		properties?: Record<string, { type?: string; enum?: string[] }>;
-	};
+	const schema = inputSchema as { properties?: Record<string, PropSchema> };
 	const props = schema.properties;
 	if (!props) return args;
 
@@ -183,26 +263,7 @@ function coerceArgsFromSchema(
 		if (typeof value !== "string") continue;
 		const propSchema = props[key];
 		if (!propSchema) continue;
-
-		// Number coercion
-		if (propSchema.type === "number" || propSchema.type === "integer") {
-			const n = Number(value);
-			if (!Number.isNaN(n)) coerced[key] = n;
-			continue;
-		}
-
-		// Boolean coercion
-		if (propSchema.type === "boolean") {
-			if (value === "true") coerced[key] = true;
-			else if (value === "false") coerced[key] = false;
-			continue;
-		}
-
-		// Enum case normalization: find case-insensitive match
-		if (propSchema.enum && propSchema.enum.length > 0) {
-			const match = propSchema.enum.find((e) => e.toLowerCase() === value.toLowerCase());
-			if (match) coerced[key] = match;
-		}
+		coerced[key] = coerceStringValue(value, propSchema);
 	}
 	return coerced;
 }
@@ -356,6 +417,7 @@ export async function generateMCPCommands(
 			name: serverName,
 			description: serverDescription,
 			customHelp: true,
+			preserveRepeatedFlags: true,
 			args: [
 				{
 					name: "subcommand",
@@ -822,6 +884,7 @@ export function generateRemoteMCPProxyCommands(
 			name: serverName,
 			description: capDescription(`Remote MCP server on ${hostInfo.hostName}`),
 			customHelp: true,
+			preserveRepeatedFlags: true,
 			args: [
 				{
 					name: "subcommand",

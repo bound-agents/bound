@@ -51,6 +51,13 @@ export interface CommandDefinition {
 	description: string;
 	helpText?: string;
 	customHelp?: boolean;
+	/**
+	 * When true, repeated --flag value calls for the same flag accumulate into
+	 * a JSON array string: `--tag a --tag b` → `args.tag = '["a","b"]'`.
+	 * Set on all MCP-generated commands to support array-typed tool parameters.
+	 * The MCP bridge's coerceArgsFromSchema decodes these on the way to callTool.
+	 */
+	preserveRepeatedFlags?: boolean;
 	args: Array<{ name: string; required: boolean; description?: string }>;
 	handler: (args: Record<string, string>, ctx: CommandContext) => Promise<CommandResult>;
 }
@@ -124,8 +131,24 @@ export function createDefineCommands(
 						const flag = arg.slice(2);
 						const next = argv[i + 1];
 						if (next !== undefined && !next.startsWith("--")) {
-							// --flag value: consume next token as the value
-							args[flag] = next;
+							// --flag value: consume next token as the value.
+							// When preserveRepeatedFlags is set and the flag was already seen,
+							// accumulate values as a JSON array string so MCP array params can
+							// be built from multiple --flag passes (e.g. --tag a --tag b).
+							if (def.preserveRepeatedFlags && flag in args) {
+								const prev = args[flag];
+								let arr: string[];
+								try {
+									const parsed = JSON.parse(prev);
+									arr = Array.isArray(parsed) ? parsed : [prev];
+								} catch {
+									arr = [prev];
+								}
+								arr.push(next);
+								args[flag] = JSON.stringify(arr);
+							} else {
+								args[flag] = next;
+							}
 							i++;
 						} else {
 							// Bare --flag (last token or followed by another --flag): boolean true
