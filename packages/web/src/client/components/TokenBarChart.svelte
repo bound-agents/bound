@@ -8,6 +8,8 @@ interface Props {
 		model_id: string;
 		tokens_in: number;
 		tokens_out: number;
+		cache_read: number;
+		cache_write: number;
 	}>;
 }
 
@@ -25,16 +27,24 @@ let containerEl: HTMLDivElement | undefined = $state(undefined);
 // (text included) — model labels balloon on wide screens.
 let measuredWidth = $state(600);
 
+// Total per row spans all four token classes so cache traffic is visible.
+function rowTotal(d: {
+	tokens_in: number;
+	tokens_out: number;
+	cache_read: number;
+	cache_write: number;
+}): number {
+	return d.tokens_in + d.tokens_out + d.cache_read + d.cache_write;
+}
+
 // Filter out models with zero total tokens (AC2.5)
 const filteredData = $derived.by(() => {
-	return data.filter((d) => d.tokens_in + d.tokens_out > 0);
+	return data.filter((d) => rowTotal(d) > 0);
 });
 
 // Sort defensively by total tokens descending
 const sortedData = $derived.by(() => {
-	return [...filteredData].sort(
-		(a, b) => b.tokens_in + b.tokens_out - (a.tokens_in + a.tokens_out),
-	);
+	return [...filteredData].sort((a, b) => rowTotal(b) - rowTotal(a));
 });
 
 // Calculate dimensions — viewBox tracks the actual rendered pixel width,
@@ -46,7 +56,7 @@ const containerHeight = $derived(sortedData.length * rowHeight + padding.top + p
 
 // Compute max total tokens for x scale domain
 const maxTokens = $derived.by(() => {
-	return Math.max(...sortedData.map((d) => d.tokens_in + d.tokens_out), 1);
+	return Math.max(...sortedData.map(rowTotal), 1);
 });
 
 // Create x scale
@@ -56,22 +66,31 @@ const xScale = $derived.by(() => {
 		.range([0, contentWidth - padding.left - padding.right]);
 });
 
+// Tooltip lists every token class regardless of which segment is hovered, so
+// the operator always sees the full breakdown — picking which class drove the
+// row matters less than seeing all four side-by-side.
 function showTooltip(
 	event: MouseEvent,
-	d: { model_id: string; tokens_in: number; tokens_out: number },
-	series: "input" | "output",
+	d: {
+		model_id: string;
+		tokens_in: number;
+		tokens_out: number;
+		cache_read: number;
+		cache_write: number;
+	},
 ): void {
 	if (!containerEl) return;
 	const rect = containerEl.getBoundingClientRect();
 	tooltipX = event.clientX - rect.left;
 	tooltipY = event.clientY - rect.top;
-	const total = d.tokens_in + d.tokens_out;
+	const total = rowTotal(d);
 	tooltipLines = [
 		d.model_id,
-		series === "input"
-			? `Input: ${d.tokens_in.toLocaleString()} tokens`
-			: `Output: ${d.tokens_out.toLocaleString()} tokens`,
-		`Total: ${total.toLocaleString()} tokens`,
+		`Input:       ${d.tokens_in.toLocaleString()}`,
+		`Output:      ${d.tokens_out.toLocaleString()}`,
+		`Cache read:  ${d.cache_read.toLocaleString()}`,
+		`Cache write: ${d.cache_write.toLocaleString()}`,
+		`Total:       ${total.toLocaleString()}`,
 	];
 	tooltipVisible = true;
 }
@@ -95,7 +114,7 @@ function hideTooltip(): void {
 		class="chart-svg"
 		preserveAspectRatio="xMinYMin meet"
 	>
-		<!-- Model labels on the left -->
+		<!-- Model labels + 4-segment stacked bars -->
 		{#each sortedData as d, i}
 			<text
 				x={padding.left - 8}
@@ -107,7 +126,7 @@ function hideTooltip(): void {
 				{d.model_id}
 			</text>
 
-			<!-- Input tokens (tokens_in) - blue -->
+			<!-- Input - blue -->
 			<rect
 				x={padding.left}
 				y={padding.top + i * rowHeight + 4}
@@ -116,12 +135,12 @@ function hideTooltip(): void {
 				fill="var(--line-3)"
 				opacity="0.8"
 				class="bar"
-				onmouseenter={(e) => showTooltip(e, d, "input")}
-				onmousemove={(e) => showTooltip(e, d, "input")}
+				onmouseenter={(e) => showTooltip(e, d)}
+				onmousemove={(e) => showTooltip(e, d)}
 				onmouseleave={hideTooltip}
 			/>
 
-			<!-- Output tokens (tokens_out) - amber, positioned after input -->
+			<!-- Output - amber -->
 			<rect
 				x={padding.left + xScale(d.tokens_in)}
 				y={padding.top + i * rowHeight + 4}
@@ -130,8 +149,36 @@ function hideTooltip(): void {
 				fill="var(--line-0)"
 				opacity="0.8"
 				class="bar"
-				onmouseenter={(e) => showTooltip(e, d, "output")}
-				onmousemove={(e) => showTooltip(e, d, "output")}
+				onmouseenter={(e) => showTooltip(e, d)}
+				onmousemove={(e) => showTooltip(e, d)}
+				onmouseleave={hideTooltip}
+			/>
+
+			<!-- Cache read - green -->
+			<rect
+				x={padding.left + xScale(d.tokens_in + d.tokens_out)}
+				y={padding.top + i * rowHeight + 4}
+				width={xScale(d.cache_read)}
+				height={rowHeight - 8}
+				fill="var(--line-4)"
+				opacity="0.8"
+				class="bar"
+				onmouseenter={(e) => showTooltip(e, d)}
+				onmousemove={(e) => showTooltip(e, d)}
+				onmouseleave={hideTooltip}
+			/>
+
+			<!-- Cache write - violet -->
+			<rect
+				x={padding.left + xScale(d.tokens_in + d.tokens_out + d.cache_read)}
+				y={padding.top + i * rowHeight + 4}
+				width={xScale(d.cache_write)}
+				height={rowHeight - 8}
+				fill="var(--line-6)"
+				opacity="0.8"
+				class="bar"
+				onmouseenter={(e) => showTooltip(e, d)}
+				onmousemove={(e) => showTooltip(e, d)}
 				onmouseleave={hideTooltip}
 			/>
 		{/each}
@@ -146,6 +193,14 @@ function hideTooltip(): void {
 		<div class="legend-item">
 			<div class="legend-color" style="background-color: var(--line-0)"></div>
 			<span>Output</span>
+		</div>
+		<div class="legend-item">
+			<div class="legend-color" style="background-color: var(--line-4)"></div>
+			<span>Cache read</span>
+		</div>
+		<div class="legend-item">
+			<div class="legend-color" style="background-color: var(--line-6)"></div>
+			<span>Cache write</span>
 		</div>
 	</div>
 

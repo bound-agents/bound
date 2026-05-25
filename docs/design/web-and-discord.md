@@ -236,13 +236,13 @@ Routes under `/api/advisories` back the advisory view and the TopBar advisory-co
 
 **GET /api/metrics** — Required query params: `from` and `to` (ISO 8601 date strings). Returns a `MetricsResponse` with three sections:
 
-- **tokens**: per-model token/cost breakdown, timeline (hourly buckets for ranges ≤2 days, daily otherwise), and totals (including error count).
+- **tokens**: per-model token/cost breakdown, a `costByModelTimeline` (hourly buckets for ranges ≤2 days, daily otherwise), and `totals` carrying `tokens_in`, `tokens_out`, `cache_read`, `cache_write`, `cost_usd`, and `error_count`. Each `costByModelTimeline` row carries the four token classes (`tokens_in`, `tokens_out`, `cache_read`, `cache_write`) plus matching per-component cost fields (`cost_input_usd`, `cost_output_usd`, `cost_cache_read_usd`, `cost_cache_write_usd`); the four `cost_*_usd` fields are recomputed at query time from current `model_backends.json` pricing and will not always sum exactly to the persisted `cost_usd` after a price change. When pricing is missing for a model, the route falls back to a proportional split of `cost_usd` weighted by the four token counts.
 - **relay**: per-host latency aggregates (avg + P95), success/failure/expired counts, recent cycles (last 50), and totals with success rate.
 - **context**: cache hit rate, budget pressure count, average truncated tokens, and a timeline of cache hit rate / budget pressure / context utilization.
 
 All queries filter on `turns.deleted = 0`. Relay metrics come from the local-only `relay_cycles` table. The `to` parameter is clamped to the current time if it's in the future. Timeline bucketing switches from daily to hourly when the requested range is ≤48 hours.
 
-The `MetricsResponse` type is exported from `packages/web/src/server/routes/metrics.ts`.
+The `MetricsResponse` type is exported from `packages/web/src/server/routes/metrics.ts`. The route factory signature is `createMetricsRoutes(db, backends?: BackendPricing[])`; `BackendPricing` is also exported from `packages/web/src/server/routes/metrics.ts` (and re-exported from `routes/index.ts`, `server/index.ts`, `server/start.ts`) and is intentionally local to `@bound/web` rather than imported from `@bound/agent` to avoid pulling agent code into the web package. The CLI populates it from `modelBackends.backends` at `createWebServer()` call time in `packages/cli/src/commands/start/server.ts`.
 
 #### Webhook Ingress — `/hooks`
 

@@ -9,7 +9,12 @@ import type {
 } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
-import { type ModelsConfig, type RoutesConfig, registerRoutes } from "./routes/index";
+import {
+	type BackendPricing,
+	type ModelsConfig,
+	type RoutesConfig,
+	registerRoutes,
+} from "./routes/index";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -22,10 +27,11 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 	}
 }
 
-export type { ModelsConfig };
+export type { ModelsConfig, BackendPricing };
 
 export interface WebAppConfig {
 	modelsConfig?: ModelsConfig;
+	backendPricing?: BackendPricing[];
 	hostName?: string;
 	siteId?: string;
 	operatorUserId: string;
@@ -94,6 +100,7 @@ export async function createWebApp(
 
 	const routesConfig: RoutesConfig = {
 		modelsConfig: config.modelsConfig,
+		backendPricing: config.backendPricing,
 		hostName: config.hostName,
 		siteId: config.siteId,
 		operatorUserId: config.operatorUserId,

@@ -1,6 +1,20 @@
 import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
 
+/**
+ * Per-backend pricing snapshot used to reconstruct per-component cost in the
+ * cost-by-model timeline. Mirrors the shape consumed by `calculateTurnCost`
+ * in `@bound/agent` (packages/agent/src/agent-loop-utils.ts) — defined locally
+ * so this package does not depend on `@bound/agent`.
+ */
+export interface BackendPricing {
+	id: string;
+	price_per_m_input?: number;
+	price_per_m_output?: number;
+	price_per_m_cache_read?: number;
+	price_per_m_cache_write?: number;
+}
+
 export interface MetricsResponse {
 	tokens: {
 		byModel: Array<{
@@ -13,10 +27,36 @@ export interface MetricsResponse {
 			turn_count: number;
 		}>;
 		timeline: Array<{ date: string; tokens_in: number; tokens_out: number; cost_usd: number }>;
-		costByModelTimeline: Array<{ date: string; model_id: string; cost_usd: number }>;
+		/**
+		 * Per (date, model_id) cost broken down across the four token classes.
+		 * `cost_usd` comes straight from `SUM(turns.cost_usd)` (the persisted,
+		 * write-time value). The four `cost_*_usd` fields are reconstructed at
+		 * query time from current `model_backends.json` pricing — i.e., they
+		 * reflect the price *now*, not the price when the turn was recorded.
+		 * After a model price change the four components will not always sum to
+		 * `cost_usd`; the headline is still authoritative.
+		 *
+		 * When pricing is not available for a model, the four components fall
+		 * back to a proportional split of `cost_usd` weighted by token counts.
+		 */
+		costByModelTimeline: Array<{
+			date: string;
+			model_id: string;
+			cost_usd: number;
+			cost_input_usd: number;
+			cost_output_usd: number;
+			cost_cache_read_usd: number;
+			cost_cache_write_usd: number;
+			tokens_in: number;
+			tokens_out: number;
+			cache_read: number;
+			cache_write: number;
+		}>;
 		totals: {
 			tokens_in: number;
 			tokens_out: number;
+			cache_read: number;
+			cache_write: number;
 			cost_usd: number;
 			turn_count: number;
 			error_count: number;
@@ -63,8 +103,12 @@ export interface MetricsResponse {
 	};
 }
 
-export function createMetricsRoutes(_db: Database): Hono {
+export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]): Hono {
 	const app = new Hono();
+	const pricingById = new Map<string, BackendPricing>();
+	for (const b of backends ?? []) {
+		pricingById.set(b.id, b);
+	}
 
 	app.get("/", (c) => {
 		try {
@@ -193,7 +237,11 @@ export function createMetricsRoutes(_db: Database): Hono {
 					`SELECT
 					${timelineBucketFormat} as date,
 					model_id,
-					SUM(COALESCE(cost_usd, 0)) as cost_usd
+					SUM(COALESCE(cost_usd, 0)) as cost_usd,
+					SUM(tokens_in) as tokens_in,
+					SUM(tokens_out) as tokens_out,
+					SUM(COALESCE(tokens_cache_read, 0)) as cache_read,
+					SUM(COALESCE(tokens_cache_write, 0)) as cache_write
 				FROM turns
 				WHERE created_at BETWEEN ? AND ? AND deleted = 0
 				GROUP BY date, model_id
@@ -203,6 +251,10 @@ export function createMetricsRoutes(_db: Database): Hono {
 				date: string;
 				model_id: string;
 				cost_usd: number;
+				tokens_in: number;
+				tokens_out: number;
+				cache_read: number;
+				cache_write: number;
 			}>;
 
 			const totalsRow = _db
@@ -210,6 +262,8 @@ export function createMetricsRoutes(_db: Database): Hono {
 					`SELECT
 					SUM(tokens_in) as tokens_in,
 					SUM(tokens_out) as tokens_out,
+					SUM(COALESCE(tokens_cache_read, 0)) as cache_read,
+					SUM(COALESCE(tokens_cache_write, 0)) as cache_write,
 					SUM(COALESCE(cost_usd, 0)) as cost_usd,
 					COUNT(*) as turn_count,
 					SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
@@ -219,6 +273,8 @@ export function createMetricsRoutes(_db: Database): Hono {
 				.get(fromISO, toISO) as {
 				tokens_in: number | null;
 				tokens_out: number | null;
+				cache_read: number | null;
+				cache_write: number | null;
 				cost_usd: number | null;
 				turn_count: number | null;
 				error_count: number | null;
@@ -377,15 +433,64 @@ export function createMetricsRoutes(_db: Database): Hono {
 				avg_context_utilization: number | null;
 			}>;
 
+			// Reconstruct the four cost components for each (date, model) bucket.
+			// When pricing is configured for the model, multiply token sums by
+			// `price_per_m_*` from the snapshot. When pricing is missing, fall
+			// back to a proportional split of the persisted `cost_usd` weighted
+			// by the four token counts so the components still sum to `cost_usd`.
+			const costByModelTimelineWithComponents = (costByModelTimelineRows || []).map((row) => {
+				const pricing = pricingById.get(row.model_id);
+				let costInput: number;
+				let costOutput: number;
+				let costCacheRead: number;
+				let costCacheWrite: number;
+
+				if (pricing) {
+					costInput = (row.tokens_in * (pricing.price_per_m_input ?? 0)) / 1_000_000;
+					costOutput = (row.tokens_out * (pricing.price_per_m_output ?? 0)) / 1_000_000;
+					costCacheRead = (row.cache_read * (pricing.price_per_m_cache_read ?? 0)) / 1_000_000;
+					costCacheWrite = (row.cache_write * (pricing.price_per_m_cache_write ?? 0)) / 1_000_000;
+				} else {
+					const totalTokens = row.tokens_in + row.tokens_out + row.cache_read + row.cache_write;
+					if (totalTokens > 0) {
+						costInput = (row.cost_usd * row.tokens_in) / totalTokens;
+						costOutput = (row.cost_usd * row.tokens_out) / totalTokens;
+						costCacheRead = (row.cost_usd * row.cache_read) / totalTokens;
+						costCacheWrite = (row.cost_usd * row.cache_write) / totalTokens;
+					} else {
+						costInput = 0;
+						costOutput = 0;
+						costCacheRead = 0;
+						costCacheWrite = 0;
+					}
+				}
+
+				return {
+					date: row.date,
+					model_id: row.model_id,
+					cost_usd: row.cost_usd,
+					cost_input_usd: costInput,
+					cost_output_usd: costOutput,
+					cost_cache_read_usd: costCacheRead,
+					cost_cache_write_usd: costCacheWrite,
+					tokens_in: row.tokens_in,
+					tokens_out: row.tokens_out,
+					cache_read: row.cache_read,
+					cache_write: row.cache_write,
+				};
+			});
+
 			// Build response with all queries populated
 			const response: MetricsResponse = {
 				tokens: {
 					byModel: byModelRows || [],
 					timeline: timelineRows || [],
-					costByModelTimeline: costByModelTimelineRows || [],
+					costByModelTimeline: costByModelTimelineWithComponents,
 					totals: {
 						tokens_in: totalsRow?.tokens_in ?? 0,
 						tokens_out: totalsRow?.tokens_out ?? 0,
+						cache_read: totalsRow?.cache_read ?? 0,
+						cache_write: totalsRow?.cache_write ?? 0,
 						cost_usd: totalsRow?.cost_usd ?? 0,
 						turn_count: totalsRow?.turn_count ?? 0,
 						error_count: totalsRow?.error_count ?? 0,
