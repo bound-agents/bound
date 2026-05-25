@@ -53,6 +53,7 @@ import {
 import { buildStaticSystemParts } from "./system-parts";
 import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
+import { buildVaryingPrefix } from "./varying-prefix";
 import { computeRecentWindow } from "./warm-compaction";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
@@ -571,58 +572,17 @@ export function buildVolatileContext(params: {
 	const varyingLines: string[] = [];
 	const suffixLines: string[] = [];
 
-	// --- VARYING: User/Thread ID, relay info, platform context, current model ---
-	suffixLines.push(`User ID: ${params.userId}, Thread ID: ${params.threadId}`);
-	varyingLines.push(`User ID: ${params.userId}, Thread ID: ${params.threadId}`);
-
-	// AC5.4: Model location when inference is relayed
-	if (params.relayInfo) {
-		const relayLine = `You are: ${params.relayInfo.model} (via ${params.relayInfo.provider} on host ${params.relayInfo.remoteHost}, relayed from ${params.relayInfo.localHost})`;
-		suffixLines.push(relayLine);
-		varyingLines.push(relayLine);
-	}
-
-	// Platform silence semantics: user only sees what you explicitly send.
-	if (params.platformContext) {
-		const toolRef =
-			params.platformContext.toolNames && params.platformContext.toolNames.length > 0
-				? params.platformContext.toolNames.map((n) => `\`${n}\``).join(" or ")
-				: "the platform send tool";
-		const platformLines: string[] = [
-			"",
-			`## Platform Context: ${params.platformContext.platform}`,
-			"The user of this conversation is on an external platform and cannot see your responses directly.",
-			`To send a message to the user, call ${toolRef}. If you do not call it, the user sees nothing (silence).`,
-			"Each call to the tool produces one separate message to the user. " +
-				"Multiple calls are allowed and delivered in order.",
-		];
-
-		// Platform-specific formatting constraints
-		if (
-			params.platformContext.platform === "discord" ||
-			params.platformContext.platform === "discord-interaction"
-		) {
-			platformLines.push(
-				"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
-					"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
-					"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
-					"- bulleted lists (2-space indent to nest). " +
-					"Tables do NOT render — use lists or code blocks instead. " +
-					"Messages over 2000 characters are rejected; split long content across multiple calls.",
-			);
-		}
-
-		suffixLines.push(...platformLines);
-		varyingLines.push(...platformLines);
-	}
-
-	// Include current model name (moved out of orientation for cache stability).
-	// Stays varying because model_hint can switch turn-to-turn.
-	if (params.currentModel) {
-		const modelLine = `Current Model: ${params.currentModel}`;
-		suffixLines.push(modelLine);
-		varyingLines.push(modelLine);
-	}
+	// --- VARYING: User/Thread ID, relay info, platform context, current model.
+	// Pure projection in `varying-prefix/build.ts`; pinned by V1-V8 props. ---
+	const prefixLines = buildVaryingPrefix({
+		userId: params.userId,
+		threadId: params.threadId,
+		relayInfo: params.relayInfo,
+		platformContext: params.platformContext,
+		currentModel: params.currentModel,
+	});
+	suffixLines.push(...prefixLines);
+	varyingLines.push(...prefixLines);
 
 	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
 	// Phase 5: Wire three-renderer composition
