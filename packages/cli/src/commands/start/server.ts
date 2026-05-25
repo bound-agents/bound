@@ -59,7 +59,27 @@ export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
 
 const getTracer = () => trace.getTracer("bound.web");
 
-/** Format a notification payload as a human-readable message for the agent. */
+/**
+ * Format a notification payload as a human-readable message for the agent.
+ *
+ * `proactive` and `introspect` payloads carry agent-authored free-text
+ * `content` from a sibling thread — the calling agent's narrative
+ * description of state. The bridge wraps the resulting `developer`
+ * message in `<system-context>...</system-context>`, so without an
+ * explicit provenance signal the receiving agent reads its sibling's
+ * narrative as authoritative system state and primes diagnoses on the
+ * phrasing rather than on ground truth (live evidence: 2026-05-17
+ * incident, where the agent built a full dedup fix from a notify
+ * payload's "byte-different content + 1 notify fallback" phrase
+ * before discovering the real bug was in the LLM bridge layer).
+ *
+ * For these two payload kinds, the prefix marks the content as
+ * agent-authored and unverified so the receiving agent treats it as
+ * a past assertion to verify against source thread tool_results /
+ * messages, not as system fact. `task_complete` and `advisory_created`
+ * are system-generated payloads (the runtime produces their fields
+ * from real DB state) so they keep the simpler `[notification]` shape.
+ */
 export function formatNotification(payload: Record<string, unknown>): string {
 	switch (payload.type) {
 		case "task_complete":
@@ -67,9 +87,9 @@ export function formatNotification(payload: Record<string, unknown>): string {
 		case "advisory_created":
 			return `[notification] New advisory: ${payload.title ?? "Untitled"}. ${payload.detail ?? ""}`.trim();
 		case "proactive":
-			return `[notification from background task] ${payload.content ?? ""}`.trim();
+			return `[notification from background task — agent-authored summary, unverified; verify against source thread before relying] ${payload.content ?? ""}`.trim();
 		case "introspect":
-			return `[introspect request from thread ${payload.source_thread ?? "unknown"}] ${payload.content ?? ""}`.trim();
+			return `[introspect request from thread ${payload.source_thread ?? "unknown"} — agent-authored framing, unverified; verify against source thread before relying] ${payload.content ?? ""}`.trim();
 		default:
 			return `[notification] ${JSON.stringify(payload)}`;
 	}
