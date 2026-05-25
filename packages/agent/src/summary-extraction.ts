@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
+import { getPkColumn, insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
@@ -591,6 +591,7 @@ export interface StageResult {
 }
 
 export interface DetailEntry {
+	id: string;
 	key: string;
 	last_accessed_at: string | null;
 }
@@ -1483,11 +1484,99 @@ export function loadRecencyEntries(
 export function loadDetailEntries(db: Database): DetailRetrievalResult {
 	const rows = db
 		.prepare(
-			"SELECT key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
+			"SELECT id, key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
 		)
-		.all() as Array<{ key: string; last_accessed_at: string | null }>;
+		.all() as Array<{ id: string; key: string; last_accessed_at: string | null }>;
 
-	return { entries: rows.map((r) => ({ key: r.key, last_accessed_at: r.last_accessed_at })) };
+	return {
+		entries: rows.map((r) => ({
+			id: r.id,
+			key: r.key,
+			last_accessed_at: r.last_accessed_at,
+		})),
+	};
+}
+
+/**
+ * Default debounce window for `bumpRenderedDetailEntries`. The render
+ * path runs on every cold assembly, so without a debounce each cold
+ * pass would generate one change_log entry per loaded detail entry —
+ * a few hundred sync rows per cold turn on busy threads. One hour
+ * caps the rate to at most one bump per entry per hour.
+ */
+const RENDER_BUMP_DEBOUNCE_MS = 60 * 60 * 1000;
+
+/**
+ * Bump `last_accessed_at` to `nowMs` for each rendered detail entry
+ * whose existing access timestamp is older than the debounce window.
+ *
+ * R-MV5 (no-bump on `query` / `memory --action search`) is preserved:
+ * this fires from the render pipeline, not the agent's deliberate
+ * read tools. Without it, Discoverable Archive sorts and displays
+ * rendered detail entries by their last WRITE time rather than their
+ * actual usage. Live evidence: thread d0372be6's
+ * `curiosity:smolagents-codeact-paradigm:2026-04-28` entry was
+ * rendered on every cold assembly for weeks but still showed
+ * `(last accessed 26d ago)` because nothing on the read path
+ * advanced the column.
+ *
+ * **Documented exception to the change-log outbox invariant
+ * (CONTRIBUTING.md #1).** This helper writes `last_accessed_at`
+ * via direct SQL — NOT via `updateRow` — because:
+ *
+ *  1. `last_accessed_at` is a per-host relevance hint, not a
+ *     content field. It does not need LWW resolution across hosts:
+ *     each host's render activity informs only that host's local
+ *     sort order. There is no cross-host correctness invariant
+ *     keyed on this column.
+ *  2. Routing through `updateRow` advances `modified_at` along
+ *     with `last_accessed_at` because LWW requires it. That cascades
+ *     into stale-child detection (`buildStaleChildrenMap` compares
+ *     child.modified_at vs parent summary.modified_at) and would
+ *     misclassify every actively-rendered detail entry as stale —
+ *     defeating the rendering invariant we're trying to fix.
+ *  3. The change-log volume from per-cold-assembly bumps on busy
+ *     threads (~200 entries × multiple cold passes) would also be
+ *     wasteful sync traffic for a signal other hosts ignore.
+ *
+ * The narrow column allowed here is `last_accessed_at` only.
+ * Failures are non-fatal: a missed bump is a hint, not a
+ * correctness gate, and the render must not break the agent loop.
+ *
+ * **LWW overwrite is acceptable.** A remote `memorize` from another
+ * host arrives via the change-log reducer and overwrites every
+ * column in the row, including `last_accessed_at`. The local bump
+ * we just performed gets clobbered by the remote write's timestamp.
+ * This is fine: a remote write IS a genuine content mutation, and
+ * resetting the access time to that write's `now` is semantically
+ * correct ("the entry was last touched then"). The local-render
+ * bumps and remote-write bumps are not in tension — they're two
+ * legitimate sources of access-time updates.
+ */
+export function bumpRenderedDetailEntries(
+	db: Database,
+	entries: DetailEntry[],
+	nowMs: number,
+	debounceMs: number = RENDER_BUMP_DEBOUNCE_MS,
+): void {
+	const nowIso = new Date(nowMs).toISOString();
+	const cutoff = new Date(nowMs - debounceMs).toISOString();
+	const pk = getPkColumn("semantic_memory");
+	// Compile the prepared statement ONCE outside the loop. SQLite
+	// re-binds parameters cheaply but compilation per-iteration would
+	// turn a ~200-row bump into ~200× the work it needs to do.
+	const sql = `UPDATE semantic_memory SET last_accessed_at = ? WHERE ${pk} = ? AND deleted = 0`; // outbox-exempt: per-host relevance hint, see JSDoc on bumpRenderedDetailEntries
+	const stmt = db.prepare(sql);
+	for (const entry of entries) {
+		if (entry.last_accessed_at !== null && entry.last_accessed_at >= cutoff) {
+			continue;
+		}
+		try {
+			stmt.run(nowIso, entry.id);
+		} catch {
+			// Non-fatal — bumping is a relevance hint, not a correctness gate.
+		}
+	}
 }
 
 const WORKING_KNOWLEDGE_HEADER = "## Working Knowledge — operational and durable";
