@@ -1278,12 +1278,26 @@ Original output was too large for the context window. If you need the full conte
 				const group = purgeGroups[groupIndex];
 				processedPurgeGroups.add(groupIndex);
 
-				// Create a developer message with the purge summary
+				// Create a developer message with the purge summary, flagged
+				// as an agent-authored claim. The summary text comes from
+				// the agent's own input to the `purge` tool — there's no
+				// system verification of its truthfulness at write time.
+				// On read, the bridge wraps developer messages in
+				// <system-context>...</system-context>; without an explicit
+				// provenance marker the agent re-reads its own past summary
+				// as authoritative system state and gate-dismisses real
+				// events that contradict it (live evidence: thread d0372be6
+				// 2026-05-24, where the agent's confabulated "Issues #20-36
+				// captured" claim drove ~50 turns of "stand down" decisions
+				// against actual fresh webhook deliveries). The provenance
+				// prefix asks the agent to verify against ground truth
+				// (messages / semantic_memory / files tables) before
+				// relying on the summary's claims.
 				messagesAfterPurge.push({
 					id: `purge-summary-${groupIndex}`,
 					thread_id: threadId,
 					role: "developer",
-					content: `(purged ${group.ids.size} messages) ${group.summary}`,
+					content: `(purged ${group.ids.size} messages — agent-authored summary, unverified; verify against source tables before relying) ${group.summary}`,
 					model_id: null,
 					tool_name: null,
 					created_at: msg.created_at,
