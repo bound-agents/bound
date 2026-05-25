@@ -168,18 +168,46 @@ function openCrossThread(src: CrossThreadSource): void {
 		</div>
 
 		{#if selectedTurn}
+			{@const ctxDebug = selectedTurn.context_debug}
+			{@const actualTokens = ctxDebug.actualTotalTokens ?? null}
+			{@const estimatedTokens = ctxDebug.totalEstimated}
+			{@const headlineTokens = actualTokens ?? estimatedTokens}
+			{@const headlineSource = actualTokens !== null ? "actual" : "estimate"}
+			{@const inflationRatio = actualTokens !== null && estimatedTokens > 0 ? actualTokens / estimatedTokens : null}
 			<div class="turn-summary">
 				<div class="summary-row summary-row-total">
-					<span class="total-num mono tnum" class:total-pressure={selectedTurn.context_debug.budgetPressure}>
-						{selectedTurn.context_debug.totalEstimated.toLocaleString()}
+					<span
+						class="total-num mono tnum"
+						class:total-pressure={ctxDebug.budgetPressure}
+						title="{headlineSource === 'actual'
+							? 'Actual input tokens reported by the LLM driver this turn (cache_read + cache_write + raw_input). Includes tokenizer drift between the local cl100k_base estimator and the provider tokenizer.'
+							: 'Pre-LLM token estimate (cl100k_base). The actual count is recorded after the LLM responds; this turn has no actual yet.'}"
+					>
+						{headlineTokens.toLocaleString()}
 					</span>
 					<span class="total-den">
-						/ {selectedTurn.context_debug.contextWindow.toLocaleString()} tokens
+						/ {ctxDebug.contextWindow.toLocaleString()} tokens
 					</span>
 					<span class="total-pct mono">
-						{((selectedTurn.context_debug.totalEstimated / selectedTurn.context_debug.contextWindow) * 100).toFixed(1)}%
+						{((headlineTokens / ctxDebug.contextWindow) * 100).toFixed(1)}%
 					</span>
 				</div>
+				{#if actualTokens !== null && actualTokens !== estimatedTokens}
+					<div
+						class="summary-row summary-row-estimate"
+						title="Pre-LLM tiktoken estimate vs. the LLM-reported actual input. The ratio reveals tokenizer drift between cl100k_base (local estimator) and the provider tokenizer; per-thread inflation drives the adaptive truncation ratio."
+					>
+						<span class="estimate-kicker">Pre-LLM est</span>
+						<span class="estimate-num mono tnum">
+							{estimatedTokens.toLocaleString()}
+						</span>
+						{#if inflationRatio !== null}
+							<span class="estimate-ratio mono" class:estimate-ratio-high={inflationRatio > 1.5}>
+								× {inflationRatio.toFixed(2)}
+							</span>
+						{/if}
+					</div>
+				{/if}
 			</div>
 
 			{#if selectedTurn.tokens_cache_read !== null && selectedTurn.tokens_cache_write !== null && (selectedTurn.context_debug.cacheMarkers || selectedTurn.tokens_cache_read > 0 || selectedTurn.tokens_cache_write > 0)}
@@ -463,6 +491,40 @@ function openCrossThread(src: CrossThreadSource): void {
 		display: flex;
 		align-items: baseline;
 		gap: 8px;
+	}
+
+	.summary-row-estimate {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		margin-top: 2px;
+		font-size: 11px;
+		color: var(--ink-3);
+		cursor: help;
+	}
+
+	.estimate-kicker {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--ink-4);
+	}
+
+	.estimate-num {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+		color: var(--ink-3);
+	}
+
+	.estimate-ratio {
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+		color: var(--ink-4);
+	}
+
+	.estimate-ratio-high {
+		color: var(--warn);
 	}
 
 	.total-num {

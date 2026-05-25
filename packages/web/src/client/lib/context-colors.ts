@@ -15,7 +15,13 @@ export const SECTION_COLORS: Record<string, string> = {
 	conversation: "var(--line-M)", // red
 	"task-digest": "var(--line-T)",
 	"skill-context": "var(--line-Y)",
-	"volatile-prefix": "var(--accent)",
+	// volatile-prefix is the cached stable portion of the system param. Use a
+	// darker shade of accent so the eye can resolve the boundary against
+	// `history` (also red-family) — without this they alias to the same #C8331C
+	// hex and the system-level cache breakpoint disappears into a continuous
+	// red block. The deeper hue also reads visually as "denser, more durable",
+	// which matches the cache-stability semantics.
+	"volatile-prefix": "var(--accent-2)",
 	"volatile-tail": "var(--line-N)",
 	"volatile-other": "var(--line-N)",
 	scratchpad: "var(--ink-3)",
