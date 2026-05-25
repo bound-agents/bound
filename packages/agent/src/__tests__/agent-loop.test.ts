@@ -1426,6 +1426,65 @@ describe("AgentLoop", () => {
 		}
 	});
 
+	// Cache-path observability fields: regression for the 5/6 observability
+	// gaps surfaced on thread 2d055bbe-405f-4757-82a0-8775ac95a0e2, where
+	// effectiveTruncationRatio / coldReason / cachePath were null in
+	// context_debug despite the agent loop actively making those decisions.
+	// Without these fields, post-hoc cache-thrash analysis required scraping
+	// log lines and re-running the inflation EMA against the same row history.
+	it("records cache-path observability fields on context_debug", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("First response");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const turn = db
+			.query(
+				"SELECT context_debug FROM turns WHERE thread_id = ? AND context_debug IS NOT NULL ORDER BY rowid ASC LIMIT 1",
+			)
+			.get(threadId) as { context_debug: string } | null;
+
+		expect(turn).not.toBeNull();
+		const debug = JSON.parse(turn?.context_debug ?? "{}") as {
+			cachePath?: string;
+			cachePathReason?: string;
+			effectiveTruncationRatio?: number;
+			measuredInflation?: number | null;
+			warmCompactionTokensSaved?: number;
+		};
+
+		// First turn on a new thread: must be cold path with no-stored-state.
+		// Distinguishing this from later cold reasons (cache-expired,
+		// tool-change, budget-exceeded, orphaned-tool-call) is the whole
+		// point of recording the reason — silent "cold for some reason"
+		// debug rows tell us nothing about why caching isn't sticking.
+		expect(debug.cachePath).toBe("cold");
+		expect(debug.cachePathReason).toBe("no-stored-state");
+
+		// Adaptive truncation ratio must surface even on cold-start threads
+		// (where measuredInflation is null and the resolver returns the base
+		// 0.85). On a thread where the EMA HAS collapsed to 0.4, the recorded
+		// 0.4 is the only signal that explains why warm-path budget bails fire
+		// 200k tokens earlier than the contextWindow would suggest.
+		expect(debug.effectiveTruncationRatio).toBeCloseTo(0.85, 5);
+		// Cold-start threads have insufficient samples for the EMA. Recording
+		// `null` distinguishes "estimator is accurate" from "we don't know yet"
+		// — both surfaces would otherwise look identical at the base ratio.
+		expect(debug.measuredInflation).toBeNull();
+
+		// warmCompactionTokensSaved is undefined on cold turns (it's only
+		// meaningful on warm turns where compactStoredMessagesInPlace ran).
+		expect(debug.warmCompactionTokensSaved).toBeUndefined();
+	});
+
 	// Model unavailability: when a model_hint can't be resolved, fail the task
 	it("fails the task when model-hint is unavailable instead of silently falling back", async () => {
 		const mockBackend = new MockLLMBackend();

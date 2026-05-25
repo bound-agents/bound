@@ -93,7 +93,21 @@ export function resolveAdaptiveTruncationRatio(
 	threadId: string,
 	baseRatio: number,
 ): number {
+	return resolveAdaptiveTruncation(db, threadId, baseRatio).ratio;
+}
+
+/**
+ * Same computation as `resolveAdaptiveTruncationRatio`, but exposes the raw
+ * inflation EMA alongside the resolved ratio so callers (notably the agent
+ * loop's `context_debug` writer) can record both without re-running the
+ * lookback query. `inflation === null` signals "insufficient samples".
+ */
+export function resolveAdaptiveTruncation(
+	db: Database,
+	threadId: string,
+	baseRatio: number,
+): { ratio: number; inflation: number | null } {
 	const inflation = computeInflationRatio(db, threadId);
-	if (inflation === null) return baseRatio;
-	return baseRatio / Math.max(1.0, inflation);
+	if (inflation === null) return { ratio: baseRatio, inflation: null };
+	return { ratio: baseRatio / Math.max(1.0, inflation), inflation };
 }

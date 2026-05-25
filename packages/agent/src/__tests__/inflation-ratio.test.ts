@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { computeInflationRatio, resolveAdaptiveTruncationRatio } from "../inflation-ratio";
+import {
+	computeInflationRatio,
+	resolveAdaptiveTruncation,
+	resolveAdaptiveTruncationRatio,
+} from "../inflation-ratio";
 
 describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => {
 	let db: Database;
@@ -314,5 +318,44 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		// budget bails on every turn under this load.
 		const adaptive = resolveAdaptiveTruncationRatio(db, threadId, 0.85);
 		expect(adaptive).toBeLessThan(0.5);
+	});
+
+	// resolveAdaptiveTruncation exposes the same computation as
+	// resolveAdaptiveTruncationRatio plus the raw inflation EMA, so the
+	// agent loop can record both onto context_debug without re-running the
+	// lookback query. The agreement-with-legacy assertions guard against
+	// drift between the two entry points.
+	describe("resolveAdaptiveTruncation — exposes ratio + raw inflation", () => {
+		it("returns inflation: null on cold start (insufficient samples)", () => {
+			const result = resolveAdaptiveTruncation(db, threadId, 0.85);
+			expect(result.ratio).toBeCloseTo(0.85, 5);
+			expect(result.inflation).toBeNull();
+		});
+
+		it("returns matching ratio + numeric inflation when samples exist", () => {
+			const t0 = new Date("2026-05-25T10:00:00Z");
+			insertTurn(t0, { estimated: 100000, actualTotal: 200000 });
+			insertTurn(new Date(t0.getTime() + 1000), { estimated: 100000, actualTotal: 200000 });
+			insertTurn(new Date(t0.getTime() + 2000), { estimated: 100000, actualTotal: 200000 });
+
+			const result = resolveAdaptiveTruncation(db, threadId, 0.85);
+			expect(result.inflation).toBeCloseTo(2.0, 5);
+			expect(result.ratio).toBeCloseTo(0.425, 5);
+			// Must agree with the legacy entry point on the same data.
+			expect(result.ratio).toBeCloseTo(resolveAdaptiveTruncationRatio(db, threadId, 0.85), 5);
+		});
+
+		it("preserves the inflation < 1.0 clamp behavior on the ratio", () => {
+			const t0 = new Date("2026-05-25T11:00:00Z");
+			insertTurn(t0, { estimated: 100000, actualTotal: 80000 });
+			insertTurn(new Date(t0.getTime() + 1000), { estimated: 100000, actualTotal: 80000 });
+			insertTurn(new Date(t0.getTime() + 2000), { estimated: 100000, actualTotal: 80000 });
+
+			const result = resolveAdaptiveTruncation(db, threadId, 0.85);
+			// Raw inflation is reported as-measured (0.8) — the clamp lives on
+			// the ratio side so observers can still see "estimator overcounts".
+			expect(result.inflation).toBeCloseTo(0.8, 5);
+			expect(result.ratio).toBeCloseTo(0.85, 5);
+		});
 	});
 });
