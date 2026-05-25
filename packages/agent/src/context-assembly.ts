@@ -332,6 +332,14 @@ export function buildVolatileContext(params: {
 	threadSummary?: string;
 	/** Referenced inactive skill name, if any */
 	inactiveSkillRef?: string;
+	/**
+	 * Wall-clock anchor for relative-time formatting (`Nd ago`, applied-advisory
+	 * recency cutoffs, etc.). Defaults to `Date.now()` for production callers;
+	 * tests inject a fixed timestamp so snapshot fixtures stay deterministic
+	 * across days. Without this, relative-time strings drift relative to when
+	 * the snapshot was last regenerated.
+	 */
+	nowMs?: number;
 }): VolatileContext {
 	// Suffix-prefix split (RFC 2026-05-22-volatile-context):
 	//   varyingLines  — per-thread / per-turn content. Driver places these
@@ -410,7 +418,7 @@ export function buildVolatileContext(params: {
 	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
 	// Phase 5: Wire three-renderer composition
 	const enrichmentBaseline = computeBaseline(params.db, params.threadId, params.taskId, false);
-	const nowMs = Date.now();
+	const nowMs = params.nowMs ?? Date.now();
 
 	// Compute delta-key set from R-MV1 baseline + delta query
 	const allDeltaKeys = params.db
