@@ -471,4 +471,111 @@ describe("webhook commands", () => {
 			expect(hints.thread).toBe("kimi-k2");
 		});
 	});
+
+	// --no-history flag: end-to-end semantics across create, list, update (#54)
+	describe("--no-history flag", () => {
+		const noHistoryFor = (name: string): number | null => {
+			const wh = db.prepare("SELECT task_id FROM webhooks WHERE name = ?").get(name) as {
+				task_id: string;
+			};
+			const task = db.prepare("SELECT no_history FROM tasks WHERE id = ?").get(wh.task_id) as {
+				no_history: number | null;
+			};
+			return task.no_history;
+		};
+
+		it("webhookCreate without --no-history leaves no_history=0 on the task", () => {
+			setup();
+			console.log = () => {};
+
+			webhookCreate(db, SITE_ID, ["--name", "default-history"]);
+
+			expect(noHistoryFor("default-history")).toBe(0);
+		});
+
+		it("webhookCreate with --no-history sets no_history=1 on the task", () => {
+			setup();
+			console.log = () => {};
+
+			webhookCreate(db, SITE_ID, ["--name", "no-history-hook", "--no-history"]);
+
+			expect(noHistoryFor("no-history-hook")).toBe(1);
+		});
+
+		it("webhookCreate prints History line in the create output", () => {
+			setup();
+			const output: string[] = [];
+			console.log = (msg: string) => output.push(msg);
+
+			webhookCreate(db, SITE_ID, ["--name", "history-output", "--no-history"]);
+
+			expect(output.join("\n")).toContain("History: disabled");
+		});
+
+		it("webhookList shows H column reflecting per-webhook no_history", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "with-history"]);
+			webhookCreate(db, SITE_ID, ["--name", "without-history", "--no-history"]);
+
+			const output: string[] = [];
+			console.log = (msg: string) => output.push(msg);
+			webhookList(db);
+			const joined = output.join("\n");
+
+			expect(joined).toContain(" H ");
+			// Header + at least one "y" row and one "n" row.
+			const lines = joined.split("\n");
+			const withHistoryLine = lines.find((l) => l.startsWith("with-history"));
+			const withoutHistoryLine = lines.find((l) => l.startsWith("without-history"));
+			expect(withHistoryLine).toMatch(/\sn\s/);
+			expect(withoutHistoryLine).toMatch(/\sy\s/);
+		});
+
+		it("webhookUpdate with --no-history sets no_history=1 on the task", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "set-via-update"]);
+
+			webhookUpdate(db, SITE_ID, ["--name", "set-via-update", "--no-history"]);
+
+			expect(noHistoryFor("set-via-update")).toBe(1);
+		});
+
+		it("webhookUpdate with --history clears no_history back to 0", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "clear-via-update", "--no-history"]);
+			expect(noHistoryFor("clear-via-update")).toBe(1);
+
+			webhookUpdate(db, SITE_ID, ["--name", "clear-via-update", "--history"]);
+
+			expect(noHistoryFor("clear-via-update")).toBe(0);
+		});
+
+		it("webhookUpdate without history flags leaves existing no_history alone", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "leave-alone-history", "--no-history"]);
+
+			webhookUpdate(db, SITE_ID, [
+				"--name",
+				"leave-alone-history",
+				"--description",
+				"still no history",
+			]);
+
+			expect(noHistoryFor("leave-alone-history")).toBe(1);
+		});
+
+		it("webhookUpdate with both --no-history and --history throws", () => {
+			setup();
+			console.log = () => {};
+			webhookCreate(db, SITE_ID, ["--name", "ambiguous"]);
+
+			expect(() => {
+				webhookUpdate(db, SITE_ID, ["--name", "ambiguous", "--no-history", "--history"]);
+			}).toThrow(/mutually exclusive/);
+		});
+	});
 });

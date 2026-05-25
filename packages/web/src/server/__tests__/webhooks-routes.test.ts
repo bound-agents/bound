@@ -502,6 +502,176 @@ describe("webhooks routes", () => {
 		});
 	});
 
+	// no_history round-trip: stored as INTEGER 0/1 on tasks, exposed as boolean
+	// over the JSON API (#54).
+	describe("no_history round-trip on tasks.no_history", () => {
+		const taskNoHistoryFor = (db: Database, webhookId: string): number | null => {
+			const wh = db.prepare("SELECT task_id FROM webhooks WHERE id = ?").get(webhookId) as {
+				task_id: string;
+			};
+			const task = db.prepare("SELECT no_history FROM tasks WHERE id = ?").get(wh.task_id) as {
+				no_history: number | null;
+			};
+			return task.no_history;
+		};
+
+		it("POST without no_history defaults to no_history=0 on the task", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "default-no-history" }),
+				}),
+			);
+			expect(createResp.status).toBe(201);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			expect(created.no_history).toBe(false);
+			expect(taskNoHistoryFor(db, created.id as string)).toBe(0);
+		});
+
+		it("POST with no_history=true stores 1 on the task and returns true", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "no-history-true", no_history: true }),
+				}),
+			);
+			expect(createResp.status).toBe(201);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			expect(created.no_history).toBe(true);
+			expect(taskNoHistoryFor(db, created.id as string)).toBe(1);
+		});
+
+		it("POST with no_history=false stores 0 explicitly", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "no-history-false", no_history: false }),
+				}),
+			);
+			expect(createResp.status).toBe(201);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			expect(created.no_history).toBe(false);
+			expect(taskNoHistoryFor(db, created.id as string)).toBe(0);
+		});
+
+		it("GET list and detail include no_history as boolean", async () => {
+			const app = createWebhooksRoutes(db);
+			await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "listed-no-history", no_history: true }),
+				}),
+			);
+
+			const listResp = await app.fetch(new Request("http://localhost/", { method: "GET" }));
+			const listed = (await listResp.json()) as Array<Record<string, unknown>>;
+			expect(listed[0]?.no_history).toBe(true);
+			expect(typeof listed[0]?.no_history).toBe("boolean");
+
+			const id = listed[0]?.id as string;
+			const detailResp = await app.fetch(new Request(`http://localhost/${id}`, { method: "GET" }));
+			const detail = (await detailResp.json()) as Record<string, unknown>;
+			expect(detail.no_history).toBe(true);
+		});
+
+		it("PATCH with no_history=true sets it on the task", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "patch-no-history" }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ no_history: true }),
+				}),
+			);
+			expect(patchResp.status).toBe(200);
+			const patched = (await patchResp.json()) as Record<string, unknown>;
+			expect(patched.no_history).toBe(true);
+			expect(taskNoHistoryFor(db, id)).toBe(1);
+		});
+
+		it("PATCH with no_history=false clears it back to 0", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "clear-no-history", no_history: true }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+			expect(taskNoHistoryFor(db, id)).toBe(1);
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ no_history: false }),
+				}),
+			);
+			expect(patchResp.status).toBe(200);
+			const patched = (await patchResp.json()) as Record<string, unknown>;
+			expect(patched.no_history).toBe(false);
+			expect(taskNoHistoryFor(db, id)).toBe(0);
+		});
+
+		it("PATCH without no_history key leaves existing no_history alone", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "leave-no-history", no_history: true }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ description: "unrelated" }),
+				}),
+			);
+			expect(patchResp.status).toBe(200);
+			const patched = (await patchResp.json()) as Record<string, unknown>;
+			expect(patched.no_history).toBe(true);
+			expect(taskNoHistoryFor(db, id)).toBe(1);
+		});
+
+		it("PATCH with non-boolean no_history returns 400", async () => {
+			const app = createWebhooksRoutes(db);
+			const createResp = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "bad-no-history" }),
+				}),
+			);
+			const created = (await createResp.json()) as Record<string, unknown>;
+			const id = created.id as string;
+
+			const patchResp = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ no_history: "yes" }),
+				}),
+			);
+			expect(patchResp.status).toBe(400);
+			const body = (await patchResp.json()) as Record<string, unknown>;
+			expect(body.error).toContain("no_history");
+			// Original value preserved on rejection.
+			expect(taskNoHistoryFor(db, id)).toBe(0);
+		});
+	});
+
 	describe("AC5.4: DELETE /api/webhooks/:id soft-deletes and cancels task", () => {
 		it("soft-deletes webhook and cancels task", async () => {
 			const app = createWebhooksRoutes(db);
