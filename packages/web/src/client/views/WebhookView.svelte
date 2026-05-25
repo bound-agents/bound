@@ -27,6 +27,7 @@ let createFormat = $state("github");
 let createDescription = $state("");
 let createPrompt = $state("");
 let createModel = $state(""); // "" = use cluster default
+let createNoHistory = $state(false);
 let createError = $state<string | null>(null);
 
 // Edit form state
@@ -34,6 +35,7 @@ let editDescription = $state("");
 let editFormat = $state("");
 let editPrompt = $state("");
 let editModel = $state(""); // "" = use cluster default
+let editNoHistory = $state(false);
 let editError = $state<string | null>(null);
 
 // Loading states
@@ -91,6 +93,7 @@ async function handleCreate(): Promise<void> {
 			description: createDescription || undefined,
 			prompt: createPrompt || undefined,
 			model_hint: createModel || null,
+			no_history: createNoHistory,
 		});
 
 		// Show secret modal
@@ -105,6 +108,7 @@ async function handleCreate(): Promise<void> {
 		createDescription = "";
 		createPrompt = "";
 		createModel = "";
+		createNoHistory = false;
 
 		// Reload webhooks
 		await loadWebhooks();
@@ -152,6 +156,7 @@ async function handleUpdate(id: string): Promise<void> {
 			format: editFormat,
 			prompt: editPrompt || undefined,
 			model_hint: editModel || null,
+			no_history: editNoHistory,
 		});
 
 		await loadWebhooks();
@@ -197,6 +202,7 @@ function handleSelectWebhook(webhook: WebhookListEntry): void {
 	editFormat = webhook.signature_format;
 	editPrompt = webhook.prompt ?? "";
 	editModel = webhook.model_hint ?? "";
+	editNoHistory = webhook.no_history === true;
 	editError = null;
 	view = "detail";
 }
@@ -208,6 +214,7 @@ function handleBackToList(): void {
 	editFormat = "";
 	editPrompt = "";
 	editModel = "";
+	editNoHistory = false;
 	editError = null;
 }
 
@@ -218,6 +225,7 @@ function handleCreateNew(): void {
 	createDescription = "";
 	createPrompt = "";
 	createModel = "";
+	createNoHistory = false;
 	createError = null;
 }
 
@@ -382,6 +390,23 @@ function formatDate(iso: string): string {
 						></textarea>
 					</div>
 
+					<div class="form-group checkbox-group">
+						<label for="create-no-history">
+							<input
+								id="create-no-history"
+								type="checkbox"
+								bind:checked={createNoHistory}
+								disabled={actionInProgress === "create"}
+							/>
+							Disable history (no_history)
+						</label>
+						<p class="help-text">
+							When enabled, each delivery starts from a clean context window. Saves
+							tokens for stateless handlers and helps avoid the retrieve_task spin
+							pattern on repeated webhook fires.
+						</p>
+					</div>
+
 					<div class="form-actions">
 						<Btn
 							variant="accent"
@@ -512,6 +537,21 @@ function formatDate(iso: string): string {
 							></textarea>
 						</div>
 
+						<div class="form-group checkbox-group">
+							<label for="edit-no-history">
+								<input
+									id="edit-no-history"
+									type="checkbox"
+									bind:checked={editNoHistory}
+									disabled={actionInProgress !== null}
+								/>
+								Disable history (no_history)
+							</label>
+							<p class="help-text">
+								When enabled, each delivery starts from a clean context window.
+							</p>
+						</div>
+
 						<div class="form-actions">
 							<Btn
 								variant="accent"
@@ -532,6 +572,8 @@ function formatDate(iso: string): string {
 									editDescription = selectedWebhook?.description ?? "";
 									editFormat = selectedWebhook?.signature_format ?? "";
 									editPrompt = selectedWebhook?.prompt ?? "";
+									editModel = selectedWebhook?.model_hint ?? "";
+									editNoHistory = selectedWebhook?.no_history === true;
 									editError = null;
 								}}
 							>
@@ -751,6 +793,29 @@ function formatDate(iso: string): string {
 		display: flex;
 		gap: 8px;
 		margin-top: 8px;
+	}
+
+	.checkbox-group label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		text-transform: none;
+		letter-spacing: normal;
+		font-size: 13px;
+		font-weight: 400;
+		color: var(--ink);
+	}
+
+	.checkbox-group input[type="checkbox"] {
+		width: auto;
+		padding: 0;
+	}
+
+	.help-text {
+		margin: 4px 0 0 24px;
+		font-size: 12px;
+		color: var(--ink-3);
+		line-height: 1.4;
 	}
 
 	.detail-content {

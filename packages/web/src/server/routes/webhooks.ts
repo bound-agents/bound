@@ -16,6 +16,9 @@ export function createWebhooksRoutes(db: Database): Hono {
 	// SELECT projection used by list/detail/patch responses. The webhook's
 	// custom prompt and model_hint live on the linked event task, so we
 	// LEFT JOIN tasks and surface them as `prompt` / `model_hint` for the UI/client.
+	// `no_history` is stored as INTEGER (0/1) on the task row; we coerce to a
+	// boolean here so the JSON shape matches what callers expect ergonomically
+	// (and what UpdateWebhookOptions accepts on PATCH).
 	const WEBHOOK_SELECT = `SELECT
 			w.id,
 			w.name,
@@ -26,28 +29,28 @@ export function createWebhooksRoutes(db: Database): Hono {
 			w.created_at,
 			w.modified_at,
 			t.system_prompt_addition AS prompt,
-			t.model_hint AS model_hint
+			t.model_hint AS model_hint,
+			CASE WHEN t.no_history = 1 THEN 1 ELSE 0 END AS no_history
 		FROM webhooks w
 		LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0`;
+
+	// Coerce raw row → response shape: integer no_history becomes boolean.
+	function shapeWebhook(
+		row: Record<string, unknown> | null | undefined,
+	): Record<string, unknown> | null {
+		if (!row) return null;
+		const { no_history, ...rest } = row;
+		return { ...rest, no_history: no_history === 1 };
+	}
 
 	// GET / — List webhooks (AC5.2)
 	app.get("/", (c) => {
 		try {
-			const webhooks = db
+			const rows = db
 				.prepare(`${WEBHOOK_SELECT} WHERE w.deleted = 0 ORDER BY w.created_at DESC`)
-				.all() as Array<{
-				id: string;
-				name: string;
-				signature_format: string;
-				description: string | null;
-				task_id: string;
-				thread_id: string;
-				created_at: string;
-				modified_at: string;
-				prompt: string | null;
-			}>;
+				.all() as Array<Record<string, unknown>>;
 
-			return c.json(webhooks);
+			return c.json(rows.map((r) => shapeWebhook(r)));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -73,7 +76,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 				return c.json({ error: "Webhook not found" }, 404);
 			}
 
-			return c.json(webhook);
+			return c.json(shapeWebhook(webhook));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -100,6 +103,9 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const rawModelHint = body.model_hint;
 			const modelHint =
 				typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
+			// no_history: missing or non-boolean → false (default). Boolean values
+			// are stored as 0/1 on the task row; the response coerces back to bool.
+			const noHistory = body.no_history === true ? 1 : 0;
 
 			// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 			if (!name) {
@@ -179,7 +185,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 					max_runs: null,
 					requires: null,
 					model_hint: modelHint,
-					no_history: 0,
+					no_history: noHistory,
 					inject_mode: "results",
 					depends_on: null,
 					require_success: 0,
@@ -223,7 +229,8 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const fresh = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(webhookId) as
 				| Record<string, unknown>
 				| undefined;
-			return c.json({ ...(fresh ?? {}), secret }, 201);
+			const shaped = shapeWebhook(fresh) ?? {};
+			return c.json({ ...shaped, secret }, 201);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -263,6 +270,18 @@ export function createWebhooksRoutes(db: Database): Hono {
 			const rawModelHint = body.model_hint;
 			const modelHintValue =
 				typeof rawModelHint === "string" && rawModelHint.length > 0 ? rawModelHint : null;
+			// no_history is two-state on PATCH:
+			//   key absent → leave alone
+			//   boolean    → set 0/1
+			// Non-boolean values are rejected with 400 to avoid ambiguity.
+			const noHistoryProvided = "no_history" in body;
+			let noHistoryValue: 0 | 1 = 0;
+			if (noHistoryProvided) {
+				if (typeof body.no_history !== "boolean") {
+					return c.json({ error: "no_history must be a boolean" }, 400);
+				}
+				noHistoryValue = body.no_history ? 1 : 0;
+			}
 
 			// Update task system_prompt_addition if prompt provided
 			if (prompt !== undefined) {
@@ -300,6 +319,21 @@ export function createWebhooksRoutes(db: Database): Hono {
 				);
 			}
 
+			// Update task no_history if provided. The flag is read by the
+			// relay-processor at delivery time, so a PATCH takes effect on the
+			// next webhook fire without needing to recreate the task.
+			if (noHistoryProvided) {
+				updateRow(
+					db,
+					"tasks",
+					webhook.task_id,
+					{
+						no_history: noHistoryValue,
+					},
+					siteId,
+				);
+			}
+
 			// Update webhook row with description or format
 			if (description !== undefined || format !== undefined) {
 				const updateData: Record<string, unknown> = {};
@@ -319,7 +353,7 @@ export function createWebhooksRoutes(db: Database): Hono {
 				unknown
 			>;
 
-			return c.json(updated);
+			return c.json(shapeWebhook(updated));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(

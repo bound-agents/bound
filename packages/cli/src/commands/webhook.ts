@@ -9,7 +9,7 @@ import type { SignatureFormat } from "@bound/shared";
 // ---------------------------------------------------------------------------
 
 export function webhookCreate(db: Database, siteId: string, args: string[]): void {
-	// Parse args: --name, --format, --description, --prompt, --model
+	// Parse args: --name, --format, --description, --prompt, --model, --no-history
 	const name = getArgValue(args, "--name");
 	const format = (getArgValue(args, "--format") || "github") as SignatureFormat;
 	const description = getArgValue(args, "--description");
@@ -17,6 +17,9 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	const modelHint = getArgValue(args, "--model");
 	// Normalise: undefined or empty string both mean "use system default"
 	const modelHintValue = modelHint && modelHint.length > 0 ? modelHint : null;
+	// --no-history is a presence flag: when set, the webhook's event task runs
+	// with no_history=1 so each delivery starts from a clean context window.
+	const noHistory = hasFlag(args, "--no-history") ? 1 : 0;
 
 	// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 	if (!name) {
@@ -93,7 +96,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 			max_runs: null,
 			requires: null,
 			model_hint: modelHintValue,
-			no_history: 0,
+			no_history: noHistory,
 			inject_mode: "results",
 			depends_on: null,
 			require_success: 0,
@@ -137,6 +140,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	console.log(`Secret: ${secret}`);
 	console.log(`Format: ${format}`);
 	console.log(`Model: ${modelHintValue ?? "(default)"}`);
+	console.log(`History: ${noHistory ? "disabled (no_history=true)" : "enabled"}`);
 	console.log("");
 	console.log("⚠ Save the secret now — it will not be shown again.");
 }
@@ -152,7 +156,8 @@ export function webhookList(db: Database): void {
 			        w.signature_format AS signature_format,
 			        w.description AS description,
 			        w.created_at AS created_at,
-			        t.model_hint AS model_hint
+			        t.model_hint AS model_hint,
+			        t.no_history AS no_history
 			 FROM webhooks w
 			 LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0
 			 WHERE w.deleted = 0
@@ -164,6 +169,7 @@ export function webhookList(db: Database): void {
 		description: string | null;
 		created_at: string;
 		model_hint: string | null;
+		no_history: number | null;
 	}>;
 
 	if (rows.length === 0) {
@@ -171,16 +177,19 @@ export function webhookList(db: Database): void {
 		return;
 	}
 
-	console.log("NAME              FORMAT    MODEL              DESCRIPTION          CREATED");
-	console.log("-".repeat(95));
+	// "H" column shows "y" when no_history=1 on the task. One letter to keep
+	// the table compact; the long form is in `webhook show`-style detail.
+	console.log("NAME              FORMAT    MODEL              H  DESCRIPTION          CREATED");
+	console.log("-".repeat(98));
 
 	for (const row of rows) {
 		const name = row.name.padEnd(16);
 		const format = row.signature_format.padEnd(9);
 		const model = (row.model_hint ?? "(default)").slice(0, 18).padEnd(18);
+		const noHist = row.no_history === 1 ? "y" : "n";
 		const desc = (row.description || "").slice(0, 20).padEnd(20);
 		const created = row.created_at.slice(0, 19);
-		console.log(`${name} ${format} ${model} ${desc} ${created}`);
+		console.log(`${name} ${format} ${model} ${noHist}  ${desc} ${created}`);
 	}
 }
 
@@ -230,6 +239,20 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 	const modelIdx = args.indexOf("--model");
 	const modelProvided = modelIdx !== -1;
 	const modelValue = modelProvided ? (args[modelIdx + 1] ?? "") : undefined;
+
+	// Three-state semantics for no_history (mirroring --model):
+	//   neither flag        → leave alone
+	//   --no-history        → set to 1 (disable history)
+	//   --history           → set to 0 (re-enable history)
+	// Both flags being passed together is rejected; the operator should pick
+	// one to avoid ambiguity about which one wins.
+	const wantsNoHistory = hasFlag(args, "--no-history");
+	const wantsHistory = hasFlag(args, "--history");
+	if (wantsNoHistory && wantsHistory) {
+		throw new Error("--no-history and --history are mutually exclusive");
+	}
+	const noHistoryProvided = wantsNoHistory || wantsHistory;
+	const noHistoryValue: 0 | 1 = wantsNoHistory ? 1 : 0;
 
 	if (!name) {
 		throw new Error("--name is required");
@@ -286,6 +309,12 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 		updateRow(db, "threads", webhook.thread_id, { model_hint: newHint }, siteId);
 	}
 
+	if (noHistoryProvided) {
+		// Read by relay-processor at delivery time, so the next webhook fire
+		// honours this without needing to recreate the task.
+		updateRow(db, "tasks", webhook.task_id, { no_history: noHistoryValue }, siteId);
+	}
+
 	console.log(`Webhook '${name}' updated.`);
 }
 
@@ -325,4 +354,8 @@ export function webhookRotateSecret(db: Database, siteId: string, name: string):
 function getArgValue(args: string[], flag: string): string | undefined {
 	const idx = args.indexOf(flag);
 	return idx !== -1 ? args[idx + 1] : undefined;
+}
+
+function hasFlag(args: string[], flag: string): boolean {
+	return args.indexOf(flag) !== -1;
 }
