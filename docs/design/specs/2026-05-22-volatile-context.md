@@ -600,3 +600,60 @@ Thread `2d055bbe-...` violated the property silently. The `volatile-prefix` toke
 - `packages/agent/src/stable-prefix/compose.ts` — pure renderer, including the parity-with-production rationale for the deliberate duplication of ~15 lines of rendering logic.
 - `packages/agent/src/stable-prefix/hash.ts` — canonicalization rules for the input fingerprint.
 
+## 10. Varying-Tail Freshness Invariant (R-VC26)
+
+Added: 2026-05-25 alongside R-VC25. Where R-VC25 enforces byte stability on the cacheable side of the volatile context, R-VC26 enforces the dual properties on the varying side: freshness, source-label totality, subsystem ordering, cap discipline, determinism, and time monotonicity.
+
+### 10.1 Background
+
+The varying tail is the developer-role message that rides AFTER history in the LLM message array. It is rebuilt every turn (the inner-loop `refreshVolatileTailForNextTurn` mechanism, plus the cold/warm path entry) and is **not cacheable** — the bridge merges it into the next user message wrapped in `<system-context>`.
+
+The wins of R-VC25 (cache stability) do not apply here. The risks are different:
+
+- **Stale freshness**: a memorize / file write / new advisory lands within the cache TTL, but the next varying-tail render doesn't reflect it. Symptom: agent operates on a state snapshot from minutes / hours ago. Live precedent: thread `d0372be6-...`'s confabulation incident (§1.3) was a freshness-and-labelling failure, not a cache failure.
+
+- **Source-label leakage**: an LS subsystem entry renders without its `[thread] / [task] / [file] / [advisory]` source tag. The agent loses the structural cue that distinguishes "live event payload" from "sibling-thread metadata pointer".
+
+- **Subsystem ordering drift**: refactor renames a field, the renderer iterates inputs in a different order, the agent sees `[task]` lines before `[thread]` lines. The R-VC5 fixed ordering is the agent's mental-model anchor.
+
+- **Cap discipline regression**: `BUDGET_PRESSURE_SUBSYSTEM_CAP = 3` quietly grows or stops applying, and budget-pressure turns blow past their byte ceiling.
+
+### 10.2 Invariant Statement (R-VC26)
+
+**Varying-tail renderers shall be pure functions of `(inputs, nowMs)` with the following properties:**
+
+- **V1 Determinism**: for fixed `(inputs, nowMs)`, output is byte-identical across calls and processes.
+
+- **V2 Freshness**: when relevant state changes between two assemblies, the second render reflects it. Specifically: every key present in the upstream `deltaKeys` set (Working Knowledge updates) MUST produce a `[changed since last turn]` marker in the output.
+
+- **V3 Source-label totality**: every Live-State line carries exactly one of `[thread] / [task] / [file] / [advisory] / [synthesis-backlog]`. Unlabeled lines and double-labeled lines are forbidden.
+
+- **V4 Subsystem ordering**: Live-State subsystems render in fixed order `thread → task → file → advisory → synthesis-backlog`, regardless of input field order. The R-VC5 reference fixes this.
+
+- **V5 Cap discipline under pressure**: when `budgetPressure: true`, no LS subsystem (excluding the synthesis-backlog singleton) renders more than `BUDGET_PRESSURE_SUBSYSTEM_CAP = 3` entries.
+
+- **V6 Time monotonicity**: given two `nowMs` values with `t1 > t0` and otherwise identical inputs, no relative-time fragment goes backward.
+
+- **No DB reads. No env / config reads.** The renderer is fed from a `collect`-equivalent layer; data acquisition does not happen inside compose. (`Date.now()` is allowed only via the explicit `nowMs` parameter — every other wall-clock call is forbidden inside the compose seam.)
+
+### 10.3 Implementation
+
+- `packages/agent/src/varying-tail/`: types, pure compose. Single seam for property tests and parity regression.
+- `composeVolatileVarying(inputs: VolatileVaryingInputs): string[]` is pure in `(inputs, inputs.nowMs)`. Renders WK update markers + Recent-memory block + Live State.
+- Production-renderer parameterization: `relativeTimeAt(iso, nowMs)` and `stalenessTagAt(iso, nowMs)` are exported parameterized variants of the prior `relativeTime` / `stalenessTag` helpers. The prior helpers continue to exist as thin `Date.now()`-bound wrappers so production callsites are unaffected. The varying-tail compose seam uses the parameterized variants exclusively.
+- `packages/agent/src/varying-tail/__tests__/compose.property.test.ts`: V1-V6 property tests via `fast-check`, `numRuns: 100`.
+- `packages/agent/src/varying-tail/__tests__/parity-with-production.test.ts`: regression that pins byte-equivalence between `composeVolatileVarying` and the production renderers (`renderWorkingKnowledge.varyingLines + Recent-memory + renderLiveState`) for the same inputs, with `Date.now()` mocked to a fixed value.
+
+### 10.4 Reading List
+
+- `packages/agent/src/varying-tail/types.ts` — `VolatileVaryingInputs` declaration with full per-field rationale and the V1-V6 contract.
+- `packages/agent/src/varying-tail/compose.ts` — pure renderer with the parity-with-production rationale.
+
+### 10.5 What R-VC26 Does NOT Cover
+
+- **Per-turn injectables.** Model-switch notices, file-modification notifications, the `User/Thread ID` line, relay/platform/model context, `systemPromptAddition`, and inactive-skill references are added AROUND `composeVolatileVarying` (in `buildVolatileContext` / `assembleContext`), not inside it. They have their own handling and do not currently flow through this seam. A future iteration may extract a `composeVolatileTail` that wraps both `composeVolatileVarying` and these per-turn injectables; for now, the boundary lives at the R-VC24 three-renderer scope.
+
+- **Hashing.** Unlike R-VC25, the varying side does not produce a `context_debug` hash. The varying tail changes by design every turn; a hash would just record the turn-to-turn rebuild rather than detect drift.
+
+- **Drift detector**. The hourly stable-prefix drift detector (§9.3) does not cover the varying side. The freshness invariant (V2) is asserted in CI by property tests; production violations would surface as agent-behavior bugs, not as cache-thrash metrics.
+

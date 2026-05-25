@@ -469,7 +469,13 @@ export function buildCrossThreadDigest(
 	}
 }
 
-function resolveSource(
+/**
+ * Resolve a memory entry's `source` field into a human-readable
+ * label. Pure in inputs alone — no DB, no clock. Exposed so the
+ * varying-tail module can render `formatMemoryEntry`-equivalent
+ * output without re-deriving the labelling logic.
+ */
+export function resolveSource(
 	taskName: string | null,
 	threadId: string | null,
 	threadTitle: string | null,
@@ -484,8 +490,14 @@ function resolveSource(
 	return source.slice(0, 8);
 }
 
-function relativeTime(isoString: string): string {
-	const diffMs = Date.now() - new Date(isoString).getTime();
+/**
+ * Parameterized relative-time fragment generator. Used for the
+ * varying-side renderer where `nowMs` is plumbed through as the
+ * single allowed wall-clock ingress. Production callers that want
+ * the implicit-now behavior call `relativeTime` (which delegates).
+ */
+export function relativeTimeAt(isoString: string, nowMs: number): string {
+	const diffMs = nowMs - new Date(isoString).getTime();
 	const diffSeconds = Math.floor(diffMs / 1000);
 	if (diffSeconds < 60) return "just now";
 	const diffMinutes = Math.floor(diffSeconds / 60);
@@ -494,6 +506,22 @@ function relativeTime(isoString: string): string {
 	if (diffHours < 24) return `${diffHours}h ago`;
 	const diffDays = Math.floor(diffHours / 24);
 	return `${diffDays}d ago`;
+}
+
+function relativeTime(isoString: string): string {
+	return relativeTimeAt(isoString, Date.now());
+}
+
+/**
+ * Parameterized staleness-tag generator. Same `nowMs` plumbing
+ * rationale as `relativeTimeAt`.
+ */
+export function stalenessTagAt(isoString: string, nowMs: number): string {
+	const diffMs = nowMs - new Date(isoString).getTime();
+	const diffDays = diffMs / (1000 * 60 * 60 * 24);
+	if (diffDays > 7) return " ⚠️ may be outdated (>7d old)";
+	if (diffDays > 1) return " (may have changed)";
+	return "";
 }
 
 /** Staleness caveat for memory entries older than 24h. */
@@ -1672,14 +1700,14 @@ export const SUMMARY_GLOSS_MAX = 200;
 export function truncateGlossForSummary(value: string): string {
 	return truncateGloss(value, SUMMARY_GLOSS_MAX);
 }
-const STALE_CHILD_GLOSS_MAX = 200;
-const DELTA_MARKER = "[changed since last turn]";
+export const STALE_CHILD_GLOSS_MAX = 200;
+export const DELTA_MARKER = "[changed since last turn]";
 
 /**
  * Truncates a string to maximum length and appends "..." if truncated.
  * Matches the existing convention in formatMemoryEntry (line 577).
  */
-function truncateGloss(s: string, max: number): string {
+export function truncateGloss(s: string, max: number): string {
 	if (s.length <= max) return s;
 	return `${safeSlice(s, 0, max)}...`;
 }
@@ -1690,7 +1718,7 @@ function truncateGloss(s: string, max: number): string {
  * the agent can visually pair updates with the stable bodies above without
  * re-parsing the section title.
  */
-const WORKING_KNOWLEDGE_UPDATES_HEADER = "## Working Knowledge — updates";
+export const WORKING_KNOWLEDGE_UPDATES_HEADER = "## Working Knowledge — updates";
 
 /**
  * Renders the Working Knowledge section from pinned and summary entries.
@@ -1901,10 +1929,10 @@ export interface LiveStateInput {
 	nowMs: number;
 }
 
-const LIVE_STATE_HEADER = "## Live State — pointers to canonical sources";
-const LIVE_STATE_FOOTER =
+export const LIVE_STATE_HEADER = "## Live State — pointers to canonical sources";
+export const LIVE_STATE_FOOTER =
 	"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.";
-const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
+export const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
 
 /**
  * Renders the Live State section — the third top-level section.
