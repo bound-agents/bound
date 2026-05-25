@@ -246,6 +246,111 @@ export interface VolatileContext {
  * declares as relevant to byte output — see
  * `stable-prefix/types.ts` for the contract.
  */
+/**
+ * Inputs required by `composeVolatileSections`. Returned by
+ * `loadVolatileSectionInputs` — the single DB-reading layer that
+ * both the no-history task path and the budget-pressure rebuild
+ * share.
+ *
+ * Unifying the load was a refactor against silent divergence: prior
+ * to extraction, the no-history branch and the `applyReducedEnrichment`
+ * closure each ran ~30 lines of nearly-identical SQL with different
+ * caps, and a fix to one site wouldn't propagate to the other.
+ * That's the same divergence pattern `stable-prefix/collect.ts`
+ * eliminated for the stable-side fingerprint.
+ *
+ * The primary cold path (`buildVolatileContext`) does NOT call this
+ * helper — it has additional responsibilities (bumping
+ * `last_accessed_at`, computing the input fingerprint, building
+ * the volatile-context envelope) that don't belong here.
+ */
+interface VolatileSectionInputs {
+	pinned: ReturnType<typeof loadPinnedEntries>;
+	summaries: ReturnType<typeof loadSummaryEntries>;
+	detailEntries: ReturnType<typeof loadDetailEntries>;
+	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
+	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
+	digest: ReturnType<typeof buildCrossThreadDigest>;
+	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
+	taskDigestEntries: LiveStateTaskEntry[];
+	taskDigestLines: string[];
+	tiers: TieredEnrichment;
+	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
+	deltaKeys: Set<string>;
+}
+
+/**
+ * Load every input `composeVolatileSections` needs in a single
+ * pass. Pure-modulo-DB: no clock reads beyond what `buildVolatileEnrichment`
+ * already does internally for digest cutoffs.
+ *
+ * Caps follow the existing two-call-site convention:
+ *   - no-history task path: `(maxMemory: 10, maxTasks: 5, maxPinned: 10)`
+ *   - budget-pressure rebuild: `(maxMemory: 3, maxTasks: 3)` (no pinned cap)
+ *
+ * Property-tested at
+ * `__tests__/load-volatile-section-inputs.property.test.ts`.
+ */
+function loadVolatileSectionInputs(args: {
+	db: Database;
+	threadId: string;
+	userId: string;
+	baseline: string;
+	nowMs: number;
+	maxMemory?: number;
+	maxTasks?: number;
+	maxPinned?: number;
+}): VolatileSectionInputs {
+	const { db, threadId, userId, baseline, nowMs, maxMemory, maxTasks, maxPinned } = args;
+
+	const pinned = loadPinnedEntries(db);
+	const summaries = loadSummaryEntries(db, pinned.exclusionSet);
+	const detailEntries = loadDetailEntries(db);
+	const staleChildrenMap = buildStaleChildrenMap(db, summaries.entries);
+	const parentSummaryMap = buildParentSummaryMap(
+		db,
+		detailEntries.entries.map((e) => e.key),
+	);
+	const digest = buildCrossThreadDigest(db, userId, threadId);
+	const advisories = loadAppliedAdvisoriesForLiveState(db, nowMs);
+	const fileEntries = loadFileModificationsForLiveState(db, threadId);
+
+	const { taskDigestEntries, taskDigestLines, tiers } = buildVolatileEnrichment(
+		db,
+		baseline,
+		maxMemory,
+		maxTasks,
+		undefined,
+		undefined,
+		maxPinned,
+	);
+
+	const allDeltaKeys = db
+		.prepare(
+			`SELECT DISTINCT key FROM semantic_memory
+			 WHERE modified_at > ?
+			   AND deleted = 0
+			   AND key NOT LIKE '_internal.%'`,
+		)
+		.all(baseline) as Array<{ key: string }>;
+	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
+
+	return {
+		pinned,
+		summaries,
+		detailEntries,
+		staleChildrenMap,
+		parentSummaryMap,
+		digest,
+		advisories,
+		taskDigestEntries,
+		taskDigestLines,
+		tiers,
+		fileEntries,
+		deltaKeys,
+	};
+}
+
 function computeStablePrefixInputFingerprint(args: {
 	pinned: ReadonlyArray<StageEntry>;
 	summaries: ReadonlyArray<StageEntry>;
@@ -1869,39 +1974,19 @@ Original output was too large for the context window. If you need the full conte
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
 		const nowMs = Date.now();
 
-		// Load inputs for renderers with smaller caps (maxMemory=10, maxTasks=5)
-		const pinnedNH = loadPinnedEntries(db);
-		const summariesNH = loadSummaryEntries(db, pinnedNH.exclusionSet);
-		const detailEntriesNH = loadDetailEntries(db);
-		const staleChildrenMapNH = buildStaleChildrenMap(db, summariesNH.entries);
-		const parentSummaryMapNH = buildParentSummaryMap(
+		const inputs = loadVolatileSectionInputs({
 			db,
-			detailEntriesNH.entries.map((e) => e.key),
-		);
-		const digestNH = buildCrossThreadDigest(db, userId, threadId);
-		const advisoriesNH = loadAppliedAdvisoriesForLiveState(db, nowMs);
+			threadId,
+			userId,
+			baseline: enrichmentBaseline,
+			nowMs,
+			maxMemory: 10,
+			maxTasks: 5,
+			maxPinned: 10,
+		});
 
-		// Compute task and file entries
-		const {
-			taskDigestEntries: taskEntriesNH,
-			taskDigestLines: noHistTasks,
-			tiers: enrichmentTiersL2,
-		} = buildVolatileEnrichment(db, enrichmentBaseline, 10, 5, undefined, undefined, 10);
-		const fileEntriesNH = loadFileModificationsForLiveState(db, threadId);
-
-		// Compute delta-key set
-		const allDeltaKeysNH = db
-			.prepare(
-				`SELECT DISTINCT key FROM semantic_memory
-				 WHERE modified_at > ?
-				   AND deleted = 0
-				   AND key NOT LIKE '_internal.%'`,
-			)
-			.all(enrichmentBaseline) as Array<{ key: string }>;
-		const deltaKeysNH = new Set(allDeltaKeysNH.map((r) => r.key));
-
-		enrichmentTiers = enrichmentTiersL2;
-		taskDigestLinesSnapshot = noHistTasks;
+		enrichmentTiers = inputs.tiers;
+		taskDigestLinesSnapshot = inputs.taskDigestLines;
 
 		// Compose the three sections using the shared helper. The noHistory
 		// path mirrors the primary path's split: stable subsections fold into
@@ -1909,17 +1994,17 @@ Original output was too large for the context window. If you need the full conte
 		// developer message at the assembled tail.
 		const { stableLines: nhStable, varyingLines: nhVarying } = composeVolatileSections({
 			db,
-			pinned: pinnedNH.entries,
-			summaries: summariesNH.entries,
-			detailEntries: detailEntriesNH.entries,
-			staleChildrenMap: staleChildrenMapNH,
-			parentSummaryMap: parentSummaryMapNH,
-			deltaKeys: deltaKeysNH,
-			digest: digestNH,
-			taskDigestEntries: taskEntriesNH,
-			fileEntries: fileEntriesNH,
-			advisories: advisoriesNH,
-			recencyEntries: flattenRecencyEntries(enrichmentTiersL2),
+			pinned: inputs.pinned.entries,
+			summaries: inputs.summaries.entries,
+			detailEntries: inputs.detailEntries.entries,
+			staleChildrenMap: inputs.staleChildrenMap,
+			parentSummaryMap: inputs.parentSummaryMap,
+			deltaKeys: inputs.deltaKeys,
+			digest: inputs.digest,
+			taskDigestEntries: inputs.taskDigestEntries,
+			fileEntries: inputs.fileEntries,
+			advisories: inputs.advisories,
+			recencyEntries: flattenRecencyEntries(inputs.tiers),
 			budgetPressure: false,
 			nowMs,
 		});
@@ -1932,11 +2017,11 @@ Original output was too large for the context window. If you need the full conte
 		// loads no skills (the skill index is stamped only on
 		// non-noHistory threads), so `skillIndex: []`.
 		stablePrefixInputFingerprint = computeStablePrefixInputFingerprint({
-			pinned: pinnedNH.entries,
-			summaries: summariesNH.entries,
-			detailEntries: detailEntriesNH.entries,
-			parentSummaryMap: parentSummaryMapNH,
-			staleChildrenMap: staleChildrenMapNH,
+			pinned: inputs.pinned.entries,
+			summaries: inputs.summaries.entries,
+			detailEntries: inputs.detailEntries.entries,
+			parentSummaryMap: inputs.parentSummaryMap,
+			staleChildrenMap: inputs.staleChildrenMap,
 			budgetPressure: false,
 			activeSkills: [],
 		});
@@ -2004,39 +2089,19 @@ Original output was too large for the context window. If you need the full conte
 		// At this point, enrichmentBaseline is guaranteed to be non-undefined (caller checks it).
 		// biome-ignore lint/style/noNonNullAssertion: Caller checked the condition above
 		const baseline = enrichmentBaseline!;
+		const nowMs = Date.now();
 
-		// Re-load inputs for renderers with reduced caps (3 task entries, 3 live-state caps per subsystem)
-		const pinnedBP = loadPinnedEntries(db);
-		const summariesBP = loadSummaryEntries(db, pinnedBP.exclusionSet);
-		const detailEntriesBP = loadDetailEntries(db);
-
-		const staleChildrenMapBP = buildStaleChildrenMap(db, summariesBP.entries);
-		const parentSummaryMapBP = buildParentSummaryMap(
+		// Re-load with reduced caps via the shared helper (mirrors the
+		// noHistory path's load shape; only the cap values differ).
+		const inputs = loadVolatileSectionInputs({
 			db,
-			detailEntriesBP.entries.map((e) => e.key),
-		);
-		const digestBP = buildCrossThreadDigest(db, userId, threadId);
-		const advisoriesBP = loadAppliedAdvisoriesForLiveState(db, Date.now());
-
-		// Compute task and file entries with reduced caps (3 tasks, 3 files for Live State)
-		const { taskDigestEntries: taskEntriesBP, tiers: tiersBP } = buildVolatileEnrichment(
-			db,
+			threadId,
+			userId,
 			baseline,
-			3,
-			3,
-		);
-		const fileEntriesBP = loadFileModificationsForLiveState(db, threadId);
-
-		// Compute delta-key set
-		const allDeltaKeysBP = db
-			.prepare(
-				`SELECT DISTINCT key FROM semantic_memory
-				 WHERE modified_at > ?
-				   AND deleted = 0
-				   AND key NOT LIKE '_internal.%'`,
-			)
-			.all(baseline) as Array<{ key: string }>;
-		const deltaKeysBP = new Set(allDeltaKeysBP.map((r) => r.key));
+			nowMs,
+			maxMemory: 3,
+			maxTasks: 3,
+		});
 
 		// Compose three sections with budgetPressure:true
 		// R-VC14 §3.3: Pass full memory entries (no pre-cap); renderers handle section-specific capping
@@ -2047,22 +2112,22 @@ Original output was too large for the context window. If you need the full conte
 		// per-subsystem-cap-3 convention applied inside renderLiveState.
 		// Even under pressure the agent needs to see fresh memory
 		// activity, so don't drop the section entirely — just trim.
-		const recencyBP = flattenRecencyEntries(tiersBP).slice(0, 3);
+		const recencyBP = flattenRecencyEntries(inputs.tiers).slice(0, 3);
 		const { stableLines: bpStable, varyingLines: bpVarying } = composeVolatileSections({
 			db,
-			pinned: pinnedBP.entries,
-			summaries: summariesBP.entries,
-			detailEntries: detailEntriesBP.entries,
-			staleChildrenMap: staleChildrenMapBP,
-			parentSummaryMap: parentSummaryMapBP,
-			deltaKeys: deltaKeysBP,
-			digest: digestBP,
-			taskDigestEntries: taskEntriesBP,
-			fileEntries: fileEntriesBP,
-			advisories: advisoriesBP,
+			pinned: inputs.pinned.entries,
+			summaries: inputs.summaries.entries,
+			detailEntries: inputs.detailEntries.entries,
+			staleChildrenMap: inputs.staleChildrenMap,
+			parentSummaryMap: inputs.parentSummaryMap,
+			deltaKeys: inputs.deltaKeys,
+			digest: inputs.digest,
+			taskDigestEntries: inputs.taskDigestEntries,
+			fileEntries: inputs.fileEntries,
+			advisories: inputs.advisories,
 			recencyEntries: recencyBP,
 			budgetPressure: true,
-			nowMs: Date.now(),
+			nowMs,
 		});
 		const reducedEnrichmentLines: string[] = [...bpStable, ...bpVarying];
 
