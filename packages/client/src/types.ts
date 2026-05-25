@@ -166,6 +166,16 @@ export interface CacheMarker {
 export interface ContextDebugInfo {
 	contextWindow: number;
 	totalEstimated: number;
+	/**
+	 * LLM-reported actual input tokens for this turn (raw_input + cache_read +
+	 * cache_write per AI-SDK semantics). Set after the LLM responds via
+	 * `applyActualUsageToContextDebug`; undefined until the response arrives.
+	 *
+	 * Preferred over `totalEstimated` for headline display because the local
+	 * cl100k_base estimator drifts (typically 10–15% under, sometimes 2x+ on
+	 * thinking-heavy threads) from the provider tokenizer that actually bills.
+	 */
+	actualTotalTokens?: number;
 	model: string;
 	sections: ContextDebugSection[];
 	budgetPressure: boolean;

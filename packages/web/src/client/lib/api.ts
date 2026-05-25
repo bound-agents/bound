@@ -78,6 +78,7 @@ export interface ContextDebugTurn {
 	context_debug: {
 		contextWindow: number;
 		totalEstimated: number;
+		actualTotalTokens?: number;
 		model: string;
 		sections: Array<{
 			name: string;

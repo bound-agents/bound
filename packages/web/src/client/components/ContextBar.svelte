@@ -39,22 +39,29 @@ function formatTokensCompact(n: number): string {
 	return String(n);
 }
 
-// Each marker resolves to one of four states. State drives color and label:
+// Each marker resolves to one of four states, driving its color:
 //
-// - `hit`     — capability on, cache_read > 0. The system breakpoint absorbs the
-//                read attribution because the stable prefix dominates on warm turns.
-// - `write`   — capability on, cache_write > 0. Attributed to the (cold-path)
-//                message marker because the fresh placement is what seeds the
-//                write — the system breakpoint already cached on a previous turn.
-// - `disabled`— capability off (backend can't cache this turn at all).
-// - `idle`    — capability on but neither read nor write attributable to this
-//                marker. Renders as a faint tick with just the TTL label so the
-//                position is still visible.
+// - `hit`      — read dominated this turn. The cached prefix served bytes; the
+//                 small write that may also have happened (e.g., the new user
+//                 message extending the cache) is a footnote on top of that.
+// - `write`    — write dominated. Either a cold reassembly seeded a fresh
+//                 prefix, or an extension wrote more than it read.
+// - `disabled` — backend `prompt_caching` capability is off; nothing was
+//                 cached this turn.
+// - `idle`     — capability on but no cache activity attributable to the turn.
+//                 Renders as a faint tick with the TTL label so the position
+//                 is still visible.
 //
-// Heuristic note: the AI SDK reports cache_read / cache_write at the request
-// level, so we cannot deterministically attribute tokens to a specific
-// breakpoint. The summary row in ContextDebugPanel surfaces the totals
-// faithfully; per-marker labels are signposting, not exact accounting.
+// Both the system and message markers SHARE the same state per turn — the AI
+// SDK aggregates cache_read / cache_write at request level, so per-marker
+// attribution would be a fabrication. Painting them with one shared "story"
+// matches operational reality (e.g., on a cold turn that wrote 162k, BOTH
+// breakpoints participated in seeding the write — painting only one as
+// "write" misled operators into thinking the other did nothing).
+//
+// Inline numeric labels are placed only on the message marker to avoid
+// rendering the same number twice underneath the bar. The system marker
+// shows its TTL inline when present and otherwise relies on the tooltip.
 type MarkerState = "hit" | "write" | "disabled" | "idle";
 
 interface RenderedMarker {
@@ -69,27 +76,30 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 	if (!cacheMarkers || cacheMarkers.length === 0) return [];
 	const cacheRead = cacheReadTokens ?? 0;
 	const cacheWrite = cacheWriteTokens ?? 0;
+	const anyDisabled = cacheMarkers.some((m) => !m.capabilityEnabled);
+
+	let dominantState: MarkerState;
+	if (anyDisabled) {
+		dominantState = "disabled";
+	} else if (cacheRead > cacheWrite) {
+		dominantState = "hit";
+	} else if (cacheWrite > 0) {
+		dominantState = "write";
+	} else {
+		dominantState = "idle";
+	}
 
 	return cacheMarkers.map((m) => {
 		const pct = Math.max(0, Math.min(100, (m.positionTokens / contextWindow) * 100));
-		let state: MarkerState;
-		if (!m.capabilityEnabled) {
-			state = "disabled";
-		} else if (m.kind === "system" && cacheRead > 0) {
-			state = "hit";
-		} else if (m.kind === "message" && cacheWrite > 0 && m.variant === "fixed") {
-			state = "write";
-		} else if (m.kind === "message" && cacheRead > 0 && m.variant === "rolling") {
-			state = "hit";
-		} else {
-			state = "idle";
-		}
-
+		const state: MarkerState = m.capabilityEnabled ? dominantState : "disabled";
 		const color = CACHE_MARKER_COLORS[state];
+
 		let label = "";
-		if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
-		else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
-		else if (state === "idle") label = m.ttl;
+		if (m.kind === "message") {
+			if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
+			else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
+			else if (state === "idle") label = m.ttl;
+		}
 
 		const variantLabel = m.kind === "system" ? "system" : `message · ${m.variant}`;
 		const tooltipParts = [
