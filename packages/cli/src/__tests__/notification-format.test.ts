@@ -8,7 +8,17 @@ describe("formatNotification", () => {
 			source_thread: "thread-123",
 			content: "goose deep read completed",
 		});
-		expect(result).toBe("[notification from background task] goose deep read completed");
+		// Per F2c (notification provenance): proactive payloads carry
+		// agent-authored free-text from a sibling thread. The render
+		// prefix must include a "background task" framing AND a
+		// provenance marker that flags the content as unverified, so
+		// the receiving agent doesn't read its sibling's narrative as
+		// authoritative system state.
+		expect(result).toContain("[notification from background task");
+		expect(result).toContain("goose deep read completed");
+		// Provenance signal — see notification-provenance.test.ts for
+		// the full assertion against the marker set.
+		expect(result.toLowerCase()).toContain("unverified");
 	});
 
 	it("handles proactive notification with empty content", () => {
@@ -16,7 +26,10 @@ describe("formatNotification", () => {
 			type: "proactive",
 			source_thread: "thread-123",
 		});
-		expect(result).toBe("[notification from background task]");
+		// Even with empty content, the provenance-marked prefix renders.
+		// Just trim trailing whitespace from the empty content tail.
+		expect(result).toContain("[notification from background task");
+		expect(result).toContain("unverified");
 	});
 
 	it("formats task_complete notifications", () => {
@@ -35,7 +48,11 @@ describe("formatNotification", () => {
 			source_thread: "thread-abc",
 			content: "What do you think?",
 		});
-		expect(result).toBe("[introspect request from thread thread-abc] What do you think?");
+		// Same provenance contract as proactive — introspect content
+		// is also agent-authored from a sibling thread.
+		expect(result).toContain("[introspect request from thread thread-abc");
+		expect(result).toContain("What do you think?");
+		expect(result.toLowerCase()).toContain("unverified");
 	});
 
 	it("formats unknown notification types as JSON", () => {
