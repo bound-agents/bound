@@ -12,6 +12,7 @@ import type {
 } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
+import { truncateHistoryToBudget } from "./budget-truncate";
 import {
 	hashStableVolatileInputs,
 	hashSystemPromptString,
@@ -2279,64 +2280,17 @@ Original output was too large for the context window. If you need the full conte
 				truncationTarget - systemMsgTokens - stablePrefixTokens - toolTokens,
 			);
 
-			// Walk backwards from end, accumulating tokens until we exceed budget
-			let accumulatedTokens = 0;
-			let sliceStart = historyMessages.length; // start at end (include nothing)
-			for (let i = historyMessages.length - 1; i >= 0; i--) {
-				const msgTokens = countContentTokens(historyMessages[i].content);
-				if (accumulatedTokens + msgTokens > historyBudget) break;
-				accumulatedTokens += msgTokens;
-				sliceStart = i;
-			}
-
-			// Floor: keep at least 2 messages so the agent has something to work with
-			sliceStart = Math.min(sliceStart, Math.max(0, historyMessages.length - 2));
-
-			// Advance past orphaned tool_result/tool_call/assistant at the boundary
-			// to start at a clean user message when possible.
-			const preAdvanceStart = sliceStart;
-			while (sliceStart < historyMessages.length && historyMessages[sliceStart].role !== "user") {
-				sliceStart++;
-			}
-
-			// Fallback: if no user found in forward scan (e.g. scheduled task threads
-			// with only system wakeup + tool_call/tool_result/assistant cycles, or
-			// long bursts of tool_call/tool_result pairs that pushed every user
-			// message out of the kept slice), try the last user message, or
-			// fall back to the original budget-based start. The Bedrock driver
-			// prepends a `<system-notification />` placeholder user message when
-			// the conversation doesn't start with `user`, but that placeholder
-			// does NOT satisfy a leading orphan tool_result whose tool_call was
-			// sliced off — Bedrock's pair validator rejects with "Expected
-			// toolResult blocks at messages.0.content for the following Ids: …".
-			// So even on the budget-based fallback, advance past leading
-			// `tool_result` rows whose `tool_call` partner is no longer in the
-			// kept slice. We deliberately do NOT skip leading `tool_call` rows:
-			// a tool_call followed by its tool_result is a well-formed pair, and
-			// the placeholder user satisfies Bedrock's "first message must be
-			// user" constraint.
-			if (sliceStart >= historyMessages.length) {
-				let foundUser = false;
-				for (let i = historyMessages.length - 1; i >= 0; i--) {
-					if (historyMessages[i].role === "user") {
-						sliceStart = i;
-						foundUser = true;
-						break;
-					}
-				}
-				if (!foundUser) {
-					sliceStart = preAdvanceStart;
-					while (
-						sliceStart < historyMessages.length &&
-						historyMessages[sliceStart].role === "tool_result"
-					) {
-						sliceStart++;
-					}
-				}
-			}
-
-			const remaining = historyMessages.slice(sliceStart);
-			truncatedCount = historyMessages.length - remaining.length;
+			// Backward-fill + wire-legal-opener resolution lives in
+			// `budget-truncate/`. Property-tested for budget compliance,
+			// floor preservation, wire-legal openers, recency
+			// preservation, non-monotonicity, determinism, and empty
+			// input — see `budget-truncate/__tests__/truncate.property.test.ts`.
+			const truncationResult = truncateHistoryToBudget({
+				historyMessages,
+				historyBudget,
+			});
+			const remaining = truncationResult.kept;
+			truncatedCount = truncationResult.truncatedCount;
 
 			// Inject truncation marker so the agent knows context was lost
 			const truncationMarker: LLMMessage[] = [];
