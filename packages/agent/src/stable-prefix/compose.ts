@@ -200,14 +200,16 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 /**
  * Render the active-skills XML index. Pure in `skills` alone.
  *
- * Mirrors `buildSkillIndex` in `context-assembly.ts` byte-for-byte —
- * the parity regression test asserts that. If `buildSkillIndex`
- * changes shape, this function must change in lockstep, otherwise
- * the drift detector's "leak in compose" diagnosis would surface
- * spurious mismatches between this module's output and production
- * `systemPrompt` content.
+ * Single source of truth for the skill-index byte layout. Used both
+ * by `composeStableVolatileSubsection` (property-test seam) and by
+ * the production stable-prefix folding in
+ * `context-assembly.buildVolatileContext`. Both call sites import
+ * this function so a future format change propagates everywhere
+ * without a "keep in lockstep" coupling.
  */
-function renderSkillIndex(skills: ReadonlyArray<{ name: string; description: string }>): string {
+export function renderSkillIndex(
+	skills: ReadonlyArray<{ name: string; description: string }>,
+): string {
 	return `<available_skills>
 ${skills.map(
 	(skill) => `<skill>

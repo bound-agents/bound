@@ -18,7 +18,7 @@ export {
 	type LoadedStableInputs,
 	projectStableVolatileInputs,
 } from "./collect";
-export { composeStableVolatileSubsection } from "./compose";
+export { composeStableVolatileSubsection, renderSkillIndex } from "./compose";
 export { hashStableVolatileInputs, hashSystemPromptString } from "./hash";
 export type {
 	DetailEntryView,
