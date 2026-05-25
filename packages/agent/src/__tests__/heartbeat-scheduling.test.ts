@@ -602,6 +602,31 @@ describe("healStuckHeartbeats", () => {
 		expect(row.status).toBe("pending");
 	});
 
+	// Reproduces the production incident on heartbeat task 455a07c1:
+	// A heartbeat session encountered consecutive relay errors and cancelled itself
+	// via the cancel tool, leaving status='cancelled'. The healer must also recover
+	// this state, otherwise the heartbeat is permanently wedged until manual intervention.
+	it("re-arms a heartbeat row stuck in 'cancelled' with stale next_run_at", () => {
+		const stalePast = new Date(Date.now() - 60_000).toISOString();
+		const taskId = insertHeartbeat({
+			status: "cancelled",
+			error: "Unknown source site: f9c2e53b5d2017d0b2adb195432bfa0c",
+			nextRunAt: stalePast,
+			runCount: 251,
+		});
+
+		const ctx = makeCtx();
+		const healed = healStuckHeartbeats(db, ctx.logger, new Date());
+
+		expect(healed).toBe(1);
+		const row = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+			status: string;
+			next_run_at: string;
+		};
+		expect(row.status).toBe("pending");
+		expect(new Date(row.next_run_at).getTime()).toBeGreaterThan(Date.now());
+	});
+
 	it("ignores heartbeats currently running", () => {
 		const taskId = insertHeartbeat({
 			status: "running",

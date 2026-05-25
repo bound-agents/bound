@@ -308,13 +308,16 @@ export function rescheduleHeartbeat(
 }
 
 /**
- * Heals heartbeat tasks left in a terminal state with a stale next_run_at.
+ * Heals heartbeat tasks left in a terminal or externally-cancelled state with
+ * a stale next_run_at.
  *
  * The eviction-vs-completion race in phase0 can leave a heartbeat row with
  * status='completed' or 'failed' AND next_run_at in the past, with no
  * subsequent code path that resurrects it (phase1 only claims status='pending').
- * Without a healer, a single race wedges the heartbeat indefinitely — the
- * cluster stops firing heartbeats entirely until manual intervention.
+ * Additionally, a heartbeat session that encounters consecutive relay errors
+ * may cancel itself via the cancel tool — leaving status='cancelled' — which
+ * the healer must also recover. Without a healer, a single wedge halts the
+ * cluster's heartbeat entirely until manual intervention.
  *
  * Called from phase0 every tick. Re-arms each stuck row via rescheduleHeartbeat,
  * which is the same write the eviction/completion paths perform — no
@@ -334,7 +337,7 @@ export function healStuckHeartbeats(
 			`SELECT * FROM tasks
 			WHERE type = 'heartbeat'
 			  AND deleted = 0
-			  AND status IN ('completed', 'failed')
+			  AND status IN ('completed', 'failed', 'cancelled')
 			  AND next_run_at IS NOT NULL
 			  AND next_run_at < ?`,
 		)

@@ -35,10 +35,11 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 				const taskId = input.task_id;
 
 				if (payloadMatch) {
-					// Find all pending/claimed tasks whose payload contains the match string
+					// Find all pending/claimed tasks whose payload contains the match string.
+					// Heartbeat tasks are excluded — they are uncancellable by design.
 					const tasks = ctx.db
 						.prepare(
-							"SELECT id FROM tasks WHERE payload LIKE ? AND status IN ('pending', 'claimed') AND deleted = 0",
+							"SELECT id FROM tasks WHERE payload LIKE ? AND type != 'heartbeat' AND status IN ('pending', 'claimed') AND deleted = 0",
 						)
 						.all(`%${payloadMatch}%`) as Array<{ id: string }>;
 
@@ -57,13 +58,20 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 					return "Error: must specify task_id or payload_match";
 				}
 
-				// Check if task exists
+				// Check if task exists and fetch type for the heartbeat guard below.
 				const existing = ctx.db
-					.prepare("SELECT id FROM tasks WHERE id = ? AND deleted = 0")
-					.get(taskId) as { id: string } | null;
+					.prepare("SELECT id, type FROM tasks WHERE id = ? AND deleted = 0")
+					.get(taskId) as { id: string; type: string } | null;
 
 				if (!existing) {
 					return `Error: Task not found: ${taskId}`;
+				}
+
+				// Heartbeat tasks are uncancellable by design — the scheduler healer
+				// re-arms them on every tick regardless of status. Allowing a cancel
+				// just leaves the task in a wedged state until the healer fires.
+				if (existing.type === "heartbeat") {
+					return "Error: Cannot cancel heartbeat tasks (uncancellable by design)";
 				}
 
 				// Update task status to cancelled

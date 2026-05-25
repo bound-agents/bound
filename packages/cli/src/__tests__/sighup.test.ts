@@ -518,4 +518,83 @@ describe("SIGHUP handler", () => {
 		// Only first call should log "Reloading"
 		expect(reloadingLogs.length).toBe(1);
 	});
+
+	it("calls onKeyringChanged callback when keyring changes", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		let reloadCalled = false;
+		const mockKeyManager: Partial<KeyManager> = {
+			reloadKeyring(_newKeyring: KeyringConfig) {},
+		};
+
+		let callbackSiteIds: string[] = [];
+		const onKeyringChanged = (newKeyring: KeyringConfig) => {
+			reloadCalled = true;
+			callbackSiteIds = Object.keys(newKeyring.hosts);
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {
+				keyring: { ok: true, value: { hosts: {} } },
+			},
+		};
+
+		writeFileSync(
+			join(tempDir, "keyring.json"),
+			JSON.stringify({
+				hosts: {
+					peer1: { public_key: "ed25519:aaaa", url: "http://peer1:8080" },
+					peer2: { public_key: "ed25519:bbbb", url: "http://peer2:8080" },
+				},
+			}),
+		);
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			keyManager: mockKeyManager,
+			logger: testLogger,
+			onKeyringChanged,
+		});
+
+		expect(reloadCalled).toBe(true);
+		expect(callbackSiteIds).toContain("peer1");
+		expect(callbackSiteIds).toContain("peer2");
+	});
+
+	it("does not call onKeyringChanged when keyring is unchanged", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+
+		let callCount = 0;
+		const mockKeyManager: Partial<KeyManager> = {
+			reloadKeyring(_newKeyring: KeyringConfig) {},
+		};
+
+		const keyringValue = {
+			hosts: { peer1: { public_key: "ed25519:aaaa", url: "http://peer1:8080" } },
+		};
+
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {
+				keyring: { ok: true, value: keyringValue },
+			},
+		};
+
+		// Same keyring as stored
+		writeFileSync(join(tempDir, "keyring.json"), JSON.stringify(keyringValue));
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			keyManager: mockKeyManager,
+			logger: testLogger,
+			onKeyringChanged: (_newKeyring) => {
+				callCount++;
+			},
+		});
+
+		expect(callCount).toBe(0);
+	});
 });
