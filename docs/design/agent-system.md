@@ -8,10 +8,11 @@ This document describes the `@bound/agent` package — the runtime core of Bound
 
 1. [Agent Loop State Machine](#agent-loop-state-machine)
 2. [Context Assembly Pipeline](#context-assembly-pipeline)
-3. [Built-in Commands](#built-in-commands)
-4. [Scheduler](#scheduler)
-5. [MCP Bridge](#mcp-bridge)
-6. [Advanced Features](#advanced-features)
+3. [Prompt Cache Path (warm / cold)](#prompt-cache-path-warm--cold)
+4. [Built-in Commands](#built-in-commands)
+5. [Scheduler](#scheduler)
+6. [MCP Bridge](#mcp-bridge)
+7. [Advanced Features](#advanced-features)
    - [Advisories](#advisories)
    - [Message Redaction](#message-redaction)
    - [Thread Title Generation](#thread-title-generation)
@@ -261,6 +262,36 @@ Place a Markdown file at `config/persona.md` (relative to the working directory,
 config/
   persona.md   <- injected as a system message after the base prompt
 ```
+
+---
+
+## Prompt Cache Path (warm / cold)
+
+The agent loop uses `CachedTurnState` to reuse assembled messages across turns. `InMemoryTurnStateStore` is constructed with `ttlMs = 55 * 60 * 1000` in `createAppContext()` (matching the 1h upstream prompt-cache tier). The class default constructor argument remains `4 * 60 * 1000`, but production never uses it.
+
+- **Cold**: runs full `assembleContext()` (all 8 stages, including Stage 3 tool-pair sanitization), places a fixed `cache` marker, stores the result. Stage 1.7 unconditionally rewrites old `tool_result` content to retrieval-pointer stubs; thinking-block stripping inside Stage 1.7 is **budget-driven** — it only fires when the post-tool_result-compaction estimate exceeds the effective truncation ratio (per-thread adaptive, base 85%) of the context window.
+- **Warm**: reuses stored messages WITHOUT mutating them on the happy path, fetches only delta messages, appends a rolling `cache` marker at `messages[length-2]`, injects a freshly-built **varying** volatile tail as a `developer`-role tail (R-VC24). The stable half (Working Knowledge bodies + Discoverable Archive titles + skill index) is already inside the cached `systemPrompt` from the cold build and is reused untouched. Stable warm-path messages are required for prefix caching: any mutation invalidates the provider's byte-exact prefix-cache lookup.
+
+  **Exception:** when the high-water budget gate fails, `compactStoredMessagesInPlace` (from `packages/agent/src/warm-compaction.ts`) applies cold-Stage-1.7-equivalent compaction (tool_result → retrieval-pointer stub keyed by `tool_use_id`, plus thinking-block strip) to `LLMMessage[]` in place; if the post-compaction estimate fits, the warm path proceeds with the byte-stable prefix the provider has already cached. The fallback to cold reassembly only fires when in-place compaction is insufficient.
+
+Warm-path bails to cold reassembly when any of the following hold (each clears `CachedTurnState` first, forcing full re-assembly next turn):
+
+- **High-water gate**: merged token estimate exceeds `effectiveTruncationRatio * contextWindow`. `effectiveTruncationRatio` is the per-thread adaptive ratio from `resolveAdaptiveTruncationRatio(db, threadId, TRUNCATION_TARGET_RATIO)` — the base 0.85 divided by the EMA of `actualTotalTokens / totalEstimated` over the last 10 valid turns (clamped so inflation < 1.0 does not loosen the gate). `actualTotalTokens` is the AI-SDK-yielded `inputTokens` value AS-IS — Bedrock@4.x and Anthropic@3.x already sum `raw_input + cache_read + cache_write` into `inputTokens`, so adding `cacheReadTokens + cacheWriteTokens` again would double-count and poison the EMA on cache-write turns. When the gate fires, the agent loop first calls `compactStoredMessagesInPlace`; only if the post-compaction estimate is still over budget does it clear `CachedTurnState` and bail to cold reassembly. The adaptive layer addresses thinking-heavy threads where `cl100k_base` under-counts by 2x+ and the static 0.85 ratio leaves the configured forcing budget exposed. `COLD_COMPACTION_THRESHOLD = 500` and `computeRecentWindow(contextWindow)` are exported from `warm-compaction.ts` and shared between the cold-path Stage 1.7 entry gate (in `context-assembly.ts`) and the warm-path in-place compactor.
+- **Orphan tool_call**: `hasOrphanedToolCall(messages)` finds a `tool_call` whose `tool_use` ids are not answered by matching `tool_result`s before the next non-tool turn. Symptom pre-fix was AI SDK `MissingToolResultsError` when a client tool had not returned before the user sent a follow-up. The warm path cannot self-heal this because it skips Stage 3 sanitization; only the cold path synthesizes the missing `tool_result`.
+
+`computeToolFingerprint()` detects tool-set changes that invalidate the cache. `predictCacheState()` / `selectCacheTtl()` pick warm vs. cold based on time since last turn. `hasOrphanedToolCall()` is exported from `packages/agent/src/agent-loop-utils.ts`.
+
+### Per-inner-loop volatile-tail refresh
+
+The cold/warm path injection above happens once per `AgentLoop.run()` invocation (entry). Within the inner `while (continueLoop)` tool-roundtrip loop, `refreshVolatileTailForNextTurn` rebuilds the volatile-tail `developer` message in `llmMessages` before each LLM call after the first (`turnCount > 1`) and refreshes `lastContextDebug.{totalEstimated, sections}` so the per-turn record reflects the wire payload that will actually be sent. Without this, the dev tail's snapshot ages relative to mid-run state mutations (memorize, file writes, applied advisories), and the agent has been observed re-stating already-resolved facts. The refresh calls `buildVolatileContext` directly (not `composeVolatileSections`); `computeVolatileTailSection(volatileCtx)` exported from `context-assembly.ts` is the shared helper that produces the `volatile-tail` `ContextSection` for cold-path `assembleContext`, `rebuildWarmSections`, and the inner-loop refresh — so the section breakdown stays consistent across all three sites. The fast path uses `fastApproxContentTokens()` (char/4 fallback above `FAST_TOKEN_APPROX_THRESHOLD = 32_000`) to avoid tiktoken's pathological behavior on highly-repetitive content near the 50k tool-result offload boundary.
+
+### Cache markers
+
+`maybePlaceCacheMarker()` (in `packages/agent/src/cache-marker.ts`) returns a `CacheMarkerPlacement { placed; variant: "fixed" | "rolling"; index; reason?: "capability-disabled" | "too-short" }`. Both call sites in `agent-loop.ts` (warm rolling, cold fixed) feed the placement into the exported `buildCacheMarkers({ sections, messagePlacement, ttl })` helper, which synthesizes a 2-entry `CacheMarker[]` (system + message) from the section token totals and attaches it to `contextDebug.cacheMarkers` so the breakpoint descriptors flow through `applyActualUsageToContextDebug` and persist via `recordContextDebug`. The system marker rides the `system` provider-param boundary (R-VC24 stable prefix); the message marker sits at `messages[length - 2]`. When `messagePlacement.reason === "capability-disabled"` (e.g. MiniMax on Bedrock) `buildCacheMarkers` returns `[]` so the wire and the debug record agree; the `"too-short"` branch (messages.length < 2) still emits descriptors with `capabilityEnabled: true` so the UI can render the intended position. `ContextDebugInfo.cacheMarkers?: CacheMarker[]` is optional — old `context_debug` rows parse without it. The mirror type plus `tokens_cache_read` / `tokens_cache_write` columns are surfaced on `ContextDebugTurn` from `@bound/client` and on `GET /api/threads/:id/context-debug`. Per-marker cache attribution is heuristic: the AI SDK aggregates `cache_read` / `cache_write` totals at request level, so the UI splits the totals across markers by convention rather than by exact byte accounting.
+
+### Per-backend cache TTL
+
+`model_backends.json` accepts an optional per-backend `cache_ttl: "5m" | "1h"` field. It propagates through the standard per-backend hand-off chain (per critical invariant #17): `modelBackendSchema` → `toRouterConfig()` (camelCase `cacheTtl`) → `BackendConfig.cacheTtl` → `ModelRouter.getCacheTtl()` → `ModelResolution.local.cacheTtl` → agent-loop attaches it to `ChatParams.cache_ttl` → driver folds it into `cachePoint.ttl` (Bedrock) or `cache_control.ttl` (Anthropic). `inferenceRequestPayloadSchema` includes `cache_ttl` for completeness, but `relay-processor` deliberately reads the TTL from the **local** backend config rather than the payload — spokes apply their own TTL preference rather than honoring a hub-set TTL for a model the spoke may not support. Bedrock `"1h"` is supported only on Claude Opus 4.5+, Sonnet 4.5+, and Haiku 4.5+; setting `"1h"` on an unsupported model falls back to default.
 
 ---
 
