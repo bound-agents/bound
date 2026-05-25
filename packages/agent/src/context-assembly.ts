@@ -12,6 +12,7 @@ import type {
 } from "@bound/shared";
 import { countContentTokens, countTokens, safeSlice } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
+import { hashStableVolatileInputs, hashSystemPromptString } from "./stable-prefix";
 import {
 	type LiveStateTaskEntry,
 	RECENT_MEMORY_HEADER,
@@ -205,6 +206,66 @@ export interface VolatileContext {
 	crossThreadSources?: CrossThreadSource[];
 	/** Total memory count for header reconstruction */
 	totalMemCount: number;
+	/**
+	 * SHA-256/16-hex of the `StableVolatileInputs` snapshot that fed
+	 * the R-VC24 stable subsection rendering on this assembly. The
+	 * hash covers Working Knowledge inputs (pinned + summary), the
+	 * Discoverable Archive inputs (detail entries + parent-summary
+	 * map + stale-child exclusions + tunables + budgetPressure), and
+	 * the skill-index inputs.
+	 *
+	 * Propagated up to `ContextDebugInfo.stablePrefixInputFingerprint`
+	 * by `assembleContext`. Used by the drift detector at
+	 * `validation/run-stable-prefix-drift-validation.ts` to localize
+	 * leaks: matching fingerprint with diverging output hash means
+	 * the drift is in the renderer (not in input collection).
+	 */
+	stablePrefixInputFingerprint: string;
+}
+
+/**
+ * Project the inputs that fed `composeVolatileSections` into the
+ * narrow `StableVolatileInputs` shape and hash them, producing the
+ * `context_debug.stablePrefixInputFingerprint` value.
+ *
+ * Shared across the three stable-side rendering call sites (primary
+ * cold path inside `buildVolatileContext`, no-history task path
+ * inlined in `assembleContext`, budget-pressure rebuild path) so
+ * each site records a fingerprint computed from the same canonical
+ * input shape. Without this sharing, the drift detector would see
+ * spurious mismatches across paths even when the same logical inputs
+ * were rendered.
+ *
+ * The function reads only what `composeStableVolatileSubsection`
+ * declares as relevant to byte output — see
+ * `stable-prefix/types.ts` for the contract.
+ */
+function computeStablePrefixInputFingerprint(args: {
+	pinned: ReadonlyArray<{ key: string; value: string }>;
+	summaries: ReadonlyArray<{ key: string; value: string }>;
+	detailEntries: ReadonlyArray<{ key: string; last_accessed_at: string | null }>;
+	parentSummaryMap: ReadonlyMap<string, string>;
+	staleChildrenMap: ReadonlyMap<string, ReadonlyArray<{ key: string }>>;
+	budgetPressure: boolean;
+	activeSkills: ReadonlyArray<{ name: string; description: string }>;
+}): string {
+	return hashStableVolatileInputs({
+		pinned: args.pinned.map((e) => ({ key: e.key, value: e.value })),
+		summaries: args.summaries.map((e) => ({ key: e.key, value: e.value })),
+		detailEntries: args.detailEntries.map((e) => ({
+			key: e.key,
+			last_accessed_at: e.last_accessed_at,
+		})),
+		parentSummaryByKey: args.parentSummaryMap,
+		staleChildKeysInWorkingKnowledge: new Set(
+			Array.from(args.staleChildrenMap.values())
+				.flat()
+				.map((e) => e.key),
+		),
+		budgetPressure: args.budgetPressure,
+		tunables: resolveVc15Tunables(),
+		skillIndex: args.activeSkills.map((s) => ({ name: s.name, description: s.description })),
+	});
 }
 
 function buildSkillIndex(skills: { name: string; description: string }[]): string {
@@ -310,7 +371,6 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		parentSummaryByKey: params.parentSummaryMap,
 		staleChildKeysInWorkingKnowledge,
 		budgetPressure: params.budgetPressure,
-		nowMs: params.nowMs,
 		tunables: resolveVc15Tunables(),
 	});
 	stableLines.push(...da.section.lines);
@@ -567,8 +627,14 @@ export function buildVolatileContext(params: {
 	// Skill index is keyed off the active skill set; a skill flipping
 	// active/retired or being newly imported invalidates the prefix, but
 	// steady state (no skill churn) keeps it cacheable across turns.
+	//
+	// `activeSkills` is hoisted out of the try block so the
+	// stable-prefix fingerprint computation below can also see it. On
+	// error, falls through to `[]` — same outcome the rendering branch
+	// has (empty skill index produces no lines).
+	let activeSkills: Array<{ name: string; description: string }> = [];
 	try {
-		const activeSkills = params.db
+		activeSkills = params.db
 			.query(
 				"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
 			)
@@ -689,6 +755,20 @@ export function buildVolatileContext(params: {
 	const stableTokenEstimate = stableContent.length > 0 ? countTokens(stableContent) : 0;
 	const varyingTokenEstimate = varyingContent.length > 0 ? countTokens(varyingContent) : 0;
 
+	// Stable-prefix input fingerprint — see ContextDebugInfo for
+	// rationale. Hashed at the same level as the renderer so the
+	// captured snapshot is byte-equivalent to what the renderer
+	// actually consumed (R-VC24 stable-side inputs only).
+	const stablePrefixInputFingerprint = computeStablePrefixInputFingerprint({
+		pinned: pinned.entries,
+		summaries: summaries.entries,
+		detailEntries: detailEntries.entries,
+		parentSummaryMap,
+		staleChildrenMap,
+		budgetPressure: false,
+		activeSkills,
+	});
+
 	return {
 		content,
 		stableContent,
@@ -707,6 +787,7 @@ export function buildVolatileContext(params: {
 		tiers: enrichmentTiers,
 		crossThreadSources,
 		totalMemCount,
+		stablePrefixInputFingerprint,
 	};
 }
 
@@ -758,29 +839,6 @@ function loadPersona(configDir: string): string | null {
 	personaCachePath = configDir;
 	personaCache = null;
 	return null;
-}
-
-/**
- * Formats a timestamp as a relative duration string for context annotations.
- * Returns e.g. "[5m ago]", "[2h ago]", "[3d ago]".
- * @deprecated Use formatTimestamp instead — relative timestamps bust prompt cache.
- */
-export function formatRelativeTimestamp(isoTimestamp: string, now?: Date): string {
-	const then = new Date(isoTimestamp).getTime();
-	const nowMs = (now ?? new Date()).getTime();
-	const diffMs = nowMs - then;
-
-	if (diffMs < 0) return "[just now]";
-
-	const minutes = Math.floor(diffMs / 60_000);
-	if (minutes < 1) return "[just now]";
-	if (minutes < 60) return `[${minutes}m ago]`;
-
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `[${hours}h ago]`;
-
-	const days = Math.floor(hours / 24);
-	return `[${days}d ago]`;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -2038,6 +2096,11 @@ Original output was too large for the context window. If you need the full conte
 	// accounting and warm-path token reuse.
 	let crossThreadSources: CrossThreadSource[] | undefined;
 	let suffixContent: string | undefined;
+	// Stable-prefix fingerprints for the drift detector.
+	// Populated by the primary cold path (via `buildVolatileContext`)
+	// and the no-history task path (inline below); left undefined on
+	// other paths where the stable subsection isn't built.
+	let stablePrefixInputFingerprint: string | undefined;
 	if (!noHistory) {
 		// --- VARYING SUFFIX: per-thread content that busts the cache ---
 		// Extract latest user message for relevance-aware memory boosting
@@ -2075,6 +2138,7 @@ Original output was too large for the context window. If you need the full conte
 				tokens: volatileCtx.stableTokenEstimate,
 			};
 		}
+		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
 		// an adjacent user message wrapped in <system-context>; uncached.
@@ -2166,6 +2230,22 @@ Original output was too large for the context window. If you need the full conte
 			nowMs,
 		});
 		const renderedEnrichmentLines: string[] = [...nhStable, ...nhVarying];
+
+		// Stable-prefix input fingerprint for the noHistory path.
+		// Mirrors the primary path's computation in
+		// `buildVolatileContext` so the drift detector sees a uniform
+		// fingerprint shape across path types. The noHistory path
+		// loads no skills (the skill index is stamped only on
+		// non-noHistory threads), so `skillIndex: []`.
+		stablePrefixInputFingerprint = computeStablePrefixInputFingerprint({
+			pinned: pinnedNH.entries,
+			summaries: summariesNH.entries,
+			detailEntries: detailEntriesNH.entries,
+			parentSummaryMap: parentSummaryMapNH,
+			staleChildrenMap: staleChildrenMapNH,
+			budgetPressure: false,
+			activeSkills: [],
+		});
 
 		if (renderedEnrichmentLines.length > 0) {
 			totalMemCount = (
@@ -2588,6 +2668,8 @@ Original output was too large for the context window. If you need the full conte
 					budgetPressure,
 					truncated: truncatedCount,
 					...(crossThreadSources ? { crossThreadSources } : {}),
+					stablePrefixHash: hashSystemPromptString(systemPrompt),
+					...(stablePrefixInputFingerprint !== undefined ? { stablePrefixInputFingerprint } : {}),
 				},
 			};
 		}

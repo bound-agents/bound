@@ -25,7 +25,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -40,20 +39,24 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 
-	it("test 2: Single entry, no budget pressure — relative time fragment present", () => {
-		const entry = createTestEntry("my-memory", undefined, 0.0625); // 90 minutes ago
+	it("test 2: Single entry, no budget pressure — absolute date fragment present", () => {
+		// 90 minutes before 2026-05-23T12:00:00Z is still 2026-05-23 (10:30Z).
+		// The displayed date is the calendar prefix of `last_accessed_at`,
+		// so the relative position within the day doesn't matter — only
+		// the date does. This is what gives the stable-prefix its byte
+		// stability across cold rebuilds within a day.
+		const entry = createTestEntry("my-memory", undefined, 0.0625);
 		const input: DiscoverableArchiveInput = {
 			entries: [entry],
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- my-memory (last accessed 1h ago)");
+		expect(result.section.lines).toContain("- my-memory (accessed 2026-05-23)");
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 
@@ -64,13 +67,12 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- forgotten-key (last accessed never)");
+		expect(result.section.lines).toContain("- forgotten-key (accessed never)");
 	});
 
 	it("test 4: Sorting preserved — three entries already sorted DESC by last_accessed_at", () => {
@@ -86,7 +88,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: now,
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -105,7 +106,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: true,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -129,7 +129,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(["entry-b"]),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -153,7 +152,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -172,7 +170,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -196,7 +193,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -211,7 +207,6 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -238,7 +233,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -270,7 +264,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -304,7 +297,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -348,7 +340,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -391,7 +382,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: now,
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -438,7 +428,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -465,7 +454,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 250, m: 20 },
 		};
 
@@ -489,7 +477,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: true,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -528,7 +515,6 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 1000, m: 20 },
 		};
 
@@ -554,7 +540,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 210, m: 3 },
 		};
 
@@ -578,7 +563,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 210, m: 3 },
 		};
 
@@ -606,7 +590,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 200, m: 5 },
 		};
 
@@ -642,7 +625,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: now,
 			tunables: { n: 200, m: 3 },
 		};
 
@@ -693,7 +675,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 200, m: 10 },
 		};
 
@@ -724,7 +705,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 200, m: 10 },
 		};
 
@@ -751,7 +731,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 200, m: 10 },
 		};
 
@@ -772,7 +751,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: new Map(),
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: true,
-			nowMs: new Date("2026-05-23T12:00:00Z").getTime(),
 			tunables: { n: 200, m: 3 },
 		};
 
@@ -841,7 +819,6 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			parentSummaryByKey: parentMap,
 			staleChildKeysInWorkingKnowledge: new Set(),
 			budgetPressure: false,
-			nowMs: now,
 			tunables: { n: 200, m: 2 },
 		};
 

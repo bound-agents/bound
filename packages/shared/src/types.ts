@@ -758,6 +758,40 @@ export interface ContextDebugInfo {
 	 */
 	warmCompactionTokensSaved?: number;
 	/**
+	 * SHA-256 (first 16 hex chars) of the final `systemPrompt` byte
+	 * string for this cold rebuild — i.e. the bytes that ride the
+	 * system-level cache breakpoint on the wire.
+	 *
+	 * The drift detector at
+	 * `packages/agent/src/validation/run-stable-prefix-drift-validation.ts`
+	 * compares consecutive cold rebuilds on the same thread within
+	 * the cache TTL window: if `stablePrefixHash` differs but no
+	 * change_log row touched `semantic_memory | skills | files |
+	 * advisories | overlay_index` between them, that's a leak.
+	 *
+	 * `undefined` on warm turns (the warm path reuses the cached
+	 * `systemPrompt` and recording the hash again would just
+	 * duplicate the cold-turn value). `undefined` on rows persisted
+	 * before this field was added.
+	 */
+	stablePrefixHash?: string;
+	/**
+	 * SHA-256 (first 16 hex chars) of a deterministic
+	 * canonicalization of the `StableVolatileInputs` object that fed
+	 * `composeStableVolatileSubsection` for this cold rebuild.
+	 *
+	 * Diagnosis lever: when `stablePrefixHash` differs between two
+	 * cold rebuilds but `stablePrefixInputFingerprint` matches, the
+	 * divergence cannot have come from a declared input change. By
+	 * elimination, the renderer is reading some undeclared signal
+	 * (e.g., wall-clock, `process.env`, etc.). That points the
+	 * smoking gun straight at `stable-prefix/compose.ts` or its
+	 * delegated renderers without needing log scraping.
+	 *
+	 * `undefined` on warm turns and on older rows.
+	 */
+	stablePrefixInputFingerprint?: string;
+	/**
 	 * Cache breakpoint descriptors for this turn. Up to two entries:
 	 *
 	 * - `kind: "system"` — boundary at the end of the stable system-prompt prefix

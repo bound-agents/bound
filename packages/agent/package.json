@@ -21,6 +21,7 @@
 		"@opentelemetry/resources": "^1.30.0",
 		"@opentelemetry/sdk-trace-base": "^1.30.0",
 		"@opentelemetry/semantic-conventions": "^1.28.0",
+		"fast-check": "^4.8.0",
 		"just-bash": "^2.14.0"
 	}
 }

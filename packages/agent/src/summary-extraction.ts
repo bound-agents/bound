@@ -673,8 +673,6 @@ export interface DiscoverableArchiveInput {
 	staleChildKeysInWorkingKnowledge: Set<string>;
 	/** True when the upstream budget gate (R-VC14) signals critical pressure. */
 	budgetPressure: boolean;
-	/** Wall-clock anchor for relative-time formatting. Pass Date.now() at assembly time. */
-	nowMs: number;
 	/** Resolved at assembly time from BOUND_VC15_N / BOUND_VC15_M (see resolveVc15Tunables). */
 	tunables: Vc15Tunables;
 }
@@ -794,9 +792,31 @@ export function buildStaleChildrenMap(
 	return result;
 }
 
-const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
-const DISCOVERABLE_FOOTER =
+export const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
+export const DISCOVERABLE_FOOTER =
 	"Bodies are accessed via memory search or query against semantic_memory.";
+
+/**
+ * Render a Discoverable-Archive entry line. Pure in `(entry,
+ * budgetPressure)` — no `nowMs` parameter, no `Date.now()` call —
+ * which is the wall-clock-purity contract that
+ * `composeStableVolatileSubsection` relies on. Delegates to
+ * `formatDetailLine`; exported here so the stable-prefix module can
+ * render byte-equivalently without importing internal helpers.
+ */
+export function formatStableDetailLine(
+	entry: { key: string; last_accessed_at: string | null },
+	budgetPressure: boolean,
+): string {
+	return formatDetailLine(
+		// Production callers pass full `DetailEntry` rows; the
+		// renderer reads only `key` and `last_accessed_at`. The narrow
+		// shape from `stable-prefix/types.ts` is structurally
+		// compatible with the subset actually read.
+		entry as DetailEntry,
+		budgetPressure,
+	);
+}
 
 /**
  * Section header for `tier='default'` L2 (graph-seeded) + L3 (recency)
@@ -837,7 +857,7 @@ export function renderDiscoverableArchive(
 	if (total <= VC15_TIER1_THRESHOLD) {
 		// Tier 1: flat list, last_accessed_at DESC (already sorted upstream by R-VC4 SELECT).
 		for (const entry of visible) {
-			lines.push(formatDetailLine(entry, input.budgetPressure, input.nowMs));
+			lines.push(formatDetailLine(entry, input.budgetPressure));
 		}
 		lines.push("");
 		lines.push(DISCOVERABLE_FOOTER);
@@ -851,7 +871,7 @@ export function renderDiscoverableArchive(
 		for (const cluster of sorted) {
 			lines.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
 			for (const entry of cluster.entries) {
-				lines.push(formatDetailLine(entry, input.budgetPressure, input.nowMs));
+				lines.push(formatDetailLine(entry, input.budgetPressure));
 			}
 			lines.push(""); // blank line between clusters for readability
 		}
@@ -873,7 +893,7 @@ export function renderDiscoverableArchive(
 			`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
 		);
 		for (const entry of tail) {
-			lines.push(formatDetailLine(entry, input.budgetPressure, input.nowMs));
+			lines.push(formatDetailLine(entry, input.budgetPressure));
 		}
 		lines.push("");
 		if (
@@ -930,14 +950,47 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 	});
 }
 
-function formatDetailLine(entry: DetailEntry, budgetPressure: boolean, nowMs: number): string {
+function formatDetailLine(entry: DetailEntry, budgetPressure: boolean): string {
 	if (budgetPressure) {
 		return `- ${entry.key}`;
 	}
-	const fragment = relativeTimeFragment(entry.last_accessed_at, nowMs);
-	return `- ${entry.key} (last accessed ${fragment})`;
+	const dateFragment = formatAbsoluteDate(entry.last_accessed_at);
+	return `- ${entry.key} (accessed ${dateFragment})`;
 }
 
+/**
+ * Render a `last_accessed_at` ISO timestamp as the literal calendar date
+ * prefix (`YYYY-MM-DD`), or `"never"` when the input is null or malformed.
+ *
+ * Pure in `iso` alone — no `Date.now()`, no `Date.parse()` round-trip, no
+ * timezone math. The output is byte-stable across renders for the same
+ * input string. This is the key property that lets `composeStablePrefix`
+ * be byte-stable across cold rebuilds within the cache TTL window: the
+ * displayed date only changes when the underlying `last_accessed_at`
+ * column changes, and `bumpRenderedDetailEntries` debounces those writes
+ * to ≥ cache TTL.
+ *
+ * The prior `Nm/h/d/mo/y ago` formatter was the documented direct cause
+ * of the 554-token volatile-prefix wobble observed on thread
+ * `2d055bbe-...` (see `docs/design/specs/2026-05-22-volatile-context.md`,
+ * "Stable-prefix purity invariant"): the relative-time string ticked
+ * with wall-clock between renders, breaking byte-stability and driving
+ * the prompt cache hit rate to ~12%.
+ */
+function formatAbsoluteDate(iso: string | null): string {
+	if (!iso) return "never";
+	const match = /^(\d{4}-\d{2}-\d{2})/.exec(iso);
+	return match ? match[1] : "never";
+}
+
+/**
+ * Render an ISO timestamp as a humanized relative-age fragment
+ * (`"just now"`, `"5m ago"`, `"3d ago"`, etc.). Used ONLY by the
+ * **varying** side of the volatile context (Live State applied-advisory
+ * line). Stable-side renderers must not call this — they have no
+ * `nowMs` parameter to pass in (see `formatAbsoluteDate` for the
+ * stable-side equivalent and the byte-stability rationale).
+ */
 function relativeTimeFragment(iso: string | null, nowMs: number): string {
 	if (!iso) return "never";
 	const ts = Date.parse(iso);
@@ -1604,10 +1657,21 @@ export function bumpRenderedDetailEntries(
 	}
 }
 
-const WORKING_KNOWLEDGE_HEADER = "## Working Knowledge — operational and durable";
-const WORKING_KNOWLEDGE_FOOTER =
+export const WORKING_KNOWLEDGE_HEADER = "## Working Knowledge — operational and durable";
+export const WORKING_KNOWLEDGE_FOOTER =
 	"Bodies of summary entries are accessed via memory search using terms from the entry key.";
-const SUMMARY_GLOSS_MAX = 200;
+export const SUMMARY_GLOSS_MAX = 200;
+
+/**
+ * Truncate a summary value to `SUMMARY_GLOSS_MAX` chars with `…`
+ * suffix when over budget. Exposed so `stable-prefix/compose.ts`
+ * can render summary bodies byte-equivalently to
+ * `renderWorkingKnowledge`'s stable channel without re-importing
+ * the dual-purpose renderer.
+ */
+export function truncateGlossForSummary(value: string): string {
+	return truncateGloss(value, SUMMARY_GLOSS_MAX);
+}
 const STALE_CHILD_GLOSS_MAX = 200;
 const DELTA_MARKER = "[changed since last turn]";
 
