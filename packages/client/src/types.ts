@@ -239,6 +239,14 @@ export interface WebhookListEntry {
 	 * Stored on `tasks.model_hint`; null means "use the cluster default model".
 	 */
 	model_hint: string | null;
+	/**
+	 * When true, the webhook's event task runs with conversation history
+	 * suppressed — each delivery starts from a clean context window. Saves
+	 * tokens for stateless webhook handlers and partially mitigates the
+	 * retrieve_task spin pattern (#51) by removing the prior-cycle echo.
+	 * Stored as 0/1 on `tasks.no_history` and coerced to a boolean here.
+	 */
+	no_history: boolean;
 }
 
 export interface WebhookCreateResponse extends WebhookListEntry {
@@ -259,6 +267,11 @@ export interface CreateWebhookOptions {
 	 * string all leave the task on the cluster default model.
 	 */
 	model_hint?: string | null;
+	/**
+	 * When true, the webhook's event task is created with no_history=1.
+	 * Defaults to false (history enabled). See WebhookListEntry.no_history.
+	 */
+	no_history?: boolean;
 }
 
 export interface UpdateWebhookOptions {
@@ -272,6 +285,13 @@ export interface UpdateWebhookOptions {
 	 *   non-empty str  → set the model_hint
 	 */
 	model_hint?: string | null;
+	/**
+	 * Two-state semantics on PATCH:
+	 *   omitted   → leave the no_history flag alone
+	 *   true/false → set the flag explicitly
+	 * Non-boolean values are rejected by the server with HTTP 400.
+	 */
+	no_history?: boolean;
 }
 
 // ---- Errors ----
