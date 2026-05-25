@@ -560,3 +560,43 @@ The §8.3 regression test verifies the structural surface only. The d0372be6 con
 **Why probability thresholds, not boolean assertions.** Model-behavior tests are inherently probabilistic. A single-trial assertion would be flaky regardless of whether the structural fix worked. The 80/20 thresholds are tuned to the observed pre-RFC failure rate (4/4 disclaimer turns in d0372be6 across 23:30, 02:11, 02:14, 02:14:55 — effectively 100%) and a generous 20% slack on the post-RFC bet. If the post-RFC `content_pct` falls between 0.5 and 0.8, the structural fix is partial; the RFC needs revisiting before merge.
 
 **Why this lives in §8.6, not §8.3.** §8.3 is structural and runs in the unit-test budget. §8.6 spawns a real agent loop and consumes inference budget; it lives in the integration-test pipeline, not the per-PR unit-test suite. CI runs §8.6 on a schedule (weekly or per-release), not per-commit.
+
+## 9. Stable-Prefix Purity Invariant (R-VC25)
+
+Added: 2026-05-25 in response to live-thread incident `2d055bbe-405f-4757-82a0-8775ac95a0e2` (44 turns, $70.09 spend, 11.93% prompt-cache hit rate).
+
+### 9.1 Background
+
+The R-VC24 stable-varying split (§3.5 / §6.3) folds the **stable** half of the volatile context — Working Knowledge bodies, Discoverable Archive titles, and the skill index — into `systemPrompt`, where it rides the system-level cache breakpoint. The promised win is cross-thread cache reuse for cron tasks within the same TTL window. That win depends on a property R-VC24 stated in prose but did not enforce in code: **byte-stability of the stable prefix across cold rebuilds within the cache TTL window when nothing relevant has changed**.
+
+Thread `2d055bbe-...` violated the property silently. The `volatile-prefix` token total oscillated between 66,345 and 66,899 across cold rebuilds despite zero `change_log` rows touching `semantic_memory | skills | files | advisories` during the thread's 20-minute lifetime. Direct cause: `formatDetailLine` (`packages/agent/src/summary-extraction.ts`) rendered detail entries with relative-time fragments (`(last accessed 26d ago)`) computed from `Date.now()`. The fragment ticked between renders as wall-clock advanced past minute / hour / day boundaries, breaking the byte-exact prefix-cache lookup. `cache_write` totaled 4.39M tokens vs. `cache_read` 1.69M — the agent paid to write ~2.6M tokens of cache that were never read.
+
+### 9.2 Invariant Statement (R-VC25)
+
+**Stable-side renderers shall be pure functions of their declared inputs.** Specifically:
+
+1. **No wall-clock reads.** Stable-side renderer signatures shall not accept `nowMs` or any `Date`-shaped parameter, and the renderer body shall not call `Date.now()`, `Date.parse()`, `process.hrtime()`, `process.uptime()`, `performance.now()`, or any equivalent ambient-time source.
+
+2. **No DB reads.** Stable-side renderers shall not accept a `Database` handle. Data acquisition belongs to a separate `collect` layer; the renderer consumes pre-loaded views.
+
+3. **No environment / config reads.** Stable-side renderers shall not call `process.env`, read config files, or invoke any mutable global state.
+
+4. **Type-level enforcement.** The declared input shape (`StableVolatileInputs` in `packages/agent/src/stable-prefix/types.ts`) carries every signal allowed to influence the byte output. Adding a new stable-side data dependency is a contract change that requires extending the input type. The drift detector's "leak in compose" classification depends on the input fingerprint covering every input the renderer reads.
+
+5. **Wall-clock signals enter only via persisted columns whose write debounce is ≥ cache TTL.** The narrow exception that motivates this rule is `last_accessed_at`: bumped by `bumpRenderedDetailEntries` on every cold render, debounced to 1h (the cache TTL). Within a TTL window, the bump fires once and subsequent cold renders see no change. The displayed value is the literal calendar date prefix of the stored ISO string (`YYYY-MM-DD`); the renderer never reaches `Date.parse` to compute a relative offset.
+
+### 9.3 Implementation
+
+- `packages/agent/src/stable-prefix/`: types, pure compose, hash helpers. Single seam for property tests and for production hashing.
+- `packages/agent/src/summary-extraction.ts`: `formatAbsoluteDate` replaces the prior `relativeTimeFragment` on the stable path. The relative-time helper survives for **varying-side** Live State rendering only.
+- `packages/agent/src/stable-prefix/__tests__/compose.property.test.ts`: P1–P7 property tests via `fast-check` (determinism, time-purity, locality, order-invariance, same-day bump inertness, tier stability, separator injectivity).
+- `packages/agent/src/stable-prefix/__tests__/parity-with-production.test.ts`: regression that pins byte-equivalence between this module's output and the production renderers' stable channels for the same inputs.
+- `ContextDebugInfo.stablePrefixHash` + `stablePrefixInputFingerprint`: per-cold-rebuild hashes recorded on `turns.context_debug`.
+- `packages/agent/src/validation/run-stable-prefix-drift-validation.ts`: hourly drift detector hooked into `heartbeat-context.ts`. Compares consecutive cold rebuilds on the same thread within the cache TTL; emits `_validation:stable-prefix-drift:compose:*` when the same input fingerprint produces different output (renderer leak), `_validation:stable-prefix-drift:collect:*` when the input fingerprint shifted without a covering `change_log` row (collector leak).
+
+### 9.4 Reading List
+
+- `packages/agent/src/stable-prefix/types.ts` — `StableVolatileInputs` declaration with full per-field rationale.
+- `packages/agent/src/stable-prefix/compose.ts` — pure renderer, including the parity-with-production rationale for the deliberate duplication of ~15 lines of rendering logic.
+- `packages/agent/src/stable-prefix/hash.ts` — canonicalization rules for the input fingerprint.
+

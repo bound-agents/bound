@@ -1,6 +1,6 @@
 # Contributing to Bound
 
-Last verified: 2026-05-24
+Last verified: 2026-05-25
 
 Thanks for your interest in contributing! This document is the developer-facing companion to [README.md](README.md) — if you're running `bun test` and touching SQL, this is the file you want.
 
@@ -82,7 +82,7 @@ For design rationale per package, see `docs/design/` — six topic files coverin
 - **Validation**: Zod v4
 - **Web**: Hono (server) + Svelte 5 (client, Vite build)
 - **Linting**: Biome (tabs, double quotes, semicolons, 100-char lines)
-- **Testing**: `bun:test`, Playwright for e2e
+- **Testing**: `bun:test`, Playwright for e2e, `fast-check` for property-based tests (currently used only for the R-VC25 stable-prefix purity properties in `packages/agent/src/stable-prefix/__tests__/`)
 
 ## Testing Conventions
 

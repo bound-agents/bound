@@ -2,6 +2,10 @@ import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { pruneResolvedAdvisories } from "./advisories";
 import { runR_VC9Validation, shouldRunR_VC9Validation } from "./validation/run-r-vc9-validation";
+import {
+	runStablePrefixDriftValidation,
+	shouldRunStablePrefixDriftValidation,
+} from "./validation/run-stable-prefix-drift-validation";
 
 const DEFAULT_INSTRUCTIONS =
 	"Review system state. If advisories need attention, address them. If tasks have failed, investigate. Otherwise, note what you observed.";
@@ -33,6 +37,31 @@ export function buildHeartbeatContext(
 			options.logger?.warn("[heartbeat] R-VC9 validation error (advisory, non-blocking)", {
 				error: String(validationError),
 			});
+		}
+	}
+
+	// Run stable-prefix drift validation hourly. Surfaces leaks where
+	// two consecutive cold rebuilds within the same cache TTL window
+	// produced different `stablePrefixHash` values — i.e. the bytes
+	// the provider's prefix cache locks on shifted without anything
+	// the renderer declares as relevant having changed. See
+	// `validation/run-stable-prefix-drift-validation.ts` for the
+	// full diagnosis story (compose vs collect).
+	if (options?.siteId && shouldRunStablePrefixDriftValidation(db, Date.now())) {
+		try {
+			const report = runStablePrefixDriftValidation(db, options.siteId, Date.now());
+			if (report.composeDriftCount > 0 || report.collectDriftCount > 0) {
+				options.logger?.info(
+					`[heartbeat] Stable-prefix drift: ${report.composeDriftCount} compose, ${report.collectDriftCount} collect leaks detected over ${report.pairsExamined} pairs`,
+				);
+			}
+		} catch (validationError) {
+			options.logger?.warn(
+				"[heartbeat] Stable-prefix drift validation error (advisory, non-blocking)",
+				{
+					error: String(validationError),
+				},
+			);
 		}
 	}
 
