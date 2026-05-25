@@ -21,6 +21,7 @@ import {
 	buildParentSummaryMap,
 	buildStaleChildrenMap,
 	buildVolatileEnrichment,
+	bumpRenderedDetailEntries,
 	computeBaseline,
 	flattenRecencyEntries,
 	formatMemoryEntry,
@@ -484,6 +485,18 @@ export function buildVolatileContext(params: {
 	const pinned = loadPinnedEntries(params.db);
 	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
 	const detailEntries = loadDetailEntries(params.db);
+
+	// B3: bump last_accessed_at for detail entries that are about to
+	// be rendered into Discoverable Archive. The DA sort key and
+	// per-entry `(last accessed Nd ago)` fragment depend on this
+	// column; without a render-time bump the agent reads its own
+	// actively-used memory as "26d ago" and concludes everything is
+	// stale (live evidence: thread d0372be6). Debounced to one bump
+	// per entry per hour. Direct SQL write (not via the outbox) —
+	// see bumpRenderedDetailEntries for the documented exception
+	// to invariant #1.
+	bumpRenderedDetailEntries(params.db, detailEntries.entries, nowMs);
+
 	const staleChildrenMap = buildStaleChildrenMap(params.db, summaries.entries);
 	const parentSummaryMap = buildParentSummaryMap(
 		params.db,
