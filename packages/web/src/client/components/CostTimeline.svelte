@@ -8,6 +8,14 @@ interface Props {
 		date: string;
 		model_id: string;
 		cost_usd: number;
+		cost_input_usd: number;
+		cost_output_usd: number;
+		cost_cache_read_usd: number;
+		cost_cache_write_usd: number;
+		tokens_in: number;
+		tokens_out: number;
+		cache_read: number;
+		cache_write: number;
 	}>;
 }
 
@@ -40,17 +48,41 @@ const MODEL_PALETTE: string[] = [
 ];
 
 // Group rows by model_id, parse dates, sort each series by time.
+interface SeriesPoint {
+	dateObj: Date;
+	cost_usd: number;
+	cost_input_usd: number;
+	cost_output_usd: number;
+	cost_cache_read_usd: number;
+	cost_cache_write_usd: number;
+	tokens_in: number;
+	tokens_out: number;
+	cache_read: number;
+	cache_write: number;
+}
+
 interface ModelSeries {
 	model_id: string;
 	color: string;
-	points: Array<{ dateObj: Date; cost_usd: number }>;
+	points: Array<SeriesPoint>;
 }
 
 const seriesList = $derived.by<ModelSeries[]>(() => {
-	const byModel = new Map<string, Array<{ dateObj: Date; cost_usd: number }>>();
+	const byModel = new Map<string, Array<SeriesPoint>>();
 	for (const row of data) {
 		const existing = byModel.get(row.model_id) ?? [];
-		existing.push({ dateObj: new Date(row.date), cost_usd: row.cost_usd });
+		existing.push({
+			dateObj: new Date(row.date),
+			cost_usd: row.cost_usd,
+			cost_input_usd: row.cost_input_usd,
+			cost_output_usd: row.cost_output_usd,
+			cost_cache_read_usd: row.cost_cache_read_usd,
+			cost_cache_write_usd: row.cost_cache_write_usd,
+			tokens_in: row.tokens_in,
+			tokens_out: row.tokens_out,
+			cache_read: row.cache_read,
+			cache_write: row.cache_write,
+		});
 		byModel.set(row.model_id, existing);
 	}
 	// Stable color assignment: sort model ids alphabetically so the palette
@@ -149,20 +181,46 @@ const xTickDates = $derived.by(() => {
 	return unique.filter((_, i) => i % step === 0);
 });
 
-function showTooltip(
-	event: MouseEvent,
-	series: ModelSeries,
-	point: { dateObj: Date; cost_usd: number },
-): void {
+// Tooltip shows the headline `Cost` (the persisted, write-time `cost_usd`)
+// followed by the four reconstructed components. The components are computed
+// from current `model_backends.json` pricing in the metrics route, so they
+// will not always sum exactly to `Cost` after a model price change — `Cost`
+// remains authoritative. Rows with zero token counts are hidden so the
+// tooltip stays compact.
+function showTooltip(event: MouseEvent, series: ModelSeries, point: SeriesPoint): void {
 	if (!containerEl) return;
 	const rect = containerEl.getBoundingClientRect();
 	tooltipX = event.clientX - rect.left;
 	tooltipY = event.clientY - rect.top;
-	tooltipLines = [
+
+	const lines: string[] = [
 		series.model_id,
 		formatDateFull(point.dateObj),
 		`Cost: ${formatUSD(point.cost_usd)}`,
 	];
+
+	if (point.tokens_in > 0) {
+		lines.push(
+			`  Input:       ${formatUSD(point.cost_input_usd)}  (${point.tokens_in.toLocaleString()} tok)`,
+		);
+	}
+	if (point.tokens_out > 0) {
+		lines.push(
+			`  Output:      ${formatUSD(point.cost_output_usd)}  (${point.tokens_out.toLocaleString()} tok)`,
+		);
+	}
+	if (point.cache_read > 0) {
+		lines.push(
+			`  Cache read:  ${formatUSD(point.cost_cache_read_usd)}  (${point.cache_read.toLocaleString()} tok)`,
+		);
+	}
+	if (point.cache_write > 0) {
+		lines.push(
+			`  Cache write: ${formatUSD(point.cost_cache_write_usd)}  (${point.cache_write.toLocaleString()} tok)`,
+		);
+	}
+
+	tooltipLines = lines;
 	tooltipVisible = true;
 }
 

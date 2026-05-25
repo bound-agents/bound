@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
-import type { ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
+import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
 import { handleWebhookRequest } from "./webhook-handler.js";
 import { createWebSocketHandler } from "./websocket";
@@ -10,7 +10,7 @@ import type { ConnectionRegistry } from "./websocket";
 
 const logger = createLogger("@bound/web", "server-start");
 
-export type { ModelsConfig };
+export type { ModelsConfig, BackendPricing };
 
 export interface WebServerConfig {
 	port?: number;
@@ -18,6 +18,7 @@ export interface WebServerConfig {
 	hostName?: string;
 	operatorUserId: string;
 	models?: ModelsConfig;
+	backendPricing?: BackendPricing[];
 	siteId?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
@@ -75,6 +76,7 @@ export async function createWebServer(
 
 	const webAppConfig: WebAppConfig = {
 		modelsConfig: config.models,
+		backendPricing: config.backendPricing,
 		hostName: config.hostName,
 		operatorUserId: config.operatorUserId,
 		siteId: config.siteId,

@@ -1721,5 +1721,271 @@ describe("metrics routes", () => {
 				expect(elapsed).toBeLessThan(2000);
 			});
 		});
+
+		describe("Cache totals + per-component cost (token & cost breakdown)", () => {
+			it("aggregates cache_read / cache_write into tokens.totals", async () => {
+				const app = createMetricsRoutes(db);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-cache-1",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"opus",
+					1000,
+					500,
+					3000,
+					400,
+					0.05,
+					"ok",
+					null,
+				);
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-cache-2",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"opus",
+					500,
+					250,
+					1500,
+					100,
+					0.02,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const totals = (json.tokens as Record<string, unknown>).totals as Record<string, unknown>;
+				expect(totals.cache_read).toBe(4500);
+				expect(totals.cache_write).toBe(500);
+				expect(totals.tokens_in).toBe(1500);
+				expect(totals.tokens_out).toBe(750);
+			});
+
+			it("populates costByModelTimeline with token sums and cost components", async () => {
+				const app = createMetricsRoutes(db, [
+					{
+						id: "opus",
+						price_per_m_input: 15,
+						price_per_m_output: 75,
+						price_per_m_cache_read: 1.5,
+						price_per_m_cache_write: 18.75,
+					},
+				]);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// 1M input @ $15, 1M output @ $75, 1M cache_read @ $1.50, 1M cache_write @ $18.75
+				// Per-component cost: 15 / 75 / 1.5 / 18.75 = 110.25 USD total
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-priced",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"opus",
+					1_000_000,
+					1_000_000,
+					1_000_000,
+					1_000_000,
+					110.25,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const rows = (json.tokens as Record<string, unknown>).costByModelTimeline as Array<
+					Record<string, unknown>
+				>;
+				const row = rows.find((r) => r.model_id === "opus");
+				expect(row).toBeDefined();
+				expect(row?.cost_usd).toBeCloseTo(110.25, 6);
+				expect(row?.cost_input_usd).toBeCloseTo(15, 6);
+				expect(row?.cost_output_usd).toBeCloseTo(75, 6);
+				expect(row?.cost_cache_read_usd).toBeCloseTo(1.5, 6);
+				expect(row?.cost_cache_write_usd).toBeCloseTo(18.75, 6);
+				expect(row?.tokens_in).toBe(1_000_000);
+				expect(row?.tokens_out).toBe(1_000_000);
+				expect(row?.cache_read).toBe(1_000_000);
+				expect(row?.cache_write).toBe(1_000_000);
+			});
+
+			it("falls back to a proportional split of cost_usd when pricing is absent", async () => {
+				const app = createMetricsRoutes(db); // no pricing passed
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-fallback",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"sonnet",
+					100,
+					200,
+					300,
+					400,
+					1.0,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const rows = (json.tokens as Record<string, unknown>).costByModelTimeline as Array<
+					Record<string, unknown>
+				>;
+				const row = rows.find((r) => r.model_id === "sonnet");
+				expect(row).toBeDefined();
+				// 100/1000, 200/1000, 300/1000, 400/1000 of $1.00
+				expect(row?.cost_input_usd).toBeCloseTo(0.1, 6);
+				expect(row?.cost_output_usd).toBeCloseTo(0.2, 6);
+				expect(row?.cost_cache_read_usd).toBeCloseTo(0.3, 6);
+				expect(row?.cost_cache_write_usd).toBeCloseTo(0.4, 6);
+				// Components sum exactly to cost_usd in the fallback path.
+				const sum =
+					(row?.cost_input_usd as number) +
+					(row?.cost_output_usd as number) +
+					(row?.cost_cache_read_usd as number) +
+					(row?.cost_cache_write_usd as number);
+				expect(sum).toBeCloseTo(row?.cost_usd as number, 6);
+			});
+
+			it("returns zero components without NaN for zero-token, zero-cost rows", async () => {
+				const app = createMetricsRoutes(db); // fallback path
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				// All-zero row exercises the totalTokens === 0 branch
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-zero",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"empty-model",
+					0,
+					0,
+					0,
+					0,
+					0,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const rows = (json.tokens as Record<string, unknown>).costByModelTimeline as Array<
+					Record<string, unknown>
+				>;
+				const row = rows.find((r) => r.model_id === "empty-model");
+				expect(row).toBeDefined();
+				for (const k of [
+					"cost_input_usd",
+					"cost_output_usd",
+					"cost_cache_read_usd",
+					"cost_cache_write_usd",
+				]) {
+					expect(row?.[k]).toBe(0);
+					expect(Number.isNaN(row?.[k] as number)).toBe(false);
+				}
+			});
+
+			it("uses pricing for known models and falls back for unknown models in the same response", async () => {
+				const app = createMetricsRoutes(db, [
+					{
+						id: "known",
+						price_per_m_input: 10,
+						price_per_m_output: 20,
+						price_per_m_cache_read: 1,
+						price_per_m_cache_write: 5,
+					},
+				]);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-known",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"known",
+					1_000_000,
+					0,
+					0,
+					0,
+					10,
+					"ok",
+					null,
+				);
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-unknown",
+					"thread-2",
+					"2026-05-18T13:00:00Z",
+					"unknown",
+					100,
+					100,
+					0,
+					0,
+					0.5,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const rows = (json.tokens as Record<string, unknown>).costByModelTimeline as Array<
+					Record<string, unknown>
+				>;
+
+				const knownRow = rows.find((r) => r.model_id === "known");
+				expect(knownRow?.cost_input_usd).toBeCloseTo(10, 6);
+				expect(knownRow?.cost_output_usd).toBe(0);
+
+				const unknownRow = rows.find((r) => r.model_id === "unknown");
+				expect(unknownRow?.cost_input_usd).toBeCloseTo(0.25, 6);
+				expect(unknownRow?.cost_output_usd).toBeCloseTo(0.25, 6);
+			});
+		});
 	});
 });

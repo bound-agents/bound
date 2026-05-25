@@ -5,7 +5,7 @@ import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
-import { createMetricsRoutes } from "./metrics.js";
+import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
 import { createSkillsRoutes } from "./skills";
 import { type ModelsConfig, createStatusRoutes } from "./status";
 import { createTasksRoutes } from "./tasks";
@@ -13,9 +13,15 @@ import { createThreadsRoutes } from "./threads";
 import { createWebhooksRoutes } from "./webhooks";
 
 export type { ModelsConfig };
+export type { BackendPricing };
 
 export interface RoutesConfig {
 	modelsConfig?: ModelsConfig;
+	/**
+	 * Per-backend pricing snapshot. Forwarded to the metrics route to
+	 * reconstruct per-component cost in the cost-by-model timeline.
+	 */
+	backendPricing?: BackendPricing[];
 	hostName?: string;
 	siteId?: string;
 	operatorUserId: string;
@@ -33,6 +39,7 @@ export interface RoutesConfig {
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
 	const {
 		modelsConfig,
+		backendPricing,
 		hostName = "unknown",
 		siteId = "",
 		operatorUserId,
@@ -70,6 +77,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		mcp: createMcpRoutes(db),
 		webhooks: createWebhooksRoutes(db),
 		skills: createSkillsRoutes(db),
-		metrics: createMetricsRoutes(db),
+		metrics: createMetricsRoutes(db, backendPricing),
 	};
 }

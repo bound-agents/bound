@@ -34,21 +34,15 @@ function syncState(): void {
 	error = store.state.error;
 }
 
-// Computed properties
-const totalTokens = $derived(
-	data ? data.tokens.totals.tokens_in + data.tokens.totals.tokens_out : 0,
-);
-
-// `tokens.totals` only carries tokens_in/tokens_out/cost. Cache totals live
-// per-model on `tokens.byModel`, so sum them client-side rather than wiring a
-// dedicated `cache_totals` field through the metrics route. The byModel rows
-// are already in the response and are typically small (≤ a dozen entries).
-const totalCacheRead = $derived(
-	data?.tokens.byModel.reduce((sum, m) => sum + m.cache_read, 0) ?? 0,
-);
-const totalCacheWrite = $derived(
-	data?.tokens.byModel.reduce((sum, m) => sum + m.cache_write, 0) ?? 0,
-);
+// Computed properties — totals are now sourced directly from
+// `data.tokens.totals` (the metrics route aggregates all four token classes
+// server-side). The headline number sums the four token classes so cache
+// traffic is not hidden from the operator on cache-heavy workloads.
+const tokensIn = $derived(data?.tokens.totals.tokens_in ?? 0);
+const tokensOut = $derived(data?.tokens.totals.tokens_out ?? 0);
+const totalCacheRead = $derived(data?.tokens.totals.cache_read ?? 0);
+const totalCacheWrite = $derived(data?.tokens.totals.cache_write ?? 0);
+const totalTokens = $derived(tokensIn + tokensOut + totalCacheRead + totalCacheWrite);
 
 async function loadMetrics(): Promise<void> {
 	// store.load() synchronously sets refreshing/initialLoading before awaiting fetch.
@@ -163,6 +157,24 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 							{#snippet children()}
 								<span class="metric-label">Total Tokens</span>
 								<span class="metric-value">{totalTokens.toLocaleString()}</span>
+								<div class="token-breakdown">
+									<div class="token-row">
+										<span class="token-row-label token-row-input">↑ Input</span>
+										<span class="token-row-value mono tnum">{tokensIn.toLocaleString()}</span>
+									</div>
+									<div class="token-row">
+										<span class="token-row-label token-row-output">↓ Output</span>
+										<span class="token-row-value mono tnum">{tokensOut.toLocaleString()}</span>
+									</div>
+									<div class="token-row">
+										<span class="token-row-label token-row-cache-read">⟲ Cache read</span>
+										<span class="token-row-value mono tnum">{totalCacheRead.toLocaleString()}</span>
+									</div>
+									<div class="token-row">
+										<span class="token-row-label token-row-cache-write">⟳ Cache write</span>
+										<span class="token-row-value mono tnum">{totalCacheWrite.toLocaleString()}</span>
+									</div>
+								</div>
 							{/snippet}
 						</MetroCard>
 
@@ -358,6 +370,46 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 		color: var(--ink-3);
 		margin-top: 4px;
 		text-transform: capitalize;
+	}
+
+	.token-breakdown {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		margin-top: 8px;
+		font-size: 12px;
+	}
+
+	.token-row {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 8px;
+	}
+
+	.token-row-label {
+		color: var(--ink-3);
+	}
+
+	.token-row-input {
+		color: var(--line-3);
+	}
+
+	.token-row-output {
+		color: var(--line-0);
+	}
+
+	.token-row-cache-read {
+		color: var(--ok);
+	}
+
+	.token-row-cache-write {
+		color: var(--warn);
+	}
+
+	.token-row-value {
+		color: var(--ink);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.cache-card-value {

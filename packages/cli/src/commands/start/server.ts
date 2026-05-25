@@ -347,6 +347,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				models: uniqueModels,
 				default: modelBackends.default,
 			},
+			backendPricing: modelBackends.backends.map((b) => ({
+				id: b.id,
+				price_per_m_input: b.price_per_m_input,
+				price_per_m_output: b.price_per_m_output,
+				price_per_m_cache_read: b.price_per_m_cache_read,
+				price_per_m_cache_write: b.price_per_m_cache_write,
+			})),
 			siteId: appContext.siteId,
 			statusForwardCache,
 			activeDelegations,
