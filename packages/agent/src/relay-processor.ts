@@ -192,6 +192,20 @@ export class RelayProcessor {
 		this.fileReader = fn;
 	}
 
+	/**
+	 * Update the set of trusted keyring site IDs after a hot-reload (e.g. SIGHUP).
+	 *
+	 * The constructor bakes in the site-ID set from the keyring at startup. When
+	 * a new peer is added to keyring.json and a SIGHUP fires, the KeyManager is
+	 * reloaded but the relay processor's set stays stale — causing "Unknown source
+	 * site" errors for the new peer until the process restarts. Calling this method
+	 * from the SIGHUP onKeyringChanged callback keeps the set in sync without a
+	 * restart.
+	 */
+	updateKeyringSiteIds(siteIds: Set<string>): void {
+		this.keyringSiteIds = siteIds;
+	}
+
 	start(
 		pollIntervalMs: number = DEFAULT_POLL_INTERVAL_MS,
 		scheduler?: SchedulerLike,

@@ -39,6 +39,13 @@ interface SighupHandlerConfig {
 		oldConfig: ModelBackendsConfig,
 		newConfig: ModelBackendsConfig,
 	) => Promise<void>;
+	/**
+	 * Callback invoked when keyring.json changes during a reload, after
+	 * KeyManager has been updated. Receives the new keyring so callers can
+	 * refresh any derived state (e.g. relay processor's trusted site-ID set)
+	 * that was baked in at construction time.
+	 */
+	onKeyringChanged?: (newKeyring: KeyringConfig) => void;
 	// For testing: inject a delay into the reload work to allow true concurrency testing
 	delayMs?: number;
 }
@@ -59,6 +66,7 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 		onMcpConfigChanged,
 		onWsConfigChanged,
 		onModelBackendsChanged,
+		onKeyringChanged,
 		logger,
 		delayMs,
 	} = config;
@@ -133,6 +141,9 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 				logger.info("KeyManager reloaded with updated keyring", {
 					peerCount: Object.keys(newKeyring.hosts).length,
 				});
+				// Propagate new site IDs to any component (e.g. RelayProcessor) that
+				// captured keyringSiteIds at construction time.
+				onKeyringChanged?.(newKeyring);
 			}
 		}
 
