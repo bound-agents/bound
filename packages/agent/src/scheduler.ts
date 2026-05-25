@@ -84,7 +84,14 @@ function rescheduleCronTask(
 			db,
 			"tasks",
 			task.id,
-			{ next_run_at: nextRunAt.toISOString(), status: "pending" },
+			{
+				next_run_at: nextRunAt.toISOString(),
+				status: "pending",
+				// Clear stale error string once a successful run has completed.
+				// Soft/hard-error reschedules intentionally omit this so the error
+				// persists for diagnostic purposes until the task actually succeeds.
+				...(context === "completion" ? { error: "" } : {}),
+			},
 			siteId,
 		);
 	} catch (cronError) {
@@ -299,8 +306,10 @@ export function rescheduleHeartbeat(
 	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
 	const nextRunAt = new Date(nextBoundary).toISOString();
 
-	db.query("UPDATE tasks SET next_run_at = ?, status = 'pending' WHERE id = ?") // outbox-exempt: heartbeat updates are local-only state, not synced
-		.run(nextRunAt, task.id);
+	// Clear stale error string on successful completion — see rescheduleCronTask for rationale.
+	const errorClause = context === "completion" ? ", error = ''" : "";
+	const heartbeatRescheduleSQL = `UPDATE tasks SET next_run_at = ?, status = 'pending'${errorClause} WHERE id = ?`; // outbox-exempt: heartbeat rescheduling is local-only state, not synced
+	db.query(heartbeatRescheduleSQL).run(nextRunAt, task.id);
 
 	logger.info(
 		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAt}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
