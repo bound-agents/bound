@@ -340,49 +340,78 @@ export function computeStableCacheMarkerPlacement(
 	// (consistent with the bridge — developer messages get merged into
 	// adjacent users and don't contribute their own token count to the
 	// on-wire cumulative).
-	let positionTokens = 0;
-	let nonDevPrecedingCount = 0;
-	for (let i = 0; i < insertAt; i++) {
-		const m = messages[i];
-		if (m.role === "cache" || m.role === "developer") continue;
-		positionTokens += estimateTokens(m);
-		nonDevPrecedingCount++;
-	}
+	const computePositionTokens = (
+		end: number,
+	): { positionTokens: number; nonDevPrecedingCount: number } => {
+		let positionTokens = 0;
+		let nonDevPrecedingCount = 0;
+		for (let i = 0; i < end; i++) {
+			const m = messages[i];
+			if (m.role === "cache" || m.role === "developer") continue;
+			positionTokens += estimateTokens(m);
+			nonDevPrecedingCount++;
+		}
+		return { positionTokens, nonDevPrecedingCount };
+	};
 
-	// Bridge-drop guard. The AI SDK bridge (ai-sdk-bridge.ts:270-288)
-	// processes role="cache" by attaching a cachePoint to the LAST
-	// emitted message in `result`. Developer messages don't produce
-	// result entries — they accumulate in `pendingDev` and merge into
-	// the next user message. If every message before insertAt is a
-	// developer, `result` is empty when the bridge processes the cache
-	// marker, and the marker is SILENTLY DROPPED — no cachePoint
-	// reaches the wire, no message-level cache anchor is created.
+	let { positionTokens, nonDevPrecedingCount } = computePositionTokens(insertAt);
+
+	// Bridge-drop avoidance. The AI SDK bridge (ai-sdk-bridge.ts:270-288)
+	// processes role="cache" by attaching a cachePoint to the LAST emitted
+	// message in `result`. Developer messages don't produce result entries
+	// — they accumulate in `pendingDev` and merge into the next user
+	// message. If every message before insertAt is a developer, `result`
+	// is empty when the bridge processes the cache marker, and the marker
+	// is silently dropped — no cachePoint reaches the wire.
 	//
-	// Live regression: thread `91a31a43-...` 2026-05-26 had exactly
-	// one user message at the start of history, with Stage 1.7
-	// prepending a developer-role compaction summary at index 0. The
-	// semantic-anchor placer chose insertAt=1 (the latest user); all
-	// preceding messages were developers; positionTokens=0; the bridge
-	// dropped the marker; cw=0 across 40 consecutive turns despite
-	// system anchor riding correctly.
+	// Live regressions:
+	//   - thread `91a31a43-...` 2026-05-26: autonomous task with one user
+	//     and only `[user_1, dev_tail]` in messages. Latest-user at idx 0,
+	//     fallback placed BEFORE user_1 → bridge dropped → cw=0.
+	//   - thread `3a833552-...` 2026-05-26: autonomous task WITH a Stage
+	//     1.7-prepended `developer` compaction summary at index 0 +
+	//     thread.summary. Strict semantic-anchor placed marker BEFORE
+	//     user_1 (at idx 1), but nothing non-developer preceded → bridge
+	//     dropped → cw=0 across all 33 turns.
 	//
-	// The fix: refuse placement when no non-developer, non-cache
-	// message precedes the chosen index. The bedrock driver's
-	// shouldEnableSystemCachePoint gate (post-67596ec0) is independent
-	// of message-level marker presence when cacheTtl is set, so the
-	// system anchor floor is preserved even with no message-level
-	// marker on this turn. Once the thread accumulates non-developer
-	// content before user_N (e.g., a tool_call from the same turn,
-	// or a prior assistant message after the first user-turn boundary
-	// is crossed), placement resumes.
+	// Recovery rule. When the strict semantic-anchor target has 0
+	// non-developer preceding messages, the marker would be silently
+	// dropped if spliced. Try advancing insertAt past the latest user
+	// (insertAt + 1) so the cachePoint anchors ON that user — by which
+	// point the bridge has flushed any pending developer content into the
+	// user via `appendDevToUser`. This makes the cached prefix the
+	// merged user message (e.g. `[compaction summary] + user prompt`),
+	// which is byte-stable across inner-loop iterations as long as
+	// thread.summary doesn't change. If the advanced position STILL has
+	// no non-dev preceding (impossible here since user_1 IS non-dev), or
+	// would land outside the array, refuse.
 	if (nonDevPrecedingCount === 0) {
-		return {
-			placed: false,
-			index: -1,
-			positionTokens: 0,
-			targetTokens: 0,
-			reason: "no-eligible-anchor",
-		};
+		const advanced = insertAt + 1;
+		if (advanced >= messages.length) {
+			// No content after the user to advance to — the marker would
+			// fall off the end and the bridge couldn't attach it either.
+			return {
+				placed: false,
+				index: -1,
+				positionTokens: 0,
+				targetTokens: 0,
+				reason: "no-eligible-anchor",
+			};
+		}
+		const advancedTokens = computePositionTokens(advanced);
+		if (advancedTokens.nonDevPrecedingCount === 0) {
+			// Defensive: shouldn't happen because user_1 is non-dev, but
+			// preserves the invariant if upstream message shapes change.
+			return {
+				placed: false,
+				index: -1,
+				positionTokens: 0,
+				targetTokens: 0,
+				reason: "no-eligible-anchor",
+			};
+		}
+		insertAt = advanced;
+		positionTokens = advancedTokens.positionTokens;
 	}
 
 	return {

@@ -337,6 +337,57 @@ describe("Semantic-anchor cache marker placement (B1-B4)", () => {
 		expect(placement.placed).toBe(true);
 	});
 
+	it("B6b (load-bearing): leading developer + user_1 + autonomous task → placer ADVANCES past user, places cachePoint with non-zero positionTokens", () => {
+		// Live regression on thread `3a833552-...` 2026-05-26: an
+		// autonomous task with thread.summary set, so Stage 1.7 prepends
+		// a developer-role compaction summary at messages[0]. The strict
+		// semantic-anchor placer would choose insertAt=1 (latest user_1's
+		// index), but every message before that is a developer →
+		// nonDevPrecedingCount=0 → bridge would silently drop the cache
+		// marker. The original B6 fix refused placement entirely. Result:
+		// 33 turns of cw=0, no cumulative cache.
+		//
+		// The recovery: when the strict semantic-anchor target has 0
+		// non-dev preceding messages, advance insertAt past user_1 to land
+		// the cachePoint ON the merged user (which the bridge produces by
+		// flushing pendingDev into user_1's content via appendDevToUser).
+		// The cached prefix is `[merged compaction summary + user prompt]`,
+		// byte-stable across inner-loop iterations because thread.summary
+		// changes ≤ once per outer turn boundary.
+		//
+		// Contract: when the autonomous-task shape is detected (only
+		// developers preceding the latest user), the placer MUST place
+		// at insertAt+1 (after the user) AND positionTokens MUST be > 0.
+		const messages: LLMMessage[] = [
+			makeMsg("developer", 800, "compaction_summary"),
+			makeMsg("user", 600, "u1"),
+			makeMsg("tool_call", 200, "tc1"),
+			makeMsg("tool_result", 1200, "tr1"),
+			makeMsg("assistant", 400, "a1"),
+			makeMsg("tool_call", 200, "tc2"),
+			makeMsg("tool_result", 1200, "tr2"),
+			makeMsg("developer", 500, "vt"),
+		];
+		const placement = coldPathPlaceCacheMarker(
+			messages,
+			{ bucketTokens: 0, estimateTokens: charEstimate },
+			CAPS,
+		);
+		// Now MUST be placed (recovery applies).
+		expect(placement.placed).toBe(true);
+		expect(placement.positionTokens).toBeGreaterThan(0);
+		// Marker must sit AFTER user_1 (idx 2), with user_1 in the
+		// non-dev preceding count.
+		const insertedIdx = messages.findIndex((m) => m.role === "cache");
+		expect(insertedIdx).toBe(2);
+		let nonDevBefore = 0;
+		for (let i = 0; i < insertedIdx; i++) {
+			const m = messages[i];
+			if (m.role !== "developer" && m.role !== "cache") nonDevBefore++;
+		}
+		expect(nonDevBefore).toBeGreaterThan(0);
+	});
+
 	it("B6 (load-bearing): a leading developer + latest user at index 1 must NOT place a cachePoint with positionTokens=0 — bridge silently drops it", () => {
 		// Live regression on thread `91a31a43-...` 2026-05-26: an autonomous
 		// task thread with exactly 1 user message at the start of history.
