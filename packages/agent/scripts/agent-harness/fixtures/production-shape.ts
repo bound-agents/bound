@@ -63,7 +63,19 @@ const SYNTHETIC_STDOUT_BLOCK = `${SYNTHETIC_LINES}\n\n${SYNTHETIC_DIRECTORY_LIST
 export const productionShapeFixture: HarnessFixture = {
 	name: "production-shape",
 	description:
-		"Approximates the production autonomous-task shape: large thread.summary, ~3k-char tool results to drive tokens_in into the 30-40% hit-rate band",
+		"Reproduces the production autonomous-task shape: ~67k-token volatile-prefix from seeded semantic_memory + skills, large thread.summary, ~3k-char tool results — drives the 30-40% cache hit-rate band observed on threads 6fff1513 / 91a31a43 / b4541575",
+
+	// Counts measured from `~/bound/data/bound.db` on 2026-05-26:
+	// pinned=93, summary=96, detail=328, active skills=6. The harness's
+	// rendered volatile-prefix size matches when these counts are roughly
+	// reproduced; small deltas are absorbed by Sonnet tokenizer rounding.
+	volatilePrefix: {
+		pinnedCount: 90,
+		pinnedValueChars: 2000,
+		summaryCount: 90,
+		detailCount: 320,
+		skillCount: 6,
+	},
 
 	initialUserContent:
 		"Investigate the cache marker placement code and produce a one-paragraph summary of how the recovery rule works.",

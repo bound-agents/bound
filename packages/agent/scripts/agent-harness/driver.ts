@@ -95,7 +95,7 @@ import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-u
 import type { AgentLoopConfig, RegisteredTool } from "../../src/types";
 import { createCapturingFetch } from "./capture";
 import type { Diagnostic, DiagnosticTurnData } from "./diagnostics/types";
-import type { HarnessFixture } from "./fixtures/types";
+import type { HarnessFixture, VolatilePrefixSeedSpec } from "./fixtures/types";
 
 type RawBackendConfig = RawBackendsConfig["backends"][number];
 
@@ -233,6 +233,15 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	// path (outbox-exempt — see bootstrap.ts). Context-assembly only reads
 	// `ctx.hostName` and `ctx.siteId` directly, so the harness can skip
 	// host seeding without breaking any read path.
+
+	// Seed volatile-prefix data when the fixture asks for it. Without
+	// this, the volatile-prefix renders ~empty and `tokens_in` per
+	// inference is artificially small — pushing cache hit rate toward
+	// 100% in a way that doesn't predict production. With production-
+	// scale counts the harness's hit rate lands in the production band.
+	if (opts.fixture.volatilePrefix) {
+		seedVolatilePrefix(db, siteId, now, opts.fixture.volatilePrefix);
+	}
 
 	const fs = new InMemoryFs();
 
@@ -385,6 +394,150 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Seed `semantic_memory` and `skills` rows so the volatile-prefix
+ * renderer (`composeStableVolatileSubsection`) produces a body in the
+ * production-scale range. Without seeded rows, the renderer emits
+ * empty Working Knowledge / Discoverable Archive sections and the
+ * harness's `tokens_in` per inference is artificially small.
+ *
+ * Determinism: the fixture spec specifies counts; this function
+ * generates byte-stable rows with deterministic keys/values. Multiple
+ * runs of the same harness invocation produce byte-identical seeds,
+ * which is the precondition for byte-stable cache reads turn-over-turn.
+ *
+ * Seeded shape mirrors `loadPinnedEntries` / `loadSummaryEntries` /
+ * `loadDetailEntries` queries in `summary-extraction.ts`:
+ *   - `tier='pinned'` rows render as `- {key}: {value}` in full
+ *   - `tier='summary'` rows render with value truncated to 200 chars
+ *   - `tier='detail'` rows render as `- {key} (accessed YYYY-MM-DD)`
+ *   - active `skills` render as `<skill><name>...</name>...</skill>`
+ *
+ * `last_accessed_at` is anchored to the harness's start time and never
+ * advances during the run — production renderers strip this to a
+ * `YYYY-MM-DD` calendar prefix (R-VC25 byte-stability invariant) so any
+ * future drift surfaces as `_validation:stable-prefix-drift:*`.
+ */
+function seedVolatilePrefix(
+	db: Database,
+	siteId: string,
+	now: string,
+	spec: VolatilePrefixSeedSpec,
+): void {
+	const pinnedCount = spec.pinnedCount ?? 0;
+	const pinnedValueChars = spec.pinnedValueChars ?? 2000;
+	const summaryCount = spec.summaryCount ?? 0;
+	const detailCount = spec.detailCount ?? 0;
+	const skillCount = spec.skillCount ?? 0;
+
+	for (let i = 0; i < pinnedCount; i++) {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: deterministicUuid("pinned", i),
+				key: `_pinned:harness:${String(i).padStart(4, "0")}`,
+				value: synthesizeBlob(`pinned-${i}`, pinnedValueChars),
+				source: null,
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+				tier: "pinned",
+			},
+			siteId,
+		);
+	}
+
+	for (let i = 0; i < summaryCount; i++) {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: deterministicUuid("summary", i),
+				key: `summary:harness:${String(i).padStart(4, "0")}`,
+				// Generate ~600 chars; the renderer truncates to 200.
+				value: synthesizeBlob(`summary-${i}`, 600),
+				source: null,
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+				tier: "summary",
+			},
+			siteId,
+		);
+	}
+
+	for (let i = 0; i < detailCount; i++) {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: deterministicUuid("detail", i),
+				key: `detail:harness:topic-${String(i).padStart(4, "0")}:component-${i % 13}`,
+				value: synthesizeBlob(`detail-${i}`, 1500),
+				source: null,
+				created_at: now,
+				modified_at: now,
+				last_accessed_at: now,
+				deleted: 0,
+				tier: "detail",
+			},
+			siteId,
+		);
+	}
+
+	for (let i = 0; i < skillCount; i++) {
+		insertRow(
+			db,
+			"skills",
+			{
+				id: deterministicUuid("skill", i),
+				name: `harness-skill-${String(i).padStart(2, "0")}`,
+				description: synthesizeBlob(`skill-desc-${i}`, 240),
+				status: "active",
+				skill_root: `skills/harness-skill-${i}`,
+				content_hash: null,
+				allowed_tools: null,
+				compatibility: null,
+				metadata_json: null,
+				activated_at: now,
+				created_by_thread: null,
+				activation_count: 1,
+				last_activated_at: now,
+				retired_by: null,
+				retired_reason: null,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+	}
+}
+
+/**
+ * Synthesize a stable blob of approximately the requested character
+ * length. Uses the seed string repeated with a separator so byte
+ * content is realistic-looking (multi-token-friendly) but trivially
+ * deterministic. Truncated/padded to land at exactly `chars`.
+ */
+function synthesizeBlob(seed: string, chars: number): string {
+	const filler = `${seed} sentence with words that compress reasonably well. `;
+	let out = "";
+	while (out.length < chars) out += filler;
+	return out.slice(0, chars);
+}
+
+/**
+ * Deterministic synthetic UUID. Used for seeded harness rows so multiple
+ * invocations of the same fixture produce byte-identical DB content.
+ */
+function deterministicUuid(prefix: string, n: number): string {
+	const num = String(n).padStart(8, "0");
+	return `00000000-0000-0000-${prefix.slice(0, 4).padEnd(4, "x")}-${num}0000`;
+}
 
 /** Sum of `cost_usd` across all turn rows for the harness thread. */
 function sumTurnCosts(db: Database, threadId: string): number {
