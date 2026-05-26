@@ -162,6 +162,54 @@ export interface PromptResult {
 }
 
 /**
+ * Escape all non-ASCII UTF-16 code units in a string to `\uXXXX` escape
+ * sequences, producing a pure-ASCII result that round-trips faithfully
+ * through HTTP proxies or CDNs that mis-classify `application/json` bodies as
+ * Latin-1 (the old RFC 2616 default charset). Such proxies corrupt UTF-8
+ * multi-byte sequences — the leading byte (0xC2–0xF4) survives as a single
+ * Latin-1 character while continuation bytes (0x80–0xBF) are stripped as
+ * C1 controls, turning e.g. an em dash (U+2014, UTF-8 E2 80 94) into `â`.
+ *
+ * Surrogate pairs (U+D800–U+DFFF) are escaped as two consecutive `\uXXXX`
+ * sequences — valid JSON per RFC 8259 §7, and correctly decoded by
+ * `JSON.parse` back to the original Unicode scalar.
+ *
+ * @example
+ *   escapeNonAscii('hello — world')  // 'hello \\u2014 world'
+ *   escapeNonAscii('✓ done')         // '\\u2713 done'
+ */
+export function escapeNonAscii(s: string): string {
+	let out = "";
+	for (let i = 0; i < s.length; i++) {
+		const code = s.charCodeAt(i);
+		if (code > 0x7f) {
+			out += `\\u${code.toString(16).padStart(4, "0")}`;
+		} else {
+			out += s[i];
+		}
+	}
+	return out;
+}
+
+/**
+ * A `FetchLike` wrapper that escapes all non-ASCII characters in string request
+ * bodies before forwarding to the global `fetch`. This prevents character
+ * corruption when the JSON body transits a proxy that misinterprets UTF-8 as
+ * Latin-1. The resulting ASCII-only payload is semantically identical — any
+ * conformant JSON parser decodes `\uXXXX` sequences back to the original
+ * characters.
+ *
+ * Injected as the `fetch` option of `StreamableHTTPClientTransport` for all
+ * HTTP-transport MCP connections.
+ */
+function asciiSafeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+	if (init?.body != null && typeof init.body === "string") {
+		return fetch(url, { ...init, body: escapeNonAscii(init.body) });
+	}
+	return fetch(url, init);
+}
+
+/**
  * MCPClient manages connections to external MCP servers using the real MCP SDK.
  */
 export class MCPClient {
@@ -192,6 +240,7 @@ export class MCPClient {
 			}
 			const transport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url), {
 				requestInit: this.serverConfig.headers ? { headers: this.serverConfig.headers } : undefined,
+				fetch: asciiSafeFetch,
 			});
 			await this.client.connect(transport);
 		}

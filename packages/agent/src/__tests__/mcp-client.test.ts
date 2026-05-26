@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { extractMCPToolResult } from "../mcp-client";
+import { escapeNonAscii, extractMCPToolResult } from "../mcp-client";
 
 describe("extractMCPToolResult", () => {
 	it("extracts text-only content", () => {
@@ -156,5 +156,74 @@ describe("extractMCPToolResult", () => {
 	it("ignores resource_link items missing the uri field (malformed)", () => {
 		const result = extractMCPToolResult([{ type: "resource_link", name: "no-uri" }]);
 		expect(result.resourceLinks).toBeUndefined();
+	});
+});
+
+describe("escapeNonAscii", () => {
+	it("passes ASCII-only strings through unchanged", () => {
+		expect(escapeNonAscii("hello world")).toBe("hello world");
+		expect(escapeNonAscii("")).toBe("");
+		expect(escapeNonAscii("abc123 !@#$%^&*()_+-=[]{}|;':\",./<>?`~")).toBe(
+			"abc123 !@#$%^&*()_+-=[]{}|;':\",./<>?`~",
+		);
+	});
+
+	it("escapes em dash (issue #33 repro: U+2014)", () => {
+		// em dash is the canonical example from the bug report
+		expect(escapeNonAscii("—")).toBe("\\u2014");
+		expect(escapeNonAscii("before — after")).toBe("before \\u2014 after");
+	});
+
+	it("escapes checkmark and cross (issue #33 repro: U+2713 and U+2717)", () => {
+		expect(escapeNonAscii("✓")).toBe("\\u2713");
+		expect(escapeNonAscii("✗")).toBe("\\u2717");
+	});
+
+	it("escaped output round-trips via JSON.parse to the original string", () => {
+		// The primary guarantee: after escaping, JSON.parse restores originals.
+		const original = "em dash — checkmark ✓ cross ✗ accent café";
+		const escaped = escapeNonAscii(original);
+		// All escaped code points must be 0x7F or below in the output
+		for (let i = 0; i < escaped.length; i++) {
+			expect(escaped.charCodeAt(i)).toBeLessThanOrEqual(0x7f);
+		}
+		// Round-trip: wrap in a JSON string and parse back
+		const roundTripped = JSON.parse(`"${escaped}"`);
+		expect(roundTripped).toBe(original);
+	});
+
+	it("escapes surrogate pairs (emoji: U+1F600 😀) as two \\uXXXX sequences", () => {
+		// 😀 is U+1F600, encoded in UTF-16 as surrogates D83D + DE00
+		const emoji = "\uD83D\uDE00"; // same as '😀'
+		const escaped = escapeNonAscii(emoji);
+		expect(escaped).toBe("\\ud83d\\ude00");
+		// Round-trip: JSON.parse handles lone surrogates
+		const roundTripped = JSON.parse(`"${escaped}"`);
+		expect(roundTripped).toBe(emoji);
+	});
+
+	it("preserves DEL (0x7F) and escapes everything above it", () => {
+		// 0x7F is DEL — ASCII, so NOT escaped
+		expect(escapeNonAscii("\x7f")).toBe("\x7f");
+		// 0x80 is the first non-ASCII byte — MUST be escaped
+		expect(escapeNonAscii("\x80")).toBe("\\u0080");
+	});
+
+	it("handles a realistic JSON body string (full issue #33 repro)", () => {
+		// Simulate what happens when the agent calls github-bound add_issue_comment
+		// with a body containing the characters reported in issue #33.
+		const body = JSON.stringify({
+			body: "This is fixed — see ✓ PR #42\nNo more â corruption ✗",
+		});
+		const escaped = escapeNonAscii(body);
+		// ASCII-only output
+		for (let i = 0; i < escaped.length; i++) {
+			expect(escaped.charCodeAt(i)).toBeLessThanOrEqual(0x7f);
+		}
+		// Round-trips correctly
+		const parsed = JSON.parse(escaped) as { body: string };
+		expect(parsed.body).toBe(
+			"This is fixed \u2014 see \u2713 PR #42\nNo more \u00e2 corruption \u2717",
+		);
 	});
 });
