@@ -572,6 +572,167 @@ describe("inner-loop temporal-frame coherence", () => {
 		expect(call2Tail).toContain(advisoryTitle);
 	});
 
+	it("warm path injects ONLY varyingContent into the developer tail (no stable-subsection duplication)", async () => {
+		// Live evidence captured via the agent-harness production-shape
+		// fixture (2026-05-26): warm-path inferences carried a 226,238-
+		// byte trailing user message containing the FULL Working Knowledge
+		// + Discoverable Archive + skill index XML — exactly the content
+		// already in the cached system prompt. The cold path correctly
+		// uses `volatileContext.varyingContent` for the developer tail
+		// (varying-only); the warm path uses `volatileContext.content`
+		// (stable + varying), duplicating ~224k bytes per warm turn.
+		// Effect: every warm-path inference paid `tokens_in` for the
+		// stable subsection a SECOND time even though the cache anchor
+		// already covered it — a massive pessimization of the
+		// hit-rate denominator.
+		//
+		// The contract: warm-path developer-tail injection uses
+		// `varyingContent` only. The stable subsection lives in the
+		// cached system prompt; injecting it again in the dev tail
+		// merely inflates tokens_in.
+		//
+		// Detection: assert the developer-tail dev message in the warm-
+		// path captured params doesn't contain the Working Knowledge
+		// header. The header is a stable-subsection-only literal.
+		const summaryMarker = `WARM-PATH-DEV-TAIL-${randomUUID()}`;
+		seedThreadWithUserMessage(globalThreadId, "Run two bash commands then summarize", {
+			summary: `harness summary ${summaryMarker}`,
+		});
+		// Seed pinned memory entries so Working Knowledge has rendered
+		// content. Without this the stable subsection is empty and the
+		// duplication isn't visible — the test would falsely pass.
+		const now = new Date().toISOString();
+		// Multiple entries — Working Knowledge needs N>0 pinned with
+		// rendered content to emit its header.
+		for (let i = 0; i < 5; i++) {
+			globalDb.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, last_accessed_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					`_pinned:warm-path-test:marker-${i}`,
+					`pinned-marker-content-${summaryMarker}-${i} sentence with reasonable length to render in WK section`,
+					null,
+					now,
+					now,
+					now,
+					0,
+					"pinned",
+				],
+			);
+		}
+
+		const mockBackend = new MockLLMBackend();
+		// Inner-loop turn 1: cold path. Need this to populate cached
+		// turn state so turn 2 takes the warm path. The done chunk
+		// MUST report nonzero cache_write — predictCacheState gates
+		// warm-vs-cold on the last turn having recorded cache activity.
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "tool-1", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "tool-1",
+				partial_json: JSON.stringify({ command: "echo first" }),
+			};
+			yield { type: "tool_use_end" as const, id: "tool-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 100,
+					output_tokens: 5,
+					cache_write_tokens: 100,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Cold path done." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 200,
+					output_tokens: 10,
+					cache_write_tokens: 50,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const loop1 = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId: globalThreadId,
+			userId: globalUserId,
+		});
+		await loop1.run();
+
+		// Insert a NEW user message and run again — second run takes
+		// the warm path (cached turn state is alive in turnStateStore).
+		globalDb.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				randomUUID(),
+				globalThreadId,
+				"user",
+				"second user message",
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"local",
+				0,
+			],
+		);
+
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Warm path done." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 300,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const callsBefore = mockBackend.getCapturedMessages().length;
+		const loop2 = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId: globalThreadId,
+			userId: globalUserId,
+		});
+		await loop2.run();
+
+		const allCalls = mockBackend.getCapturedMessages();
+		expect(allCalls.length).toBeGreaterThan(callsBefore);
+
+		// First call after the second run — the warm path's first inference.
+		const warmCall = allCalls[callsBefore];
+		const developers = warmCall.filter((m) => m.role === "developer");
+		expect(developers.length).toBeGreaterThan(0);
+		// Combine all developer contents — varying content is what we expect
+		// to find here. Stable subsection content (pinned marker, Working
+		// Knowledge header) MUST NOT appear in any developer message — the
+		// system prompt already covers it via the cache anchor.
+		const allDevText = developers
+			.map((d) => (typeof d.content === "string" ? d.content : JSON.stringify(d.content)))
+			.join("\n");
+
+		// Sanity: at least the User/Thread ID line (varying) is present.
+		expect(allDevText).toContain(globalThreadId);
+
+		// Load-bearing: the Working Knowledge header (a stable-subsection
+		// literal) must NOT appear in the developer tail. If it does, we're
+		// duplicating ~Nk bytes that the system-prompt cache anchor
+		// already covers. (The header literal lives in summary-extraction.)
+		expect(allDevText).not.toContain("## Working Knowledge — operational and durable");
+		// And specifically the seeded pinned-memory marker — its presence
+		// in the dev tail means the stable subsection got duplicated.
+		expect(allDevText).not.toContain("pinned-marker-content-WARM-PATH-DEV-TAIL");
+	});
+
 	it("preserves the Stage 1.7 compaction-summary developer when refreshing the volatile-tail (load-bearing)", async () => {
 		// Live regression observed via the agent-harness on
 		// `production-shape` fixture (2026-05-26): between two consecutive

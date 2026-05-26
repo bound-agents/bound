@@ -818,7 +818,26 @@ export class AgentLoop {
 							cacheMarkerCaps ?? undefined,
 						);
 
-						// 5. Inject fresh volatile developer message at tail
+						// 5. Inject fresh volatile developer message at tail.
+						//
+						// Use `varyingContent` only — NOT the full `content`
+						// (which is `stableContent + varyingContent`). The stable
+						// subsection (Working Knowledge bodies + Discoverable
+						// Archive titles + skill index) lives in the cached
+						// system prompt; injecting it again into the developer
+						// tail is pure duplication that bloats `tokens_in` by
+						// the size of the entire stable prefix on every warm
+						// turn. The cold path correctly uses `varyingContent`
+						// alone — see `context-assembly.ts:1348`.
+						//
+						// Live evidence captured via the agent-harness
+						// production-shape fixture (2026-05-26): warm-path
+						// inferences carried 226,238-byte trailing user
+						// messages containing the full Working Knowledge +
+						// Discoverable Archive + skill index XML — exactly
+						// the content the system-anchor cache already covered.
+						// Switching to `varyingContent` shrinks each warm-path
+						// `tokens_in` by ~the volatile-prefix size.
 						const volatileContext = buildVolatileContext({
 							db: this.ctx.db,
 							threadId: this.config.threadId,
@@ -838,7 +857,7 @@ export class AgentLoop {
 
 						storedMessages.push({
 							role: "developer",
-							content: volatileContext.content,
+							content: volatileContext.varyingContent,
 						});
 
 						// 6. Check budget: bail to cold reassembly when context exceeds the
