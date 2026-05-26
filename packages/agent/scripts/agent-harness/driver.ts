@@ -329,25 +329,41 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			break;
 		}
 
-		// One agent-loop run produces N inferences (the inner loop spans
-		// multiple LLM calls when the agent issues tool calls, gets results,
-		// and continues). Each inference writes ONE wire body (capturing.entries)
-		// AND ONE row to the in-memory `turns` table (recordTurn from the
-		// `done` chunk handler). Both lists are emitted in lock-step in
-		// `created_at` order, so we zip them by index.
+		// One agent-loop run produces N main-loop inferences (the inner loop
+		// spans multiple LLM calls when the agent issues tool calls, gets
+		// results, and continues). Each main-loop inference writes ONE wire
+		// body AND ONE row to the in-memory `turns` table (recordTurn from
+		// the `done` chunk handler).
+		//
+		// AUXILIARY calls — `extractSummaryAndMemories`, title generation,
+		// etc. — also flow through the same `LLMBackend.chat()` path and
+		// thus ALSO produce wire bodies in `capturing.entries`, but they
+		// do NOT write to the `turns` table. If we naively zip wires to
+		// rows by index we mis-attribute auxiliary calls' (small, cheap,
+		// summarizer-prompt) wire bodies to (large, expensive, agent-loop)
+		// turn rows, producing nonsense diagnostic data.
+		//
+		// Filter: keep only wires whose system block looks like an
+		// agent-loop stable prefix. The agent's system prompt always
+		// starts with the byte-stable `**Environment.** You run inside
+		// **bound**` literal (see `composeStablePrefix`). Auxiliary
+		// callers compose their own short system prompts that don't
+		// contain that literal, so filtering by it cleanly separates the
+		// two channels without false positives.
 		const newTurnRows = readTurnRowsAfter(db, threadId, turnsRowCountBefore);
-		const wires = capturing.entries.slice();
-		if (newTurnRows.length !== wires.length) {
-			// Surface the mismatch so it's visible in the report rather than
-			// silently aligning to the shorter list.
+		const allWires = capturing.entries.slice();
+		const mainWires = allWires.filter(isAgentLoopWire);
+		if (newTurnRows.length !== mainWires.length) {
 			opts.logger.warn(
-				`[harness] user-turn ${userTurn}: ${wires.length} wire bodies captured but ${newTurnRows.length} turn rows recorded; aligning to min`,
+				`[harness] user-turn ${userTurn}: ${allWires.length} wires captured ` +
+					`(${mainWires.length} main-loop, ${allWires.length - mainWires.length} auxiliary) ` +
+					`but ${newTurnRows.length} turn rows recorded; aligning to min(rows, main-wires)`,
 			);
 		}
-		const inferenceCount = Math.min(newTurnRows.length, wires.length);
+		const inferenceCount = Math.min(newTurnRows.length, mainWires.length);
 		for (let i = 0; i < inferenceCount; i++) {
 			inferenceCounter += 1;
-			const turnData = buildTurnData(inferenceCounter, userTurn, newTurnRows[i], wires[i]);
+			const turnData = buildTurnData(inferenceCounter, userTurn, newTurnRows[i], mainWires[i]);
 			rawTurnData.push(turnData);
 			for (const diag of opts.diagnostics) {
 				perDiagRecords.get(diag.name)?.push(diag.collect(turnData));
@@ -537,6 +553,37 @@ function synthesizeBlob(seed: string, chars: number): string {
 function deterministicUuid(prefix: string, n: number): string {
 	const num = String(n).padStart(8, "0");
 	return `00000000-0000-0000-${prefix.slice(0, 4).padEnd(4, "x")}-${num}0000`;
+}
+
+/**
+ * Discriminator: does this wire body look like an agent-loop main
+ * inference call (vs an auxiliary call like summary extraction, title
+ * generation, etc.)?
+ *
+ * The agent loop's stable prefix always opens with the literal
+ * "**Environment.** You run inside **bound**" (see the persona block in
+ * `compose-stable-prefix.ts`). Auxiliary callers (summary-extraction,
+ * title-generation) compose their own much-shorter system prompts that
+ * never contain that literal. Filtering by it cleanly separates the
+ * two channels with no false positives.
+ *
+ * Without this filter the harness misattributes (small) auxiliary wire
+ * bodies to (large) agent-loop turn rows by zip-index, producing
+ * nonsense diagnostic data — e.g. a 6KB summarizer wire body paired
+ * with a `cache_read_tokens=59,507` agent turn row, even though the
+ * summarizer's prompt has nothing to do with the agent's cached prefix.
+ */
+const AGENT_PROMPT_SIGNATURE = "**Environment.** You run inside **bound**";
+
+function isAgentLoopWire(wire: { url: string; body: string }): boolean {
+	// Body opens with `{"system":[{"text":"...`. Find the first system text
+	// block and check for the signature literal in its first ~200 chars.
+	// Avoids parsing the full JSON for every wire.
+	const sysOpen = wire.body.indexOf('"system":[{"text":"');
+	if (sysOpen < 0) return false;
+	const start = sysOpen + '"system":[{"text":"'.length;
+	const sniff = wire.body.slice(start, start + 200);
+	return sniff.includes(AGENT_PROMPT_SIGNATURE);
 }
 
 /** Sum of `cost_usd` across all turn rows for the harness thread. */
