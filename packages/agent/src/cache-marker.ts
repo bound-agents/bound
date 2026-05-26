@@ -302,12 +302,30 @@ export function computeStableCacheMarkerPlacement(
 			break;
 		}
 	}
+
+	// Fallback: when no usable semantic anchor exists (no user message at
+	// index > 0), fall back to the bridge-aware default placement. This
+	// preserves the load-bearing contract that placement happens
+	// best-effort ALWAYS when caps allow caching — without a placed
+	// marker, `hasBedrockMessageCachePoint` returns false and the bedrock
+	// driver gates the SYSTEM cachePoint off too, killing cache_read for
+	// the whole turn. Live regression: thread `a191e01f-…` had user_1 at
+	// index 0 (fresh boundless thread), the strict semantic placer
+	// declined, and 79 turns ran with cr=0 across the board.
+	//
+	// The fallback (`computeCacheMarkerIndex`) is byte-position-suboptimal
+	// for tool-using inner loops but unconditionally produces a valid
+	// placement when there's anything to anchor on.
 	if (insertAt <= 0) {
-		// No user message OR user is at index 0 — bridge has no preceding
-		// message to attach the cachePoint onto. The system anchor
-		// continues to cache-hit; we just don't place a message-level
-		// marker. Common for scheduler-wakeup threads that haven't had a
-		// human user turn yet.
+		// `computeCacheMarkerIndex` reads from `messages` only — never
+		// mutates — so the readonly-vs-mutable distinction is safe to
+		// drop here.
+		insertAt = computeCacheMarkerIndex(messages as LLMMessage[]);
+	}
+
+	if (insertAt <= 0) {
+		// Even the fallback couldn't find a position — the array is too
+		// small (1-message threads). Caller can re-attempt later.
 		return {
 			placed: false,
 			index: -1,
