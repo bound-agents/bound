@@ -64,13 +64,31 @@
  *      placement the bridge would silently drop. Live regression on
  *      thread `91a31a43-...` 2026-05-26: 40 turns of cw=0 because
  *      `result[result.length-1]` was empty when the bridge processed
- *      the cache marker.
+ *      the cache marker. Resolution: the placer either advances past
+ *      user_1 (preferred — see B6b) or refuses with a non-capability-
+ *      disabled reason. EITHER outcome avoids the silent-drop case.
+ *
+ *   B6b (load-bearing — recovery rule) — autonomous-task shape with
+ *      a leading developer (Stage 1.7 compaction summary) followed by
+ *      a single user_1 followed by inner-loop content. Strict semantic-
+ *      anchor placement at insertAt=user_1's index would yield
+ *      nonDevPrecedingCount=0 → bridge silently drops. The placer MUST
+ *      advance to insertAt+1 (the position immediately AFTER user_1)
+ *      so the cachePoint anchors on the bridge's merged user message
+ *      (which contains the dev-prepend content folded in via
+ *      `appendDevToUser`). The cached prefix is then byte-stable across
+ *      inner-loop iterations as long as thread.summary is stable.
+ *      Live regression: thread `3a833552-...` 2026-05-26 had cw=0 across
+ *      all 33 turns because the original B6 fix refused this case
+ *      outright instead of advancing.
  *
  *   P_B6 (placer property) — for ANY message sequence, when
  *      coldPathPlaceCacheMarker reports placed=true, there is at least
  *      one non-developer, non-cache message strictly before the chosen
- *      index (so positionTokens > 0). Encoded as a fast-check property
- *      over the role alphabet so any future placement-strategy change
+ *      index (so positionTokens > 0). Holds under the B6b recovery
+ *      rule: when the strict anchor would violate this, the placer
+ *      advances rather than placing-with-zero. Encoded as a fast-check
+ *      property over the role alphabet so any future placement change
  *      that forgets the bridge's accumulator behavior fails in CI.
  *
  *   P_B7 (placer-bridge integration property) — for ANY message sequence
@@ -81,7 +99,8 @@
  *      corresponds to an actual on-wire cachePoint, not a marker the
  *      bridge silently drops. Catches the entire class of bridge-drop
  *      regressions without requiring the test author to enumerate every
- *      pathological role-shape upfront.
+ *      pathological role-shape upfront. Holds under B6b: the advanced
+ *      position lands the marker on a result-emitting message.
  *
  *   P_B8 (capability-disabled property) — when caps.prompt_caching is
  *      false, placement is always refused with reason="capability-disabled"
@@ -579,11 +598,13 @@ describe("Semantic-anchor cache marker placement — property invariants", () =>
 		);
 	});
 
-	it("P_B6_explicit_dev_prefix: messages starting with N developers force the bridge-drop guard regardless of latest-user position", () => {
+	it("P_B6_explicit_dev_prefix: messages starting with N developers either advance past user via B6b recovery OR refuse cleanly — bridge never silently drops", () => {
 		// Targeted generator: prepend 1-4 developer messages, then a
-		// random suffix containing at least one user. Without the
-		// bridge-drop guard the placer would happily put the marker at
-		// the latest user's index and report positionTokens=0.
+		// random suffix containing at least one user. Under the original
+		// B6 fix the placer would refuse outright; under the B6b recovery
+		// rule the placer ADVANCES past user_1 when strict semantic anchor
+		// would yield positionTokens=0, so most shapes produce placed=true
+		// AND the cachePoint reaches the wire successfully.
 		fc.assert(
 			fc.property(
 				fc.integer({ min: 1, max: 4 }),
@@ -610,6 +631,53 @@ describe("Semantic-anchor cache marker placement — property invariants", () =>
 						return placement.reason !== "capability-disabled";
 					}
 					// Placed: bridge must successfully attach.
+					const attached = simulateBridgeCachePointAttachments(messages);
+					return attached === 1;
+				},
+			),
+			{ numRuns: 200 },
+		);
+	});
+
+	it("P_B6b (load-bearing — recovery property): autonomous-task shape with leading developer + user_1 followed by ANY non-dev content MUST place via recovery (placed=true)", () => {
+		// Targeted at the production thread `3a833552-...` regression
+		// shape: 1+ leading developers, then exactly one user, then a
+		// non-empty run of non-developer content (asst/tool_call/
+		// tool_result), then optionally a trailing developer (vol_tail).
+		//
+		// Strict semantic anchor would refuse (nonDevPrecedingCount=0
+		// at insertAt=user_index). The B6b recovery MUST advance to
+		// insertAt+1 instead, producing placed=true with positionTokens
+		// > 0, so the message-level cachePoint reaches the wire.
+		const nonDevRoleArb = fc.constantFrom<LLMMessage["role"]>(
+			"assistant",
+			"tool_call",
+			"tool_result",
+		);
+		fc.assert(
+			fc.property(
+				fc.integer({ min: 1, max: 3 }),
+				fc.array(nonDevRoleArb, { minLength: 1, maxLength: 8 }),
+				fc.boolean(),
+				(devCount, postUserRoles, trailingDev) => {
+					const messages: LLMMessage[] = [];
+					for (let i = 0; i < devCount; i++) {
+						messages.push(makeMsg("developer", 200, `d${i}`));
+					}
+					messages.push(makeMsg("user", 400, "u1"));
+					for (let i = 0; i < postUserRoles.length; i++) {
+						messages.push(makeMsg(postUserRoles[i], 200, `p${i}`));
+					}
+					if (trailingDev) messages.push(makeMsg("developer", 200, "vt"));
+
+					const placement = coldPathPlaceCacheMarker(
+						messages,
+						{ bucketTokens: 0, estimateTokens: charEstimate },
+						CAPS,
+					);
+					if (!placement.placed) return false;
+					if ((placement.positionTokens ?? 0) <= 0) return false;
+					// Bridge must successfully attach the cachePoint.
 					const attached = simulateBridgeCachePointAttachments(messages);
 					return attached === 1;
 				},
