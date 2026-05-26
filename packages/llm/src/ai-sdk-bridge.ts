@@ -892,7 +892,23 @@ type ProviderMetadata = Record<string, Record<string, unknown>>;
 
 interface FinishState {
 	totalUsage?: {
+		/**
+		 * AI SDK v6's `inputTokens` is the SUMMED total prompt count
+		 * (`noCache + cacheRead + cacheWrite`), NOT the non-cached portion.
+		 * Verified live on `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168`
+		 * (2026-05-26 probe): a request with 11 noCache + 3506 cacheWrite
+		 * tokens reports `inputTokens: 3517`. The actual non-cached scalar
+		 * lives on `inputTokenDetails.noCacheTokens`. This bridge MUST read
+		 * from `inputTokenDetails.noCacheTokens` (with `inputTokens` as a
+		 * fallback when details are absent — covers older provider
+		 * adapters that haven't migrated to the structured shape).
+		 */
 		inputTokens?: number;
+		inputTokenDetails?: {
+			noCacheTokens?: number;
+			cacheReadTokens?: number;
+			cacheWriteTokens?: number;
+		};
 		outputTokens?: number;
 		cachedInputTokens?: number;
 		reasoningTokens?: number;
@@ -1132,7 +1148,24 @@ function extractUsage(
 	opts: MapChunksOptions,
 ): DoneUsage {
 	const u = finish.totalUsage ?? {};
-	let inputTokens = u.inputTokens ?? 0;
+	// `inputTokens` in AI SDK v6 is the SUMMED total (`noCache + cacheRead +
+	// cacheWrite`), not the non-cached portion. Use `inputTokenDetails.
+	// noCacheTokens` when present so the recorded `input_tokens` matches the
+	// non-cached scalar Bedrock and Anthropic actually charge at the full
+	// input rate. Fall back to the summed `inputTokens` only when the
+	// provider adapter doesn't expose the structured details (older or
+	// non-cache-aware providers — they don't report cache_read/cache_write
+	// either, so the fallback degrades gracefully).
+	//
+	// Live evidence (agent-harness production-shape, 2026-05-26): inf 13
+	// reported `ti=86,734 cr=86,261 cw=44`. With the old read,
+	// `calculateTurnCost` charged `86,734 × $3/M` for input — but only ~373
+	// tokens were actually non-cached this turn. The cost was overstated by
+	// ~$0.26/inf, and the diagnostic hit-rate denominator was poisoned with
+	// the cached-portion bytes. Switching to `noCacheTokens` aligns the
+	// recorded `input_tokens` with the wire reality (≈ 429 tokens for inf 13)
+	// and makes downstream cost/hit-rate metrics honest.
+	let inputTokens = u.inputTokenDetails?.noCacheTokens ?? u.inputTokens ?? 0;
 	let outputTokens = u.outputTokens ?? 0;
 	const cacheReadTokens = u.cachedInputTokens ?? null;
 	// Cache-write tokens are summed by the caller across all finish-step
