@@ -2239,6 +2239,100 @@ describe("mapChunks — finish / usage", () => {
 		});
 	});
 
+	it("reads input_tokens from inputTokenDetails.noCacheTokens when present (NOT the summed inputTokens)", async () => {
+		// Live regression observed via probe against
+		// `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168` (2026-05-26):
+		// the AI SDK exposes `totalUsage.inputTokens` as the SUMMED total
+		// (`noCache + cacheRead + cacheWrite`), not the non-cached
+		// portion. Probe output for a request with 11 noCache + 3506
+		// cacheWrite tokens:
+		//
+		//   { inputTokens: 3517,
+		//     inputTokenDetails: { noCacheTokens: 11, cacheReadTokens: 0,
+		//                          cacheWriteTokens: 3506 },
+		//     cachedInputTokens: 0 }
+		//
+		// Pre-fix: bridge read `u.inputTokens` (= 3517), so downstream
+		// `calculateTurnCost` charged the FULL input price for the cached
+		// portion. Combined with the separate `cache_read_tokens × $0.30`
+		// charge, the cached bytes were billed twice. On warm-path
+		// inferences with cumulative cache reads of ~85k tokens, the
+		// double-charge inflated reported cost by ~$0.26/inf.
+		//
+		// Post-fix: read `inputTokenDetails.noCacheTokens` first; fall
+		// back to the legacy scalar only when details are absent (older
+		// providers that haven't migrated to the structured shape).
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: { usage: { cacheWriteInputTokens: 3506 } },
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: {
+							// Summed total — the trap. The bridge MUST NOT use this
+							// as `input_tokens` when `inputTokenDetails` is present.
+							inputTokens: 3517,
+							inputTokenDetails: {
+								noCacheTokens: 11,
+								cacheReadTokens: 0,
+								cacheWriteTokens: 3506,
+							},
+							outputTokens: 4,
+							cachedInputTokens: 0,
+						},
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage).toEqual({
+			input_tokens: 11,
+			output_tokens: 4,
+			cache_write_tokens: 3506,
+			cache_read_tokens: 0,
+			estimated: false,
+		});
+	});
+
+	it("falls back to inputTokens scalar when inputTokenDetails is absent (older provider adapters)", async () => {
+		// Older providers (or non-cache-aware adapters) emit only a
+		// scalar `inputTokens` and no `inputTokenDetails`. The bridge
+		// must continue to honor that shape so existing per-PR tests and
+		// non-Bedrock/Anthropic providers keep reporting correct values.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "answer" },
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: {
+							inputTokens: 100,
+							outputTokens: 20,
+						},
+					},
+				),
+				{ usageProvider: null },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage).toEqual({
+			input_tokens: 100,
+			output_tokens: 20,
+			cache_write_tokens: null,
+			cache_read_tokens: null,
+			estimated: false,
+		});
+	});
+
 	it("extracts cache-write tokens from anthropic providerMetadata", async () => {
 		const out = await collect(
 			mapChunks(
