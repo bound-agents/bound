@@ -307,19 +307,63 @@ export function buildToolSet(
 	};
 }
 
-export function buildSystemPromptAddition(
+/**
+ * Collects git context (current branch + recent commits) from the given
+ * working directory. Returns formatted context lines on success, or a
+ * warning string if git is unavailable or the directory is not a repository.
+ */
+export async function collectGitContext(cwd: string): Promise<string> {
+	try {
+		const branchProc = Bun.spawn(["git", "-C", cwd, "branch", "--show-current"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [branchOut, , branchExit] = await Promise.all([
+			Bun.readableStreamToText(branchProc.stdout),
+			Bun.readableStreamToText(branchProc.stderr),
+			branchProc.exited,
+		]);
+
+		if (branchExit !== 0) {
+			return "Git context: (not a git repository)";
+		}
+
+		const branch = branchOut.trim() || "(detached HEAD)";
+
+		const logProc = Bun.spawn(["git", "-C", cwd, "log", "--oneline", "-10"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [logOut, , logExit] = await Promise.all([
+			Bun.readableStreamToText(logProc.stdout),
+			Bun.readableStreamToText(logProc.stderr),
+			logProc.exited,
+		]);
+
+		const commits = logExit === 0 && logOut.trim() ? logOut.trim() : "(no commits)";
+
+		return `Git branch: ${branch}\nRecent commits:\n${commits}`;
+	} catch {
+		return "Git context: (git unavailable)";
+	}
+}
+
+export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
 	mcpServers: string[],
-): string {
+): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
 	const toolList = `boundless_read, boundless_write, boundless_edit, boundless_bash, boundless_copy${
 		mcpNamespaces ? `, ${mcpNamespaces}` : ""
 	}`;
 
+	const gitContext = await collectGitContext(cwd);
+
 	return `You are connected to a boundless terminal client.
 Host: ${hostname}
 Working directory: ${cwd}
+${gitContext}
 Available tool namespaces: ${toolList}
 
 Tool results include provenance metadata showing which host and directory produced them.`;
