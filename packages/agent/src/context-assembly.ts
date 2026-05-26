@@ -27,6 +27,7 @@ import {
 	projectStableVolatileInputs,
 	renderSkillIndex,
 } from "./stable-prefix";
+import type { StableSubsectionCache } from "./stable-prefix/cache";
 import {
 	type LiveStateTaskEntry,
 	RECENT_MEMORY_HEADER,
@@ -148,6 +149,20 @@ export interface ContextParams {
 	 * and Stage 7 truncation target.
 	 */
 	effectiveTruncationRatio?: number;
+	/**
+	 * Per-process cache for the rendered R-VC25 stable volatile subsection.
+	 * When supplied, the cold-path stable bytes pushed onto `systemParts`
+	 * come from `cache.get(...)` rather than from a freshly-rendered
+	 * `volatileCtx.stableContent`. Insulates the on-wire bytes from
+	 * `last_accessed_at` bumps and other within-TTL collect-side
+	 * mutations that the change-log doesn't track (CONTRIBUTING.md narrow
+	 * exception #1) — pinning K1 of `stable-prefix/cache.ts`.
+	 *
+	 * Optional. When omitted, the renderer falls back to the freshly-
+	 * rendered bytes. Tests omit this; the agent loop passes a singleton
+	 * instance per process.
+	 */
+	stableSubsectionCache?: StableSubsectionCache;
 }
 
 export interface ContextAssemblyResult {
@@ -1300,11 +1315,30 @@ Original output was too large for the context window. If you need the full conte
 		// STABLE PREFIX: fold WK bodies + DA titles + skill index into systemParts.
 		// Sits behind the system-level cache breakpoint, so steady-state runs reuse
 		// the prefix across turns and across threads.
-		if (volatileCtx.stableContent.length > 0) {
-			systemParts.push(volatileCtx.stableContent);
+		//
+		// When `stableSubsectionCache` is supplied (production path), pull the
+		// rendered bytes from the per-thread memoization layer instead of using
+		// the fresh `volatileCtx.stableContent`. This insulates the on-wire bytes
+		// from within-TTL `last_accessed_at` bumps and other collect-side
+		// mutations the change_log doesn't track — the K1 invariant of
+		// `stable-prefix/cache.ts`. Tests omit the cache and fall back to the
+		// freshly-rendered content (preserving existing test semantics).
+		const stableContentForWire = params.stableSubsectionCache
+			? params.stableSubsectionCache
+					.get({
+						db,
+						threadId,
+						budgetPressure: false,
+					})
+					.join("\n")
+			: volatileCtx.stableContent;
+		if (stableContentForWire.length > 0) {
+			systemParts.push(stableContentForWire);
 			sections[volatilePrefixSectionIndex] = {
 				name: "volatile-prefix",
-				tokens: volatileCtx.stableTokenEstimate,
+				tokens: params.stableSubsectionCache
+					? countTokens(stableContentForWire)
+					: volatileCtx.stableTokenEstimate,
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
