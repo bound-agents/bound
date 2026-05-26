@@ -47,15 +47,26 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		 * fetch is used with zero overhead.
 		 */
 		logger?: Logger;
+		/**
+		 * Custom fetch for wire-body interception (harness/test only). When
+		 * set, takes precedence over the logger-backed fetch. Production
+		 * callers leave this unset and use `logger` instead. Mirrors the same
+		 * field on `BedrockDriver` so `createBackendFromConfig` can thread a
+		 * single fetch override through whichever provider the config picks.
+		 */
+		fetch?: typeof fetch;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
 		this.providerName = config.providerName ?? "openai-compatible";
+		const customFetch =
+			config.fetch ??
+			(config.logger ? createLoggingFetch(config.logger, this.providerName) : undefined);
 		this.provider = createOpenAICompatible({
 			name: this.providerName,
 			baseURL: config.baseUrl,
 			apiKey: config.apiKey,
-			...(config.logger && { fetch: createLoggingFetch(config.logger, this.providerName) }),
+			...(customFetch && { fetch: customFetch }),
 		});
 	}
 

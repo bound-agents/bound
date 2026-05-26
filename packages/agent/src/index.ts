@@ -33,7 +33,11 @@ export { getDelegationTarget, getRecentToolCalls } from "./delegation";
 
 // Export agent loop
 export { AgentLoop } from "./agent-loop";
-export { findPendingUserMessage } from "./agent-loop-utils";
+export {
+	findPendingUserMessage,
+	insertThreadMessage,
+	calculateTurnCost,
+} from "./agent-loop-utils";
 export {
 	HandleMessageTracker,
 	DEFAULT_WATCHDOG_TIMEOUT_MS,

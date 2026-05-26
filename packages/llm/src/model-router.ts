@@ -420,7 +420,11 @@ export class ModelRouter {
 	}
 }
 
-function createBackendFromConfig(config: BackendConfig, logger?: Logger): LLMBackend {
+function createBackendFromConfig(
+	config: BackendConfig,
+	logger?: Logger,
+	fetch?: typeof globalThis.fetch,
+): LLMBackend {
 	const provider = config.provider.toLowerCase();
 
 	switch (provider) {
@@ -437,6 +441,7 @@ function createBackendFromConfig(config: BackendConfig, logger?: Logger): LLMBac
 				contextWindow,
 				profile,
 				logger,
+				fetch,
 			});
 		}
 
@@ -454,6 +459,7 @@ function createBackendFromConfig(config: BackendConfig, logger?: Logger): LLMBac
 				contextWindow,
 				providerName: "openai-compatible",
 				logger,
+				fetch,
 			});
 		}
 
@@ -471,6 +477,7 @@ function createBackendFromConfig(config: BackendConfig, logger?: Logger): LLMBac
 				contextWindow,
 				providerName: "cerebras",
 				logger,
+				fetch,
 			});
 		}
 
@@ -488,6 +495,7 @@ function createBackendFromConfig(config: BackendConfig, logger?: Logger): LLMBac
 				contextWindow,
 				providerName: "zai",
 				logger,
+				fetch,
 			});
 		}
 
@@ -509,12 +517,17 @@ interface RouterState {
 	backendConfigs: Map<string, BackendConfig>;
 }
 
-function buildRouterState(config: ModelBackendsConfig, logger?: Logger): RouterState {
+function buildRouterState(
+	config: ModelBackendsConfig,
+	logger?: Logger,
+	fetchByBackendId?: Map<string, typeof globalThis.fetch>,
+): RouterState {
 	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
 	const groups = new Map<string, { entries: PoolEntry[]; caps: BackendCapabilities[] }>();
 
 	for (const backendConfig of config.backends) {
-		const backend = createBackendFromConfig(backendConfig, logger);
+		const fetchOverride = fetchByBackendId?.get(backendConfig.id);
+		const backend = createBackendFromConfig(backendConfig, logger, fetchOverride);
 		const baseline = backend.capabilities();
 		const capOverride =
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
@@ -585,13 +598,22 @@ export interface CreateModelRouterOptions {
 	 * provider factory's `fetch` option (see `createLoggingFetch`).
 	 */
 	logger?: Logger;
+	/**
+	 * Optional per-backend fetch override, keyed by `BackendConfig.id`. When
+	 * present for a given backend ID, the driver constructor receives the
+	 * fetch directly (taking precedence over the logger-backed fetch). Used
+	 * by the diagnostic harness in `packages/agent/scripts/agent-harness/`
+	 * to capture wire bodies for inspection. Production callers leave this
+	 * unset.
+	 */
+	fetchByBackendId?: Map<string, typeof globalThis.fetch>;
 }
 
 export function createModelRouter(
 	config: ModelBackendsConfig,
 	options?: CreateModelRouterOptions,
 ): ModelRouter {
-	const state = buildRouterState(config, options?.logger);
+	const state = buildRouterState(config, options?.logger, options?.fetchByBackendId);
 	return new ModelRouter(
 		state.backends,
 		state.defaultId,
