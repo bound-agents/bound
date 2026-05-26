@@ -37,6 +37,7 @@ export {
 	findPendingUserMessage,
 	insertThreadMessage,
 	calculateTurnCost,
+	estimateMaxTurnCost,
 } from "./agent-loop-utils";
 export {
 	HandleMessageTracker,

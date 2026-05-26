@@ -15,6 +15,52 @@
  *   1. Pre-flight estimate before turn 1.
  *   2. Per-turn projection before each turn.
  *   3. Hard stop after each turn (5% slack).
+ *
+ * Divergence audit (kept narrow on purpose).
+ * Production constructs `AgentLoop` via `createAgentLoopFactory`
+ * (`packages/cli/src/commands/start/agent-factory.ts`). The harness
+ * deliberately deviates only where the daemon's wiring would force live
+ * filesystem / sandbox / platform side effects. Every deviation either
+ * (a) reuses a production helper, (b) is harmless on the harness hot path,
+ * or (c) is documented as a known limitation.
+ *
+ * Reused unchanged from production:
+ *   - `loadConfigFile` + `modelBackendsSchema` (config-loader)
+ *   - `toRouterConfig` (Critical Invariant #17 hand-off)
+ *   - `createModelRouter` + `createBackendFromConfig` (provider dispatch)
+ *   - `applySchema` + `applyMetricsSchema` + `insertRow` (DB seed)
+ *   - `InMemoryTurnStateStore` (already in-memory in production too)
+ *   - `insertThreadMessage` (queues user prompts)
+ *   - `estimateMaxTurnCost` (budget ceiling math)
+ *   - The agent-loop's own `recordTurn` writes `cost_usd` via
+ *     `calculateTurnCost(modelId, usage, ctx.config.modelBackends.backends)`
+ *     — the harness reads from `cost_usd` in the in-memory `turns` row,
+ *     never recomputes.
+ *
+ * Deliberate harness-side overrides (each has a one-line justification
+ * elsewhere in this file):
+ *   - Sandbox shim provides `exec` only. Production `loopSandbox` also
+ *     provides `capturePreSnapshot`/`writeFile`/`persistFs`/`builtInTools`
+ *     for VFS/sandbox flows. Fixtures use deterministic stubs so none of
+ *     these hooks fire on the harness hot path; if a future agent-loop
+ *     change starts requiring one, this comment is the first place to look.
+ *   - No `hosts` row seeded. `hosts` is read by relay-router / mcp-bridge /
+ *     model-resolution / hostinfo / summary-extraction. None of those
+ *     fire on a fixture-driven turn (no relay, no MCP, single-backend
+ *     router, no summary regen mid-fixture, no hostinfo tool). Skipping
+ *     the seed avoids reaching for the `bootstrap.ts` outbox-exempt path.
+ *   - `commandRegistry: []` and `optionalConfig: {}`. Context-assembly
+ *     reads commandRegistry only for MCP bridge command rendering;
+ *     fixtures don't use MCP. optionalConfig is read for sync — also
+ *     unused on the harness path.
+ *   - `eventBus` is a noop. Production emits `file:changed` /
+ *     `changelog:written` etc. for sync. Harness has no sync.
+ *   - `tools: undefined` in `AgentLoopConfig`. Production passes
+ *     `[sandboxTool, ...builtInToolDefs, ...platformToolDefs]`, but
+ *     `getMergedTools` reads from `toolRegistry` first and dedupes
+ *     `tools` against the registry — so omitting `tools` is a no-op
+ *     when every tool is already in the registry, which the harness
+ *     enforces via its fixture loader.
  */
 
 import { Database } from "bun:sqlite";
@@ -45,7 +91,7 @@ import { toRouterConfig } from "../../../cli/src/commands/start/inference";
 // `@bound/agent` is the package this harness lives in; use relative paths to
 // avoid the package self-reference resolution issue under tsc.
 import { AgentLoop } from "../../src/agent-loop";
-import { calculateTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
+import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
 import type { AgentLoopConfig, RegisteredTool } from "../../src/types";
 import { createCapturingFetch } from "./capture";
 import type { Diagnostic, DiagnosticTurnData } from "./diagnostics/types";
@@ -267,7 +313,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		}
 
 		// Collect per-turn data from the in-memory `turns` table.
-		const turnData = collectTurnData(db, threadId, turn, capturing.entries.slice(), [picked]);
+		const turnData = collectTurnData(db, threadId, turn, capturing.entries.slice());
 		rawTurnData.push(turnData);
 		for (const diag of opts.diagnostics) {
 			perDiagRecords.get(diag.name)?.push(diag.collect(turnData));
@@ -312,15 +358,6 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Worst-case dollar cost for a single turn. */
-function estimateMaxTurnCost(backend: RawBackendConfig): number {
-	const ctx = backend.context_window ?? 200_000;
-	const max = backend.max_output_tokens ?? 8_000;
-	const inputPrice = backend.price_per_m_input ?? 0;
-	const outputPrice = backend.price_per_m_output ?? 0;
-	return (ctx * inputPrice + max * outputPrice) / 1_000_000;
-}
 
 /** Sum of `cost_usd` across all turn rows for the harness thread. */
 function sumTurnCosts(db: Database, threadId: string): number {
@@ -371,7 +408,6 @@ function collectTurnData(
 	threadId: string,
 	turn: number,
 	wireBodies: ReadonlyArray<{ url: string; body: string }>,
-	pricingBackends: RawBackendConfig[],
 ): DiagnosticTurnData {
 	// Most recent turn row for this thread.
 	const row = db
@@ -403,28 +439,12 @@ function collectTurnData(
 				}
 			: null;
 
-	let costUsd = row?.cost_usd ?? 0;
-	// `recordTurn` writes cost_usd; recompute here as a fallback for legacy
-	// turns that didn't populate it. Reuses the same cost helper the
-	// production agent loop uses.
-	if (costUsd === 0 && usage && pricingBackends.length > 0) {
-		costUsd = calculateTurnCost(
-			pricingBackends[0].id,
-			{
-				inputTokens: usage.input_tokens,
-				outputTokens: usage.output_tokens,
-				cacheReadTokens: usage.cache_read_tokens,
-				cacheWriteTokens: usage.cache_write_tokens,
-			},
-			pricingBackends.map((b) => ({
-				id: b.id,
-				price_per_m_input: b.price_per_m_input,
-				price_per_m_output: b.price_per_m_output,
-				price_per_m_cache_read: b.price_per_m_cache_read,
-				price_per_m_cache_write: b.price_per_m_cache_write,
-			})),
-		);
-	}
+	// `recordTurn` (called by AgentLoop's done-chunk handler with the same
+	// `calculateTurnCost(modelId, usage, ctx.config.modelBackends.backends)`
+	// the harness's AppContext stub provides) always populates `cost_usd`.
+	// No parallel cost math here — anything else would be a divergence
+	// vector if pricing fields ever change shape.
+	const costUsd = row?.cost_usd ?? 0;
 
 	return {
 		turn,

@@ -187,6 +187,28 @@ export function calculateTurnCost(
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
+/**
+ * Compute the worst-case turn cost ceiling for a backend in USD: full
+ * context-window of input + max-output. Useful for budget forecasting
+ * (e.g. by the agent-harness diagnostic) without running a turn.
+ *
+ * Defaults match `BackendConfig` schema defaults: 200k context window,
+ * 8k max-output, zero pricing if unset. The result is a strict upper
+ * bound — actual turn cost is almost always lower.
+ */
+export function estimateMaxTurnCost(backend: {
+	context_window?: number;
+	max_output_tokens?: number;
+	price_per_m_input?: number;
+	price_per_m_output?: number;
+}): number {
+	const ctxWindow = backend.context_window ?? 200_000;
+	const maxOutput = backend.max_output_tokens ?? 8_000;
+	const inputPrice = backend.price_per_m_input ?? 0;
+	const outputPrice = backend.price_per_m_output ?? 0;
+	return (ctxWindow * inputPrice + maxOutput * outputPrice) / 1_000_000;
+}
+
 // ---------------------------------------------------------------------------
 // Model resolution helpers
 // ---------------------------------------------------------------------------
