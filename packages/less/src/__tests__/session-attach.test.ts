@@ -77,6 +77,7 @@ describe("performAttach", () => {
 			configureTools: vi.fn(() => {
 				callOrder.push("configureTools");
 			}),
+			getBaseUrl: vi.fn(() => "http://localhost:3001"),
 		} as unknown as BoundClient;
 
 		// Mock McpServerManager

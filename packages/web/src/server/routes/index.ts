@@ -1,11 +1,13 @@
 import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import type { MountableFs } from "just-bash";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
+import { createSandboxRoutes } from "./sandbox";
 import { createSkillsRoutes } from "./skills";
 import { type ModelsConfig, createStatusRoutes } from "./status";
 import { createTasksRoutes } from "./tasks";
@@ -34,6 +36,13 @@ export interface RoutesConfig {
 		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
 	) => void;
 	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
+	/**
+	 * Live sandbox cluster filesystem reference. When present, exposes
+	 * `/api/sandbox/file` for arbitrary path read/write — used by the
+	 * `boundless_copy` tool to bridge host and sandbox filesystems
+	 * without round-tripping bytes through the LLM context window.
+	 */
+	clusterFs?: MountableFs | null;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -48,6 +57,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		activeLoops,
 		emitToolCancel,
 		requestConsistency,
+		clusterFs,
 	} = config;
 
 	return {
@@ -78,5 +88,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		webhooks: createWebhooksRoutes(db),
 		skills: createSkillsRoutes(db),
 		metrics: createMetricsRoutes(db, backendPricing),
+		sandbox: createSandboxRoutes(clusterFs ?? null),
 	};
 }

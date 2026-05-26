@@ -9,6 +9,7 @@ import type {
 } from "@bound/sync";
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
+import type { MountableFs } from "just-bash";
 import {
 	type BackendPricing,
 	type ModelsConfig,
@@ -44,6 +45,13 @@ export interface WebAppConfig {
 		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
 	) => void;
 	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
+	/**
+	 * Live sandbox cluster filesystem. When provided, exposes
+	 * `/api/sandbox/file` for arbitrary path read/write — used by the
+	 * `boundless_copy` tool to bridge host and sandbox filesystems
+	 * without round-tripping bytes through the LLM context window.
+	 */
+	clusterFs?: MountableFs | null;
 }
 
 export interface SyncAppConfig {
@@ -109,6 +117,7 @@ export async function createWebApp(
 		activeLoops: config.activeLoops,
 		emitToolCancel: config.emitToolCancel,
 		requestConsistency: config.requestConsistency,
+		clusterFs: config.clusterFs,
 	};
 
 	const app = new Hono();
@@ -139,6 +148,7 @@ export async function createWebApp(
 	app.route("/api/webhooks", routes.webhooks);
 	app.route("/api/skills", routes.skills);
 	app.route("/api/metrics", routes.metrics);
+	app.route("/api/sandbox", routes.sandbox);
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

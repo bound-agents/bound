@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
+import type { MountableFs } from "just-bash";
 import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
 import { handleWebhookRequest } from "./webhook-handler.js";
@@ -33,6 +34,13 @@ export interface WebServerConfig {
 	handleMessageTracker?: {
 		closeDispatch(callId: string, status?: "ok" | "error", reason?: string): void;
 	};
+	/**
+	 * Live sandbox cluster filesystem. When provided, exposes
+	 * `/api/sandbox/file` for arbitrary path read/write — used by the
+	 * `boundless_copy` tool to bridge host and sandbox filesystems
+	 * without round-tripping bytes through the LLM context window.
+	 */
+	clusterFs?: MountableFs | null;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -85,6 +93,7 @@ export async function createWebServer(
 		activeLoops: config.activeLoops,
 		emitToolCancel: wsHandler.emitToolCancel,
 		requestConsistency: config.requestConsistency,
+		clusterFs: config.clusterFs,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

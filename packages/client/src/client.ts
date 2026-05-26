@@ -95,6 +95,11 @@ export class BoundClient {
 	 */
 	private tracingSession: ClientTracingSession | null = null;
 
+	/** Public read-only accessor for the bound API base URL (trailing slash stripped). */
+	getBaseUrl(): string {
+		return this.baseUrl;
+	}
+
 	/**
 	 * @param baseUrl Base URL for the Bound API. Defaults to "" (empty string)
 	 *   for browser usage with relative URLs. Server consumers should pass the

@@ -40,6 +40,7 @@ import {
 	createConnectorTool,
 	getConnectorHandle,
 } from "@bound/platforms";
+import type { ClusterFsResult } from "@bound/sandbox";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
@@ -258,6 +259,8 @@ export interface ServerDeps {
 	keyManager: KeyManager | undefined;
 	keyring: KeyringConfig | undefined;
 	hubSiteId: string | undefined;
+	/** Cluster FS reference, exposed via `/api/sandbox/file` for `boundless_copy`. */
+	clusterFsObj: ClusterFsResult | null;
 	/** RelayProcessor to wire platform MCP registry and factories into. */
 	relayProcessor: {
 		setPlatformMcpRegistry(registry: PlatformMcpRegistry): void;
@@ -276,6 +279,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		keyManager,
 		keyring,
 		hubSiteId,
+		clusterFsObj,
 		relayProcessor,
 	} = deps;
 
@@ -380,6 +384,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			activeLoops: threadExecutor.activeThreads as Set<string>,
 			requestConsistency: (tables: string[]) => wsTransportHolder.requestConsistency(tables),
 			handleMessageTracker,
+			clusterFs: clusterFsObj?.fs ?? null,
 		});
 		await webServer.start();
 

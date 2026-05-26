@@ -75,6 +75,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					keyManager,
 					keyring,
 					hubSiteId,
+					clusterFsObj,
 					relayProcessor,
 				})
 			: {

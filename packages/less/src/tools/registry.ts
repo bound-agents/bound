@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@bound/client";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerConfig } from "../config";
 import { createBashTool } from "./bash";
+import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
 import type { ToolHandler, ToolResult } from "./types";
@@ -23,6 +24,7 @@ export function buildToolSet(
 	_hostname: string,
 	mcpTools?: Map<string, { tools: Tool[]; config: McpServerConfig }>,
 	confirmFn?: (toolName: string) => Promise<boolean>,
+	boundUrl?: string,
 ): BuildToolSetResult {
 	const toolDefinitions: ToolDefinition[] = [];
 	const handlers = new Map<string, ToolHandler>();
@@ -122,6 +124,40 @@ export function buildToolSet(
 				},
 			},
 		},
+		{
+			type: "function",
+			function: {
+				name: "boundless_copy",
+				description:
+					"Copy a file between the host filesystem (where boundless runs) and the bound runtime sandbox, without round-tripping bytes through the LLM context. Use this instead of read+write whenever you only need to move file contents from one filesystem to the other.",
+				parameters: {
+					type: "object",
+					required: ["source", "source_path", "target", "target_path"],
+					properties: {
+						source: {
+							type: "string",
+							enum: ["host", "sandbox"],
+							description: 'Source filesystem: "host" or "sandbox"',
+						},
+						source_path: {
+							type: "string",
+							description:
+								"Path on the source filesystem. Host paths may be relative to the boundless cwd; sandbox paths must be absolute.",
+						},
+						target: {
+							type: "string",
+							enum: ["host", "sandbox"],
+							description: 'Target filesystem: "host" or "sandbox"',
+						},
+						target_path: {
+							type: "string",
+							description:
+								"Path on the target filesystem. Host paths may be relative to the boundless cwd; sandbox paths must be absolute. Parent directories are created on the host side.",
+						},
+					},
+				},
+			},
+		},
 	];
 
 	toolDefinitions.push(...coreToolDefs);
@@ -129,6 +165,13 @@ export function buildToolSet(
 	handlers.set("boundless_write", createWriteTool(_hostname));
 	handlers.set("boundless_edit", createEditTool(_hostname));
 	handlers.set("boundless_bash", createBashTool(_hostname));
+	handlers.set(
+		"boundless_copy",
+		createCopyTool({
+			hostname: _hostname,
+			boundUrl: boundUrl ?? "http://localhost:3001",
+		}),
+	);
 
 	// Detect potential namespace collisions from underscore ambiguity
 	// Example: server "a_b" with tool "c" -> "boundless_mcp_a_b_c"
@@ -270,7 +313,7 @@ export function buildSystemPromptAddition(
 	mcpServers: string[],
 ): string {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
-	const toolList = `boundless_read, boundless_write, boundless_edit, boundless_bash${
+	const toolList = `boundless_read, boundless_write, boundless_edit, boundless_bash, boundless_copy${
 		mcpNamespaces ? `, ${mcpNamespaces}` : ""
 	}`;
 
