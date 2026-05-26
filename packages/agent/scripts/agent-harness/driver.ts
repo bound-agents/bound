@@ -110,7 +110,10 @@ export interface HarnessRunOptions {
 }
 
 export interface HarnessRunResult {
-	turnsCompleted: number;
+	/** Number of operator-driven user-turn iterations that completed. */
+	userTurnsCompleted: number;
+	/** Number of LLM inference calls observed (sum of inner-loop iterations). */
+	inferencesObserved: number;
 	totalCostUsd: number;
 	abortReason: "completed" | "pre-flight-budget" | "per-turn-budget" | "hard-stop-budget" | "error";
 	abortMessage: string | null;
@@ -151,7 +154,8 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	const projectedTotal = maxTurnCost * opts.turns;
 	if (projectedTotal > opts.budgetUsd) {
 		return {
-			turnsCompleted: 0,
+			userTurnsCompleted: 0,
+			inferencesObserved: 0,
 			totalCostUsd: 0,
 			abortReason: "pre-flight-budget",
 			abortMessage: `pre-flight estimate ${projectedTotal.toFixed(4)} USD exceeds budget ${opts.budgetUsd.toFixed(2)} USD (per-turn ceiling ${maxTurnCost.toFixed(4)} × ${opts.turns} turns)`,
@@ -269,22 +273,23 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	const rawTurnData: DiagnosticTurnData[] = [];
 
 	// 11. Drive the turns loop.
-	let turnsCompleted = 0;
+	let userTurnsCompleted = 0;
+	let inferenceCounter = 0;
 	let abortReason: HarnessRunResult["abortReason"] = "completed";
 	let abortMessage: string | null = null;
 
-	for (let turn = 1; turn <= opts.turns; turn++) {
-		// Per-turn budget projection.
+	for (let userTurn = 1; userTurn <= opts.turns; userTurn++) {
+		// Per-user-turn budget projection.
 		const before = sumTurnCosts(db, threadId);
 		if (before + maxTurnCost > opts.budgetUsd) {
 			abortReason = "per-turn-budget";
-			abortMessage = `running cost ${before.toFixed(4)} + ceiling ${maxTurnCost.toFixed(4)} would exceed budget ${opts.budgetUsd.toFixed(2)} USD before turn ${turn}`;
+			abortMessage = `running cost ${before.toFixed(4)} + ceiling ${maxTurnCost.toFixed(4)} would exceed budget ${opts.budgetUsd.toFixed(2)} USD before user-turn ${userTurn}`;
 			break;
 		}
 
-		// Inject user message for this turn.
+		// Inject user message for this user-turn.
 		const userContent =
-			turn === 1 ? opts.fixture.initialUserContent : mutationFor(turn - 1, opts.fixture);
+			userTurn === 1 ? opts.fixture.initialUserContent : mutationFor(userTurn - 1, opts.fixture);
 		if (userContent) {
 			insertThreadMessage(
 				db,
@@ -293,8 +298,11 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			);
 		}
 
-		// Reset capture buffer for this turn.
+		// Reset capture buffer for this user-turn.
 		capturing.clear();
+		// Snapshot turn-row count before the agent-loop runs so we can collect
+		// the per-inference rows it adds during this user-turn.
+		const turnsRowCountBefore = countTurnRows(db, threadId);
 
 		// Build the loop config and run.
 		const config: AgentLoopConfig = {
@@ -308,23 +316,41 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			await loop.run();
 		} catch (err) {
 			abortReason = "error";
-			abortMessage = `turn ${turn} threw: ${(err as Error).message}`;
+			abortMessage = `user-turn ${userTurn} threw: ${(err as Error).message}`;
 			break;
 		}
 
-		// Collect per-turn data from the in-memory `turns` table.
-		const turnData = collectTurnData(db, threadId, turn, capturing.entries.slice());
-		rawTurnData.push(turnData);
-		for (const diag of opts.diagnostics) {
-			perDiagRecords.get(diag.name)?.push(diag.collect(turnData));
+		// One agent-loop run produces N inferences (the inner loop spans
+		// multiple LLM calls when the agent issues tool calls, gets results,
+		// and continues). Each inference writes ONE wire body (capturing.entries)
+		// AND ONE row to the in-memory `turns` table (recordTurn from the
+		// `done` chunk handler). Both lists are emitted in lock-step in
+		// `created_at` order, so we zip them by index.
+		const newTurnRows = readTurnRowsAfter(db, threadId, turnsRowCountBefore);
+		const wires = capturing.entries.slice();
+		if (newTurnRows.length !== wires.length) {
+			// Surface the mismatch so it's visible in the report rather than
+			// silently aligning to the shorter list.
+			opts.logger.warn(
+				`[harness] user-turn ${userTurn}: ${wires.length} wire bodies captured but ${newTurnRows.length} turn rows recorded; aligning to min`,
+			);
 		}
-		turnsCompleted = turn;
+		const inferenceCount = Math.min(newTurnRows.length, wires.length);
+		for (let i = 0; i < inferenceCount; i++) {
+			inferenceCounter += 1;
+			const turnData = buildTurnData(inferenceCounter, userTurn, newTurnRows[i], wires[i]);
+			rawTurnData.push(turnData);
+			for (const diag of opts.diagnostics) {
+				perDiagRecords.get(diag.name)?.push(diag.collect(turnData));
+			}
+		}
+		userTurnsCompleted = userTurn;
 
 		// Hard-stop check.
 		const after = sumTurnCosts(db, threadId);
 		if (after > opts.budgetUsd * 1.05) {
 			abortReason = "hard-stop-budget";
-			abortMessage = `running cost ${after.toFixed(4)} exceeded budget ${opts.budgetUsd.toFixed(2)} USD (5% slack) after turn ${turn}`;
+			abortMessage = `running cost ${after.toFixed(4)} exceeded budget ${opts.budgetUsd.toFixed(2)} USD (5% slack) after user-turn ${userTurn}`;
 			break;
 		}
 	}
@@ -340,7 +366,8 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	db.close();
 
 	return {
-		turnsCompleted,
+		userTurnsCompleted,
+		inferencesObserved: inferenceCounter,
 		totalCostUsd,
 		abortReason,
 		abortMessage,
@@ -403,22 +430,45 @@ interface TurnRow {
 	tokens_cache_write: number | null;
 }
 
-function collectTurnData(
-	db: Database,
-	threadId: string,
-	turn: number,
-	wireBodies: ReadonlyArray<{ url: string; body: string }>,
-): DiagnosticTurnData {
-	// Most recent turn row for this thread.
+/** Count the rows the agent loop has written so far for this thread. */
+function countTurnRows(db: Database, threadId: string): number {
 	const row = db
-		.query<TurnRow, [string]>(
-			"SELECT context_debug, cost_usd, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
-		)
+		.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM turns WHERE thread_id = ?")
 		.get(threadId);
+	return row?.n ?? 0;
+}
 
+/**
+ * Read every `turns` row added since the count snapshot, ordered by
+ * `created_at` ascending so the result lines up with `capturing.entries`
+ * (both are emitted in `done`-chunk order by the agent loop).
+ */
+function readTurnRowsAfter(db: Database, threadId: string, previousCount: number): TurnRow[] {
+	return db
+		.query<TurnRow, [string, number]>(
+			"SELECT context_debug, cost_usd, tokens_in, tokens_out, tokens_cache_read, tokens_cache_write " +
+				"FROM turns WHERE thread_id = ? " +
+				"ORDER BY created_at ASC, rowid ASC " +
+				"LIMIT -1 OFFSET ?",
+		)
+		.all(threadId, previousCount);
+}
+
+/**
+ * Map one inference's `turns` row + captured wire body into the diagnostic
+ * input shape. `recordTurn` always writes `cost_usd` via the agent loop's
+ * `calculateTurnCost` against `ctx.config.modelBackends.backends` — the
+ * harness reads from `cost_usd` only, never recomputes.
+ */
+function buildTurnData(
+	inferenceIdx: number,
+	userTurn: number,
+	row: TurnRow,
+	wire: { url: string; body: string },
+): DiagnosticTurnData {
 	let contextDebug: DiagnosticTurnData["contextDebug"] = null;
 	let cachePath: DiagnosticTurnData["cachePath"] = "unknown";
-	if (row?.context_debug) {
+	if (row.context_debug) {
 		try {
 			contextDebug = JSON.parse(row.context_debug) as DiagnosticTurnData["contextDebug"];
 			const cp = (contextDebug as { cachePath?: string } | null)?.cachePath;
@@ -429,7 +479,7 @@ function collectTurnData(
 	}
 
 	const usage =
-		row && row.tokens_in !== null
+		row.tokens_in !== null
 			? {
 					input_tokens: row.tokens_in ?? 0,
 					output_tokens: row.tokens_out ?? 0,
@@ -439,20 +489,14 @@ function collectTurnData(
 				}
 			: null;
 
-	// `recordTurn` (called by AgentLoop's done-chunk handler with the same
-	// `calculateTurnCost(modelId, usage, ctx.config.modelBackends.backends)`
-	// the harness's AppContext stub provides) always populates `cost_usd`.
-	// No parallel cost math here — anything else would be a divergence
-	// vector if pricing fields ever change shape.
-	const costUsd = row?.cost_usd ?? 0;
-
 	return {
-		turn,
+		turn: inferenceIdx,
+		userTurn,
 		cachePath,
-		wireBodies,
+		wireBodies: [wire],
 		usage,
 		contextDebug,
-		costUsd,
+		costUsd: row.cost_usd ?? 0,
 	};
 }
 
