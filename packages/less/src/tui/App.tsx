@@ -303,31 +303,30 @@ export function App({
 	// View routing
 	return (
 		<Box flexDirection="column">
-			{state.view === "chat" && (
-				<ChatView
-					key={state.threadId}
-					client={client}
-					threadId={state.threadId}
-					model={state.model}
-					connectionState={connectionState}
-					cwd={cwd}
-					commitHash={commitHash}
-					messages={messages}
-					inFlightTools={inFlightTools}
-					mcpServerCount={mcpServerCount}
-					bannerMessage={state.bannerMessage}
-					bannerType={state.bannerType}
-					ctrlCHint={ctrlCHint}
-					isProcessing={isProcessing}
-					onModelChange={handleSetModel}
-					onModelPicker={() => handleSetView("picker", "model")}
-					onAttachThread={() => handleSetView("picker", "thread")}
-					onMcpView={() => handleSetView("mcp")}
-					onClear={handleClear}
-					onBannerDismiss={handleDismissBanner}
-					onSendMessage={handleSendMessage}
-				/>
-			)}
+			<ChatView
+				key={state.threadId}
+				client={client}
+				threadId={state.threadId}
+				model={state.model}
+				connectionState={connectionState}
+				cwd={cwd}
+				commitHash={commitHash}
+				messages={messages}
+				inFlightTools={inFlightTools}
+				mcpServerCount={mcpServerCount}
+				bannerMessage={state.bannerMessage}
+				bannerType={state.bannerType}
+				ctrlCHint={ctrlCHint}
+				isProcessing={isProcessing}
+				onModelChange={handleSetModel}
+				onModelPicker={() => handleSetView("picker", "model")}
+				onAttachThread={() => handleSetView("picker", "thread")}
+				onMcpView={() => handleSetView("mcp")}
+				onClear={handleClear}
+				onBannerDismiss={handleDismissBanner}
+				onSendMessage={handleSendMessage}
+				active={state.view === "chat"}
+			/>
 			{state.view === "mcp" && (
 				<McpView
 					mcpManager={mcpManager}
