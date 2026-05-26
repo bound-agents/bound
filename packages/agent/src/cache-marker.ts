@@ -341,10 +341,48 @@ export function computeStableCacheMarkerPlacement(
 	// adjacent users and don't contribute their own token count to the
 	// on-wire cumulative).
 	let positionTokens = 0;
+	let nonDevPrecedingCount = 0;
 	for (let i = 0; i < insertAt; i++) {
 		const m = messages[i];
 		if (m.role === "cache" || m.role === "developer") continue;
 		positionTokens += estimateTokens(m);
+		nonDevPrecedingCount++;
+	}
+
+	// Bridge-drop guard. The AI SDK bridge (ai-sdk-bridge.ts:270-288)
+	// processes role="cache" by attaching a cachePoint to the LAST
+	// emitted message in `result`. Developer messages don't produce
+	// result entries — they accumulate in `pendingDev` and merge into
+	// the next user message. If every message before insertAt is a
+	// developer, `result` is empty when the bridge processes the cache
+	// marker, and the marker is SILENTLY DROPPED — no cachePoint
+	// reaches the wire, no message-level cache anchor is created.
+	//
+	// Live regression: thread `91a31a43-...` 2026-05-26 had exactly
+	// one user message at the start of history, with Stage 1.7
+	// prepending a developer-role compaction summary at index 0. The
+	// semantic-anchor placer chose insertAt=1 (the latest user); all
+	// preceding messages were developers; positionTokens=0; the bridge
+	// dropped the marker; cw=0 across 40 consecutive turns despite
+	// system anchor riding correctly.
+	//
+	// The fix: refuse placement when no non-developer, non-cache
+	// message precedes the chosen index. The bedrock driver's
+	// shouldEnableSystemCachePoint gate (post-67596ec0) is independent
+	// of message-level marker presence when cacheTtl is set, so the
+	// system anchor floor is preserved even with no message-level
+	// marker on this turn. Once the thread accumulates non-developer
+	// content before user_N (e.g., a tool_call from the same turn,
+	// or a prior assistant message after the first user-turn boundary
+	// is crossed), placement resumes.
+	if (nonDevPrecedingCount === 0) {
+		return {
+			placed: false,
+			index: -1,
+			positionTokens: 0,
+			targetTokens: 0,
+			reason: "no-eligible-anchor",
+		};
 	}
 
 	return {
