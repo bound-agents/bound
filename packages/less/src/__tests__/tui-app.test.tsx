@@ -16,7 +16,7 @@ describe("App Component", () => {
 	beforeEach(() => {
 		mockClient = {
 			listThreads: vi.fn().mockResolvedValue([]),
-			listModels: vi.fn().mockResolvedValue([]),
+			listModels: vi.fn().mockResolvedValue({ models: [], default: "" }),
 			subscribe: vi.fn(),
 			on: vi.fn().mockReturnValue(() => {}),
 			off: vi.fn(),
@@ -311,5 +311,66 @@ describe("App Component", () => {
 		// Status bar should show model and thread
 		expect(output).toContain("claude-opus");
 		expect(output).toContain("abc-def-ghi");
+	});
+
+	describe("model picker selection feedback", () => {
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+		function renderApp(overrides: Partial<Record<string, unknown>> = {}) {
+			return render(
+				React.createElement(App, {
+					client: mockClient,
+					threadId: "thread-picker",
+					configDir: "/tmp",
+					cwd: "/home/user",
+					hostname: "localhost",
+					mcpManager: mockMcpManager,
+					mcpConfigs: [],
+					// biome-ignore lint/suspicious/noExplicitAny: test setup pattern
+					logger: mockLogger as any,
+					initialMessages: [],
+					model: "gpt-4",
+					toolHandlers: new Map(),
+					...overrides,
+				}),
+			);
+		}
+
+		it("selecting a model closes the picker and shows a confirmation banner", async () => {
+			mockClient.listModels = vi.fn().mockResolvedValue({
+				models: [
+					{
+						id: "claude-sonnet",
+						provider: "anthropic",
+						host: "localhost",
+						via: "local",
+						status: "online",
+					},
+					{ id: "gpt-4", provider: "openai", host: "localhost", via: "local", status: "online" },
+				],
+				default: "gpt-4",
+			});
+
+			const { lastFrame, stdin } = renderApp({ model: "gpt-4" });
+
+			await tick();
+			stdin.write("/model");
+			await tick();
+			stdin.write("\r");
+			await tick();
+
+			// Picker should now be open
+			expect(lastFrame() ?? "").toContain("Select Model");
+
+			// Press Enter to select the first item (claude-sonnet)
+			stdin.write("\r");
+			await tick();
+
+			const output = lastFrame() ?? "";
+			// Picker must be dismissed
+			expect(output).not.toContain("Select Model");
+			// Banner must confirm the model switch
+			expect(output).toContain("Model switched to");
+		});
 	});
 });

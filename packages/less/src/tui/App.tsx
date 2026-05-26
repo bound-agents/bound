@@ -341,11 +341,14 @@ export function App({
 				<PickerView
 					mode={state.pickerMode}
 					client={client}
+					currentValue={state.pickerMode === "model" ? (state.model ?? undefined) : undefined}
 					onSelect={(value) => {
 						if (state.pickerMode === "thread") {
 							handleSetThread(value);
 						} else if (state.pickerMode === "model") {
 							handleSetModel(value);
+							handleSetView("chat");
+							handleSetBanner(`Model switched to ${value}`, "info");
 						}
 					}}
 					onCancel={() => handleSetView("chat")}

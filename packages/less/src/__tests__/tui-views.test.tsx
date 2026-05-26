@@ -14,7 +14,19 @@ describe("TUI Views", () => {
 				{ id: "thread-1", title: "Thread 1" },
 				{ id: "thread-2", title: "Thread 2" },
 			]),
-			listModels: vi.fn().mockResolvedValue(["gpt-4", "claude-opus"]),
+			listModels: vi.fn().mockResolvedValue({
+				models: [
+					{ id: "gpt-4", provider: "openai", host: "localhost", via: "local", status: "online" },
+					{
+						id: "claude-opus",
+						provider: "anthropic",
+						host: "localhost",
+						via: "local",
+						status: "online",
+					},
+				],
+				default: "gpt-4",
+			}),
 		} as unknown as BoundClient;
 	});
 
@@ -241,6 +253,41 @@ describe("TUI Views", () => {
 			const output = lastFrame();
 			// Either loading message or Select Model title
 			expect(output).toMatch(/Select Model|Loading/);
+		});
+
+		it("shows (active) marker next to the currently-configured model", async () => {
+			const { lastFrame } = render(
+				React.createElement(PickerView, {
+					mode: "model",
+					client: mockClient,
+					onSelect: vi.fn(),
+					onCancel: vi.fn(),
+					currentValue: "claude-opus",
+				}),
+			);
+
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			const output = lastFrame();
+			expect(output).toContain("(active)");
+			// The active model name must still appear alongside the marker
+			expect(output).toContain("claude-opus");
+		});
+
+		it("does not show (active) marker when no currentValue is provided", async () => {
+			const { lastFrame } = render(
+				React.createElement(PickerView, {
+					mode: "model",
+					client: mockClient,
+					onSelect: vi.fn(),
+					onCancel: vi.fn(),
+				}),
+			);
+
+			await new Promise((resolve) => setTimeout(resolve, 150));
+
+			const output = lastFrame();
+			expect(output).not.toContain("(active)");
 		});
 	});
 
