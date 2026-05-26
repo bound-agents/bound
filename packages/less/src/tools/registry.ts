@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { ToolDefinition } from "@bound/client";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerConfig } from "../config";
@@ -348,10 +349,45 @@ export async function collectGitContext(cwd: string): Promise<string> {
 	}
 }
 
+/**
+ * The standard context files that boundless auto-injects when present in the
+ * working directory. These are project-level instruction files for agents.
+ */
+const CONTEXT_FILE_CANDIDATES = ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"] as const;
+
+/**
+ * Reads context files (README.md, CONTRIBUTING.md, AGENTS.md, CLAUDE.md) from
+ * the given working directory. Files that are absent or unreadable are silently
+ * skipped. Returns a formatted block for all found files, or an empty string if
+ * none are present.
+ */
+export async function collectContextFiles(cwd: string): Promise<string> {
+	const sections: string[] = [];
+
+	for (const filename of CONTEXT_FILE_CANDIDATES) {
+		const filepath = join(cwd, filename);
+		try {
+			const content = await Bun.file(filepath).text();
+			if (content.trim()) {
+				sections.push(`### ${filename}\n${content.trim()}`);
+			}
+		} catch {
+			// File doesn't exist or can't be read — skip silently
+		}
+	}
+
+	if (sections.length === 0) {
+		return "";
+	}
+
+	return `Context files:\n\n${sections.join("\n\n")}`;
+}
+
 export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
 	mcpServers: string[],
+	options?: { injectContextFiles?: boolean },
 ): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
 	const toolList = `boundless_read, boundless_write, boundless_edit, boundless_bash, boundless_copy${
@@ -359,12 +395,15 @@ export async function buildSystemPromptAddition(
 	}`;
 
 	const gitContext = await collectGitContext(cwd);
+	const shouldInjectContextFiles = options?.injectContextFiles !== false;
+	const contextFilesSection = shouldInjectContextFiles ? await collectContextFiles(cwd) : "";
+	const contextFilesBlock = contextFilesSection ? `${contextFilesSection}\n` : "";
 
 	return `You are connected to a boundless terminal client.
 Host: ${hostname}
 Working directory: ${cwd}
 ${gitContext}
-Available tool namespaces: ${toolList}
+${contextFilesBlock}Available tool namespaces: ${toolList}
 
 Tool results include provenance metadata showing which host and directory produced them.`;
 }
