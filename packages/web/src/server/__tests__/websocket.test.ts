@@ -845,6 +845,151 @@ describe("ClientConnection type and WS message schemas", () => {
 
 			testHandler.cleanup();
 		});
+
+		it("sets exit_code=0 when tool:result has no is_error flag (success path)", () => {
+			const eventBus = new TypedEventEmitter();
+			const recentTime = new Date().toISOString();
+
+			const insertedMessages: Array<{ sql: string; values: unknown[] }> = [];
+
+			const mockDb = {
+				prepare: (sql: string) => ({
+					all: () => {
+						if (sql.includes("status = 'expired'")) return [];
+						// getPendingClientToolCalls path
+						return [
+							{
+								message_id: "msg-1",
+								thread_id: "thread-123",
+								status: "pending",
+								claimed_by: null,
+								event_type: "client_tool_call",
+								event_payload: JSON.stringify({ call_id: "call-123" }),
+								created_at: recentTime,
+								modified_at: recentTime,
+							},
+						];
+					},
+					run: () => {},
+				}),
+				transaction: (fn: () => unknown) => () => {
+					fn();
+					return "mock-hlc";
+				},
+				run: (sql: string, values: unknown[]) => {
+					if (sql.includes("INSERT INTO messages")) {
+						insertedMessages.push({ sql, values });
+					}
+				},
+				query: (_sql: string) => ({
+					get: () => null,
+				}),
+				exec: () => {},
+			} as unknown as Database;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-123",
+					thread_id: "thread-123",
+					content: "Edited file.ts: replaced 1 occurrence",
+					// no is_error flag — success path
+				}),
+			);
+
+			expect(insertedMessages).toHaveLength(1);
+			const { sql, values } = insertedMessages[0];
+			const colMatch = sql.match(/INSERT INTO messages \(([^)]+)\)/);
+			const columns = colMatch?.[1].split(", ").map((c: string) => c.trim()) ?? [];
+			const exitCodeIndex = columns.indexOf("exit_code");
+			expect(exitCodeIndex).toBeGreaterThanOrEqual(0);
+			expect(values[exitCodeIndex]).toBe(0);
+
+			testHandler.cleanup();
+		});
+
+		it("sets exit_code=1 when tool:result has is_error=true (error path)", () => {
+			const eventBus = new TypedEventEmitter();
+			const recentTime = new Date().toISOString();
+
+			const insertedMessages: Array<{ sql: string; values: unknown[] }> = [];
+
+			const mockDb = {
+				prepare: (sql: string) => ({
+					all: () => {
+						if (sql.includes("status = 'expired'")) return [];
+						return [
+							{
+								message_id: "msg-1",
+								thread_id: "thread-123",
+								status: "pending",
+								claimed_by: null,
+								event_type: "client_tool_call",
+								event_payload: JSON.stringify({ call_id: "call-123" }),
+								created_at: recentTime,
+								modified_at: recentTime,
+							},
+						];
+					},
+					run: () => {},
+				}),
+				transaction: (fn: () => unknown) => () => {
+					fn();
+					return "mock-hlc";
+				},
+				run: (sql: string, values: unknown[]) => {
+					if (sql.includes("INSERT INTO messages")) {
+						insertedMessages.push({ sql, values });
+					}
+				},
+				query: (_sql: string) => ({
+					get: () => null,
+				}),
+				exec: () => {},
+			} as unknown as Database;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-123",
+					thread_id: "thread-123",
+					content: "Error: File not found: missing.ts",
+					is_error: true,
+				}),
+			);
+
+			expect(insertedMessages).toHaveLength(1);
+			const { sql, values } = insertedMessages[0];
+			const colMatch = sql.match(/INSERT INTO messages \(([^)]+)\)/);
+			const columns = colMatch?.[1].split(", ").map((c: string) => c.trim()) ?? [];
+			const exitCodeIndex = columns.indexOf("exit_code");
+			expect(exitCodeIndex).toBeGreaterThanOrEqual(0);
+			expect(values[exitCodeIndex]).toBe(1);
+
+			testHandler.cleanup();
+		});
 	});
 
 	describe("Task 5: tool:call delivery to WS clients", () => {
