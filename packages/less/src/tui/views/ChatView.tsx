@@ -141,6 +141,14 @@ export interface ChatViewProps {
 	onClear: () => void;
 	onBannerDismiss: () => void;
 	onSendMessage: (message: string) => void;
+	/**
+	 * When false, the dynamic interactive area (input, status bar, action bar,
+	 * banners) is suppressed while `<Static>` remains mounted. This preserves
+	 * the Static high-water mark across view transitions (e.g. opening the
+	 * model/thread picker) so the splash header does not re-render on return.
+	 * Defaults to true.
+	 */
+	active?: boolean;
 }
 
 /**
@@ -172,6 +180,7 @@ export function ChatView({
 	onClear,
 	onBannerDismiss,
 	onSendMessage,
+	active = true,
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
@@ -291,89 +300,94 @@ export function ChatView({
 				</Static>
 			</Box>
 
-			{/* Dynamic area — redrawn by Ink on state changes */}
+			{/* Dynamic area — suppressed when active is false so <Static> stays mounted
+			    and its high-water mark is preserved across picker/mcp view transitions,
+			    preventing the splash header from re-rendering on return to ChatView. */}
+			{active && (
+				<>
+					{/* Banners */}
+					{bannerMessage && bannerType && (
+						<Box marginBottom={1}>
+							<Banner type={bannerType} message={bannerMessage} onDismiss={onBannerDismiss} />
+						</Box>
+					)}
+					{showHelp && (
+						<Box flexDirection="column" marginBottom={1}>
+							<Text bold>Available commands:</Text>
+							{[
+								["/help", "Show this help message"],
+								["/model [name]", "Switch model (opens picker if no name)"],
+								["/attach", "Switch to a different thread"],
+								["/mcp", "MCP server configuration"],
+								["/clear", "Start a new thread"],
+							].map(([cmd, desc]) => (
+								<Box key={cmd}>
+									<Box width={18}>
+										<Text color="cyan">{cmd}</Text>
+									</Box>
+									<Text>{desc}</Text>
+								</Box>
+							))}
+						</Box>
+					)}
+					{commandError && (
+						<Box marginBottom={1}>
+							<Banner type="error" message={commandError} onDismiss={() => setCommandError(null)} />
+						</Box>
+					)}
 
-			{/* Banners */}
-			{bannerMessage && bannerType && (
-				<Box marginBottom={1}>
-					<Banner type={bannerType} message={bannerMessage} onDismiss={onBannerDismiss} />
-				</Box>
-			)}
-			{showHelp && (
-				<Box flexDirection="column" marginBottom={1}>
-					<Text bold>Available commands:</Text>
-					{[
-						["/help", "Show this help message"],
-						["/model [name]", "Switch model (opens picker if no name)"],
-						["/attach", "Switch to a different thread"],
-						["/mcp", "MCP server configuration"],
-						["/clear", "Start a new thread"],
-					].map(([cmd, desc]) => (
-						<Box key={cmd}>
-							<Box width={18}>
-								<Text color="cyan">{cmd}</Text>
-							</Box>
-							<Text>{desc}</Text>
+					{/* In-flight tool calls */}
+					{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
+						<Box key={callId} marginBottom={1}>
+							<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
 						</Box>
 					))}
-				</Box>
-			)}
-			{commandError && (
-				<Box marginBottom={1}>
-					<Banner type="error" message={commandError} onDismiss={() => setCommandError(null)} />
-				</Box>
-			)}
 
-			{/* In-flight tool calls */}
-			{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
-				<Box key={callId} marginBottom={1}>
-					<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
-				</Box>
-			))}
+					{/* Processing indicator */}
+					{isProcessing && inFlightTools.size === 0 && (
+						<Box>
+							<Spinner label="Thinking" />
+						</Box>
+					)}
 
-			{/* Processing indicator */}
-			{isProcessing && inFlightTools.size === 0 && (
-				<Box>
-					<Spinner label="Thinking" />
-				</Box>
-			)}
+					{/* Ctrl-C hint */}
+					{ctrlCHint && (
+						<Box>
+							<Text dimColor>{ctrlCHint}</Text>
+						</Box>
+					)}
 
-			{/* Ctrl-C hint */}
-			{ctrlCHint && (
-				<Box>
-					<Text dimColor>{ctrlCHint}</Text>
-				</Box>
-			)}
+					{/* Input area — frame color tracks connection health */}
+					<Box borderStyle="round" borderColor={frameColor} paddingX={1} flexDirection="row">
+						<Text color={frameColor}>{"❯ "}</Text>
+						<Box flexGrow={1} flexShrink={1}>
+							<TextInput
+								placeholder="Enter message or /help"
+								onSubmit={handleSubmit}
+								disabled={connectionState !== "connected"}
+								columns={inputColumns}
+							/>
+						</Box>
+					</Box>
 
-			{/* Input area — frame color tracks connection health */}
-			<Box borderStyle="round" borderColor={frameColor} paddingX={1} flexDirection="row">
-				<Text color={frameColor}>{"❯ "}</Text>
-				<Box flexGrow={1} flexShrink={1}>
-					<TextInput
-						placeholder="Enter message or /help"
-						onSubmit={handleSubmit}
-						disabled={connectionState !== "connected"}
-						columns={inputColumns}
+					{/* Status bar and action hints */}
+					<StatusBar
+						threadId={threadId}
+						model={model}
+						connectionState={connectionState}
+						mcpServerCount={mcpServerCount}
+						cwd={cwd}
 					/>
-				</Box>
-			</Box>
-
-			{/* Status bar and action hints */}
-			<StatusBar
-				threadId={threadId}
-				model={model}
-				connectionState={connectionState}
-				mcpServerCount={mcpServerCount}
-				cwd={cwd}
-			/>
-			<ActionBar
-				actions={[
-					{ keys: "/model", label: "switch model" },
-					{ keys: "/attach", label: "switch thread" },
-					{ keys: "/mcp", label: "MCP config" },
-					{ keys: "Ctrl-C", label: "exit" },
-				]}
-			/>
+					<ActionBar
+						actions={[
+							{ keys: "/model", label: "switch model" },
+							{ keys: "/attach", label: "switch thread" },
+							{ keys: "/mcp", label: "MCP config" },
+							{ keys: "Ctrl-C", label: "exit" },
+						]}
+					/>
+				</>
+			)}
 		</Box>
 	);
 }

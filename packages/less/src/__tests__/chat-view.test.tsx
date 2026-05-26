@@ -14,6 +14,7 @@ function makeProps(overrides: Partial<ChatViewProps> = {}): ChatViewProps {
 		model: "gpt-4",
 		connectionState: "connected",
 		cwd: "/tmp/work",
+		commitHash: "test-sha",
 		messages: [],
 		inFlightTools: new Map(),
 		mcpServerCount: 0,
@@ -94,6 +95,32 @@ describe("ChatView slash commands", () => {
 		// Accept either "/model" alone or "/model [name]" (optional-arg convention).
 		expect(frame).toContain("/model");
 		expect(frame).not.toContain("/model <name>");
+	});
+});
+
+describe("ChatView active prop", () => {
+	it("renders dynamic content by default (active=true)", async () => {
+		const props = makeProps();
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const output = lastFrame() ?? "";
+		// Input prompt and status bar thread ID should be present
+		expect(output).toContain("❯");
+		expect(output).toContain("thread-123");
+	});
+
+	it("suppresses dynamic content when active=false, keeping Static mounted", async () => {
+		const props = makeProps({ active: false });
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const output = lastFrame() ?? "";
+		// Dynamic area (input prompt, status bar thread ID) should be absent.
+		// The <Static> splash may still appear in lastFrame() — that's expected
+		// and is the whole point: Static stays mounted across view transitions.
+		expect(output).not.toContain("❯");
+		expect(output).not.toContain("thread-123");
 	});
 });
 
