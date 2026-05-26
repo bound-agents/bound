@@ -23,14 +23,26 @@ import type { CapturedRequest } from "../capture";
  * captured fetch entries.
  */
 export interface DiagnosticTurnData {
-	/** 1-indexed turn number within the harness run. */
+	/**
+	 * 1-indexed inference number within the harness run. ONE per LLM
+	 * inference call. A single user-turn iteration (one operator-driven
+	 * input) drives N inferences via the agent loop's inner-loop tool-
+	 * call/result cycle.
+	 */
 	turn: number;
+	/**
+	 * 1-indexed user-turn iteration within the harness run. Multiple
+	 * inferences share the same `userTurn`; the user-message boundary
+	 * is the natural compaction boundary diagnostics may want to group on.
+	 */
+	userTurn: number;
 	/** Cold/warm/unknown — read from `context_debug.cachePath`. */
 	cachePath: "cold" | "warm" | "unknown";
 	/**
-	 * Raw wire bodies captured for this turn. The agent loop's inner loop
-	 * may make multiple inference calls per turn (one per LLM-tool round
-	 * trip), so this is an array.
+	 * Raw wire bodies captured for this inference. Always exactly one
+	 * entry — the harness pairs each `done` chunk's wire body with its
+	 * own diagnostic record, so a multi-inference user-turn yields N
+	 * `DiagnosticTurnData` records each with its own single wire body.
 	 */
 	wireBodies: ReadonlyArray<CapturedRequest>;
 	/**

@@ -4,6 +4,7 @@
  */
 
 import { autonomousTaskFixture } from "./autonomous-task";
+import { productionShapeFixture } from "./production-shape";
 import type { HarnessFixture } from "./types";
 
 const REGISTRY = new Map<string, HarnessFixture>();
@@ -19,4 +20,5 @@ export function listFixtures(): ReadonlyMap<string, HarnessFixture> {
 export function registerBuiltinFixtures(): void {
 	if (REGISTRY.size > 0) return; // idempotent
 	registerFixture(autonomousTaskFixture);
+	registerFixture(productionShapeFixture);
 }

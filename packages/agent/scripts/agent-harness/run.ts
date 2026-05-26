@@ -63,12 +63,13 @@ async function main(): Promise<void> {
 
 	// Cumulative footer.
 	process.stdout.write("\n=== run summary ===\n");
-	process.stdout.write(`turns_completed: ${result.turnsCompleted} / ${args.turns}\n`);
-	process.stdout.write(`total_cost_usd:  ${result.totalCostUsd.toFixed(4)}\n`);
-	process.stdout.write(`budget_usd:      ${args.budget.toFixed(2)}\n`);
-	process.stdout.write(`abort_reason:    ${result.abortReason}\n`);
+	process.stdout.write(`user_turns_completed:  ${result.userTurnsCompleted} / ${args.turns}\n`);
+	process.stdout.write(`inferences_observed:   ${result.inferencesObserved}\n`);
+	process.stdout.write(`total_cost_usd:        ${result.totalCostUsd.toFixed(4)}\n`);
+	process.stdout.write(`budget_usd:            ${args.budget.toFixed(2)}\n`);
+	process.stdout.write(`abort_reason:          ${result.abortReason}\n`);
 	if (result.abortMessage) {
-		process.stdout.write(`abort_message:   ${result.abortMessage}\n`);
+		process.stdout.write(`abort_message:         ${result.abortMessage}\n`);
 	}
 
 	// Optional: dump raw wire bodies per turn for offline inspection.

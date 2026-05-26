@@ -22,6 +22,7 @@ import type { Diagnostic, DiagnosticTurnData } from "./types";
 
 interface CacheTurnRecord {
 	turn: number;
+	userTurn: number;
 	path: "cold" | "warm" | "unknown";
 	sysCp: number;
 	msgCp: number;
@@ -29,11 +30,10 @@ interface CacheTurnRecord {
 	cr: number | null;
 	cw: number | null;
 	costUsd: number;
-	/** First byte index where this turn's first wire body diverges from
-	 *  the previous turn's first wire body. -1 = byte-identical. null = no
-	 *  prior turn or no body to compare. */
+	/** First byte index where this inference's wire body diverges from
+	 *  the previous inference's. -1 = byte-identical. null = first inference. */
 	wireDiffVsPrev: number | null;
-	/** First wire body's length in bytes (used for diff context). */
+	/** Wire body's length in bytes (used for diff context). */
 	bodyLen: number;
 }
 
@@ -68,6 +68,7 @@ export function buildCacheDiagnostic(): Diagnostic {
 			}
 			const record: CacheTurnRecord = {
 				turn: data.turn,
+				userTurn: data.userTurn,
 				path: data.cachePath,
 				sysCp: inspect?.systemMarkers ?? 0,
 				msgCp: inspect?.messageMarkers ?? 0,
@@ -93,8 +94,8 @@ function renderCacheReport(recs: ReadonlyArray<CacheTurnRecord>): string {
 	}
 
 	const lines: string[] = [];
-	lines.push("  n  path  sys  msg  cr        cw        cost_usd  wire_diff_vs_prev");
-	lines.push("  -- ----  ---  ---  --------  --------  --------  -----------------");
+	lines.push("  inf  ut   path  sys  msg  cr        cw        cost_usd  wire_diff_vs_prev");
+	lines.push("  ---  ---  ----  ---  ---  --------  --------  --------  -----------------");
 	for (const r of recs) {
 		const diff =
 			r.wireDiffVsPrev === null
@@ -103,7 +104,7 @@ function renderCacheReport(recs: ReadonlyArray<CacheTurnRecord>): string {
 					? "stable"
 					: `@${r.wireDiffVsPrev} of ${r.bodyLen}`;
 		lines.push(
-			`  ${pad(String(r.turn), 2)} ${pad(r.path, 5)} ${pad(String(r.sysCp), 3)}  ${pad(String(r.msgCp), 3)}  ${pad(formatTokens(r.cr), 8)}  ${pad(formatTokens(r.cw), 8)}  ${pad(r.costUsd.toFixed(4), 8)}  ${diff}`,
+			`  ${pad(String(r.turn), 3)}  ${pad(String(r.userTurn), 3)}  ${pad(r.path, 5)} ${pad(String(r.sysCp), 3)}  ${pad(String(r.msgCp), 3)}  ${pad(formatTokens(r.cr), 8)}  ${pad(formatTokens(r.cw), 8)}  ${pad(r.costUsd.toFixed(4), 8)}  ${diff}`,
 		);
 	}
 
