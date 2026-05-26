@@ -20,7 +20,11 @@
 import { describe, expect, it } from "bun:test";
 import type { BackendCapabilities, LLMMessage } from "@bound/llm";
 import type { ContextSection } from "@bound/shared";
-import { buildCacheMarkers, maybePlaceCacheMarker } from "../cache-marker";
+import {
+	buildCacheMarkers,
+	maybePlaceCacheMarker,
+	refreshInnerLoopRollingMarker,
+} from "../cache-marker";
 
 const CACHING_CAPS: BackendCapabilities = {
 	streaming: true,
@@ -284,5 +288,105 @@ describe("maybePlaceCacheMarker — MiniMax regression scenario", () => {
 
 		const cacheCount = messages.filter((m) => m.role === "cache").length;
 		expect(cacheCount).toBe(0);
+	});
+});
+
+describe("refreshInnerLoopRollingMarker", () => {
+	it("evicts a prior rolling marker and places a fresh one before the volatile-tail", () => {
+		// Shape: [user_1, FIXED_cache, assistant, user_tool_result_1,
+		//         OLD_rolling_cache, developer_tail].
+		// After refresh: prior rolling at idx 4 is evicted, new rolling
+		// is spliced before the developer tail (computeCacheMarkerIndex
+		// places before the user the bridge will merge dev into; here the
+		// last non-developer is `user_tool_result_1`).
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "u1" },
+			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a1" },
+			{ role: "user", content: "tr1" },
+			{ role: "cache", content: "" },
+			{ role: "developer", content: "vt" },
+		];
+		const placement = refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		expect(placement.placed).toBe(true);
+		expect(placement.variant).toBe("rolling");
+		const cacheMsgs = messages.filter((m) => m.role === "cache");
+		expect(cacheMsgs.length).toBe(2);
+		// The fixed marker stays at its original index 1.
+		expect(messages[1].role).toBe("cache");
+	});
+
+	it("places a rolling marker even when no prior rolling exists", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "u1" },
+			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a1" },
+			{ role: "user", content: "tr1" },
+			{ role: "developer", content: "vt" },
+		];
+		const placement = refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		expect(placement.placed).toBe(true);
+		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
+	});
+
+	it("preserves the fixed marker index across multiple inner-loop refreshes", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "u1" },
+			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a1" },
+			{ role: "user", content: "tr1" },
+			{ role: "developer", content: "vt" },
+		];
+		// First refresh — places rolling.
+		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		expect(messages[1].role).toBe("cache");
+
+		// Simulate the inner loop's next iter appending another tool round.
+		// The dev tail moves further down; the pre-existing rolling marker
+		// is still in place and must be evicted on the next refresh.
+		const beforeRefresh = messages.length;
+		messages.push({ role: "assistant", content: "a2" });
+		messages.push({ role: "user", content: "tr2" });
+		expect(messages.length).toBe(beforeRefresh + 2);
+
+		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		// Still exactly 2 cache markers — fixed + new rolling, prior rolling evicted.
+		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
+		// Fixed at index 1 untouched.
+		expect(messages[1].role).toBe("cache");
+	});
+
+	it("refuses placement and reports capability-disabled when caps disable caching", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "u1" },
+			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a1" },
+			{ role: "user", content: "tr1" },
+			{ role: "developer", content: "vt" },
+		];
+		const placement = refreshInnerLoopRollingMarker(messages, 1, NO_CACHING_CAPS);
+		expect(placement.placed).toBe(false);
+		expect(placement.reason).toBe("capability-disabled");
+		// Eviction still ran. The fixed marker survives because the eviction
+		// loop preserves indices == fixedCacheIdx.
+		expect(messages.filter((m) => m.role === "cache").length).toBe(1);
+		expect(messages[1].role).toBe("cache");
+	});
+
+	it("evicts ALL prior rolling markers in one call (defense against accumulation)", () => {
+		// Pathological input: somehow two rolling markers landed in the
+		// array. The eviction loop must drop both, not just one.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "u1" },
+			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a1" },
+			{ role: "cache", content: "" },
+			{ role: "user", content: "tr1" },
+			{ role: "cache", content: "" },
+			{ role: "developer", content: "vt" },
+		];
+		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		// Exactly 2 left: the fixed (untouched) and the new rolling.
+		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
 	});
 });
