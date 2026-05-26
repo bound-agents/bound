@@ -6,6 +6,7 @@ import DataTable from "../components/DataTable.svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import SkillCreateModal from "../components/SkillCreateModal.svelte";
+import SkillEditModal from "../components/SkillEditModal.svelte";
 import StatusChip from "../components/StatusChip.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
@@ -16,6 +17,8 @@ let statusFilter = $state<"all" | "active" | "retired">("all");
 let expandedId = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let showCreateModal = $state(false);
+let showEditModal = $state(false);
+let editingSkillId = $state<string | null>(null);
 
 let skillDetail = $state<
 	Record<string, { content: string; files: { path: string; size: number }[] } | null>
@@ -88,6 +91,31 @@ async function activateSkill(id: string): Promise<void> {
 		console.error("Failed to activate skill:", error);
 	}
 	actionInProgress = null;
+}
+
+async function openEditModal(id: string): Promise<void> {
+	// Ensure detail is loaded before opening the modal
+	if (!skillDetail[id]) {
+		await loadSkillDetail(id);
+	}
+	editingSkillId = id;
+	showEditModal = true;
+}
+
+function onEditSaved(): void {
+	const savedId = editingSkillId;
+	showEditModal = false;
+	editingSkillId = null;
+	if (savedId) {
+		// Clear cached detail so it reloads with fresh data
+		const newDetail = { ...skillDetail };
+		delete newDetail[savedId];
+		skillDetail = newDetail;
+		const newRendered = { ...renderedContent };
+		delete newRendered[savedId];
+		renderedContent = newRendered;
+	}
+	loadSkills();
 }
 
 function getRowAccent(row: Record<string, unknown>): string | null {
@@ -193,6 +221,19 @@ $effect.pre(() => {
 	/>
 {/if}
 
+{#if showEditModal && editingSkillId}
+	{@const editSkill = skills.find((s) => s.id === editingSkillId)}
+	{@const editDetail = skillDetail[editingSkillId]}
+	{#if editSkill && editDetail}
+		<SkillEditModal
+			skill={editSkill}
+			content={editDetail.content}
+			onClose={() => { showEditModal = false; editingSkillId = null; }}
+			onSaved={onEditSaved}
+		/>
+	{/if}
+{/if}
+
 {#snippet snippet_content(skill)}
 	{@const detail = skillDetail[skill.id as string]}
 	{@const content = renderedContent[skill.id as string]}
@@ -234,6 +275,12 @@ $effect.pre(() => {
 		{/if}
 
 		<div class="action-bar">
+			<Btn
+				size="sm"
+				onclick={() => openEditModal(skill.id as string)}
+			>
+				Edit
+			</Btn>
 			{#if skill.status === "active"}
 				{#if showRetireInput[skill.id as string]}
 					<input

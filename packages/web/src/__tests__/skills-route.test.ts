@@ -472,6 +472,164 @@ This is from a zip.`;
 		});
 	});
 
+	describe("PATCH /:id - Update skill", () => {
+		function insertTestSkill(skillId: string, name: string, skillRoot: string): void {
+			db.run(
+				`INSERT INTO skills (
+					id, name, description, status, skill_root, content_hash,
+					allowed_tools, compatibility, metadata_json, activated_at,
+					created_by_thread, activation_count, last_activated_at,
+					retired_by, retired_reason, modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					skillId,
+					name,
+					"Original description",
+					"active",
+					skillRoot,
+					"originalhash",
+					"tool1",
+					"compat1",
+					null,
+					new Date().toISOString(),
+					null,
+					1,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					0,
+				],
+			);
+		}
+
+		function insertSkillFile(filePath: string, content: string): void {
+			db.run(
+				`INSERT INTO files (id, path, size_bytes, content, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					filePath,
+					filePath,
+					content.length,
+					content,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+		}
+
+		it("Updates description of an existing active skill", async () => {
+			const app = createSkillsRoutes(db);
+			const skillId = randomUUID();
+			insertTestSkill(skillId, "editable-skill", "skills/editable-skill");
+
+			const res = await app.request(`/${skillId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ description: "Updated description" }),
+			});
+
+			expect(res.status).toBe(200);
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.description).toBe("Updated description");
+			expect(data.skill.id).toBe(skillId);
+		});
+
+		it("Updates body and reflects new content_hash in SKILL.md", async () => {
+			const app = createSkillsRoutes(db);
+			const skillId = randomUUID();
+			const skillRoot = "skills/body-skill";
+			insertTestSkill(skillId, "body-skill", skillRoot);
+
+			const originalContent =
+				"---\nname: body-skill\ndescription: Original description\n---\nOriginal body";
+			insertSkillFile(`${skillRoot}/SKILL.md`, originalContent);
+
+			const res = await app.request(`/${skillId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ body: "Updated body content" }),
+			});
+
+			expect(res.status).toBe(200);
+			const data = (await res.json()) as { skill: Skill };
+			// content_hash should have changed
+			expect(data.skill.content_hash).not.toBe("originalhash");
+
+			// Verify file content was updated
+			const updatedFile = db
+				.query("SELECT content FROM files WHERE path = ?")
+				.get(`${skillRoot}/SKILL.md`) as { content: string } | null;
+			expect(updatedFile?.content).toContain("Updated body content");
+		});
+
+		it("Updates allowed_tools and compatibility", async () => {
+			const app = createSkillsRoutes(db);
+			const skillId = randomUUID();
+			insertTestSkill(skillId, "tools-skill", "skills/tools-skill");
+
+			const res = await app.request(`/${skillId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ allowed_tools: "newtool1, newtool2", compatibility: "newcompat" }),
+			});
+
+			expect(res.status).toBe(200);
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.allowed_tools).toBe("newtool1, newtool2");
+			expect(data.skill.compatibility).toBe("newcompat");
+		});
+
+		it("Preserves name (name is read-only)", async () => {
+			const app = createSkillsRoutes(db);
+			const skillId = randomUUID();
+			insertTestSkill(skillId, "readonly-name-skill", "skills/readonly-name-skill");
+
+			const res = await app.request(`/${skillId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ description: "Changed description" }),
+			});
+
+			expect(res.status).toBe(200);
+			const data = (await res.json()) as { skill: Skill };
+			// Name should not change
+			expect(data.skill.name).toBe("readonly-name-skill");
+		});
+
+		it("Clears allowed_tools when empty string is sent", async () => {
+			const app = createSkillsRoutes(db);
+			const skillId = randomUUID();
+			insertTestSkill(skillId, "clear-tools-skill", "skills/clear-tools-skill");
+
+			const res = await app.request(`/${skillId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ allowed_tools: "" }),
+			});
+
+			expect(res.status).toBe(200);
+			const data = (await res.json()) as { skill: Skill };
+			expect(data.skill.allowed_tools).toBeNull();
+		});
+
+		it("Returns 404 for non-existent skill", async () => {
+			const app = createSkillsRoutes(db);
+			const fakeId = randomUUID();
+
+			const res = await app.request(`/${fakeId}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ description: "anything" }),
+			});
+
+			expect(res.status).toBe(404);
+			const data = (await res.json()) as { error: string };
+			expect(data.error).toBe("Skill not found");
+		});
+	});
+
 	describe("POST /:id/retire - Retire skill", () => {
 		it("AC2.7: Retires an active skill", async () => {
 			const app = createSkillsRoutes(db);

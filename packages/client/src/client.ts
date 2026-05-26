@@ -699,6 +699,22 @@ export class BoundClient {
 		});
 	}
 
+	async updateSkill(
+		id: string,
+		data: {
+			description?: string;
+			body?: string;
+			allowed_tools?: string;
+			compatibility?: string;
+		},
+	): Promise<{ skill: Skill }> {
+		return this.fetchJson(`/api/skills/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(data),
+		});
+	}
+
 	async retireSkill(id: string, reason?: string): Promise<{ skill: Skill }> {
 		return this.fetchJson(`/api/skills/${id}/retire`, {
 			method: "POST",
