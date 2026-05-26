@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildSystemPromptAddition, buildToolSet } from "../tools/registry";
+import { buildSystemPromptAddition, buildToolSet, collectGitContext } from "../tools/registry";
 
 describe("buildToolSet", () => {
 	it("returns core tools with correct structure", () => {
@@ -635,8 +635,8 @@ describe("buildToolSet", () => {
 });
 
 describe("buildSystemPromptAddition", () => {
-	it("returns system prompt with core tools only", () => {
-		const prompt = buildSystemPromptAddition("/home/user", "example.com", []);
+	it("returns system prompt with core tools only", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
 
 		expect(prompt).toContain("boundless terminal client");
 		expect(prompt).toContain("Host: example.com");
@@ -648,20 +648,65 @@ describe("buildSystemPromptAddition", () => {
 		expect(prompt).toContain("provenance metadata");
 	});
 
-	it("includes MCP server namespaces", () => {
-		const prompt = buildSystemPromptAddition("/home/user", "example.com", ["github", "slack"]);
+	it("includes MCP server namespaces", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [
+			"github",
+			"slack",
+		]);
 
 		expect(prompt).toContain("boundless_mcp_github_*");
 		expect(prompt).toContain("boundless_mcp_slack_*");
 	});
 
-	it("returns consistent format", () => {
-		const prompt = buildSystemPromptAddition("/tmp", "localhost", []);
+	it("returns consistent format", async () => {
+		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
 
 		// Should have multiple lines
 		expect(prompt.split("\n").length).toBeGreaterThan(2);
 
 		// Should mention available tools
 		expect(prompt.toLowerCase()).toContain("tool");
+	});
+
+	it("includes git context in the output", async () => {
+		// Use the bound repo itself — guaranteed to be a git repo
+		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", []);
+
+		// Should contain git context somewhere between working directory and tool namespaces
+		expect(prompt).toContain("Git branch:");
+		expect(prompt).toContain("Recent commits:");
+	});
+
+	it("includes git warning for non-git directories", async () => {
+		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
+
+		// /tmp is not a git repo — should show the warning
+		expect(prompt).toContain("Git context:");
+	});
+});
+
+describe("collectGitContext", () => {
+	it("returns branch and recent commits when in a git repository", async () => {
+		// Use the bound repo — it's always a git repo when running tests
+		const result = await collectGitContext(process.cwd());
+
+		expect(result).toContain("Git branch:");
+		expect(result).toContain("Recent commits:");
+		// Should not be a warning
+		expect(result).not.toContain("Git context:");
+	});
+
+	it("returns warning for non-git directory", async () => {
+		// /tmp is not a git repo
+		const result = await collectGitContext("/tmp");
+
+		expect(result).toBe("Git context: (not a git repository)");
+	});
+
+	it("returns warning for non-existent directory", async () => {
+		const result = await collectGitContext("/this/path/does/not/exist/at/all");
+
+		// Either "not a git repository" (git ran but failed) or "git unavailable" (spawn threw)
+		expect(result).toMatch(/^Git context: \(/);
 	});
 });
