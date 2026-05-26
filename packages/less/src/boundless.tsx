@@ -164,7 +164,7 @@ async function main(): Promise<void> {
 
 		// Step 8: Build tool set for App
 		const mcpTools = mcpManager.getRunningTools();
-		const toolSet = buildToolSet(process.cwd(), hostname, mcpTools, undefined);
+		const toolSet = buildToolSet(process.cwd(), hostname, mcpTools, undefined, config.url);
 
 		// Block on the shiki highlighter before render so initial message
 		// history (committed to Ink's <Static>) is fully syntax-highlighted.
