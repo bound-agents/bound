@@ -21,7 +21,6 @@ import { MODEL_SWITCH_CAP, annotateMessages } from "../annotate";
 const NOW_ISO = "2026-05-25T12:00:00.000Z";
 const NOW_MS = new Date(NOW_ISO).getTime();
 const OLD_ISO = "2026-05-25T11:00:00.000Z"; // 1h ago
-const RECENT_ISO = "2026-05-25T11:59:30.000Z"; // 30s ago
 
 function msg(
 	role: Message["role"],
@@ -177,12 +176,73 @@ describe("annotateMessages — property tests", () => {
 		}
 	});
 
-	it("N7: recent-user no-annotation — < 60s old user messages", () => {
-		const msgs: Message[] = [msg("user", "u1", "very recent", { created_at: RECENT_ISO })];
-		const out = annotateMessages({ messages: msgs, nowMs: NOW_MS });
-		if (out[0].content !== "very recent") {
-			throw new Error("recent user message was annotated");
+	it("N7 (load-bearing): timestamp annotation is byte-stable across ANY nowMs — no age-based cliff", () => {
+		// Live regression on thread `6fff1513-...` 2026-05-26: the prior
+		// annotation rule applied a timestamp prefix only when the user
+		// message was ≥ 60s old. For autonomous tasks (single user_1
+		// followed by long inner loops), this caused a one-time byte shift
+		// at exactly 60s into the conversation — user_1's wire content
+		// went from `Let's implement...` to `[May 26, 15:53] Let's
+		// implement...`, a +16-char shift. The cachePoint anchored on
+		// user_1 thrashed across that boundary; cumulative cache stuck
+		// at the system-anchor floor for the rest of the conversation.
+		//
+		// The contract: annotation output is a pure function of (msg,
+		// msg.created_at) — independent of nowMs. Equivalently: the same
+		// user message produces the same wire content regardless of when
+		// the agent loop runs the annotation pass.
+		//
+		// Encoded as a property: for any user message age, the output is
+		// byte-equal to the output at any other age.
+		const userMsg = msg("user", "u1", "Let's implement issue #34", {
+			created_at: "2026-05-25T11:00:00.000Z",
+		});
+		const ages = [
+			0, // age 0s
+			1_000, // 1s
+			30_000, // 30s — was previously not annotated
+			60_000, // exactly the old cliff
+			61_000, // 1s past the old cliff
+			3_600_000, // 1h
+		];
+		const outputs = ages.map((delta) => {
+			const at = new Date(userMsg.created_at).getTime() + delta;
+			return JSON.stringify(annotateMessages({ messages: [userMsg], nowMs: at }));
+		});
+		// All outputs must be byte-equal — no time-based cliff.
+		for (let i = 1; i < outputs.length; i++) {
+			if (outputs[i] !== outputs[0]) {
+				throw new Error(
+					`annotation output diverged at age ${ages[i]}ms: ${outputs[0]} vs ${outputs[i]}`,
+				);
+			}
 		}
+		// And the annotation must be PRESENT (timestamp prefix added) so
+		// the model still sees when the user spoke.
+		const out = annotateMessages({ messages: [userMsg], nowMs: NOW_MS });
+		if (typeof out[0].content !== "string" || !out[0].content.startsWith("[")) {
+			throw new Error("user message should always have timestamp prefix for byte stability");
+		}
+	});
+
+	it("N7b (property): annotation is independent of nowMs for any user message", () => {
+		fc.assert(
+			fc.property(
+				fc.string({ minLength: 0, maxLength: 50 }).filter((s) => !/[\n\r]/.test(s)),
+				fc.integer({ min: 0, max: 24 * 3600_000 }), // 0..24h ages
+				fc.integer({ min: 0, max: 24 * 3600_000 }), // another age to compare
+				(content, ageA, ageB) => {
+					const created = "2026-05-25T11:00:00.000Z";
+					const userMsg = msg("user", "u1", content, { created_at: created });
+					const tA = new Date(created).getTime() + ageA;
+					const tB = new Date(created).getTime() + ageB;
+					const outA = JSON.stringify(annotateMessages({ messages: [userMsg], nowMs: tA }));
+					const outB = JSON.stringify(annotateMessages({ messages: [userMsg], nowMs: tB }));
+					return outA === outB;
+				},
+			),
+			{ numRuns: 100 },
+		);
 	});
 
 	it("N8: empty input → empty output", () => {

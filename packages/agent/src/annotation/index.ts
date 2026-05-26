@@ -14,8 +14,13 @@
  *   N5 tool_use_id resolution — every `tool_result` in output has
  *      a non-null `tool_use_id`.
  *   N6 Timestamp annotation only on user messages.
- *   N7 Recent-user no-annotation — user messages newer than 60s
- *      do not get a timestamp prefix.
+ *   N7 (load-bearing) Annotation byte-stable across nowMs — for the
+ *      same user message, the annotated output is identical regardless
+ *      of when annotation runs. Replaces the prior age-gated rule that
+ *      caused a one-time byte transition at 60s into the conversation,
+ *      breaking message-level cache for autonomous tasks.
+ *   N7b (property) Same byte-stability rule as N7, asserted across
+ *      arbitrary user content and arbitrary message ages via fast-check.
  *   N8 Empty input → empty output.
  */
 
