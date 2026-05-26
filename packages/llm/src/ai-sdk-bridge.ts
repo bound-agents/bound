@@ -311,20 +311,43 @@ export function toModelMessages(
 		if (msg.role === "tool_result") {
 			const blocks = normalizeBlocks(msg.content);
 			const toolCallId = sanitizeToolUseId(msg.tool_use_id ?? "", envelope);
-			result.push({
-				role: "tool",
-				content: [
-					{
-						type: "tool-result",
-						toolCallId,
-						// Resolved from the prior tool-call index; fall back to ""
-						// if the tool_result arrives without a matching call (which
-						// would be a caller bug but we don't want to throw here).
-						toolName: toolNameById.get(toolCallId) ?? "",
-						output: buildToolResultOutput(blocks, opts.resolveFileRef),
-					},
-				] as never,
-			});
+			const toolResultPart = {
+				type: "tool-result" as const,
+				toolCallId,
+				// Resolved from the prior tool-call index; fall back to ""
+				// if the tool_result arrives without a matching call (which
+				// would be a caller bug but we don't want to throw here).
+				toolName: toolNameById.get(toolCallId) ?? "",
+				output: buildToolResultOutput(blocks, opts.resolveFileRef),
+			};
+			// Combine consecutive tool_results into a single `role: "tool"`
+			// ModelMessage. Background: the AI SDK's
+			// `convertToLanguageModelPrompt` (ai@6.0.168 dist/index.mjs:1342-
+			// 1354) combines consecutive tool messages by appending the
+			// second's content onto the first's content array — and silently
+			// drops the second's `providerOptions`. The bridge's
+			// `{role:"cache"}` handler attaches the cachePoint to
+			// `result[result.length - 1]`, which for parallel tool_results
+			// is the LAST tool message; AI SDK then collapses them and the
+			// cachePoint metadata is lost. By combining tool_results here at
+			// emit time, the bridge produces ONE tool ModelMessage per
+			// consecutive run; the cachePoint attaches to that single
+			// surviving message and reaches the wire intact.
+			//
+			// Live regression: thread `b4541575-...` 2026-05-26 had cw=0
+			// across 50+ cold turns of an autonomous task with parallel
+			// tool calls. System anchor floor held at 84,440 read; message-
+			// level cachePoint never reached the wire. After this fix the
+			// cachePoint rides on the merged tool message instead.
+			const lastEmitted = result[result.length - 1];
+			if (lastEmitted && lastEmitted.role === "tool" && Array.isArray(lastEmitted.content)) {
+				(lastEmitted.content as unknown[]).push(toolResultPart);
+			} else {
+				result.push({
+					role: "tool",
+					content: [toolResultPart] as never,
+				});
+			}
 			continue;
 		}
 
