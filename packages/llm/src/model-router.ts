@@ -379,15 +379,36 @@ export class ModelRouter {
 	}
 
 	/**
-	 * Returns the per-backend prompt-cache TTL hint, if configured.
-	 * "5m" (Bedrock default), "1h" (extended TTL on supported models), or
-	 * undefined (omit the field entirely so the provider uses its default).
+	 * Returns the per-backend prompt-cache TTL hint.
+	 *
+	 * Resolution priority:
+	 *   1. Explicit `config.cacheTtl` ("5m" or "1h") — operator override
+	 *      for backends that should use extended TTL or be opted out
+	 *      from caching entirely.
+	 *   2. Capability-based default — when `effectiveCaps.prompt_caching`
+	 *      is `true`, default to "5m" (the Bedrock baseline TTL supported
+	 *      by every caching-capable model). This is the load-bearing
+	 *      fallback that prevents an entire class of config landmines:
+	 *      operators no longer have to remember to set `cacheTtl` on each
+	 *      caching-capable backend in `model_backends.json` to actually
+	 *      get caching.
+	 *   3. Otherwise undefined (caching not intended).
+	 *
+	 * Live regression that motivated this defaulting: thread
+	 * `33212d49-…` 2026-05-25 ran with cr=0 across most of its turns
+	 * because Sonnet's config didn't explicitly set `cacheTtl`. The
+	 * bedrock-driver's `shouldEnableSystemCachePoint` gate disabled the
+	 * system anchor when both `cache_ttl` was undefined AND the
+	 * message-level marker wasn't placed — both layers failed silently,
+	 * caching was completely off.
 	 */
 	getCacheTtl(backendId: string): "5m" | "1h" | undefined {
 		const config = this.backendConfigs.get(backendId);
-		if (!config) return undefined;
-		const ttl = config.cacheTtl;
-		return ttl === "5m" || ttl === "1h" ? ttl : undefined;
+		const explicit = config?.cacheTtl;
+		if (explicit === "5m" || explicit === "1h") return explicit;
+		const caps = this.effectiveCaps.get(backendId);
+		if (caps?.prompt_caching === true) return "5m";
+		return undefined;
 	}
 
 	/**

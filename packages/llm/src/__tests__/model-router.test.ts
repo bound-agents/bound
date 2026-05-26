@@ -41,6 +41,88 @@ function createRouterFromBackends(
 	return new ModelRouter(backends, defaultId, effectiveCaps);
 }
 
+/**
+ * Caching-capable mock backend (advertises prompt_caching: true).
+ * Used to test capability-based defaulting of getCacheTtl.
+ */
+class CachingMockBackend implements LLMBackend {
+	constructor(public id: string) {}
+	async *chat() {}
+	capabilities() {
+		return {
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: true, // ← THIS distinguishes it from MockBackend
+			vision: false,
+			extended_thinking: false,
+			max_context: 200000,
+		};
+	}
+}
+
+describe("ModelRouter — getCacheTtl capability defaulting", () => {
+	// Live regression: thread `33212d49-…` 2026-05-25 ran with cr=0 across
+	// most of its turns because Sonnet's `model_backends.json` config didn't
+	// explicitly set `cacheTtl` (a config-landmine — every operator must
+	// remember to set it for each caching-capable backend). `getCacheTtl`
+	// returned undefined; bedrock-driver's gate disabled the system anchor
+	// after the message-level marker also stopped firing; cumulative
+	// caching collapsed.
+	//
+	// Contract: `getCacheTtl` falls back to a sensible default ("5m" — the
+	// Bedrock baseline TTL supported by every caching model) when the
+	// backend's effective capabilities advertise `prompt_caching: true`,
+	// even if the config doesn't explicitly set `cacheTtl`. Operators can
+	// still override to "1h" via config when they want extended TTL on
+	// supported models.
+
+	it("E1 (load-bearing): defaults to '5m' when caps say prompt_caching:true and config has no explicit cacheTtl", () => {
+		const backend = new CachingMockBackend("sonnet-mock");
+		const backends = new Map<string, LLMBackend>([[backend.id, backend]]);
+		const effectiveCaps = new Map<string, BackendCapabilities>([
+			[backend.id, backend.capabilities()],
+		]);
+		const router = new ModelRouter(backends, backend.id, effectiveCaps);
+		expect(router.getCacheTtl(backend.id)).toBe("5m");
+	});
+
+	it("E2: returns undefined when caps say prompt_caching:false (no caching intended)", () => {
+		const backend = new MockBackend("non-caching"); // prompt_caching: false
+		const backends = new Map<string, LLMBackend>([[backend.id, backend]]);
+		const router = createRouterFromBackends(backends, backend.id);
+		expect(router.getCacheTtl(backend.id)).toBeUndefined();
+	});
+
+	it("E3: explicit config cacheTtl='1h' overrides the capability default", () => {
+		const config: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "opus-1h",
+					provider: "bedrock",
+					region: "us-west-2",
+					model: "anthropic.claude-opus-4-7",
+					contextWindow: 200000,
+					cacheTtl: "1h",
+				},
+			],
+			default: "opus-1h",
+		};
+		const router = createModelRouter(config);
+		expect(router.getCacheTtl("opus-1h")).toBe("1h");
+	});
+
+	it("E4: returns undefined for an unknown backend ID", () => {
+		const backend = new CachingMockBackend("known");
+		const backends = new Map<string, LLMBackend>([[backend.id, backend]]);
+		const effectiveCaps = new Map<string, BackendCapabilities>([
+			[backend.id, backend.capabilities()],
+		]);
+		const router = new ModelRouter(backends, backend.id, effectiveCaps);
+		expect(router.getCacheTtl("not-registered")).toBeUndefined();
+	});
+});
+
 describe("ModelRouter", () => {
 	it("should create a router with multiple backends", () => {
 		const backend1 = new MockBackend("backend1");

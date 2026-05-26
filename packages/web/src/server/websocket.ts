@@ -648,7 +648,7 @@ export function createWebSocketHandler(
 					modified_at: now,
 					host_origin: hostOrigin,
 					deleted: 0,
-					exit_code: null,
+					exit_code: msg.is_error ? 1 : 0,
 					metadata: null,
 				},
 				siteId,
