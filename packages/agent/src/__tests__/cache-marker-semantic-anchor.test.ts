@@ -229,6 +229,34 @@ describe("Semantic-anchor cache marker placement (B1-B4)", () => {
 		}
 	});
 
+	it("B5 (regression sentry): a marker MUST be placed for any thread with ≥2 messages so the system anchor stays enabled", () => {
+		// Live regression observed on thread `a191e01f-…` 2026-05-25:
+		// the semantic-anchor placer returned no-eligible-anchor when the
+		// latest user message was at index 0 (a fresh boundless thread
+		// where user_1 starts the conversation). With no marker placed,
+		// `hasBedrockMessageCachePoint` returned false → the bedrock
+		// driver disabled the SYSTEM cachePoint too → cr=0 across all
+		// 79 turns of the thread, hit rate 11.41%.
+		//
+		// The contract: placement is best-effort ALWAYS when caps allow
+		// caching. A semantic-anchor failure must fall back to a less-
+		// optimal but functional position, never to "no marker" (which
+		// would gate the system anchor off).
+		const messages: LLMMessage[] = [
+			makeMsg("user", 800, "u1"), // user at index 0 — no semantic anchor candidate
+			makeMsg("assistant", 200, "a1"),
+			makeMsg("tool_call", 100, "tc1"),
+			makeMsg("tool_result", 1500, "tr1"),
+			makeMsg("developer", 600, "vt"),
+		];
+		const placement = coldPathPlaceCacheMarker(
+			messages,
+			{ bucketTokens: 0, estimateTokens: charEstimate },
+			CAPS,
+		);
+		expect(placement.placed).toBe(true);
+	});
+
 	it("B4: cachePoint never lands inside a tool round — always at a turn boundary", () => {
 		// A turn with a complex inner loop: user → asst → tool_call → tool_result
 		//                                  → asst → tool_call → tool_result → dev
