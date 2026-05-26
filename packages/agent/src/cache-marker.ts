@@ -562,6 +562,59 @@ export function buildCacheMarkers(args: {
 }
 
 /**
+ * Evict any prior inner-loop rolling cache marker, then place a fresh one
+ * before the volatile-tail.
+ *
+ * Inner-loop semantics. Inside `while (continueLoop)` in agent-loop.ts,
+ * each iteration appends `tool_call + tool_result(s)` to `llmMessages`.
+ * The cold-path FIXED marker at the semantic anchor (user_1 for fresh
+ * threads) caches the system + user prompt, but every byte appended after
+ * it pays full price on the next inner iteration. Without a rolling
+ * cachePoint, a 5-iter inner loop with ~10k tool roundtrips per iter
+ * pays the full ~50k cumulative on each inference. Live evidence
+ * (agent-harness production-shape, 2026-05-26, /tmp/h8/turn-{2..6}.json):
+ * cr stuck at 59,510 (system + user_1 floor) across 5 inner-loop
+ * iterations while ti climbed 63k → 84k.
+ *
+ * Placing a rolling marker just before the dev-tail captures iteration
+ * K-1's appended content so iteration K reads it back. Inner-loop
+ * cumulative cache then grows monotonically across the inner loop, and
+ * the next outer-turn's warm-path arrival doesn't have to re-seed the
+ * inner-loop content from cold.
+ *
+ * Eviction. Mirrors the warm-path eviction (`agent-loop.ts:749-757`):
+ * drop every `role: "cache"` entry except the one at `fixedCacheIdx`.
+ * Walks backwards so splice indices don't shift under us. The fixed
+ * marker survives at its original index because eviction never touches
+ * indices ≤ `fixedCacheIdx` (the fixed marker is always at or near the
+ * head).
+ *
+ * Placement. Delegates to `maybePlaceCacheMarker(.., "rolling", caps)`,
+ * which already handles trailing-developer awareness and the bridge-
+ * drop avoidance from `computeCacheMarkerIndex`.
+ *
+ * 4-cachePoint cap. With this helper engaged, a single chat() call
+ * carries: 1 system-level + 1 fixed + 1 rolling = 3 cachePoints. Under
+ * Anthropic's 4-marker cap.
+ *
+ * Pure-ish: mutates `messages` in place (eviction + splice). Returns the
+ * placement record from the underlying `maybePlaceCacheMarker` call so
+ * the caller can record it on `contextDebug.cacheMarkers` if desired.
+ */
+export function refreshInnerLoopRollingMarker(
+	messages: LLMMessage[],
+	fixedCacheIdx: number,
+	caps: CacheMarkerCaps | undefined,
+): CacheMarkerPlacement {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "cache" && i !== fixedCacheIdx) {
+			messages.splice(i, 1);
+		}
+	}
+	return maybePlaceCacheMarker(messages, "rolling", caps);
+}
+
+/**
  * Defense-in-depth receiver-side strip: if a relayed inference payload
  * arrives with `{ role: "cache" }` markers but the local backend can't
  * cache, drop them before dispatch so we don't send

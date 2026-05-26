@@ -868,4 +868,122 @@ describe("inner-loop temporal-frame coherence", () => {
 		const call2Head = call2Devs.find((c) => c.includes(summaryMarker));
 		expect(call2Head).toBe(call1Head);
 	});
+
+	it("places a rolling cachePoint on each inner-loop iteration after the first", async () => {
+		// Live regression observed via the agent-harness on
+		// `production-shape` fixture (2026-05-26, /tmp/h8/turn-{2..6}.json):
+		// across a 5-iter cold-path inner loop, the wire body's only
+		// message-level cachePoint stayed at user_1 (the semantic anchor).
+		// Each iteration's appended `tool_call + tool_result` content lived
+		// outside the cache region, so cr stayed pinned at the system+user_1
+		// floor (59,510 tokens) while ti climbed 63k → 84k. The next outer-
+		// turn's first warm-path inference then had to write ~25k of cache
+		// to seed what the inner loop produced cold.
+		//
+		// Fix: at the top of each inner-loop iteration after the first,
+		// place a rolling cachePoint just before the volatile-tail. This
+		// captures iter K-1's appended content into the cache so iter K
+		// reads it back. The fixed semantic-anchor at user_1 is preserved.
+		//
+		// This test pins the contract by inspecting `params.messages`
+		// captured per chat() call: iter 1 carries exactly 1 message-level
+		// cache marker (the fixed); iter 2+ carries 2 (fixed + rolling).
+		seedThreadWithUserMessage(globalThreadId, "Run 3 bash commands");
+		const mockBackend = new MockLLMBackend();
+
+		// Iter 1 — tool_use → continues to iter 2.
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "tool-1", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "tool-1",
+				partial_json: JSON.stringify({ command: "echo first" }),
+			};
+			yield { type: "tool_use_end" as const, id: "tool-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 100,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		// Iter 2 — tool_use → continues to iter 3.
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "tool-2", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "tool-2",
+				partial_json: JSON.stringify({ command: "echo second" }),
+			};
+			yield { type: "tool_use_end" as const, id: "tool-2" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 200,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		// Iter 3 — terminal text exits the inner loop.
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "All done." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 300,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId: globalThreadId,
+			userId: globalUserId,
+		});
+		await loop.run();
+
+		const calls = mockBackend.getCapturedMessages();
+		expect(calls.length).toBeGreaterThanOrEqual(3);
+
+		// The contract: iter K (K >= 2) sends EXACTLY ONE more cache
+		// marker than iter 1, regardless of whether iter 1 had a fixed
+		// marker placed (which depends on whether the assembled message
+		// array satisfied the placer's no-eligible-anchor gate). The
+		// added marker is the inner-loop rolling, capturing iter K-1's
+		// `tool_call + tool_result` append into the cache.
+		const countCacheMarkers = (msgs: (typeof calls)[0]) =>
+			msgs.filter((m) => m.role === "cache").length;
+		const iter1Count = countCacheMarkers(calls[0]);
+		const iter2Count = countCacheMarkers(calls[1]);
+		const iter3Count = countCacheMarkers(calls[2]);
+
+		// Iter 2 carries the rolling that iter 1 didn't.
+		expect(iter2Count).toBe(iter1Count + 1);
+
+		// Iter 3: prior rolling evicted, new rolling placed — count
+		// matches iter 2 (no accumulation).
+		expect(iter3Count).toBe(iter2Count);
+
+		// Stronger property: iter 2's rolling marker sits at a strictly
+		// later index than any marker iter 1 carried. The rolling rides
+		// just before the volatile-tail at the END of the message array,
+		// while the fixed marker (if any) anchors at the head.
+		const iter2RollingIdx = calls[1].findIndex(
+			(m, i) => m.role === "cache" && i === calls[1].length - 2,
+		);
+		expect(iter2RollingIdx).toBeGreaterThanOrEqual(0);
+	});
 });

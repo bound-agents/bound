@@ -41,7 +41,12 @@ import {
 	parseToolResultContent,
 	shouldRetryRelayCall,
 } from "./agent-loop-utils";
-import { buildCacheMarkers, coldPathPlaceCacheMarker, maybePlaceCacheMarker } from "./cache-marker";
+import {
+	buildCacheMarkers,
+	coldPathPlaceCacheMarker,
+	maybePlaceCacheMarker,
+	refreshInnerLoopRollingMarker,
+} from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
@@ -1263,6 +1268,36 @@ export class AgentLoop {
 				// unchanged history messages.
 				if (turnCount > 1) {
 					this.refreshVolatileTailForNextTurn(llmMessages, relayInfo, resolvedModelForDebug);
+
+					// Refresh the inner-loop rolling cache marker. Each inner-loop
+					// iteration appends `tool_call + tool_result(s)` to
+					// `llmMessages`; without a rolling cachePoint, those bytes pay
+					// full price on each subsequent inference because they live
+					// outside the cache region anchored by the FIXED marker at
+					// user_1. The fixed semantic-anchor stays put — this adds a
+					// SECOND marker downstream of the appended content so iter K
+					// reads back iter K-1's tool roundtrip.
+					//
+					// Live evidence (agent-harness production-shape, 2026-05-26):
+					// cr stuck at the system+user_1 floor (59,510) across 5 inner-
+					// loop iterations while ti climbed 63k → 84k. The next outer-
+					// turn's warm-path then had to write ~25k of cache to seed
+					// what the inner loop produced cold. With this rolling, the
+					// inner-loop cumulative cache grows monotonically.
+					//
+					// `fixedCacheIdx` may be -1 when the cold-path placer
+					// refused (e.g. a fresh thread whose initial `[user_1,
+					// dev_tail]` is too short for the semantic-anchor placer).
+					// In that case eviction matches no index and drops every
+					// `role: "cache"` entry — fine; placement then runs on a
+					// cleanly-evicted array with 4+ messages from accumulated
+					// tool roundtrips, well past the placer's too-short floor.
+					const fixedIdxForRolling = this.getCachedTurnState()?.fixedCacheIdx ?? -1;
+					refreshInnerLoopRollingMarker(
+						llmMessages,
+						fixedIdxForRolling,
+						cacheMarkerCaps ?? undefined,
+					);
 				}
 				const chunks: StreamChunk[] = [];
 				let currentTurnId: string | null = null;
