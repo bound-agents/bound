@@ -160,6 +160,7 @@ async function main(): Promise<void> {
 			cwd: process.cwd(),
 			hostname,
 			logger,
+			injectContextFiles: config.contextFiles,
 		});
 
 		// Step 8: Build tool set for App

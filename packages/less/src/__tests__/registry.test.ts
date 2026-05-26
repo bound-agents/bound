@@ -1,5 +1,14 @@
 import { describe, expect, it } from "bun:test";
-import { buildSystemPromptAddition, buildToolSet, collectGitContext } from "../tools/registry";
+import { join } from "node:path";
+import {
+	buildSystemPromptAddition,
+	buildToolSet,
+	collectContextFiles,
+	collectGitContext,
+} from "../tools/registry";
+
+// packages/less/src/__tests__ → packages/less/src → packages/less → packages → repo root
+const REPO_ROOT = join(import.meta.dir, "../../../..");
 
 describe("buildToolSet", () => {
 	it("returns core tools with correct structure", () => {
@@ -708,5 +717,80 @@ describe("collectGitContext", () => {
 
 		// Either "not a git repository" (git ran but failed) or "git unavailable" (spawn threw)
 		expect(result).toMatch(/^Git context: \(/);
+	});
+});
+
+describe("collectContextFiles", () => {
+	it("returns empty string for directory with no context files", async () => {
+		// /tmp should not contain README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
+		const result = await collectContextFiles("/tmp");
+		expect(result).toBe("");
+	});
+
+	it("returns empty string for non-existent directory", async () => {
+		const result = await collectContextFiles("/this/path/does/not/exist/at/all");
+		expect(result).toBe("");
+	});
+
+	it("returns non-empty string when context files are present", async () => {
+		// The bound repo has README.md, CONTRIBUTING.md, and CLAUDE.md at its root
+		const result = await collectContextFiles(REPO_ROOT);
+		expect(result).not.toBe("");
+		expect(result).toContain("Context files:");
+	});
+
+	it("formats each file under a header", async () => {
+		const result = await collectContextFiles(REPO_ROOT);
+		// Each found file should have a ### header
+		expect(result).toContain("### README.md");
+	});
+
+	it("silently skips files that are not present", async () => {
+		// bound repo has no AGENTS.md
+		const result = await collectContextFiles(REPO_ROOT);
+		expect(result).not.toContain("### AGENTS.md");
+	});
+
+	it("includes multiple files when several are present", async () => {
+		// bound repo has at least README.md and CONTRIBUTING.md
+		const result = await collectContextFiles(REPO_ROOT);
+		const headerCount = (result.match(/^### /gm) || []).length;
+		expect(headerCount).toBeGreaterThanOrEqual(2);
+	});
+});
+
+describe("buildSystemPromptAddition context files", () => {
+	it("includes context files by default when files are present", async () => {
+		// bound repo root has README.md — use REPO_ROOT so we hit the actual files
+		const prompt = await buildSystemPromptAddition(REPO_ROOT, "localhost", []);
+		expect(prompt).toContain("Context files:");
+		expect(prompt).toContain("### README.md");
+	});
+
+	it("excludes context files when injectContextFiles is false", async () => {
+		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", [], {
+			injectContextFiles: false,
+		});
+		expect(prompt).not.toContain("Context files:");
+		// But still has git context
+		expect(prompt).toContain("Git branch:");
+		expect(prompt).toContain("Available tool namespaces:");
+	});
+
+	it("does not include context files block when none are present", async () => {
+		// /tmp has no README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
+		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
+		expect(prompt).not.toContain("Context files:");
+	});
+
+	it("still includes all other sections when context files are disabled", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "test.host", ["github"], {
+			injectContextFiles: false,
+		});
+		expect(prompt).toContain("boundless terminal client");
+		expect(prompt).toContain("Host: test.host");
+		expect(prompt).toContain("Working directory: /home/user");
+		expect(prompt).toContain("boundless_mcp_github_*");
+		expect(prompt).toContain("provenance metadata");
 	});
 });

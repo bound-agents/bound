@@ -8,6 +8,7 @@ const configSchema = z
 	.object({
 		url: z.string().default("http://localhost:3001"),
 		model: z.string().nullable().default(null),
+		contextFiles: z.boolean().default(true),
 	})
 	.passthrough();
 
@@ -68,6 +69,7 @@ export function loadConfig(configDir: string): Config & { _raw: Record<string, u
 			return {
 				url: "http://localhost:3001",
 				model: null,
+				contextFiles: true,
 				_raw: {},
 			};
 		}
