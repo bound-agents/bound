@@ -129,21 +129,6 @@ function fastApproxContentTokens(content: string | ContentBlock[]): number {
 	return sum;
 }
 
-/**
- * Bucket size for the cold-path cache marker. The stable-position placer
- * rounds the marker's cumulative-token position DOWN to the nearest multiple
- * of this value, so consecutive turns whose history grows within the same
- * bucket land the cachePoint at the SAME byte position. Bedrock's prefix
- * cache then matches on every turn within the bucket; advancement to the
- * next bucket pays a single cache_write to seed the new prefix.
- *
- * 10,000 tokens is the operating point. Larger values reduce cache_write
- * frequency at the cost of a smaller cached-prefix-relative-to-history
- * ratio. Smaller values increase the cached-prefix ratio but pay more
- * cache_write events per thread.
- */
-const STABLE_CACHE_BUCKET_TOKENS = 10_000;
-
 /** Per-message token estimator passed to `coldPathPlaceCacheMarker`. */
 function estimateMessageTokens(msg: import("@bound/llm").LLMMessage): number {
 	return fastApproxContentTokens(msg.content);
@@ -1105,7 +1090,9 @@ export class AgentLoop {
 				const fixedPlacement = coldPathPlaceCacheMarker(
 					contextMessages,
 					{
-						bucketTokens: STABLE_CACHE_BUCKET_TOKENS,
+						// `bucketTokens` is unused under the semantic-anchor algorithm
+						// — kept in the API for backward compat. Pass any value.
+						bucketTokens: 0,
 						estimateTokens: estimateMessageTokens,
 					},
 					cacheMarkerCaps ?? undefined,

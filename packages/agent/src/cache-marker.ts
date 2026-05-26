@@ -144,56 +144,68 @@ export function maybePlaceCacheMarker(
 }
 
 /**
- * Bucket-aligned stable cache marker placement.
+ * Semantic-anchor cache marker placement.
  *
  * Background. Bedrock's prompt cache is keyed by the EXACT byte position of
  * each `cachePoint` from the start of the request, with a ~20-content-block
- * lookback for the simplified-cache mode (see Bedrock prompt-caching docs).
- * The "rolling" placement that pinned the marker right before the trailing
- * volatile-tail thrashed: every turn placed the cachePoint at a new byte
- * position because message history grew, so cached prefixes from prior turns
- * were never matched. Live evidence: thread `7453d60b-…` post-bridge-aware
- * fix held cache_read at the system-prefix size on every turn after
- * priming, with cache_write climbing to 60k+ tokens per turn that the next
- * turn never read back. One serendipitous hit (cr=141,991) confirmed the
- * lookback DOES work when consecutive turns happen to land within the
- * window; the other turns missed because position drift exceeded the
- * window.
+ * lookback for the simplified-cache mode. The original "rolling" placer
+ * thrashed because every turn moved the marker; the bucket-token-aligned
+ * successor (5b2f05fe) thrashed when single inner-loop iterations produced
+ * tool results larger than the bucket size — the bucket boundary advanced
+ * past the prior cached position in one jump, lookback couldn't bridge.
+ * Live evidence: thread `192f8174-…` had a +28k-token tool result between
+ * two budget-exceeded cold paths within the same outer turn; bucket
+ * advanced from 90k → 120k; cumulative cache orphaned for 5 turns until
+ * the new bucket primed.
  *
- * Bucket-aligned placement. Round the marker's cumulative-token position
- * DOWN to the nearest `bucketTokens` boundary. The marker advances only
- * when message history grows past the next bucket boundary — bounded,
- * predictable hysteresis. Within a bucket, consecutive turns land the
- * cachePoint at the same byte position and Bedrock matches reliably.
+ * The fundamental issue with token-bucket math: `bucketTokens` is a magic
+ * number. There IS no principled value of N — pick 10k and big tool
+ * results overflow, pick 50k and small inner loops never benefit. The
+ * placer was tuning a symptom.
+ *
+ * Semantic anchoring. The cachePoint anchors at the index of the LATEST
+ * user message. The bytes BEFORE that user are persisted history from
+ * prior turns — semantically immutable. Within a single user turn (any
+ * number of inner-loop iterations producing arbitrary-size tool results),
+ * the latest-user-msg index doesn't advance; the cachePoint byte position
+ * stays put; Bedrock's prefix cache hits regardless of inner-loop append
+ * size. When a NEW user message arrives, the anchor advances by exactly
+ * one prior user turn's worth of content — a natural cache-invalidation
+ * cadence aligned with the user's interaction pattern.
+ *
+ * Same semantic boundary used by `computeCompactionBoundary` in
+ * `history-compaction/` and the boundary-aware summary throttle (0ce38fb0).
+ * Anchoring on it unifies the architecture: summary regen, cachePoint
+ * advance, and compaction events all happen at the same instant — the
+ * arrival of a new user message.
  *
  * Cumulative cache lifecycle:
- *   turn 1: history = 12k tokens. Below bucket → no message marker (system
- *           anchor still rides the cache).
- *   turn 5: history = 32k tokens, bucket = 10k → target 30k. Marker lands
- *           at the latest message boundary ≤ 30k cumulative. cache_write
- *           seeds the new prefix.
- *   turn 6-9: history = 35-39k tokens, bucket-aligned target stays at 30k.
- *             Marker at SAME byte position. cache_read = 30k every turn.
- *   turn 10: history = 41k tokens, bucket-aligned target advances to 40k.
- *            Marker advances forward; one cache_write to seed the new
- *            prefix; subsequent turns in the 40k bucket cache-hit.
+ *   user turn 1 starts: place cachePoint before user_1 (no prior msgs →
+ *                       no message-level marker, system anchor only).
+ *   user turn 1 inner loop: marker stays put. Each iteration's tool calls
+ *                           append AFTER the cachePoint. cache HITS.
+ *   user turn 2 arrives: cachePoint advances to before user_2. The bytes
+ *                        between (user_1, asst_response_1, tool round
+ *                        results) are now cached. cache_write to seed the
+ *                        new larger prefix; subsequent inner-loop turns
+ *                        cache HIT at the new larger position.
  *
  * Pure function — depends only on its arguments. No DB, no clock, no
- * ambient state. The token estimator is injected so the production caller
- * uses tiktoken while tests use a deterministic char-based estimator.
+ * ambient state.
  */
 
 export interface StableCacheMarkerParams {
 	messages: ReadonlyArray<LLMMessage>;
 	/**
-	 * Bucket size in tokens. The marker advances in chunks of this size.
-	 * Larger values = fewer cache_write events but smaller cached prefix
-	 * relative to history. Recommended: 10,000 tokens.
+	 * @deprecated Unused under the semantic-anchor algorithm. Kept in the
+	 * input shape for backward compatibility with callers that still pass
+	 * a value; the placer ignores it. Pass any value (e.g. `0`).
 	 */
 	bucketTokens: number;
 	/**
 	 * Token estimator. Pure and deterministic. The function is called once
-	 * per non-marker message; its result is summed cumulatively.
+	 * per non-marker, non-developer message; its result is summed to
+	 * compute `positionTokens` (the wire byte position of the cachePoint).
 	 */
 	estimateTokens: (msg: LLMMessage) => number;
 }
@@ -204,10 +216,15 @@ export interface StableCacheMarkerPlacement {
 	index: number;
 	/** Cumulative tokens BEFORE the marker (= bytes that get cached). 0 when not placed. */
 	positionTokens: number;
-	/** Bucket-aligned target the marker is at-or-below. 0 when not placed. */
+	/**
+	 * Equal to `positionTokens` under the semantic-anchor algorithm.
+	 * Retained in the response shape for backward compatibility with the
+	 * web debugger's marker-tick rendering, which historically read this
+	 * field as the bucket-aligned target.
+	 */
 	targetTokens: number;
 	/** Reason for non-placement. */
-	reason?: "capability-disabled" | "below-bucket" | "no-eligible-anchor";
+	reason?: "capability-disabled" | "no-eligible-anchor";
 }
 
 /**
@@ -241,61 +258,85 @@ export function computeStableCacheMarkerPlacement(
 		};
 	}
 
-	const { messages, bucketTokens, estimateTokens } = params;
+	const { messages, estimateTokens } = params;
 
-	// Walk forward, tracking cumulative tokens and candidate splice indices.
-	// A "candidate" splice index sits IMMEDIATELY AFTER a non-marker, non-
-	// developer message — that's where a cache marker can land such that the
-	// bridge will attach the cachePoint to that preceding message. Trailing
-	// developer messages are excluded because the bridge merges them onto an
-	// adjacent user, mutating the cachePoint target's bytes (the bug pinned
-	// by `computeCacheMarkerIndex`).
-	let cumulative = 0;
-	const candidates: Array<{ index: number; cumulative: number }> = [];
-	for (let i = 0; i < messages.length; i++) {
-		const m = messages[i];
-		if (m.role === "cache") continue;
-		if (m.role === "developer") continue;
-		cumulative += estimateTokens(m);
-		// Candidate splice index = i + 1 (insert AFTER this message).
-		candidates.push({ index: i + 1, cumulative });
-	}
-
-	const totalTokens = cumulative;
-	if (totalTokens < bucketTokens) {
+	// Semantic anchoring. The cachePoint anchors at the index of the
+	// LATEST user message — `computeCacheMarkerIndex` already implements
+	// this rule for the trailing-developer case (76a0c0eb). Within a
+	// single user turn (multiple inner-loop iterations), the latest user
+	// msg index does NOT change as new tool_call / tool_result content
+	// appends. The cachePoint byte position therefore stays stable
+	// regardless of how big the inner-loop appends grow.
+	//
+	// When a NEW user message arrives, the index advances — the
+	// cachePoint's byte position increases by exactly one prior user
+	// turn's worth of content. That's the natural cache-invalidation
+	// cadence: cumulative cache grows monotonically by one user turn per
+	// transition over the thread lifetime.
+	//
+	// `bucketTokens` is now unused — the magic-number era is over. The
+	// param is kept in the input shape for backward compat with existing
+	// callers; new callers should pass anything (e.g. `0`) and ignore it.
+	if (messages.length < 2) {
 		return {
 			placed: false,
 			index: -1,
 			positionTokens: 0,
 			targetTokens: 0,
-			reason: "below-bucket",
-		};
-	}
-
-	const targetTokens = Math.floor(totalTokens / bucketTokens) * bucketTokens;
-
-	// Find the LATEST candidate whose cumulative ≤ target.
-	let best: { index: number; cumulative: number } | null = null;
-	for (const c of candidates) {
-		if (c.cumulative <= targetTokens) best = c;
-		else break;
-	}
-
-	if (!best || best.index === 0) {
-		return {
-			placed: false,
-			index: -1,
-			positionTokens: 0,
-			targetTokens,
 			reason: "no-eligible-anchor",
 		};
 	}
 
+	// Semantic anchor: find the LATEST user message index. Place marker
+	// at that index so the cachePoint attaches to messages[index - 1]
+	// (the prior turn's last message — semantically immutable history).
+	//
+	// This mirrors `computeCompactionBoundary` from `history-compaction/`
+	// — same semantic boundary (latest-user-msg-index) the summary
+	// throttle uses (0ce38fb0). The two systems advance in lockstep, so
+	// summary regen and cachePoint advance happen at the same instant.
+	let insertAt = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role === "user") {
+			insertAt = i;
+			break;
+		}
+	}
+	if (insertAt <= 0) {
+		// No user message OR user is at index 0 — bridge has no preceding
+		// message to attach the cachePoint onto. The system anchor
+		// continues to cache-hit; we just don't place a message-level
+		// marker. Common for scheduler-wakeup threads that haven't had a
+		// human user turn yet.
+		return {
+			placed: false,
+			index: -1,
+			positionTokens: 0,
+			targetTokens: 0,
+			reason: "no-eligible-anchor",
+		};
+	}
+
+	// Compute positionTokens = sum of estimateTokens over messages BEFORE
+	// the splice index. Skip cache markers and developer messages
+	// (consistent with the bridge — developer messages get merged into
+	// adjacent users and don't contribute their own token count to the
+	// on-wire cumulative).
+	let positionTokens = 0;
+	for (let i = 0; i < insertAt; i++) {
+		const m = messages[i];
+		if (m.role === "cache" || m.role === "developer") continue;
+		positionTokens += estimateTokens(m);
+	}
+
 	return {
 		placed: true,
-		index: best.index,
-		positionTokens: best.cumulative,
-		targetTokens,
+		index: insertAt,
+		positionTokens,
+		// `targetTokens` is now `positionTokens` — there's no separate
+		// bucket-aligned target. Kept in the response shape for backward
+		// compatibility with the web debugger marker rendering.
+		targetTokens: positionTokens,
 	};
 }
 
