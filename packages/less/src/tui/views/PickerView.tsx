@@ -13,6 +13,10 @@ export interface PickerViewProps {
 	client: BoundClient | null;
 	onSelect: (value: string) => void;
 	onCancel: () => void;
+	/** The currently-active value (model id or thread id). When provided and
+	 *  mode === "model", the matching list item is annotated with "(active)"
+	 *  so the user can see which model is currently in use at a glance. */
+	currentValue?: string;
 }
 
 interface PickerItem {
@@ -30,6 +34,7 @@ export function PickerView({
 	client,
 	onSelect,
 	onCancel,
+	currentValue,
 }: PickerViewProps): React.ReactElement {
 	const [items, setItems] = useState<PickerItem[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -103,6 +108,11 @@ export function PickerView({
 								<Text>
 									<Text color="cyan">{selected ? "› " : "  "}</Text>
 									{item.label}
+									{mode === "model" && item.id === currentValue && (
+										<Text color="green" dimColor>
+											{" (active)"}
+										</Text>
+									)}
 								</Text>
 							)}
 						/>
