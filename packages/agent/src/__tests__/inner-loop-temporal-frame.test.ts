@@ -192,7 +192,12 @@ function createMockSandbox() {
 	};
 }
 
-function seedThreadWithUserMessage(threadId: string, userText: string) {
+function seedThreadWithUserMessage(
+	threadId: string,
+	userText: string,
+	options: { summary?: string } = {},
+) {
+	const now = new Date().toISOString();
 	globalDb.run(
 		"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		[
@@ -202,8 +207,8 @@ function seedThreadWithUserMessage(threadId: string, userText: string) {
 			"local",
 			0,
 			"Inner Loop Frame Test",
-			null,
-			null,
+			options.summary ?? null,
+			options.summary ? now : null,
 			null,
 			null,
 			new Date().toISOString(),
@@ -565,5 +570,141 @@ describe("inner-loop temporal-frame coherence", () => {
 		// rebuilds the volatile-tail and the new advisory line shows
 		// up in the next call's developer message.
 		expect(call2Tail).toContain(advisoryTitle);
+	});
+
+	it("preserves the Stage 1.7 compaction-summary developer when refreshing the volatile-tail (load-bearing)", async () => {
+		// Live regression observed via the agent-harness on
+		// `production-shape` fixture (2026-05-26): between two consecutive
+		// inner-loop iterations of the same outer-turn, cumulative cache
+		// dropped by 22,363 tokens (cr 80,952 → 58,589) because the wire
+		// body's first user message changed by 232k bytes.
+		//
+		// Root cause: `refreshVolatileTailForNextTurn` calls
+		// `llmMessages.findIndex((m) => m.role === "developer")`, which
+		// returns the FIRST developer. When `assembleContext` Stage 1.7
+		// prepended a compaction-summary developer at the head of
+		// llmMessages (because `thread.summary` is set), that's the one
+		// that gets overwritten — silently destroying the byte-stable
+		// summary content and leaving the actual TAIL volatile-tail
+		// stale.
+		//
+		// The contract: `refreshVolatileTailForNextTurn` MUST replace
+		// the LAST developer (the volatile-tail), not the first. The
+		// HEAD compaction summary stays untouched so its byte-stable
+		// content keeps Bedrock's cache prefix matching turn-over-turn.
+		const summaryMarker = `STAGE-1.7-MARKER-${randomUUID()}`;
+		seedThreadWithUserMessage(globalThreadId, "Run two bash commands", {
+			summary: `harness compaction summary body containing ${summaryMarker}`,
+		});
+
+		const advisoryTitle = `volatile-tail-mutation-${randomUUID()}`;
+		const advisoryId = randomUUID();
+
+		const mockBackend = new MockLLMBackend();
+		// Inner loop turn 1: tool_use bash. Insert applied advisory
+		// after chunks consumed; refresh fires at the top of turn 2.
+		mockBackend.pushResponseWithPostHook(
+			async function* () {
+				yield { type: "tool_use_start" as const, id: "tool-1", name: "bash" };
+				yield {
+					type: "tool_use_args" as const,
+					id: "tool-1",
+					partial_json: JSON.stringify({ command: "echo first" }),
+				};
+				yield { type: "tool_use_end" as const, id: "tool-1" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 100,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			},
+			() => {
+				const now = new Date().toISOString();
+				globalDb.run(
+					"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						advisoryId,
+						"general",
+						"applied",
+						advisoryTitle,
+						"Mutation marker",
+						null,
+						null,
+						null,
+						now,
+						null,
+						now,
+						"test-site-id",
+						now,
+						0,
+					],
+				);
+			},
+		);
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Done." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 200,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId: globalThreadId,
+			userId: globalUserId,
+		});
+		await loop.run();
+
+		const calls = mockBackend.getCapturedMessages();
+		expect(calls.length).toBeGreaterThanOrEqual(2);
+
+		// Find ALL developer messages in each call so we can distinguish
+		// the head-summary and the tail-volatile-tail.
+		function findAllDeveloperContents(messages: LLMMessage[]): string[] {
+			return messages
+				.filter((m) => m.role === "developer")
+				.map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+		}
+
+		const call1Devs = findAllDeveloperContents(calls[0]);
+		const call2Devs = findAllDeveloperContents(calls[1]);
+
+		// Sanity: call 1 carries TWO developers — the Stage 1.7 head
+		// summary AND the tail volatile-tail.
+		expect(call1Devs.length).toBeGreaterThanOrEqual(2);
+		expect(call1Devs.some((c) => c.includes(summaryMarker))).toBe(true);
+
+		// Call 2: BOTH developers must still be present (head intact, tail
+		// refreshed with the new advisory).
+		expect(call2Devs.length).toBeGreaterThanOrEqual(2);
+
+		// Load-bearing: the head summary marker must still be in call 2's
+		// developer messages. Without the fix, the refresh helper
+		// overwrites the head summary with the volatile-tail content,
+		// dropping the marker.
+		expect(call2Devs.some((c) => c.includes(summaryMarker))).toBe(true);
+
+		// Sanity: the volatile-tail mutation IS observed in call 2's
+		// developer messages (so we know the refresh ran).
+		expect(call2Devs.some((c) => c.includes(advisoryTitle))).toBe(true);
+
+		// Stronger property: the head summary developer's content is
+		// byte-equal between call 1 and call 2 — refresh must touch only
+		// the tail.
+		const call1Head = call1Devs.find((c) => c.includes(summaryMarker));
+		const call2Head = call2Devs.find((c) => c.includes(summaryMarker));
+		expect(call2Head).toBe(call1Head);
 	});
 });

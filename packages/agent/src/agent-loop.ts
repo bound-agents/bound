@@ -347,13 +347,32 @@ export class AgentLoop {
 			systemPromptAddition: this.config.systemPromptAddition,
 		});
 
-		// Replace the existing developer-role tail in place. The bridge
-		// (ai-sdk-bridge.toModelMessages) tail-emits dev content into a
-		// trailing user message wrapped in <system-context>, so position
-		// inside llmMessages is wire-irrelevant — only content matters.
-		const devIdx = llmMessages.findIndex((m) => m.role === "developer");
-		if (devIdx >= 0) {
-			llmMessages[devIdx] = {
+		// Replace the LAST developer-role message — that's the
+		// volatile-tail produced by Stage 5.5 of context-assembly. There
+		// may be additional developer messages earlier in `llmMessages`:
+		// in particular, when `thread.summary` is set, Stage 1.7 prepends
+		// a compaction-summary developer at index 0. Those head
+		// developers are byte-stable across inner-loop iterations and
+		// MUST NOT be touched here — Bedrock's prompt cache anchors on
+		// their bytes.
+		//
+		// Bug previously addressed by `findIndex` returning the FIRST
+		// developer: when Stage 1.7 ran, the refresh silently overwrote
+		// the byte-stable summary with the varying volatile-tail content,
+		// destroying the cache prefix mid-user-turn AND leaving the actual
+		// tail dev stale. Live evidence on agent-harness production-shape
+		// fixture: cumulative cache_read dropped 22,363 tokens between
+		// two consecutive inferences within the same user-turn (cr 80,952
+		// → 58,589, cw 241 → 22,427).
+		let tailDevIdx = -1;
+		for (let i = llmMessages.length - 1; i >= 0; i--) {
+			if (llmMessages[i].role === "developer") {
+				tailDevIdx = i;
+				break;
+			}
+		}
+		if (tailDevIdx >= 0) {
+			llmMessages[tailDevIdx] = {
 				role: "developer",
 				content: freshVol.varyingContent,
 			};
