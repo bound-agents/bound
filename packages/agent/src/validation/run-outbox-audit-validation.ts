@@ -12,10 +12,10 @@
  *     yet ban.
  *   - Local-only test setup that snuck into production paths.
  *
- * The audit query: for every synced-table row, check that
- * `change_log` contains at least one entry with matching
- * `(table_name, row_id)` whose `timestamp <= row.modified_at`. If
- * not, the row was inserted/updated without going through the
+ * The audit query: for every synced-table row in the auditable
+ * window (see "evidence horizon" below), check that `change_log`
+ * contains at least one entry with matching `(table_name, row_id)`.
+ * If not, the row was inserted/updated without going through the
  * outbox helpers — sync would not propagate it to other hosts.
  *
  * Documented narrow exceptions:
@@ -29,6 +29,27 @@
  *     bulk-insert path before any change_log replay completes. We
  *     gate the audit on a stability threshold (rows older than
  *     30 minutes) to avoid false positives on recently-seeded rows.
+ *
+ *   - Pruned change_log entries (the **evidence horizon**):
+ *     `change_log` retention is finite. Multi-host pruning
+ *     (`packages/sync/src/pruning.ts`) deletes entries below the
+ *     minimum confirmed peer HLC; single-host mode caps at 100k
+ *     entries. A row whose change_log entry has been legitimately
+ *     pruned would, under a naive audit, be indistinguishable from
+ *     a row that never went through the outbox.
+ *
+ *     The audit anchors against `MIN(change_log.timestamp)` — the
+ *     wall-clock time of the oldest surviving entry — and only
+ *     audits rows whose `modified_at` is at or after that point.
+ *     Older rows fall outside the audit's evidence horizon and are
+ *     skipped. When `change_log` is empty the audit has no claim
+ *     space at all and skips this run entirely.
+ *
+ *     Tradeoff: a row written at the exact wall-clock instant of
+ *     the horizon entry whose own changelog entry has been pruned
+ *     could escape detection. Acceptable; the static check covers
+ *     compile-time bypasses and this validator's value is over the
+ *     lifetime of a deployed system, not at the moment of pruning.
  *
  * Outcomes are written as `_validation:outbox-audit:<table>:<row_id>`
  * (tier `default`, `source: "validation:outbox-audit"`) idempotently
@@ -90,6 +111,30 @@ export interface OutboxAuditReport {
 	rowsExamined: number;
 	violationsFound: number;
 	tablesScanned: number;
+	/**
+	 * `null` when the audit had no evidence horizon to anchor against
+	 * (empty `change_log`) and skipped all tables. Otherwise the
+	 * earliest `change_log.timestamp` seen at run start — rows older
+	 * than this fall outside the audit's claim space and were skipped.
+	 */
+	evidenceHorizon: string | null;
+}
+
+/**
+ * Returns the wall-clock timestamp of the oldest surviving
+ * `change_log` entry, or `null` if the table is empty. Used as the
+ * lower bound for audit eligibility — older rows have ambiguous
+ * provenance (entry pruned vs entry never written) and are skipped.
+ *
+ * Computed BEFORE `updateLastRun` so the validator's own
+ * bookkeeping write doesn't accidentally tighten its own horizon
+ * when this is the very first run on a fresh node.
+ */
+function getEvidenceHorizon(db: Database): string | null {
+	const row = db.prepare("SELECT MIN(timestamp) AS horizon FROM change_log").get() as {
+		horizon: string | null;
+	} | null;
+	return row?.horizon ?? null;
 }
 
 export function runOutboxAuditValidation(
@@ -97,7 +142,16 @@ export function runOutboxAuditValidation(
 	siteId: string,
 	nowMs: number,
 ): OutboxAuditReport {
+	const evidenceHorizon = getEvidenceHorizon(db);
+
 	updateLastRun(db, siteId, nowMs);
+
+	// No surviving change_log entries → the audit has no anchor
+	// and cannot distinguish bypass from pruned-but-legitimate. Skip
+	// cleanly rather than flag every row in the database.
+	if (evidenceHorizon === null) {
+		return { rowsExamined: 0, violationsFound: 0, tablesScanned: 0, evidenceHorizon: null };
+	}
 
 	const stabilityCutoff = new Date(nowMs - STABILITY_THRESHOLD_MS).toISOString();
 
@@ -110,14 +164,26 @@ export function runOutboxAuditValidation(
 		let rows: Array<{ row_id: string; modified_at: string }>;
 		try {
 			const pkCol = TABLE_PK_OVERRIDE[table] ?? "id";
+			// Lower bound: the evidence horizon. Rows older than the
+			// earliest surviving change_log entry have ambiguous
+			// provenance and are skipped to avoid false positives on
+			// nodes with active changelog pruning.
+			//
+			// Upper bound: the stability cutoff. Rows newer than 30
+			// minutes are skipped to avoid false positives during
+			// snapshot seeding on new spokes.
 			rows = db
 				.prepare(
 					`SELECT ${pkCol} AS row_id, ${MODIFIED_AT_COLUMN} AS modified_at
 					FROM ${table}
-					WHERE ${MODIFIED_AT_COLUMN} <= ?
+					WHERE ${MODIFIED_AT_COLUMN} >= ?
+						AND ${MODIFIED_AT_COLUMN} <= ?
 					LIMIT 1000`,
 				)
-				.all(stabilityCutoff) as Array<{ row_id: string; modified_at: string }>;
+				.all(evidenceHorizon, stabilityCutoff) as Array<{
+				row_id: string;
+				modified_at: string;
+			}>;
 		} catch {
 			continue;
 		}
@@ -149,7 +215,7 @@ export function runOutboxAuditValidation(
 		}
 	}
 
-	return { rowsExamined, violationsFound, tablesScanned };
+	return { rowsExamined, violationsFound, tablesScanned, evidenceHorizon };
 }
 
 export function shouldRunOutboxAuditValidation(db: Database, nowMs: number): boolean {
