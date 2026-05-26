@@ -27,6 +27,10 @@ interface CacheTurnRecord {
 	sysCp: number;
 	msgCp: number;
 	msgCpOffsets: number[];
+	/** Non-cached input tokens — the denominator term that drives the
+	 *  hit-rate calculation alongside cr/cw. Production uses
+	 *  `cr / (cr + cw + ti)` for the cumulative hit-rate metric. */
+	ti: number | null;
 	cr: number | null;
 	cw: number | null;
 	costUsd: number;
@@ -73,6 +77,7 @@ export function buildCacheDiagnostic(): Diagnostic {
 				sysCp: inspect?.systemMarkers ?? 0,
 				msgCp: inspect?.messageMarkers ?? 0,
 				msgCpOffsets: inspect?.messageMarkerByteOffsets ?? [],
+				ti: data.usage?.input_tokens ?? null,
 				cr: data.usage?.cache_read_tokens ?? null,
 				cw: data.usage?.cache_write_tokens ?? null,
 				costUsd: data.costUsd,
@@ -94,8 +99,12 @@ function renderCacheReport(recs: ReadonlyArray<CacheTurnRecord>): string {
 	}
 
 	const lines: string[] = [];
-	lines.push("  inf  ut   path  sys  msg  cr        cw        cost_usd  wire_diff_vs_prev");
-	lines.push("  ---  ---  ----  ---  ---  --------  --------  --------  -----------------");
+	lines.push(
+		"  inf  ut   path  sys  msg  ti        cr        cw        cost_usd  wire_diff_vs_prev",
+	);
+	lines.push(
+		"  ---  ---  ----  ---  ---  --------  --------  --------  --------  -----------------",
+	);
 	for (const r of recs) {
 		const diff =
 			r.wireDiffVsPrev === null
@@ -104,15 +113,21 @@ function renderCacheReport(recs: ReadonlyArray<CacheTurnRecord>): string {
 					? "stable"
 					: `@${r.wireDiffVsPrev} of ${r.bodyLen}`;
 		lines.push(
-			`  ${pad(String(r.turn), 3)}  ${pad(String(r.userTurn), 3)}  ${pad(r.path, 5)} ${pad(String(r.sysCp), 3)}  ${pad(String(r.msgCp), 3)}  ${pad(formatTokens(r.cr), 8)}  ${pad(formatTokens(r.cw), 8)}  ${pad(r.costUsd.toFixed(4), 8)}  ${diff}`,
+			`  ${pad(String(r.turn), 3)}  ${pad(String(r.userTurn), 3)}  ${pad(r.path, 5)} ${pad(String(r.sysCp), 3)}  ${pad(String(r.msgCp), 3)}  ${pad(formatTokens(r.ti), 8)}  ${pad(formatTokens(r.cr), 8)}  ${pad(formatTokens(r.cw), 8)}  ${pad(r.costUsd.toFixed(4), 8)}  ${diff}`,
 		);
 	}
 
-	// Cumulative stats.
+	// Cumulative stats. Hit-rate formula matches production exactly:
+	//   cr / (cr + cw + ti)
+	// The `ti` term (non-cached input tokens) is the dominant denominator
+	// component on autonomous-task threads — without it the metric
+	// silently overstates cache effectiveness.
 	const totalCr = recs.reduce((s, r) => s + (r.cr ?? 0), 0);
 	const totalCw = recs.reduce((s, r) => s + (r.cw ?? 0), 0);
+	const totalTi = recs.reduce((s, r) => s + (r.ti ?? 0), 0);
 	const totalCost = recs.reduce((s, r) => s + r.costUsd, 0);
-	const hitRate = totalCr + totalCw === 0 ? 0 : (100 * totalCr) / (totalCr + totalCw);
+	const denom = totalCr + totalCw + totalTi;
+	const hitRate = denom === 0 ? 0 : (100 * totalCr) / denom;
 	const longestStable = longestRunOf(
 		recs,
 		(r) => r.wireDiffVsPrev === -1 || r.wireDiffVsPrev === null,
@@ -120,9 +135,10 @@ function renderCacheReport(recs: ReadonlyArray<CacheTurnRecord>): string {
 
 	lines.push("");
 	lines.push("  cumulative:");
+	lines.push(`    total_ti:           ${totalTi.toLocaleString()}`);
 	lines.push(`    total_cr:           ${totalCr.toLocaleString()}`);
 	lines.push(`    total_cw:           ${totalCw.toLocaleString()}`);
-	lines.push(`    cache_hit_rate:     ${hitRate.toFixed(2)}%`);
+	lines.push(`    cache_hit_rate:     ${hitRate.toFixed(2)}%   (cr / (cr + cw + ti))`);
 	lines.push(`    total_cost_usd:     ${totalCost.toFixed(4)}`);
 	lines.push(`    longest_stable_run: ${longestStable} turns`);
 	return lines.join("\n");

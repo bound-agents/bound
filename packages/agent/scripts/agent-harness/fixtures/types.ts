@@ -28,6 +28,43 @@ export interface FixtureMutation {
 	insertUser: string;
 }
 
+/**
+ * Counts of synthetic memory + skill rows seeded into the harness's
+ * in-memory DB before turn 1. Drives the volatile-prefix size produced by
+ * `composeStableVolatileSubsection` so the harness's `tokens_in` per
+ * inference lands in the production band (~67k for autonomous-task threads).
+ *
+ * Defaults (when `volatilePrefix` is absent on a fixture) leave the DB
+ * empty — useful for fixtures that intentionally exercise the small-prefix
+ * regime. Production-scale fixtures set the counts explicitly.
+ */
+export interface VolatilePrefixSeedSpec {
+	/**
+	 * `tier='pinned'` rows in `semantic_memory`. Each renders fully as
+	 * `- {key}: {value}`. Production typically has 60-100 entries with
+	 * avg value length ~2k chars.
+	 */
+	pinnedCount?: number;
+	pinnedValueChars?: number;
+	/**
+	 * `tier='summary'` rows. Each renders as `- {key}: {value(truncated 200)}`.
+	 * Production typically has 60-100 entries.
+	 */
+	summaryCount?: number;
+	/**
+	 * `tier='detail'` rows. Only the `key` is rendered (plus the
+	 * `(accessed YYYY-MM-DD)` fragment when budget pressure isn't on).
+	 * Production typically has 200-500 entries.
+	 */
+	detailCount?: number;
+	/**
+	 * Active `skills` rows. Each renders as a `<skill><name>...
+	 * <description>...</description></skill>` block in the
+	 * `<available_skills>` XML envelope.
+	 */
+	skillCount?: number;
+}
+
 export interface HarnessFixture {
 	/** Unique name (matches the CLI flag value). */
 	name: string;
@@ -42,6 +79,14 @@ export interface HarnessFixture {
 	 * that triggered demons `476e7a6e` and `71ebc11e`.
 	 */
 	threadSummary?: string;
+	/**
+	 * Optional volatile-prefix seed counts. When omitted, the harness's DB
+	 * has no memory or skill rows and the volatile-prefix is ~empty —
+	 * useful for testing the placer in the small-prefix regime but yields
+	 * artificially high cache hit rates (tiny `tokens_in` denominator).
+	 * Production-scale fixtures set this to drive realistic hit rates.
+	 */
+	volatilePrefix?: VolatilePrefixSeedSpec;
 	/** Tools advertised to the LLM. */
 	tools: ToolDefinition[];
 	/**
