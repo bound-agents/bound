@@ -122,6 +122,44 @@ export function hasBedrockMessageCachePoint(messages: ModelMessage[]): boolean {
 	});
 }
 
+export interface ShouldEnableSystemCachePointParams {
+	/** From `ChatParams.cache_ttl`. Caller signals caching intent. */
+	cacheTtl: "5m" | "1h" | undefined;
+	/** Post-bridge messages — used as a fallback signal for caching intent. */
+	bridgeMessages: ModelMessage[];
+}
+
+/**
+ * Decide whether the SYSTEM block should carry a Bedrock `cachePoint`.
+ *
+ * The SYSTEM anchor is INDEPENDENT of any message-level cachePoint. The
+ * historical conflation — `cacheEnabled =
+ * hasBedrockMessageCachePoint(bridgeMessages)` — meant any failure of
+ * the upstream message-marker placer disabled the system anchor too.
+ * Live regression: thread `a191e01f-…` 2026-05-25 had no message-level
+ * marker placed (root cause still under investigation in the agent
+ * loop's truncation/placement path), the gate flipped false, the
+ * system anchor was suppressed, and 79 turns ran with cr=0.
+ *
+ * The new contract:
+ *   - If the caller passed `cache_ttl`, they intend caching → enable
+ *     the system anchor.
+ *   - As a fallback for older callers that don't pass `cache_ttl`,
+ *     check for message-level marker presence (preserves the previous
+ *     behavior for any code path that hasn't been updated).
+ *   - Otherwise disable.
+ *
+ * The two layers (system anchor / message-level marker) now operate
+ * independently: a missing message-level marker no longer disables the
+ * system anchor, and a missing `cache_ttl` no longer prevents
+ * downstream code from flipping the system anchor on via a
+ * message-level marker.
+ */
+export function shouldEnableSystemCachePoint(params: ShouldEnableSystemCachePointParams): boolean {
+	if (params.cacheTtl !== undefined) return true;
+	return hasBedrockMessageCachePoint(params.bridgeMessages);
+}
+
 export class BedrockDriver implements LLMBackend {
 	private provider: AmazonBedrockProvider;
 	private model: string;
@@ -194,7 +232,15 @@ export class BedrockDriver implements LLMBackend {
 		// See `buildBedrockSystemMessage` for the full rationale.
 		const systemMessage = buildBedrockSystemMessage({
 			system: params.system,
-			cacheEnabled: hasBedrockMessageCachePoint(bridgeMessages),
+			// Independent decision per `shouldEnableSystemCachePoint` — the
+			// system anchor is no longer gated on message-level marker
+			// presence. See thread `a191e01f-…` regression: empty bridge
+			// markers used to disable the system anchor, killing all
+			// caching for the entire turn.
+			cacheEnabled: shouldEnableSystemCachePoint({
+				cacheTtl: params.cache_ttl,
+				bridgeMessages,
+			}),
 			cacheTtl: params.cache_ttl,
 		});
 		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;

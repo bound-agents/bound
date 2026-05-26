@@ -36,7 +36,85 @@
 import { describe, expect, it } from "bun:test";
 import type { ModelMessage } from "ai";
 import fc from "fast-check";
-import { buildBedrockSystemMessage, hasBedrockMessageCachePoint } from "../bedrock-driver";
+import {
+	buildBedrockSystemMessage,
+	hasBedrockMessageCachePoint,
+	shouldEnableSystemCachePoint,
+} from "../bedrock-driver";
+
+describe("Bedrock chat() — system anchor independence from message-level marker", () => {
+	// Regression sentry for the live thread `a191e01f-…` 2026-05-25 issue:
+	// the bedrock-driver gated `cacheEnabled` on
+	// `hasBedrockMessageCachePoint(bridgeMessages)`. When no message-level
+	// marker was placed (truncation drops the latest user, semantic-anchor
+	// fallback returns no-eligible-anchor, etc.), the system anchor was
+	// disabled too — even though caching was intended (cache_ttl set).
+	// 79 turns of the thread ran with cr=0 across the board.
+	//
+	// The contract: SYSTEM anchor enablement is independent of MESSAGE-level
+	// marker presence. The system block carries its own cachePoint whenever
+	// the caller signals caching intent (cache_ttl set), regardless of
+	// what's happening at the message level.
+
+	it("D1 (load-bearing): system anchor enabled when cache_ttl is set, even with no message-level marker", () => {
+		// `bridgeMessages` here has NO providerOptions.bedrock.cachePoint
+		// — no message-level marker placed. The old contract (cacheEnabled
+		// = hasBedrockMessageCachePoint) would say false; system gets no
+		// cachePoint; caching is fully off. The new contract says: system
+		// anchor still rides because cache_ttl was set.
+		const bridgeMessagesWithoutMarker: ModelMessage[] = [
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "hello" },
+			{ role: "user", content: "follow up" },
+		];
+
+		// Direct call to the system message builder with the contract under
+		// test: enable cachePoint when cache_ttl is intended, independent
+		// of any message-level marker presence.
+		const enabled = bridgeMessagesWithoutMarker.some((m) => {
+			const opts = m.providerOptions as { bedrock?: { cachePoint?: unknown } } | undefined;
+			return opts?.bedrock?.cachePoint !== undefined;
+		});
+		// Today: enabled === false → system gets no cachePoint → bug.
+		expect(enabled).toBe(false);
+
+		// The fix: system anchor enabled whenever `cache_ttl` is set, even
+		// if no bridge message has a cachePoint. Encoded by
+		// `shouldEnableSystemCachePoint`.
+		const shouldEnable = shouldEnableSystemCachePoint({
+			cacheTtl: "1h",
+			bridgeMessages: bridgeMessagesWithoutMarker,
+		});
+		expect(shouldEnable).toBe(true);
+	});
+
+	it("D2: system anchor disabled when cache_ttl is undefined (caller signals no caching intent)", () => {
+		const bridgeMessages: ModelMessage[] = [{ role: "user", content: "hi" }];
+		const shouldEnable = shouldEnableSystemCachePoint({
+			cacheTtl: undefined,
+			bridgeMessages,
+		});
+		expect(shouldEnable).toBe(false);
+	});
+
+	it("D3: system anchor enabled when message-level marker present (preserves prior behavior)", () => {
+		const bridgeMessages: ModelMessage[] = [
+			{ role: "user", content: "hi" },
+			{
+				role: "user",
+				content: "with cp",
+				providerOptions: { bedrock: { cachePoint: { type: "default" } } },
+			},
+		];
+		const shouldEnable = shouldEnableSystemCachePoint({
+			cacheTtl: undefined,
+			bridgeMessages,
+		});
+		// Even without cache_ttl, presence of message-level marker means
+		// some caller already intended caching → enable system anchor.
+		expect(shouldEnable).toBe(true);
+	});
+});
 
 describe("buildBedrockSystemMessage", () => {
 	it("C1: returns null when system is empty/missing", () => {
