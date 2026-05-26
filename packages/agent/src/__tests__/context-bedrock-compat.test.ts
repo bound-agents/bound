@@ -102,8 +102,9 @@ describe("Context assembly Bedrock compatibility", () => {
 		// The non-alert messages should still be present
 		const userMessages = messages.filter((m) => m.role === "user");
 		expect(userMessages).toHaveLength(2);
-		expect(userMessages[0].content).toBe("Hello");
-		expect(userMessages[1].content).toBe("Continue please");
+		// Annotation prefix prepended (N7 byte-stability invariant).
+		expect(userMessages[0].content).toContain("Hello");
+		expect(userMessages[1].content).toContain("Continue please");
 	});
 
 	it("filters out purge-role messages from context (not just substitution)", () => {
@@ -292,8 +293,9 @@ describe("Context assembly Bedrock compatibility", () => {
 		// User and assistant messages should remain
 		const userMessages = messages.filter((m) => m.role === "user");
 		expect(userMessages).toHaveLength(2);
-		expect(userMessages[0].content).toBe("Hello there");
-		expect(userMessages[1].content).toBe("Are you still there?");
+		// Annotation prefix prepended (N7 byte-stability invariant).
+		expect(userMessages[0].content).toContain("Hello there");
+		expect(userMessages[1].content).toContain("Are you still there?");
 
 		const assistantMessages = messages.filter((m) => m.role === "assistant");
 		expect(assistantMessages).toHaveLength(1);

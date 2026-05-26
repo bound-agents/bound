@@ -22,17 +22,16 @@ export interface AnnotateMessagesParams {
 	/** Post-Stage-3 sanitized messages. */
 	messages: ReadonlyArray<Message>;
 	/**
-	 * Wall-clock anchor for the user-message timestamp annotation
-	 * cutoff. Defaults to `Date.now()` for production callers; tests
-	 * inject a fixed value so property assertions can compare
-	 * byte-equal output.
+	 * @deprecated Unused under the byte-stable annotation rule (N7).
+	 * Kept in the input shape for backward compatibility with callers
+	 * that still pass a value. The annotator no longer consults
+	 * wall-clock time when deciding whether to prefix a user message.
 	 */
 	nowMs?: number;
 }
 
 export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 	const { messages } = params;
-	const nowMs = params.nowMs ?? Date.now();
 
 	// Build a map from tool_call message ID to its first tool_use_id,
 	// plus a set of all known tool_use_ids for tool_result resolution.
@@ -97,13 +96,28 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 			}
 		}
 
-		// Timestamp-annotate user messages older than 60s.
-		if (m.role === "user" && m.created_at) {
-			const ageMs = nowMs - new Date(m.created_at).getTime();
-			if (ageMs >= 60_000 && typeof annotatedContent === "string") {
-				const ts = formatTimestamp(m.created_at);
-				annotatedContent = `${ts} ${annotatedContent}`;
-			}
+		// Timestamp-annotate user messages. Always — independent of nowMs —
+		// so the wire bytes are byte-stable across the agent loop's lifetime.
+		//
+		// History: the rule was previously age-gated (≥60s only), to avoid
+		// prefixing the user's just-sent message. But that introduced a
+		// one-time byte transition exactly 60s into the conversation:
+		// before 60s the wire showed `<user content>`, after 60s it showed
+		// `[May 26, 15:53] <user content>`. For autonomous tasks (single
+		// user_1 followed by long inner loops), the 60s cliff routinely
+		// fired mid-conversation, breaking the message-level cachePoint
+		// that anchored on user_1. Live regression on thread `6fff1513-...`
+		// 2026-05-26: cumulative cache stuck at the system-anchor floor
+		// because user_1's wire bytes shifted by +16 chars at the cliff.
+		//
+		// Annotating always is byte-stable: the prefix is a pure function
+		// of `created_at`, which is immutable per Invariant #1. The model
+		// already sees the timestamp via the volatile-tail context; adding
+		// it to the user message is redundant-but-stable, which is
+		// strictly better than redundant-and-time-varying.
+		if (m.role === "user" && m.created_at && typeof annotatedContent === "string") {
+			const ts = formatTimestamp(m.created_at);
+			annotatedContent = `${ts} ${annotatedContent}`;
 		}
 
 		const msg: LLMMessage = {

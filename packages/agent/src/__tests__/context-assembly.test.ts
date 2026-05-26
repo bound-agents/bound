@@ -364,7 +364,9 @@ describe("Context Assembly Pipeline", () => {
 
 			// Only msg3 should remain as a user message
 			expect(userMessages.length).toBe(1);
-			expect(userMessages[0].content).toBe("Message 3");
+			// User message has a timestamp prefix (Stage 5 annotation —
+			// always-on for byte-stable cache; see annotation/index.ts N7).
+			expect(userMessages[0].content).toContain("Message 3");
 
 			// Should have a developer message with the purge summary
 			const purgeSummary = developerMessages.find((m) => m.content.includes("purged 2 messages"));
@@ -481,7 +483,8 @@ describe("Context Assembly Pipeline", () => {
 			// User message should remain
 			const userMessages = messages.filter((m) => m.role === "user");
 			expect(userMessages.length).toBe(1);
-			expect(userMessages[0].content).toBe("Keep this message");
+			// Annotation prefix prepended (see N7 byte-stability invariant).
+			expect(userMessages[0].content).toContain("Keep this message");
 
 			// Should have purge summary indicating 2 messages (tool_call + tool_result)
 			const developerMessages = messages.filter((m) => m.role === "developer");
@@ -702,7 +705,8 @@ describe("Context Assembly Pipeline", () => {
 
 			const userMessages = messages.filter((m) => m.role === "user");
 			expect(userMessages.length).toBe(1);
-			expect(userMessages[0].content).toBe("Keep this");
+			// Annotation prefix prepended (N7 byte-stability invariant).
+			expect(userMessages[0].content).toContain("Keep this");
 		});
 	});
 
@@ -6007,7 +6011,8 @@ This skill reviews pull requests.`;
 					m.content.includes("explain the architecture"),
 			);
 			expect(userMsg).toBeDefined();
-			expect(userMsg?.content).toBe("explain the architecture in detail");
+			// Annotation prefix prepended (N7 byte-stability invariant).
+			expect(userMsg?.content).toContain("explain the architecture in detail");
 
 			// Clean up
 			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
@@ -6478,11 +6483,13 @@ This skill reviews pull requests.`;
 			const wideHistory = wide.messages.filter((m) => m.role === "user" || m.role === "assistant");
 			expect(wideHistory.length).toBe(600);
 			expect(wide.debug.truncated).toBe(0);
+			// User messages carry an annotation prefix (N7 byte-stability);
+			// assistant messages are unaltered. Match either by substring.
 			expect(
-				wideHistory.some((m) => typeof m.content === "string" && m.content === "Message 0"),
+				wideHistory.some((m) => typeof m.content === "string" && m.content.includes("Message 0")),
 			).toBe(true);
 			expect(
-				wideHistory.some((m) => typeof m.content === "string" && m.content === "Message 599"),
+				wideHistory.some((m) => typeof m.content === "string" && m.content.includes("Message 599")),
 			).toBe(true);
 
 			// Tight window: Stage 7 truncates from the front, keeps the tail,
