@@ -177,6 +177,18 @@ export class BedrockDriver implements LLMBackend {
 		 * fetch is used with zero overhead.
 		 */
 		logger?: Logger;
+		/**
+		 * Custom fetch for wire-body interception (harness/test only). When
+		 * set, takes precedence over the logger-backed fetch. Production
+		 * callers leave this unset and use `logger` instead.
+		 *
+		 * The harness in `packages/agent/scripts/agent-harness/` injects a
+		 * capturing fetch through `createModelRouter`'s `fetchByBackendId`
+		 * option to record outgoing wire bodies per turn for diagnostic
+		 * inspection (cache-marker counts, byte-diff vs prior cold turn,
+		 * etc.).
+		 */
+		fetch?: typeof fetch;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
@@ -197,10 +209,14 @@ export class BedrockDriver implements LLMBackend {
 					};
 				}
 			: undefined;
+		// Custom fetch takes precedence over logger-backed fetch. When both
+		// are absent the SDK uses its default fetch with zero overhead.
+		const customFetch =
+			config.fetch ?? (config.logger ? createLoggingFetch(config.logger, "bedrock") : undefined);
 		this.provider = createAmazonBedrock({
 			region: config.region,
 			...(credentialProvider && { credentialProvider }),
-			...(config.logger && { fetch: createLoggingFetch(config.logger, "bedrock") }),
+			...(customFetch && { fetch: customFetch }),
 		});
 	}
 
