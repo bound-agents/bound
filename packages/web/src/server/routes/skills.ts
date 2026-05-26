@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { importSkillFromFiles } from "@bound/agent";
+import { createHash } from "node:crypto";
+import { importSkillFromFiles, parseFrontmatter } from "@bound/agent";
 import { updateRow } from "@bound/core";
 import type { Skill, SkillFileEntry } from "@bound/shared";
 import { unzipSync } from "fflate";
@@ -234,6 +235,95 @@ export function createSkillsRoutes(db: Database): Hono {
 				},
 				500,
 			);
+		}
+	});
+
+	// PATCH /:id - Update skill content (name is read-only)
+	app.patch("/:id", async (c) => {
+		try {
+			const { id } = c.req.param();
+			const siteId = getSiteId();
+
+			const skill = db
+				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
+				.get(id) as Skill | null;
+
+			if (!skill) {
+				return c.json({ error: "Skill not found" }, 404);
+			}
+
+			const body = (await c.req.json()) as {
+				description?: string;
+				body?: string;
+				allowed_tools?: string;
+				compatibility?: string;
+			};
+
+			// Load existing SKILL.md to extract current body if not provided
+			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
+			const skillMdPath = `${skillRoot}/SKILL.md`;
+			const skillMdRow = db
+				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
+				.get(skillMdPath) as { content: string } | null;
+
+			const parsed = skillMdRow ? parseFrontmatter(skillMdRow.content) : null;
+			const currentBody = parsed?.body ?? "";
+
+			// Merge new values over existing
+			const newDescription = body.description ?? skill.description;
+			const newAllowedTools =
+				body.allowed_tools !== undefined ? body.allowed_tools : (skill.allowed_tools ?? "");
+			const newCompatibility =
+				body.compatibility !== undefined ? body.compatibility : (skill.compatibility ?? "");
+			const newBody = body.body !== undefined ? body.body : currentBody;
+
+			// Reconstruct SKILL.md
+			let frontmatter = "---\n";
+			frontmatter += `name: ${skill.name}\n`;
+			frontmatter += `description: ${newDescription}\n`;
+			if (newAllowedTools) frontmatter += `allowed_tools: ${newAllowedTools}\n`;
+			if (newCompatibility) frontmatter += `compatibility: ${newCompatibility}\n`;
+			frontmatter += "---\n";
+			const newContent = frontmatter + newBody;
+
+			const contentHash = createHash("sha256").update(newContent).digest("hex");
+			const now = new Date().toISOString();
+
+			// Update SKILL.md file if it exists
+			if (skillMdRow) {
+				updateRow(
+					db,
+					"files",
+					skillMdPath,
+					{
+						content: newContent,
+						size_bytes: Buffer.byteLength(newContent, "utf8"),
+						modified_at: now,
+					},
+					siteId,
+				);
+			}
+
+			// Update skill row
+			updateRow(
+				db,
+				"skills",
+				id,
+				{
+					description: newDescription,
+					allowed_tools: newAllowedTools || null,
+					compatibility: newCompatibility || null,
+					content_hash: contentHash,
+					modified_at: now,
+				},
+				siteId,
+			);
+
+			const updated = db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill;
+			return c.json({ skill: updated }, 200);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to update skill", details: message }, 500);
 		}
 	});
 
