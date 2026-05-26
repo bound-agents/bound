@@ -1661,18 +1661,35 @@ Original output was too large for the context window. If you need the full conte
 			const remaining = truncationResult.kept;
 			truncatedCount = truncationResult.truncatedCount;
 
-			// Inject truncation marker so the agent knows context was lost
+			// Inject truncation marker so the agent knows context was lost.
+			//
+			// Byte-stability requirement. The marker is the head developer
+			// message; the bridge merges it into msg[0] of the wire request,
+			// so its bytes ride the cached prefix of every message-level
+			// cachePoint. Any per-turn variance in this string invalidates
+			// Bedrock's prefix-match cache lookup for the entire downstream
+			// prefix — the cumulative cache then never grows past the
+			// system-anchor floor.
+			//
+			// The previous marker included `This thread has ${totalInThread}
+			// total messages` where `totalInThread` was a fresh
+			// `SELECT COUNT(*) FROM messages` per cold path. Inner-loop
+			// iterations append assistant + tool_result messages; the count
+			// advances by 1-2 each turn; the marker bytes mutated; the cache
+			// missed every turn even with the bucket-aligned cachePoint
+			// holding stable. Live evidence: thread `7339231f-…` 16:57:16-16:58:14
+			// had cw=61,164 stable across 5 turns and msg[0]_hash drifting
+			// every turn (cr stuck at 84,764 system-anchor floor).
+			//
+			// Fix: drop `totalInThread`. `truncatedCount` is preserved
+			// because it tends to be byte-stable in practice (when history
+			// grows by N at the tail, ~N old messages drop, net-zero count
+			// delta) and it's the actionable signal for the agent.
 			const truncationMarker: LLMMessage[] = [];
 			if (truncatedCount > 0) {
-				// Count total messages in the thread for the marker
-				const totalRow = params.db
-					.prepare(
-						"SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND role IN ('user','assistant','tool_call','tool_result')",
-					)
-					.get(params.threadId) as { count: number } | null;
-				const totalInThread = totalRow?.count ?? historyMessages.length;
-
-				// Include thread summary if available — preserves gist of truncated history
+				// Include thread summary if available — preserves gist of truncated history.
+				// The summary's byte-stability is enforced by the boundary-aware throttle
+				// in `summary-extraction.ts`.
 				const threadRow = params.db
 					.prepare("SELECT summary FROM threads WHERE id = ?")
 					.get(params.threadId) as { summary: string | null } | null;
@@ -1682,7 +1699,7 @@ Original output was too large for the context window. If you need the full conte
 
 				truncationMarker.push({
 					role: "developer",
-					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. This thread has ${totalInThread} total messages. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]${summarySection}`,
+					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]${summarySection}`,
 				});
 			}
 
