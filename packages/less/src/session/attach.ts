@@ -19,7 +19,7 @@ export interface AttachParams {
 	hostname: string;
 	logger: AppLogger;
 	confirmFn?: (toolName: string) => Promise<boolean>;
-	injectContextFiles?: boolean;
+	injectContextFiles?: string[];
 }
 
 export interface AttachResult {

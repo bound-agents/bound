@@ -356,15 +356,18 @@ export async function collectGitContext(cwd: string): Promise<string> {
 const CONTEXT_FILE_CANDIDATES = ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"] as const;
 
 /**
- * Reads context files (README.md, CONTRIBUTING.md, AGENTS.md, CLAUDE.md) from
- * the given working directory. Files that are absent or unreadable are silently
- * skipped. Returns a formatted block for all found files, or an empty string if
- * none are present.
+ * Reads context files from the given working directory. Files that are absent
+ * or unreadable are silently skipped. Returns a formatted block for all found
+ * files, or an empty string if none are present.
+ *
+ * @param cwd - Working directory to search in
+ * @param candidates - Files to look for. Defaults to CONTEXT_FILE_CANDIDATES.
+ *   Pass a custom list (relative paths) to override the defaults.
  */
-export async function collectContextFiles(cwd: string): Promise<string> {
+export async function collectContextFiles(cwd: string, candidates?: string[]): Promise<string> {
 	const sections: string[] = [];
 
-	for (const filename of CONTEXT_FILE_CANDIDATES) {
+	for (const filename of candidates ?? CONTEXT_FILE_CANDIDATES) {
 		const filepath = join(cwd, filename);
 		try {
 			const content = await Bun.file(filepath).text();
@@ -387,7 +390,7 @@ export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
 	mcpServers: string[],
-	options?: { injectContextFiles?: boolean },
+	options?: { injectContextFiles?: string[] },
 ): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
 	const toolList = `boundless_read, boundless_write, boundless_edit, boundless_bash, boundless_copy${
@@ -395,8 +398,7 @@ export async function buildSystemPromptAddition(
 	}`;
 
 	const gitContext = await collectGitContext(cwd);
-	const shouldInjectContextFiles = options?.injectContextFiles !== false;
-	const contextFilesSection = shouldInjectContextFiles ? await collectContextFiles(cwd) : "";
+	const contextFilesSection = await collectContextFiles(cwd, options?.injectContextFiles);
 	const contextFilesBlock = contextFilesSection ? `${contextFilesSection}\n` : "";
 
 	return `You are connected to a boundless terminal client.

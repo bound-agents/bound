@@ -8,7 +8,12 @@ const configSchema = z
 	.object({
 		url: z.string().default("http://localhost:3001"),
 		model: z.string().nullable().default(null),
-		contextFiles: z.boolean().default(true),
+		// Which context files to auto-inject into the system prompt (relative to cwd).
+		// Defaults to the standard set: README.md, CONTRIBUTING.md, AGENTS.md, CLAUDE.md.
+		// Pass [] to disable injection entirely.
+		contextFiles: z
+			.array(z.string())
+			.default(["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"]),
 	})
 	.passthrough();
 
@@ -69,7 +74,7 @@ export function loadConfig(configDir: string): Config & { _raw: Record<string, u
 			return {
 				url: "http://localhost:3001",
 				model: null,
-				contextFiles: true,
+				contextFiles: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"],
 				_raw: {},
 			};
 		}
