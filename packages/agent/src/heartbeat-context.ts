@@ -54,9 +54,13 @@ export function buildHeartbeatContext(
 	if (options?.siteId && shouldRunOutboxAuditValidation(db, Date.now())) {
 		try {
 			const report = runOutboxAuditValidation(db, options.siteId, Date.now());
-			if (report.violationsFound > 0) {
+			if (report.evidenceHorizon === null) {
 				options.logger?.info(
-					`[heartbeat] Outbox audit: ${report.violationsFound} violations across ${report.tablesScanned} tables (${report.rowsExamined} rows examined)`,
+					"[heartbeat] Outbox audit: no surviving change_log entries — audit skipped (evidence horizon empty)",
+				);
+			} else if (report.violationsFound > 0) {
+				options.logger?.info(
+					`[heartbeat] Outbox audit: ${report.violationsFound} violations across ${report.tablesScanned} tables (${report.rowsExamined} rows examined, horizon ${report.evidenceHorizon})`,
 				);
 			}
 		} catch (validationError) {
