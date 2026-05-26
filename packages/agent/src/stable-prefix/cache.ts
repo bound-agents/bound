@@ -132,4 +132,17 @@ export class StableSubsectionCache {
 	size(): number {
 		return this.entries.size;
 	}
+
+	/** Drop all cached entries. Diagnostic / test seam. */
+	clear(): void {
+		this.entries.clear();
+	}
 }
+
+/**
+ * Process-wide singleton cache used by the agent loop. One instance is
+ * shared across all threads on a host so per-thread cache entries can
+ * be looked up by threadId. Tests construct their own instances via
+ * `new StableSubsectionCache()` to keep state isolated.
+ */
+export const sharedStableSubsectionCache = new StableSubsectionCache();

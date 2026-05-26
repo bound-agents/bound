@@ -20,6 +20,11 @@ export {
 } from "./collect";
 export { composeStableVolatileSubsection, renderSkillIndex } from "./compose";
 export { hashStableVolatileInputs, hashSystemPromptString } from "./hash";
+export {
+	STABLE_SUBSECTION_TTL_MS,
+	StableSubsectionCache,
+	sharedStableSubsectionCache,
+} from "./cache";
 export type {
 	DetailEntryView,
 	MemoryEntryView,

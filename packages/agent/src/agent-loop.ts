@@ -58,6 +58,7 @@ import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
+import { sharedStableSubsectionCache } from "./stable-prefix";
 import { extractSummaryAndMemories } from "./summary-extraction";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -1078,6 +1079,7 @@ export class AgentLoop {
 							noHistory: this.config.noHistory,
 							systemPromptAddition: this.config.systemPromptAddition,
 							commandRegistry: this.ctx.commandRegistry,
+							stableSubsectionCache: sharedStableSubsectionCache,
 						});
 					},
 				);
