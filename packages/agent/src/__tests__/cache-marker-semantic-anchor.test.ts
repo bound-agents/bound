@@ -54,11 +54,91 @@
  *   B4 — cachePoint never lands inside a turn's content. It always
  *      sits at a turn boundary (between the prior turn's last msg
  *      and the next user msg).
+ *
+ *   B5 (regression sentry) — fresh thread with the only user at index 0
+ *      still yields a placement (best-effort always-on for non-disabled
+ *      caps), keeping the system anchor floor enabled.
+ *
+ *   B6 (regression sentry, single fixture) — leading developer prepended
+ *      by Stage 1.7 with the only user at index 1 must not yield a
+ *      placement the bridge would silently drop. Live regression on
+ *      thread `91a31a43-...` 2026-05-26: 40 turns of cw=0 because
+ *      `result[result.length-1]` was empty when the bridge processed
+ *      the cache marker.
+ *
+ *   P_B6 (placer property) — for ANY message sequence, when
+ *      coldPathPlaceCacheMarker reports placed=true, there is at least
+ *      one non-developer, non-cache message strictly before the chosen
+ *      index (so positionTokens > 0). Encoded as a fast-check property
+ *      over the role alphabet so any future placement-strategy change
+ *      that forgets the bridge's accumulator behavior fails in CI.
+ *
+ *   P_B7 (placer-bridge integration property) — for ANY message sequence
+ *      where the placer reports placed=true, the bridge simulator
+ *      successfully attaches the cachePoint to a result entry (i.e.
+ *      simulateBridgeCachePointAttachments returns exactly 1). This is
+ *      the load-bearing assertion that the placer's "placed" output
+ *      corresponds to an actual on-wire cachePoint, not a marker the
+ *      bridge silently drops. Catches the entire class of bridge-drop
+ *      regressions without requiring the test author to enumerate every
+ *      pathological role-shape upfront.
+ *
+ *   P_B8 (capability-disabled property) — when caps.prompt_caching is
+ *      false, placement is always refused with reason="capability-disabled"
+ *      regardless of message shape; no marker is ever spliced into
+ *      `messages`. Pins the structural-vs-policy split the relay-
+ *      processor strip relies on.
  */
 
 import { describe, expect, it } from "bun:test";
 import type { BackendCapabilities, LLMMessage } from "@bound/llm";
+import fc from "fast-check";
 import { coldPathPlaceCacheMarker } from "../cache-marker";
+
+/**
+ * Faithful simulation of the AI SDK bridge's `role: "cache"` handling
+ * (ai-sdk-bridge.ts lines 270-288). Used by the placer-bridge integration
+ * property tests below to assert that the placer never produces output
+ * the bridge would silently drop on the wire.
+ *
+ * The bridge:
+ *   - accumulates developer content into `pendingDev` (no result entry yet)
+ *   - emits result entries for user/assistant/tool_call/tool_result
+ *   - on `role: "cache"`, attaches a cachePoint to result[result.length-1]
+ *     if result is non-empty; otherwise SILENTLY DROPS the marker
+ *
+ * Returns the count of cache markers that successfully attached a
+ * cachePoint on the simulated wire. The placer's contract: if placed=true
+ * is reported, this count must equal exactly 1 (the marker landed and the
+ * bridge will produce a cachePoint).
+ */
+function simulateBridgeCachePointAttachments(messages: LLMMessage[]): number {
+	const result: { role: string; hasCachePoint: boolean }[] = [];
+	const pendingDev: string[] = [];
+	let attached = 0;
+	for (const msg of messages) {
+		if (msg.role === "developer") {
+			pendingDev.push(typeof msg.content === "string" ? msg.content : "");
+			continue;
+		}
+		if (msg.role === "cache") {
+			const prev = result[result.length - 1];
+			if (prev) {
+				prev.hasCachePoint = true;
+				attached++;
+			}
+			// else: silently dropped — the bug we're guarding against.
+			continue;
+		}
+		// user / assistant / tool_call / tool_result emit a result entry.
+		// (We don't model the dev→user merge here; we only need to know
+		// what the result array looks like at the moment the bridge
+		// processes a cache marker.)
+		result.push({ role: msg.role, hasCachePoint: false });
+		if (msg.role === "user") pendingDev.length = 0;
+	}
+	return attached;
+}
 
 const CAPS: BackendCapabilities = {
 	streaming: true,
@@ -257,6 +337,76 @@ describe("Semantic-anchor cache marker placement (B1-B4)", () => {
 		expect(placement.placed).toBe(true);
 	});
 
+	it("B6 (load-bearing): a leading developer + latest user at index 1 must NOT place a cachePoint with positionTokens=0 — bridge silently drops it", () => {
+		// Live regression on thread `91a31a43-...` 2026-05-26: an autonomous
+		// task thread with exactly 1 user message at the start of history.
+		// Stage 1.7 history compaction prepends a developer-role summary
+		// stub at messages[0]; the user_1 message ends up at index 1 of the
+		// assembled context. The semantic-anchor placer correctly identifies
+		// user_1 as the latest user and places insertAt=1, but every message
+		// before that index is a developer — so the cache marker's wire
+		// position has 0 preceding non-developer bytes.
+		//
+		// The AI SDK bridge (ai-sdk-bridge.ts:270-288) handles role="cache"
+		// by attaching a cachePoint to `result[result.length-1]`. When all
+		// preceding messages are developers (which accumulate in pendingDev
+		// without producing result entries), `result` is empty when the
+		// cache marker is processed and the marker is silently dropped.
+		// The on-wire request has only the system-level cachePoint, no
+		// message-level cachePoint, so cumulative caching never accumulates
+		// past the system anchor floor.
+		//
+		// Live evidence: 44 turns, system anchor floor of 87,388 read on
+		// every turn, but cw=0 for 40 consecutive turns — cumulative cache
+		// frozen at the system prefix. Hit rate 38.37% (driven entirely by
+		// the system anchor floor; no message-level extension).
+		//
+		// The contract: when there are 0 non-developer, non-cache messages
+		// before the placer's chosen insertAt, the placer MUST return
+		// placed=false with a non-capability-disabled reason. The bedrock
+		// driver's shouldEnableSystemCachePoint gate (post-67596ec0)
+		// keeps the system anchor riding on cacheTtl, so this fallback
+		// preserves the system anchor floor while signaling that
+		// message-level caching has no anchor on this turn.
+		const messages: LLMMessage[] = [
+			makeMsg("developer", 800, "summary_stub"), // Stage 1.7 prepended summary
+			makeMsg("user", 600, "u1"), // the only user message in this thread
+			makeMsg("tool_call", 200, "tc1"),
+			makeMsg("tool_result", 1200, "tr1"),
+			makeMsg("assistant", 400, "a1"),
+			makeMsg("tool_call", 200, "tc2"),
+			makeMsg("tool_result", 1200, "tr2"),
+			makeMsg("developer", 500, "vt"), // volatile-tail
+		];
+		const placement = coldPathPlaceCacheMarker(
+			messages,
+			{ bucketTokens: 0, estimateTokens: charEstimate },
+			CAPS,
+		);
+		// Either: refuse placement (preferred — caller falls through to
+		// system anchor floor only), OR place at a position with > 0
+		// preceding non-developer bytes. The current implementation
+		// returns placed=true with positionTokens=0, which means the
+		// bridge will silently drop the marker on the wire.
+		if (placement.placed) {
+			// If we DO place, the marker must have at least one
+			// non-developer, non-cache message before it.
+			const insertedIdx = messages.findIndex((m) => m.role === "cache");
+			let nonDevBefore = 0;
+			for (let i = 0; i < insertedIdx; i++) {
+				const m = messages[i];
+				if (m.role !== "developer" && m.role !== "cache") nonDevBefore++;
+			}
+			expect(nonDevBefore).toBeGreaterThan(0);
+		} else {
+			// If we refuse, the reason must NOT be capability-disabled
+			// (caps allow caching). The cold path will skip the message-
+			// level marker; the system anchor still rides via cacheTtl
+			// in the bedrock driver gate.
+			expect(placement.reason).not.toBe("capability-disabled");
+		}
+	});
+
 	it("B4: cachePoint never lands inside a tool round — always at a turn boundary", () => {
 		// A turn with a complex inner loop: user → asst → tool_call → tool_result
 		//                                  → asst → tool_call → tool_result → dev
@@ -289,5 +439,131 @@ describe("Semantic-anchor cache marker placement (B1-B4)", () => {
 		// PRIOR turn — not a tool_call/tool_result from the current inner
 		// loop. This is the structural invariant.
 		expect(["user", "assistant"]).toContain(target.role);
+	});
+});
+
+/**
+ * Role alphabet for property-test message generation. Excludes "cache"
+ * and "system": "cache" is what the placer inserts (so generators
+ * shouldn't pre-populate it), and "system" is forbidden in the messages
+ * array under invariant #19 (see CONTRIBUTING.md). The remaining roles
+ * are exactly what the agent loop hands to the placer in production.
+ */
+const placerRoleArb = fc.constantFrom<LLMMessage["role"]>(
+	"user",
+	"assistant",
+	"tool_call",
+	"tool_result",
+	"developer",
+);
+
+const placerMessagesArb = fc
+	.array(placerRoleArb, { minLength: 2, maxLength: 12 })
+	.map((roles) => roles.map((role, i) => makeMsg(role, 200, `m${i}`)) as LLMMessage[]);
+
+describe("Semantic-anchor cache marker placement — property invariants", () => {
+	it("P_B6: when placer reports placed=true, ≥1 non-developer, non-cache message strictly precedes the marker (positionTokens > 0)", () => {
+		fc.assert(
+			fc.property(placerMessagesArb, (messages) => {
+				const placement = coldPathPlaceCacheMarker(
+					messages,
+					{ bucketTokens: 0, estimateTokens: charEstimate },
+					CAPS,
+				);
+				if (!placement.placed) return true; // refused placements vacuously satisfy
+				const insertedIdx = messages.findIndex((m) => m.role === "cache");
+				if (insertedIdx <= 0) return false; // index 0 means no preceding bytes
+				let nonDevBefore = 0;
+				for (let i = 0; i < insertedIdx; i++) {
+					const role = messages[i].role;
+					if (role !== "developer" && role !== "cache") nonDevBefore++;
+				}
+				return nonDevBefore > 0;
+			}),
+			{ numRuns: 200 },
+		);
+	});
+
+	it("P_B7 (placer-bridge integration): when placer reports placed=true, the bridge attaches exactly 1 cachePoint on the simulated wire", () => {
+		// This is the load-bearing assertion that the placer's contract
+		// matches the bridge's actual behavior. Any future placement
+		// strategy that splices a marker into a position the bridge will
+		// silently drop fails here.
+		fc.assert(
+			fc.property(placerMessagesArb, (messages) => {
+				const placement = coldPathPlaceCacheMarker(
+					messages,
+					{ bucketTokens: 0, estimateTokens: charEstimate },
+					CAPS,
+				);
+				if (!placement.placed) {
+					// Refused placements — no marker should have been spliced.
+					return !messages.some((m) => m.role === "cache");
+				}
+				// Placed: bridge must attach the cachePoint to a result entry.
+				const attached = simulateBridgeCachePointAttachments(messages);
+				return attached === 1;
+			}),
+			{ numRuns: 200 },
+		);
+	});
+
+	it("P_B8: caps.prompt_caching=false ALWAYS refuses placement with capability-disabled, no marker spliced", () => {
+		const disabledCaps: BackendCapabilities = { ...CAPS, prompt_caching: false };
+		fc.assert(
+			fc.property(placerMessagesArb, (messages) => {
+				const before = messages.length;
+				const placement = coldPathPlaceCacheMarker(
+					messages,
+					{ bucketTokens: 0, estimateTokens: charEstimate },
+					disabledCaps,
+				);
+				if (placement.placed) return false;
+				if (placement.reason !== "capability-disabled") return false;
+				if (messages.length !== before) return false;
+				if (messages.some((m) => m.role === "cache")) return false;
+				return true;
+			}),
+			{ numRuns: 200 },
+		);
+	});
+
+	it("P_B6_explicit_dev_prefix: messages starting with N developers force the bridge-drop guard regardless of latest-user position", () => {
+		// Targeted generator: prepend 1-4 developer messages, then a
+		// random suffix containing at least one user. Without the
+		// bridge-drop guard the placer would happily put the marker at
+		// the latest user's index and report positionTokens=0.
+		fc.assert(
+			fc.property(
+				fc.integer({ min: 1, max: 4 }),
+				fc.array(placerRoleArb, { minLength: 1, maxLength: 8 }),
+				(devCount, suffixRoles) => {
+					// Ensure at least one user in the suffix.
+					const suffix = [...suffixRoles];
+					if (!suffix.includes("user")) suffix[0] = "user";
+					const messages: LLMMessage[] = [];
+					for (let i = 0; i < devCount; i++) {
+						messages.push(makeMsg("developer", 200, `d${i}`));
+					}
+					for (let i = 0; i < suffix.length; i++) {
+						messages.push(makeMsg(suffix[i], 200, `s${i}`));
+					}
+					const placement = coldPathPlaceCacheMarker(
+						messages,
+						{ bucketTokens: 0, estimateTokens: charEstimate },
+						CAPS,
+					);
+					if (!placement.placed) {
+						// Refusal is acceptable; reason must not be
+						// capability-disabled (caps allow caching).
+						return placement.reason !== "capability-disabled";
+					}
+					// Placed: bridge must successfully attach.
+					const attached = simulateBridgeCachePointAttachments(messages);
+					return attached === 1;
+				},
+			),
+			{ numRuns: 200 },
+		);
 	});
 });
