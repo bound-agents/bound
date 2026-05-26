@@ -767,9 +767,9 @@ describe("buildSystemPromptAddition context files", () => {
 		expect(prompt).toContain("### README.md");
 	});
 
-	it("excludes context files when injectContextFiles is false", async () => {
+	it("excludes context files when injectContextFiles is empty array", async () => {
 		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", [], {
-			injectContextFiles: false,
+			injectContextFiles: [],
 		});
 		expect(prompt).not.toContain("Context files:");
 		// But still has git context
@@ -783,9 +783,9 @@ describe("buildSystemPromptAddition context files", () => {
 		expect(prompt).not.toContain("Context files:");
 	});
 
-	it("still includes all other sections when context files are disabled", async () => {
+	it("still includes all other sections when context files list is empty", async () => {
 		const prompt = await buildSystemPromptAddition("/home/user", "test.host", ["github"], {
-			injectContextFiles: false,
+			injectContextFiles: [],
 		});
 		expect(prompt).toContain("boundless terminal client");
 		expect(prompt).toContain("Host: test.host");
