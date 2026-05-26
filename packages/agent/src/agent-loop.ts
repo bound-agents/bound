@@ -1852,17 +1852,34 @@ export class AgentLoop {
 					}
 				}
 
-				// AI SDK provider packages (@ai-sdk/amazon-bedrock@4.x,
-				// @ai-sdk/anthropic@3.x) already sum raw_input + cache_read +
-				// cache_write into the standardized `inputTokens` field. Adding
-				// the cache fields again here would double-count and poison the
-				// inflation EMA. See agent-loop.test.ts regression.
+				// `actualTotalTokens` for inflation-EMA purposes wants the
+				// FULL on-wire prompt token count (so the ratio of agent-side
+				// tiktoken estimate vs the LLM's tokenizer reflects only
+				// tokenizer drift, not cache accounting). Since the bridge
+				// fix at ai-sdk-bridge.ts:extractUsage now reports
+				// `input_tokens` as the NON-cached portion (the value billed
+				// at the full input rate), we must add the cache fields back
+				// here to recover the true wire size. Cache reads + writes
+				// also occupy wire bytes — they're discounted in pricing,
+				// not absent from the prompt.
+				//
+				// Pre-2026-05-26: `parsed.usage.inputTokens` was the AI SDK's
+				// summed total, which already included cache fields, and
+				// this site explicitly avoided double-adding. After the
+				// bridge fix lands, the field reverted to its raw bedrock/
+				// anthropic semantic (noCache only), so the explicit sum is
+				// now both correct AND necessary. See ai-sdk-bridge.ts probe
+				// notes for the live evidence.
+				const actualTotalTokens =
+					parsed.usage.inputTokens +
+					(parsed.usage.cacheReadTokens ?? 0) +
+					(parsed.usage.cacheWriteTokens ?? 0);
 				// applyActualUsageToContextDebug deep-clones sections so per-turn
 				// snapshots remain independent across loop iterations.
-				if (this.lastContextDebug && parsed.usage.inputTokens > 0) {
+				if (this.lastContextDebug && actualTotalTokens > 0) {
 					this.lastContextDebug = applyActualUsageToContextDebug(
 						this.lastContextDebug,
-						parsed.usage.inputTokens,
+						actualTotalTokens,
 					);
 				}
 

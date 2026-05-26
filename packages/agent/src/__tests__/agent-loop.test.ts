@@ -2029,31 +2029,33 @@ describe("AgentLoop", () => {
 			expect(debug2.actualTotalTokens).not.toBe(debug1.actualTotalTokens);
 		});
 
-		it("does not double-count cached tokens already summed by AI SDK providers", async () => {
-			// Both AI SDK provider packages (@ai-sdk/amazon-bedrock@4.x,
-			// @ai-sdk/anthropic@3.x) sum input + cache_read + cache_write into
-			// the standardized `inputTokens` field they yield to the runtime.
-			// Our extractUsage forwards that as `input_tokens`. If the agent
-			// loop adds cache_read_tokens / cache_write_tokens on top of that,
-			// cache-write turns report ~2x the real prompt size, which poisons
-			// the inflation EMA (`actualTotalTokens / totalEstimated`) and
-			// monotonically tightens the per-thread effectiveTruncationRatio
-			// until warm-path budget checks fail forever.
+		it("computes actualTotalTokens as input + cache_read + cache_write (the on-wire prompt size)", async () => {
+			// Wire contract for `actualTotalTokens`: it represents the FULL
+			// on-wire prompt token count (so the inflation EMA's ratio of
+			// agent-side tiktoken estimate vs LLM-tokenizer truth reflects
+			// only tokenizer drift, not cache accounting).
 			//
-			// This test pins the wire contract: actualTotalTokens MUST equal
-			// the runtime's input_tokens, regardless of cache_write/cache_read.
+			// The bridge's `extractUsage` reads `inputTokenDetails.noCacheTokens`
+			// from the AI SDK v6 totalUsage shape (verified live against
+			// `@ai-sdk/amazon-bedrock@4.0.96` — the structured `inputTokens`
+			// scalar is the SUMMED total, but the noCacheTokens field is the
+			// non-cached portion that's actually billed at the full input
+			// rate). So `chunk.usage.input_tokens` post-bridge is the
+			// non-cached scalar; the agent loop must add cache reads + writes
+			// back here to recover the true wire size for inflation purposes.
+			//
+			// Pre-2026-05-26 this test pinned the OLD broken contract — back
+			// when the bridge accidentally read the AI SDK's summed scalar
+			// and the agent loop avoided adding cache fields back. The bridge
+			// is fixed; this contract reverses to "DO sum them back."
 			const mockBackend = new MockLLMBackend();
 
-			// Simulate a cache-write turn: AI SDK Bedrock provider already
-			// summed (raw_input + cR + cW) into input_tokens. The driver yields
-			// cache_write_tokens separately for billing/observability — but
-			// adding it back to input_tokens is double-counting.
 			mockBackend.pushResponse(async function* () {
 				yield { type: "text" as const, content: "ok" };
 				yield {
 					type: "done" as const,
 					usage: {
-						input_tokens: 200_000, // already includes cW
+						input_tokens: 200_000, // non-cached portion (from noCacheTokens)
 						output_tokens: 50,
 						cache_write_tokens: 180_000,
 						cache_read_tokens: 0,
@@ -2080,8 +2082,11 @@ describe("AgentLoop", () => {
 				actualTotalTokens?: number;
 			};
 
-			// MUST be 200_000, NOT 200_000 + 180_000 = 380_000
-			expect(debug.actualTotalTokens).toBe(200_000);
+			// MUST be 380_000 — the full wire size (input + cR + cW) that
+			// the LLM actually saw on the prompt, because the inflation EMA
+			// compares this against the agent's tiktoken estimate of the
+			// FULL prompt.
+			expect(debug.actualTotalTokens).toBe(380_000);
 		});
 	});
 
