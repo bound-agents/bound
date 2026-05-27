@@ -382,16 +382,17 @@ describe("buildVolatileEnrichment — _internal key filtering", () => {
 describe("buildVolatileEnrichment — pinned/policy entries", () => {
 	const siteId = randomBytes(8).toString("hex");
 
-	it("always includes _policy entries regardless of recency", () => {
-		// Insert a policy entry with a very old modified_at
+	it("always includes pinned-tier entries regardless of recency", () => {
+		// Insert a pinned-tier entry with a very old modified_at
 		insertRow(
 			db,
 			"semantic_memory",
 			{
 				id: randomBytes(8).toString("hex"),
-				key: "_policy_research_guidelines",
+				key: "policy_research_guidelines",
 				value: "Always cite sources when researching",
 				source: null,
+				tier: "pinned",
 				created_at: "2026-01-01T00:00:00.000Z",
 				modified_at: "2026-01-01T00:00:00.000Z",
 				deleted: 0,
@@ -399,16 +400,17 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 			siteId,
 		);
 
-		// Baseline well after the policy entry
+		// Baseline well after the entry
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
 		const policyLine = enrichment.memoryDeltaLines.find((l) =>
-			l.includes("_policy_research_guidelines"),
+			l.includes("policy_research_guidelines"),
 		);
 		expect(policyLine).toBeDefined();
 		expect(policyLine).toContain("Always cite sources");
 	});
 
-	it("always includes _pinned entries regardless of recency", () => {
+	it("ignores legacy underscore-prefixed entries that lack tier='pinned'", () => {
+		// Pre-removal contract: "_pinned_*" prefix would auto-pin. Post-removal: it does NOT.
 		insertRow(
 			db,
 			"semantic_memory",
@@ -417,6 +419,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 				key: "_pinned_operator_name",
 				value: "Kara is the operator",
 				source: null,
+				// no explicit tier — defaults to 'default'
 				created_at: "2026-01-01T00:00:00.000Z",
 				modified_at: "2026-01-01T00:00:00.000Z",
 				deleted: 0,
@@ -426,20 +429,21 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
 		const pinnedLine = enrichment.memoryDeltaLines.find((l) => l.includes("_pinned_operator_name"));
-		expect(pinnedLine).toBeDefined();
-		expect(pinnedLine).toContain("Kara is the operator");
+		// The entry is not pinned and was modified before baseline, so it must NOT appear.
+		expect(pinnedLine).toBeUndefined();
 	});
 
-	it("pinned entries do not count against maxMemory limit", () => {
-		// Insert a pinned entry
+	it("pinned-tier entries do not count against maxMemory limit", () => {
+		// Insert a pinned entry (tier='pinned' is the only thing that pins)
 		insertRow(
 			db,
 			"semantic_memory",
 			{
 				id: randomBytes(8).toString("hex"),
-				key: "_pinned_important",
+				key: "important_rule",
 				value: "This is pinned",
 				source: null,
+				tier: "pinned",
 				created_at: "2026-01-01T00:00:00.000Z",
 				modified_at: "2026-01-01T00:00:00.000Z",
 				deleted: 0,
@@ -467,7 +471,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 
 		// maxMemory=3: all 3 regular entries + pinned should appear
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 3);
-		const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("_pinned_important"));
+		const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("important_rule"));
 		const regularCount = enrichment.memoryDeltaLines.filter((l) =>
 			l.includes("regular-entry"),
 		).length;

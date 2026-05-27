@@ -75,19 +75,36 @@ describe("memory tool", () => {
 			expect(row?.deleted).toBe(0);
 		});
 
-		it("should auto-resolve tier from pinned prefix", async () => {
+		it("should honor explicit tier='pinned' on store", async () => {
 			const tool = createMemoryTool(ctx);
 			await getExecute(tool)({
 				action: "store",
-				key: "_standing:important",
+				key: "important_rule",
 				value: "critical info",
+				tier: "pinned",
 			});
 
 			const row = db
 				.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-				.get("_standing:important") as { tier: string } | null;
+				.get("important_rule") as { tier: string } | null;
 
 			expect(row?.tier).toBe("pinned");
+		});
+
+		it("should NOT auto-pin a key just because it starts with a legacy prefix", async () => {
+			const tool = createMemoryTool(ctx);
+			await getExecute(tool)({
+				action: "store",
+				key: "_standing:legacy_name",
+				value: "legacy-named entry without explicit tier",
+			});
+
+			const row = db
+				.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
+				.get("_standing:legacy_name") as { tier: string } | null;
+
+			// Tier-from-prefix inference was removed: the prefix is just a name now.
+			expect(row?.tier).toBe("default");
 		});
 
 		it("should allow explicit tier override", async () => {
@@ -552,11 +569,11 @@ describe("memory tool", () => {
 		it("should not demote pinned target when creating summarizes edge", async () => {
 			const tool = createMemoryTool(ctx);
 
-			// Store pinned entry (via prefix)
 			await getExecute(tool)({
 				action: "store",
-				key: "_pinned:important",
+				key: "important_rule",
 				value: "pinned content",
+				tier: "pinned",
 			});
 			await getExecute(tool)({
 				action: "store",
@@ -568,21 +585,21 @@ describe("memory tool", () => {
 			// Verify target is pinned
 			let row = db
 				.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-				.get("_pinned:important") as { tier: string } | null;
+				.get("important_rule") as { tier: string } | null;
 			expect(row?.tier).toBe("pinned");
 
 			// Create summarizes edge
 			await getExecute(tool)({
 				action: "connect",
 				source_key: "summary_source",
-				target_key: "_pinned:important",
+				target_key: "important_rule",
 				relation: "summarizes",
 			});
 
 			// Verify target remains pinned
-			row = db
-				.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-				.get("_pinned:important") as { tier: string } | null;
+			row = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("important_rule") as {
+				tier: string;
+			} | null;
 			expect(row?.tier).toBe("pinned");
 		});
 	});
@@ -666,22 +683,23 @@ describe("memory tool", () => {
 			});
 			await getExecute(tool)({
 				action: "store",
-				key: "_policy:rule",
+				key: "policy_rule",
 				value: "policy",
+				tier: "pinned",
 			});
 
 			// Create summarizes edge
 			await getExecute(tool)({
 				action: "connect",
 				source_key: "summary_with_pinned",
-				target_key: "_policy:rule",
+				target_key: "policy_rule",
 				relation: "summarizes",
 			});
 
 			// Verify child remains pinned
-			let row = db
-				.prepare("SELECT tier FROM semantic_memory WHERE key = ?")
-				.get("_policy:rule") as { tier: string } | null;
+			let row = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get("policy_rule") as {
+				tier: string;
+			} | null;
 			expect(row?.tier).toBe("pinned");
 
 			// Forget summary
@@ -693,7 +711,7 @@ describe("memory tool", () => {
 			// Verify pinned child remains pinned
 			row = db
 				.prepare("SELECT tier FROM semantic_memory WHERE key = ? AND deleted = 0")
-				.get("_policy:rule") as { tier: string } | null;
+				.get("policy_rule") as { tier: string } | null;
 			expect(row?.tier).toBe("pinned");
 		});
 	});

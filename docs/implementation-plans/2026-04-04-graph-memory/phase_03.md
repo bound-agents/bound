@@ -1,5 +1,7 @@
 # Graph Memory Implementation Plan — Phase 3: Graph Traversal Queries
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Implement recursive graph traversal functions and wire them into `traverse` and `neighbors` subcommands on the `memory` command.
 
 **Architecture:** Three query functions are added to `graph-queries.ts`: `traverseGraph()` uses a recursive CTE with cycle prevention to walk edges from a start key, `getNeighbors()` returns one-hop connections with direction, and `graphSeededRetrieval()` combines keyword-based seed finding with traversal for context assembly (used in Phase 4). The `memory traverse` and `memory neighbors` subcommands expose the first two as agent commands.

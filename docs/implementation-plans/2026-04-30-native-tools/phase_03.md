@@ -1,5 +1,7 @@
 # Native Agent Tools Implementation Plan — Phase 3
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Implement the 3 grouped native tools (memory, cache, skill) with `action` parameters that consolidate multiple related commands into single tools.
 
 **Architecture:** Each grouped tool uses an `action` enum to dispatch to the correct handler. Memory consolidates 7 subcommands (store, forget, search, connect, disconnect, traverse, neighbors) from `memory.ts`. Cache consolidates 4 commands (warm, pin, unpin, evict) from separate `cache-*.ts` files. Skill consolidates 4 commands (activate, list, read, retire) from separate `skill-*.ts` files. Each factory returns a `RegisteredTool` with `kind: "builtin"` and an `execute` handler that switches on the `action` parameter.

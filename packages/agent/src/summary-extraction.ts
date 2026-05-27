@@ -1291,12 +1291,14 @@ export function buildVolatileEnrichment(
 }
 
 /**
- * Stage L0: Load pinned entries using dual detection (tier='pinned' OR prefix match)
- * Returns loaded entries plus an exclusion set for downstream stages.
+ * Stage L0: Load pinned entries.
+ *
+ * `tier` is the single source of truth for pinning. The historical
+ * key-prefix dual-detection (`_standing:` / `_feedback:` / `_policy:`
+ * / `_pinned:`) was removed: those names remain legal but no longer
+ * auto-pin.
  */
 export function loadPinnedEntries(db: Database): StageResult {
-	// IMPORTANT: ESCAPE syntax must match summary-extraction.ts lines 467-470 exactly.
-	// Copy the escape sequence from the existing codebase, do NOT derive from scratch.
 	const rows = db
 		.prepare(
 			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
@@ -1307,11 +1309,7 @@ export function loadPinnedEntries(db: Database): StageResult {
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE m.deleted = 0
-			   AND (m.tier = 'pinned'
-			     OR m.key LIKE '\\_standing%' ESCAPE '\\'
-			     OR m.key LIKE '\\_feedback%' ESCAPE '\\'
-			     OR m.key LIKE '\\_policy%' ESCAPE '\\'
-			     OR m.key LIKE '\\_pinned%' ESCAPE '\\')
+			   AND m.tier = 'pinned'
 			 ORDER BY m.key ASC`,
 		)
 		.all() as Array<{

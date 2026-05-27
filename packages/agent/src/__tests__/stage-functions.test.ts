@@ -113,10 +113,12 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 		expect(row.tier).toBe("pinned");
 	});
 
-	it("AC3.1: loads entries with _standing prefix", () => {
+	it("AC3.1: ignores legacy underscore-prefixed keys that lack tier='pinned'", () => {
 		const now = new Date().toISOString();
 
-		// Insert a _standing entry
+		// Historical naming convention with tier='default' — must NOT
+		// surface as a pinned entry. Tier-from-prefix inference was
+		// removed; only tier='pinned' should match.
 		db.prepare(
 			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -131,37 +133,11 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 			0,
 		);
 
-		// Verify the entry was inserted
-		const row = db
-			.prepare("SELECT key, tier FROM semantic_memory WHERE key = ?")
-			.get("_standing_instructions_daily_standup");
-		expect(row).toBeDefined();
-	});
-
-	it("AC3.1: deduplicates entries matching both tier and prefix", () => {
-		const now = new Date().toISOString();
-
-		// Insert an entry with tier='pinned' and _pinned prefix (should appear once)
-		db.prepare(
-			`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		).run("mem3", "_pinned_core_rule", "Always check user context", "pinned", now, now, now, 0);
-
-		// Raw query should return it exactly once
 		const rows = db
-			.prepare(
-				`SELECT key FROM semantic_memory
-			 WHERE deleted = 0
-			   AND (tier = 'pinned'
-			     OR key LIKE '\\_standing%' ESCAPE '\\'
-			     OR key LIKE '\\_feedback%' ESCAPE '\\'
-			     OR key LIKE '\\_policy%' ESCAPE '\\'
-			     OR key LIKE '\\_pinned%' ESCAPE '\\')`,
-			)
+			.prepare("SELECT key FROM semantic_memory WHERE deleted = 0 AND tier = 'pinned'")
 			.all() as Array<{ key: string }>;
 
-		const matchingRows = rows.filter((r) => r.key === "_pinned_core_rule");
-		expect(matchingRows.length).toBe(1);
+		expect(rows.find((r) => r.key === "_standing_instructions_daily_standup")).toBeUndefined();
 	});
 
 	it("AC3.1: excludes soft-deleted entries", () => {
@@ -173,21 +149,11 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run("mem4", "deleted_pinned_entry", "This was pinned", "pinned", now, now, now, 1);
 
-		// Query should not return it
 		const rows = db
-			.prepare(
-				`SELECT key FROM semantic_memory
-			 WHERE deleted = 0
-			   AND (tier = 'pinned'
-			     OR key LIKE '\\_standing%' ESCAPE '\\'
-			     OR key LIKE '\\_feedback%' ESCAPE '\\'
-			     OR key LIKE '\\_policy%' ESCAPE '\\'
-			     OR key LIKE '\\_pinned%' ESCAPE '\\')`,
-			)
+			.prepare("SELECT key FROM semantic_memory WHERE deleted = 0 AND tier = 'pinned'")
 			.all() as Array<{ key: string }>;
 
-		const matchingRows = rows.filter((r) => r.key === "deleted_pinned_entry");
-		expect(matchingRows.length).toBe(0);
+		expect(rows.find((r) => r.key === "deleted_pinned_entry")).toBeUndefined();
 	});
 });
 
@@ -526,7 +492,7 @@ describe("loadPinnedEntries function", () => {
 		expect(pinned?.tag).toBe("[pinned]");
 	});
 
-	it("AC3.1: loadPinnedEntries returns prefix-matched entries", () => {
+	it("AC3.1: loadPinnedEntries does NOT promote prefix-named entries with tier='default'", () => {
 		const now = new Date().toISOString();
 
 		db.prepare(
@@ -536,9 +502,9 @@ describe("loadPinnedEntries function", () => {
 
 		const result = loadPinnedEntries(db);
 
-		const standing = result.entries.find((e) => e.key === "_standing_morning_routine");
-		expect(standing).toBeDefined();
-		expect(standing?.tag).toBe("[pinned]");
+		// Underscore-prefixed names without explicit tier='pinned' must
+		// not appear as pinned entries. Tier is the single source of truth.
+		expect(result.entries.find((e) => e.key === "_standing_morning_routine")).toBeUndefined();
 	});
 
 	it("AC3.1: loadPinnedEntries adds keys to exclusion set", () => {

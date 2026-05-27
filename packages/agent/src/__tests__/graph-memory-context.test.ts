@@ -408,9 +408,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// Create pinned, seeded, and recency entries
 			const pinnedMem = {
 				id: randomBytes(8).toString("hex"),
-				key: "_pinned_important",
+				key: "important_rule",
 				value: "Important info",
 				source: null,
+				tier: "pinned",
 				created_at: "2026-01-01T00:00:00.000Z",
 				modified_at: "2026-01-01T00:00:00.000Z",
 				deleted: 0,
@@ -463,7 +464,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const graphCount = memoryLines.filter((l) => l.includes("[graph]")).length;
 
 			// Each category should have at least one entry (if present)
-			expect(pinnedCount).toBeGreaterThanOrEqual(1); // _pinned_important
+			expect(pinnedCount).toBeGreaterThanOrEqual(1); // important_rule
 			expect(graphCount).toBeGreaterThanOrEqual(1); // seed_entry and graph_entry
 			// Recency entries depend on which entries are selected
 		});
@@ -528,9 +529,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// Create pinned entry
 			const pinnedMem = {
 				id: randomBytes(8).toString("hex"),
-				key: "_pinned_critical",
+				key: "critical_rule",
 				value: "Always show this",
 				source: null,
+				tier: "pinned",
 				created_at: "2026-01-01T00:00:00.000Z",
 				modified_at: "2026-01-01T00:00:00.000Z",
 				deleted: 0,
@@ -556,7 +558,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(db, baseline, 3, 3, "test query");
 
 			// Should contain pinned entry
-			const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("_pinned_critical"));
+			const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("critical_rule"));
 			expect(hasPinned).toBe(true);
 
 			// Verify pinned entries are separate from maxMemory limit

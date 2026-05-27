@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval Implementation Plan
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Wire tier awareness into the `memory` command subcommands so that store, forget, connect, and disconnect respect the four-tier hierarchy.
 
 **Architecture:** Modifies existing handler functions in `packages/agent/src/commands/memory.ts` to accept `--tier` parameter, enforce pinned prefix overrides, and perform automatic tier transitions when `summarizes` edges are created or removed. All tier updates use `updateRow()` for sync safety.

@@ -1,5 +1,7 @@
 # Graph Memory Implementation Plan — Phase 4: Context Assembly Integration
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Wire graph-seeded retrieval into Stage 5.5 volatile enrichment, replacing the recency+keyword approach when edges exist, with recency fallback for orphan nodes and empty graph.
 
 **Architecture:** `buildVolatileEnrichment()` in `summary-extraction.ts` gains a graph-aware retrieval path that activates when `memory_edges` has rows. The flow becomes: pinned entries first, then graph-seeded retrieval (keyword seeds + depth-2 traversal), then recency fallback to fill remaining slots. When the edges table is empty, behavior is identical to current (pure recency + keyword boosting). Output format tags each entry with its retrieval method.

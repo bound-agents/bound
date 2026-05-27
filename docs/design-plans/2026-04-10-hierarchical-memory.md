@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval Design
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning; key naming alone never auto-pins. References to "prefix-based pinned detection" in this document describe the historical implementation; the live contract is documented at `docs/design/specs/2026-04-10-hierarchical-memory.md` (amended 2026-05-26) and the live `## Memory tiers` section of `CLAUDE.md`.
+
 ## Summary
 
 This design implements a four-tier memory hierarchy (`pinned`/`summary`/`default`/`detail`) to reduce context pollution and improve agent reasoning. The agent's semantic memory currently dumps all recent entries into every context assembly, forcing the LLM to process verbose, low-level details when high-level summaries would suffice. The new system introduces a `tier` column on the `semantic_memory` table and a 4-stage retrieval pipeline that prioritizes summaries over details. Pinned entries (standing instructions, feedback) load first (L0), then summaries with stale-detail detection (L1), followed by graph-seeded relevant context (L2), and finally recent entries (L3). Each stage builds an exclusion set to prevent double-loading. When summaries exist, their children are demoted to `detail` tier and excluded from retrieval unless they become stale (modified after the parent summary).

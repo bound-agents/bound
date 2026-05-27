@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval Implementation Plan
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Verify zero-regression behavior and handle edge cases. Ensure backward compatibility (zero summaries produces identical output), sync propagation of tier changes, and robustness of orphaned detail and exclusion cascade handling.
 
 **Architecture:** This phase is primarily a testing and verification phase. It adds comprehensive integration tests that exercise the full pipeline with various edge case scenarios, verifies sync propagation of the new `tier` column and `summarizes` edges, and confirms backward compatibility by comparing output with and without summary entries.

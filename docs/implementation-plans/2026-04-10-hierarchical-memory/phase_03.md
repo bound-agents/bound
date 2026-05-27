@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval Implementation Plan
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Implement the four retrieval stage functions as standalone, testable units that will replace the monolithic retrieval logic in `buildVolatileEnrichment()`.
 
 **Architecture:** Four pure functions (`loadPinnedEntries`, `loadSummaryEntries`, `loadGraphEntries`, `loadRecencyEntries`) each accept a database handle and an exclusion set, return loaded entries plus an expanded exclusion set. The existing `graphSeededRetrieval()` in `graph-queries.ts` gains an `excludeKeys` parameter. Each stage function operates in isolation and can be tested independently with controlled DB state.

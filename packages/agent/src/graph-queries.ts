@@ -389,7 +389,6 @@ export function graphSeededRetrieval(
 				 FROM semantic_memory_fts fts
 				 JOIN semantic_memory m ON m.key = fts.key
 				 WHERE m.deleted = 0
-				   AND m.key NOT LIKE '_policy%' AND m.key NOT LIKE '_pinned%' AND m.key NOT LIKE '_standing%' AND m.key NOT LIKE '_feedback%'
 				   AND m.key NOT LIKE '_internal.%'
 				   ${tierFilter}
 				   AND semantic_memory_fts MATCH ?

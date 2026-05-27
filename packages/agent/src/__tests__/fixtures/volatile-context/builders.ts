@@ -7,11 +7,12 @@ import { upsertEdge } from "../../../graph-queries";
 /**
  * Builder fixtures for volatile-context snapshot tests.
  *
- * Note on leading underscore prefixes (_pinned:, _summary:, _internal.file_thread.*):
- * These prefixes are intentional for test namespacing to avoid collisions with production
- * memory keys. They work correctly with the current codebase. However, if the project
- * introduces broader filtering (e.g., `WHERE key LIKE '_%'`) to distinguish internal keys,
- * all snapshot files will need to be regenerated with the new prefixes.
+ * Note on leading underscore key prefixes (`_pinned:`, `_summary:`,
+ * `_internal.file_thread.*`): these are intentional namespacing to
+ * avoid collisions with production memory keys. They are NAMES only
+ * — tier is set explicitly on every insert. Tier-from-prefix
+ * inference was removed from the production codebase; the names
+ * survive as a human-facing convention, nothing more.
  */
 
 export interface BuilderContext {
