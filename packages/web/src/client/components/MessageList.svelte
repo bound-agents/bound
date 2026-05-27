@@ -21,6 +21,7 @@ interface TurnRange {
 interface Props {
 	messages: Message[];
 	waiting?: boolean;
+	streamingText?: string;
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
 	threadColor?: number;
@@ -31,6 +32,7 @@ interface Props {
 const {
 	messages,
 	waiting = false,
+	streamingText = "",
 	emptyText = null,
 	turnRange = null,
 	threadColor = 0,
@@ -81,6 +83,13 @@ $effect(() => {
 	}
 
 	prevMessageCount = count;
+});
+
+// Auto-scroll during streaming when user is already at the bottom
+$effect(() => {
+	if (streamingText && isAtBottom) {
+		tick().then(() => scrollToBottom(false));
+	}
 });
 
 // --- Turn range highlighting + scroll ---
@@ -289,15 +298,23 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 					></div>
 				</div>
 				<div class="row-content">
-					<div class="role-label">Agent</div>
-					<div class="thinking-caption">
-						<span>Thinking</span>
-						<span class="dots">
-							<span class="dot"></span>
-							<span class="dot"></span>
-							<span class="dot"></span>
-						</span>
-					</div>
+					{#if streamingText}
+						<MessageBubble
+							role="assistant"
+							content={streamingText}
+							{threadColor}
+						/>
+					{:else}
+						<div class="role-label">Agent</div>
+						<div class="thinking-caption">
+							<span>Thinking</span>
+							<span class="dots">
+								<span class="dot"></span>
+								<span class="dot"></span>
+								<span class="dot"></span>
+							</span>
+						</div>
+					{/if}
 				</div>
 			</div>
 		{/if}

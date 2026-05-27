@@ -19,6 +19,7 @@ import type {
 	SerializedSpan,
 	StatusForwardPayload,
 	TypedEventEmitter,
+	WsStreamChunk,
 } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
@@ -768,6 +769,22 @@ export function createWebSocketHandler(
 		}
 	};
 
+	const handleStreamChunk = (data: { thread_id: string; chunk: WsStreamChunk }): void => {
+		for (const [, conn] of clients) {
+			if (conn.subscriptions.has(data.thread_id)) {
+				if (conn.ws.readyState === 1) {
+					conn.ws.send(
+						JSON.stringify({
+							type: "stream:chunk",
+							thread_id: data.thread_id,
+							chunk: data.chunk,
+						}),
+					);
+				}
+			}
+		}
+	};
+
 	/**
 	 * Helper to emit tool:cancel for pending client tool calls.
 	 * Takes pre-fetched dispatch entries, threadId, and reason.
@@ -922,6 +939,7 @@ export function createWebSocketHandler(
 	eventBus.on("context:debug", handleContextDebug);
 	eventBus.on("client_tool_call:created", handleClientToolCallCreated);
 	eventBus.on("status:forward", handleStatusForward);
+	eventBus.on("stream:chunk", handleStreamChunk);
 
 	return {
 		open(ws: ServerWebSocket<unknown>): void {
@@ -1026,6 +1044,7 @@ export function createWebSocketHandler(
 			eventBus.off("context:debug", handleContextDebug);
 			eventBus.off("client_tool_call:created", handleClientToolCallCreated);
 			eventBus.off("status:forward", handleStatusForward);
+			eventBus.off("stream:chunk", handleStreamChunk);
 			clients.clear();
 		},
 

@@ -43,6 +43,10 @@ let pendingFileId = $state<string | null>(null);
 let thread = $state<Thread | null>(null);
 let panelMode = $state<"context" | "debugger">("context");
 
+// Streaming state: accumulates partial text from the agent while it's generating.
+// Cleared when the full persisted message arrives via message:created.
+let streamingText = $state("");
+
 // A selected-turn range emitted by the debugger's turn scrubber. When set, the
 // conversation dims other turns and scrolls the selected one into view.
 let turnRange = $state<{ from: string; to: string | null } | null>(null);
@@ -68,6 +72,12 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			if (shouldClearWaiting(msg.role ?? "")) {
 				waiting = false;
 			}
+			// Clear streaming text when any agent-side message lands (assistant,
+			// tool_call, or tool_result). The first persisted message after
+			// streaming means the turn progressed past the streaming phase.
+			if (msg.role !== "user") {
+				streamingText = "";
+			}
 		}
 	}
 });
@@ -75,6 +85,14 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 async function pollMessages(): Promise<void> {
 	try {
 		const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+		// If poll discovers new non-user messages, clear streaming text —
+		// the persisted content supersedes the streaming preview.
+		if (streamingText && latest.length > messages.length) {
+			const newMessages = latest.slice(messages.length);
+			if (newMessages.some((m) => m.role !== "user")) {
+				streamingText = "";
+			}
+		}
 		messages = latest;
 		if (
 			waiting &&
@@ -96,6 +114,19 @@ function handleThreadStatus(data: unknown): void {
 	agentActive = status.active ?? false;
 	agentState = status.state ?? null;
 	if (waiting && !status.active) waiting = false;
+	// Clear streaming text when the agent goes idle — defense-in-depth for
+	// cases where message:created arrives late or is dropped entirely.
+	if (!status.active && streamingText) {
+		streamingText = "";
+	}
+}
+
+function handleStreamChunk(data: unknown): void {
+	const evt = data as { thread_id?: string; chunk?: { type?: string; content?: string } };
+	if (evt.thread_id !== threadId) return;
+	if (evt.chunk?.type === "text" && evt.chunk.content) {
+		streamingText += evt.chunk.content;
+	}
 }
 
 onMount(async () => {
@@ -110,6 +141,7 @@ onMount(async () => {
 
 	pollInterval = setInterval(pollMessages, 5000);
 	client.on("thread:status", handleThreadStatus);
+	client.on("stream:chunk", handleStreamChunk);
 
 	try {
 		const data = await client.getThreadStatus(threadId);
@@ -124,6 +156,7 @@ onDestroy(() => {
 	disconnectWebSocket();
 	if (pollInterval !== null) clearInterval(pollInterval);
 	client.off("thread:status", handleThreadStatus);
+	client.off("stream:chunk", handleStreamChunk);
 });
 
 function handleSendMessage(): void {
@@ -270,6 +303,7 @@ function turnPreview(content: string): string {
 			<MessageList
 				{messages}
 				{waiting}
+				{streamingText}
 				turnRange={panelMode === "debugger" ? turnRange : null}
 				threadColor={thread?.color ?? 0}
 				{lineColor}

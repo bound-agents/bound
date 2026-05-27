@@ -1418,6 +1418,7 @@ export class AgentLoop {
 									).pipe(
 										tap((chunk) => {
 											if (chunk.type !== "heartbeat") {
+												this.config.onStreamChunk?.(chunk);
 												chunks.push(chunk);
 											}
 										}),
@@ -1504,6 +1505,7 @@ export class AgentLoop {
 												ttftRecorded = true;
 											}
 
+											this.config.onStreamChunk?.(chunk);
 											chunks.push(chunk);
 										}
 

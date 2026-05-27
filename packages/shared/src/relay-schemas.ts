@@ -162,6 +162,38 @@ export const platformRequestPayloadSchema = z.object({
 
 export const hostPlatformsSchema = z.array(z.string());
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WebSocket stream chunk schema (discriminated union matching StreamChunk from
+// @bound/llm). Heartbeats are filtered upstream and never reach the WS.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const wsStreamChunkSchema = z.discriminatedUnion("type", [
+	z.object({ type: z.literal("text"), content: z.string() }),
+	z.object({
+		type: z.literal("thinking"),
+		content: z.string(),
+		signature: z.string().optional(),
+		redacted_data: z.string().optional(),
+	}),
+	z.object({ type: z.literal("tool_use_start"), id: z.string(), name: z.string() }),
+	z.object({ type: z.literal("tool_use_args"), id: z.string(), partial_json: z.string() }),
+	z.object({ type: z.literal("tool_use_end"), id: z.string() }),
+	z.object({
+		type: z.literal("done"),
+		usage: z.object({
+			input_tokens: z.number(),
+			output_tokens: z.number(),
+			cache_write_tokens: z.number().nullable(),
+			cache_read_tokens: z.number().nullable(),
+			estimated: z.boolean(),
+		}),
+		cost_usd: z.number().optional(),
+	}),
+	z.object({ type: z.literal("error"), error: z.string() }),
+]);
+
+export type WsStreamChunk = z.infer<typeof wsStreamChunkSchema>;
+
 export const RELAY_PAYLOAD_SCHEMAS = {
 	tool_call: toolCallPayloadSchema,
 	resource_read: resourceReadPayloadSchema,

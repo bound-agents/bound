@@ -121,6 +121,10 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			modelId,
 			abortSignal: abortController.signal,
 			onActivity: resetTimeout,
+			onStreamChunk: (chunk) => {
+				resetTimeout();
+				eventBus.emit("stream:chunk", { thread_id: threadId, chunk });
+			},
 			shouldYield,
 			platform,
 			clientTools,
