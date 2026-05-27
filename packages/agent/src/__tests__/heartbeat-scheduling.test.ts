@@ -11,7 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, updateRowIf } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -446,5 +446,166 @@ describe("rescheduleHeartbeat", () => {
 		expect(msUntilNext).toBeLessThanOrEqual(effectiveInterval);
 		// Verify clock-alignment: next_run_at should be on a 45-minute boundary
 		expect(nextDate.getTime() % effectiveInterval).toBe(0);
+	});
+});
+
+describe("heartbeat_at sync via outbox (R-LR1)", () => {
+	let tmpDir: string;
+	let db: Database;
+	let siteId: string;
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), `hb-at-sync-${randomBytes(4).toString("hex")}-`));
+		const dbPath = join(tmpDir, "test.db");
+		db = createDatabase(dbPath);
+		applySchema(db);
+		applyMetricsSchema(db);
+	});
+
+	beforeEach(() => {
+		siteId = randomUUID();
+
+		db.run("DELETE FROM host_meta");
+		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+	});
+
+	afterEach(() => {
+		db.run("DELETE FROM tasks");
+		db.run("DELETE FROM change_log");
+	});
+
+	afterAll(async () => {
+		db.close();
+		await cleanupTmpDir(tmpDir);
+	});
+
+	function insertRunningTask(leaseId: string): string {
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: 30 * 60 * 1000 });
+
+		db.run(
+			`INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				?, 'heartbeat', 'running', ?, NULL, NULL,
+				?, ?, ?, NULL, NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, NULL, ?, 'system', ?, 0
+			)`,
+			[taskId, triggerSpec, siteId, now, leaseId, now, now],
+		);
+
+		return taskId;
+	}
+
+	function getChangeLogEntries(tableName = "tasks"): any[] {
+		return db
+			.query("SELECT * FROM change_log WHERE table_name = ? ORDER BY hlc ASC")
+			.all(tableName) as any[];
+	}
+
+	// AC1.1: heartbeat_at refresh creates change_log entry with outbox routing
+	it("AC1.1: heartbeat_at refresh writes to change_log via outbox", () => {
+		const leaseId = "L1";
+		const taskId = insertRunningTask(leaseId);
+		const now = new Date().toISOString();
+
+		// Clear any existing change_log entries for this task
+		db.run("DELETE FROM change_log WHERE row_id = ?", [taskId]);
+
+		// Trigger heartbeat_at refresh via updateRowIf (as the timer-driven site would)
+		const result = updateRowIf(
+			db,
+			"tasks",
+			taskId,
+			{ lease_id: leaseId },
+			{ heartbeat_at: now },
+			siteId,
+		);
+
+		expect(result).toBe(true); // Update should succeed
+		expect(result).toBe(true); // Precondition matched
+
+		// Verify exactly one change_log entry was created for this task
+		const entries = getChangeLogEntries("tasks");
+		const relevantEntries = entries.filter((e) => e.row_id === taskId);
+		expect(relevantEntries.length).toBeGreaterThanOrEqual(1);
+
+		// Verify the change_log entry contains heartbeat_at in the payload
+		const lastEntry = relevantEntries[relevantEntries.length - 1];
+		const rowData = JSON.parse(lastEntry.row_data as string);
+		expect(rowData.heartbeat_at).toBe(now);
+
+		// Verify the database row was updated
+		const task = db.query("SELECT heartbeat_at FROM tasks WHERE id = ?").get(taskId) as any;
+		expect(task.heartbeat_at).toBe(now);
+	});
+
+	// AC1.2: LWW convergence with close-in-time refreshes
+	// Verifies that multiple heartbeat_at updates in quick succession
+	// with different timestamps create separate change_log entries
+	it("AC1.2: Multiple heartbeat_at updates create separate change_log entries", () => {
+		const leaseId = "L1";
+		const taskId = insertRunningTask(leaseId);
+
+		// Clear change_log to start fresh
+		db.run("DELETE FROM change_log");
+
+		// Create two close-in-time heartbeat refreshes on host A
+		const t1 = new Date().toISOString();
+		const result1 = updateRowIf(
+			db,
+			"tasks",
+			taskId,
+			{ lease_id: leaseId },
+			{ heartbeat_at: t1 },
+			siteId,
+		);
+		expect(result1).toBe(true);
+
+		// Small delay then second refresh
+		const t2 = new Date(Date.now() + 1).toISOString();
+		const result2 = updateRowIf(
+			db,
+			"tasks",
+			taskId,
+			{ lease_id: leaseId },
+			{ heartbeat_at: t2 },
+			siteId,
+		);
+		expect(result2).toBe(true);
+
+		// Get the change_log entries
+		const entries = getChangeLogEntries("tasks");
+		const refreshEntries = entries.filter((e) => e.row_id === taskId);
+		expect(refreshEntries.length).toBeGreaterThanOrEqual(2);
+
+		// Extract the last two entries (the refreshes we just made)
+		const firstRefresh = refreshEntries[refreshEntries.length - 2];
+		const secondRefresh = refreshEntries[refreshEntries.length - 1];
+
+		const firstData = JSON.parse(firstRefresh.row_data as string);
+		const secondData = JSON.parse(secondRefresh.row_data as string);
+
+		// Verify both entries have heartbeat_at and they're different
+		expect(firstData.heartbeat_at).toBe(t1);
+		expect(secondData.heartbeat_at).toBe(t2);
+		expect(firstData.heartbeat_at).not.toBe(secondData.heartbeat_at);
+
+		// Verify modified_at timestamps are also recorded (LWW uses these)
+		expect(firstData.modified_at).toBeDefined();
+		expect(secondData.modified_at).toBeDefined();
+		// Second update should have later or equal modified_at
+		expect(new Date(secondData.modified_at).getTime()).toBeGreaterThanOrEqual(
+			new Date(firstData.modified_at).getTime(),
+		);
 	});
 });
