@@ -343,6 +343,9 @@ export function rescheduleHeartbeat(
  * ensures consistency with primary recovery paths (eviction, completion).
  * See docs/design/specs/2026-05-26-task-lifecycle-resilience.md §3.1 R-LR4.
  *
+ * lastUserInteractionAt is forwarded to rescheduleHeartbeat only; other dispatch
+ * arms ignore it.
+ *
  * Returns the number of rows healed.
  */
 export function healStuckTasks(
@@ -404,6 +407,8 @@ export function healStuckTasks(
 					recovered++;
 					break;
 				default:
+					// warn for expected recovery activity, error for unexpected schema/state —
+					// unknown task.type indicates corrupted data and warrants error-level logging.
 					logger.error("[scheduler] healStuckTasks: unknown task type", {
 						taskId: task.id,
 						type: task.type,
