@@ -9,6 +9,7 @@ export {
 	createChangeLogEntry,
 	setChangelogEventBus,
 	withChangeLog,
+	withTx,
 	insertRow,
 	updateRow,
 	updateRowIf,
