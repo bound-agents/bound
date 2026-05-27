@@ -608,9 +608,19 @@ export class Scheduler {
 
 		const now = new Date().toISOString();
 		for (const [taskId, info] of this.runningTasks.entries()) {
-			this.ctx.db
-				.query("UPDATE tasks SET heartbeat_at = ? WHERE id = ? AND lease_id = ?") // outbox-exempt: heartbeat_at is local-only state, not synced
-				.run(now, taskId, info.leaseId);
+			const updated = updateRowIf(
+				this.ctx.db,
+				"tasks",
+				taskId,
+				{ lease_id: info.leaseId },
+				{ heartbeat_at: now },
+				this.ctx.siteId,
+			);
+			if (!updated) {
+				this.ctx.logger.debug(
+					`[@bound/agent/scheduler] Heartbeat refresh failed: lease lost for task ${taskId}`,
+				);
+			}
 		}
 	}
 
@@ -1284,11 +1294,16 @@ export class Scheduler {
 					// progress points (turn boundaries, post-tool, periodic during
 					// long tool execution — see agent-loop.ts call sites), so as long
 					// as work is happening, heartbeat refreshes regardless of the
-					// timer's health. Outbox-exempt: heartbeat_at is local-only.
+					// timer's health.
 					onActivity: () => {
-						this.ctx.db
-							.query("UPDATE tasks SET heartbeat_at = ? WHERE id = ? AND lease_id = ?") // outbox-exempt: heartbeat_at is local-only state, not synced
-							.run(new Date().toISOString(), task.id, leaseId);
+						updateRowIf(
+							this.ctx.db,
+							"tasks",
+							task.id,
+							{ lease_id: leaseId },
+							{ heartbeat_at: new Date().toISOString() },
+							this.ctx.siteId,
+						);
 					},
 				};
 
