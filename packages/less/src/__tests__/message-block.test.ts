@@ -33,6 +33,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -72,6 +73,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -100,6 +102,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -130,6 +133,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -154,6 +158,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -176,6 +181,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -199,6 +205,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -220,6 +227,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -243,6 +251,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -268,6 +277,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -292,6 +302,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -323,6 +334,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -350,6 +362,7 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
@@ -373,12 +386,81 @@ describe("MessageBlock", () => {
 						thread_id: "t-1",
 						created_at: new Date().toISOString(),
 					},
+					terminalColumns: 120,
 				}),
 			);
 			await tick();
 
 			const frame = lastFrame();
 			expect(frame).toContain("Client tool call expired");
+		});
+	});
+
+	describe("stripe width constraint", () => {
+		// Regression: long unbroken content used to soft-wrap at the terminal
+		// edge (column 0), placing wrapped fragments OUTSIDE the colored
+		// stripe. With an explicit `width` on the StripeBox, Ink wraps
+		// content INSIDE the stripe, so every rendered row begins with the
+		// stripe glyph for `borderStyle="single"`: U+2502 BOX DRAWINGS LIGHT
+		// VERTICAL ("│").
+		it("wraps long content inside the stripe at narrow terminal widths", async () => {
+			const longLine = "abcdefghij".repeat(20); // 200 chars, no whitespace breaks
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-wrap",
+						role: "user",
+						content: longLine,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 40,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			const lines = frame.split("\n").filter((l) => l.trim().length > 0);
+			// Sanity: long content must produce more than one rendered row.
+			expect(lines.length).toBeGreaterThan(1);
+			// Every non-empty rendered row must begin with the stripe glyph,
+			// i.e. the wrap stays inside the stripe rather than escaping to
+			// column 0.
+			for (const line of lines) {
+				expect(line.startsWith("│")).toBe(true);
+			}
+			// And no rendered row exceeds the configured width budget
+			// (stripeWidth = max(20, 40 - 1) = 39).
+			for (const line of lines) {
+				expect(line.length).toBeLessThanOrEqual(39);
+			}
+		});
+
+		it("floors stripe width at 20 columns for absurdly narrow terminals", async () => {
+			const longLine = "x".repeat(200);
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-floor",
+						role: "assistant",
+						content: longLine,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 5,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			const lines = frame.split("\n").filter((l) => l.trim().length > 0);
+			expect(lines.length).toBeGreaterThan(1);
+			// Floor of 20 means rendered rows can be up to 20 cols wide
+			// even though the terminal claims 5.
+			for (const line of lines) {
+				expect(line.startsWith("│")).toBe(true);
+				expect(line.length).toBeLessThanOrEqual(20);
+			}
 		});
 	});
 });

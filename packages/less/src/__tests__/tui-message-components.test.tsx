@@ -18,7 +18,7 @@ describe("Message rendering components", () => {
 				created_at: "2024-01-01T00:00:00Z",
 			};
 
-			const { lastFrame } = render(<MessageBlock message={message} />);
+			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
 			const output = lastFrame();
 			expect(output).toContain("you");
 			expect(output).toContain("Hello there");
@@ -35,7 +35,7 @@ describe("Message rendering components", () => {
 				created_at: "2024-01-01T00:00:00Z",
 			};
 
-			const { lastFrame } = render(<MessageBlock message={message} />);
+			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
 			const output = lastFrame();
 			expect(output).toContain("agent");
 			expect(output).toContain("I can help");
@@ -52,7 +52,7 @@ describe("Message rendering components", () => {
 				created_at: "2024-01-01T00:00:00Z",
 			};
 
-			const { lastFrame } = render(<MessageBlock message={message} />);
+			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
 			const output = lastFrame();
 			// Tool calls render as "⏵ <tool>: <content>" under the assistant stripe
 			expect(output).toContain("⏵");
@@ -70,7 +70,7 @@ describe("Message rendering components", () => {
 				created_at: "2024-01-01T00:00:00Z",
 			};
 
-			const { lastFrame } = render(<MessageBlock message={message} />);
+			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
 			const output = lastFrame();
 			// Tool results render as indented output with ✓/✗ indicator
 			expect(output).toContain("✓");
@@ -88,7 +88,7 @@ describe("Message rendering components", () => {
 				created_at: "2024-01-01T00:00:00Z",
 			};
 
-			const { lastFrame } = render(<MessageBlock message={message} />);
+			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
 			const output = lastFrame();
 			expect(output).toContain("simple string");
 		});
@@ -104,7 +104,7 @@ describe("Message rendering components", () => {
 				created_at: "2024-01-01T00:00:00Z",
 			};
 
-			const { lastFrame } = render(<MessageBlock message={message} />);
+			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
 			const output = lastFrame();
 			expect(output).toContain("block content");
 		});

@@ -236,17 +236,29 @@ function ToolCallRow({
  * User messages get a green stripe; assistant messages and their tool
  * calls/results share a blue stripe so the eye can follow a single turn
  * down the page even when it spans many child blocks.
+ *
+ * `width` is the explicit column budget for the stripe + content. Without
+ * it, Ink/Yoga sizes the box to its intrinsic content width and the
+ * terminal soft-wraps any overflow at terminal-edge (column 0), which
+ * places the wrapped fragment OUTSIDE the colored stripe and breaks the
+ * visual continuity of a turn. Constraining `width` here makes Ink wrap
+ * the content INSIDE the stripe via `<Text>`'s default `wrap="wrap"`,
+ * which is propagated to descendants (Markdown, HighlightedLine, etc.)
+ * transitively through the parent-bounded layout.
  */
 function StripeBox({
 	color,
+	width,
 	children,
 }: {
 	color: string;
+	width: number;
 	children: React.ReactNode;
 }): React.ReactElement {
 	return (
 		<Box
 			flexDirection="column"
+			width={width}
 			borderStyle="single"
 			borderLeft
 			borderRight={false}
@@ -270,6 +282,12 @@ export interface MessageBlockProps {
 	 * from this prop.)
 	 */
 	filePath?: string;
+	/**
+	 * Live terminal column count from `useTerminalSize()`. Forwarded into
+	 * `StripeBox`'s `width` so long lines wrap inside the colored stripe
+	 * instead of soft-wrapping at the terminal edge.
+	 */
+	terminalColumns: number;
 }
 
 /**
@@ -280,7 +298,17 @@ export interface MessageBlockProps {
  * - `"tool_result"`: blue stripe, `✓/✗ name · summary` with truncated body
  * - Pending placeholder: dimmed "Waiting for tool result..." text
  */
-export function MessageBlock({ message, filePath }: MessageBlockProps): React.ReactElement {
+export function MessageBlock({
+	message,
+	filePath,
+	terminalColumns,
+}: MessageBlockProps): React.ReactElement {
+	// Stripe width budget: leave 1 col of right-side gutter for terminals
+	// that reserve a column for cursor/scrollbar artifacts, and floor at
+	// 20 cols so absurdly-narrow terminals don't collapse the box.
+	// Inner content renders at `stripeWidth - 2` (1 col stripe border +
+	// 1 col paddingLeft) — that's the effective wrap column.
+	const stripeWidth = Math.max(20, terminalColumns - 1);
 	// Helper to render content with markdown support
 	const renderContent = (content: string | ContentBlock[]): React.ReactElement => {
 		if (typeof content === "string") {
@@ -315,7 +343,7 @@ export function MessageBlock({ message, filePath }: MessageBlockProps): React.Re
 	// Render based on role
 	if (message.role === "user") {
 		return (
-			<StripeBox color="green">
+			<StripeBox color="green" width={stripeWidth}>
 				<Text bold color="green">
 					you
 				</Text>
@@ -326,7 +354,7 @@ export function MessageBlock({ message, filePath }: MessageBlockProps): React.Re
 
 	if (message.role === "assistant") {
 		return (
-			<StripeBox color="blue">
+			<StripeBox color="blue" width={stripeWidth}>
 				<Text bold color="blue">
 					agent
 				</Text>
@@ -361,7 +389,7 @@ export function MessageBlock({ message, filePath }: MessageBlockProps): React.Re
 
 		if (toolUseBlocks.length > 0) {
 			return (
-				<StripeBox color="blue">
+				<StripeBox color="blue" width={stripeWidth}>
 					{inlineText && (
 						<Box flexDirection="column" marginBottom={1}>
 							<Text bold color="blue">
@@ -379,7 +407,7 @@ export function MessageBlock({ message, filePath }: MessageBlockProps): React.Re
 		}
 
 		return (
-			<StripeBox color="blue">
+			<StripeBox color="blue" width={stripeWidth}>
 				<Text>
 					<Text color="cyan">⏵ </Text>
 					<Text color="cyan" bold>
@@ -477,7 +505,7 @@ export function MessageBlock({ message, filePath }: MessageBlockProps): React.Re
 		};
 
 		return (
-			<StripeBox color="blue">
+			<StripeBox color="blue" width={stripeWidth}>
 				<Box flexDirection="column" paddingLeft={2}>
 					<Text>
 						<Text color={indicatorColor} bold>
