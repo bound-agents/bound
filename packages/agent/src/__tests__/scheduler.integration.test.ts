@@ -715,15 +715,17 @@ describe("Scheduler Integration", () => {
 		});
 		const { stop } = scheduler.start(20);
 
-		// Wait for the task to be marked as failed (should NOT retry since at max)
+		// Wait for the task to be marked as failed and exceed max retries.
+		// Task starts with consecutive_failures = 1.
+		// After first failure run: consecutive_failures = 2 (retries because 2 <= DEFERRED_MAX_RETRIES)
+		// After second failure run: consecutive_failures = 3 (does NOT retry because 3 > DEFERRED_MAX_RETRIES)
 		await waitFor(
 			() => {
 				const t = db
 					.query("SELECT status, consecutive_failures FROM tasks WHERE id = ?")
 					.get(taskId) as { status: string; consecutive_failures: number } | null;
-				// After this run, consecutive_failures will be 2 (was 1 + 1 from this failure)
-				// DEFERRED_MAX_RETRIES = 2, so it should stay failed
-				return t?.status === "failed" && t.consecutive_failures >= 2;
+				// Final state: status='failed', consecutive_failures=3 (exceeded max)
+				return t?.status === "failed" && t.consecutive_failures > 2;
 			},
 			{ message: "task did not reach final failure state", timeoutMs: 3000 },
 		);
@@ -735,7 +737,7 @@ describe("Scheduler Integration", () => {
 
 		expect(finalTask).not.toBeNull();
 		expect(finalTask?.status).toBe("failed");
-		expect(finalTask?.consecutive_failures).toBe(2);
+		expect(finalTask?.consecutive_failures).toBe(3);
 	}, 5_000);
 
 	it("aborts runTask via lease verification when peer wins LWW between CAS and verification (split-brain defense)", async () => {
