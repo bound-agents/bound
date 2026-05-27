@@ -48,6 +48,7 @@ import {
 	extractTraceContext,
 	formatError,
 	injectTraceContext,
+	isUserFacingInterface,
 	parseJsonSafe,
 	resultPayloadSchema,
 } from "@bound/shared";
@@ -199,19 +200,11 @@ export function resolveDelegationMessageId(
 }
 
 /**
- * Returns true when a thread's `interface` value maps to a user-facing
- * surface that should be exposed to the agent as `platform: <name>` in the
- * volatile context. False for system-initiated interfaces (scheduler, mcp)
- * and for missing/empty values.
- *
- * Exported for unit testing.
+ * Re-export `isUserFacingInterface` for backward compatibility with existing
+ * imports (notably the unit test). The single source of truth lives in
+ * `@bound/shared`.
  */
-export function isUserFacingInterface(threadInterface: string | null | undefined): boolean {
-	if (!threadInterface) return false;
-	if (threadInterface === "scheduler" || threadInterface === "mcp" || threadInterface === "webhook")
-		return false;
-	return true;
-}
+export { isUserFacingInterface };
 
 export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;

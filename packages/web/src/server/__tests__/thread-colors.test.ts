@@ -120,4 +120,59 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		const thread3 = await response3.json();
 		expect(thread3.color).toBe(1);
 	});
+
+	it("color cycle skips system-driven (non-user-facing) threads", async () => {
+		// User-facing thread (web): color 0
+		let response = await app.fetch(
+			new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			}),
+		);
+		let thread = await response.json();
+		expect(thread.color).toBe(0);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		// boundless thread: color 1
+		response = await app.fetch(
+			new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ interface: "boundless" }),
+			}),
+		);
+		thread = await response.json();
+		expect(thread.color).toBe(1);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		// Simulate webhook + scheduler threads landing directly in the DB.
+		// Both routes hardcode color: 0; pre-fix this would pin the next
+		// user-facing thread back to color 1 by anchoring the cycle to a
+		// system row instead of the boundless row.
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			["webhook-test-id", "system", "webhook", "localhost", 0, now, now, now, 0],
+		);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		const now2 = new Date().toISOString();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			["scheduler-test-id", "system", "scheduler", "localhost", 0, now2, now2, now2, 0],
+		);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		// Next user-facing thread should advance from boundless's color 1 -> 2,
+		// NOT cycle off the webhook/scheduler color 0 -> 1.
+		response = await app.fetch(
+			new Request("http://localhost:3000/api/threads", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ interface: "boundless" }),
+			}),
+		);
+		thread = await response.json();
+		expect(thread.color).toBe(2);
+	});
 });

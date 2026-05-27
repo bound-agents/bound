@@ -4,7 +4,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertRow } from "@bound/core";
 import type { StatusForwardPayload, Thread } from "@bound/shared";
-import { createLogger } from "@bound/shared";
+import { NON_USER_FACING_INTERFACES, createLogger } from "@bound/shared";
 import { Hono } from "hono";
 
 const logger = createLogger("@bound/web", "threads-routes");
@@ -165,11 +165,18 @@ export function createThreadsRoutes(
 
 			const siteId = getSiteId(db);
 
-			// Assign next palette color by cycling (0-9) per spec R-U18
-			// Pick up from the last thread's color so colors always advance
+			// Assign next palette color by cycling (0-9) per spec R-U18.
+			// Pick up from the last *user-facing* thread's color so colors always
+			// advance. Excluding system-driven threads (scheduler, mcp, webhook)
+			// from the lookup prevents the user-visible cycle from being pinned
+			// to a single color by bursts of system thread creates that all
+			// hardcode color: 0.
+			const exclusionPlaceholders = NON_USER_FACING_INTERFACES.map(() => "?").join(", ");
 			const lastThread = db
-				.query("SELECT color FROM threads WHERE deleted = 0 ORDER BY created_at DESC LIMIT 1")
-				.get() as { color: number } | null;
+				.query(
+					`SELECT color FROM threads WHERE deleted = 0 AND interface NOT IN (${exclusionPlaceholders}) ORDER BY created_at DESC LIMIT 1`,
+				)
+				.get(...NON_USER_FACING_INTERFACES) as { color: number } | null;
 			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
 
 			insertRow(
