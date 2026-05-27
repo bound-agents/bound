@@ -1291,11 +1291,22 @@ export class Scheduler {
 						if (currentTask?.lease_id === leaseId) {
 							// Use raw SQL to handle concurrent updates to consecutive_failures properly
 							const txFn = this.ctx.db.transaction(() => {
-								this.ctx.db
+								const result = this.ctx.db
 									.query(
-										"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+										"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
 									)
-									.run(errorMsg, new Date().toISOString(), task.id);
+									.run(errorMsg, new Date().toISOString(), task.id, leaseId);
+
+								if (result.changes === 0) {
+									// Lease CAS rejected — peer eviction landed first; the row is now in `pending` with
+									// claim cleared. Don't emit a misleading change_log entry. Log and bail; the
+									// healer / phase1 reclaim will drive next steps.
+									this.ctx.logger.warn(
+										"[scheduler] running→failed UPDATE rejected by lease CAS guard",
+										{ taskId: task.id, expectedLease: leaseId, path: "model-validation" },
+									);
+									return -1; // Sentinel: lease CAS rejected
+								}
 
 								// Get the updated row to check new failure count
 								const updatedTask = this.ctx.db
@@ -1318,6 +1329,10 @@ export class Scheduler {
 							});
 
 							const newConsecutiveFailures = txFn();
+							if (newConsecutiveFailures === -1) {
+								// Lease CAS guard rejected the update; bail without advisory
+								return;
+							}
 							if (newConsecutiveFailures === task.alert_threshold) {
 								this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 							}
@@ -1450,11 +1465,29 @@ export class Scheduler {
 						// Soft error: run() returned normally but with an error field
 						// Use raw SQL to handle concurrent updates to consecutive_failures properly
 						const txFn = this.ctx.db.transaction(() => {
-							this.ctx.db
+							const updateResult = this.ctx.db
 								.query(
-									"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+									"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
 								)
-								.run(result.error ?? "", resultStr, completedAt, new Date().toISOString(), task.id);
+								.run(
+									result.error ?? "",
+									resultStr,
+									completedAt,
+									new Date().toISOString(),
+									task.id,
+									leaseId,
+								);
+
+							if (updateResult.changes === 0) {
+								// Lease CAS rejected — peer eviction landed first; the row is now in `pending` with
+								// claim cleared. Don't emit a misleading change_log entry. Log and bail; the
+								// healer / phase1 reclaim will drive next steps.
+								this.ctx.logger.warn(
+									"[scheduler] running→failed UPDATE rejected by lease CAS guard",
+									{ taskId: task.id, expectedLease: leaseId, path: "soft-error" },
+								);
+								return -1; // Sentinel: lease CAS rejected
+							}
 
 							// Get the updated row to check new failure count
 							const updatedTask = this.ctx.db
@@ -1477,6 +1510,10 @@ export class Scheduler {
 						});
 
 						const newConsecutiveFailures = txFn();
+						if (newConsecutiveFailures === -1) {
+							// Lease CAS guard rejected the update; bail without advisory
+							return;
+						}
 						if (newConsecutiveFailures === task.alert_threshold) {
 							this.triggerFailureAdvisory(task, result.error, newConsecutiveFailures);
 						}
@@ -1521,7 +1558,7 @@ export class Scheduler {
 							this.ctx.db,
 							"tasks",
 							task.id,
-							{ status: "running" },
+							{ status: "running", lease_id: leaseId },
 							{
 								status: "completed",
 								result: resultStr,
@@ -1584,11 +1621,22 @@ export class Scheduler {
 				if (currentTask?.lease_id === leaseId) {
 					// Use raw SQL to handle concurrent updates to consecutive_failures properly
 					const txFn = this.ctx.db.transaction(() => {
-						this.ctx.db
+						const updateResult = this.ctx.db
 							.query(
-								"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+								"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
 							)
-							.run(errorMsg, new Date().toISOString(), task.id);
+							.run(errorMsg, new Date().toISOString(), task.id, leaseId);
+
+						if (updateResult.changes === 0) {
+							// Lease CAS rejected — peer eviction landed first; the row is now in `pending` with
+							// claim cleared. Don't emit a misleading change_log entry. Log and bail; the
+							// healer / phase1 reclaim will drive next steps.
+							this.ctx.logger.warn(
+								"[scheduler] running→failed UPDATE rejected by lease CAS guard",
+								{ taskId: task.id, expectedLease: leaseId, path: "hard-error" },
+							);
+							return -1; // Sentinel: lease CAS rejected
+						}
 
 						// Get the updated row to check new failure count
 						const updatedTask = this.ctx.db
@@ -1611,6 +1659,10 @@ export class Scheduler {
 					});
 
 					const newConsecutiveFailures = txFn();
+					if (newConsecutiveFailures === -1) {
+						// Lease CAS guard rejected the update; bail without advisory
+						return;
+					}
 					if (newConsecutiveFailures === task.alert_threshold) {
 						this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 					}
