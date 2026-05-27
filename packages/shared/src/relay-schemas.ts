@@ -4,10 +4,6 @@
  */
 import { z } from "zod";
 
-// ---------------------------------------------------------------------------
-// Request payload schemas
-// ---------------------------------------------------------------------------
-
 export const toolCallPayloadSchema = z.object({
 	tool: z.string().min(1),
 	args: z.record(z.string(), z.unknown()),
@@ -88,10 +84,6 @@ export const intakePayloadSchema = z.object({
 		.optional(),
 });
 
-// ---------------------------------------------------------------------------
-// Response payload schemas
-// ---------------------------------------------------------------------------
-
 export const resultPayloadSchema = z.object({
 	stdout: z.string(),
 	stderr: z.string(),
@@ -139,10 +131,6 @@ export const statusForwardPayloadSchema = z.object({
 	tokens: z.number(),
 });
 
-// ---------------------------------------------------------------------------
-// Host JSON column schemas
-// ---------------------------------------------------------------------------
-
 export const hostModelsSchema = z.union([
 	z.array(z.string()),
 	z.array(
@@ -173,10 +161,6 @@ export const platformRequestPayloadSchema = z.object({
 });
 
 export const hostPlatformsSchema = z.array(z.string());
-
-// ---------------------------------------------------------------------------
-// Relay kind to schema mapping (for dynamic dispatch)
-// ---------------------------------------------------------------------------
 
 export const RELAY_PAYLOAD_SCHEMAS = {
 	tool_call: toolCallPayloadSchema,

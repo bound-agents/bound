@@ -113,7 +113,6 @@ export function wrapWithMemoryTracking(fs: IFileSystem, tracker: MemoryTracker):
 	};
 
 	fs.rm = async (path: string, options?: unknown): Promise<void> => {
-		// Track removal of all files under this path if recursive
 		const rmOpts = options as { recursive?: boolean; force?: boolean } | undefined;
 		if (rmOpts?.recursive) {
 			try {

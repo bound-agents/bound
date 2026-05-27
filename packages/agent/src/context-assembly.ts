@@ -75,9 +75,7 @@ export const TRUNCATION_TARGET_RATIO = 0.85;
  *
  * tiktoken's cl100k_base is an APPROXIMATION of the actual tokenizers used by Claude, GLM,
  * qwen, etc. — variance is typically 5-10%, but for short payloads it can be as small as
- * 0.6%, which is exactly enough to slip past a zero-margin gate and overflow on the wire
- * (see bound_issue:context-assembly:missing-safety-margin — incident estimate was 48,902,
- * actual was 49,196 against a 49,152 window).
+ * 0.6%, which is exactly enough to slip past a zero-margin gate and overflow on the wire.
  *
  * The gate in assembleContext compares the estimate against
  *   effectiveBudget = contextWindow - safetyMargin(contextWindow)
@@ -250,41 +248,6 @@ export interface VolatileContext {
 	stablePrefixInputFingerprint: string;
 }
 
-/**
- * Project the inputs that fed `composeVolatileSections` into the
- * narrow `StableVolatileInputs` shape and hash them, producing the
- * `context_debug.stablePrefixInputFingerprint` value.
- *
- * Shared across the three stable-side rendering call sites (primary
- * cold path inside `buildVolatileContext`, no-history task path
- * inlined in `assembleContext`, budget-pressure rebuild path) so
- * each site records a fingerprint computed from the same canonical
- * input shape. Without this sharing, the drift detector would see
- * spurious mismatches across paths even when the same logical inputs
- * were rendered.
- *
- * The function reads only what `composeStableVolatileSubsection`
- * declares as relevant to byte output — see
- * `stable-prefix/types.ts` for the contract.
- */
-/**
- * Inputs required by `composeVolatileSections`. Returned by
- * `loadVolatileSectionInputs` — the single DB-reading layer that
- * both the no-history task path and the budget-pressure rebuild
- * share.
- *
- * Unifying the load was a refactor against silent divergence: prior
- * to extraction, the no-history branch and the `applyReducedEnrichment`
- * closure each ran ~30 lines of nearly-identical SQL with different
- * caps, and a fix to one site wouldn't propagate to the other.
- * That's the same divergence pattern `stable-prefix/collect.ts`
- * eliminated for the stable-side fingerprint.
- *
- * The primary cold path (`buildVolatileContext`) does NOT call this
- * helper — it has additional responsibilities (bumping
- * `last_accessed_at`, computing the input fingerprint, building
- * the volatile-context envelope) that don't belong here.
- */
 interface VolatileSectionInputs {
 	pinned: ReturnType<typeof loadPinnedEntries>;
 	summaries: ReturnType<typeof loadSummaryEntries>;
@@ -401,15 +364,6 @@ function computeStablePrefixInputFingerprint(args: {
 	);
 }
 
-/**
- * Compose volatile sections using the three-section renderer pattern (R-VC1).
- * Shared helper for three of four buildVolatileEnrichment call sites: primary cold path,
- * no-history task path, and budget-pressure rebuild path. rebuildWarmSections does not
- * render and does not call this helper (warm cache rebuild only re-counts tokens).
- *
- * Returns { lines, synthesisBacklogCount } where lines are the rendered sections
- * in fixed order: Working Knowledge → Discoverable Archive → Live State.
- */
 interface ComposeVolatileSectionsParams {
 	db: Database;
 	pinned: ReturnType<typeof loadPinnedEntries>["entries"];
@@ -423,20 +377,9 @@ interface ComposeVolatileSectionsParams {
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
 	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
 	/**
-	 * L2 (graph-seeded) + L3 (recency) entries from
-	 * `buildVolatileEnrichment.tiers`. Rendered into the varying tail
-	 * via `formatMemoryEntry` so `tier='default'` memorizes that the
-	 * three R-VC24 renderers (WK / DA / LS) wouldn't surface still
-	 * reach the agent on the wire.
-	 *
-	 * Without this rendering hook, `tier='default'` entries are
-	 * structurally invisible — the post-R-VC24 design folded
-	 * `pinned`/`summary` into `renderWorkingKnowledge`, `detail` into
-	 * `renderDiscoverableArchive`, and left `default`/orphaned-detail
-	 * entries with no rendering path despite being computed by
-	 * `loadRecencyEntries` and tracked in `tiers.{L2,L3}`. Live
-	 * evidence: thread d0372be6's recent `bound:issue:*` and
-	 * `_outcome:*` memorizes never appeared in volatile context.
+	 * L2 (graph-seeded) + L3 (recency) entries. Filter to `tier='default'`
+	 * before rendering to avoid double-rendering entries already handled by
+	 * renderWorkingKnowledge (pinned/summary) or renderDiscoverableArchive (detail).
 	 */
 	recencyEntries: StageEntry[];
 	budgetPressure: boolean;
@@ -444,6 +387,10 @@ interface ComposeVolatileSectionsParams {
 }
 
 /**
+ * Shared helper for three of the four `buildVolatileEnrichment` call sites:
+ * primary cold path, no-history task path, and budget-pressure rebuild path.
+ * `rebuildWarmSections` does not render and does not call this helper.
+ *
  * Composes the three volatile renderers (Working Knowledge, Discoverable
  * Archive, Live State) into stable and varying line buffers per the
  * suffix-prefix split (RFC 2026-05-22-volatile-context).
@@ -470,14 +417,13 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	const stableLines: string[] = [];
 	const varyingLines: string[] = [];
 
-	// Compute stale child keys for dedup
 	const staleChildKeysInWorkingKnowledge = new Set(
 		Array.from(params.staleChildrenMap.values())
 			.flat()
 			.map((e) => e.key),
 	);
 
-	// Render in fixed order R-VC1: Working Knowledge → Discoverable Archive → Live State
+	// Render in fixed order: Working Knowledge → Discoverable Archive → Live State
 	const wk = renderWorkingKnowledge({
 		pinned: params.pinned,
 		summaries: params.summaries,
@@ -599,8 +545,7 @@ export function buildVolatileContext(params: {
 	suffixLines.push(...prefixLines);
 	varyingLines.push(...prefixLines);
 
-	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
-	// Phase 5: Wire three-renderer composition
+	// Stage 5.5: VOLATILE ENRICHMENT
 	const nowMs = params.nowMs ?? Date.now();
 	const enrichmentBaseline = computeBaseline(
 		params.db,
@@ -626,7 +571,7 @@ export function buildVolatileContext(params: {
 	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
 	const detailEntries = loadDetailEntries(params.db);
 
-	// B3: bump last_accessed_at for detail entries that are about to
+	// Bump last_accessed_at for detail entries that are about to
 	// be rendered into Discoverable Archive. The DA sort key and
 	// per-entry `(last accessed Nd ago)` fragment depend on this
 	// column; without a render-time bump the agent reads its own
@@ -697,13 +642,12 @@ export function buildVolatileContext(params: {
 	const enrichmentEndIdx = suffixLines.length;
 	const varyingEnrichmentEndIdx = varyingLines.length;
 
-	// Track cross-thread sources for debug
 	let crossThreadSources: CrossThreadSource[] | undefined;
 	if (digest.sources.length > 0) {
 		crossThreadSources = digest.sources;
 	}
 
-	// --- STABLE: active skill index (AC3.1, AC3.2) ---
+	// --- STABLE: active skill index ---
 	// Skill index is keyed off the active skill set; a skill flipping
 	// active/retired or being newly imported invalidates the prefix, but
 	// steady state (no skill churn) keeps it cacheable across turns.
@@ -727,7 +671,6 @@ export function buildVolatileContext(params: {
 		}
 	} catch (_error) {
 		// Non-fatal: active skills query failed
-		// No logger available in this context
 	}
 
 	// --- VARYING: operator-feedback notifications (24h window). Surfaces
@@ -742,7 +685,7 @@ export function buildVolatileContext(params: {
 		varyingLines.push(line);
 	}
 
-	// --- VARYING: inactive skill reference note (AC3.4) ---
+	// --- VARYING: inactive skill reference note ---
 	if (params.inactiveSkillRef) {
 		const line = `Referenced skill '${params.inactiveSkillRef}' is not active.`;
 		suffixLines.push("");
@@ -751,7 +694,7 @@ export function buildVolatileContext(params: {
 		varyingLines.push(line);
 	}
 
-	// --- VARYING: systemPromptAddition (AC2.2) ---
+	// --- VARYING: systemPromptAddition ---
 	// Operator-supplied per-task instruction. Treated as varying because a
 	// task can be reconfigured between runs; placing it in the cached prefix
 	// would silently freeze old text. Keeps it as the trailing element of the
@@ -763,14 +706,12 @@ export function buildVolatileContext(params: {
 		varyingLines.push(params.systemPromptAddition);
 	}
 
-	// Capture full content for return
 	const allVolatileLines = [...suffixLines];
 	const allVaryingLines = [...varyingLines];
 	const content = suffixLines.join("\n");
 	const stableContent = stableLines.join("\n");
 	const varyingContent = varyingLines.join("\n");
 
-	// Calculate token estimates
 	const tokenEstimate = countTokens(content);
 	const stableTokenEstimate = stableContent.length > 0 ? countTokens(stableContent) : 0;
 	const varyingTokenEstimate = varyingContent.length > 0 ? countTokens(varyingContent) : 0;
@@ -828,7 +769,6 @@ export function estimateContentLength(content: string | ContentBlock[]): number 
 	}, 0);
 }
 
-// Cache for persona content - loaded once at startup
 let personaCache: string | null = null;
 let personaCachePath: string | null = null;
 
@@ -837,7 +777,6 @@ let personaCachePath: string | null = null;
  * Loads config/persona.md if it exists
  */
 function loadPersona(configDir: string): string | null {
-	// Check if we already have this cached
 	if (personaCachePath === configDir && personaCache !== undefined) {
 		return personaCache;
 	}
@@ -850,8 +789,7 @@ function loadPersona(configDir: string): string | null {
 			personaCache = content;
 			return content;
 		} catch (_error) {
-			// persona.md exists but cannot be read — no logger available in this context
-			// This is logged elsewhere if needed
+			// persona.md exists but cannot be read
 			return null;
 		}
 	}
@@ -912,7 +850,6 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		effectiveTruncationRatio = TRUNCATION_TARGET_RATIO,
 	} = params;
 
-	// Debug tracking for ContextAssemblyResult
 	const sections: ContextSection[] = [];
 	let budgetPressure = false;
 	let truncatedCount = 0;
@@ -926,7 +863,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	let varyingEnrichmentStartIdx = -1;
 	let varyingEnrichmentEndIdx = -1;
 	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
-	let enrichmentTiers: TieredEnrichment | undefined; // State variable for tracking
+	let enrichmentTiers: TieredEnrichment | undefined;
 	let allVaryingLines: string[] = []; // Varying-only volatile content for tail rebuild
 	// biome-ignore lint/correctness/noUnusedVariables: Used in return statement
 	let totalMemCount = 0;
@@ -1020,19 +957,16 @@ Original output was too large for the context window. If you need the full conte
 		const recentWindow = params.compactRecentWindow ?? computeRecentWindow(contextWindow);
 
 		// Anchor the compaction boundary to the index of the LAST user
-		// message — see `history-compaction/index.ts` H2 for the cache-
+		// message — see `history-compaction/index.ts` for the cache-
 		// stability rationale. The boundary stays put across LLM round-
 		// trips within a single user request so the prefix bytes don't
 		// mutate underneath the provider's cache.
 		const compactionBoundary = computeCompactionBoundary(messages, recentWindow);
 
-		// Inject thread summary if available
 		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
 			summary: string | null;
 		} | null;
 		if (thread?.summary) {
-			// Prepend a synthetic developer-role summary message.
-			// It will be picked up naturally by later stages.
 			messages.unshift({
 				id: "__compaction_summary__",
 				thread_id: threadId,
@@ -1078,9 +1012,6 @@ Original output was too large for the context window. If you need the full conte
 	// Invariant #19, role='system' must never be persisted into the messages
 	// table — insertRow() enforces this at the write boundary. Any row
 	// reaching this filter with role='system' is legacy/corrupt data; drop it.
-	// The prior prefix allowlist for "purge-summary-" / "__compaction_" was
-	// dead code — those synthetic messages (inserted earlier in this function
-	// at lines 783 and 930) are role='developer', not 'system'.
 	const stage2_5Span = getTracer().startSpan("context.stage-2.5-role-filtering");
 	const NON_LLM_ROLES = new Set(["alert", "purge", "system"]);
 	const messagesFiltered = messagesAfterPurge.filter((m) => !NON_LLM_ROLES.has(m.role));
@@ -1148,13 +1079,11 @@ Original output was too large for the context window. If you need the full conte
 
 	const assembled: LLMMessage[] = [];
 
-	// Track part count before skill injection (for token tracking)
 	const systemPartCountBeforeSkill = systemParts.length;
 
-	// Track inactive skill reference for volatile context note (AC3.4)
 	let inactiveSkillRef: string | undefined;
 
-	// Inject task-referenced skill body into system prompt (AC3.3, AC3.5)
+	// Inject task-referenced skill body into system prompt
 	// Must be outside the !noHistory guard so it works when noHistory = true
 	if (params.taskId) {
 		try {
@@ -1168,7 +1097,6 @@ Original output was too large for the context window. If you need the full conte
 					taskPayload = JSON.parse(taskRow.payload);
 				} catch (_error) {
 					// Malformed task payload — skip skill injection
-					// No logger available in this context
 				}
 
 				if (
@@ -1206,7 +1134,6 @@ Original output was too large for the context window. If you need the full conte
 			}
 		} catch (_error) {
 			// Non-fatal: skip skill body injection on any error
-			// No logger available in this context
 		}
 	}
 
@@ -1215,10 +1142,9 @@ Original output was too large for the context window. If you need the full conte
 	// stable prefix (Working Knowledge bodies + Discoverable Archive titles +
 	// skill index) can be folded into systemParts. That gets it onto the
 	// `system` provider param where the existing system-level cache breakpoint
-	// covers it cross-thread (the cron-task cache reuse goal called out in the
-	// historical line-1774 comment). The bridge would otherwise merge a
-	// pre-history developer message into the first user message and lose
-	// cross-thread byte stability.
+	// covers it cross-thread (the cron-task cache reuse goal). The bridge
+	// would otherwise merge a pre-history developer message into the first
+	// user message and lose cross-thread byte stability.
 	const systemTokens = systemParts
 		.slice(0, systemPartCountBeforeSkill)
 		.reduce((sum, part) => sum + countTokens(part), 0);
@@ -1239,10 +1165,8 @@ Original output was too large for the context window. If you need the full conte
 	const volatilePrefixSectionIndex = sections.length;
 	sections.push({ name: "volatile-prefix", tokens: 0 });
 
-	// Add message history
 	assembled.push(...finalAnnotated);
 
-	// Track history section with role children
 	const historyChildren: ContextSection[] = [];
 	let userTokens = 0;
 	let assistantTokens = 0;
@@ -1365,7 +1289,6 @@ Original output was too large for the context window. If you need the full conte
 		if (tailSection) sections.push(tailSection);
 	}
 
-	// Track tools section (from ContextParams)
 	const toolTokens = params.toolTokenEstimate ?? 0;
 	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
 	stage6Span.end();
@@ -1373,7 +1296,7 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 5.5: VOLATILE_ENRICHMENT
 	const stage5_5Span = getTracer().startSpan("context.stage-5.5-volatile-enrichment");
 
-	// Stage 5.5 (noHistory path): Inject enrichment as standalone system message for autonomous tasks
+	// Stage 5.5 (noHistory path): Inject enrichment
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
 		const nowMs = Date.now();
@@ -1448,7 +1371,7 @@ Original output was too large for the context window. If you need the full conte
 			varyingEnrichmentStartIdx = 0;
 			varyingEnrichmentEndIdx = nhVarying.length;
 
-			// Append systemPromptAddition if present (AC2.2 for noHistory path).
+			// Append systemPromptAddition if present for the noHistory path.
 			// Operator-supplied per-task instruction stays varying (re-runnable).
 			if (params.systemPromptAddition) {
 				varyingTailLines.push("");
@@ -1473,8 +1396,7 @@ Original output was too large for the context window. If you need the full conte
 	// volatile content (Working Knowledge bodies + Discoverable Archive titles
 	// + skill index). Folding these into the `system` provider param keeps
 	// them inside the system-level cache breakpoint, so steady-state turns
-	// reuse the prefix across turns AND across threads (cron-task cache reuse
-	// goal called out in the historical line-1774 comment).
+	// reuse the prefix across turns AND across threads (cron-task cache reuse).
 	const systemPrompt = systemParts.join("\n\n");
 
 	// Stage 7: BUDGET_VALIDATION
@@ -1495,8 +1417,6 @@ Original output was too large for the context window. If you need the full conte
 		const baseline = enrichmentBaseline!;
 		const nowMs = Date.now();
 
-		// Re-load with reduced caps via the shared helper (mirrors the
-		// noHistory path's load shape; only the cap values differ).
 		const inputs = loadVolatileSectionInputs({
 			db,
 			threadId,
@@ -1507,11 +1427,6 @@ Original output was too large for the context window. If you need the full conte
 			maxTasks: 3,
 		});
 
-		// Compose three sections with budgetPressure:true
-		// R-VC14 §3.3: Pass full memory entries (no pre-cap); renderers handle section-specific capping
-		// - Working Knowledge: full fidelity (no cap)
-		// - Discoverable Archive: all titles preserved (R-VC21), fragment dropped via budgetPressure flag
-		// - Live State: BUDGET_PRESSURE_SUBSYSTEM_CAP (3) applied per subsystem inside renderLiveState
 		// Cap recency entries under budget pressure to mirror the
 		// per-subsystem-cap-3 convention applied inside renderLiveState.
 		// Even under pressure the agent needs to see fresh memory
@@ -1549,10 +1464,8 @@ Original output was too large for the context window. If you need the full conte
 				// Splice the reduced VARYING enrichment into the developer
 				// tail message. The stable prefix (WK bodies + DA titles +
 				// skill index) is already folded into systemPrompt and is not
-				// edited under budget pressure: it is bounded by R-VC14 §3.3
-				// (WK full-fidelity / presence invariant) and VC15 tunables
-				// (DA titles), so leaving it stable is acceptable. The
-				// shedding effect lives on the varying tail (Live State
+				// edited under budget pressure — leaving it stable is acceptable.
+				// The shedding effect lives on the varying tail (Live State
 				// subsystem caps + the WK update markers), which is exactly
 				// what bpVarying re-renders.
 				const rebuiltVarying = [
@@ -1578,10 +1491,8 @@ Original output was too large for the context window. If you need the full conte
 			}
 		}
 
-		// Re-count volatile section tokens after budget pressure rebuild
 		const reducedEnrichmentTokens = countTokens(reducedEnrichmentLines.join("\n"));
 
-		// Update sections array to reflect new token counts
 		for (let i = 0; i < sections.length; i++) {
 			if (sections[i].name === "volatile-enrichment") {
 				sections[i] = { ...sections[i], tokens: reducedEnrichmentTokens };
@@ -1705,20 +1616,13 @@ Original output was too large for the context window. If you need the full conte
 			// prefix — the cumulative cache then never grows past the
 			// system-anchor floor.
 			//
-			// The previous marker included `This thread has ${totalInThread}
-			// total messages` where `totalInThread` was a fresh
-			// `SELECT COUNT(*) FROM messages` per cold path. Inner-loop
-			// iterations append assistant + tool_result messages; the count
-			// advances by 1-2 each turn; the marker bytes mutated; the cache
-			// missed every turn even with the bucket-aligned cachePoint
-			// holding stable. Live evidence: thread `7339231f-…` 16:57:16-16:58:14
-			// had cw=61,164 stable across 5 turns and msg[0]_hash drifting
-			// every turn (cr stuck at 84,764 system-anchor floor).
-			//
-			// Fix: drop `totalInThread`. `truncatedCount` is preserved
-			// because it tends to be byte-stable in practice (when history
-			// grows by N at the tail, ~N old messages drop, net-zero count
-			// delta) and it's the actionable signal for the agent.
+			// The previous marker included a per-turn `totalInThread` count;
+			// inner-loop iterations append assistant + tool_result messages so
+			// the count advances by 1-2 each turn, mutating the marker bytes
+			// and busting the cache prefix every turn. `truncatedCount` is
+			// preserved because it tends to be byte-stable in practice (when
+			// history grows by N at the tail, ~N old messages drop, net-zero
+			// count delta) and it's the actionable signal for the agent.
 			const truncationMarker: LLMMessage[] = [];
 			if (truncatedCount > 0) {
 				// Include thread summary if available — preserves gist of truncated history.
@@ -1774,12 +1678,7 @@ Original output was too large for the context window. If you need the full conte
 
 			const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
-			// Stage 7 must record its attributes and end on every return
-			// path. Pre-fix this branch returned without calling .end(),
-			// orphaning the span: BatchSpanProcessor never flushed it,
-			// so Jaeger had zero visibility into truncation events even
-			// though they were the most operationally significant turns
-			// (largest cache invalidations, biggest message drops).
+			// Must end on all return paths — span is used for truncation event visibility.
 			stage7Span.setAttribute("context.total_tokens", totalEstimated);
 			stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
 			stage7Span.setAttribute("context.truncated_messages", truncatedCount);
@@ -1809,7 +1708,7 @@ Original output was too large for the context window. If you need the full conte
 	}
 
 	// Stage 8: METRIC_RECORDING
-	// Deferred to Phase 8 when metrics.db is created
+	// No-op — metrics recorded by caller after LLM response
 	const stage8Span = getTracer().startSpan("context.stage-8-metric-recording");
 
 	const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
@@ -1953,41 +1852,17 @@ export function rebuildWarmSections(params: {
 }
 
 /**
- * Apply actual LLM-reported token counts to a previously-built ContextDebugInfo,
- * returning a fully deep-cloned new snapshot.
+ * Applies actual LLM-reported token counts to a previously-built ContextDebugInfo,
+ * returning a deep-cloned snapshot.
  *
- * The agent loop builds contextDebug once per user submission (cold or warm
- * assembly), then iterates calling the LLM multiple times for extended-tool-use.
- * After each LLM response, the actual input-token count is known and may differ
- * from the pre-call estimate; this helper updates `totalEstimated` and bumps
- * `history.tokens` by the positive delta so the recorded per-turn debug
- * reflects what actually went on the wire.
+ * `totalEstimated` stays as the pre-LLM tiktoken estimate; `actualTotalTokens`
+ * carries the LLM-reported number. Both live independently so visualizers can
+ * compute `actualTotalTokens / totalEstimated` as the inflation ratio.
  *
  * The deep-clone (via structuredClone) is essential: the agent loop holds a
- * reference to lastContextDebug across iterations, and recordContextDebug
- * synchronously serializes it via JSON.stringify. Without the clone, mutating
- * sections in place would leave a window where a later iteration's delta
- * could retroactively alter an earlier iteration's section breakdown if the
- * synchronous-serialization invariant ever broke (e.g. async DB writes,
- * future refactors holding the reference longer, callers reading
- * lastContextDebug directly). The clone removes that latent dependency.
- */
-/**
- * Records the LLM-reported actual input token count alongside the existing
- * tiktoken-derived `totalEstimated`, returning a deep-cloned snapshot so
- * concurrent loop iterations can't share section references.
- *
- * Pre-2026-05-22 this function overwrote `totalEstimated` with `actualTokens`
- * and bumped `sections.history.tokens` by the positive delta to keep the
- * section sum consistent with the new total. That destroyed the original
- * tiktoken estimate, making per-thread inflation-ratio analysis impossible
- * without ad-hoc trace correlation.
- *
- * Now both numbers live independently: `totalEstimated` stays as the
- * pre-LLM tiktoken estimate (per-section breakdown sums to it), and
- * `actualTotalTokens` carries the LLM-reported number. Visualizers wanting
- * to surface the gap can render `actualTotalTokens / totalEstimated` as
- * the inflation ratio.
+ * reference to lastContextDebug across concurrent iterations, and without the
+ * clone, a later iteration's delta could retroactively alter an earlier
+ * iteration's section breakdown.
  */
 export function applyActualUsageToContextDebug(
 	debug: ContextDebugInfo,

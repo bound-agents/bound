@@ -8690,16 +8690,9 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 	});
 
 	it("memory section reports varying-only enrichment tokens, not stable+varying union (regression: section accounting double-counts stable bodies)", () => {
-		// BUG: rebuildWarmSections (and the assembleContext primary path) compute
-		// memoryLines from volatileCtx.allVolatileLines (stable + varying union)
-		// sliced by enrichmentStartIdx/enrichmentEndIdx (also union-relative).
-		// When stable Working Knowledge bodies have been promoted into the prefix
-		// (v0.0.161/162 stable-slab work), this over-reports memory tokens by the
-		// stable enrichment size. context_debug ends up ~stable-slab tokens above
-		// the actual on-wire tokens_in.
-		//
-		// FIX: slice volatileCtx.allVaryingLines using
-		//      volatileCtx.varyingEnrichmentStartIdx / volatileCtx.varyingEnrichmentEndIdx.
+		// Regression: rebuildWarmSections was slicing allVolatileLines (stable + varying union)
+		// using the union-relative enrichment indices, over-reporting memory tokens by the
+		// stable enrichment size. Fix: use allVaryingLines with varyingEnrichmentStartIdx/EndIdx.
 
 		// Stable enrichment is the simulated Working Knowledge bodies in the prefix.
 		const stableBody = "PINNED_BODY_FIXTURE_LONG_LONG_LONG ".repeat(40);

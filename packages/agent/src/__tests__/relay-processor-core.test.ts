@@ -1331,8 +1331,6 @@ describe("RelayProcessor", () => {
 			const amplifiedErrors = allOutbox.filter(
 				(e) => e.kind === "error" && e.payload?.includes("Unknown request kind"),
 			);
-			// BUG: This should be 0 (response kinds should be silently consumed)
-			// but the current code generates error amplification
 			expect(amplifiedErrors.length).toBe(0);
 		});
 
