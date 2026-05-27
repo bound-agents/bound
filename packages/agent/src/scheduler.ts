@@ -72,6 +72,12 @@ const EVICTION_TIMEOUT = 600_000; // 10 minutes
  * (EVICTION_TIMEOUT=600_000, HOST_HEARTBEAT_INTERVAL=120_000), this evaluates to
  * 600_000 ms (10 min). See docs/design/specs/2026-05-26-task-lifecycle-resilience.md
  * §3.1 R-LR2.
+ *
+ * IMPORTANT INVARIANT: HOST_OFFLINE_TIMEOUT >= EVICTION_TIMEOUT is operationally
+ * meaningful. With current values, EVICTION_TIMEOUT dominates. Raising
+ * HOST_HEARTBEAT_INTERVAL above 300_000 ms would shift the dominant term to
+ * 2 × HOST_HEARTBEAT_INTERVAL, widening the eviction window beyond R-LR2's intent.
+ * Future maintainers: verify this invariant when tuning heartbeat cadence.
  */
 const HOST_OFFLINE_TIMEOUT = Math.max(EVICTION_TIMEOUT, 2 * HOST_HEARTBEAT_INTERVAL);
 
@@ -730,6 +736,8 @@ export class Scheduler {
 		// (b) Evict crashed running tasks
 		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
 		const hostOfflineThreshold = new Date(now.getTime() - HOST_OFFLINE_TIMEOUT).toISOString();
+		// LEFT JOIN with claimed_by=NULL: ON clause never matches → h.site_id IS NULL fires → row evicted.
+		// Covers the unlikely corruption state where status='running' but the lease holder is unset.
 		const tasksToEvict = this.ctx.db
 			.query<Task, [string, string]>(
 				`SELECT t.*
