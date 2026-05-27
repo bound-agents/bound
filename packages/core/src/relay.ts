@@ -66,12 +66,7 @@ export function writeOutbox(
 	// hub-side offline-async-buffer path in WsTransport.handleRelaySend, which
 	// re-buffers an entry that's already in relay_outbox). The Node
 	// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
-	// throws RangeError around depth ~5000 — observed in production as
-	// 286k log lines / 99.3% of total log volume in a 26-minute window, with
-	// the hub crash-restarting 35 times.
-	//
-	// Correct semantic: "a new outbox row was added, please route it." A
-	// no-op INSERT means no work to do — silently no-op the emit too.
+	// throws RangeError.
 	if (result.changes === 0) return;
 
 	// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)

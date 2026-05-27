@@ -41,9 +41,8 @@ export interface ToolResultDocument {
 
 /**
  * MCP `resource_link` content type — a pointer to a resource without
- * inlining its bytes. Per Kara's design directive these are passed through
- * as a structured text annotation; the agent loads them on demand via the
- * bash `resource` command.
+ * inlining its bytes. Passed through as a structured text annotation;
+ * the agent loads them on demand via the bash `resource` command.
  */
 export interface ToolResultResourceLink {
 	uri: string;
@@ -247,9 +246,6 @@ export class MCPClient {
 		this.connected = true;
 	}
 
-	/**
-	 * Disconnect from the MCP server.
-	 */
 	async disconnect(): Promise<void> {
 		if (this.connected) {
 			await this.client.close();
@@ -257,9 +253,6 @@ export class MCPClient {
 		}
 	}
 
-	/**
-	 * Discover available tools from the server.
-	 */
 	async listTools(): Promise<Tool[]> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
@@ -268,9 +261,6 @@ export class MCPClient {
 		return result.tools;
 	}
 
-	/**
-	 * Discover available resources from the server.
-	 */
 	async listResources(): Promise<Resource[]> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
@@ -279,9 +269,6 @@ export class MCPClient {
 		return result.resources;
 	}
 
-	/**
-	 * Discover available prompts from the server.
-	 */
 	async listPrompts(): Promise<Prompt[]> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
@@ -290,9 +277,6 @@ export class MCPClient {
 		return result.prompts;
 	}
 
-	/**
-	 * Execute a tool on the MCP server.
-	 */
 	async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
@@ -310,9 +294,6 @@ export class MCPClient {
 		};
 	}
 
-	/**
-	 * Read a resource from the MCP server.
-	 */
 	async readResource(uri: string): Promise<ResourceContent> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
@@ -320,7 +301,6 @@ export class MCPClient {
 
 		const result = await this.client.readResource({ uri });
 
-		// Use the first content item
 		const first = result.contents[0];
 		if (!first) {
 			throw new Error(`No content returned for resource: ${uri}`);
@@ -334,9 +314,6 @@ export class MCPClient {
 		};
 	}
 
-	/**
-	 * Invoke a prompt on the MCP server.
-	 */
 	async invokePrompt(name: string, args: Record<string, string>): Promise<PromptResult> {
 		if (!this.connected) {
 			throw new Error(`MCP client not connected to ${this.serverConfig.name}`);
@@ -360,16 +337,10 @@ export class MCPClient {
 		};
 	}
 
-	/**
-	 * Get the server configuration.
-	 */
 	getConfig(): MCPServerConfig {
 		return this.serverConfig;
 	}
 
-	/**
-	 * Check if connected.
-	 */
 	isConnected(): boolean {
 		return this.connected;
 	}
