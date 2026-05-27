@@ -59,7 +59,7 @@ const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
  * prevent) or move the keyword onto an unmarked line that re-trips the validator.
  */
 export const STALE_TASK_RESET_SQL =
-	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)"; // outbox-exempt: crash recovery
+	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ? AND (heartbeat_at IS NULL OR heartbeat_at < ?)"; // outbox-exempt: crash recovery, scoped to booting host (R-LR10)
 
 /**
  * Crash-recovery scan for threads whose last meaningful message is a tool_call
@@ -414,7 +414,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			.all(staleThreshold) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
-			appContext.db.query(STALE_TASK_RESET_SQL).run(staleThreshold);
+			appContext.db.query(STALE_TASK_RESET_SQL).run(appContext.siteId, staleThreshold);
 			appContext.logger.info(
 				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
 			);
