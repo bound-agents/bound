@@ -912,7 +912,7 @@ export class Scheduler {
 				const txFn = this.ctx.db.transaction(() => {
 					const result = this.ctx.db
 						.query(
-							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-exempt: CAS update in transaction, followed by createChangeLogEntry
+							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-routed: explicit createChangeLogEntry follows the CAS UPDATE in this transaction (pending → claimed)
 						)
 						.run(this.ctx.siteId, claimedAt, task.id);
 					if (result.changes > 0) {
@@ -1002,7 +1002,7 @@ export class Scheduler {
 		const txFn = this.ctx.db.transaction(() => {
 			const result = this.ctx.db
 				.query(
-					"UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ? AND status = 'claimed' AND claimed_by = ?", // outbox-exempt: CAS update in transaction, followed by createChangeLogEntry
+					"UPDATE tasks SET status = 'running', lease_id = ?, heartbeat_at = ? WHERE id = ? AND status = 'claimed' AND claimed_by = ?", // outbox-routed: explicit createChangeLogEntry follows the CAS UPDATE in this transaction (claimed → running, includes heartbeat_at)
 				)
 				.run(leaseId, now, task.id, this.ctx.siteId);
 			if (result.changes === 0) {
@@ -1340,7 +1340,7 @@ export class Scheduler {
 							const txFn = this.ctx.db.transaction(() => {
 								const result = this.ctx.db
 									.query(
-										"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+										"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-routed: explicit createChangeLogEntry follows the UPDATE in this transaction (running → failed, model-validation path)
 									)
 									.run(errorMsg, new Date().toISOString(), task.id, leaseId);
 
@@ -1514,7 +1514,7 @@ export class Scheduler {
 						const txFn = this.ctx.db.transaction(() => {
 							const updateResult = this.ctx.db
 								.query(
-									"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+									"UPDATE tasks SET status = 'failed', error = ?, result = ?, run_count = run_count + 1, last_run_at = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-routed: explicit createChangeLogEntry follows the UPDATE in this transaction (running → failed, soft-error path)
 								)
 								.run(
 									result.error ?? "",
@@ -1670,7 +1670,7 @@ export class Scheduler {
 					const txFn = this.ctx.db.transaction(() => {
 						const updateResult = this.ctx.db
 							.query(
-								"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-exempt: UPDATE in transaction, followed by createChangeLogEntry
+								"UPDATE tasks SET status = 'failed', error = ?, consecutive_failures = consecutive_failures + 1, modified_at = ? WHERE id = ? AND lease_id = ?", // outbox-routed: explicit createChangeLogEntry follows the UPDATE in this transaction (running → failed, hard-error path)
 							)
 							.run(errorMsg, new Date().toISOString(), task.id, leaseId);
 
@@ -1793,7 +1793,7 @@ export class Scheduler {
 					const txFn = this.ctx.db.transaction(() => {
 						const result = this.ctx.db
 							.query(
-								"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-exempt: CAS update in transaction, followed by createChangeLogEntry
+								"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-routed: explicit createChangeLogEntry follows the CAS UPDATE in this transaction (post-eviction reclaim)
 							)
 							.run(this.ctx.siteId, claimedAt, task.id);
 						if (result.changes > 0) {
