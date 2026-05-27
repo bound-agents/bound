@@ -60,9 +60,18 @@ function extractCronExpression(triggerSpec: string): string {
 	return triggerSpec;
 }
 const EVICTION_TIMEOUT = 600_000; // 10 minutes
+/**
+ * Stuck-row healer threshold. Rows with `claimed_at` older than this are eligible for
+ * recovery via `healStuckTasks`. Set to 2× EVICTION_TIMEOUT so the healer never races
+ * primary recovery: by the time a row is "stuck" by this measure, the eviction CAS or
+ * the type-specific reschedule helper has had a full eviction cycle to land its
+ * cleanup write. See docs/design/specs/2026-05-26-task-lifecycle-resilience.md §3.1
+ * R-LR4 and §4.1 sequencing.
+ */
+export const STUCK_THRESHOLD = 2 * EVICTION_TIMEOUT;
 const CRON_THREAD_ROTATION_THRESHOLD = 200;
-const DEFERRED_MAX_RETRIES = 2;
-const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecutive failure
+export const DEFERRED_MAX_RETRIES = 2;
+export const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecutive failure
 
 /**
  * Reschedules a cron task to its next run time and resets status to 'pending'.
@@ -87,6 +96,9 @@ function rescheduleCronTask(
 			{
 				next_run_at: nextRunAt.toISOString(),
 				status: "pending",
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
 				// Clear stale error string once a successful run has completed.
 				// Soft/hard-error reschedules intentionally omit this so the error
 				// persists for diagnostic purposes until the task actually succeeds.
@@ -317,53 +329,99 @@ export function rescheduleHeartbeat(
 }
 
 /**
- * Heals heartbeat tasks left in a terminal or externally-cancelled state with
- * a stale next_run_at.
+ * Generalized stuck-row healer (R-LR4). Recovers rows with claim metadata left
+ * in a failed/cancelled state across all task types (cron, heartbeat, event, deferred).
  *
- * The eviction-vs-completion race in phase0 can leave a heartbeat row with
- * status='completed' or 'failed' AND next_run_at in the past, with no
- * subsequent code path that resurrects it (phase1 only claims status='pending').
- * Additionally, a heartbeat session that encounters consecutive relay errors
- * may cancel itself via the cancel tool — leaving status='cancelled' — which
- * the healer must also recover. Without a healer, a single wedge halts the
- * cluster's heartbeat entirely until manual intervention.
+ * The four `failed`-write paths (eviction CAS, model-validation failure, soft error,
+ * hard error) all leave `status = 'failed'`, `claimed_by`, `claimed_at`, `lease_id`
+ * populated, `consecutive_failures` incremented, and `error` set. If a process dies
+ * after the `failed` write but before the type-specific cleanup write, the row
+ * remains wedged. This healer selects those rows and dispatches to the matching
+ * reschedule helper.
  *
- * Called from phase0 every tick. Re-arms each stuck row via rescheduleHeartbeat,
- * which is the same write the eviction/completion paths perform — no
- * cancel-recreate, no schema change, just an idempotent unstick. Honors the
- * "heartbeat is uncancellable by design" invariant.
+ * Called from phase0 every tick. Per-row dispatch via existing reschedule helpers
+ * ensures consistency with primary recovery paths (eviction, completion).
+ * See docs/design/specs/2026-05-26-task-lifecycle-resilience.md §3.1 R-LR4.
  *
  * Returns the number of rows healed.
  */
-export function healStuckHeartbeats(
+export function healStuckTasks(
 	db: AppContext["db"],
 	logger: AppContext["logger"],
+	siteId: string,
 	lastUserInteractionAt: Date,
 ): number {
-	const now = new Date().toISOString();
+	const stuckThreshold = new Date(Date.now() - STUCK_THRESHOLD).toISOString();
 	const stuck = db
 		.query(
 			`SELECT * FROM tasks
-			WHERE type = 'heartbeat'
-			  AND deleted = 0
-			  AND status IN ('completed', 'failed', 'cancelled')
-			  AND next_run_at IS NOT NULL
-			  AND next_run_at < ?`,
+			WHERE deleted = 0
+			  AND claimed_by IS NOT NULL
+			  AND claimed_at < ?
+			  AND status IN ('failed', 'cancelled')`,
 		)
-		.all(now) as Task[];
+		.all(stuckThreshold) as Task[];
 
+	let recovered = 0;
 	for (const task of stuck) {
-		logger.warn("[@bound/agent/scheduler] Healing stuck heartbeat row", {
-			taskId: task.id,
-			previousStatus: task.status,
-			previousError: task.error,
-			staleNextRunAt: task.next_run_at,
-			runCount: task.run_count,
-		});
-		rescheduleHeartbeat(db, task, logger, "stuck-row healer", lastUserInteractionAt);
+		try {
+			logger.warn("[scheduler] healStuckTasks: recovering stuck row", {
+				taskId: task.id,
+				type: task.type,
+				previousStatus: task.status,
+				claimedBy: task.claimed_by,
+				elapsedMs: task.claimed_at ? Date.now() - new Date(task.claimed_at).getTime() : 0,
+			});
+
+			switch (task.type) {
+				case "cron":
+					rescheduleCronTask(db, task, logger, "stuck-row healer", siteId);
+					recovered++;
+					break;
+				case "heartbeat":
+					rescheduleHeartbeat(db, task, logger, "stuck-row healer", lastUserInteractionAt);
+					// NOTE: rescheduleHeartbeat is an outbox-exempt raw UPDATE (Phase 1). It does not
+					// clear claim metadata. Claim metadata remains until Phase 2 R-LR11 lands, at which
+					// point rescheduleHeartbeat is moved to updateRow. For Phase 1, this is acceptable:
+					// the row is already back to 'pending', so the phase1 claiming CAS will overwrite
+					// the stale claim columns on the next claim. AC4.1's "claim metadata cleared"
+					// becomes fully true after Phase 2.
+					recovered++;
+					break;
+				case "event":
+					resetEventTask(db, task, logger, "stuck-row healer", siteId);
+					recovered++;
+					break;
+				case "deferred":
+					retryDeferredTask(
+						db,
+						task,
+						task.consecutive_failures ?? 0,
+						logger,
+						siteId,
+						DEFERRED_RETRY_BACKOFF_MS_DEFAULT,
+					);
+					recovered++;
+					break;
+				default:
+					logger.error("[scheduler] healStuckTasks: unknown task type", {
+						taskId: task.id,
+						type: task.type,
+					});
+					// Do not increment recovered; do not throw — continue to next row
+					break;
+			}
+		} catch (err) {
+			logger.error("[scheduler] healStuckTasks: error dispatching row", {
+				taskId: task.id,
+				type: task.type,
+				error: formatError(err),
+			});
+			// Do not increment recovered; continue to next row
+		}
 	}
 
-	return stuck.length;
+	return recovered;
 }
 
 const POLL_INTERVAL = 5000; // 5 seconds
@@ -684,10 +742,11 @@ export class Scheduler {
 			}
 		}
 
-		// (c) Heal heartbeats stuck in a terminal state with stale next_run_at.
+		// (c) Heal stuck rows in terminal state with stale next_run_at.
+		// Generalized healer covering all four task types and all failed-write paths.
 		// Defends against any future eviction-vs-completion race that escapes the
-		// CAS in (b), and recovers existing stuck rows on restart.
-		healStuckHeartbeats(this.ctx.db, this.ctx.logger, this.lastUserInteractionAt);
+		// CAS in (b), and recovers existing stuck rows on restart (e.g., d2ecf42d).
+		healStuckTasks(this.ctx.db, this.ctx.logger, this.ctx.siteId, this.lastUserInteractionAt);
 	}
 
 	private phase1Schedule(): void {
