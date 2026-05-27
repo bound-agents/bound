@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { inferenceRequestPayloadSchema, streamChunkPayloadSchema } from "../relay-schemas";
+import {
+	inferenceRequestPayloadSchema,
+	streamChunkPayloadSchema,
+	wsStreamChunkSchema,
+} from "../relay-schemas";
 
 describe("inferenceRequestPayloadSchema thinking field", () => {
 	it("accepts payload with thinking config", () => {
@@ -199,5 +203,127 @@ describe("inferenceRequestPayloadSchema native tool definitions", () => {
 				((parsed[1].function as Record<string, unknown>).name as string).length,
 			).toBeGreaterThan(0);
 		}
+	});
+});
+
+describe("wsStreamChunkSchema — discriminated union validation", () => {
+	it("accepts a text chunk", () => {
+		const result = wsStreamChunkSchema.safeParse({ type: "text", content: "Hello" });
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts a thinking chunk with optional fields", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "thinking",
+			content: "Reasoning...",
+			signature: "sig123",
+			redacted_data: undefined,
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts a thinking chunk without optional fields", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "thinking",
+			content: "Just thinking",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts tool_use_start", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "tool_use_start",
+			id: "call-123",
+			name: "query",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts tool_use_args", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "tool_use_args",
+			id: "call-123",
+			partial_json: '{"sql": "SELECT',
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts tool_use_end", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "tool_use_end",
+			id: "call-123",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts done chunk with full usage", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 150,
+				output_tokens: 42,
+				cache_write_tokens: 1000,
+				cache_read_tokens: null,
+				estimated: false,
+			},
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts done chunk with cost_usd", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 150,
+				output_tokens: 42,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: true,
+			},
+			cost_usd: 0.0045,
+		});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.type).toBe("done");
+			if (result.data.type === "done") {
+				expect(result.data.cost_usd).toBe(0.0045);
+			}
+		}
+	});
+
+	it("accepts error chunk", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "error",
+			error: "Rate limit exceeded",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects heartbeat chunks (not part of WS schema)", () => {
+		const result = wsStreamChunkSchema.safeParse({ type: "heartbeat" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects chunks with unknown type", () => {
+		const result = wsStreamChunkSchema.safeParse({ type: "unknown_thing", data: "foo" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects text chunk missing content field", () => {
+		const result = wsStreamChunkSchema.safeParse({ type: "text" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects done chunk missing usage", () => {
+		const result = wsStreamChunkSchema.safeParse({ type: "done" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects done chunk with incomplete usage", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: { input_tokens: 10 },
+		});
+		expect(result.success).toBe(false);
 	});
 });

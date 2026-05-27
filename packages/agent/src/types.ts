@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@bound/llm";
+import type { WsStreamChunk } from "@bound/shared";
 import type { BuiltInToolResult } from "./built-in-tools";
 
 /**
@@ -69,6 +70,8 @@ export interface AgentLoopConfig {
 	abortSignal?: AbortSignal;
 	/** Called after each tool execution to signal the loop is still active. */
 	onActivity?: () => void;
+	/** Called for each non-heartbeat stream chunk during LLM inference. */
+	onStreamChunk?: (chunk: WsStreamChunk) => void;
 	tools?: Array<{
 		type: "function";
 		function: {

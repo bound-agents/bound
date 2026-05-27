@@ -111,4 +111,85 @@ describe("BoundClient event unwrapping", () => {
 		expect(received).not.toBeNull();
 		expect((received as Record<string, unknown>).path).toBe("/src/main.ts");
 	});
+
+	it("stream:chunk listener receives flat data with thread_id and chunk", () => {
+		const client = new BoundClient("http://localhost:3001");
+		let received: unknown = null;
+
+		client.on("stream:chunk", (data) => {
+			received = data;
+		});
+
+		// stream:chunk is flat format (no `data` wrapper)
+		const wsFrame = {
+			type: "stream:chunk",
+			thread_id: "t-1",
+			chunk: { type: "text", content: "Hello world" },
+		};
+
+		client.handleWsMessage(JSON.stringify(wsFrame));
+
+		expect(received).not.toBeNull();
+		expect((received as Record<string, unknown>).thread_id).toBe("t-1");
+		expect((received as Record<string, unknown>).chunk).toEqual({
+			type: "text",
+			content: "Hello world",
+		});
+	});
+
+	it("stream:chunk with tool_use_start chunk dispatches correctly", () => {
+		const client = new BoundClient("http://localhost:3001");
+		let received: unknown = null;
+
+		client.on("stream:chunk", (data) => {
+			received = data;
+		});
+
+		const wsFrame = {
+			type: "stream:chunk",
+			thread_id: "t-2",
+			chunk: { type: "tool_use_start", id: "call-abc", name: "query" },
+		};
+
+		client.handleWsMessage(JSON.stringify(wsFrame));
+
+		expect(received).not.toBeNull();
+		const chunk = (received as Record<string, unknown>).chunk as Record<string, unknown>;
+		expect(chunk.type).toBe("tool_use_start");
+		expect(chunk.id).toBe("call-abc");
+		expect(chunk.name).toBe("query");
+	});
+
+	it("stream:chunk with done chunk includes usage data", () => {
+		const client = new BoundClient("http://localhost:3001");
+		let received: unknown = null;
+
+		client.on("stream:chunk", (data) => {
+			received = data;
+		});
+
+		const wsFrame = {
+			type: "stream:chunk",
+			thread_id: "t-3",
+			chunk: {
+				type: "done",
+				usage: {
+					input_tokens: 150,
+					output_tokens: 42,
+					cache_write_tokens: null,
+					cache_read_tokens: 120,
+					estimated: false,
+				},
+			},
+		};
+
+		client.handleWsMessage(JSON.stringify(wsFrame));
+
+		expect(received).not.toBeNull();
+		const chunk = (received as Record<string, unknown>).chunk as Record<string, unknown>;
+		expect(chunk.type).toBe("done");
+		const usage = chunk.usage as Record<string, unknown>;
+		expect(usage.input_tokens).toBe(150);
+		expect(usage.cache_read_tokens).toBe(120);
+	});
 });

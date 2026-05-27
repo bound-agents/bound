@@ -1,5 +1,5 @@
 import type { ContentBlock } from "@bound/llm";
-import type { AgentFile, MemoryTier, Message, Task, Thread } from "@bound/shared";
+import type { AgentFile, MemoryTier, Message, Task, Thread, WsStreamChunk } from "@bound/shared";
 
 // ---- Thread responses ----
 
@@ -357,6 +357,7 @@ export interface BoundClientEvents {
 		tokens: number;
 		model: string | null;
 	}) => void;
+	"stream:chunk": (data: { thread_id: string; chunk: WsStreamChunk }) => void;
 	"tool:call": (call: ToolCallRequest) => void;
 	"tool:cancel": (event: ToolCancelEvent) => void;
 	error: (err: Event | Error | { code: string; message: string }) => void;
