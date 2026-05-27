@@ -129,7 +129,7 @@ $effect(() => {
 {:else if role === "alert"}
 	<div class="message alert" style="--line-color: {lineColor}">
 		<div class="role-row">
-			<span class="role role-alert">Advisory posted</span>
+			<span class="role role-alert">Error</span>
 		</div>
 		<div class="alert-body">{content}</div>
 	</div>
