@@ -6,6 +6,7 @@ import {
 	markProcessed,
 	updateRow,
 	updateRowIf,
+	withTx,
 } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
@@ -279,6 +280,36 @@ function resetEventTask(
 }
 
 /**
+ * Pure function to compute the next run time for a heartbeat task.
+ * Returns an ISO 8601 timestamp for the next clock-aligned boundary.
+ * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
+ * Respects quiescence multipliers to reduce frequency during idle periods.
+ *
+ * Extracted so eviction recovery can compute next_run_at inside a transaction without writing.
+ */
+export function computeHeartbeatNextRunAt(task: Task, lastUserInteractionAt: Date): string {
+	const specResult = parseJsonUntyped(task.trigger_spec, "heartbeat trigger_spec");
+	if (!specResult.ok) {
+		// On parse error, return current time (fail-safe: task will run immediately on next scheduler tick)
+		return new Date().toISOString();
+	}
+
+	const spec = specResult.value as Record<string, unknown>;
+	const intervalMs = typeof spec.interval_ms === "number" ? spec.interval_ms : 0;
+	if (!intervalMs || intervalMs < 60_000) {
+		// On invalid interval, return current time (fail-safe)
+		return new Date().toISOString();
+	}
+
+	const multiplier = computeQuiescenceMultiplier(lastUserInteractionAt);
+
+	const now = Date.now();
+	const effectiveInterval = intervalMs * multiplier;
+	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
+	return new Date(nextBoundary).toISOString();
+}
+
+/**
  * Reschedules a heartbeat task to the next clock-aligned boundary and resets status to 'pending'.
  * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
  * Respects quiescence multipliers to reduce frequency during idle periods.
@@ -311,13 +342,7 @@ export function rescheduleHeartbeat(
 		return;
 	}
 
-	// Compute quiescence multiplier using the shared helper
-	const multiplier = computeQuiescenceMultiplier(lastUserInteractionAt);
-
-	const now = Date.now();
-	const effectiveInterval = intervalMs * multiplier;
-	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
-	const nextRunAtIso = new Date(nextBoundary).toISOString();
+	const nextRunAtIso = computeHeartbeatNextRunAt(task, lastUserInteractionAt);
 
 	// Clear stale error string on successful completion — see rescheduleCronTask for rationale.
 	const updates: Partial<Record<string, unknown>> = {
@@ -330,7 +355,7 @@ export function rescheduleHeartbeat(
 	updateRow(db, "tasks", task.id, updates, siteId);
 
 	logger.info(
-		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAtIso}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
+		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAtIso}`,
 	);
 }
 
@@ -701,63 +726,116 @@ export class Scheduler {
 				})),
 			});
 
-			for (const task of tasksToEvict) {
-				const wrote = updateRowIf(
-					this.ctx.db,
-					"tasks",
-					task.id,
-					{ status: "running" },
-					{
-						status: "failed",
-						error: "evicted due to heartbeat timeout",
-						consecutive_failures: (task.consecutive_failures ?? 0) + 1,
-					},
-					this.ctx.siteId,
-				);
+			const nowMs = Date.now();
 
-				if (!wrote) {
+			for (const task of tasksToEvict) {
+				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+				let nextRunAtIso: string | null = null;
+
+				const committed = withTx(this.ctx.db, () => {
+					// Per-type next_run_at computation (reads and computation happen here; they're inside the tx).
+					switch (task.type) {
+						case "cron": {
+							if (task.trigger_spec) {
+								try {
+									const cronExpr = extractCronExpression(task.trigger_spec);
+									nextRunAtIso = computeNextRunAt(cronExpr, new Date()).toISOString();
+								} catch (e) {
+									this.ctx.logger.error(
+										"[scheduler] Failed to compute next cron time during eviction",
+										{
+											error: formatError(e),
+											taskId: task.id,
+										},
+									);
+									nextRunAtIso = null;
+								}
+							}
+							break;
+						}
+
+						case "heartbeat": {
+							nextRunAtIso = computeHeartbeatNextRunAt(task, this.lastUserInteractionAt);
+							break;
+						}
+
+						case "event": {
+							// R-LR3 design note: the relay_inbox SELECT lives inside the eviction transaction.
+							const unprocessed = this.ctx.db
+								.query<{ c: number }, [string, string]>(
+									"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
+								)
+								.get(task.thread_id ?? "", "webhook_intake");
+							const hasUnprocessed = (unprocessed?.c ?? 0) > 0;
+							const underBackoffCap = newConsecutiveFailures < MAX_EVENT_TASK_FAILURE_BACKOFFS;
+							nextRunAtIso =
+								hasUnprocessed && underBackoffCap ? new Date(nowMs + 60_000).toISOString() : null;
+							break;
+						}
+
+						case "deferred": {
+							// R-LR3 deferred-task parity with retryDeferredTask's linear backoff.
+							// RFC formula: now + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * (consecutive_failures + 1).
+							// The (consecutive_failures + 1) here is `newConsecutiveFailures` — the value
+							// we are about to write. Capped at DEFERRED_MAX_RETRIES so deferred tasks that
+							// continue to fail eventually park at status='failed' permanently.
+							if (newConsecutiveFailures > DEFERRED_MAX_RETRIES) {
+								// Don't reschedule — leave as failed permanently; recovery clears claim only.
+								nextRunAtIso = null;
+							} else {
+								nextRunAtIso = new Date(
+									nowMs + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * newConsecutiveFailures,
+								).toISOString();
+							}
+							break;
+						}
+
+						default: {
+							this.ctx.logger.error("[scheduler] eviction: unknown task type", {
+								taskId: task.id,
+								type: task.type,
+							});
+							// Don't write — let the throw bubble up and roll back the (empty) transaction.
+							throw new Error(`Unknown task type: ${task.type}`);
+						}
+					}
+
+					// Single updateRowIf — emits exactly one change_log entry. CAS precondition gates on
+					// status='running' so a concurrent local write losing the lease can't double-evict.
+					return updateRowIf(
+						this.ctx.db,
+						"tasks",
+						task.id,
+						{ status: "running" },
+						{
+							status: "pending",
+							error: "evicted due to heartbeat timeout",
+							consecutive_failures: newConsecutiveFailures,
+							next_run_at: nextRunAtIso,
+							claimed_by: null,
+							claimed_at: null,
+							lease_id: null,
+						},
+						this.ctx.siteId,
+					);
+				});
+
+				if (committed) {
+					// Failure-advisory trigger AFTER commit (invariant #6: events after commit).
+					if (newConsecutiveFailures === task.alert_threshold) {
+						this.triggerFailureAdvisory(
+							task,
+							"evicted due to heartbeat timeout",
+							newConsecutiveFailures,
+						);
+					}
+				} else {
 					// CAS lost: the agent loop's completion path already won the race
 					// and transitioned status='running' → 'completed'. Do NOT trample
-					// the result row with a phantom eviction error, and do NOT call
-					// the reschedule helpers — completion already did. Otherwise the
-					// row would be left looking like both "completed" AND "evicted",
-					// which is the exact stuck-state observed on heartbeat 455a07c1.
+					// the result row with a phantom eviction error.
 					this.ctx.logger.info(
 						"[scheduler] Eviction CAS lost — task already completed before reaper ran",
 						{ taskId: task.id, type: task.type, triggerSpec: task.trigger_spec },
-					);
-					continue;
-				}
-
-				rescheduleCronTask(
-					this.ctx.db,
-					task,
-					this.ctx.logger,
-					"heartbeat timeout eviction",
-					this.ctx.siteId,
-				);
-				rescheduleHeartbeat(
-					this.ctx.db,
-					task,
-					this.ctx.logger,
-					"heartbeat timeout eviction",
-					this.ctx.siteId,
-					this.lastUserInteractionAt,
-				);
-				resetEventTask(
-					this.ctx.db,
-					task,
-					this.ctx.logger,
-					"heartbeat timeout eviction",
-					this.ctx.siteId,
-				);
-
-				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
-				if (newConsecutiveFailures === task.alert_threshold) {
-					this.triggerFailureAdvisory(
-						task,
-						"evicted due to heartbeat timeout",
-						newConsecutiveFailures,
 					);
 				}
 			}
