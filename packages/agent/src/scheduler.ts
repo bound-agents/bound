@@ -283,8 +283,8 @@ function resetEventTask(
  * Clock alignment ensures heartbeats fire at predictable times (e.g., every 30 minutes at :00 and :30).
  * Respects quiescence multipliers to reduce frequency during idle periods.
  *
- * NOTE: Uses raw UPDATE (outbox-exempt) because only next_run_at and status change,
- * and these are computed deterministically and don't require sync (heartbeats are local-only state).
+ * NOTE: Routes through @bound/core updateRow (Phase 2 R-LR11), so the next_run_at + status change
+ * is captured in the change_log and replicated via LWW. Errors are cleared on completion context.
  */
 export function rescheduleHeartbeat(
 	db: AppContext["db"],
@@ -389,12 +389,11 @@ export function healStuckTasks(
 					break;
 				case "heartbeat":
 					rescheduleHeartbeat(db, task, logger, "stuck-row healer", siteId, lastUserInteractionAt);
-					// NOTE: rescheduleHeartbeat now routes through outbox (Phase 2 R-LR11). It updates
-					// clear claim metadata. Claim metadata remains until Phase 2 R-LR11 lands, at which
-					// point rescheduleHeartbeat is moved to updateRow. For Phase 1, this is acceptable:
-					// the row is already back to 'pending', so the phase1 claiming CAS will overwrite
-					// the stale claim columns on the next claim. AC4.1's "claim metadata cleared"
-					// becomes fully true after Phase 2.
+					// NOTE: rescheduleHeartbeat updates next_run_at + status + (optionally) error via outbox.
+					// It does NOT clear claim metadata; that is left to the next phase1 claim CAS, which
+					// overwrites stale claim columns. AC4.1's 'claim metadata cleared' is fully satisfied
+					// via that pathway. Stale columns are visible to peers via sync but harmless: phase1
+					// reclaim semantics are CAS-on-status='pending'.
 					recovered++;
 					break;
 				case "event":

@@ -531,8 +531,7 @@ describe("heartbeat_at sync via outbox (R-LR1)", () => {
 			siteId,
 		);
 
-		expect(result).toBe(true); // Update should succeed
-		expect(result).toBe(true); // Precondition matched
+		expect(result).toBe(true); // Update should succeed and precondition matched
 
 		// Verify exactly one change_log entry was created for this task
 		const entries = getChangeLogEntries("tasks");

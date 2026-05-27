@@ -409,9 +409,10 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			.query(
 				`SELECT id FROM tasks
 				 WHERE status = 'running'
+				   AND claimed_by = ?
 				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
 			)
-			.all(staleThreshold) as Array<{ id: string }>;
+			.all(appContext.siteId, staleThreshold) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
 			appContext.db.query(STALE_TASK_RESET_SQL).run(appContext.siteId, staleThreshold);
