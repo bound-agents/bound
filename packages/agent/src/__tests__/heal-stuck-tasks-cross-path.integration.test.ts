@@ -165,7 +165,7 @@ describe("healStuckTasks: cross-path coverage (AC4.3)", () => {
 			// For deferred tasks: verify backoff formula
 			if (fixture.taskType === "deferred") {
 				const nextRunMs = new Date(updatedTask?.next_run_at || "").getTime();
-				const expectedMs = now.getTime() + 5_000; // DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000
+				const expectedMs = now.getTime() + 10_000; // DEFERRED_RETRY_BACKOFF_MS_DEFAULT * 2 (post-increment: consecutive_failures + 1 = 1 + 1 = 2)
 				// Allow 1000ms tolerance for test execution time
 				expect(Math.abs(nextRunMs - expectedMs)).toBeLessThan(1000);
 			}
