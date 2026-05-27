@@ -2,6 +2,13 @@ import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { updateRow } from "./change-log.js";
 
+/**
+ * Host-heartbeat refresh cadence. Bumps `hosts.modified_at` via outbox-routed `updateRow`
+ * every HOST_HEARTBEAT_INTERVAL ms. Used by R-LR2's host-liveness gate as the freshness
+ * signal that peers consult to decide whether the lease-holder is alive.
+ */
+export const HOST_HEARTBEAT_INTERVAL = 120_000;
+
 export interface HeartbeatOptions {
 	/** Heartbeat interval in milliseconds. Defaults to 120_000 (2 minutes). */
 	intervalMs?: number;
@@ -24,7 +31,7 @@ export function startHostHeartbeat(
 	siteId: string,
 	options?: HeartbeatOptions,
 ): { stop: () => void } {
-	const intervalMs = options?.intervalMs ?? 120_000;
+	const intervalMs = options?.intervalMs ?? HOST_HEARTBEAT_INTERVAL;
 	let stopped = false;
 
 	const tick = () => {
