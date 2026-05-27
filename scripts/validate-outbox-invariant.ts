@@ -4,8 +4,8 @@
  * insertRow/updateRow/softDelete from @bound/core. Direct SQL mutations
  * (INSERT INTO, UPDATE, DELETE FROM) on synced tables are flagged as violations.
  *
- * Lines containing "// outbox-exempt" are skipped (for cluster_config writes
- * that use manual createChangeLogEntry).
+ * Lines containing "// outbox-exempt" are cross-checked against CONTRIBUTING.md.
+ * Lines containing "// outbox-routed" are skipped (explicit createChangeLogEntry pattern).
  *
  * Run: bun run scripts/validate-outbox-invariant.ts
  * Wired into: bun check (pre-commit hook)
@@ -71,10 +71,71 @@ interface Violation {
 	text: string;
 }
 
+function extractAuditSection(content: string): string {
+	const match = content.match(
+		/### Audit Disposition Table for `outbox-exempt` Annotations([\s\S]*?)(?=###|\z)/,
+	);
+	return match ? match[1] : "";
+}
+
+function isExemptionDocumented(
+	filePath: string,
+	lineNumber: number,
+	table: string,
+	contributing: string,
+): boolean {
+	const auditSection = extractAuditSection(contributing);
+	if (!auditSection) return false;
+
+	// Check if the table is NOT in SYNCED_TABLES (category c)
+	if (!SYNCED_TABLES.includes(table)) {
+		return true;
+	}
+
+	// Parse audit table rows (very basic markdown table parsing)
+	const lines = auditSection.split("\n");
+	for (const line of lines) {
+		if (!line.includes("|")) continue;
+
+		const cells = line.split("|").map((c) => c.trim());
+		if (cells.length < 3) continue;
+
+		const fileLoc = cells[1]; // File:Line or File
+		const tableMatch = cells[2]; // Table write target
+
+		if (!fileLoc || !tableMatch) continue;
+
+		// Try to match file:line exactly
+		if (fileLoc.includes(":")) {
+			const [matchFile, matchLine] = fileLoc.split(":");
+			if (
+				filePath.endsWith(matchFile.trim()) &&
+				Number.parseInt(matchLine) === lineNumber &&
+				tableMatch.includes(table)
+			) {
+				return true;
+			}
+		} else if (filePath.endsWith(fileLoc.trim()) && tableMatch.includes(table)) {
+			// Match by file path only
+			return true;
+		}
+	}
+
+	return false;
+}
+
 async function main() {
 	const root = resolve(import.meta.dir, "..");
 	const glob = new Glob("packages/*/src/**/*.ts");
 	const violations: Violation[] = [];
+
+	// Read CONTRIBUTING.md once
+	let contributing = "";
+	try {
+		contributing = readFileSync(resolve(root, "CONTRIBUTING.md"), "utf-8");
+	} catch {
+		console.warn("Warning: Could not read CONTRIBUTING.md for cross-check validation");
+	}
 
 	for await (const relPath of glob.scan({ cwd: root })) {
 		if (shouldExclude(relPath)) continue;
@@ -85,17 +146,41 @@ async function main() {
 
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
-			if (line.includes("// outbox-exempt")) continue;
+
+			// Skip outbox-routed lines (explicit changelog pattern)
+			if (line.includes("// outbox-routed")) continue;
 
 			const table = findTableInLine(line);
-			if (table) {
-				violations.push({
-					file: relPath,
-					line: i + 1,
-					table,
-					text: line.trim().slice(0, 100),
-				});
+			if (!table) continue;
+
+			// If outbox-exempt, cross-check against CONTRIBUTING.md
+			if (line.includes("// outbox-exempt")) {
+				// Check for TODO link (category d validation)
+				const hasToDoLink = lines
+					.slice(Math.max(0, i - 5), Math.min(lines.length, i + 6))
+					.some((l) => l.includes("TODO"));
+
+				// Check if documented in CONTRIBUTING.md
+				const isDocumented = isExemptionDocumented(relPath, i + 1, table, contributing);
+
+				if (!isDocumented && !hasToDoLink) {
+					violations.push({
+						file: relPath,
+						line: i + 1,
+						table,
+						text: line.trim().slice(0, 100),
+					});
+				}
+				continue;
 			}
+
+			// No annotation: violation
+			violations.push({
+				file: relPath,
+				line: i + 1,
+				table,
+				text: line.trim().slice(0, 100),
+			});
 		}
 	}
 
@@ -112,7 +197,10 @@ async function main() {
 		console.error(`    ${v.text}`);
 	}
 	console.error(
-		"\nFix: use insertRow/updateRow/softDelete from @bound/core, or add '// outbox-exempt' with justification.",
+		"\nFix: use insertRow/updateRow/softDelete from @bound/core, or add '// outbox-exempt' with CONTRIBUTING.md entry.",
+	);
+	console.error(
+		"Or use '// outbox-routed' if explicit createChangeLogEntry follows in the transaction.",
 	);
 	process.exit(1);
 }
