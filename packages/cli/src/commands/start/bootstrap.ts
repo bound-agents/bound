@@ -365,7 +365,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		if (existingHost) {
 			withChangeLog(appContext.db, appContext.siteId, () => {
 				appContext.db.run(
-					"UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-exempt: withChangeLog handles changelog entry
+					"UPDATE hosts SET host_name = ?, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
 					[appContext.hostName, now, now, appContext.siteId],
 				);
 				const updatedRow = appContext.db
@@ -388,7 +388,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			};
 			withChangeLog(appContext.db, appContext.siteId, () => {
 				appContext.db.run(
-					"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)", // outbox-exempt: withChangeLog handles changelog entry
+					"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
 					[appContext.siteId, appContext.hostName, now, now],
 				);
 				return {
