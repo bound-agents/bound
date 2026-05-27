@@ -195,7 +195,7 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		expect(evicted).toHaveLength(0);
 	});
 
-	it("AC7.1: COALESCE(modified_at, online_at) — stale modified_at, stale online_at permits eviction", () => {
+	it("AC7.1: COALESCE(modified_at, online_at) — stale modified_at, stale online_at permits eviction (unreachable NULL modified_at path)", () => {
 		const taskId = randomUUID();
 		const siteE = "site-E";
 
@@ -204,6 +204,10 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 
 		// Insert host row: stale modified_at (30min), stale online_at (30min)
 		// COALESCE(modified_at, online_at) = stale modified_at → permits eviction
+		// Note: The COALESCE fallback to online_at is tested here but never reaches it
+		// because schema enforces hosts.modified_at NOT NULL, so COALESCE always returns
+		// the non-NULL modified_at value. This test documents the expected behavior should
+		// the schema change to allow NULL modified_at in the future.
 		insertHost(siteE, 30 * 60 * 1000, 30 * 60 * 1000);
 
 		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
@@ -222,6 +226,68 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		// Do NOT insert a hosts row for this site_id
 		// The LEFT JOIN will produce NULL for h.site_id, h.modified_at, h.online_at
 		// The OR branch (h.site_id IS NULL) will fire, permitting eviction
+
+		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
+
+		expect(evicted).toHaveLength(1);
+		expect(evicted[0].id).toBe(taskId);
+	});
+
+	it("Edge case: claimed_by IS NULL (corruption state) permits eviction", () => {
+		const taskId = randomUUID();
+
+		// Insert running task with stale heartbeat_at and NULL claimed_by (corruption state)
+		// This is an unlikely scenario but possible if the database is corrupted
+		const now = new Date();
+		const heartbeatAt = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+		const nowStr = now.toISOString();
+
+		db.run(
+			`INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				taskId,
+				"cron",
+				"running",
+				"0 * * * *",
+				null,
+				null,
+				null, // claimed_by IS NULL (corruption)
+				null,
+				null,
+				null,
+				null,
+				0,
+				null,
+				null,
+				null,
+				0,
+				"status",
+				null,
+				0,
+				5,
+				0,
+				0,
+				0,
+				heartbeatAt,
+				null,
+				null,
+				nowStr,
+				"system",
+				nowStr,
+				0,
+			],
+		);
+
+		// Do NOT insert a hosts row; claimed_by is NULL anyway
+		// The LEFT JOIN ON clause (h.site_id = t.claimed_by) won't match on NULL
+		// so h.site_id will be NULL, and the OR branch (h.site_id IS NULL) fires
 
 		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
 
