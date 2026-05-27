@@ -551,6 +551,7 @@ describe("Startup Wiring", () => {
 	describe("stale task recovery", () => {
 		it("resets stale running tasks to pending", () => {
 			const taskId = randomUUID();
+			const claimedBySiteId = randomUUID();
 			const now = new Date();
 			// Heartbeat 15 minutes ago (threshold in start.ts is 10 minutes)
 			const staleHeartbeat = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
@@ -566,20 +567,20 @@ describe("Startup Wiring", () => {
 					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
 				) VALUES (
 					?, 'deferred', 'running', 'manual', NULL, NULL,
-					'some-host', ?, ?, NULL, NULL,
+					?, ?, ?, NULL, NULL,
 					0, NULL, NULL, NULL, 0,
 					'status', NULL, 0, 5,
 					0, 0, 0,
 					?, NULL, NULL, ?, 'system', ?, 0
 				)`,
-				[taskId, nowStr, randomUUID(), staleHeartbeat, nowStr, nowStr],
+				[taskId, claimedBySiteId, nowStr, randomUUID(), staleHeartbeat, nowStr, nowStr],
 			);
 
 			// Use the exact constant bootstrap.ts uses, so this test would catch any
 			// syntax error introduced into the production SQL (previously they had
 			// diverged hand-copies of the SQL, hiding bugs in the production string).
 			const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-			db.query(STALE_TASK_RESET_SQL).run(staleThreshold);
+			db.query(STALE_TASK_RESET_SQL).run(claimedBySiteId, staleThreshold);
 
 			const task = db
 				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
@@ -593,6 +594,88 @@ describe("Startup Wiring", () => {
 			expect(task?.status).toBe("pending");
 			expect(task?.lease_id).toBeNull();
 			expect(task?.claimed_by).toBeNull();
+		});
+
+		it("(AC10.1) only resets stale running tasks claimed by the booting host (R-LR10)", () => {
+			const localSiteId = randomUUID();
+			const peerSiteId = randomUUID();
+			const now = new Date();
+			const staleHeartbeat = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+			const nowStr = now.toISOString();
+			const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+			// Insert one stale running task claimed by the local host
+			const localTaskId = randomUUID();
+			const localLeaseId = randomUUID();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'running', 'manual', NULL, NULL,
+					?, ?, ?, NULL, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					?, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[localTaskId, localSiteId, nowStr, localLeaseId, staleHeartbeat, nowStr, nowStr],
+			);
+
+			// Insert one stale running task claimed by a peer host
+			const peerTaskId = randomUUID();
+			const peerLeaseId = randomUUID();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'running', 'manual', NULL, NULL,
+					?, ?, ?, NULL, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					?, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[peerTaskId, peerSiteId, nowStr, peerLeaseId, staleHeartbeat, nowStr, nowStr],
+			);
+
+			// Run the stale task reset with localSiteId as the first parameter
+			db.query(STALE_TASK_RESET_SQL).run(localSiteId, staleThreshold);
+
+			// Verify local task was reset
+			const localTask = db
+				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
+				.get(localTaskId) as {
+				status: string;
+				lease_id: string | null;
+				claimed_by: string | null;
+			} | null;
+			expect(localTask).not.toBeNull();
+			expect(localTask?.status).toBe("pending");
+			expect(localTask?.lease_id).toBeNull();
+			expect(localTask?.claimed_by).toBeNull();
+
+			// Verify peer task was NOT reset
+			const peerTask = db
+				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
+				.get(peerTaskId) as {
+				status: string;
+				lease_id: string | null;
+				claimed_by: string | null;
+			} | null;
+			expect(peerTask).not.toBeNull();
+			expect(peerTask?.status).toBe("running");
+			expect(peerTask?.lease_id).toBe(peerLeaseId);
+			expect(peerTask?.claimed_by).toBe(peerSiteId);
 		});
 	});
 
