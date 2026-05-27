@@ -1,133 +1,189 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-
-// Test fixture directory
-const TEST_DIR = resolve(import.meta.dir, "../../test-fixtures-validator");
-const CONTRIB_FILE = resolve(TEST_DIR, "CONTRIBUTING.md");
-
-let contributingContent: string;
-
-beforeAll(async () => {
-	// Create test fixture directory
-	try {
-		mkdirSync(TEST_DIR, { recursive: true });
-	} catch {
-		// Directory may already exist
-	}
-
-	// Write CONTRIBUTING.md with audit table
-	contributingContent = `
-# CONTRIBUTING
-
-## Audit Disposition Table for \`outbox-exempt\` Annotations
-
-| File:Line | Write target | Category | Disposition |
-|-----------|-------------|----------|-------------|
-| test.ts:1 | semantic_memory.last_accessed_at | (a) justified | Per-host relevance hint |
-| test.ts:5 | tasks | (b) fixed | R-LR5 rewrote to outbox-routed |
-| test.ts:10 | overlay_index | (d) known-deferred | TODO comment present |
-`;
-	writeFileSync(CONTRIB_FILE, contributingContent);
-});
-
-afterAll(() => {
-	// Clean up test files
-	try {
-		unlinkSync(CONTRIB_FILE);
-		unlinkSync(resolve(TEST_DIR, "test.ts"));
-		unlinkSync(resolve(TEST_DIR, "test-no-doc.ts"));
-		unlinkSync(resolve(TEST_DIR, "test-non-synced.ts"));
-		unlinkSync(resolve(TEST_DIR, "test-missing-todo.ts"));
-		rmdirSync(TEST_DIR);
-	} catch {
-		// Ignore cleanup errors
-	}
-});
+import { describe, expect, it } from "bun:test";
+import {
+	cleanLineNumber,
+	extractAuditSection,
+	findTableInLine,
+	hasToDoLink,
+	isExemptionDocumented,
+	shouldSkipLine,
+} from "../validate-outbox-invariant";
 
 describe("validate-outbox-invariant", () => {
-	it("should not flag outbox-routed annotated lines", async () => {
-		const testContent = `
-const result = db.query(
-	"UPDATE tasks SET status = 'claimed' WHERE id = ?", // outbox-routed: explicit createChangeLogEntry follows
-).run(id);
-`;
-		writeFileSync(resolve(TEST_DIR, "test.ts"), testContent);
+	describe("shouldSkipLine", () => {
+		it("should skip lines with outbox-routed annotation", () => {
+			const line = "// outbox-routed: explicit createChangeLogEntry follows";
+			expect(shouldSkipLine(line)).toBe(true);
+		});
 
-		// Note: actual validation would run the CLI; for now we verify the logic locally
-		// The pattern is: outbox-routed lines should be skipped
-		const hasOutboxRoutedPattern = testContent.includes("// outbox-routed");
-		expect(hasOutboxRoutedPattern).toBe(true);
+		it("should skip lines with outbox-exempt annotation", () => {
+			const line = "// outbox-exempt: per-host hint";
+			expect(shouldSkipLine(line)).toBe(true);
+		});
+
+		it("should not skip lines without either annotation", () => {
+			const line = "const x = 5;";
+			expect(shouldSkipLine(line)).toBe(false);
+		});
 	});
 
-	it("should not flag outbox-exempt with CONTRIBUTING.md entry", async () => {
-		const testContent = `
-const result = db.query(
-	"UPDATE semantic_memory SET last_accessed_at = ? WHERE id = ?", // outbox-exempt: per-host hint
-).run(now, id);
-`;
-		writeFileSync(resolve(TEST_DIR, "test.ts"), testContent);
+	describe("findTableInLine", () => {
+		it("should find INSERT mutation on tasks table", () => {
+			const line = '"INSERT INTO tasks (id, status) VALUES (?, ?)"';
+			expect(findTableInLine(line)).toBe("tasks");
+		});
 
-		// The validator would check CONTRIBUTING.md for this entry
-		// semantic_memory.last_accessed_at is in category (a)
-		const hasEntry = contributingContent.includes("semantic_memory.last_accessed_at");
-		expect(hasEntry).toBe(true);
+		it("should find UPDATE mutation on semantic_memory table", () => {
+			const line = '"UPDATE semantic_memory SET last_accessed_at = ? WHERE id = ?"';
+			expect(findTableInLine(line)).toBe("semantic_memory");
+		});
+
+		it("should find DELETE mutation on overlay_index table", () => {
+			const line = '"DELETE FROM overlay_index WHERE id = ?"';
+			expect(findTableInLine(line)).toBe("overlay_index");
+		});
+
+		it("should not find table in comment-only lines", () => {
+			const line = "// This is a comment about tasks table";
+			expect(findTableInLine(line)).toBeNull();
+		});
+
+		it("should not find table in non-mutation lines", () => {
+			const line = 'const result = await db.query("SELECT * FROM tasks").all();';
+			expect(findTableInLine(line)).toBeNull();
+		});
 	});
 
-	it("should flag outbox-exempt without CONTRIBUTING.md entry and no TODO", async () => {
-		const testContent = `
-const result = db.query(
-	"UPDATE tasks SET some_field = ? WHERE id = ?", // outbox-exempt: not documented
-).run(value, id);
-`;
-		writeFileSync(resolve(TEST_DIR, "test-no-doc.ts"), testContent);
+	describe("extractAuditSection", () => {
+		it("should extract audit section from CONTRIBUTING.md", () => {
+			const contributing =
+				"# Test\n### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category |\n|-----------|-------------|----------|\n| test.ts:1 | tasks | (a) justified |\n\n### Next Section";
+			const section = extractAuditSection(contributing);
+			expect(section).toContain("| File:Line");
+			expect(section).toContain("test.ts:1");
+			expect(section).not.toContain("### Next Section");
+		});
 
-		// This should fail validation: tasks are synced, no CONTRIBUTING entry, no TODO
-		const hasOutboxExempt = testContent.includes("// outbox-exempt");
-		const hasToDoLink = testContent.includes("TODO");
-		expect(hasOutboxExempt).toBe(true);
-		expect(hasToDoLink).toBe(false);
+		it("should return empty string if audit section not found", () => {
+			const contributing = "# Test\nNo audit section here";
+			const section = extractAuditSection(contributing);
+			expect(section).toBe("");
+		});
 	});
 
-	it("should not flag outbox-exempt on non-synced tables", async () => {
-		// non_synced_table is not in SYNCED_TABLES
-		const testContent = `
-const result = db.query(
-	"UPDATE non_synced_table SET field = ? WHERE id = ?", // outbox-exempt: non-synced table
-).run(value, id);
-`;
-		writeFileSync(resolve(TEST_DIR, "test-non-synced.ts"), testContent);
+	describe("cleanLineNumber", () => {
+		it("should parse plain line number", () => {
+			expect(cleanLineNumber("123")).toBe(123);
+		});
 
-		// Category (c) rule: non-synced tables are always allowed
-		const isSyncedTable = [
-			"users",
-			"threads",
-			"messages",
-			"semantic_memory",
-			"tasks",
-			"files",
-			"hosts",
-			"overlay_index",
-			"cluster_config",
-			"advisories",
-			"skills",
-			"memory_edges",
-			"turns",
-		].some((t) => testContent.includes(t));
-		expect(isSyncedTable).toBe(false);
+		it("should strip (REWRITTEN) marker", () => {
+			expect(cleanLineNumber("123 (REWRITTEN)")).toBe(123);
+		});
+
+		it("should strip (REMOVED) marker", () => {
+			expect(cleanLineNumber("456 (REMOVED)")).toBe(456);
+		});
+
+		it("should handle whitespace around markers", () => {
+			expect(cleanLineNumber("789  (REWRITTEN)  ")).toBe(789);
+		});
 	});
 
-	it("should not flag outbox-exempt on synced table with TODO and no CONTRIBUTING entry (category d)", async () => {
-		const testContent = `
-const result = db.query(
-	"UPDATE overlay_index SET field = ? WHERE id = ?", // outbox-exempt: backward compat
-	// TODO: follow-up RFC — convert to outbox
-).run(value, id);
-`;
-		writeFileSync(resolve(TEST_DIR, "test-missing-todo.ts"), testContent);
+	describe("isExemptionDocumented", () => {
+		it("should return true for non-synced tables (category c)", () => {
+			const contributing =
+				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category |\n\n### Next";
+			// non_synced_table is not in SYNCED_TABLES list
+			expect(isExemptionDocumented("test.ts", 1, "non_synced_table", contributing)).toBe(true);
+		});
 
-		// Category (d): has TODO link, so it's acceptable even without CONTRIBUTING entry
-		const hasToDoLink = testContent.includes("TODO");
-		expect(hasToDoLink).toBe(true);
+		it("should return true for exact file:line match with table substring", () => {
+			const contributing =
+				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts:10 | semantic_memory | (a) justified | Test entry |\n\n### Next";
+			expect(isExemptionDocumented("test.ts", 10, "semantic_memory", contributing)).toBe(true);
+		});
+
+		it("should return false for file:line match without table substring", () => {
+			const contributing =
+				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts:10 | tasks | (a) justified | Test entry |\n\n### Next";
+			expect(isExemptionDocumented("test.ts", 10, "semantic_memory", contributing)).toBe(false);
+		});
+
+		it("should return true for file-only match (any line in that file)", () => {
+			const contributing =
+				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts | semantic_memory | (a) justified | Test entry |\n\n### Next";
+			expect(isExemptionDocumented("test.ts", 999, "semantic_memory", contributing)).toBe(true);
+		});
+
+		it("should return false for synced table without documentation", () => {
+			const contributing =
+				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category |\n\n### Next";
+			expect(isExemptionDocumented("undocumented.ts", 50, "tasks", contributing)).toBe(false);
+		});
+
+		it("should handle line number with (REWRITTEN) marker in audit table", () => {
+			const contributing =
+				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts:15 (REWRITTEN) | tasks | (b) fixed | Test entry |\n\n### Next";
+			expect(isExemptionDocumented("test.ts", 15, "tasks", contributing)).toBe(true);
+		});
+	});
+
+	describe("hasToDoLink", () => {
+		it("should find TODO on the same line", () => {
+			const lines = ["const x = 5; // TODO: fix this"];
+			expect(hasToDoLink(lines, 0)).toBe(true);
+		});
+
+		it("should find TODO within 5 lines before", () => {
+			const lines = [
+				"// TODO: this will be fixed later",
+				"line 2",
+				"line 3",
+				"line 4",
+				"line 5",
+				"const x = 5;", // index 5
+			];
+			expect(hasToDoLink(lines, 5)).toBe(true);
+		});
+
+		it("should find TODO within 5 lines after", () => {
+			const lines = [
+				"const x = 5;", // index 0
+				"line 2",
+				"line 3",
+				"line 4",
+				"line 5",
+				"// TODO: fix this later",
+			];
+			expect(hasToDoLink(lines, 0)).toBe(true);
+		});
+
+		it("should not find TODO beyond 5 lines away", () => {
+			const lines = [
+				"const x = 5;", // index 0
+				"line 2",
+				"line 3",
+				"line 4",
+				"line 5",
+				"line 6",
+				"line 7",
+				"// TODO: too far away",
+			];
+			expect(hasToDoLink(lines, 0)).toBe(false);
+		});
+
+		it("should return false when no TODO found", () => {
+			const lines = ["line 1", "line 2", "line 3"];
+			expect(hasToDoLink(lines, 1)).toBe(false);
+		});
+
+		it("should handle boundary case at start of file", () => {
+			const lines = ["const x = 5;", "// TODO: fix", "line 3"];
+			expect(hasToDoLink(lines, 0)).toBe(true);
+		});
+
+		it("should handle boundary case at end of file", () => {
+			const lines = ["line 1", "// TODO: fix", "const x = 5;"];
+			expect(hasToDoLink(lines, 2)).toBe(true);
+		});
 	});
 });

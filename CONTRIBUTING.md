@@ -121,7 +121,7 @@ The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`.
 
 **20. No foreign key constraints on synced tables.** Synced tables must NOT declare `REFERENCES` / `FOREIGN KEY` constraints. `PRAGMA foreign_keys = ON` is set, but no synced table uses FK clauses. This is intentional: changelog replay, snapshot seeding, and backfill all insert rows in non-deterministic order — a message may arrive before its parent thread, a memory edge before its source node. FK constraints would cause intermittent hard failures during sync that depend on network timing. Referential integrity is enforced by the application write path (outbox helpers), not by the database engine during replay.
 
-### Documented Narrow Exceptions to Invariant #1 (outbox pattern)
+### Section A: Documented Narrow Exceptions to Invariant #1 (outbox pattern)
 
 The outbox is mandatory for all writes to synced tables EXCEPT for the explicitly-justified
 per-host hint columns listed below. Each exception is local-relevance-only with no cross-host
@@ -136,6 +136,16 @@ hosts ignore. Do not extend this list without writing down the same justificatio
   `modified_at` along with it, cascading into `buildStaleChildrenMap` and misclassifying
   every actively-rendered detail entry as stale, and (c) per-cold-assembly bumps would
   generate wasteful change-log volume for a signal other hosts ignore.
+
+- **`tasks` bootstrap reset** (`packages/cli/src/commands/start/bootstrap.ts:62`), scoped to
+  `claimed_by = ?siteId` per R-LR10. Justified because (a) per-host crash recovery on startup,
+  (b) the reset reclaims rows owned by the booting host that were left mid-`running` from a
+  prior crash, (c) routing through `outbox` would either (i) emit a change_log entry per
+  crash-recovered task on every startup (potentially hundreds), polluting the cross-host log
+  with site-local recovery noise, or (ii) require synthesizing a synthetic siteId before
+  AppContext is fully bootstrapped. The R-LR10 scope predicate (`claimed_by = ?siteId`)
+  makes this safe: each booting host only resets its own claims. Peer hosts handle
+  peer-claimed stale rows via R-LR2's host-liveness eviction (Phase 4).
 
 The PR review gate (R-LR6) blocks new `// outbox-exempt` annotations on synced-table writes
 unless the new exemption is added to this list with the same justification format, OR the
@@ -167,7 +177,7 @@ this table.
 | packages/agent/src/scheduler.ts:1517 (REWRITTEN) | tasks (running → failed, soft-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
 | packages/agent/src/scheduler.ts:1673 (REWRITTEN) | tasks (running → failed, hard-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
 | packages/agent/src/scheduler.ts:1796 (REWRITTEN) | tasks (post-eviction reclaim) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:62 | tasks (status, lease_id, claimed_by, claimed_at) | (a) justified | Crash recovery, scoped to booting host; annotation kept as exemption per R-LR10. |
+| packages/cli/src/commands/start/bootstrap.ts:62 | tasks (status, lease_id, claimed_by, claimed_at) | (a) justified | Per-host crash recovery scoped to claimed_by = ?siteId; see Section A above. |
 | packages/cli/src/commands/start/bootstrap.ts:368 (REWRITTEN) | hosts (registration) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
 | packages/cli/src/commands/start/bootstrap.ts:391 (REWRITTEN) | hosts (INSERT) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
 | packages/platforms/src/leader-election.ts:73 (REWRITTEN) | cluster_config (leader election) | (b) fixed | R-LR5 rewrote. |
@@ -176,9 +186,10 @@ this table.
 | packages/cli/src/commands/config-reload.ts:69, 73 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
 | packages/cli/src/commands/stop-resume.ts:33, 37, 66 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
 | packages/core/src/relay-metrics.ts:48 | turns.relay_target, turns.relay_latency_ms | (d) known-deferred | Synced-table write not fixed by this RFC. `turns` is synced; these columns are local-only instrumentation. TODO: follow-up RFC to either route through outbox or formalize as a Section A exception. |
-| packages/sandbox/src/overlay-scanner.ts:128, 148, 168 | overlay_index (INSERT, UPDATE, soft-delete) | (d) known-deferred | `overlay_index` IS synced. Annotation says "outbox not provided (backward compat)". TODO: follow-up RFC to convert these to `insertRow`/`updateRow`/`softDelete`. |
+| packages/sandbox/src/overlay-scanner.ts:128, 149, 170 | overlay_index (INSERT, UPDATE, soft-delete) | (d) known-deferred | `overlay_index` IS synced. Annotation says "outbox not provided (backward compat)". TODO: follow-up RFC to convert these to `insertRow`/`updateRow`/`softDelete`. |
 | packages/agent/src/task-resolution.ts:428 | tasks.no_history | (d) known-deferred | Active legacy migration that runs on startup. TODO: follow-up RFC to route through outbox or formalize as a Section A exception. |
 | packages/agent/scripts/agent-harness/driver.ts:51 | (none — comment-only) | (e) comment-only | Reference / educational note. |
+| packages/agent/scripts/agent-harness/driver.ts:233 | (none — comment-only) | (e) comment-only | Reference / educational note. |
 | packages/agent/src/validation/run-stable-prefix-drift-validation.ts:219 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
 
 ### Consistency and events
