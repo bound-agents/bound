@@ -1004,6 +1004,12 @@ relay_latency_ms INTEGER,   -- time-to-first-chunk for relay inference (NULL for
 tokens_cache_write INTEGER, -- prompt cache write tokens (NULL if not reported)
 tokens_cache_read INTEGER,  -- prompt cache read tokens (NULL if not reported)
 context_debug TEXT          -- JSON-encoded ContextDebugInfo for the turn (NULL if not captured)
+-- NOTE: `tokens_in` is the **non-cached** input portion only — the value AWS Bedrock
+-- bills at the full input rate, matching CloudWatch's `InputTokenCount` metric. The
+-- full on-wire prompt size is `tokens_in + tokens_cache_read + tokens_cache_write`.
+-- This is sourced from `extractUsage` in `packages/llm/src/ai-sdk-bridge.ts`, which
+-- reads `inputTokenDetails.noCacheTokens` from the AI SDK and falls back to the
+-- summed `inputTokens` only when details are absent.
 ```
 Index: `idx_turns_thread` on `(thread_id, created_at DESC)` for fast per-thread lookup.
 The five additional columns (`relay_target`, `relay_latency_ms`, `tokens_cache_write`, `tokens_cache_read`, `context_debug`) are added via idempotent `ALTER TABLE` statements at startup so the table remains backward-compatible with existing databases.
@@ -1042,7 +1048,7 @@ interface TurnRecord {
 
 function recordTurn(db: Database, turn: TurnRecord): number
 ```
-Inserts a row into `turns` and upserts the corresponding row in `daily_summary` within a single implicit transaction. The date key is derived by splitting `created_at` on `"T"`. Returns the auto-incremented row ID of the inserted turn. `tokens_cache_write` and `tokens_cache_read` should be `null` when the backend does not report prompt caching statistics.
+Inserts a row into `turns` and upserts the corresponding row in `daily_summary` within a single implicit transaction. The date key is derived by splitting `created_at` on `"T"`. Returns the auto-incremented row ID of the inserted turn. `tokens_cache_write` and `tokens_cache_read` should be `null` when the backend does not report prompt caching statistics. **`tokens_in` is the non-cached input portion only**, NOT the summed total — the three fields are independent (full wire prompt = `tokens_in + tokens_cache_read + tokens_cache_write`). `cost_usd` is computed by `calculateTurnCost` (in `packages/agent/src/agent-loop-utils.ts`) as `tokens_in * price_per_m_input + tokens_out * price_per_m_output + cache_read * price_per_m_cache_read + cache_write * price_per_m_cache_write`, all per-million; the cached portion is no longer charged at the full input rate.
 
 ```typescript
 function recordContextDebug(db: Database, turnId: number, debug: ContextDebugInfo): void
@@ -1064,11 +1070,12 @@ applyMetricsSchema(db);
 recordTurn(db, {
   thread_id: "thread-abc",
   model_id: "claude-3-7-sonnet-20250219",
-  tokens_in: 1200,
+  tokens_in: 1200,            // non-cached input only (matches CloudWatch InputTokenCount)
   tokens_out: 340,
-  tokens_cache_write: 800,
-  tokens_cache_read: 400,
-  cost_usd: 0.0048,
+  tokens_cache_write: 800,    // independent: not part of tokens_in
+  tokens_cache_read: 400,     // independent: not part of tokens_in
+  cost_usd: 0.0048,           // tokens_in * input_rate + tokens_out * output_rate +
+                              // cache_read * cache_read_rate + cache_write * cache_write_rate
   created_at: new Date().toISOString(),
 });
 
