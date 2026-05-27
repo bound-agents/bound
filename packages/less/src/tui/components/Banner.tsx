@@ -9,12 +9,12 @@ export interface BannerProps {
 
 /**
  * A bordered notification panel sized to its content. Error banners use a
- * red border with a ⚠ glyph; info banners use a blue border with a ℹ glyph.
+ * red border with a ⚠ glyph; info banners use a cyan border with a ℹ glyph.
  * The dismiss hint, when present, sits inside the border so it reads as
  * part of the banner rather than trailing text.
  */
 export function Banner({ type, message, onDismiss }: BannerProps): React.ReactElement {
-	const color = type === "error" ? "red" : "blue";
+	const color = type === "error" ? "red" : "cyan";
 	const icon = type === "error" ? "⚠" : "ℹ";
 
 	useInput(
