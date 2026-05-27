@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { getSiteId, insertRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { BOUND_NAMESPACE, NON_USER_FACING_INTERFACES, deterministicUUID } from "@bound/shared";
 import { Hono } from "hono";
 
 export function createMcpRoutes(db: Database): Hono {
@@ -14,10 +14,15 @@ export function createMcpRoutes(db: Database): Hono {
 			const siteId = getSiteId(db);
 			const mcpUserId = deterministicUUID(BOUND_NAMESPACE, "mcp");
 
-			// Assign next palette color by cycling (0-9)
+			// Assign next palette color by cycling (0-9) over user-facing threads
+			// only — system-driven interfaces (scheduler, webhook, and mcp itself)
+			// are excluded so they don't pin the visible cycle to a single color.
+			const exclusionPlaceholders = NON_USER_FACING_INTERFACES.map(() => "?").join(", ");
 			const lastThread = db
-				.query("SELECT color FROM threads WHERE deleted = 0 ORDER BY created_at DESC LIMIT 1")
-				.get() as { color: number } | null;
+				.query(
+					`SELECT color FROM threads WHERE deleted = 0 AND interface NOT IN (${exclusionPlaceholders}) ORDER BY created_at DESC LIMIT 1`,
+				)
+				.get(...NON_USER_FACING_INTERFACES) as { color: number } | null;
 			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
 
 			insertRow(

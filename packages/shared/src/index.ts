@@ -29,6 +29,9 @@ export * from "./hlc.js";
 export * from "./assert.js";
 export * from "./branded-types.js";
 
+// Thread interface taxonomy
+export * from "./interface-tags.js";
+
 // Build metadata (commit hash, build time) — generated at build time
 export * from "./build-info.js";
 export * from "./parse-json.js";
