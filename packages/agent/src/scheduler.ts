@@ -291,6 +291,7 @@ export function rescheduleHeartbeat(
 	task: Task,
 	logger: AppContext["logger"],
 	context: string,
+	siteId: string,
 	lastUserInteractionAt: Date,
 ): void {
 	if (task.type !== "heartbeat") return;
@@ -316,15 +317,20 @@ export function rescheduleHeartbeat(
 	const now = Date.now();
 	const effectiveInterval = intervalMs * multiplier;
 	const nextBoundary = Math.ceil(now / effectiveInterval) * effectiveInterval;
-	const nextRunAt = new Date(nextBoundary).toISOString();
+	const nextRunAtIso = new Date(nextBoundary).toISOString();
 
 	// Clear stale error string on successful completion — see rescheduleCronTask for rationale.
-	const errorClause = context === "completion" ? ", error = ''" : "";
-	const heartbeatRescheduleSQL = `UPDATE tasks SET next_run_at = ?, status = 'pending'${errorClause} WHERE id = ?`; // outbox-exempt: heartbeat rescheduling is local-only state, not synced
-	db.query(heartbeatRescheduleSQL).run(nextRunAt, task.id);
+	const updates: Partial<Record<string, unknown>> = {
+		next_run_at: nextRunAtIso,
+		status: "pending",
+	};
+	if (context === "completion") {
+		updates.error = "";
+	}
+	updateRow(db, "tasks", task.id, updates, siteId);
 
 	logger.info(
-		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAt}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
+		`[@bound/agent/scheduler] Rescheduled heartbeat (${context}): next_run_at=${nextRunAtIso}, multiplier=${multiplier}x, effective_interval=${effectiveInterval}ms`,
 	);
 }
 
@@ -382,8 +388,8 @@ export function healStuckTasks(
 					recovered++;
 					break;
 				case "heartbeat":
-					rescheduleHeartbeat(db, task, logger, "stuck-row healer", lastUserInteractionAt);
-					// NOTE: rescheduleHeartbeat is an outbox-exempt raw UPDATE (Phase 1). It does not
+					rescheduleHeartbeat(db, task, logger, "stuck-row healer", siteId, lastUserInteractionAt);
+					// NOTE: rescheduleHeartbeat now routes through outbox (Phase 2 R-LR11). It updates
 					// clear claim metadata. Claim metadata remains until Phase 2 R-LR11 lands, at which
 					// point rescheduleHeartbeat is moved to updateRow. For Phase 1, this is acceptable:
 					// the row is already back to 'pending', so the phase1 claiming CAS will overwrite
@@ -736,6 +742,7 @@ export class Scheduler {
 					task,
 					this.ctx.logger,
 					"heartbeat timeout eviction",
+					this.ctx.siteId,
 					this.lastUserInteractionAt,
 				);
 				resetEventTask(
@@ -1250,6 +1257,7 @@ export class Scheduler {
 								task,
 								this.ctx.logger,
 								"model validation failure",
+								this.ctx.siteId,
 								this.lastUserInteractionAt,
 							);
 							retryDeferredTask(
@@ -1403,6 +1411,7 @@ export class Scheduler {
 							task,
 							this.ctx.logger,
 							"soft error",
+							this.ctx.siteId,
 							this.lastUserInteractionAt,
 						);
 						retryDeferredTask(
@@ -1465,6 +1474,7 @@ export class Scheduler {
 							task,
 							this.ctx.logger,
 							"completion",
+							this.ctx.siteId,
 							this.lastUserInteractionAt,
 						);
 						resetEventTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
@@ -1565,6 +1575,7 @@ export class Scheduler {
 						task,
 						this.ctx.logger,
 						"hard error",
+						this.ctx.siteId,
 						this.lastUserInteractionAt,
 					);
 					retryDeferredTask(
@@ -1761,6 +1772,7 @@ export class Scheduler {
 						task,
 						this.ctx.logger,
 						"template completion",
+						this.ctx.siteId,
 						this.lastUserInteractionAt,
 					);
 					resetEventTask(
@@ -1799,6 +1811,7 @@ export class Scheduler {
 						task,
 						this.ctx.logger,
 						"template hard error",
+						this.ctx.siteId,
 						this.lastUserInteractionAt,
 					);
 					resetEventTask(

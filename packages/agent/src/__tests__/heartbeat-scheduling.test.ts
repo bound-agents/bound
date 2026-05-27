@@ -127,7 +127,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at, status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
@@ -145,7 +145,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "completion", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "completion", siteId, lastInteraction);
 
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
@@ -158,7 +158,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "eviction", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "eviction", siteId, lastInteraction);
 
 		const row = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
@@ -172,7 +172,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
@@ -187,7 +187,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
@@ -203,7 +203,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
@@ -221,7 +221,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 1x multiplier: 30min interval, boundaries at :00 and :30
@@ -236,7 +236,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 3x multiplier: 30min becomes 90min effective interval
@@ -254,7 +254,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date(Date.now() - 5 * 60 * 60 * 1000);
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		// With 5x multiplier: 30min becomes 150min effective interval
@@ -277,7 +277,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "eviction_timeout", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "eviction_timeout", siteId, lastInteraction);
 
 		const row = db.query("SELECT next_run_at, status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("pending");
@@ -314,7 +314,7 @@ describe("rescheduleHeartbeat", () => {
 
 		// Should return early without updating
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(row.status).toBe("running"); // unchanged
@@ -351,7 +351,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		expect(errorLogged).toBe(true);
 
@@ -391,7 +391,7 @@ describe("rescheduleHeartbeat", () => {
 		const lastInteraction = new Date();
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", lastInteraction);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
 
 		expect(errorLogged).toBe(true);
 	});
@@ -405,7 +405,7 @@ describe("rescheduleHeartbeat", () => {
 		const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", fiveHoursAgo);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, fiveHoursAgo);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
@@ -431,7 +431,7 @@ describe("rescheduleHeartbeat", () => {
 		const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
 
 		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", twoHoursAgo);
+		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, twoHoursAgo);
 
 		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
 		const nextDate = new Date(row.next_run_at);
@@ -607,5 +607,216 @@ describe("heartbeat_at sync via outbox (R-LR1)", () => {
 		expect(new Date(secondData.modified_at).getTime()).toBeGreaterThanOrEqual(
 			new Date(firstData.modified_at).getTime(),
 		);
+	});
+});
+
+describe("rescheduleHeartbeat outbox routing (R-LR11)", () => {
+	let tmpDir: string;
+	let db: Database;
+	let siteId: string;
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), `hb-reschedule-${randomBytes(4).toString("hex")}-`));
+		const dbPath = join(tmpDir, "test.db");
+		db = createDatabase(dbPath);
+		applySchema(db);
+		applyMetricsSchema(db);
+	});
+
+	beforeEach(() => {
+		siteId = randomUUID();
+
+		db.run("DELETE FROM host_meta");
+		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
+	});
+
+	afterEach(() => {
+		db.run("DELETE FROM tasks");
+		db.run("DELETE FROM change_log");
+	});
+
+	afterAll(async () => {
+		db.close();
+		await cleanupTmpDir(tmpDir);
+	});
+
+	function makeCtx(): AppContext {
+		return {
+			db,
+			logger: {
+				debug: () => {},
+				info: () => {},
+				warn: () => {},
+				error: () => {},
+			},
+			eventBus: new TypedEventEmitter(),
+			hostName: "test-host",
+			siteId,
+			config: {
+				allowlist: {
+					default_web_user: "test",
+					users: { test: { display_name: "Test" } },
+				},
+				modelBackends: {
+					backends: [
+						{
+							id: "mock",
+							provider: "ollama",
+							model: "mock",
+							base_url: "http://localhost:11434",
+							context_window: 8000,
+							tier: 1,
+							price_per_m_input: 0,
+							price_per_m_output: 0,
+						},
+					],
+					default: "mock",
+					daily_budget_usd: 100,
+				},
+			},
+			optionalConfig: {},
+		};
+	}
+
+	function insertRunningHeartbeatTask(error: string | null = null): string {
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: 30 * 60 * 1000 });
+
+		db.run(
+			`INSERT INTO tasks (
+				id, type, status, trigger_spec, payload, thread_id,
+				claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+				run_count, max_runs, requires, model_hint, no_history,
+				inject_mode, depends_on, require_success, alert_threshold,
+				consecutive_failures, event_depth, no_quiescence,
+				heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+			) VALUES (
+				?, 'heartbeat', 'running', ?, NULL, NULL,
+				NULL, NULL, NULL, NULL, NULL,
+				0, NULL, NULL, NULL, 0,
+				'status', NULL, 0, 5,
+				0, 0, 0,
+				NULL, NULL, ?, ?, 'system', ?, 0
+			)`,
+			[taskId, triggerSpec, error, now, now],
+		);
+
+		return taskId;
+	}
+
+	function getChangeLogEntries(): any[] {
+		return db
+			.query("SELECT * FROM change_log WHERE table_name = 'tasks' ORDER BY hlc ASC")
+			.all() as any[];
+	}
+
+	// AC11.1: Post-completion reschedule routes through outbox
+	it("AC11.1.1: Post-completion context routes through outbox", () => {
+		const taskId = insertRunningHeartbeatTask("task failed previously");
+		const ctx = makeCtx();
+		const lastInteraction = new Date();
+
+		// Clear change_log to count entries from this operation
+		db.run("DELETE FROM change_log");
+
+		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+		rescheduleHeartbeat(db, task, ctx.logger, "completion", siteId, lastInteraction);
+
+		// Verify row state
+		const row = db
+			.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?")
+			.get(taskId) as any;
+		expect(row.status).toBe("pending");
+		expect(row.next_run_at).toBeDefined();
+		expect(row.error).toBe(""); // Cleared on completion
+
+		// Verify change_log entry
+		const entries = getChangeLogEntries();
+		const relevantEntries = entries.filter((e) => e.row_id === taskId);
+		expect(relevantEntries.length).toBe(1);
+
+		const entry = relevantEntries[0];
+		const rowData = JSON.parse(entry.row_data as string);
+		expect(rowData.status).toBe("pending");
+		expect(rowData.next_run_at).toBeDefined();
+		expect(rowData.error).toBe("");
+	});
+
+	// AC11.1: Eviction recovery reschedule routes through outbox
+	it("AC11.1.2: Eviction recovery context routes through outbox", () => {
+		const taskId = insertRunningHeartbeatTask(null);
+		const ctx = makeCtx();
+		const lastInteraction = new Date();
+
+		// Clear change_log to count entries from this operation
+		db.run("DELETE FROM change_log");
+
+		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+		rescheduleHeartbeat(
+			db,
+			task,
+			ctx.logger,
+			"heartbeat timeout eviction",
+			siteId,
+			lastInteraction,
+		);
+
+		// Verify row state
+		const row = db
+			.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?")
+			.get(taskId) as any;
+		expect(row.status).toBe("pending");
+		expect(row.next_run_at).toBeDefined();
+		// error should NOT be cleared on non-completion contexts
+		expect(row.error).toBe(null);
+
+		// Verify change_log entry
+		const entries = getChangeLogEntries();
+		const relevantEntries = entries.filter((e) => e.row_id === taskId);
+		expect(relevantEntries.length).toBe(1);
+
+		const entry = relevantEntries[0];
+		const rowData = JSON.parse(entry.row_data as string);
+		expect(rowData.status).toBe("pending");
+		expect(rowData.next_run_at).toBeDefined();
+		// error not in the update (only next_run_at and status)
+		// The change_log will show the full row state, so error should be null/undefined if not updated
+		expect([null, undefined]).toContain(rowData.error);
+	});
+
+	// AC11.1: Hard-error reschedule routes through outbox
+	it("AC11.1.3: Hard-error (model validation) context routes through outbox", () => {
+		const taskId = insertRunningHeartbeatTask(null);
+		const ctx = makeCtx();
+		const lastInteraction = new Date();
+
+		// Clear change_log to count entries from this operation
+		db.run("DELETE FROM change_log");
+
+		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+		rescheduleHeartbeat(db, task, ctx.logger, "model validation failure", siteId, lastInteraction);
+
+		// Verify row state
+		const row = db
+			.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?")
+			.get(taskId) as any;
+		expect(row.status).toBe("pending");
+		expect(row.next_run_at).toBeDefined();
+		// error should NOT be cleared on non-completion contexts
+		expect(row.error).toBe(null);
+
+		// Verify change_log entry
+		const entries = getChangeLogEntries();
+		const relevantEntries = entries.filter((e) => e.row_id === taskId);
+		expect(relevantEntries.length).toBe(1);
+
+		const entry = relevantEntries[0];
+		const rowData = JSON.parse(entry.row_data as string);
+		expect(rowData.status).toBe("pending");
+		expect(rowData.next_run_at).toBeDefined();
+		// error not in the update (only next_run_at and status)
+		// The change_log will show the full row state, so error should be null/undefined if not updated
+		expect([null, undefined]).toContain(rowData.error);
 	});
 });
