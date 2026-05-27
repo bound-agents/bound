@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval -- Test Requirements
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. Acceptance criteria below that reference prefix detection describe the historical implementation; the corresponding tests have been updated or removed to match the live contract.
+
 Maps each acceptance criterion to automated tests and/or human verification steps.
 
 ---

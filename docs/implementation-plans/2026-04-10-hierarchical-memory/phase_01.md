@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval Implementation Plan
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Add a `tier` column to `semantic_memory` and define shared types to support four-tier memory hierarchy (`pinned`/`summary`/`default`/`detail`).
 
 **Architecture:** Extends the existing semantic memory schema with a new `tier` column and backfills prefix-keyed entries as `pinned`. Uses the established idempotent ALTER TABLE migration pattern. Adds `MemoryTier` type to the shared package for cross-package type safety.

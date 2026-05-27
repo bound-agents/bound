@@ -2,7 +2,17 @@
 
 **Supplements:** `2026-03-29-memory-visibility.md` R-MV1–R-MV13; `2026-03-20-base.md` §5.5, §9.2, §13.1
 **Date:** 2026-04-10
-**Status:** Draft
+**Status:** Implemented; superseded in part on 2026-05-26 — see amendment below.
+
+---
+
+## Amendment 2026-05-26: Pinned-prefix shorthand removed
+
+The "Availability over consistency" principle (§1.5) admitted a deliberate redundancy: an entry could be pinned by `tier='pinned'` OR by key prefix (`_standing:`, `_feedback:`, `_policy:`, `_pinned:`). The redundancy outlived its purpose. After the schema-level `tier` column was added and the idempotent backfill ran on every host, every prefixed entry already carried `tier='pinned'`. The prefix-detection path no longer rescued anything; it only made `loadPinnedEntries`, `graphSeededRetrieval`, the schema migration, and `resolveTierForKey` carry the same hardcoded list of four prefixes in three different SQL fragments.
+
+On 2026-05-26 the redundancy was removed. `tier` is the single source of truth for pinning. The four prefixes survive as a human-facing naming convention only — `_feedback:correction:foo` is still a meaningful key NAME, but it does not auto-resolve to `tier='pinned'`. To pin a memory, pass `tier: "pinned"` explicitly to `memory store`.
+
+The body of this RFC is preserved verbatim as historical context. R-HM2's prefix-override clause and §3.3's prefix-OR-tier dual detection no longer hold.
 
 ---
 

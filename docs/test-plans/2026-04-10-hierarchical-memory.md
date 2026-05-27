@@ -1,5 +1,7 @@
 # Hierarchical Memory Retrieval — Human Test Plan
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. Test scenarios below that reference prefix detection describe the historical implementation; pin a memory by passing `tier: "pinned"` explicitly to the `memory store` action.
+
 **Feature:** Hierarchical memory retrieval with four-tier system (pinned/summary/default/detail)
 **Date:** 2026-04-10
 **Automated coverage:** 36/36 acceptance criteria covered by automated tests

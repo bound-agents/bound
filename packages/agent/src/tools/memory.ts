@@ -27,7 +27,9 @@ const memorySchema = z.object({
 	tier: z
 		.enum(["pinned", "summary", "default", "detail"])
 		.optional()
-		.describe("Memory tier (for store)"),
+		.describe(
+			"Memory tier (for store). Pass 'pinned' to make a memory durable across context compaction (operational rules, feedback corrections, policy pointers, explicit pins). Defaults to 'default'.",
+		),
 	prefix: z.string().optional().describe("Key prefix for batch forget"),
 	source_key: z.string().optional().describe("Source memory key (for connect, disconnect)"),
 	target_key: z.string().optional().describe("Target memory key (for connect, disconnect)"),
@@ -47,39 +49,17 @@ const memorySchema = z.object({
 type MemoryInput = z.infer<typeof memorySchema>;
 
 /**
- * Key prefixes whose presence forces the resulting memory entry to
- * the `pinned` tier regardless of any explicit tier argument.
+ * Resolve the tier for a memory entry from an optional explicit-tier
+ * argument. Pure function: explicit tier wins, else `"default"`.
  *
- * Per CONTRIBUTING.md "Memory tiers" — prefixed keys carry standing
- * authority (operational rules, feedback corrections, policy
- * pointers, explicit pins), so the agent must not be able to
- * accidentally demote them by passing an explicit tier on store.
+ * Tier is the single source of truth for memory durability. The
+ * historical `_standing:` / `_feedback:` / `_policy:` / `_pinned:`
+ * key-prefix shorthand was removed: those names are still legal as a
+ * human-facing naming convention, but they no longer auto-pin. To
+ * pin a memory, pass `tier: "pinned"` on store.
  */
-export const PINNED_PREFIXES = ["_standing", "_feedback", "_policy", "_pinned"] as const;
-
-/** True when the key starts with `<prefix>:` for any pinned prefix. */
-export function hasPinnedPrefix(key: string): boolean {
-	return PINNED_PREFIXES.some((prefix) => key.startsWith(`${prefix}:`));
-}
-
-/**
- * Resolve the tier for a memory entry from its key and an optional
- * explicit-tier argument.
- *
- * Pure function. The rules, in priority order:
- *   1. Pinned-prefix keys ALWAYS resolve to `pinned`. The explicit
- *      tier argument is ignored. This is the invariant that prevents
- *      operational rules from being accidentally demoted.
- *   2. Otherwise, an explicit tier argument wins.
- *   3. Otherwise, default to `"default"`.
- *
- * Property-tested at `__tests__/tier-classification.property.test.ts`
- * for totality, idempotence, and the priority-ordering invariant.
- */
-export function resolveTierForKey(key: string, explicitTier?: MemoryTier): MemoryTier {
-	if (hasPinnedPrefix(key)) return "pinned";
-	if (explicitTier !== undefined) return explicitTier;
-	return "default";
+export function resolveTierForKey(_key: string, explicitTier?: MemoryTier): MemoryTier {
+	return explicitTier ?? "default";
 }
 
 function handleStore(args: MemoryInput, ctx: ToolContext): string {
@@ -92,12 +72,8 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 	const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
 	const now = new Date().toISOString();
 
-	// Determine tier: see `resolveTierForKey` for the priority rules.
-	// Pinned-prefix keys always resolve to `pinned` regardless of the
-	// explicit tier argument — this is the invariant that prevents
-	// operational rules from being demoted by an `args.tier` on store.
+	// Determine tier: explicit argument wins, else "default".
 	const resolvedTier = resolveTierForKey(key, args.tier);
-	const isPinnedByPrefix = hasPinnedPrefix(key);
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
 	const existing = ctx.db
@@ -105,8 +81,8 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 		.get(key) as { id: string; deleted: number; tier: MemoryTier } | null;
 
 	if (existing) {
-		// Updating existing entry: pinned prefixes always correct to "pinned", else preserve tier unless explicitly overridden
-		const tierForUpdate = isPinnedByPrefix ? "pinned" : args.tier ? resolvedTier : existing.tier;
+		// Updating existing entry: preserve tier unless explicitly overridden.
+		const tierForUpdate = args.tier ? resolvedTier : existing.tier;
 		updateRow(
 			ctx.db,
 			"semantic_memory",
@@ -408,7 +384,7 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "memory",
 				description:
-					"Semantic memory operations: store, forget, search, connect, disconnect, traverse, neighbors",
+					"Semantic memory operations: store, forget, search, connect, disconnect, traverse, neighbors. To make a memory durable across context compaction, pass tier='pinned' on store. Tier is the single source of truth for pinning — key naming alone never auto-pins.",
 				parameters: jsonSchema,
 			},
 		},

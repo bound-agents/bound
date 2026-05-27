@@ -777,20 +777,6 @@ export function applySchema(db: Database): void {
 			WHERE tier = 'detail' AND deleted = 0
 	`);
 
-	// Backfill: prefix-keyed entries → pinned tier (idempotent — only updates default tier)
-	// IMPORTANT: Use the EXACT same ESCAPE syntax as summary-extraction.ts lines 467-470.
-	// Do NOT derive the escaping from scratch — copy the pattern from the existing codebase.
-	// The correct escape sequence depends on the string context (template literal vs prepare()).
-	// Reference: summary-extraction.ts uses LIKE '\\_standing%' ESCAPE '\\' inside prepare().
-	db.run(`
-		UPDATE semantic_memory SET tier = 'pinned'
-		WHERE (key LIKE '\\_standing%' ESCAPE '\\'
-			OR key LIKE '\\_feedback%' ESCAPE '\\'
-			OR key LIKE '\\_policy%' ESCAPE '\\'
-			OR key LIKE '\\_pinned%' ESCAPE '\\')
-			AND tier = 'default' AND deleted = 0
-	`);
-
 	// Thread model hint: authoritative model preference for inference on this thread.
 	// Replaces the heuristic of scanning messages.model_id for thread model resolution.
 	try {

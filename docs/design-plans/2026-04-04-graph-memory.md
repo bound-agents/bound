@@ -1,5 +1,7 @@
 # Graph Memory Architecture Design
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning; key naming alone never auto-pins. References below describe the historical implementation. Live contract: `## Memory tiers` in `CLAUDE.md`.
+
 ## Summary
 
 Graph Memory adds structured relationships between the agent's semantic memories to improve context retrieval. Currently, the agent selects memories for inclusion in its context window based solely on recency and keyword matching — a memory about "scheduler_v3" might be included because it was recently modified, but related memories about "cron_rescheduling" or "heartbeat_scheduling" are missed unless they also happen to be recent. This design introduces a `memory_edges` table that expresses typed relationships (relates_to, supersedes, governs, part_of, derived_from) between existing memory entries, turning the flat memory store into a graph.

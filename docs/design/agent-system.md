@@ -348,7 +348,7 @@ Native memory tool dispatched by action parameter: `store`, `forget`, `search`, 
 
 | Action | Parameters | Description |
 |---|---|---|
-| `store` | key, value, tier | Upsert a key/value pair in `semantic_memory`. Keys with prefixes `_standing`, `_feedback`, `_policy`, or `_pinned` are auto-pinned; otherwise `tier` (`pinned`, `summary`, `default`, `detail`) is honored. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
+| `store` | key, value, tier | Upsert a key/value pair in `semantic_memory`. The explicit `tier` argument (`pinned`, `summary`, `default`, `detail`) is the only way to set durability — to pin a memory across context compaction, pass `tier: "pinned"`. Key naming alone never auto-pins. Row ID is a deterministic UUID derived from the key using `BOUND_NAMESPACE`. |
 | `forget` | key_match, prefix | Soft-delete an entry by `key_match` or batch-delete by `prefix`. Cascades to memory edges; retiring a `summary` promotes its `detail` children back to `default`. |
 | `search` | query | Keyword search over memory keys and values (stop-word filtered, limit 20, ordered by `modified_at DESC`). |
 | `connect` / `disconnect` | source, target, relation, weight | Upsert or remove `memory_edges` rows. `summarizes` edges drive tier transitions. |

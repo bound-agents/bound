@@ -1,5 +1,7 @@
 # Volatile Context Tiered Fidelity — Phase 7: §8.4 Validation Check + §8.6 Behavioral Probe
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Implement the §8.4 daily R-VC9/R-VC9b title-and-gloss compliance validation that runs in the heartbeat task and writes `_validation:*` outcome entries, plus the §8.6 behavioral probe scaffold that runs an N=10 agent-loop integration test against a webhook fixture for both the post-RFC and pre-RFC orientation blocks. The probe is integration-tier and gated behind an env var so per-PR CI does not consume inference budget.
 
 **Architecture:** Two independent subsystems. §8.4 is a pure-DB validation pass that hooks into the existing scheduler/heartbeat task path. §8.6 is a probe harness under `packages/agent/src/__tests__/probes/` (a new `.integration.test.ts` file) that exercises a real agent loop with deterministic temperature against a fixture conversation. Both are documented for operator follow-up: §8.4's outcome entries are surfaced via the existing `_validation:` synthesis advisory channel; §8.6 is wired into a separate CI workflow that the operator schedules weekly.

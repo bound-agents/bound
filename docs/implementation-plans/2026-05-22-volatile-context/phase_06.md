@@ -1,5 +1,7 @@
 # Volatile Context Tiered Fidelity — Phase 6: Snapshot Tests + d0372be6 Structural Regression
 
+> **Contract update 2026-05-26.** The pinned-prefix shorthand (`_standing:` / `_feedback:` / `_policy:` / `_pinned:`) was removed. `tier='pinned'` is now the single source of truth for pinning. References below describe the historical implementation.
+
 **Goal:** Land §8.2's eleven snapshot-style fixtures (the new `.snap.txt` convention this RFC introduces) plus the §8.3 d0372be6 structural regression test that pins the surface-level fix for the confabulation pattern.
 
 **Architecture:** A small in-house snapshot helper (`assertSnapshot`) under `packages/agent/src/__tests__/test-helpers/snapshot.ts` reads a fixture file and compares against a rendered string with optional `UPDATE_SNAPSHOTS=1` regeneration. Each of the eleven scenarios constructs a fixture DB, runs `buildVolatileContext`, and pins the rendered output to a corresponding `.snap.txt`. The §8.3 regression test runs on the same plumbing but uses positive/negative substring assertions rather than full-block snapshot equivalence.

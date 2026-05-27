@@ -531,7 +531,7 @@ created_at TEXT NOT NULL, modified_at TEXT NOT NULL, last_accessed_at TEXT,
 deleted INTEGER DEFAULT 0,
 tier TEXT DEFAULT 'default'  -- added via idempotent ALTER TABLE; one of "pinned" | "summary" | "default" | "detail"
 ```
-Indexes: unique partial index on `key` where `deleted = 0`; `idx_memory_modified` on `modified_at DESC`; partial index `idx_memory_tier` on `tier` where `deleted = 0`. An idempotent backfill promotes entries with `_standing`/`_feedback`/`_policy`/`_pinned` key prefixes from the `default` tier to `pinned`.
+Indexes: unique partial index on `key` where `deleted = 0`; `idx_memory_modified` on `modified_at DESC`; partial index `idx_memory_tier` on `tier` where `deleted = 0`. The `tier` column is the single source of truth for pinning — there is no key-prefix shorthand that promotes entries to `pinned` tier. The historical `_standing` / `_feedback` / `_policy` / `_pinned` key prefixes survive only as a human-facing naming convention.
 
 **`tasks`**
 ```sql
