@@ -252,12 +252,16 @@ describe("healStuckTasks", () => {
 
 			// Verify backoff formula: next_run_at = now + DEFERRED_RETRY_BACKOFF_MS * consecutive_failures
 			// With consecutive_failures = 1 (pre-increment), the backoff is 1 * 5000 = 5000ms
-			// Formula note: retryDeferredTask increments, so the formula is:
+			// Formula note: retryDeferredTask uses LINEAR backoff:
 			// next_run_at = now + DEFERRED_RETRY_BACKOFF_MS * (consecutive_failures)
 			// where consecutive_failures is the PRE-increment value passed to retryDeferredTask.
-			// This matches Phase 3 R-LR3 eviction's deferred branch formula:
-			// newConsecutiveFailures = prev + 1; next_run_at = now + DEFERRED_RETRY_BACKOFF_MS * newConsecutiveFailures
-			// The two formulations are equivalent.
+			// SEMANTIC DIFFERENCE: Phase 1 (healer, this test) uses pre-increment multiplication.
+			// Phase 3 R-LR3 (eviction) uses post-increment: newConsecutiveFailures = prev + 1;
+			// next_run_at = now + DEFERRED_RETRY_BACKOFF_MS * newConsecutiveFailures.
+			// They differ by exactly DEFERRED_RETRY_BACKOFF_MS:
+			// Phase 1: 1 * 5000 = 5000ms; Phase 3: (1+1) * 5000 = 10000ms.
+			// When Phase 3 lands, this test must be updated to expect 10000ms for prev=1 OR
+			// the Phase 1 helper must be migrated to post-increment for consistency.
 			const expectedBackoffMs = DEFERRED_RETRY_BACKOFF_MS_DEFAULT * 1; // 1 * 5000
 			const expectedNextRunAt = new Date(beforeTime + expectedBackoffMs);
 			const actualNextRunAt = updatedTask?.next_run_at ? new Date(updatedTask.next_run_at) : null;
