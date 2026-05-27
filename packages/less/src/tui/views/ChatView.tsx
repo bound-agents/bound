@@ -293,7 +293,11 @@ export function ChatView({
 						const marginBottom = msg.role === "tool_call" ? 0 : meta && !meta.isLastInGroup ? 0 : 1;
 						return (
 							<Box key={msg.id} marginBottom={marginBottom}>
-								<MessageBlock message={msg} filePath={meta?.filePath} />
+								<MessageBlock
+									message={msg}
+									filePath={meta?.filePath}
+									terminalColumns={termColumns}
+								/>
 							</Box>
 						);
 					}}
