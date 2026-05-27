@@ -386,4 +386,118 @@ describe("Atomic eviction recovery (R-LR3)", () => {
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as { status: string };
 		expect(row.status).toBe("completed");
 	});
+
+	it("Per-row try/catch: unknown task type in first task does not abort batch — second task evicts normally", () => {
+		// Setup: Create two evictable running tasks. The first has corrupted task.type;
+		// the second is a normal event task. This tests that per-row error handling allows
+		// the batch to continue despite one task's unknown type throwing inside withTx.
+		const now = new Date();
+		const staleHeartbeat = new Date(now.getTime() - 30 * 60_000);
+
+		// Task 1: corrupted task with unknown type
+		const taskId1 = randomUUID();
+		const leaseId1 = randomUUID();
+		db.run(
+			"INSERT INTO tasks (id, type, trigger_spec, status, created_at, modified_at, claimed_by, claimed_at, lease_id, error, result, consecutive_failures, alert_threshold, next_run_at, thread_id, deleted, heartbeat_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				taskId1,
+				"zzz_unknown", // Will cause throw inside withTx's switch default branch
+				"test",
+				"running",
+				now.toISOString(),
+				now.toISOString(),
+				ctx.siteId,
+				new Date(now.getTime() - 5 * 60_000).toISOString(),
+				leaseId1,
+				null,
+				null,
+				0,
+				3,
+				null,
+				null,
+				0,
+				staleHeartbeat.toISOString(),
+			],
+		);
+
+		// Task 2: normal event task
+		const taskId2 = randomUUID();
+		const leaseId2 = randomUUID();
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId2,
+				type: "event",
+				trigger_spec: "test",
+				status: "running",
+				created_at: now.toISOString(),
+				modified_at: now.toISOString(),
+				claimed_by: ctx.siteId,
+				claimed_at: new Date(now.getTime() - 5 * 60_000).toISOString(),
+				lease_id: leaseId2,
+				error: null,
+				result: null,
+				consecutive_failures: 0,
+				alert_threshold: 3,
+				next_run_at: null,
+				thread_id: "th2",
+				deleted: 0,
+				heartbeat_at: staleHeartbeat.toISOString(),
+			},
+			ctx.siteId,
+		);
+
+		// No relay_inbox entries, so task2 will get next_run_at = null
+
+		// Record change_log count BEFORE eviction for task 2
+		const task2ChangesBefore = (
+			db.query("SELECT COUNT(*) as c FROM change_log WHERE row_id = ?").get(taskId2) as {
+				c: number;
+			}
+		).c;
+
+		// Run eviction
+		const scheduler = new Scheduler(ctx);
+		(scheduler as any).phase0Eviction();
+
+		// Assert 1: Task 1 with unknown type rolled back — still running (unchanged)
+		const row1 = db
+			.query("SELECT status, consecutive_failures, claimed_by FROM tasks WHERE id = ?")
+			.get(taskId1) as { status: string; consecutive_failures: number; claimed_by: string | null };
+		expect(row1.status).toBe(
+			"running",
+			"Task 1 (unknown type) should remain running after withTx rollback",
+		);
+		expect(row1.consecutive_failures).toBe(0, "Task 1 consecutive_failures should not increment");
+		expect(row1.claimed_by).toBe(ctx.siteId, "Task 1 claimed_by should remain unchanged");
+
+		// Assert 2: Task 2 was still evicted despite task 1's error
+		const row2 = db
+			.query("SELECT status, consecutive_failures, claimed_by FROM tasks WHERE id = ?")
+			.get(taskId2) as { status: string; consecutive_failures: number; claimed_by: string | null };
+		expect(row2.status).toBe("pending", "Task 2 should be evicted to pending");
+		expect(row2.consecutive_failures).toBe(1, "Task 2 consecutive_failures should be incremented");
+		expect(row2.claimed_by).toBeNull("Task 2 claimed_by should be cleared after eviction");
+
+		// Assert 3: Task 1 change_log should be empty (no entry from the rolled-back tx)
+		const task1Changes = (
+			db.query("SELECT COUNT(*) as c FROM change_log WHERE row_id = ?").get(taskId1) as {
+				c: number;
+			}
+		).c;
+		expect(task1Changes).toBe(0, "Task 1 should have no changelog entries from eviction");
+
+		// Assert 4: Task 2 change_log should have exactly one NEW entry (the successful eviction)
+		// Task 2 already has 1 from insertRow, so after eviction it should have task2ChangesBefore + 1
+		const task2ChangesAfter = (
+			db.query("SELECT COUNT(*) as c FROM change_log WHERE row_id = ?").get(taskId2) as {
+				c: number;
+			}
+		).c;
+		expect(task2ChangesAfter).toBe(
+			task2ChangesBefore + 1,
+			"Task 2 should have exactly one new changelog entry from eviction",
+		);
+	});
 });
