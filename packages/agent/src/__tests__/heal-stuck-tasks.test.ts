@@ -150,10 +150,8 @@ describe("healStuckTasks", () => {
 			expect(updatedTask?.next_run_at).toBeDefined();
 			expect(updatedTask?.next_run_at).not.toBeNull();
 
-			// NOTE: In Phase 1, rescheduleHeartbeat is an outbox-exempt raw UPDATE
-			// that does not clear claim metadata. The row is 'pending', so phase1
-			// claiming will overwrite the stale columns on the next claim. This
-			// becomes fully compliant after Phase 2 R-LR11 lands.
+			// NOTE: rescheduleHeartbeat now routes through outbox (Phase 2 R-LR11). It does not
+			// clear claim metadata; the next phase1 claim CAS overwrites stale claim columns.
 		});
 
 		it("recovers a stuck event task", () => {

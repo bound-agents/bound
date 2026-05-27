@@ -33,7 +33,7 @@ describe("heartbeat-at multi-host LWW propagation", () => {
 		setChangelogEventBus(null);
 	});
 
-	it("AC1.1: Single heartbeat refresh propagates to host B via LWW", () => {
+	it("AC1.1: Single heartbeat refresh propagates to host B via LWW", async () => {
 		const taskId = randomUUID();
 		const leaseId = randomUUID();
 		const now = new Date().toISOString();
@@ -46,7 +46,7 @@ describe("heartbeat-at multi-host LWW propagation", () => {
 				id: taskId,
 				type: "heartbeat",
 				status: "running",
-				trigger_spec: "*/30 * * * *",
+				trigger_spec: JSON.stringify({ type: "heartbeat", interval_ms: 30 * 60 * 1000 }),
 				payload: null,
 				created_at: now,
 				created_by: siteIdA,
@@ -95,6 +95,9 @@ describe("heartbeat-at multi-host LWW propagation", () => {
 		expect(rowB).not.toBeNull();
 		expect(rowB?.heartbeat_at).toBeNull();
 
+		// Sleep before first refresh to ensure different modified_at timestamp from insert
+		await new Promise((r) => setTimeout(r, 2));
+
 		// Trigger a heartbeat refresh on host A using updateRowIf
 		const t1 = new Date().toISOString();
 		const refreshSuccess = updateRowIf(
@@ -142,7 +145,7 @@ describe("heartbeat-at multi-host LWW propagation", () => {
 				id: taskId,
 				type: "heartbeat",
 				status: "running",
-				trigger_spec: "*/30 * * * *",
+				trigger_spec: JSON.stringify({ type: "heartbeat", interval_ms: 30 * 60 * 1000 }),
 				payload: null,
 				created_at: now,
 				created_by: siteIdA,
@@ -181,6 +184,9 @@ describe("heartbeat-at multi-host LWW propagation", () => {
 		for (const entry of insertEntries) {
 			applyLWWReducer(dbB, entry);
 		}
+
+		// Sleep before first refresh to ensure different modified_at timestamp from insert
+		await new Promise((r) => setTimeout(r, 2));
 
 		// Trigger TWO close-in-time refreshes on host A
 		// First refresh
