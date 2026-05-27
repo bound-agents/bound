@@ -26,13 +26,6 @@ export interface WrapToolCallOptions {
  * SpanContext from the carrier and parents `client-tool.execute` directly under
  * it, so parallel/serial sibling calls naturally group under the agent loop's
  * `tool-execute` span on a single unified Jaeger trace.
- *
- * The previous `boundless.session` span has been removed: it conflated
- * connection lifetime with per-turn lifetime (it rolled per-traceparent), and
- * once children parent under the server SpanContext directly, sibling grouping
- * happens automatically via the carrier — the session span added a layer of
- * indirection that misrepresented causality (it appeared to be the parent of a
- * tool-execute span that had actually caused it).
  */
 export interface ClientTracingSession {
 	/**
@@ -52,10 +45,9 @@ export interface ClientTracingSession {
 
 	/**
 	 * Shut down the underlying provider (fire-and-forget). Idempotent —
-	 * subsequent calls return `[]`. The return type is preserved for back-compat
-	 * with callers that previously needed to ship a trailing batch span; with
-	 * the session span removed, every `client-tool.execute` ships on its own
-	 * `span.end()` and there is nothing trailing to flush.
+	 * subsequent calls return `[]`. The `SerializedSpan[]` return type is
+	 * preserved for back-compat with callers that previously shipped a
+	 * trailing batch; nothing is ever queued here so the array is always empty.
 	 */
 	end(): SerializedSpan[];
 }

@@ -6,15 +6,9 @@
  * Historically, resolveDelegationMessageId() persisted notifications with
  * role: "system", which context-assembly.ts Stage 2.5 silently filtered
  * out of the LLM input — the message row landed in the DB but the agent
- * never saw it. A single live-traffic symptom: thread
- * a83b945f-d4b1-4b77-904f-bb9b465edc1d received heartbeat anomaly
- * notifications at 07:32, 09:03, 11:32, 14:01, 19:03 UTC 2026-04-26 and
- * produced zero assistant turns in response because the notification
- * never reached the model.
- *
- * This test wires the real producers and consumers together and asserts
- * the notification text survives to assembleContext()'s `messages`
- * output. It is the regression guard for Invariant #19.
+ * never saw it. This test wires the real producers and consumers together
+ * and asserts the notification text survives to assembleContext()'s
+ * `messages` output. Regression guard for Invariant #19.
  */
 
 import type { Database } from "bun:sqlite";

@@ -27,7 +27,6 @@ function loadRelayConfig(configDir: string): { drain_timeout_seconds: number } {
 			drain_timeout_seconds: parsed.relay?.drain_timeout_seconds ?? 120,
 		};
 	} catch {
-		// Default if config can't be loaded
 		return { drain_timeout_seconds: 120 };
 	}
 }
@@ -80,9 +79,8 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		console.log("Relay drain mode enabled.");
 
 		// Step 2: Wait for relay outbox to drain
-		// This polls the relay_outbox table for delivered entries. With WS transport,
-		// entries are marked delivered via markDelivered() when acknowledged by the relay handler.
-		// This drain mechanism works transparently with WS transport (no changes needed).
+		// Polls relay_outbox until all entries are delivered or the timeout elapses.
+		// Entries are marked delivered via markDelivered() when acknowledged by the relay handler.
 		const relayConfig = loadRelayConfig(configDir);
 		const drainTimeoutMs = relayConfig.drain_timeout_seconds * 1000;
 		const drainStart = Date.now();

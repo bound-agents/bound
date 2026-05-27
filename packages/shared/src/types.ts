@@ -177,12 +177,10 @@ export interface Host {
  * Object format for hosts.models entries. Carries capability metadata alongside the
  * model ID. The legacy string format (plain model ID) is parsed by relay-router.ts
  * without capability metadata (treated as "unverified").
- */
-/**
- * Mirror of Partial<BackendCapabilities> from @bound/llm — defined inline here to avoid
- * a circular dependency (shared cannot import from llm). If BackendCapabilities gains new
- * fields, this inline type MUST be updated to match. TypeScript's structural typing keeps
- * them compatible at usage sites even without a shared reference.
+ *
+ * The `capabilities` shape mirrors Partial<BackendCapabilities> from @bound/llm, defined
+ * inline to avoid a circular dependency. If BackendCapabilities gains new fields, this
+ * type MUST be updated to match.
  */
 export interface HostModelEntry {
 	id: string;
@@ -368,8 +366,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
 	// for local-only columns (context_debug, relay_target, relay_latency_ms)
-	// that are excluded from replicated row_data. See metrics-schema.ts and
-	// bound_issue:turns-table:observability-gap for the full story.
+	// that are excluded from replicated row_data.
 	turns: "append-only",
 };
 
@@ -446,12 +443,7 @@ export const RELAY_KIND_REGISTRY = {
 	// `webhook_intake` carries the raw HTTP envelope written by the
 	// `/webhook/:name` handler. Its payload shape is
 	// {method, path, headers, content_type, body} — distinct from the
-	// platform-MCP `intake` shape (intakePayloadSchema). Pre-fix, this kind
-	// was overloaded onto `intake` and the relay-processor silently consumed
-	// every webhook by failing to parse it as an MCP intake; the scheduler's
-	// `buildEventWakeupContent` then found `processed=0` empty and fell back
-	// to `"Execute scheduled task."` on every wakeup. See the May 2026 fix
-	// commit message for the full incident write-up.
+	// platform-MCP `intake` shape (intakePayloadSchema).
 	webhook_intake: { dispatch: "passive" },
 
 	// Response kinds — stored in relay_inbox for polling loops
@@ -596,7 +588,7 @@ export interface ErrorPayload {
 	definitely_not_executed?: boolean;
 }
 
-// Loop delegation payloads (Phase 7)
+// Loop delegation payloads
 export interface ProcessPayload {
 	thread_id: string;
 	message_id: string;
@@ -628,7 +620,7 @@ export interface IntakePayload {
 	attachments?: AttachmentPayload[];
 }
 
-// --- Context Debug Types (Phase 2: Context Debugger) ---
+// --- Context Debug Types ---
 
 export interface ContextSection {
 	name: string;

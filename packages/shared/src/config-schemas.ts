@@ -1,13 +1,9 @@
 import { z } from "zod";
 
-// Config schemas use Zod strict mode throughout so an unknown key in a
-// config file fails parse with the exact offending key name instead of
-// being silently stripped. A 2026-04-25 regression traced a missing
-// reasoning-config field ("thinking") all the way to production — strip
-// mode had swallowed it at load time and nothing further in the stack
-// noticed. Treat every config file as a closed schema. Nested objects
-// get `.strict()` too; the `.refine(...)` chains on root schemas are
-// invoked after strict validation, so they compose cleanly.
+// Config schemas use Zod strict mode throughout so unknown keys fail parse
+// with the exact offending key name instead of being silently stripped.
+// Treat every config file as a closed schema. Nested objects get `.strict()`
+// too; `.refine(...)` chains compose cleanly after strict validation.
 
 // Allowlist Config
 export const userEntrySchema = z
