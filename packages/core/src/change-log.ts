@@ -265,6 +265,23 @@ export function updateRowIf<T extends SyncedTableName>(
 	return hlc !== null;
 }
 
+/**
+ * Run `fn` inside a SQLite transaction. Returns whatever `fn` returns. The transaction
+ * commits if `fn` returns normally and rolls back if it throws.
+ *
+ * Use this when you need to compose multiple reads + a single `updateRowIf` (or other
+ * outbox-routed write) inside one transaction, e.g., the eviction recovery path that
+ * SELECTs from `relay_inbox` to compute `next_run_at` before calling `updateRowIf`.
+ *
+ * `updateRowIf` opens its own internal `db.transaction()`; bun:sqlite handles nested
+ * transactions via savepoints, so calling `updateRowIf` inside `withTx` is safe.
+ *
+ * See docs/design/specs/2026-05-26-task-lifecycle-resilience.md §3.1 R-LR3.
+ */
+export function withTx<T>(db: Database, fn: () => T): T {
+	return db.transaction(fn)();
+}
+
 export function softDelete(db: Database, table: SyncedTableName, id: string, siteId: string): void {
 	const txFn = db.transaction(() => {
 		const now = new Date().toISOString();
