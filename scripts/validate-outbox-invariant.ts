@@ -45,11 +45,15 @@ const EXCLUDED_PATHS = [
 
 const SQL_MUTATION_PATTERN = /["'`]\s*(INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+/i;
 
-function shouldExclude(filePath: string): boolean {
+export function shouldExclude(filePath: string): boolean {
 	return EXCLUDED_PATHS.some((exc) => path.normalize(filePath).includes(path.normalize(exc)));
 }
 
-function findTableInLine(line: string): string | null {
+export function shouldSkipLine(line: string): boolean {
+	return line.includes("// outbox-routed") || line.includes("// outbox-exempt");
+}
+
+export function findTableInLine(line: string): string | null {
 	const trimmed = line.trimStart();
 	if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return null;
 
@@ -71,14 +75,19 @@ interface Violation {
 	text: string;
 }
 
-function extractAuditSection(content: string): string {
+export function extractAuditSection(content: string): string {
 	const match = content.match(
 		/### Audit Disposition Table for `outbox-exempt` Annotations([\s\S]*?)(?=###|\z)/,
 	);
 	return match ? match[1] : "";
 }
 
-function isExemptionDocumented(
+export function cleanLineNumber(linePart: string): number {
+	// Strip trailing (REWRITTEN) or (REMOVED) markers before parsing
+	return Number.parseInt(linePart.replace(/\s*\(.*?\)\s*$/, ""));
+}
+
+export function isExemptionDocumented(
 	filePath: string,
 	lineNumber: number,
 	table: string,
@@ -107,10 +116,11 @@ function isExemptionDocumented(
 
 		// Try to match file:line exactly
 		if (fileLoc.includes(":")) {
-			const [matchFile, matchLine] = fileLoc.split(":");
+			const [matchFile, matchLineStr] = fileLoc.split(":");
+			const matchLine = cleanLineNumber(matchLineStr);
 			if (
 				filePath.endsWith(matchFile.trim()) &&
-				Number.parseInt(matchLine) === lineNumber &&
+				matchLine === lineNumber &&
 				tableMatch.includes(table)
 			) {
 				return true;
@@ -124,7 +134,13 @@ function isExemptionDocumented(
 	return false;
 }
 
-async function main() {
+export function hasToDoLink(lines: string[], centerIndex: number): boolean {
+	return lines
+		.slice(Math.max(0, centerIndex - 5), Math.min(lines.length, centerIndex + 6))
+		.some((l) => l.includes("TODO"));
+}
+
+export async function main() {
 	const root = resolve(import.meta.dir, "..");
 	const glob = new Glob("packages/*/src/**/*.ts");
 	const violations: Violation[] = [];
@@ -147,32 +163,33 @@ async function main() {
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 
-			// Skip outbox-routed lines (explicit changelog pattern)
-			if (line.includes("// outbox-routed")) continue;
+			// Skip outbox-routed and outbox-exempt lines (both are permitted)
+			if (shouldSkipLine(line)) {
+				// If it's outbox-exempt, validate it
+				if (line.includes("// outbox-exempt")) {
+					const table = findTableInLine(line);
+					if (!table) continue;
 
-			const table = findTableInLine(line);
-			if (!table) continue;
+					// Check for TODO link (category d validation)
+					const hasTodoLink = hasToDoLink(lines, i);
 
-			// If outbox-exempt, cross-check against CONTRIBUTING.md
-			if (line.includes("// outbox-exempt")) {
-				// Check for TODO link (category d validation)
-				const hasToDoLink = lines
-					.slice(Math.max(0, i - 5), Math.min(lines.length, i + 6))
-					.some((l) => l.includes("TODO"));
+					// Check if documented in CONTRIBUTING.md
+					const isDocumented = isExemptionDocumented(relPath, i + 1, table, contributing);
 
-				// Check if documented in CONTRIBUTING.md
-				const isDocumented = isExemptionDocumented(relPath, i + 1, table, contributing);
-
-				if (!isDocumented && !hasToDoLink) {
-					violations.push({
-						file: relPath,
-						line: i + 1,
-						table,
-						text: line.trim().slice(0, 100),
-					});
+					if (!isDocumented && !hasTodoLink) {
+						violations.push({
+							file: relPath,
+							line: i + 1,
+							table,
+							text: line.trim().slice(0, 100),
+						});
+					}
 				}
 				continue;
 			}
+
+			const table = findTableInLine(line);
+			if (!table) continue;
 
 			// No annotation: violation
 			violations.push({
@@ -205,4 +222,7 @@ async function main() {
 	process.exit(1);
 }
 
-main();
+// Only run main if this is being executed directly
+if (import.meta.main) {
+	main();
+}
