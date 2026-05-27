@@ -176,18 +176,13 @@ describe("healStuckTasks: cross-path coverage (AC4.3)", () => {
 			}
 
 			// Exactly one change_log entry should exist for this task
-			// (except heartbeat tasks in Phase 1, which use outbox-exempt raw SQL UPDATE)
+			// (Phase 2 R-LR11: rescheduleHeartbeat now routes through outbox)
 			const changeLogEntries = db.query("SELECT * FROM change_log WHERE row_id = ?").all(taskId) as
 				| Array<{ id: string; row_id: string; siteId: string }>
 				| undefined;
 
-			if (fixture.taskType === "heartbeat") {
-				// Phase 1: rescheduleHeartbeat is outbox-exempt, no changelog entry
-				expect(changeLogEntries?.length).toBe(0);
-			} else {
-				// All other types use updateRow which creates changelog
-				expect(changeLogEntries?.length).toBe(1);
-			}
+			// All task types (including heartbeat) now use updateRow which creates changelog
+			expect(changeLogEntries?.length).toBe(1);
 		});
 	}
 });
