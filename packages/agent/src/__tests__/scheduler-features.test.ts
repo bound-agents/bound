@@ -712,7 +712,7 @@ describe("Scheduler features", () => {
 
 			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
 			const ctx = makeCtx();
-			rescheduleHeartbeat(ctx.db, task, ctx.logger, "completion", new Date());
+			rescheduleHeartbeat(ctx.db, task, ctx.logger, "completion", ctx.siteId, new Date());
 
 			const after = db.query("SELECT error FROM tasks WHERE id = ?").get(taskId) as {
 				error: string | null;
@@ -727,7 +727,7 @@ describe("Scheduler features", () => {
 
 			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
 			const ctx = makeCtx();
-			rescheduleHeartbeat(ctx.db, task, ctx.logger, "soft error", new Date());
+			rescheduleHeartbeat(ctx.db, task, ctx.logger, "soft error", ctx.siteId, new Date());
 
 			const after = db.query("SELECT error FROM tasks WHERE id = ?").get(taskId) as {
 				error: string | null;
