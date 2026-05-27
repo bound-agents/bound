@@ -105,8 +105,18 @@ describe("encryption — property tests", () => {
 	});
 
 	it("E4: ciphertext is not the plaintext", () => {
+		// Stream-cipher property note: ciphertext[i] = plaintext[i] XOR keystream[i].
+		// For a length-N plaintext, the prefix matches plaintext iff every one of
+		// the first N keystream bytes is zero — probability 256^-N. A length-1
+		// plaintext flakes at 1/256 per run, which fast-check shrinks toward
+		// aggressively. minLength=16 drives the false-positive probability to
+		// 256^-16 ≈ 8.6e-39 while still catching the "encrypt is a no-op"
+		// wiring bug this property defends against.
+		const e4Plaintext = fc
+			.uint8Array({ minLength: 16, maxLength: 1024 })
+			.map((arr) => new Uint8Array(arr));
 		fc.assert(
-			fc.property(nonEmptyPlaintext, symmetricKey, (pt, key) => {
+			fc.property(e4Plaintext, symmetricKey, (pt, key) => {
 				const { ciphertext } = encryptBody(pt, key);
 				// Ciphertext may be longer (auth tag) — compare prefix.
 				const prefix = ciphertext.slice(0, pt.length);
