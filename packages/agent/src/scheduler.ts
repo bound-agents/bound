@@ -128,7 +128,7 @@ function retryDeferredTask(
 	retryBackoffMs: number = DEFERRED_RETRY_BACKOFF_MS_DEFAULT,
 ): boolean {
 	if (task.type !== "deferred") return false;
-	if (consecutiveFailures >= DEFERRED_MAX_RETRIES) return false;
+	if (consecutiveFailures > DEFERRED_MAX_RETRIES) return false;
 	try {
 		const backoffMs = retryBackoffMs * consecutiveFailures;
 		const nextRunAt = new Date(Date.now() + backoffMs).toISOString();
@@ -139,6 +139,7 @@ function retryDeferredTask(
 			{
 				status: "pending",
 				next_run_at: nextRunAt,
+				consecutive_failures: consecutiveFailures,
 				claimed_by: null,
 				claimed_at: null,
 				lease_id: null,
