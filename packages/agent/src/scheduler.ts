@@ -71,9 +71,8 @@ const EVICTION_TIMEOUT = 600_000; // 10 minutes
  * AND tolerant of one missed host-heartbeat tick. With current values
  * (EVICTION_TIMEOUT=600_000, HOST_HEARTBEAT_INTERVAL=120_000), this evaluates to
  * 600_000 ms (10 min). See docs/design/specs/2026-05-26-task-lifecycle-resilience.md
- * §3.1 R-LR2. Used by Phase 4 Task 2 eviction selector.
+ * §3.1 R-LR2.
  */
-// biome-ignore lint/correctness/noUnusedVariables: Used in phase 4 task 2
 const HOST_OFFLINE_TIMEOUT = Math.max(EVICTION_TIMEOUT, 2 * HOST_HEARTBEAT_INTERVAL);
 
 /**
@@ -730,9 +729,21 @@ export class Scheduler {
 
 		// (b) Evict crashed running tasks
 		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
+		const hostOfflineThreshold = new Date(now.getTime() - HOST_OFFLINE_TIMEOUT).toISOString();
 		const tasksToEvict = this.ctx.db
-			.query("SELECT * FROM tasks WHERE status = 'running' AND deleted = 0 AND heartbeat_at < ?")
-			.all(evictionTime) as Task[];
+			.query<Task, [string, string]>(
+				`SELECT t.*
+				 FROM tasks t
+				 LEFT JOIN hosts h ON h.site_id = t.claimed_by
+				 WHERE t.status = 'running'
+				   AND t.deleted = 0
+				   AND t.heartbeat_at < ?
+				   AND (
+					   h.site_id IS NULL
+					   OR COALESCE(h.modified_at, h.online_at) < ?
+				   )`,
+			)
+			.all(evictionTime, hostOfflineThreshold) as Task[];
 
 		if (tasksToEvict.length > 0) {
 			this.ctx.logger.warn("[scheduler] Evicting crashed tasks", {
