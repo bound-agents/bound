@@ -728,6 +728,12 @@ export function applySchema(db: Database): void {
 		WHERE deleted = 0 AND claimed_by IS NOT NULL
 	`);
 
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_tasks_running_heartbeat
+		ON tasks(heartbeat_at)
+		WHERE status = 'running' AND deleted = 0
+	`);
+
 	// 21. dispatch_queue (non-replicated, local-only)
 	// Tracks message dispatch status for event-driven conversation model.
 	// NOT a synced table — dispatch state is local coordination only.

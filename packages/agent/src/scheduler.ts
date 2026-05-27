@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import {
+	HOST_HEARTBEAT_INTERVAL,
 	createChangeLogEntry,
 	insertRow,
 	markProcessed,
@@ -61,6 +62,20 @@ function extractCronExpression(triggerSpec: string): string {
 	return triggerSpec;
 }
 const EVICTION_TIMEOUT = 600_000; // 10 minutes
+
+/**
+ * Host-offline threshold: the wall-clock window past which a peer's view of a
+ * lease-holder's `hosts.modified_at` (or `hosts.online_at` fallback) is considered
+ * stale enough that the peer is permitted to evict. Defined as MAX(EVICTION_TIMEOUT,
+ * 2 × HOST_HEARTBEAT_INTERVAL) so the gate is at least as strict as heartbeat staleness
+ * AND tolerant of one missed host-heartbeat tick. With current values
+ * (EVICTION_TIMEOUT=600_000, HOST_HEARTBEAT_INTERVAL=120_000), this evaluates to
+ * 600_000 ms (10 min). See docs/design/specs/2026-05-26-task-lifecycle-resilience.md
+ * §3.1 R-LR2. Used by Phase 4 Task 2 eviction selector.
+ */
+// biome-ignore lint/correctness/noUnusedVariables: Used in phase 4 task 2
+const HOST_OFFLINE_TIMEOUT = Math.max(EVICTION_TIMEOUT, 2 * HOST_HEARTBEAT_INTERVAL);
+
 /**
  * Stuck-row healer threshold. Rows with `claimed_at` older than this are eligible for
  * recovery via `healStuckTasks`. Set to 2× EVICTION_TIMEOUT so the healer never races
