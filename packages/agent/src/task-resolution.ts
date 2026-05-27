@@ -426,5 +426,6 @@ export function seedHeartbeat(
 	// long-running heartbeat thread wastes tokens on stale self-referential output.
 	db.prepare(
 		"UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0", // outbox-exempt: legacy migration
+		// TODO: follow-up RFC — route through insertRow/updateRow or formalize as semantic exception
 	).run();
 }

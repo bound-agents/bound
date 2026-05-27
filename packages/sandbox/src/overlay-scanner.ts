@@ -126,6 +126,7 @@ export function scanOverlayIndex(
 				} else {
 					db.prepare(
 						"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)", // outbox-exempt: outbox not provided (backward compat)
+						// TODO: follow-up RFC — overlay_index writes should route through insertRow/updateRow/softDelete
 					).run(id, siteId, entry.path, stat.size, contentHash, now);
 				}
 				created++;
@@ -146,6 +147,7 @@ export function scanOverlayIndex(
 				} else {
 					db.prepare(
 						"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?", // outbox-exempt: outbox not provided (backward compat)
+						// TODO: follow-up RFC — overlay_index writes should route through insertRow/updateRow/softDelete
 					).run(stat.size, contentHash, now, id);
 				}
 				updated++;
@@ -166,6 +168,7 @@ export function scanOverlayIndex(
 				const now = new Date().toISOString();
 				db.prepare(
 					"UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?", // outbox-exempt: outbox not provided (backward compat)
+					// TODO: follow-up RFC — overlay_index writes should route through insertRow/updateRow/softDelete
 				).run(now, entry.id);
 			}
 			tombstoned++;
