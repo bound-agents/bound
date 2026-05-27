@@ -250,41 +250,6 @@ export interface VolatileContext {
 	stablePrefixInputFingerprint: string;
 }
 
-/**
- * Project the inputs that fed `composeVolatileSections` into the
- * narrow `StableVolatileInputs` shape and hash them, producing the
- * `context_debug.stablePrefixInputFingerprint` value.
- *
- * Shared across the three stable-side rendering call sites (primary
- * cold path inside `buildVolatileContext`, no-history task path
- * inlined in `assembleContext`, budget-pressure rebuild path) so
- * each site records a fingerprint computed from the same canonical
- * input shape. Without this sharing, the drift detector would see
- * spurious mismatches across paths even when the same logical inputs
- * were rendered.
- *
- * The function reads only what `composeStableVolatileSubsection`
- * declares as relevant to byte output — see
- * `stable-prefix/types.ts` for the contract.
- */
-/**
- * Inputs required by `composeVolatileSections`. Returned by
- * `loadVolatileSectionInputs` — the single DB-reading layer that
- * both the no-history task path and the budget-pressure rebuild
- * share.
- *
- * Unifying the load was a refactor against silent divergence: prior
- * to extraction, the no-history branch and the `applyReducedEnrichment`
- * closure each ran ~30 lines of nearly-identical SQL with different
- * caps, and a fix to one site wouldn't propagate to the other.
- * That's the same divergence pattern `stable-prefix/collect.ts`
- * eliminated for the stable-side fingerprint.
- *
- * The primary cold path (`buildVolatileContext`) does NOT call this
- * helper — it has additional responsibilities (bumping
- * `last_accessed_at`, computing the input fingerprint, building
- * the volatile-context envelope) that don't belong here.
- */
 interface VolatileSectionInputs {
 	pinned: ReturnType<typeof loadPinnedEntries>;
 	summaries: ReturnType<typeof loadSummaryEntries>;
@@ -401,15 +366,6 @@ function computeStablePrefixInputFingerprint(args: {
 	);
 }
 
-/**
- * Compose volatile sections using the three-section renderer pattern (R-VC1).
- * Shared helper for three of four buildVolatileEnrichment call sites: primary cold path,
- * no-history task path, and budget-pressure rebuild path. rebuildWarmSections does not
- * render and does not call this helper (warm cache rebuild only re-counts tokens).
- *
- * Returns { lines, synthesisBacklogCount } where lines are the rendered sections
- * in fixed order: Working Knowledge → Discoverable Archive → Live State.
- */
 interface ComposeVolatileSectionsParams {
 	db: Database;
 	pinned: ReturnType<typeof loadPinnedEntries>["entries"];
@@ -423,20 +379,9 @@ interface ComposeVolatileSectionsParams {
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
 	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
 	/**
-	 * L2 (graph-seeded) + L3 (recency) entries from
-	 * `buildVolatileEnrichment.tiers`. Rendered into the varying tail
-	 * via `formatMemoryEntry` so `tier='default'` memorizes that the
-	 * three R-VC24 renderers (WK / DA / LS) wouldn't surface still
-	 * reach the agent on the wire.
-	 *
-	 * Without this rendering hook, `tier='default'` entries are
-	 * structurally invisible — the post-R-VC24 design folded
-	 * `pinned`/`summary` into `renderWorkingKnowledge`, `detail` into
-	 * `renderDiscoverableArchive`, and left `default`/orphaned-detail
-	 * entries with no rendering path despite being computed by
-	 * `loadRecencyEntries` and tracked in `tiers.{L2,L3}`. Live
-	 * evidence: thread d0372be6's recent `bound:issue:*` and
-	 * `_outcome:*` memorizes never appeared in volatile context.
+	 * L2 (graph-seeded) + L3 (recency) entries. Filter to `tier='default'`
+	 * before rendering to avoid double-rendering entries already handled by
+	 * renderWorkingKnowledge (pinned/summary) or renderDiscoverableArchive (detail).
 	 */
 	recencyEntries: StageEntry[];
 	budgetPressure: boolean;
@@ -444,6 +389,10 @@ interface ComposeVolatileSectionsParams {
 }
 
 /**
+ * Shared helper for three of the four `buildVolatileEnrichment` call sites:
+ * primary cold path, no-history task path, and budget-pressure rebuild path.
+ * `rebuildWarmSections` does not render and does not call this helper.
+ *
  * Composes the three volatile renderers (Working Knowledge, Discoverable
  * Archive, Live State) into stable and varying line buffers per the
  * suffix-prefix split (RFC 2026-05-22-volatile-context).
@@ -599,8 +548,7 @@ export function buildVolatileContext(params: {
 	suffixLines.push(...prefixLines);
 	varyingLines.push(...prefixLines);
 
-	// Stage 5.5: VOLATILE ENRICHMENT (replaces raw memory dump)
-	// Phase 5: Wire three-renderer composition
+	// Stage 5.5: VOLATILE ENRICHMENT
 	const nowMs = params.nowMs ?? Date.now();
 	const enrichmentBaseline = computeBaseline(
 		params.db,
@@ -626,7 +574,7 @@ export function buildVolatileContext(params: {
 	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
 	const detailEntries = loadDetailEntries(params.db);
 
-	// B3: bump last_accessed_at for detail entries that are about to
+	// Bump last_accessed_at for detail entries that are about to
 	// be rendered into Discoverable Archive. The DA sort key and
 	// per-entry `(last accessed Nd ago)` fragment depend on this
 	// column; without a render-time bump the agent reads its own
@@ -703,7 +651,7 @@ export function buildVolatileContext(params: {
 		crossThreadSources = digest.sources;
 	}
 
-	// --- STABLE: active skill index (AC3.1, AC3.2) ---
+	// --- STABLE: active skill index ---
 	// Skill index is keyed off the active skill set; a skill flipping
 	// active/retired or being newly imported invalidates the prefix, but
 	// steady state (no skill churn) keeps it cacheable across turns.
@@ -742,7 +690,7 @@ export function buildVolatileContext(params: {
 		varyingLines.push(line);
 	}
 
-	// --- VARYING: inactive skill reference note (AC3.4) ---
+	// --- VARYING: inactive skill reference note ---
 	if (params.inactiveSkillRef) {
 		const line = `Referenced skill '${params.inactiveSkillRef}' is not active.`;
 		suffixLines.push("");
@@ -751,7 +699,7 @@ export function buildVolatileContext(params: {
 		varyingLines.push(line);
 	}
 
-	// --- VARYING: systemPromptAddition (AC2.2) ---
+	// --- VARYING: systemPromptAddition ---
 	// Operator-supplied per-task instruction. Treated as varying because a
 	// task can be reconfigured between runs; placing it in the cached prefix
 	// would silently freeze old text. Keeps it as the trailing element of the
@@ -1953,41 +1901,17 @@ export function rebuildWarmSections(params: {
 }
 
 /**
- * Apply actual LLM-reported token counts to a previously-built ContextDebugInfo,
- * returning a fully deep-cloned new snapshot.
+ * Applies actual LLM-reported token counts to a previously-built ContextDebugInfo,
+ * returning a deep-cloned snapshot.
  *
- * The agent loop builds contextDebug once per user submission (cold or warm
- * assembly), then iterates calling the LLM multiple times for extended-tool-use.
- * After each LLM response, the actual input-token count is known and may differ
- * from the pre-call estimate; this helper updates `totalEstimated` and bumps
- * `history.tokens` by the positive delta so the recorded per-turn debug
- * reflects what actually went on the wire.
+ * `totalEstimated` stays as the pre-LLM tiktoken estimate; `actualTotalTokens`
+ * carries the LLM-reported number. Both live independently so visualizers can
+ * compute `actualTotalTokens / totalEstimated` as the inflation ratio.
  *
  * The deep-clone (via structuredClone) is essential: the agent loop holds a
- * reference to lastContextDebug across iterations, and recordContextDebug
- * synchronously serializes it via JSON.stringify. Without the clone, mutating
- * sections in place would leave a window where a later iteration's delta
- * could retroactively alter an earlier iteration's section breakdown if the
- * synchronous-serialization invariant ever broke (e.g. async DB writes,
- * future refactors holding the reference longer, callers reading
- * lastContextDebug directly). The clone removes that latent dependency.
- */
-/**
- * Records the LLM-reported actual input token count alongside the existing
- * tiktoken-derived `totalEstimated`, returning a deep-cloned snapshot so
- * concurrent loop iterations can't share section references.
- *
- * Pre-2026-05-22 this function overwrote `totalEstimated` with `actualTokens`
- * and bumped `sections.history.tokens` by the positive delta to keep the
- * section sum consistent with the new total. That destroyed the original
- * tiktoken estimate, making per-thread inflation-ratio analysis impossible
- * without ad-hoc trace correlation.
- *
- * Now both numbers live independently: `totalEstimated` stays as the
- * pre-LLM tiktoken estimate (per-section breakdown sums to it), and
- * `actualTotalTokens` carries the LLM-reported number. Visualizers wanting
- * to surface the gap can render `actualTotalTokens / totalEstimated` as
- * the inflation ratio.
+ * reference to lastContextDebug across concurrent iterations, and without the
+ * clone, a later iteration's delta could retroactively alter an earlier
+ * iteration's section breakdown.
  */
 export function applyActualUsageToContextDebug(
 	debug: ContextDebugInfo,
