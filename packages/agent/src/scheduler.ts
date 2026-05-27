@@ -430,7 +430,7 @@ export function healStuckTasks(
 					retryDeferredTask(
 						db,
 						task,
-						task.consecutive_failures ?? 0,
+						(task.consecutive_failures ?? 0) + 1,
 						logger,
 						siteId,
 						DEFERRED_RETRY_BACKOFF_MS_DEFAULT,

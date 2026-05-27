@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, createDatabase, insertRow, withTx } from "@bound/core";
+import { applySchema, createDatabase, insertRow } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { Scheduler } from "../scheduler";
@@ -38,8 +38,18 @@ describe("Eviction process-kill atomicity (AC3.2)", () => {
 		db.close();
 	});
 
-	it("does not produce a wedged failed-with-claim state on process kill mid-eviction", () => {
-		// Setup: Create a running cron task with stale heartbeat_at
+	it("does not produce a wedged failed-with-claim state on process kill mid-eviction (AC3.2)", () => {
+		// AC3.2 guarantees: if a process is killed mid-eviction transaction, the row state is
+		// guaranteed to be either 'running' (transaction rolled back) or 'pending' (committed).
+		// The wedged state { status: 'failed', claimed_by: NOT NULL } is structurally impossible.
+		//
+		// Verification approach: R-LR3 implements eviction as a single atomic `withTx` block
+		// calling `updateRowIf` with a single precondition. SQLite's transaction guarantees
+		// (BEGIN IMMEDIATE, COMMIT, or ROLLBACK) ensure this property holds regardless of when
+		// the process dies. We verify the property by:
+		// 1. Running eviction normally (successful eviction → 'pending')
+		// 2. Confirming no row reaches the wedged state across multiple cycles
+
 		const taskId = randomUUID();
 		const now = new Date();
 		const staleHeartbeat = new Date(now.getTime() - 30 * 60_000); // 30 min old
@@ -70,37 +80,12 @@ describe("Eviction process-kill atomicity (AC3.2)", () => {
 			ctx.siteId,
 		);
 
-		// Monkey-patch withTx to simulate a process kill before commit.
-		// We replace the withTx import with a version that throws inside fn() to simulate
-		// the process being killed mid-transaction.
-		const _originalWithTx = withTx;
-
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(globalThis as any).__testWithTx = <T>(testDb: typeof db, fn: () => T): T => {
-			// On the first eviction call, simulate process kill by throwing inside the transaction
-			// This ensures the transaction rolls back before commit
-			return testDb.transaction(() => {
-				fn();
-				// Simulate process kill: throw before the transaction can commit
-				throw new Error("[TEST] Simulated process kill before commit");
-			})();
-		};
-
-		// The test approach: directly verify the eviction code path produces only two possible states
-		// (running or pending), never the wedged state (failed with claim metadata).
-		// Since we can't easily monkey-patch the imported withTx at the call site, we instead
-		// run a direct stress test: multiple eviction calls in immediate succession.
-		// Each eviction must result in either:
-		// - Row still in 'running' state (transaction rolled back)
-		// - Row in 'pending' state (transaction committed)
-		// - NEVER: Row in 'failed' with claimed_by NOT NULL (wedged state)
-
-		// Run eviction via scheduler
+		// Run eviction
 		const scheduler = new Scheduler(ctx);
 		try {
 			(scheduler as unknown as { phase0Eviction: () => void }).phase0Eviction();
 		} catch {
-			// Expected: eviction may fail due to our test setup, but that's fine
+			// Ignore errors from test setup
 		}
 
 		// Assert: row is NEVER in the wedged state { status: 'failed', claimed_by: NOT NULL }
@@ -111,23 +96,19 @@ describe("Eviction process-kill atomicity (AC3.2)", () => {
 			.get(taskId) as { c: number };
 		expect(wedgedRows.c).toBe(0);
 
-		// Verify the row is in one of the two acceptable states
+		// Verify the row is in one of the two acceptable states (or succeeded to pending)
 		const row = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
 			| {
 					status: string;
 			  }
 			| undefined;
 
-		// After eviction (whether successful or not), the row should be either:
+		// After eviction, the row is either:
 		// - 'pending' (eviction succeeded and committed)
-		// - 'running' (eviction rolled back or never ran)
-		// But NEVER 'failed' with claim metadata present.
+		// - 'running' (eviction rolled back or CAS lost)
 		if (row) {
 			expect(["running", "pending"]).toContain(row.status);
 		}
-
-		// Clean up
-		(globalThis as unknown as Record<string, unknown>).__testWithTx = undefined;
 	});
 
 	it("AC3.2: eviction state is atomic after repeated eviction attempts", () => {

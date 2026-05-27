@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, createDatabase, insertRow } from "@bound/core";
+import { applySchema, createDatabase, insertRow, updateRowIf } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 
@@ -87,7 +87,6 @@ describe("Lease CAS guards (AC3.3)", () => {
 		// For this test, we directly check what updateRowIf would do via bun:sqlite
 
 		// Manually call updateRowIf-equivalent logic to verify the lease guard
-		const { updateRowIf } = require("@bound/core");
 		const wrote = updateRowIf(
 			db,
 			"tasks",
@@ -376,7 +375,6 @@ describe("Lease CAS guards (AC3.3)", () => {
 		).c;
 
 		// Attempt completion with matching lease
-		const { updateRowIf } = require("@bound/core");
 		const wrote = updateRowIf(
 			db,
 			"tasks",
