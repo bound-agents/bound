@@ -116,8 +116,11 @@ function rescheduleCronTask(
 }
 
 /**
- * Auto-retries a failed deferred task if consecutive_failures is below the retry limit.
- * Uses linear backoff (30s * consecutive_failures). Returns true if retried.
+ * Auto-retries a failed deferred task if consecutiveFailures (already post-incremented by the
+ * caller) does not exceed DEFERRED_MAX_RETRIES. Uses linear backoff:
+ * backoffMs = retryBackoffMs * consecutiveFailures (default retryBackoffMs =
+ * DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000ms). Returns true if the row was rewritten to pending
+ * with a future next_run_at.
  */
 function retryDeferredTask(
 	db: AppContext["db"],
@@ -147,7 +150,7 @@ function retryDeferredTask(
 			siteId,
 		);
 		logger.info(
-			`Retrying deferred task ${task.id} (attempt ${consecutiveFailures + 1}/${DEFERRED_MAX_RETRIES})`,
+			`Retrying deferred task ${task.id} (attempt ${consecutiveFailures}/${DEFERRED_MAX_RETRIES})`,
 			{
 				taskId: task.id,
 				backoffMs,
@@ -730,114 +733,123 @@ export class Scheduler {
 			const nowMs = Date.now();
 
 			for (const task of tasksToEvict) {
-				const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
-				let nextRunAtIso: string | null = null;
+				try {
+					const newConsecutiveFailures = (task.consecutive_failures ?? 0) + 1;
+					let nextRunAtIso: string | null = null;
 
-				const committed = withTx(this.ctx.db, () => {
-					// Per-type next_run_at computation (reads and computation happen here; they're inside the tx).
-					switch (task.type) {
-						case "cron": {
-							if (task.trigger_spec) {
-								try {
-									const cronExpr = extractCronExpression(task.trigger_spec);
-									nextRunAtIso = computeNextRunAt(cronExpr, new Date()).toISOString();
-								} catch (e) {
-									this.ctx.logger.error(
-										"[scheduler] Failed to compute next cron time during eviction",
-										{
-											error: formatError(e),
-											taskId: task.id,
-										},
-									);
-									nextRunAtIso = null;
+					const committed = withTx(this.ctx.db, () => {
+						// Per-type next_run_at computation (reads and computation happen here; they're inside the tx).
+						switch (task.type) {
+							case "cron": {
+								if (task.trigger_spec) {
+									try {
+										const cronExpr = extractCronExpression(task.trigger_spec);
+										nextRunAtIso = computeNextRunAt(cronExpr, new Date()).toISOString();
+									} catch (e) {
+										this.ctx.logger.error(
+											"[scheduler] Failed to compute next cron time during eviction",
+											{
+												error: formatError(e),
+												taskId: task.id,
+											},
+										);
+										nextRunAtIso = null;
+									}
 								}
+								break;
 							}
-							break;
-						}
 
-						case "heartbeat": {
-							nextRunAtIso = computeHeartbeatNextRunAt(task, this.lastUserInteractionAt);
-							break;
-						}
-
-						case "event": {
-							// R-LR3 design note: the relay_inbox SELECT lives inside the eviction transaction.
-							const unprocessed = this.ctx.db
-								.query<{ c: number }, [string, string]>(
-									"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
-								)
-								.get(task.thread_id ?? "", "webhook_intake");
-							const hasUnprocessed = (unprocessed?.c ?? 0) > 0;
-							const underBackoffCap = newConsecutiveFailures < MAX_EVENT_TASK_FAILURE_BACKOFFS;
-							nextRunAtIso =
-								hasUnprocessed && underBackoffCap ? new Date(nowMs + 60_000).toISOString() : null;
-							break;
-						}
-
-						case "deferred": {
-							// R-LR3 deferred-task parity with retryDeferredTask's linear backoff.
-							// RFC formula: now + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * (consecutive_failures + 1).
-							// The (consecutive_failures + 1) here is `newConsecutiveFailures` — the value
-							// we are about to write. Capped at DEFERRED_MAX_RETRIES so deferred tasks that
-							// continue to fail eventually park at status='failed' permanently.
-							if (newConsecutiveFailures > DEFERRED_MAX_RETRIES) {
-								// Don't reschedule — leave as failed permanently; recovery clears claim only.
-								nextRunAtIso = null;
-							} else {
-								nextRunAtIso = new Date(
-									nowMs + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * newConsecutiveFailures,
-								).toISOString();
+							case "heartbeat": {
+								nextRunAtIso = computeHeartbeatNextRunAt(task, this.lastUserInteractionAt);
+								break;
 							}
-							break;
+
+							case "event": {
+								// R-LR3 design note: the relay_inbox SELECT lives inside the eviction transaction.
+								const unprocessed = this.ctx.db
+									.query<{ c: number }, [string, string]>(
+										"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
+									)
+									.get(task.thread_id ?? "", "webhook_intake");
+								const hasUnprocessed = (unprocessed?.c ?? 0) > 0;
+								const underBackoffCap = newConsecutiveFailures < MAX_EVENT_TASK_FAILURE_BACKOFFS;
+								nextRunAtIso =
+									hasUnprocessed && underBackoffCap ? new Date(nowMs + 60_000).toISOString() : null;
+								break;
+							}
+
+							case "deferred": {
+								// R-LR3 deferred-task parity with retryDeferredTask's linear backoff.
+								// RFC formula: now + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * (consecutive_failures + 1).
+								// The (consecutive_failures + 1) here is `newConsecutiveFailures` — the value
+								// we are about to write. Capped at DEFERRED_MAX_RETRIES so deferred tasks that
+								// continue to fail eventually park at status='failed' permanently.
+								if (newConsecutiveFailures > DEFERRED_MAX_RETRIES) {
+									// Don't reschedule — leave as failed permanently; recovery clears claim only.
+									nextRunAtIso = null;
+								} else {
+									nextRunAtIso = new Date(
+										nowMs + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * newConsecutiveFailures,
+									).toISOString();
+								}
+								break;
+							}
+
+							default: {
+								this.ctx.logger.error("[scheduler] eviction: unknown task type", {
+									taskId: task.id,
+									type: task.type,
+								});
+								// Don't write — let the throw bubble up and roll back the (empty) transaction.
+								throw new Error(`Unknown task type: ${task.type}`);
+							}
 						}
 
-						default: {
-							this.ctx.logger.error("[scheduler] eviction: unknown task type", {
-								taskId: task.id,
-								type: task.type,
-							});
-							// Don't write — let the throw bubble up and roll back the (empty) transaction.
-							throw new Error(`Unknown task type: ${task.type}`);
+						// Single updateRowIf — emits exactly one change_log entry. CAS precondition gates on
+						// status='running' so a concurrent local write losing the lease can't double-evict.
+						return updateRowIf(
+							this.ctx.db,
+							"tasks",
+							task.id,
+							{ status: "running" },
+							{
+								status: "pending",
+								error: "evicted due to heartbeat timeout",
+								consecutive_failures: newConsecutiveFailures,
+								next_run_at: nextRunAtIso,
+								claimed_by: null,
+								claimed_at: null,
+								lease_id: null,
+							},
+							this.ctx.siteId,
+						);
+					});
+
+					if (committed) {
+						// Failure-advisory trigger AFTER commit (invariant #6: events after commit).
+						if (newConsecutiveFailures === task.alert_threshold) {
+							this.triggerFailureAdvisory(
+								task,
+								"evicted due to heartbeat timeout",
+								newConsecutiveFailures,
+							);
 						}
-					}
-
-					// Single updateRowIf — emits exactly one change_log entry. CAS precondition gates on
-					// status='running' so a concurrent local write losing the lease can't double-evict.
-					return updateRowIf(
-						this.ctx.db,
-						"tasks",
-						task.id,
-						{ status: "running" },
-						{
-							status: "pending",
-							error: "evicted due to heartbeat timeout",
-							consecutive_failures: newConsecutiveFailures,
-							next_run_at: nextRunAtIso,
-							claimed_by: null,
-							claimed_at: null,
-							lease_id: null,
-						},
-						this.ctx.siteId,
-					);
-				});
-
-				if (committed) {
-					// Failure-advisory trigger AFTER commit (invariant #6: events after commit).
-					if (newConsecutiveFailures === task.alert_threshold) {
-						this.triggerFailureAdvisory(
-							task,
-							"evicted due to heartbeat timeout",
-							newConsecutiveFailures,
+					} else {
+						// CAS lost: the agent loop's completion path already won the race
+						// and transitioned status='running' → 'completed'. Do NOT trample
+						// the result row with a phantom eviction error.
+						this.ctx.logger.info(
+							"[scheduler] Eviction CAS lost — task already completed before reaper ran",
+							{ taskId: task.id, type: task.type, triggerSpec: task.trigger_spec },
 						);
 					}
-				} else {
-					// CAS lost: the agent loop's completion path already won the race
-					// and transitioned status='running' → 'completed'. Do NOT trample
-					// the result row with a phantom eviction error.
-					this.ctx.logger.info(
-						"[scheduler] Eviction CAS lost — task already completed before reaper ran",
-						{ taskId: task.id, type: task.type, triggerSpec: task.trigger_spec },
-					);
+				} catch (err) {
+					this.ctx.logger.error("[scheduler] eviction failed for task; continuing batch", {
+						taskId: task.id,
+						type: task.type,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					// Do not rethrow; continue to next task in the batch
 				}
 			}
 		}
