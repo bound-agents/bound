@@ -7,6 +7,7 @@
  */
 
 import { buildCacheDiagnostic } from "./cache";
+import { buildFidelityDiagnostic } from "./fidelity";
 import type { Diagnostic } from "./types";
 
 /**
@@ -37,4 +38,5 @@ export function listDiagnostics(): ReadonlyMap<string, Diagnostic> {
 export function registerBuiltinDiagnostics(): void {
 	if (REGISTRY.size > 0) return; // idempotent
 	registerDiagnostic("cache", buildCacheDiagnostic);
+	registerDiagnostic("fidelity", buildFidelityDiagnostic);
 }

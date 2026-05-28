@@ -229,6 +229,36 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		},
 		siteId,
 	);
+	// Pre-seed messages when the fixture defines them. Used by fixtures
+	// that need a thread large enough to trigger truncation before turn 1.
+	if (opts.fixture.preSeededMessages && opts.fixture.preSeededMessages.length > 0) {
+		const startTime = new Date(now).getTime();
+		const count = opts.fixture.preSeededMessages.length;
+		for (let mi = 0; mi < count; mi++) {
+			const pm = opts.fixture.preSeededMessages[mi];
+			const msgTime = pm.created_at ?? new Date(startTime - (count - mi) * 1000).toISOString();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: deterministicUuid("msg", mi),
+					thread_id: threadId,
+					role: pm.role,
+					content: pm.content,
+					model_id: null,
+					tool_name: null,
+					host_origin: hostName,
+					created_at: msgTime,
+					modified_at: msgTime,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
+				},
+				siteId,
+			);
+		}
+	}
+
 	// `hosts` row would normally be bootstrapped via the daemon's start
 	// path (outbox-exempt — see bootstrap.ts). Context-assembly only reads
 	// `ctx.hostName` and `ctx.siteId` directly, so the harness can skip

@@ -96,4 +96,19 @@ export interface HarnessFixture {
 	toolStubs: Record<string, ToolStub>;
 	/** Optional per-turn mutations. */
 	perTurnMutations?: FixtureMutation[];
+	/**
+	 * Pre-seeded messages inserted into the thread before turn 1.
+	 * Used by fixtures that exercise truncation behavior by starting
+	 * with a thread already large enough to exceed the context window.
+	 * Messages are inserted in chronological order via insertRow; each
+	 * gets a deterministic UUID and incrementing created_at timestamps.
+	 */
+	preSeededMessages?: PreSeededMessage[];
+}
+
+export interface PreSeededMessage {
+	role: "user" | "assistant" | "tool_call" | "tool_result";
+	content: string;
+	/** Defaults to fixture start time minus (totalCount - index) seconds. */
+	created_at?: string;
 }
