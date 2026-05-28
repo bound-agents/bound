@@ -15,6 +15,7 @@ import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, EventMap, SyncConfig } from "@bound/shared";
 import {
+	appendToolDuration,
 	capToolResultContent,
 	countContentTokens,
 	countTokens,
@@ -1960,6 +1961,7 @@ export class AgentLoop {
 						toolCall: ParsedToolCall;
 						content: string;
 						exitCode: number;
+						durationMs: number;
 					}> = [];
 					const pendingClientCalls: Array<{
 						toolCall: ParsedToolCall;
@@ -1991,6 +1993,7 @@ export class AgentLoop {
 								toolCall,
 								content: `Error: tool call arguments were truncated (output exceeded max_tokens limit). The "${toolCall.name}" call was cut off before the full arguments could be generated. Try breaking the operation into smaller parts, or reduce the size of the arguments.`,
 								exitCode: 1,
+								durationMs: 0,
 							});
 							continue;
 						}
@@ -2148,7 +2151,12 @@ export class AgentLoop {
 							isError: exitCode !== 0,
 						});
 
-						toolResults.push({ toolCall, content: resultContent, exitCode });
+						toolResults.push({
+							toolCall,
+							content: resultContent,
+							exitCode,
+							durationMs: toolDurationMs,
+						});
 						this.config.onActivity?.();
 					}
 
@@ -2174,6 +2182,21 @@ export class AgentLoop {
 								}
 							}
 						}
+					}
+
+					// Append the duration suffix to each tool result (#77). This runs
+					// AFTER the offload decision so:
+					//  1. Offload threshold check is on raw tool output (the suffix is
+					//     ~22 bytes — without this ordering, a 49,999-byte output
+					//     would tip over the 50,000-byte threshold and offload
+					//     unexpectedly).
+					//  2. Offloaded files contain the raw tool output, not the suffix
+					//     (cleaner for inspection / piping).
+					//  3. The agent always sees the duration in the message content,
+					//     whether the result was offloaded (suffix on the offload
+					//     notice) or kept inline (suffix on raw output).
+					for (const result of toolResults) {
+						result.content = appendToolDuration(result.content, result.durationMs);
 					}
 
 					toolExecuteSpan.end();

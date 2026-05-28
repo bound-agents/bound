@@ -9,6 +9,7 @@ import {
 	updateRow,
 } from "@bound/core";
 import {
+	appendToolDuration,
 	capToolResultContent,
 	formatFileAttachment,
 	getTraceExporter,
@@ -633,6 +634,15 @@ export function createWebSocketHandler(
 			// (e.g., boundless_bash's 50KB/half) run first; this catches the gap.
 			// The truncation marker embedded in the content is itself observable
 			// in the persisted messages row, so no separate log is emitted here.
+			//
+			// The duration suffix (#77) is appended BEFORE the cap so middle-cut
+			// preserves it in the tail. Elapsed is computed from the dispatch
+			// entry's created_at — for client-deferred tools this is the
+			// end-to-end roundtrip the agent observed (dispatch issued → result
+			// landed), which is what the agent should reason about.
+			const dispatchStartMs = new Date(matchingEntry.created_at).getTime();
+			const elapsedMs = Date.now() - dispatchStartMs;
+			persistedContent = appendToolDuration(persistedContent, elapsedMs);
 			persistedContent = capToolResultContent(persistedContent);
 
 			insertRow(

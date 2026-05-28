@@ -273,7 +273,8 @@ describe("built-in tool dispatch in AgentLoop", () => {
 		const result = await loop.run();
 		expect(result.toolCallsMade).toBe(1);
 
-		// The persisted content should be JSON ContentBlock[]
+		// The persisted content should be JSON ContentBlock[] with the original
+		// blocks plus a trailing text duration block (#77).
 		const toolResultMsg = db
 			.prepare(
 				"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' ORDER BY created_at DESC LIMIT 1",
@@ -283,8 +284,10 @@ describe("built-in tool dispatch in AgentLoop", () => {
 		// biome-ignore lint/style/noNonNullAssertion: test assertion after not-null check
 		const blocks = JSON.parse(toolResultMsg!.content);
 		expect(Array.isArray(blocks)).toBe(true);
-		expect(blocks).toHaveLength(2);
+		expect(blocks).toHaveLength(3);
 		expect(blocks[0].type).toBe("text");
 		expect(blocks[1].type).toBe("image");
+		expect(blocks[2].type).toBe("text");
+		expect(blocks[2].text).toMatch(/^\[duration: \d+\.\d{3}s\]$/);
 	});
 });
