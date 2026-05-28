@@ -1,6 +1,6 @@
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useStdin } from "ink";
 import type React from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface TextInputProps {
 	onSubmit: (value: string) => void;
@@ -219,6 +219,32 @@ export function TextInput({
 	});
 	const { value, pos } = state;
 
+	// ink maps BOTH 0x7F (the byte the Unix Backspace key sends) and the
+	// xterm forward-delete escape sequence (ESC[3~) to key.delete=true with
+	// input='' (see ink's parse-keypress.js: 0x7F and ESC[3~ both resolve to
+	// name 'delete'), so the two keys are indistinguishable from the useInput
+	// API alone. To recover which physical key was pressed we tap ink's
+	// internal event emitter, which emits the raw input chunk on its 'input'
+	// event — ink's App.handleReadable does
+	// `internal_eventEmitter.emit('input', chunk)` right alongside the parse
+	// that drives useInput. prependListener guarantees our handler runs BEFORE
+	// useInput's own 'input' listener, so lastRawBytes already reflects the
+	// current keypress by the time the useInput callback inspects it. This
+	// works identically under a real TTY and ink-testing-library, and unlike a
+	// stdin 'data' tap it never flips stdin into flowing mode (ink consumes
+	// stdin via 'readable' + read()).
+	const lastRawBytes = useRef<string>("");
+	const { internal_eventEmitter: inputEmitter } = useStdin();
+	useEffect(() => {
+		const handler = (data: Buffer | string) => {
+			lastRawBytes.current = typeof data === "string" ? data : data.toString("utf8");
+		};
+		inputEmitter.prependListener("input", handler);
+		return () => {
+			inputEmitter.removeListener("input", handler);
+		};
+	}, [inputEmitter]);
+
 	useInput(
 		(input, key) => {
 			if (disabled) {
@@ -283,7 +309,34 @@ export function TextInput({
 				return;
 			}
 
-			if (key.backspace) {
+			if (key.delete) {
+				// Disambiguate via raw bytes (see useEffect tap above).
+				// Real forward Delete sends one of these escape sequences:
+				//   ESC[3~  (plain), ESC[3 followed by dollar (shift),
+				//   ESC[3^  (ctrl).
+				// Anything else (DEL 0x7F, ESC+DEL) is the Unix Backspace
+				// key, which ink unhelpfully labels 'delete' too.
+				const raw = lastRawBytes.current;
+				const isForwardDelete =
+					raw === "\u001b[3~" || raw === "\u001b[3\u0024" || raw === "\u001b[3^";
+				if (isForwardDelete) {
+					// Delete the grapheme cluster AT the cursor (forward delete).
+					setState((s) => {
+						if (s.pos >= s.value.length) {
+							return s;
+						}
+						const nextPos = graphemeRight(s.value, s.pos);
+						return {
+							value: s.value.slice(0, s.pos) + s.value.slice(nextPos),
+							pos: s.pos,
+						};
+					});
+					return;
+				}
+				// Fall through: treat as backspace.
+			}
+
+			if (key.backspace || key.delete) {
 				// Delete the grapheme cluster before the cursor (may be more
 				// than one JS code unit for emoji/flags/combining marks).
 				setState((s) => {
@@ -294,22 +347,6 @@ export function TextInput({
 					return {
 						value: s.value.slice(0, newPos) + s.value.slice(s.pos),
 						pos: newPos,
-					};
-				});
-				return;
-			}
-
-			if (key.delete) {
-				// Delete the grapheme cluster AT the cursor (forward delete).
-				// Backspace removes left of cursor; Delete removes right.
-				setState((s) => {
-					if (s.pos >= s.value.length) {
-						return s;
-					}
-					const nextPos = graphemeRight(s.value, s.pos);
-					return {
-						value: s.value.slice(0, s.pos) + s.value.slice(nextPos),
-						pos: s.pos,
 					};
 				});
 				return;
