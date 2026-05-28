@@ -39,6 +39,33 @@ export interface TieredHistoryParams {
 	historyBudget: number;
 	threadId: string;
 	threadSummary?: string;
+	/**
+	 * Hard ceiling (in tokens) for the recent tier — the physical headroom left
+	 * for history after the fixed-cost sections (system prompt + volatile +
+	 * tools) are subtracted from the actual context window.
+	 *
+	 * This is DISTINCT from `historyBudget`, which is the SOFT target
+	 * (`contextWindow * truncationRatio` minus fixed costs) the recent/middle
+	 * tiers size themselves against. The recent tier is anchored to the latest
+	 * user message (the shared semantic boundary cache-point / compaction /
+	 * summary all use), so within a single user turn the anchor never moves and
+	 * the cache stays warm — even when an inner-loop tool run pushes the
+	 * anchored slice modestly past the soft `historyBudget`. Trimming that slice
+	 * every turn would mutate the ancient drop count and thrash the cache, which
+	 * is precisely the rolling behavior the cache subsystem was redesigned to
+	 * eliminate.
+	 *
+	 * The recent tier may therefore exceed `historyBudget` to preserve the
+	 * semantic anchor. It may NOT exceed `recentHardCeiling` — a single user
+	 * turn whose tool loop genuinely overflows the physical window has its
+	 * older within-turn cycles folded into the middle tier (mechanical fold, no
+	 * summarization). When the ceiling is non-positive (degenerate case: fixed
+	 * costs alone already exceed the window), the clamp is disabled and the
+	 * semantic anchor + ≥2-message floor win — there is no headroom to clamp
+	 * into and forcing a step would only thrash. Omit to disable the clamp
+	 * entirely (legacy behavior).
+	 */
+	recentHardCeiling?: number;
 }
 
 export interface TieredHistoryResult {
@@ -64,7 +91,7 @@ export interface TieredHistoryResult {
  * Compute tiered history truncation. Pure function — no I/O, no LLM calls.
  */
 export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHistoryResult {
-	const { historyMessages, historyBudget, threadId, threadSummary } = params;
+	const { historyMessages, historyBudget, threadId, threadSummary, recentHardCeiling } = params;
 
 	if (historyMessages.length === 0) {
 		return {
@@ -88,35 +115,53 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 	const recentBudget = Math.floor(historyBudget * RECENT_RATIO);
 	const middleBudget = Math.floor(historyBudget * MIDDLE_RATIO);
 
+	// Precompute per-message token counts and suffix sums once (O(n)).
+	// `suffixTokens[i]` is the total token cost of messages[i..end); it gives
+	// the recent-tier cost for any candidate slice start in O(1), reused by the
+	// backward-fill, the physical-window clamp, and the final `recentTokens`.
+	const n = historyMessages.length;
+	const msgTokenCounts = historyMessages.map((m) => countContentTokens(m.content));
+	const suffixTokens = new Array<number>(n + 1);
+	suffixTokens[n] = 0;
+	for (let i = n - 1; i >= 0; i--) {
+		suffixTokens[i] = msgTokenCounts[i] + suffixTokens[i + 1];
+	}
+
 	// --- RECENT TIER ---
 	// Backward-fill from the tail until recentBudget exhausted.
 	// Same algorithm as the original truncateHistoryToBudget but with the
 	// recent-tier budget instead of the full historyBudget.
 	let recentAccumulated = 0;
-	let recentSliceStart = historyMessages.length;
-	for (let i = historyMessages.length - 1; i >= 0; i--) {
-		const msgTokens = countContentTokens(historyMessages[i].content);
+	let recentSliceStart = n;
+	for (let i = n - 1; i >= 0; i--) {
+		const msgTokens = msgTokenCounts[i];
 		if (recentAccumulated + msgTokens > recentBudget) break;
 		recentAccumulated += msgTokens;
 		recentSliceStart = i;
 	}
 
 	// Floor: keep at least 2 messages.
-	recentSliceStart = Math.min(recentSliceStart, Math.max(0, historyMessages.length - 2));
+	recentSliceStart = Math.min(recentSliceStart, Math.max(0, n - 2));
 
-	// Advance past orphan tool_result/tool_call/assistant to land on wire-legal opener.
+	// Advance past orphan tool_result/tool_call/assistant to land on a
+	// wire-legal opener (a user message when possible). This only moves the
+	// slice start forward, and anchoring to a stable user position keeps the
+	// ancient-marker drop count byte-stable across consecutive cold rebuilds —
+	// the message-level prefix cache depends on that.
 	const preAdvanceStart = recentSliceStart;
-	while (
-		recentSliceStart < historyMessages.length &&
-		historyMessages[recentSliceStart].role !== "user"
-	) {
+	while (recentSliceStart < n && historyMessages[recentSliceStart].role !== "user") {
 		recentSliceStart++;
 	}
 
 	// Fallback: if no user message in the recent window, scan backward for one.
-	if (recentSliceStart >= historyMessages.length) {
+	// (Sustained autonomous tool-only runs have no user turn since the budget
+	// boundary.) Anchoring to a fixed historical user position is what makes the
+	// drop count byte-stable as the tail grows. The recent slice this produces
+	// may exceed the budget — the hard clamp below is the authoritative ceiling
+	// that trims it back, so this anchor choice cannot defeat the budget.
+	if (recentSliceStart >= n) {
 		let foundUser = false;
-		for (let i = historyMessages.length - 1; i >= 0; i--) {
+		for (let i = n - 1; i >= 0; i--) {
 			if (historyMessages[i].role === "user") {
 				recentSliceStart = i;
 				foundUser = true;
@@ -126,18 +171,67 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 		if (!foundUser) {
 			// Strip leading tool_results from the pre-advance position.
 			recentSliceStart = preAdvanceStart;
-			while (
-				recentSliceStart < historyMessages.length &&
-				historyMessages[recentSliceStart].role === "tool_result"
-			) {
+			while (recentSliceStart < n && historyMessages[recentSliceStart].role === "tool_result") {
 				recentSliceStart++;
+			}
+		}
+	}
+
+	// Physical-window clamp — the authoritative recent-tier ceiling and the
+	// fix for the budget-bypass failure mode. The semantic anchor above can
+	// resolve far before the backward-fill boundary (the backward scan
+	// re-anchors at the latest historical user message). On a long tool-only
+	// run within a single user turn, that pulls the ENTIRE tail into the recent
+	// tier at full resolution: without a ceiling the middle tier never fires
+	// (remainingBudgetForMiddle clamped to 0) and total context grows unbounded
+	// turn over turn (observed live: ~280k tokens against a 200k window).
+	//
+	// The clamp is deliberately gated on `recentHardCeiling` (the PHYSICAL
+	// window headroom) — NOT `historyBudget` (the soft target). Within a user
+	// turn the anchored slice may exceed the soft budget while still fitting the
+	// window; trimming there would move the anchor every turn and thrash the
+	// cache (the rolling behavior the cache subsystem was redesigned away from).
+	// Only when a single user turn's tool loop overflows the physical window do
+	// we step the anchor forward, folding the older within-turn cycles into the
+	// middle tier (mechanical fold, no summarization). In the runaway regime the
+	// cache is already cold, so the one-time anchor step costs nothing.
+	//
+	// When the ceiling is undefined or non-positive (fixed costs alone exceed
+	// the window — a degenerate tiny-window case), the clamp is disabled: there
+	// is no headroom to clamp into and forcing a step would only thrash. The
+	// semantic anchor + ≥2-message floor win, matching the pre-clamp behavior
+	// the byte-stability invariant relies on. Force-trim from the FRONT so
+	// dropped messages cascade into the middle/ancient tiers; re-strip leading
+	// `tool_result` rows after each step to keep the opener wire-legal.
+	//
+	// TRIGGER vs TARGET. The clamp TRIGGERS on the physical ceiling (only step
+	// the anchor when a user turn genuinely overflows the window) but TARGETS
+	// `recentBudget` (the soft 65% allocation). Trimming all the way back to the
+	// 65% target — rather than just under the physical ceiling — is what frees
+	// the remaining ~35% for the middle tier to FOLD the shed tail. If we only
+	// trimmed to the ceiling, `remainingBudgetForMiddle = max(0, historyBudget −
+	// recentTokens)` would clamp to 0, the middle tier would starve, and the
+	// shed messages would drop straight to the ancient tier (recall lost)
+	// instead of folding into a compressed action log (recall kept). The
+	// physical-ceiling trigger preserves the cache-warm semantic anchor in the
+	// normal regime; the soft-budget target preserves recall in the overflow
+	// regime.
+	if (recentHardCeiling !== undefined && recentHardCeiling > 0) {
+		const minFloor = Math.min(2, n);
+		const clampTarget = Math.min(recentBudget, recentHardCeiling);
+		if (suffixTokens[recentSliceStart] > recentHardCeiling) {
+			while (n - recentSliceStart > minFloor && suffixTokens[recentSliceStart] > clampTarget) {
+				recentSliceStart++;
+				while (recentSliceStart < n && historyMessages[recentSliceStart].role === "tool_result") {
+					recentSliceStart++;
+				}
 			}
 		}
 	}
 
 	const recentMessages = historyMessages.slice(recentSliceStart) as LLMMessage[];
 	const recentKept = recentMessages.length;
-	const recentTokens = recentMessages.reduce((sum, m) => sum + countContentTokens(m.content), 0);
+	const recentTokens = suffixTokens[recentSliceStart];
 
 	// --- MIDDLE TIER ---
 	// Fold messages in [0, recentSliceStart) from the END backward

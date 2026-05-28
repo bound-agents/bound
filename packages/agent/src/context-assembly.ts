@@ -1599,6 +1599,25 @@ Original output was too large for the context window. If you need the full conte
 				truncationTarget - systemMsgTokens - stablePrefixTokens - toolTokens,
 			);
 
+			// Physical-window headroom for the recent tier — the HARD ceiling,
+			// distinct from the soft `historyBudget`. `historyBudget` derives from
+			// `truncationTarget` (≤ contextWindow * truncationRatio) and sizes the
+			// tiers; `recentHardCeiling` derives from `effectiveBudget`
+			// (contextWindow − safetyMargin) and is the absolute limit the recent
+			// tier may never cross. The gap between them is the headroom that lets
+			// the recent tier stay anchored to the latest user message (cache
+			// stability) when an inner-loop run modestly overshoots the soft
+			// target, while still folding the tail into the middle tier when a
+			// single user turn genuinely overflows the window. The volatile tail
+			// also consumes window on the wire, so subtract it here (it is part of
+			// the physical fixed cost) even though the soft `historyBudget` above
+			// does not — the ceiling must reflect true history-only headroom.
+			const volatileTokens = suffixContent ? countTokens(suffixContent) : 0;
+			const recentHardCeiling = Math.max(
+				0,
+				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTokens,
+			);
+
 			// Progressive fidelity: three-tier truncation replaces the binary cliff.
 			// Property-tested for budget compliance, coverage, wire-legal openers,
 			// recency preservation, monotonicity, determinism, graceful degradation,
@@ -1613,6 +1632,7 @@ Original output was too large for the context window. If you need the full conte
 				historyBudget,
 				threadId: params.threadId,
 				threadSummary: threadRow?.summary ?? undefined,
+				recentHardCeiling,
 			});
 
 			const remaining = tieredResult.recentMessages;

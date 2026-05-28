@@ -122,9 +122,16 @@ describe("tieredHistoryTruncation — property tests", () => {
 				const { ancient, middle, recent } = result.tierTokens;
 				const totalTokens = ancient + middle + recent;
 
-				// The floor branch can exceed budget to keep ≥2 messages.
-				// Allow up to 2x budget for this case (very conservative tolerance).
-				// Most cases should be well under budget.
+				// NOTE on the contract. These params do NOT pass `recentHardCeiling`,
+				// so the physical-window clamp is disabled and the recent tier is
+				// anchored at the latest user message for cache stability. Under that
+				// configuration the recent tier MAY exceed the soft `historyBudget`
+				// (an inner-loop run within a single user turn legitimately overshoots
+				// the soft target while still fitting the physical window). The strict
+				// recent ≤ ceiling invariant is exercised separately by the
+				// "long tool-only tail" suite below, which passes a real
+				// `recentHardCeiling`. Here we keep the historical total-with-tolerance
+				// check, which still catches gross over-allocation of the folded tiers.
 				if (params.historyMessages.length <= 2) {
 					// Floor case — tolerance is higher
 					return totalTokens <= params.historyBudget * 2;
@@ -348,6 +355,166 @@ describe("tieredHistoryTruncation — property tests", () => {
 			}),
 			{ numRuns: 100 },
 		);
+	});
+});
+
+// ---------- Long tool-only tail (production regression) ----------
+//
+// These cover the failure shape that escaped the original P1 generator: a
+// single user message followed by a long run of LARGE tool_call/tool_result
+// messages with no further user message. In production this defeated the
+// recent-tier budget — the wire-legal-opener fallback scanned backward to the
+// distant user message and pulled the entire tail back to full resolution, so
+// the middle tier never fired and total context grew unbounded turn over turn
+// (~280k tokens against a 200k window). The fix anchors the recent tier at its
+// backward-fill budget and clamps any residual overflow into the middle/ancient
+// tiers.
+
+// Realistic word-salad content. Varied tokens (not single-char repeats, which
+// hit a tiktoken BPE slow path and make the suite pathologically slow).
+const WORDS =
+	"edit file patch apply diff line cursor stdin handler ink delete backspace grapheme test pass fail exit code commit branch push rebase token stream chunk".split(
+		" ",
+	);
+function blob(approxWords: number): string {
+	const parts: string[] = [];
+	for (let i = 0; i < approxWords; i++) parts.push(WORDS[i % WORDS.length]);
+	return parts.join(" ");
+}
+
+/** A tool_call (with a thinking-style blob) + its tool_result. */
+const largeToolCycle: fc.Arbitrary<LLMMessage[]> = fc
+	.integer({ min: 40, max: 300 })
+	.map((words) => [
+		{ role: "tool_call" as const, content: `tool_call: ${blob(words)}` },
+		{ role: "tool_result" as const, content: `result: ${blob(Math.floor(words / 2))}` },
+	]);
+
+/** One user message followed by a long tool-only tail (no later user). */
+const userThenLargeToolTail: fc.Arbitrary<LLMMessage[]> = fc
+	.array(largeToolCycle, { minLength: 5, maxLength: 40 })
+	.map((cycles) => [
+		{ role: "user" as const, content: "Kick off the autonomous run." },
+		...cycles.flat(),
+	]);
+
+describe("tieredHistoryTruncation — long tool-only tail (budget bypass regression)", () => {
+	it("recent tier never exceeds the physical ceiling on a long tool-only tail", () => {
+		fc.assert(
+			fc.property(
+				userThenLargeToolTail,
+				fc.integer({ min: 1000, max: 40000 }),
+				threadId,
+				(messages, budget, tid) => {
+					// `recentHardCeiling` is the physical-window bound. The recent
+					// tier may exceed the soft `historyBudget` (to preserve the
+					// cache-warm semantic anchor) but MUST NOT exceed the ceiling —
+					// except via the ≥2-message floor (a single message larger than
+					// the whole ceiling is unavoidable).
+					const recentHardCeiling = budget;
+					const result = tieredHistoryTruncation({
+						historyMessages: messages,
+						// Soft budget intentionally larger so the clamp must rely on
+						// the ceiling, not the soft target, to bound recent.
+						historyBudget: budget * 2,
+						recentHardCeiling,
+						threadId: tid,
+					});
+
+					return result.recentKept <= 2 || result.tierTokens.recent <= recentHardCeiling;
+				},
+			),
+			{ numRuns: 50 },
+		);
+	});
+
+	it("middle tier fires (does not silently vanish) when the tail overflows the window", () => {
+		// Deterministic reproduction of the production shape: 1 user followed by a
+		// long tool-only run that overflows the physical window. Pre-fix this
+		// produced an unbounded recent tier (~280k against a 200k window) with the
+		// middle tier starved to zero.
+		const messages: LLMMessage[] = [{ role: "user", content: "Start the long autonomous task." }];
+		for (let i = 0; i < 100; i++) {
+			messages.push({ role: "tool_call", content: `edit_${i}: ${blob(120)}` });
+			messages.push({ role: "tool_result", content: `exit 0, edited file ${i}` });
+		}
+
+		const historyBudget = 8000;
+		const recentHardCeiling = 8000;
+		const result = tieredHistoryTruncation({
+			historyMessages: messages,
+			historyBudget,
+			recentHardCeiling,
+			threadId: "regression-thread",
+		});
+
+		// Recent tier is bounded by the physical ceiling.
+		expect(result.tierTokens.recent).toBeLessThanOrEqual(recentHardCeiling);
+		// Truncation actually happened — not the whole tail at full resolution.
+		expect(result.recentKept).toBeLessThan(messages.length);
+		// The middle tier fires, providing a compressed action log of older work.
+		// This is the recall-preserving behavior: the shed tail folds into the
+		// middle tier rather than dropping to ancient.
+		expect(result.middleFolded).toBeGreaterThan(0);
+		expect(result.middleDigestMsg).not.toBeNull();
+		// Wire-legal opener preserved.
+		expect(result.wireLegalOpener).toBe(true);
+		expect(result.recentMessages[0]?.role).not.toBe("tool_result");
+		// Coverage: every message is accounted for across the three tiers.
+		expect(result.ancientDropped + result.middleFolded + result.recentKept).toBe(messages.length);
+	});
+
+	it("recent tokens plateau at the ceiling as the tool-only tail grows (no unbounded growth)", () => {
+		// Successive turns append tool cycles after the last user message.
+		// recentTokens must NOT grow without bound — with the physical ceiling
+		// active it must plateau rather than tracking total history size.
+		const recentHardCeiling = 6000;
+		const recentTokensByTurn: number[] = [];
+
+		const messages: LLMMessage[] = [{ role: "user", content: "Begin." }];
+		for (let turn = 0; turn < 12; turn++) {
+			messages.push({ role: "tool_call", content: `step_${turn}: ${blob(100)}` });
+			messages.push({ role: "tool_result", content: `step_${turn} done: ${blob(30)}` });
+
+			const result = tieredHistoryTruncation({
+				historyMessages: messages,
+				historyBudget: recentHardCeiling * 2,
+				recentHardCeiling,
+				threadId: "growth-thread",
+			});
+			recentTokensByTurn.push(result.tierTokens.recent);
+		}
+
+		// Once the tail exceeds the ceiling, recent tokens plateau — the last
+		// several turns must all sit at or below the ceiling, never tracking
+		// total size.
+		const tail = recentTokensByTurn.slice(-5);
+		for (const t of tail) {
+			expect(t).toBeLessThanOrEqual(recentHardCeiling);
+		}
+	});
+
+	it("recent tier stays anchored (over soft budget, under ceiling) when within-window — cache stability", () => {
+		// When a tool run overshoots the SOFT budget but still fits the physical
+		// window, the recent tier must keep the full anchored slice rather than
+		// trim — preserving the byte-stable cache anchor. The clamp must NOT fire.
+		const messages: LLMMessage[] = [{ role: "user", content: "Anchor turn." }];
+		for (let i = 0; i < 20; i++) {
+			messages.push({ role: "tool_call", content: `op_${i}: ${blob(60)}` });
+			messages.push({ role: "tool_result", content: `op_${i} ok: ${blob(20)}` });
+		}
+		// Soft budget small, ceiling large: anchored slice exceeds soft budget but
+		// fits the ceiling → clamp must NOT fire → entire tail stays in recent.
+		const result = tieredHistoryTruncation({
+			historyMessages: messages,
+			historyBudget: 2000,
+			recentHardCeiling: 1_000_000,
+			threadId: "anchor-thread",
+		});
+		// All messages kept in recent (anchor preserved), nothing folded/dropped.
+		expect(result.recentKept).toBe(messages.length);
+		expect(result.middleFolded).toBe(0);
+		expect(result.ancientDropped).toBe(0);
 	});
 });
 
