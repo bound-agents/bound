@@ -750,6 +750,19 @@ export interface ContextDebugInfo {
 	 */
 	warmCompactionTokensSaved?: number;
 	/**
+	 * Progressive fidelity tier breakdown. Present on cold-path turns
+	 * where tiered truncation fired (totalTokens > effectiveBudget and
+	 * the middle tier had messages to fold). Absent on warm turns, on
+	 * turns that didn't truncate, and on older rows.
+	 */
+	progressiveFidelity?: {
+		ancientDropped: number;
+		middleFolded: number;
+		recentKept: number;
+		tierBudgets: { ancient: number; middle: number; recent: number };
+		tierTokens: { ancient: number; middle: number; recent: number };
+	};
+	/**
 	 * SHA-256 (first 16 hex chars) of the final `systemPrompt` byte
 	 * string for this cold rebuild — i.e. the bytes that ride the
 	 * system-level cache breakpoint on the wire.
