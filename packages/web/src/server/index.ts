@@ -36,6 +36,20 @@ export interface WebAppConfig {
 	hostName?: string;
 	siteId?: string;
 	operatorUserId: string;
+	/**
+	 * The sync server's bind host and port (PORT/BIND_HOST env). Forwarded
+	 * to the webhooks route so it can enumerate the local webhook delivery
+	 * URL — webhook ingestion is on the sync port (3000), distinct from the
+	 * web port (3001). See #36.
+	 */
+	syncBindHost?: string;
+	syncPort?: number;
+	/**
+	 * `sync.hub` from config, if this node is a spoke. Forwarded to the
+	 * webhooks route so the hub's public webhook URL appears in the URL
+	 * enumeration alongside the local URLs.
+	 */
+	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
@@ -112,6 +126,9 @@ export async function createWebApp(
 		hostName: config.hostName,
 		siteId: config.siteId,
 		operatorUserId: config.operatorUserId,
+		syncBindHost: config.syncBindHost,
+		syncPort: config.syncPort,
+		hubUrl: config.hubUrl,
 		statusForwardCache: config.statusForwardCache,
 		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,

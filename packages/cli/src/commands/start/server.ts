@@ -372,6 +372,17 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				price_per_m_cache_write: b.price_per_m_cache_write,
 			})),
 			siteId: appContext.siteId,
+			// Sync server config — forwarded to the webhooks route so it can
+			// enumerate the local webhook delivery URL alongside any cluster
+			// peers' URLs (#36). Webhook ingestion is on the sync port.
+			syncBindHost: syncHost,
+			syncPort,
+			hubUrl: ((): string | undefined => {
+				const cfg = appContext.optionalConfig.sync;
+				if (!cfg?.ok) return undefined;
+				const hub = (cfg.value as { hub?: unknown }).hub;
+				return typeof hub === "string" && hub.length > 0 ? hub : undefined;
+			})(),
 			statusForwardCache,
 			activeDelegations,
 			activeLoops: threadExecutor.activeThreads as Set<string>,

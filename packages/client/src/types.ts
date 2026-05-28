@@ -257,6 +257,33 @@ export interface WebhookRotateResponse {
 	secret: string;
 }
 
+/**
+ * One entry in the cluster-wide webhook URL enumeration. See #36.
+ *
+ * `source` distinguishes:
+ *   - `hub`: derived from `sync.hub` config (only present on spokes — the
+ *     hub's webhook URL is typically the public surface external services
+ *     should use).
+ *   - `local`: derived from this host's sync server bind config. May appear
+ *     more than once when the bind host expands (e.g. `0.0.0.0` → both the
+ *     bind address and a `localhost` alias for convenience).
+ *   - `cluster`: derived from a peer host's announced `sync_url`. The local
+ *     site_id is excluded to avoid duplicating the local entry.
+ */
+export interface WebhookUrlEntry {
+	url: string;
+	source: "hub" | "local" | "cluster";
+	/** Cluster source: the peer host's display name. Local: this host's name. */
+	host_name?: string;
+	/** Cluster source: the peer host's site_id. */
+	site_id?: string;
+}
+
+export interface WebhookUrlsResponse {
+	name: string;
+	urls: WebhookUrlEntry[];
+}
+
 export interface CreateWebhookOptions {
 	name: string;
 	format?: string;

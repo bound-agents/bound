@@ -27,6 +27,20 @@ export interface RoutesConfig {
 	hostName?: string;
 	siteId?: string;
 	operatorUserId: string;
+	/**
+	 * The sync server's bind host and port. Forwarded to the webhooks route
+	 * so it can enumerate the local webhook delivery URL — webhook
+	 * ingestion is on the sync port (3000), distinct from the web port
+	 * (3001). See #36.
+	 */
+	syncBindHost?: string;
+	syncPort?: number;
+	/**
+	 * `sync.hub` from config, if this node is a spoke. Forwarded to the
+	 * webhooks route so the hub's public webhook URL appears in the URL
+	 * enumeration alongside the local URLs.
+	 */
+	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
@@ -52,6 +66,9 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		hostName = "unknown",
 		siteId = "",
 		operatorUserId,
+		syncBindHost,
+		syncPort,
+		hubUrl,
 		statusForwardCache,
 		activeDelegations,
 		activeLoops,
@@ -85,7 +102,13 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 		mcp: createMcpRoutes(db),
-		webhooks: createWebhooksRoutes(db),
+		webhooks: createWebhooksRoutes(db, {
+			syncBindHost,
+			syncPort,
+			hubUrl,
+			hostName,
+			siteId,
+		}),
 		skills: createSkillsRoutes(db),
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),
