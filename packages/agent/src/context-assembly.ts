@@ -12,7 +12,6 @@ import type {
 import { countContentTokens, countTokens } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { annotateMessages } from "./annotation";
-import { truncateHistoryToBudget } from "./budget-truncate";
 import { substituteUnsupportedBlocks } from "./content-substitution";
 import {
 	compactToolResultsBeforeBoundary,
@@ -20,6 +19,12 @@ import {
 	stripThinkingBeforeBoundary,
 } from "./history-compaction";
 import { loadNotificationInputs, renderNotifications } from "./notifications";
+import {
+	ANCIENT_RATIO,
+	MIDDLE_RATIO,
+	RECENT_RATIO,
+	tieredHistoryTruncation,
+} from "./progressive-fidelity";
 import { substitutePurgedMessages } from "./purge-substitution";
 import {
 	hashStableVolatileInputs,
@@ -1594,52 +1599,35 @@ Original output was too large for the context window. If you need the full conte
 				truncationTarget - systemMsgTokens - stablePrefixTokens - toolTokens,
 			);
 
-			// Backward-fill + wire-legal-opener resolution lives in
-			// `budget-truncate/`. Property-tested for budget compliance,
-			// floor preservation, wire-legal openers, recency
-			// preservation, non-monotonicity, determinism, and empty
-			// input — see `budget-truncate/__tests__/truncate.property.test.ts`.
-			const truncationResult = truncateHistoryToBudget({
+			// Progressive fidelity: three-tier truncation replaces the binary cliff.
+			// Property-tested for budget compliance, coverage, wire-legal openers,
+			// recency preservation, monotonicity, determinism, graceful degradation,
+			// and chronological ordering — see
+			// `progressive-fidelity/__tests__/tier-allocation.property.test.ts`.
+			const threadRow = params.db
+				.prepare("SELECT summary FROM threads WHERE id = ?")
+				.get(params.threadId) as { summary: string | null } | null;
+
+			const tieredResult = tieredHistoryTruncation({
 				historyMessages,
 				historyBudget,
+				threadId: params.threadId,
+				threadSummary: threadRow?.summary ?? undefined,
 			});
-			const remaining = truncationResult.kept;
-			truncatedCount = truncationResult.truncatedCount;
 
-			// Inject truncation marker so the agent knows context was lost.
-			//
-			// Byte-stability requirement. The marker is the head developer
-			// message; the bridge merges it into msg[0] of the wire request,
-			// so its bytes ride the cached prefix of every message-level
-			// cachePoint. Any per-turn variance in this string invalidates
-			// Bedrock's prefix-match cache lookup for the entire downstream
-			// prefix — the cumulative cache then never grows past the
-			// system-anchor floor.
-			//
-			// The previous marker included a per-turn `totalInThread` count;
-			// inner-loop iterations append assistant + tool_result messages so
-			// the count advances by 1-2 each turn, mutating the marker bytes
-			// and busting the cache prefix every turn. `truncatedCount` is
-			// preserved because it tends to be byte-stable in practice (when
-			// history grows by N at the tail, ~N old messages drop, net-zero
-			// count delta) and it's the actionable signal for the agent.
+			const remaining = tieredResult.recentMessages;
+			truncatedCount = tieredResult.ancientDropped + tieredResult.middleFolded;
+
+			// Byte-stability requirement. The marker messages ride the cached
+			// prefix of every message-level cachePoint. The ancient marker's
+			// byte content is stable between truncation events (ancientDropped
+			// count + thread summary are both byte-stable per the same reasoning
+			// documented in the original truncation marker). The middle-tier
+			// digest is a pure function of immutable historical messages and
+			// is also byte-stable between cold-path rebuilds.
 			const truncationMarker: LLMMessage[] = [];
-			if (truncatedCount > 0) {
-				// Include thread summary if available — preserves gist of truncated history.
-				// The summary's byte-stability is enforced by the boundary-aware throttle
-				// in `summary-extraction.ts`.
-				const threadRow = params.db
-					.prepare("SELECT summary FROM threads WHERE id = ?")
-					.get(params.threadId) as { summary: string | null } | null;
-				const summarySection = threadRow?.summary
-					? `\n\nSummary of earlier conversation:\n${threadRow.summary}`
-					: "";
-
-				truncationMarker.push({
-					role: "developer",
-					content: `[Context note: ${truncatedCount} earlier messages in this conversation were truncated to fit the context window. You are seeing only the most recent portion. If you need to reference earlier context, you can use the query command to search the messages table, e.g.: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${params.threadId}' ORDER BY created_at DESC LIMIT 50"]${summarySection}`,
-				});
-			}
+			if (tieredResult.ancientMarker) truncationMarker.push(tieredResult.ancientMarker);
+			if (tieredResult.middleDigestMsg) truncationMarker.push(tieredResult.middleDigestMsg);
 
 			const truncatedMessages = [...systemMessages, ...truncationMarker, ...remaining];
 
@@ -1668,11 +1656,23 @@ Original output was too large for the context window. If you need the full conte
 					if (postTruncToolResultTokens > 0)
 						postTruncChildren.push({ name: "tool_result", tokens: postTruncToolResultTokens });
 
-					sections[histIdx] = {
+					// Replace the pre-truncation history section with post-truncation
+					// values. When the middle tier is active, also insert sections for
+					// the ancient marker and middle digest ahead of the history section.
+					const newSections: ContextSection[] = [];
+					if (tieredResult.tierTokens.ancient > 0) {
+						newSections.push({ name: "ancient-marker", tokens: tieredResult.tierTokens.ancient });
+					}
+					if (tieredResult.tierTokens.middle > 0) {
+						newSections.push({ name: "middle-digest", tokens: tieredResult.tierTokens.middle });
+					}
+					newSections.push({
 						name: "history",
 						tokens: postTruncUserTokens + postTruncAssistantTokens + postTruncToolResultTokens,
 						children: postTruncChildren.length > 0 ? postTruncChildren : undefined,
-					};
+					});
+
+					sections.splice(histIdx, 1, ...newSections);
 				}
 			}
 
@@ -1683,6 +1683,22 @@ Original output was too large for the context window. If you need the full conte
 			stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
 			stage7Span.setAttribute("context.truncated_messages", truncatedCount);
 			stage7Span.end();
+
+			// Progressive fidelity debug info — present when the middle tier fired.
+			const progressiveFidelity =
+				tieredResult.middleFolded > 0
+					? {
+							ancientDropped: tieredResult.ancientDropped,
+							middleFolded: tieredResult.middleFolded,
+							recentKept: tieredResult.recentKept,
+							tierBudgets: {
+								ancient: Math.floor(historyBudget * ANCIENT_RATIO),
+								middle: Math.floor(historyBudget * MIDDLE_RATIO),
+								recent: Math.floor(historyBudget * RECENT_RATIO),
+							},
+							tierTokens: tieredResult.tierTokens,
+						}
+					: undefined;
 
 			return {
 				messages: truncatedMessages,
@@ -1702,6 +1718,7 @@ Original output was too large for the context window. If you need the full conte
 					...(crossThreadSources ? { crossThreadSources } : {}),
 					stablePrefixHash: hashSystemPromptString(systemPrompt),
 					...(stablePrefixInputFingerprint !== undefined ? { stablePrefixInputFingerprint } : {}),
+					...(progressiveFidelity ? { progressiveFidelity } : {}),
 				},
 			};
 		}

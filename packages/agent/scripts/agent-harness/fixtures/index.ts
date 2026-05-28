@@ -4,6 +4,7 @@
  */
 
 import { autonomousTaskFixture } from "./autonomous-task";
+import { longThreadFixture } from "./long-thread";
 import { productionShapeFixture } from "./production-shape";
 import type { HarnessFixture } from "./types";
 
@@ -21,4 +22,5 @@ export function registerBuiltinFixtures(): void {
 	if (REGISTRY.size > 0) return; // idempotent
 	registerFixture(autonomousTaskFixture);
 	registerFixture(productionShapeFixture);
+	registerFixture(longThreadFixture);
 }
