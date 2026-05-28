@@ -113,7 +113,9 @@ describe("Message rendering components", () => {
 	describe("ToolCallCard", () => {
 		it("AC9.2: renders spinner with elapsed time", async () => {
 			const now = Date.now();
-			const { lastFrame } = render(<ToolCallCard toolName="read" startTime={now - 2000} />);
+			const { lastFrame } = render(
+				<ToolCallCard toolName="read" startTime={now - 2000} terminalColumns={80} />,
+			);
 			const output = lastFrame();
 			expect(output).toContain("read");
 			// Should show elapsed time in seconds
@@ -122,7 +124,9 @@ describe("Message rendering components", () => {
 
 		it("AC9.2: renders badge with running status", async () => {
 			const now = Date.now();
-			const { lastFrame } = render(<ToolCallCard toolName="bash" startTime={now} />);
+			const { lastFrame } = render(
+				<ToolCallCard toolName="bash" startTime={now} terminalColumns={80} />,
+			);
 			const output = lastFrame();
 			expect(output).toContain("bash");
 			// While running, a spinner glyph appears alongside elapsed time (e.g. "⠋ 0s bash").
@@ -133,7 +137,12 @@ describe("Message rendering components", () => {
 		it("AC9.3: renders stdout in collapsible when provided", async () => {
 			const now = Date.now();
 			const { lastFrame } = render(
-				<ToolCallCard toolName="bash" startTime={now} stdout="$ echo hello\nhello" />,
+				<ToolCallCard
+					toolName="bash"
+					startTime={now}
+					stdout="$ echo hello\nhello"
+					terminalColumns={80}
+				/>,
 			);
 			const output = lastFrame();
 			expect(output).toContain("Output");
@@ -143,7 +152,12 @@ describe("Message rendering components", () => {
 		it("AC9.3: auto-expands stdout collapsible", async () => {
 			const now = Date.now();
 			const { lastFrame } = render(
-				<ToolCallCard toolName="bash" startTime={now} stdout="command output" />,
+				<ToolCallCard
+					toolName="bash"
+					startTime={now}
+					stdout="command output"
+					terminalColumns={80}
+				/>,
 			);
 			const output = lastFrame();
 			// Auto-expanded means stdout content should be visible
