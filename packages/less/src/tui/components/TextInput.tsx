@@ -283,7 +283,7 @@ export function TextInput({
 				return;
 			}
 
-			if (key.backspace || key.delete) {
+			if (key.backspace) {
 				// Delete the grapheme cluster before the cursor (may be more
 				// than one JS code unit for emoji/flags/combining marks).
 				setState((s) => {
@@ -294,6 +294,22 @@ export function TextInput({
 					return {
 						value: s.value.slice(0, newPos) + s.value.slice(s.pos),
 						pos: newPos,
+					};
+				});
+				return;
+			}
+
+			if (key.delete) {
+				// Delete the grapheme cluster AT the cursor (forward delete).
+				// Backspace removes left of cursor; Delete removes right.
+				setState((s) => {
+					if (s.pos >= s.value.length) {
+						return s;
+					}
+					const nextPos = graphemeRight(s.value, s.pos);
+					return {
+						value: s.value.slice(0, s.pos) + s.value.slice(nextPos),
+						pos: s.pos,
 					};
 				});
 				return;

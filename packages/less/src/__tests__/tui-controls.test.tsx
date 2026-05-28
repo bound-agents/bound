@@ -135,6 +135,57 @@ describe("TextInput", () => {
 		}
 	});
 
+	it("delete removes the grapheme AT the cursor (forward delete)", async () => {
+		// Regression test: Delete (forward) used to behave as Backspace.
+		// Backspace removes the grapheme to the LEFT of the cursor;
+		// Delete must remove the grapheme AT the cursor.
+		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
+		const tick = () => new Promise((r) => setTimeout(r, 50));
+
+		try {
+			await tick();
+			stdin.write("abc");
+			await tick();
+
+			// Move cursor left twice so it sits ON 'b' (pos=1).
+			stdin.write("\x1b[D");
+			stdin.write("\x1b[D");
+			await tick();
+
+			// Forward Delete: ANSI escape sequence \x1b[3~. Should remove 'b'.
+			stdin.write("\x1b[3~");
+			await tick();
+
+			// Result is "ac" with the cursor sitting on 'c'. The cursor is
+			// inverse-video on top of the character, so the visible frame is
+			// just "ac" (no extra cell at end since cursor is mid-string).
+			const frame = lastFrame() ?? "";
+			expect(frame).toBe("ac");
+		} finally {
+			unmount();
+		}
+	});
+
+	it("delete at end-of-string is a no-op", async () => {
+		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
+		const tick = () => new Promise((r) => setTimeout(r, 50));
+
+		try {
+			await tick();
+			stdin.write("abc");
+			await tick();
+
+			// Cursor is past the last char; Delete should not remove anything.
+			stdin.write("\x1b[3~");
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			expect(frame).toBe("abc");
+		} finally {
+			unmount();
+		}
+	});
+
 	it("does not shift characters when the cursor moves through them", async () => {
 		// The cursor is rendered via inverse-video *on top of* the character
 		// at `pos`, not inserted between characters. Moving the cursor
