@@ -462,5 +462,53 @@ describe("MessageBlock", () => {
 				expect(line.length).toBeLessThanOrEqual(20);
 			}
 		});
+
+		// Regression for #75: when a tool_result body line is longer than the
+		// stripe width, the existing implementation hands the long line to Ink
+		// as a single <Text>. Ink/terminal soft-wrap then produces continuation
+		// physical rows that escape the StripeBox's logical layout, so the
+		// stripe glyph (`│`) doesn't paint on them.
+		//
+		// Combined regression for #74: a tool_result with one massive single
+		// body line should not produce hundreds of visual rows — the truncation
+		// cap (TOOL_RESULT_MAX_LINES) applies to visual rows, not logical
+		// `\n`-split lines.
+		//
+		// Mirrors the real bug case: a multi-line tool result where the first
+		// line ("stdout:") becomes the headerLabel and the long second line is
+		// a body line that wraps.
+		it("wraps long single-line tool_result content inside the stripe (every row starts with │)", async () => {
+			const longBodyLine = "A".repeat(800);
+			const content = `stdout:\n${longBodyLine}`;
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-tr-wrap",
+						role: "tool_result",
+						content,
+						thread_id: "t-1",
+						tool_name: "boundless_bash",
+						exit_code: 0,
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 60,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			const lines = frame.split("\n").filter((l) => l.trim().length > 0);
+			// Sanity: should produce more than one rendered row.
+			expect(lines.length).toBeGreaterThan(1);
+			// Every non-empty row must begin with the stripe glyph.
+			for (const line of lines) {
+				expect(line.startsWith("│")).toBe(true);
+			}
+			// Total visual rows must be bounded — header + a small number of
+			// body rows + truncation marker. 800 chars at width 60 would
+			// soft-wrap to ~14 rows in the buggy path; the fix caps total
+			// visible rows.
+			expect(lines.length).toBeLessThan(10);
+		});
 	});
 });

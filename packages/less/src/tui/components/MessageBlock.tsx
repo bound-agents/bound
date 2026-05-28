@@ -3,6 +3,7 @@ import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
 import { tildifyPath, tildifyText } from "../util/path";
+import { wrapToVisualRows } from "../util/wrap";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 import { computeLineDiff, hunkDiff } from "./lineDiff";
@@ -454,8 +455,6 @@ export function MessageBlock({
 		}
 		const allLines =
 			firstNonEmpty >= 0 ? rawLines.slice(firstNonEmpty, lastNonEmpty + 1) : rawLines;
-		const truncated = allLines.length > TOOL_RESULT_MAX_LINES;
-		const displayLines = truncated ? allLines.slice(0, TOOL_RESULT_MAX_LINES) : allLines;
 
 		// Echo the tool name on the result line so the parent tool_call is
 		// visually re-anchored (especially helpful when results scroll past
@@ -477,13 +476,49 @@ export function MessageBlock({
 		// gracefully degrades to plain text rendering.
 		const lang = !isError ? langFromPath(filePath) : undefined;
 		const baseName = filePath ? (filePath.split("/").pop() ?? null) : null;
-		const headerLabel = baseName ?? tildifyText(displayLines[0] ?? "");
-		const bodyLines = (baseName ? displayLines : displayLines.slice(1)).map(tildifyText);
+		const headerLabel = baseName ?? tildifyText(allLines[0] ?? "");
+		const rawBodyLines = (baseName ? allLines : allLines.slice(1)).map(tildifyText);
+
+		// Pre-wrap each body line into visual rows so:
+		// 1. Truncation counts visual rows post-wrap, not `\n`-split logical
+		//    lines (#74 — a single 100KB line previously counted as 1 line and
+		//    soft-wrapped into hundreds of physical rows past terminal height).
+		// 2. Each visual row is its own <Text> element, so Ink's borderLeft
+		//    paints deterministically on every physical row inside StripeBox
+		//    instead of the terminal soft-wrap creating continuation rows that
+		//    escape the Box's logical layout (#75).
+		//
+		// Wrap column = stripeWidth - 6:
+		//   1 col stripe border + 1 col StripeBox paddingLeft +
+		//   2 col inner Box paddingLeft + 2 col renderResultRow "  " prefix.
+		const wrapColumn = Math.max(1, stripeWidth - 6);
+		type VisualRow = { logical: string; chunkIdx: number; chunk: string };
+		const allVisualRows: VisualRow[] = [];
+		for (const line of rawBodyLines) {
+			const chunks = wrapToVisualRows(line, wrapColumn);
+			chunks.forEach((chunk, chunkIdx) => {
+				allVisualRows.push({ logical: line, chunkIdx, chunk });
+			});
+		}
+		// Body row budget: when there's no baseName, the header consumed
+		// allLines[0], so the body cap is TOOL_RESULT_MAX_LINES - 1 to keep
+		// the total visible row count (header + body) at TOOL_RESULT_MAX_LINES.
+		// When baseName is present, the header is "free" (file basename) and
+		// the body gets the full TOOL_RESULT_MAX_LINES budget.
+		const maxBodyRows = baseName ? TOOL_RESULT_MAX_LINES : TOOL_RESULT_MAX_LINES - 1;
+		const truncated = allVisualRows.length > maxBodyRows;
+		const displayRows = truncated ? allVisualRows.slice(0, maxBodyRows) : allVisualRows;
 
 		const lineNumPattern = /^(\s*\d+)\t(.*)$/;
-		const renderResultLine = (line: string, idx: number): React.ReactElement => {
-			if (lang) {
-				const match = line.match(lineNumPattern);
+		const renderResultRow = (row: VisualRow, idx: number): React.ReactElement => {
+			// Only attempt syntax highlighting when this row is a single-chunk
+			// logical line. Highlighting a wrapped fragment would re-tokenize
+			// partial code out of context and produce incorrect colors at the
+			// wrap boundary; falling back to plain text on continuation rows
+			// is the simpler correct behavior.
+			const isWholeLine = row.chunkIdx === 0 && row.logical === row.chunk;
+			if (isWholeLine && lang) {
+				const match = row.chunk.match(lineNumPattern);
 				if (match) {
 					const [, lineNum, code] = match;
 					return (
@@ -499,7 +534,7 @@ export function MessageBlock({
 			return (
 				<Text key={idx}>
 					{"  "}
-					{line}
+					{row.chunk}
 				</Text>
 			);
 		};
@@ -520,10 +555,10 @@ export function MessageBlock({
 						)}
 						<Text>{headerLabel}</Text>
 					</Text>
-					{bodyLines.map((line, idx) => renderResultLine(line, idx))}
+					{displayRows.map((row, idx) => renderResultRow(row, idx))}
 					{truncated && (
 						<Text dimColor>
-							{"  "}… {allLines.length - TOOL_RESULT_MAX_LINES} more lines
+							{"  "}… {allVisualRows.length - maxBodyRows} more lines
 						</Text>
 					)}
 				</Box>
