@@ -237,18 +237,27 @@ function extractResultSummary(content: string | unknown[]): string {
 		return "truncated";
 	}
 
-	// Look for exit code pattern (common in bash tool results).
+	// Look for exit code pattern (common in bash tool results, including the
+	// boundless `Exit code: N\nstdout:\n<output>` shape).
 	const exitMatch = text.match(/exit[_ ]code:?\s*(\d+)/i);
 	if (exitMatch) {
 		const exitCode = exitMatch[1];
-		// Find the first meaningful line after the exit code.
-		const lines = text.split("\n").filter((l) => l.trim().length > 0);
-		const summaryLine = lines.find(
-			(l) => !l.includes("exit") && !l.startsWith("[") && l.trim().length > 10,
-		);
+		// Find the first substantive output line so the digest records WHAT the
+		// command found, not just that it ran. Skip structural noise: the
+		// exit-code line itself, the boundless `[boundless] host=…` banner,
+		// bracketed stubs, and the bare `stdout:` / `stderr:` stream markers.
+		const summaryLine = text
+			.split("\n")
+			.map((l) => l.trim())
+			.find(
+				(l) =>
+					l.length > 0 &&
+					!/exit[_ ]code/i.test(l) &&
+					!l.startsWith("[") &&
+					!/^(stdout|stderr):?$/i.test(l),
+			);
 		if (summaryLine) {
-			const trimmed = summaryLine.trim();
-			return `exit ${exitCode}, ${trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed}`;
+			return `exit ${exitCode}, ${summaryLine.length > 80 ? `${summaryLine.slice(0, 77)}...` : summaryLine}`;
 		}
 		return `exit ${exitCode}`;
 	}
@@ -274,12 +283,34 @@ function extractResultSummary(content: string | unknown[]): string {
 }
 
 function extractTextContent(content: string | unknown[]): string {
-	if (typeof content === "string") return content;
+	if (typeof content === "string") {
+		// Tool results are frequently persisted as a JSON-serialized
+		// ContentBlock[] STRING (e.g. boundless/MCP results:
+		// `[{"type":"text","text":"…"}]`). Unwrap that to the joined text so the
+		// fold summarizes the actual output instead of leaking the raw block
+		// JSON into the digest. Pure + deterministic: same frozen string → same
+		// parse → same text. Mirrors the array branch below.
+		if (content.startsWith("[")) {
+			try {
+				const parsed = JSON.parse(content);
+				if (Array.isArray(parsed)) return collectBlockText(parsed);
+			} catch {
+				// Not valid JSON — fall through and treat as plain text.
+			}
+		}
+		return content;
+	}
 	if (!Array.isArray(content)) return "";
+	return collectBlockText(content);
+}
 
-	// Collect text from text blocks, ignore others.
+/**
+ * Join the `text` of every text block in a ContentBlock array. Returns the
+ * `[non-text content]` sentinel when no text block is present.
+ */
+function collectBlockText(blocks: unknown[]): string {
 	const texts: string[] = [];
-	for (const block of content) {
+	for (const block of blocks) {
 		if (typeof block === "object" && block !== null) {
 			const b = block as Record<string, unknown>;
 			if (b.type === "text" && typeof b.text === "string") {
@@ -287,10 +318,7 @@ function extractTextContent(content: string | unknown[]): string {
 			}
 		}
 	}
-
 	if (texts.length > 0) return texts.join("\n");
-
-	// No text blocks — signal non-text content.
 	return "[non-text content]";
 }
 

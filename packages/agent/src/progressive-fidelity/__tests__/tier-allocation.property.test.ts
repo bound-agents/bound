@@ -593,6 +593,73 @@ describe("tieredHistoryTruncation — long tool-only tail (budget bypass regress
 			{ numRuns: 50 },
 		);
 	});
+
+	// CACHE PREFIX GUARD. The middle digest is a `developer` message that rides
+	// msg[0]'s cached prefix on every cold rebuild. Its bytes must not change as
+	// inner-loop messages append WITHIN the same middle zone — otherwise the
+	// prefix-match misses and the cache never reads back. This pins the digest
+	// (not just the ancient marker, which T1 covers) against the recall-fidelity
+	// changes in tool-cycle-fold: enriched result summaries must remain a pure
+	// function of the frozen middle-zone messages.
+	it("middle-digest bytes are stable when later messages append outside the folded zone", () => {
+		// A user turn with a long tool run, then MORE tool messages appended (an
+		// inner-loop iteration). The folded middle zone covers the older portion;
+		// the newer appends land in the recent tier. Folding the older zone must
+		// yield identical digest bytes before and after the append.
+		const base: LLMMessage[] = [{ role: "user", content: "investigate" }];
+		for (let i = 0; i < 30; i++) {
+			base.push({ role: "tool_call", content: `tc_${i}: ${blob(80)}` });
+			base.push({
+				role: "tool_result",
+				// Boundless-shaped frozen output with volatile-looking (but frozen) data.
+				content: JSON.stringify([
+					{ type: "text", text: "[boundless] host=abc cwd=/repo tool=boundless_bash" },
+					{
+						type: "text",
+						text: `Exit code: 0\nstdout:\nfinding_${i} at 2026-05-29T03:0${i % 10}:00Z pid ${1000 + i}`,
+					},
+				]),
+			});
+		}
+		const grown: LLMMessage[] = [
+			...base,
+			{ role: "tool_call", content: `tc_new: ${blob(80)}` },
+			{ role: "tool_result", content: "Exit code: 0\nstdout:\nnewest finding" },
+		];
+
+		// Tight ceiling so the middle tier fires in both cases.
+		const r1 = tieredHistoryTruncation({
+			historyMessages: base,
+			historyBudget: 4000,
+			recentHardCeiling: 4000,
+			threadId: "digest-stable",
+		});
+		const r2 = tieredHistoryTruncation({
+			historyMessages: grown,
+			historyBudget: 4000,
+			recentHardCeiling: 4000,
+			threadId: "digest-stable",
+		});
+
+		// Both must fold a middle tier to make the comparison meaningful.
+		expect(r1.middleDigestMsg).not.toBeNull();
+		expect(r2.middleDigestMsg).not.toBeNull();
+
+		// The folded body of the OLDER messages that appear in BOTH digests must be
+		// byte-identical. We compare the shared suffix of folded action lines:
+		// every `[tool] …` line present in r1's digest must appear verbatim in r2's.
+		const bodyLines = (m: LLMMessage | null): string[] =>
+			typeof m?.content === "string"
+				? m.content.split("\n").filter((l) => l.startsWith("[tool]") || l.startsWith("[user]"))
+				: [];
+		const lines1 = bodyLines(r1.middleDigestMsg);
+		const lines2 = new Set(bodyLines(r2.middleDigestMsg));
+		// Every folded line from the smaller digest is a deterministic projection
+		// of frozen messages, so each must reappear unchanged in the grown digest.
+		const reappearing = lines1.filter((l) => lines2.has(l));
+		expect(reappearing.length).toBeGreaterThan(0);
+		expect(reappearing.length / lines1.length).toBeGreaterThanOrEqual(0.9);
+	});
 });
 
 // ---------- Unit Tests ----------

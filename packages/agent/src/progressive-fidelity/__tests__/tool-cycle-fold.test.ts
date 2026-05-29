@@ -816,3 +816,115 @@ describe("foldMessages — Edge Cases", () => {
 		expect(result[0].text).toMatch(/bash\(ls -la\)/);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Result-summary fidelity (Defect C): the fold must preserve a meaningful
+// outcome line, not collapse everything to "exit 0", and must not leak raw
+// serialized ContentBlock JSON. The middle digest rides the cached prefix, so
+// every extraction here must be a pure, deterministic function of the FROZEN
+// message content (no wall-clock, no re-execution).
+// ---------------------------------------------------------------------------
+describe("foldMessages — result-summary fidelity (Defect C)", () => {
+	// Production shape: boundless tool results are stored as a JSON-serialized
+	// ContentBlock[] STRING whose first block is a host/cwd banner and whose
+	// second block carries "Exit code: 0\nstdout:\n<output>". Pre-fix,
+	// extractTextContent only unwrapped already-parsed arrays, so the string
+	// form fell through and the fold leaked the raw `[{"type":"text"...` JSON.
+	const boundlessResult = (stdout: string): string =>
+		JSON.stringify([
+			{ type: "text", text: "[boundless] host=abc cwd=/repo tool=boundless_bash" },
+			{ type: "text", text: `Exit code: 0\nstdout:\n${stdout}` },
+		]);
+
+	it("does not leak raw serialized ContentBlock JSON into the digest", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "bash",
+						input: { command: "grep -n escapeNonAscii src" },
+					},
+				]),
+			},
+			{ role: "tool_result", content: boundlessResult("180: function escapeNonAscii(s) {") },
+		];
+
+		const [line] = foldMessages(messages, 0, messages.length);
+		// Must NOT contain the serialized block structure.
+		expect(line.text).not.toContain('[{"type"');
+		expect(line.text).not.toContain('"text":');
+		// SHOULD carry the actual finding.
+		expect(line.text).toContain("escapeNonAscii");
+	});
+
+	it("captures the first substantive stdout line instead of collapsing to bare exit 0", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "bash",
+						input: { command: "head streamableHttp.js" },
+					},
+				]),
+			},
+			{
+				role: "tool_result",
+				content: boundlessResult("SDK client file: node_modules/.../streamableHttp.js"),
+			},
+		];
+
+		const [line] = foldMessages(messages, 0, messages.length);
+		expect(line.text).toContain("SDK client file");
+		// The bare "→ exit 0" with no detail is what we are eliminating.
+		expect(line.text).not.toMatch(/→\s*exit 0\s*$/);
+	});
+
+	it("is byte-identical across repeated folds of frozen output containing volatile-looking data", () => {
+		// The tool's output is a SNAPSHOT — a timestamp/PID recorded once. Folding
+		// the same frozen rows twice (two cold rebuilds) must produce identical
+		// bytes; the cache prefix depends on it. Source nondeterminism is
+		// irrelevant because the fold never re-runs anything.
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "run it" },
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "t1", name: "bash", input: { command: "date && echo $$" } },
+				]),
+			},
+			{
+				role: "tool_result",
+				content: boundlessResult("Thu May 29 03:00:01 UTC 2026\npid 48213\n/tmp/run-a9f3e1/out"),
+			},
+		];
+
+		const a = foldMessages(messages, 0, messages.length)
+			.map((l) => l.text)
+			.join("\n");
+		const b = foldMessages(messages, 0, messages.length)
+			.map((l) => l.text)
+			.join("\n");
+		expect(a).toBe(b);
+	});
+
+	it("still bounds folded line length with richer content", () => {
+		const huge = "x".repeat(5000);
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "t1", name: "bash", input: { command: "cat big" } },
+				]),
+			},
+			{ role: "tool_result", content: boundlessResult(huge) },
+		];
+		const [line] = foldMessages(messages, 0, messages.length);
+		expect(line.text.length).toBeLessThanOrEqual(MAX_FOLDED_LINE_CHARS);
+	});
+});
