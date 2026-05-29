@@ -337,6 +337,7 @@ function openCrossThread(src: CrossThreadSource): void {
 			<ContextBar
 				sections={selectedTurn.context_debug.sections}
 				contextWindow={selectedTurn.context_debug.contextWindow}
+				actualTotalTokens={selectedTurn.context_debug.actualTotalTokens}
 				cacheMarkers={selectedTurn.context_debug.cacheMarkers}
 				cacheReadTokens={selectedTurn.tokens_cache_read}
 				cacheWriteTokens={selectedTurn.tokens_cache_write}
@@ -394,6 +395,7 @@ function openCrossThread(src: CrossThreadSource): void {
 			<ContextSectionList
 				sections={selectedTurn.context_debug.sections}
 				contextWindow={selectedTurn.context_debug.contextWindow}
+				actualTotalTokens={selectedTurn.context_debug.actualTotalTokens}
 			/>
 
 			{#if selectedTurn.context_debug.crossThreadSources && selectedTurn.context_debug.crossThreadSources.length > 0}

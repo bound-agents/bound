@@ -10,9 +10,11 @@ interface Props {
 		children?: Array<{ name: string; tokens: number }>;
 	}>;
 	contextWindow: number;
+	/** Actual LLM-reported total; when present, drives the drift row + real free space. */
+	actualTotalTokens?: number;
 }
 
-const { sections, contextWindow }: Props = $props();
+const { sections, contextWindow, actualTotalTokens }: Props = $props();
 
 /** Terse, declarative explanations keyed by section name. */
 const SECTION_INFO: Record<string, string> = {
@@ -45,8 +47,17 @@ function toggleSection(name: string): void {
 	expandedSections = next;
 }
 
-const usedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
-const freeTokens = $derived(contextWindow - usedTokens);
+const estimatedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
+// Drift = real wire total − summed section estimates. Shown as its own row so
+// the list's free-space figure agrees with the headline's actual percentage;
+// we have no per-section actuals, so attributing drift to a single row is the
+// honest representation rather than scaling each section by a guessed ratio.
+const driftTokens = $derived(
+	actualTotalTokens != null ? Math.max(0, actualTotalTokens - estimatedTokens) : 0,
+);
+const driftPct = $derived(contextWindow > 0 ? (driftTokens / contextWindow) * 100 : 0);
+const usedTokens = $derived(actualTotalTokens != null ? actualTotalTokens : estimatedTokens);
+const freeTokens = $derived(Math.max(0, contextWindow - usedTokens));
 const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 : 0);
 </script>
 
@@ -104,6 +115,22 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 			{/each}
 		{/if}
 	{/each}
+
+	{#if driftTokens > 0}
+		<div class="section-row">
+			<div class="section-lead">
+				<span class="dot drift-dot"></span>
+				<InfoPopover
+					placement="top"
+					label="Actual wire total minus the summed section estimates. The cl100k_base estimator under-counts non-uniformly (thinking-heavy history most), so this gap can't be attributed to one section."
+				>
+					{#snippet trigger()}<span class="name">estimator drift</span>{/snippet}
+				</InfoPopover>
+			</div>
+			<span class="tokens">{driftTokens.toLocaleString()}</span>
+			<span class="pct">{driftPct.toFixed(1)}%</span>
+		</div>
+	{/if}
 
 	{#if freeTokens > 0}
 		<div class="section-row">
@@ -179,6 +206,18 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 	.dot.small {
 		width: 5px;
 		height: 9px;
+	}
+
+	/* Hatched marker for the estimator-drift row — matches the bar segment. */
+	.drift-dot {
+		background-image: repeating-linear-gradient(
+			-45deg,
+			var(--warn) 0,
+			var(--warn) 1px,
+			transparent 1px,
+			transparent 4px
+		);
+		background-color: var(--paper-3);
 	}
 
 	.name {

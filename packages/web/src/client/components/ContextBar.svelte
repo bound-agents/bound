@@ -11,6 +11,14 @@ interface Props {
 	}>;
 	contextWindow: number;
 	/**
+	 * Actual LLM-reported total input tokens for the turn. When present and
+	 * larger than the summed section estimate, the gap is rendered as an
+	 * "estimator drift" segment so the bar's fill matches the headline's actual
+	 * percentage instead of the (smaller) estimate. Undefined on assembly-only
+	 * snapshots that haven't been correlated with a response yet.
+	 */
+	actualTotalTokens?: number;
+	/**
 	 * Cache breakpoint descriptors recorded for the turn. Up to two entries
 	 * (system + message). Absent for turns persisted before this field existed.
 	 */
@@ -24,12 +32,29 @@ interface Props {
 	cacheWriteTokens?: number | null;
 }
 
-const { sections, contextWindow, cacheMarkers, cacheReadTokens, cacheWriteTokens }: Props =
-	$props();
+const {
+	sections,
+	contextWindow,
+	actualTotalTokens,
+	cacheMarkers,
+	cacheReadTokens,
+	cacheWriteTokens,
+}: Props = $props();
 
-const usedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
-const usedPct = $derived((usedTokens / contextWindow) * 100);
-const freePct = $derived(100 - usedPct);
+const estimatedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
+// Drift = how much the real wire prompt exceeds the cl100k_base estimate. The
+// estimate is non-uniformly low (thinking-heavy history inflates most), and we
+// have no per-section actuals — so rather than fabricate scaled section widths,
+// the drift is surfaced as a single explicit segment. `0` when no actual is
+// known yet or the estimate ran high.
+const driftTokens = $derived(
+	actualTotalTokens != null ? Math.max(0, actualTotalTokens - estimatedTokens) : 0,
+);
+// Tokens that actually occupy the window: the real total when known, else the
+// estimate. Drives the free-space figure so the bar agrees with the headline.
+const usedTokens = $derived(actualTotalTokens != null ? actualTotalTokens : estimatedTokens);
+const driftPct = $derived(Math.max(0, Math.min(100, (driftTokens / contextWindow) * 100)));
+const freePct = $derived(Math.max(0, 100 - (usedTokens / contextWindow) * 100));
 
 // Compact 1k/1M formatter for the inline tick label. Token counts on the bar
 // are large (200k+ context windows), so `1.2M` / `230k` reads cleaner than
@@ -131,11 +156,20 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 				></div>
 			{/if}
 		{/each}
+		{#if driftPct > 0}
+			<div
+				class="bar-segment drift"
+				style="flex-basis: {driftPct}%;"
+				title="Estimator drift: {Math.round(driftTokens).toLocaleString()} tokens ({driftPct.toFixed(1)}%) — the real prompt exceeds the cl100k_base estimate (mostly thinking-heavy history)."
+			></div>
+		{/if}
 		{#if freePct > 0}
 			<div
 				class="bar-segment free"
 				style="flex-basis: {freePct}%; background: {FREE_SPACE_COLOR};"
-				title="Free space: {Math.round(contextWindow - usedTokens).toLocaleString()} tokens ({freePct.toFixed(1)}%)"
+				title="Free space: {Math.round(contextWindow - usedTokens).toLocaleString()} tokens ({freePct.toFixed(1)}%){actualTotalTokens != null
+					? ' — vs. the actual wire total'
+					: ''}"
 			></div>
 		{/if}
 		{#each renderedMarkers as m}
@@ -200,6 +234,21 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 	.bar-segment.free {
 		opacity: 1;
 		background: var(--paper-3) !important;
+	}
+
+	/* Estimator drift: actual − estimate. Diagonal hatch in the warn hue marks
+	   it as inferred headroom-loss, not a real section we can attribute. */
+	.bar-segment.drift {
+		opacity: 1;
+		border-right: none;
+		background-color: var(--paper-3);
+		background-image: repeating-linear-gradient(
+			-45deg,
+			var(--warn) 0,
+			var(--warn) 1px,
+			transparent 1px,
+			transparent 5px
+		);
 	}
 
 	/* Cache ticks are now rendered as InfoPopover triggers with inline
