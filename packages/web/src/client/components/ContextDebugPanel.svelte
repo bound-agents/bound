@@ -257,41 +257,48 @@ function openCrossThread(src: CrossThreadSource): void {
 				{@const cachePath = selectedTurn.context_debug.cachePath ?? null}
 				{@const cacheReason = selectedTurn.context_debug.cachePathReason ?? null}
 				<div class="cache-row">
-					<InfoPopover
-						label="Read/write totals are exact (driver-reported). Bar tick positions are heuristic — provider reports caching per request, not per breakpoint."
-					>
-						{#snippet trigger()}<span class="cache-kicker">Cache</span>{/snippet}
-					</InfoPopover>
-					{#if cachePath}
+					<!-- Group 1: labels (CACHE + warm/cold). Wraps as a unit. -->
+					<span class="cache-group">
 						<InfoPopover
-							label={`${cachePath === "warm" ? "Warm: cached prefix reused, only the volatile tail rebuilt." : "Cold: full assembly ran, seeded a fresh prefix."}${cacheReason ? ` ${CACHE_REASON_LABEL[cacheReason] ?? cacheReason}.` : ""}`}
+							label="Read/write totals are exact (driver-reported). Bar tick positions are heuristic — provider reports caching per request, not per breakpoint."
 						>
-							{#snippet trigger()}<span
-									class="cache-path mono"
-									class:cache-path-warm={cachePath === "warm"}
-									class:cache-path-cold={cachePath === "cold"}>{cachePath}</span
-								>{/snippet}
+							{#snippet trigger()}<span class="cache-kicker">Cache</span>{/snippet}
 						</InfoPopover>
-						<span class="cache-sep">·</span>
-					{/if}
-					{#if capabilityOff}
-						<span class="cache-state cache-disabled mono">disabled</span>
-						<span class="cache-detail">backend lacks prompt_caching</span>
-					{:else}
-						<span class="cache-num cache-read mono tnum" class:cache-zero={cacheRead === 0}>
-							↑ {cacheRead.toLocaleString()}
-						</span>
-						<span class="cache-sep">·</span>
-						<span class="cache-num cache-write mono tnum" class:cache-zero={cacheWrite === 0}>
-							↓ {cacheWrite.toLocaleString()}
-						</span>
-						{#if ttl}
-							<span class="cache-sep">·</span>
-							<span class="cache-meta mono">{ttl} TTL</span>
+						{#if cachePath}
+							<InfoPopover
+								label={`${cachePath === "warm" ? "Warm: cached prefix reused, only the volatile tail rebuilt." : "Cold: full assembly ran, seeded a fresh prefix."}${cacheReason ? ` ${CACHE_REASON_LABEL[cacheReason] ?? cacheReason}.` : ""}`}
+							>
+								{#snippet trigger()}<span
+										class="cache-kicker"
+										class:cache-path-warm={cachePath === "warm"}
+										class:cache-path-cold={cachePath === "cold"}>{cachePath}</span
+									>{/snippet}
+							</InfoPopover>
 						{/if}
-						{#if variant}
+					</span>
+					{#if capabilityOff}
+						<span class="cache-group">
+							<span class="cache-state cache-disabled mono">disabled</span>
+							<span class="cache-detail">backend lacks prompt_caching</span>
+						</span>
+					{:else}
+						<!-- Group 2: the read/write figures. -->
+						<span class="cache-group">
+							<span class="cache-num cache-read tnum" class:cache-zero={cacheRead === 0}
+								>↑ {cacheRead.toLocaleString()}</span
+							>
 							<span class="cache-sep">·</span>
-							<span class="cache-meta mono">{variant}</span>
+							<span class="cache-num cache-write tnum" class:cache-zero={cacheWrite === 0}
+								>↓ {cacheWrite.toLocaleString()}</span
+							>
+						</span>
+						{#if ttl || variant}
+							<!-- Group 3: secondary meta (TTL + variant). Wraps together. -->
+							<span class="cache-group cache-meta-group">
+								{#if ttl}<span class="cache-meta">{ttl} TTL</span>{/if}
+								{#if ttl && variant}<span class="cache-sep">·</span>{/if}
+								{#if variant}<span class="cache-meta">{variant}</span>{/if}
+							</span>
 						{/if}
 					{/if}
 				</div>
@@ -575,12 +582,24 @@ function openCrossThread(src: CrossThreadSource): void {
 		cursor: help;
 	}
 
+	/* Cohesive units that wrap as a block, so a trailing item (e.g. variant)
+	   never orphans onto its own line. Each group keeps its items on one line. */
+	.cache-group {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 6px;
+		white-space: nowrap;
+	}
+
 	/* Keep each stat intact when the row wraps to a new line. */
 	.cache-num,
 	.cache-meta {
 		white-space: nowrap;
 	}
 
+	/* CACHE and the warm/cold chip share one kicker treatment so the two
+	   uppercase labels read as identical type (same size/weight/tracking) —
+	   the earlier mismatch was weight+size, not font family. */
 	.cache-kicker {
 		font-family: var(--font-mono);
 		font-size: 10px;
@@ -763,13 +782,7 @@ function openCrossThread(src: CrossThreadSource): void {
 		font-style: italic;
 	}
 
-	.cache-path {
-		font-family: var(--font-mono);
-		font-size: 11px;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-	}
-
+	/* Warm/cold chip reuses .cache-kicker; only the color differs. */
 	.cache-path-warm {
 		color: var(--ok);
 	}
