@@ -96,37 +96,68 @@ export const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecu
 
 /**
  * Reschedules a cron task to its next run time and resets status to 'pending'.
- * Extracted as a helper because this logic is needed in three places:
- * soft errors, hard errors, and model validation failures.
+ * Extracted as a helper because this logic is needed across the run path
+ * (completion, soft errors, hard errors, model validation failures, template
+ * paths) and the stuck-row healer.
+ *
+ * Lease-CAS guard (cron-resurrection fix). `expectedLease` is the claim token
+ * the caller acquired for this run. When it is a string, the write is gated via
+ * `updateRowIf` on `lease_id = expectedLease`, so the reschedule only lands if
+ * THIS run still holds the claim. If a peer evicted us mid-run (eviction clears
+ * `lease_id` to NULL — scheduler.ts ~926) or re-claimed the row (fresh lease),
+ * the CAS misses and we do NOT clobber the peer's state by re-arming the row.
+ * This closes the completion-path hole: the completion CAS at ~1687 can lose to
+ * an evictor (`wrote=false`) yet the code still reaches this reschedule — without
+ * the guard it would resurrect the just-evicted row to `pending`.
+ *
+ * `expectedLease === null` is the HEALER path: `healStuckTasks` recovers orphaned
+ * rows it does not (and cannot) hold a lease on, so that call rebuilds the
+ * schedule unconditionally — that is the healer's entire job. This differs from
+ * `parkTask`, which refuses on a null lease because parking an unowned row could
+ * clobber a peer's active task; rescheduling a stuck orphan is safe and intended.
+ *
+ * Scope note: the lease CAS defeats same-generation eviction/re-claim races. It
+ * does NOT by itself defeat a stale peer on pre-fix code that re-pends via a
+ * fresher `modified_at` — that is the separate soft-delete-tombstone-precedence
+ * work tracked in bound_issue:scheduler:cron-cancel-reverted-by-peer-20260529.
  */
-function rescheduleCronTask(
+export function rescheduleCronTask(
 	db: AppContext["db"],
 	task: Task,
 	logger: AppContext["logger"],
 	context: string,
 	siteId: string,
+	expectedLease: string | null,
 ): void {
 	if (task.type !== "cron" || !task.trigger_spec) return;
 	try {
 		const cronExpr = extractCronExpression(task.trigger_spec);
 		const nextRunAt = computeNextRunAt(cronExpr, new Date());
-		updateRow(
-			db,
-			"tasks",
-			task.id,
-			{
-				next_run_at: nextRunAt.toISOString(),
-				status: "pending",
-				claimed_by: null,
-				claimed_at: null,
-				lease_id: null,
-				// Clear stale error string once a successful run has completed.
-				// Soft/hard-error reschedules intentionally omit this so the error
-				// persists for diagnostic purposes until the task actually succeeds.
-				...(context === "completion" ? { error: "" } : {}),
-			},
-			siteId,
-		);
+		const updates: Partial<Task> = {
+			next_run_at: nextRunAt.toISOString(),
+			status: "pending",
+			claimed_by: null,
+			claimed_at: null,
+			lease_id: null,
+			// Clear stale error string once a successful run has completed.
+			// Soft/hard-error reschedules intentionally omit this so the error
+			// persists for diagnostic purposes until the task actually succeeds.
+			...(context === "completion" ? { error: "" } : {}),
+		};
+		if (expectedLease === null) {
+			// Healer path: recover an orphaned/stuck row unconditionally.
+			updateRow(db, "tasks", task.id, updates, siteId);
+			return;
+		}
+		const wrote = updateRowIf(db, "tasks", task.id, { lease_id: expectedLease }, updates, siteId);
+		if (!wrote) {
+			// Peer evicted or re-claimed this row after we started the run; the
+			// evictor already set next_run_at. Do not re-arm and clobber its state.
+			logger.info(`Cron reschedule skipped after ${context}: lease no longer held`, {
+				taskId: task.id,
+				expectedLease,
+			});
+		}
 	} catch (cronError) {
 		logger.error(`Failed to compute next cron time after ${context}`, {
 			error: formatError(cronError),
@@ -497,7 +528,8 @@ export function healStuckTasks(
 
 			switch (task.type) {
 				case "cron":
-					rescheduleCronTask(db, task, logger, "stuck-row healer", siteId);
+					// Healer path: orphaned/stuck row, no lease held — rebuild schedule unconditionally.
+					rescheduleCronTask(db, task, logger, "stuck-row healer", siteId, null);
 					recovered++;
 					break;
 				case "heartbeat":
@@ -1472,6 +1504,7 @@ export class Scheduler {
 									this.ctx.logger,
 									"model validation failure",
 									this.ctx.siteId,
+									leaseId,
 								);
 								rescheduleHeartbeat(
 									this.ctx.db,
@@ -1649,7 +1682,14 @@ export class Scheduler {
 						}
 
 						// Cron tasks still reschedule even after soft errors so they keep retrying
-						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "soft error", this.ctx.siteId);
+						rescheduleCronTask(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"soft error",
+							this.ctx.siteId,
+							leaseId,
+						);
 						rescheduleHeartbeat(
 							this.ctx.db,
 							task,
@@ -1712,7 +1752,14 @@ export class Scheduler {
 						}
 
 						// If cron task, compute next run time
-						rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
+						rescheduleCronTask(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							"completion",
+							this.ctx.siteId,
+							leaseId,
+						);
 						rescheduleHeartbeat(
 							this.ctx.db,
 							task,
@@ -1828,7 +1875,14 @@ export class Scheduler {
 					}
 
 					// Cron tasks must reschedule even after hard errors so they keep running on schedule
-					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "hard error", this.ctx.siteId);
+					rescheduleCronTask(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"hard error",
+						this.ctx.siteId,
+						leaseId,
+					);
 					rescheduleHeartbeat(
 						this.ctx.db,
 						task,
@@ -2025,7 +2079,14 @@ export class Scheduler {
 					}
 
 					// If cron task, compute next run time
-					rescheduleCronTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
+					rescheduleCronTask(
+						this.ctx.db,
+						task,
+						this.ctx.logger,
+						"completion",
+						this.ctx.siteId,
+						leaseId,
+					);
 					rescheduleHeartbeat(
 						this.ctx.db,
 						task,
@@ -2064,6 +2125,7 @@ export class Scheduler {
 						this.ctx.logger,
 						"template hard error",
 						this.ctx.siteId,
+						leaseId,
 					);
 					rescheduleHeartbeat(
 						this.ctx.db,

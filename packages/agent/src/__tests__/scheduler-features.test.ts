@@ -21,7 +21,7 @@ import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { Scheduler, rescheduleHeartbeat } from "../scheduler";
+import { Scheduler, rescheduleCronTask, rescheduleHeartbeat } from "../scheduler";
 import { seedCronTasks } from "../task-resolution";
 import { sleep, waitFor } from "./helpers";
 
@@ -1740,6 +1740,173 @@ describe("Scheduler features", () => {
 			expect(task?.status).toBe("pending");
 			expect(task?.next_run_at).not.toBeNull();
 			expect(new Date(task?.next_run_at ?? "").getTime()).toBeGreaterThan(Date.now());
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+	});
+
+	// -----------------------------------------------------------------------
+	// rescheduleCronTask lease-CAS guard (cron-resurrection fix)
+	// -----------------------------------------------------------------------
+	describe("rescheduleCronTask lease-CAS guard", () => {
+		const HOURLY = JSON.stringify({ type: "cron", expression: "0 * * * *" });
+
+		function insertCronTask(opts: {
+			status: string;
+			leaseId: string | null;
+			claimedBy: string | null;
+			nextRunAt: string;
+			error?: string | null;
+		}): string {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', ?, ?, NULL, NULL,
+					?, ?, ?, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, ?, ?, 'system', ?, 0
+				)`,
+				[
+					taskId,
+					opts.status,
+					HOURLY,
+					opts.claimedBy,
+					opts.claimedBy ? now : null,
+					opts.leaseId,
+					opts.nextRunAt,
+					opts.error ?? null,
+					now,
+					now,
+				],
+			);
+			return taskId;
+		}
+
+		function readTask(taskId: string) {
+			return db
+				.query(
+					"SELECT status, next_run_at, claimed_by, claimed_at, lease_id, error FROM tasks WHERE id = ?",
+				)
+				.get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+				claimed_by: string | null;
+				claimed_at: string | null;
+				lease_id: string | null;
+				error: string | null;
+			} | null;
+		}
+
+		it("reschedules a cron task on completion when the lease is still held (CAS hits)", () => {
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const taskId = insertCronTask({
+				status: "running",
+				leaseId: "lease-A",
+				claimedBy: siteId,
+				nextRunAt: pastTime,
+				error: "stale error from a prior run",
+			});
+			const ctx = makeCtx();
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+
+			rescheduleCronTask(db, task, ctx.logger, "completion", siteId, "lease-A");
+
+			const row = readTask(taskId);
+			expect(row?.status).toBe("pending");
+			expect(row?.claimed_by).toBeNull();
+			expect(row?.claimed_at).toBeNull();
+			expect(row?.lease_id).toBeNull();
+			// completion clears the stale error so it doesn't persist into the next run
+			expect(row?.error).toBe("");
+			expect(new Date(row?.next_run_at ?? "").getTime()).toBeGreaterThan(Date.now());
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("does NOT reschedule when a peer re-claimed the row mid-run (CAS misses, no resurrection)", () => {
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const taskId = insertCronTask({
+				status: "running",
+				leaseId: "lease-A",
+				claimedBy: siteId,
+				nextRunAt: pastTime,
+			});
+			const ctx = makeCtx();
+			// We captured the task object while THIS run still held lease-A.
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+
+			// A peer re-claims the row mid-run: fresh lease, its own claim + future fire.
+			const peerFuture = new Date(Date.now() + 3_600_000).toISOString();
+			db.run(
+				"UPDATE tasks SET lease_id = ?, claimed_by = ?, status = 'running', next_run_at = ? WHERE id = ?",
+				["lease-B", "peer-site", peerFuture, taskId],
+			);
+
+			// Our stale-lease reschedule must NOT clobber the peer's claim.
+			rescheduleCronTask(db, task, ctx.logger, "completion", siteId, "lease-A");
+
+			const row = readTask(taskId);
+			expect(row?.lease_id).toBe("lease-B");
+			expect(row?.claimed_by).toBe("peer-site");
+			expect(row?.status).toBe("running");
+			expect(row?.next_run_at).toBe(peerFuture);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("does NOT reschedule when the row was evicted (lease cleared to null)", () => {
+			// Evictor cleared the lease to null and set its own next_run_at.
+			const evictorFuture = new Date(Date.now() + 1_800_000).toISOString();
+			const taskId = insertCronTask({
+				status: "pending",
+				leaseId: null,
+				claimedBy: null,
+				nextRunAt: evictorFuture,
+			});
+			const ctx = makeCtx();
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+
+			// We still believe we hold lease-A; the CAS must miss against a null lease.
+			rescheduleCronTask(db, task, ctx.logger, "completion", siteId, "lease-A");
+
+			const row = readTask(taskId);
+			expect(row?.lease_id).toBeNull();
+			expect(row?.status).toBe("pending");
+			expect(row?.next_run_at).toBe(evictorFuture);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("reschedules unconditionally on the healer path (expectedLease = null)", () => {
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			// Orphaned stuck row: a dead host's lease is still stamped on it.
+			const taskId = insertCronTask({
+				status: "running",
+				leaseId: "dead-host-lease",
+				claimedBy: "dead-host",
+				nextRunAt: pastTime,
+			});
+			const ctx = makeCtx();
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+
+			// Healer holds no lease; it rebuilds the schedule regardless of current lease.
+			rescheduleCronTask(db, task, ctx.logger, "stuck-row healer", siteId, null);
+
+			const row = readTask(taskId);
+			expect(row?.status).toBe("pending");
+			expect(row?.claimed_by).toBeNull();
+			expect(row?.lease_id).toBeNull();
+			expect(new Date(row?.next_run_at ?? "").getTime()).toBeGreaterThan(Date.now());
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
