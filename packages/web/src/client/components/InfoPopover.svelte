@@ -3,56 +3,90 @@ import type { Snippet } from "svelte";
 
 /**
  * Instant hover/focus info popover. Replaces native `title=` tooltips, whose
- * ~1s show delay makes hover-to-explain UX feel broken. Pure-CSS visibility
- * (`:hover` / `:focus-within`) means zero delay and no JS timers.
+ * ~1s show delay makes hover-to-explain UX feel broken.
  *
- * Accessibility: the trigger is a focusable `<button>` so keyboard users can
- * Tab to it and read the popover; `aria-label` carries the plain-text summary
- * for screen readers that don't surface the visual popover.
+ * Positioning is FIXED, computed from the trigger's bounding rect on show, so
+ * the bubble escapes any `overflow: auto` ancestor (the debug panel scrolls;
+ * an absolutely-positioned bubble would clip against its top/edges). Shown
+ * with no delay — the only timing is a CSS opacity fade.
  *
- * Anchoring is CSS-only (absolute, positioned relative to the inline-block
- * wrapper). `placement` picks the side; the popover is width-capped and wraps.
+ * Accessibility: the trigger is a focusable `<button>` carrying `aria-label`;
+ * keyboard focus shows the bubble the same as hover.
  */
 interface Props {
-	/** Plain-text fallback / screen-reader label. */
+	/** Plain-text screen-reader label / fallback body. */
 	label: string;
-	/** Popover side relative to the trigger. */
+	/** Preferred side; flips automatically if there isn't room. */
 	placement?: "top" | "bottom";
-	/** The trigger content (the thing the user hovers). */
+	/** The hovered trigger content. */
 	trigger: Snippet;
-	/** The popover body. Falls back to `label` text when omitted. */
+	/** Popover body. Falls back to `label` when omitted. */
 	children?: Snippet;
 }
 
 const { label, placement = "top", trigger, children }: Props = $props();
+
+let visible = $state(false);
+let left = $state(0);
+let top = $state(0);
+let resolvedPlacement = $state<"top" | "bottom">(placement);
+let triggerEl: HTMLButtonElement | undefined;
+
+const BUBBLE_MAX_WIDTH = 300;
+const GAP = 6;
+
+function show(): void {
+	if (!triggerEl) return;
+	const r = triggerEl.getBoundingClientRect();
+	// Flip to bottom when there isn't room above (e.g. rows near the panel top).
+	const wantTop = placement === "top";
+	resolvedPlacement = wantTop && r.top < 160 ? "bottom" : placement;
+	// Clamp horizontally so a wide bubble never runs off the viewport edge.
+	left = Math.min(Math.max(8, r.left), window.innerWidth - BUBBLE_MAX_WIDTH - 8);
+	top = resolvedPlacement === "top" ? r.top - GAP : r.bottom + GAP;
+	visible = true;
+}
+
+function hide(): void {
+	visible = false;
+}
 </script>
 
-<span class="info-popover">
-	<button type="button" class="info-trigger" aria-label={label}>
-		{@render trigger()}
-	</button>
-	<span class="info-bubble info-bubble-{placement}" role="tooltip">
+<button
+	bind:this={triggerEl}
+	type="button"
+	class="info-trigger"
+	aria-label={label}
+	onmouseenter={show}
+	onmouseleave={hide}
+	onfocus={show}
+	onblur={hide}
+>
+	{@render trigger()}
+</button>
+{#if visible}
+	<span
+		class="info-bubble"
+		class:info-bubble-up={resolvedPlacement === "top"}
+		role="tooltip"
+		style="left: {left}px; top: {top}px;"
+	>
 		{#if children}
 			{@render children()}
 		{:else}
 			{label}
 		{/if}
 	</span>
-</span>
+{/if}
 
 <style>
-	.info-popover {
-		position: relative;
-		display: inline-flex;
-		align-items: baseline;
-	}
-
 	.info-trigger {
 		all: unset;
 		cursor: help;
-		display: inline-flex;
-		align-items: baseline;
-		/* Dotted underline cue that this is explainable, matching editorial style. */
+		/* Inherit the surrounding type so the trigger never changes the label's
+		   font; only adds the dotted "explainable" affordance. */
+		font: inherit;
+		color: inherit;
 		text-decoration: underline dotted var(--ink-4);
 		text-underline-offset: 3px;
 	}
@@ -63,40 +97,23 @@ const { label, placement = "top", trigger, children }: Props = $props();
 	}
 
 	.info-bubble {
-		position: absolute;
-		left: 0;
-		z-index: 200;
-		min-width: 180px;
+		position: fixed;
+		z-index: 1000;
 		max-width: 300px;
-		padding: 8px 10px;
+		padding: 7px 9px;
 		background: var(--paper);
 		border: 1px solid var(--rule-soft);
 		box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
 		font-family: var(--font-display);
-		font-size: 11.5px;
-		line-height: 1.5;
+		font-size: 11px;
+		line-height: 1.45;
 		color: var(--ink-2);
 		white-space: normal;
-		/* Hidden by default; shown instantly on hover/focus — no delay. */
-		opacity: 0;
-		visibility: hidden;
-		transition: opacity 80ms ease;
 		pointer-events: none;
 	}
 
-	.info-bubble-top {
-		bottom: 100%;
-		margin-bottom: 6px;
-	}
-
-	.info-bubble-bottom {
-		top: 100%;
-		margin-top: 6px;
-	}
-
-	.info-popover:hover .info-bubble,
-	.info-popover:focus-within .info-bubble {
-		opacity: 1;
-		visibility: visible;
+	/* When placed above, pull the bubble up by its own height. */
+	.info-bubble-up {
+		transform: translateY(-100%);
 	}
 </style>

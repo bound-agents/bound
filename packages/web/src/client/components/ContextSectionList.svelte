@@ -1,6 +1,7 @@
 <script lang="ts">
 import { ChevronRight } from "lucide-svelte";
 import { SECTION_COLORS } from "../lib/context-colors";
+import InfoPopover from "./InfoPopover.svelte";
 
 interface Props {
 	sections: Array<{
@@ -12,6 +13,28 @@ interface Props {
 }
 
 const { sections, contextWindow }: Props = $props();
+
+/** Terse, declarative explanations keyed by section name. */
+const SECTION_INFO: Record<string, string> = {
+	system:
+		"Stable system prefix: persona, orientation, DB schema, skill body. Cached across threads.",
+	"volatile-prefix":
+		"Stable volatile half: Working Knowledge, Discoverable Archive titles, skill index. Rides the system cache breakpoint.",
+	"ancient-marker": "Oldest history, shed to a fixed-size summary marker plus drop count.",
+	"middle-digest":
+		"Older tool cycles folded to a one-line action log. Recall preserved; no LLM summary.",
+	history: "Recent messages at full resolution — the working set this turn.",
+	"volatile-tail":
+		"Varying volatile half: Live State, memory deltas, per-turn injectables. Developer-role tail.",
+	tools: "Tool-definition JSON schemas, sent at the request level.",
+	"free space": "Unused budget below the context window.",
+	user: "User-role messages in the recent window.",
+	assistant: "Assistant and tool-call messages in the recent window.",
+	tool_result: "Tool-result messages in the recent window.",
+	memory: "Semantic-memory entries in the volatile tail.",
+	"volatile-other": "Live State, digests, per-turn injectables in the volatile tail.",
+	"task-digest": "Cross-thread task digest lines.",
+};
 
 let expandedSections = $state(new Set<string>());
 
@@ -30,20 +53,35 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 <div class="section-list">
 	{#each sections as section}
 		{@const pct = contextWindow > 0 ? (section.tokens / contextWindow) * 100 : 0}
-		<div class="section-row" class:expandable={section.children && section.children.length > 0}>
-			<button
-				class="section-toggle"
-				onclick={() => (section.children ? toggleSection(section.name) : null)}
-				disabled={!section.children || section.children.length === 0}
+		{@const expandable = !!(section.children && section.children.length > 0)}
+		<div class="section-row" class:expandable>
+			<div
+				class="section-lead"
+				class:clickable={expandable}
+				role={expandable ? "button" : undefined}
+				tabindex={expandable ? 0 : undefined}
+				onclick={() => (expandable ? toggleSection(section.name) : undefined)}
+				onkeydown={(e) => {
+					if (expandable && (e.key === "Enter" || e.key === " ")) {
+						e.preventDefault();
+						toggleSection(section.name);
+					}
+				}}
 			>
-				{#if section.children && section.children.length > 0}
+				{#if expandable}
 					<span class="chevron" class:expanded={expandedSections.has(section.name)}>
 						<ChevronRight size={12} />
 					</span>
 				{/if}
 				<span class="dot" style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}"></span>
-				<span class="name">{section.name}</span>
-			</button>
+				{#if SECTION_INFO[section.name]}
+					<InfoPopover placement="bottom" label={SECTION_INFO[section.name]}>
+						{#snippet trigger()}<span class="name">{section.name}</span>{/snippet}
+					</InfoPopover>
+				{:else}
+					<span class="name">{section.name}</span>
+				{/if}
+			</div>
 			<span class="tokens">{section.tokens.toLocaleString()}</span>
 			<span class="pct">{pct.toFixed(1)}%</span>
 		</div>
@@ -53,7 +91,13 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 				<div class="section-row child">
 					<span class="indent"></span>
 					<span class="dot small" style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}; opacity: 0.6;"></span>
-					<span class="name">{child.name}</span>
+					{#if SECTION_INFO[child.name]}
+						<InfoPopover placement="bottom" label={SECTION_INFO[child.name]}>
+							{#snippet trigger()}<span class="name">{child.name}</span>{/snippet}
+						</InfoPopover>
+					{:else}
+						<span class="name">{child.name}</span>
+					{/if}
 					<span class="tokens">{child.tokens.toLocaleString()}</span>
 					<span class="pct">{childPct.toFixed(1)}%</span>
 				</div>
@@ -63,10 +107,12 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 
 	{#if freeTokens > 0}
 		<div class="section-row">
-			<button class="section-toggle" disabled>
+			<div class="section-lead">
 				<span class="dot" style="background: var(--text-muted); opacity: 0.3;"></span>
-				<span class="name">free space</span>
-			</button>
+				<InfoPopover placement="top" label={SECTION_INFO["free space"]}>
+					{#snippet trigger()}<span class="name">free space</span>{/snippet}
+				</InfoPopover>
+			</div>
 			<span class="tokens">{freeTokens.toLocaleString()}</span>
 			<span class="pct">{freePct.toFixed(1)}%</span>
 		</div>
@@ -91,27 +137,24 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 		padding-left: 20px;
 	}
 
-	.section-toggle {
+	.section-lead {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		background: none;
-		border: none;
 		color: var(--ink);
-		cursor: default;
-		padding: 0;
 		flex: 1;
 		min-width: 0;
 		font-size: 11.5px;
 		font-family: var(--font-display);
 	}
 
-	.section-toggle:not(:disabled) {
+	.section-lead.clickable {
 		cursor: pointer;
 	}
 
-	.section-toggle:not(:disabled):hover .name {
-		color: var(--ink);
+	.section-lead.clickable:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
 	}
 
 	.chevron {

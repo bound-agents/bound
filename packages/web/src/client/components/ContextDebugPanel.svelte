@@ -212,20 +212,13 @@ function openCrossThread(src: CrossThreadSource): void {
 					<InfoPopover
 						placement="bottom"
 						label={headlineSource === "actual"
-							? "Actual input tokens reported by the LLM driver this turn (cache_read + cache_write + raw_input). Includes tokenizer drift between the local cl100k_base estimator and the provider tokenizer."
-							: "Pre-LLM token estimate (cl100k_base). The actual count is recorded after the LLM responds; this turn has no actual yet."}
+							? "Driver-reported input tokens (raw + cache read + cache write). Provider tokenizer, not the local estimate."
+							: "Pre-LLM cl100k_base estimate. Actual count arrives after the response."}
 					>
 						{#snippet trigger()}<span
 								class="total-num mono tnum"
 								class:total-pressure={ctxDebug.budgetPressure}>{headlineTokens.toLocaleString()}</span
 							>{/snippet}
-						{#if headlineSource === "actual"}
-							Actual input tokens the driver reported this turn (raw + cache read +
-							cache write). Reflects the provider tokenizer, not the local estimate.
-						{:else}
-							Pre-LLM cl100k_base estimate. The actual count lands after the LLM
-							responds — this turn doesn't have it yet.
-						{/if}
 					</InfoPopover>
 					<span class="total-den">
 						/ {ctxDebug.contextWindow.toLocaleString()} tokens
@@ -238,11 +231,9 @@ function openCrossThread(src: CrossThreadSource): void {
 					<div class="summary-row summary-row-estimate">
 						<InfoPopover
 							placement="bottom"
-							label="Pre-LLM tiktoken estimate vs. the LLM-reported actual input. The ratio reveals tokenizer drift between cl100k_base (local estimator) and the provider tokenizer; per-thread inflation drives the adaptive truncation ratio."
+							label="Local estimate vs. driver actual. ×ratio is this turn's drift; the running mean drives the adaptive budget."
 						>
 							{#snippet trigger()}<span class="estimate-kicker">Pre-LLM est</span>{/snippet}
-							What the local estimator predicted before the call. The ×ratio is this
-							turn's drift; the running average drives the adaptive budget.
 						</InfoPopover>
 						<span class="estimate-num mono tnum">
 							{estimatedTokens.toLocaleString()}
@@ -267,26 +258,19 @@ function openCrossThread(src: CrossThreadSource): void {
 				{@const cacheReason = selectedTurn.context_debug.cachePathReason ?? null}
 				<div class="cache-row">
 					<InfoPopover
-						label="Per-marker attribution is heuristic: the AI SDK reports cache_read / cache_write at the request level, so the bar's tick labels are signposting rather than exact accounting. Totals here are authoritative."
+						label="Read/write totals are exact (driver-reported). Bar tick positions are heuristic — provider reports caching per request, not per breakpoint."
 					>
 						{#snippet trigger()}<span class="cache-kicker">Cache</span>{/snippet}
-						Read/write totals are exact (reported by the driver). The per-tick
-						positions on the bar are heuristic signposting, since the provider
-						reports caching at the request level, not per breakpoint.
 					</InfoPopover>
 					{#if cachePath}
 						<InfoPopover
-							label={cacheReason ? CACHE_REASON_LABEL[cacheReason] ?? cacheReason : cachePath}
+							label={`${cachePath === "warm" ? "Warm: cached prefix reused, only the volatile tail rebuilt." : "Cold: full assembly ran, seeded a fresh prefix."}${cacheReason ? ` ${CACHE_REASON_LABEL[cacheReason] ?? cacheReason}.` : ""}`}
 						>
 							{#snippet trigger()}<span
 									class="cache-path mono"
 									class:cache-path-warm={cachePath === "warm"}
 									class:cache-path-cold={cachePath === "cold"}>{cachePath}</span
 								>{/snippet}
-							{cachePath === "warm"
-								? "Warm path: cached prefix reused; only the volatile tail was rebuilt."
-								: "Cold path: full context assembly ran and seeded a fresh cache prefix."}
-							{#if cacheReason}<br />Reason: {CACHE_REASON_LABEL[cacheReason] ?? cacheReason}{/if}
 						</InfoPopover>
 						<span class="cache-sep">·</span>
 					{/if}
@@ -319,12 +303,9 @@ function openCrossThread(src: CrossThreadSource): void {
 				{@const tightened = ratio < 0.84}
 				<div class="adaptive-row">
 					<InfoPopover
-						label="The cold-assembly budget targets this fraction of the context window. The base is 0.85; it tightens automatically when the local token estimator under-counts the real prompt (the inflation EMA), so thinking-heavy threads telescope sooner instead of overflowing the window."
+						label="Cold-assembly budget target = 0.85 ÷ inflation EMA. Lower telescopes sooner, compensating for estimator under-count."
 					>
 						{#snippet trigger()}<span class="cache-kicker">Adaptive</span>{/snippet}
-						Budget target = 0.85 ÷ inflation EMA. Lower means the thread
-						telescopes more aggressively because the estimator under-counts the
-						real wire prompt.
 					</InfoPopover>
 					<span class="adaptive-num mono tnum" class:adaptive-tight={tightened}>
 						ratio {ratio.toFixed(2)}
@@ -332,15 +313,12 @@ function openCrossThread(src: CrossThreadSource): void {
 					{#if inflation !== null && inflation !== undefined}
 						<span class="cache-sep">·</span>
 						<InfoPopover
-							label="Mean actual/estimated token ratio over recent turns. Above 1.0 means the local estimator under-counts the real prompt; the adaptive ratio divides 0.85 by this to keep the wire payload inside the window."
+							label="Running mean of actual ÷ estimated tokens. > 1.0 = estimator under-counts the real prompt."
 						>
 							{#snippet trigger()}<span
 									class="adaptive-num mono tnum"
 									class:adaptive-tight={inflation > 1.3}>inflation ×{inflation.toFixed(2)}</span
 								>{/snippet}
-							Running mean of actual ÷ estimated tokens. &gt; 1.0 means the
-							estimator under-counts the real prompt; that's why the budget
-							tightens.
 						</InfoPopover>
 					{:else}
 						<span class="cache-sep">·</span>
@@ -374,11 +352,9 @@ function openCrossThread(src: CrossThreadSource): void {
 					<div class="telescope-body">
 						<InfoPopover
 							placement="bottom"
-							label="Older history is compressed in tiers rather than summarized by an LLM. Recent messages stay at full resolution; middle messages fold into a compact action log (still readable); only the oldest are dropped to a summary marker."
+							label="Compressed to the action-log digest, not summarized. Still readable; no content lost."
 						>
 							{#snippet trigger()}<span class="telescope-explain">{folded.toLocaleString()} folded</span>{/snippet}
-							Compressed into the action-log digest — the agent can still read
-							what these turns did. No content was summarized away.
 						</InfoPopover>
 						<span class="telescope-sep">·</span>
 						<span class="telescope-dropped" class:telescope-dropped-hot={dropped > 0}>
@@ -474,15 +450,29 @@ function openCrossThread(src: CrossThreadSource): void {
 						{selectedTurn.context_debug.budgetPressure ? "YES" : "no"}
 					</span>
 				</div>
-				<div class="field">
-					<span class="kicker">Truncated</span>
-					<span
-						class="mono tnum"
-						style="color: {selectedTurn.context_debug.truncated > 0 ? 'var(--err)' : 'var(--ink-2)'}"
-					>
-						{selectedTurn.context_debug.truncated}
-					</span>
-				</div>
+				{#if selectedTurn.context_debug.progressiveFidelity}
+					{@const fpf = selectedTurn.context_debug.progressiveFidelity}
+					<div class="field">
+						<span class="kicker">Folded / dropped</span>
+						<span class="mono tnum">
+							<span style="color: var(--ok)">{fpf.middleFolded.toLocaleString()}</span>
+							<span style="color: var(--ink-4)"> / </span>
+							<span style="color: {fpf.ancientDropped > 0 ? 'var(--warn)' : 'var(--ink-2)'}"
+								>{fpf.ancientDropped.toLocaleString()}</span
+							>
+						</span>
+					</div>
+				{:else}
+					<div class="field">
+						<span class="kicker">Truncated</span>
+						<span
+							class="mono tnum"
+							style="color: {selectedTurn.context_debug.truncated > 0 ? 'var(--warn)' : 'var(--ink-2)'}"
+						>
+							{selectedTurn.context_debug.truncated}
+						</span>
+					</div>
+				{/if}
 			</div>
 		{/if}
 	{/if}
@@ -578,6 +568,7 @@ function openCrossThread(src: CrossThreadSource): void {
 	}
 
 	.cache-kicker {
+		font-family: var(--font-mono);
 		font-size: 10px;
 		font-weight: 600;
 		letter-spacing: 0.14em;
@@ -604,6 +595,7 @@ function openCrossThread(src: CrossThreadSource): void {
 	}
 
 	.cache-sep {
+		font-family: var(--font-mono);
 		color: var(--ink-4);
 	}
 
@@ -647,6 +639,7 @@ function openCrossThread(src: CrossThreadSource): void {
 	}
 
 	.estimate-kicker {
+		font-family: var(--font-mono);
 		font-size: 10px;
 		font-weight: 600;
 		letter-spacing: 0.14em;
