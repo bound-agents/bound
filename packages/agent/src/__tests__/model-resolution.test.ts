@@ -149,6 +149,69 @@ describe("Model Resolution", () => {
 			if (resolution.kind === "error") {
 				expect(resolution.error).toContain("unknown-model-xyz");
 				expect(resolution.error).toContain("claude-opus");
+				// A model that resolves nowhere (local or remote) is permanently unresolvable,
+				// not transiently unavailable. The scheduler uses this reason to park the task
+				// instead of rescheduling it forever (poison-pill parking).
+				expect(resolution.reason).toBe("unknown-model");
+			}
+		});
+
+		it("classifies a model on a stale host as transient, NOT unknown-model (parking guard)", () => {
+			// A host advertises the model but is STALE (older than the 5-minute liveness
+			// threshold), so findEligibleHostsByModel excludes it and resolution fails.
+			// The model IS real, though — it must be classified transient-unavailable, not
+			// unknown-model, so the scheduler RETRIES instead of parking it. Parking a real
+			// model's task is strictly worse than an extra retry; this is the guardrail.
+			const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1h ago
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"remote-stale",
+					"Stale Host",
+					JSON.stringify([
+						{
+							id: "real-but-offline-model",
+							tier: 2,
+							capabilities: {
+								streaming: true,
+								tool_use: true,
+								system_prompt: true,
+								prompt_caching: false,
+								vision: false,
+								extended_thinking: false,
+								max_context: 200000,
+							},
+						},
+					]),
+					0,
+					stale,
+					stale,
+				],
+			);
+
+			const mockBackend = {
+				id: "claude-3-opus",
+				chat: async function* () {
+					yield { type: "text", text: "test" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tools: true,
+					vision: false,
+					maxContextWindow: 200000,
+				}),
+			};
+			const backends = new Map([["claude-opus", mockBackend]]);
+			const modelRouter = new ModelRouter(backends, "claude-opus");
+
+			const resolution = resolveModel("real-but-offline-model", modelRouter, db, "local-site");
+
+			expect(resolution.kind).toBe("error");
+			if (resolution.kind === "error") {
+				expect(resolution.reason).toBe("transient-unavailable");
+				expect(resolution.reason).not.toBe("unknown-model");
 			}
 		});
 

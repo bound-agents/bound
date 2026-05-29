@@ -136,6 +136,70 @@ function rescheduleCronTask(
 }
 
 /**
+ * Poison-pill parking (cron-resurrection fix). Parks a task whose model_hint is
+ * PERMANENTLY unresolvable cluster-wide (a decommissioned model). A parked task is
+ * left in terminal `failed` status with `next_run_at` and ALL claim metadata
+ * (`claimed_by` / `claimed_at` / `lease_id`) cleared, so:
+ *   - the phase-1 pending sweep skips it (status is `failed`, not `pending`), and
+ *   - `healStuckTasks` skips it (it selects only rows with `claimed_by IS NOT NULL`).
+ *
+ * The write is lease-CAS guarded via `updateRowIf`: if a peer re-claimed the row
+ * after eviction, the CAS misses and we do NOT clobber the peer's claim. Heartbeats
+ * are never parked — callers gate on `task.type !== "heartbeat"`.
+ *
+ * Scope note: parking stops THIS node from re-arming a dead-model task on every
+ * tick. It propagates via the change log, but does not by itself defeat a stale
+ * peer that re-pends the row with a fresher `modified_at` — that is the separate
+ * soft-delete-tombstone-precedence work tracked in
+ * bound_issue:scheduler:cron-cancel-reverted-by-peer-20260529.
+ */
+function parkTask(
+	db: AppContext["db"],
+	task: Task,
+	logger: AppContext["logger"],
+	errorMsg: string,
+	siteId: string,
+	expectedLease: string | null,
+): void {
+	if (expectedLease === null) {
+		// No lease to guard against; refuse to park rather than risk clobbering an
+		// unowned row. Callers only reach here under a held lease in practice.
+		logger.warn("[scheduler] parkTask: no lease to guard, skipping park", {
+			taskId: task.id,
+		});
+		return;
+	}
+	const parked = updateRowIf(
+		db,
+		"tasks",
+		task.id,
+		{ lease_id: expectedLease },
+		{
+			status: "failed",
+			next_run_at: null,
+			claimed_by: null,
+			claimed_at: null,
+			lease_id: null,
+			error: `parked (model unresolvable cluster-wide): ${errorMsg}`,
+		},
+		siteId,
+	);
+	if (!parked) {
+		logger.warn("[scheduler] parkTask: lease CAS rejected, task not parked", {
+			taskId: task.id,
+			expectedLease,
+		});
+		return;
+	}
+	logger.warn("[scheduler] parked task: model unresolvable cluster-wide", {
+		taskId: task.id,
+		type: task.type,
+		modelHint: task.model_hint,
+		error: errorMsg,
+	});
+}
+
+/**
  * Auto-retries a failed deferred task if consecutiveFailures (already post-incremented by the
  * caller) does not exceed DEFERRED_MAX_RETRIES. Uses linear backoff:
  * backoffMs = retryBackoffMs * consecutiveFailures (default retryBackoffMs =
@@ -536,8 +600,14 @@ interface SchedulerConfig {
 	 * Optional model-hint validator called before each task run.
 	 * Returns { ok: true } when the model is available, { ok: false, error } otherwise.
 	 * When absent, model hints are not validated at run time (existing behaviour).
+	 *
+	 * `permanent: true` signals that the model is unresolvable cluster-wide (not merely
+	 * transiently unavailable). The scheduler parks such tasks instead of rescheduling them
+	 * forever — see `parkTask`.
 	 */
-	modelValidator?: (modelId: string) => { ok: true } | { ok: false; error: string };
+	modelValidator?: (
+		modelId: string,
+	) => { ok: true } | { ok: false; error: string; permanent?: boolean };
 	/** Optional tier resolver for cost-equivalent fallback. Returns the tier (1-5)
 	 *  for a model ID, or null if the model is not in the local router. */
 	modelTierResolver?: (modelId: string) => number | null;
@@ -1383,37 +1453,50 @@ export class Scheduler {
 							if (newConsecutiveFailures === task.alert_threshold) {
 								this.triggerFailureAdvisory(task, errorMsg, newConsecutiveFailures);
 							}
-							// Cron tasks must still reschedule even when the model is temporarily unavailable
-							rescheduleCronTask(
-								this.ctx.db,
-								task,
-								this.ctx.logger,
-								"model validation failure",
-								this.ctx.siteId,
-							);
-							rescheduleHeartbeat(
-								this.ctx.db,
-								task,
-								this.ctx.logger,
-								"model validation failure",
-								this.ctx.siteId,
-								this.lastUserInteractionAt,
-							);
-							retryDeferredTask(
-								this.ctx.db,
-								task,
-								newConsecutiveFailures,
-								this.ctx.logger,
-								this.ctx.siteId,
-								this.config.retryBackoffMs,
-							);
-							resetEventTask(
-								this.ctx.db,
-								task,
-								this.ctx.logger,
-								"model validation failure",
-								this.ctx.siteId,
-							);
+							// Poison-pill parking (cron-resurrection fix): a PERMANENT validation
+							// failure means the model_hint is registered nowhere in the cluster
+							// (decommissioned). Rescheduling re-arms the task forever — the
+							// fire→reschedule loop that resurrects cancelled crons cluster-wide.
+							// Park it instead (terminal `failed`, next_run_at + claim cleared) so
+							// neither the pending sweep nor healStuckTasks revives it. Heartbeats
+							// are NEVER parked (they must always re-arm), so the type guard routes
+							// them to rescheduleHeartbeat below regardless of permanence.
+							if (validation.permanent && task.type !== "heartbeat") {
+								parkTask(this.ctx.db, task, this.ctx.logger, errorMsg, this.ctx.siteId, leaseId);
+							} else {
+								// Retryable (transient model unavailability) or heartbeat: reschedule
+								// on the normal cadence so the task retries when the model returns.
+								rescheduleCronTask(
+									this.ctx.db,
+									task,
+									this.ctx.logger,
+									"model validation failure",
+									this.ctx.siteId,
+								);
+								rescheduleHeartbeat(
+									this.ctx.db,
+									task,
+									this.ctx.logger,
+									"model validation failure",
+									this.ctx.siteId,
+									this.lastUserInteractionAt,
+								);
+								retryDeferredTask(
+									this.ctx.db,
+									task,
+									newConsecutiveFailures,
+									this.ctx.logger,
+									this.ctx.siteId,
+									this.config.retryBackoffMs,
+								);
+								resetEventTask(
+									this.ctx.db,
+									task,
+									this.ctx.logger,
+									"model validation failure",
+									this.ctx.siteId,
+								);
+							}
 						}
 						return; // exit runTask — agent loop is not created
 					}

@@ -35,7 +35,11 @@ export type ModelResolution =
 	| {
 			kind: "error";
 			error: string;
-			reason?: "capability-mismatch" | "transient-unavailable";
+			// "unknown-model" is PERMANENT: the model is registered nowhere in the cluster
+			// (decommissioned). The scheduler parks such tasks instead of rescheduling them
+			// forever (poison-pill parking). "transient-unavailable" / "capability-mismatch"
+			// are RETRYABLE: the model is real but momentarily unreachable or capability-gated.
+			reason?: "capability-mismatch" | "transient-unavailable" | "unknown-model";
 			unmetCapabilities?: string[];
 			alternatives?: string[];
 			earliestRecovery?: number;
@@ -323,8 +327,60 @@ export function resolveModel(
 
 	// Phase 3: Error (not found anywhere)
 	const localIds = modelRouter.listBackends().map((b) => b.id);
+	// Distinguish a decommissioned model (registered NOWHERE → permanent → park) from a
+	// model that is real but transiently unreachable (registered on an offline/stale host
+	// → retry). Liveness is deliberately ignored here: an offline host that still
+	// advertises the model means the model may return when the host reconnects.
+	const knownInCluster = isModelRegisteredInCluster(effectiveModelId, modelRouter, db);
 	return {
 		kind: "error",
 		error: `Unknown model "${effectiveModelId}". Local backends: [${localIds.join(", ")}]. ${remoteResult.error}`,
+		reason: knownInCluster ? "transient-unavailable" : "unknown-model",
 	};
+}
+
+/**
+ * Checks whether a model id is registered anywhere in the cluster — local router
+ * backends OR any host's advertised models — WITHOUT any staleness filter.
+ *
+ * This is the permanent-vs-transient discriminator for resolution failures. A model
+ * registered on some (possibly offline) host is transiently unavailable and should be
+ * retried; a model registered nowhere is decommissioned and the owning task should be
+ * parked rather than rescheduled forever (poison-pill parking).
+ *
+ * Deliberately ignores host liveness (online_at / modified_at) and includes the local
+ * site's own hosts row: only genuine absence from every host's config and the local
+ * router counts as "unknown". This conservatism is intentional — a false "unknown"
+ * would park a real model's task, which is strictly worse than an extra retry.
+ */
+function isModelRegisteredInCluster(
+	modelId: string,
+	modelRouter: ModelRouter,
+	db: Database,
+): boolean {
+	// Live/configured local router backends.
+	if (modelRouter.listBackends().some((b) => b.id === modelId)) return true;
+
+	// Any host's advertised models, staleness-ignored, all sites included.
+	const rows = db.query("SELECT models FROM hosts WHERE deleted = 0").all() as Array<{
+		models: string | null;
+	}>;
+	for (const row of rows) {
+		if (!row.models) continue;
+		let rawModels: unknown;
+		try {
+			rawModels = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(rawModels)) continue;
+		for (const entry of rawModels) {
+			if (typeof entry === "string") {
+				if (entry === modelId) return true;
+			} else if (entry && typeof entry === "object" && (entry as HostModelEntry).id === modelId) {
+				return true;
+			}
+		}
+	}
+	return false;
 }

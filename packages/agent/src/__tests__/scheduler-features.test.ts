@@ -1577,6 +1577,172 @@ describe("Scheduler features", () => {
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
+
+		it("parks a cron task (clears schedule + claim, no reschedule) when validation fails permanently", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const triggerSpec = JSON.stringify({ type: "cron", expression: "0 * * * *" });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'cron', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, 'dead-model', 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
+
+			let agentLoopCalled = false;
+			const factory = () => {
+				agentLoopCalled = true;
+				return {
+					run: async (): Promise<AgentLoopResult> => ({
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+					}),
+				};
+			};
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, factory as any, {
+				// Permanent failure: the model resolves nowhere in the cluster.
+				modelValidator: () => ({
+					ok: false,
+					error: 'Unknown model "dead-model"',
+					permanent: true,
+				}),
+			});
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() =>
+					(
+						db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as {
+							status: string;
+						} | null
+					)?.status === "failed",
+				{ message: "cron task did not fail on permanent model validation failure" },
+			);
+			// Give the scheduler several more ticks; a parked task must NOT re-pend.
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			stop();
+
+			expect(agentLoopCalled).toBe(false);
+
+			const task = db
+				.query(
+					"SELECT status, next_run_at, claimed_by, claimed_at, lease_id, error FROM tasks WHERE id = ?",
+				)
+				.get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+				claimed_by: string | null;
+				claimed_at: string | null;
+				lease_id: string | null;
+				error: string | null;
+			} | null;
+
+			// Parked: failed, no future fire, claim cleared so neither the pending sweep
+			// nor the stuck-row healer can resurrect it.
+			expect(task?.status).toBe("failed");
+			expect(task?.next_run_at).toBeNull();
+			expect(task?.claimed_by).toBeNull();
+			expect(task?.claimed_at).toBeNull();
+			expect(task?.lease_id).toBeNull();
+			expect(task?.error).toContain("dead-model");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("never parks a heartbeat task even on permanent failure (heartbeat is uncancellable)", async () => {
+			const taskId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: 1_800_000 });
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'heartbeat', 'pending', ?, NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, 'dead-model', 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, triggerSpec, pastTime, now, now],
+			);
+
+			const factory = () => ({
+				run: async (): Promise<AgentLoopResult> => ({
+					messagesCreated: 0,
+					toolCallsMade: 0,
+					filesChanged: 0,
+				}),
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, factory as any, {
+				// Even a permanent failure must not park the heartbeat — it reschedules.
+				modelValidator: () => ({
+					ok: false,
+					error: 'Unknown model "dead-model"',
+					permanent: true,
+				}),
+			});
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						next_run_at: string | null;
+					} | null;
+					return (
+						task?.status === "pending" &&
+						task?.next_run_at !== null &&
+						new Date(task.next_run_at).getTime() > Date.now()
+					);
+				},
+				{
+					message: "heartbeat was not rescheduled (it may have been wrongly parked)",
+					timeoutMs: 5000,
+				},
+			);
+			stop();
+
+			const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
+				status: string;
+				next_run_at: string | null;
+			} | null;
+
+			// Rescheduled, NOT parked: still pending with a future fire time.
+			expect(task?.status).toBe("pending");
+			expect(task?.next_run_at).not.toBeNull();
+			expect(new Date(task?.next_run_at ?? "").getTime()).toBeGreaterThan(Date.now());
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
 	});
 
 	// -----------------------------------------------------------------------

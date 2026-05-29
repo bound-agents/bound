@@ -205,7 +205,15 @@ export function initScheduler(
 								appContext.siteId,
 							);
 							if (resolution.kind === "error") {
-								return { ok: false as const, error: resolution.error };
+								return {
+									ok: false as const,
+									error: resolution.error,
+									// Permanent iff the model is registered nowhere in the cluster
+									// (decommissioned). Drives poison-pill parking in the scheduler:
+									// a permanent failure parks the task instead of rescheduling it
+									// forever. A transient/capability reason stays retryable.
+									permanent: resolution.reason === "unknown-model",
+								};
 							}
 							return { ok: true as const };
 						}
