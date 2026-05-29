@@ -558,13 +558,27 @@ function openCrossThread(src: CrossThreadSource): void {
 	.cache-row {
 		display: flex;
 		align-items: baseline;
+		flex-wrap: wrap;
+		row-gap: 2px;
 		gap: 6px;
 		padding: 4px 8px;
 		margin-bottom: 8px;
 		background: var(--paper-2);
 		border: 1px solid var(--rule-faint);
 		font-size: 11.5px;
+		/* Mono on the container so every descendant — including the
+		   snippet-rendered popover triggers (CACHE, COLD) — inherits it.
+		   Scoped selectors like .cache-kicker get tree-shaken when they only
+		   match snippet content passed to a child component, so relying on
+		   per-element rules left those triggers in the display font. */
+		font-family: var(--font-mono);
 		cursor: help;
+	}
+
+	/* Keep each stat intact when the row wraps to a new line. */
+	.cache-num,
+	.cache-meta {
+		white-space: nowrap;
 	}
 
 	.cache-kicker {
@@ -767,15 +781,20 @@ function openCrossThread(src: CrossThreadSource): void {
 	.adaptive-row {
 		display: flex;
 		align-items: baseline;
+		flex-wrap: wrap;
+		row-gap: 2px;
 		gap: 6px;
 		padding: 4px 8px;
 		margin-bottom: 8px;
 		background: var(--paper-2);
 		border: 1px solid var(--rule-faint);
 		font-size: 11.5px;
+		/* Mono on the container — see .cache-row note (snippet triggers). */
+		font-family: var(--font-mono);
 	}
 
 	.adaptive-num {
+		white-space: nowrap;
 		font-family: var(--font-mono);
 		font-size: 11.5px;
 		font-variant-numeric: tabular-nums;
