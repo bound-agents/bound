@@ -259,11 +259,7 @@ function openCrossThread(src: CrossThreadSource): void {
 				<div class="cache-row">
 					<!-- Group 1: labels (CACHE + warm/cold). Wraps as a unit. -->
 					<span class="cache-group">
-						<InfoPopover
-							label="Read/write totals are exact (driver-reported). Bar tick positions are heuristic — provider reports caching per request, not per breakpoint."
-						>
-							{#snippet trigger()}<span class="cache-kicker">Cache</span>{/snippet}
-						</InfoPopover>
+						<span class="cache-kicker">Cache</span>
 						{#if cachePath}
 							<InfoPopover
 								label={`${cachePath === "warm" ? "Warm: cached prefix reused, only the volatile tail rebuilt." : "Cold: full assembly ran, seeded a fresh prefix."}${cacheReason ? ` ${CACHE_REASON_LABEL[cacheReason] ?? cacheReason}.` : ""}`}
@@ -355,7 +351,7 @@ function openCrossThread(src: CrossThreadSource): void {
 				{@const heavyDrop = dropped > pf.recentKept}
 				<div class="telescope-banner" class:telescope-warn={heavyDrop}>
 					<div class="telescope-title">
-						{heavyDrop ? "⚠ Deep telescoping" : "▤ Telescoped history"}
+						{heavyDrop ? "⚠ Deep history telescoping" : "▤ Telescoped message history"}
 					</div>
 					<div class="telescope-body">
 						<InfoPopover
@@ -420,6 +416,9 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			{/if}
 
+			<div class="section-kicker">
+				Context usage
+			</div>
 			<ContextSparkline
 				{turns}
 				selectedIdx={effectiveIdx}
@@ -435,7 +434,7 @@ function openCrossThread(src: CrossThreadSource): void {
 					<span class="mono">{selectedTurn.model_id}</span>
 				</div>
 				<div class="field">
-					<span class="kicker">In / Out</span>
+					<span class="kicker">Tokens In / Out</span>
 					<span class="mono tnum">
 						{selectedTurn.tokens_in.toLocaleString()} / {selectedTurn.tokens_out.toLocaleString()}
 					</span>
@@ -444,14 +443,14 @@ function openCrossThread(src: CrossThreadSource): void {
 					{@const diff = selectedTurn.tokens_in - selectedTurn.context_debug.totalEstimated}
 					{@const diffPct = ((diff / selectedTurn.context_debug.totalEstimated) * 100).toFixed(1)}
 					<div class="field">
-						<span class="kicker">Variance</span>
+						<span class="kicker">Input variance</span>
 						<span class="mono tnum variance-value">
 							{diff > 0 ? "+" : ""}{diff.toLocaleString()} ({diffPct}%)
 						</span>
 					</div>
 				{/if}
 				<div class="field">
-					<span class="kicker">Pressure</span>
+					<span class="kicker">Budget pressure</span>
 					<span
 						class="mono"
 						style="color: {selectedTurn.context_debug.budgetPressure ? 'var(--err)' : 'var(--ink-2)'}"
