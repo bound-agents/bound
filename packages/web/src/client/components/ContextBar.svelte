@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { CacheMarker } from "@bound/client";
 import { CACHE_MARKER_COLORS, FREE_SPACE_COLOR, SECTION_COLORS } from "../lib/context-colors";
+import InfoPopover from "./InfoPopover.svelte";
 
 interface Props {
 	sections: Array<{
@@ -138,11 +139,19 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 			></div>
 		{/if}
 		{#each renderedMarkers as m}
-			<div
-				class="cache-tick cache-tick-{m.state}"
-				style="left: {m.pct}%; --tick-color: {m.color};"
-				title={m.tooltip}
-			></div>
+			<InfoPopover
+				label={m.tooltip}
+				placement="bottom"
+				triggerClass="bare"
+				triggerStyle="position:absolute; top:-3px; bottom:-3px; width:2px; transform:translateX(-1px); z-index:2; cursor:help; left:{m.pct}%; {m.state ===
+					'disabled'
+					? `background:transparent; border-left:2px dashed ${m.color}; opacity:0.6;`
+					: m.state === 'idle'
+						? `background:${m.color}; opacity:0.55;`
+						: `background:${m.color};`}"
+			>
+				{#snippet trigger()}{/snippet}
+			</InfoPopover>
 		{/each}
 	</div>
 	{#if renderedMarkers.length > 0}
@@ -193,26 +202,9 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 		background: var(--paper-3) !important;
 	}
 
-	.cache-tick {
-		position: absolute;
-		top: -3px;
-		bottom: -3px;
-		width: 2px;
-		background: var(--tick-color);
-		pointer-events: auto; /* hover for tooltip */
-		transform: translateX(-1px); /* center the 2px line on the percentage */
-		z-index: 2;
-	}
-
-	.cache-tick-disabled {
-		background: transparent;
-		border-left: 2px dashed var(--tick-color);
-		opacity: 0.6;
-	}
-
-	.cache-tick-idle {
-		opacity: 0.55;
-	}
+	/* Cache ticks are now rendered as InfoPopover triggers with inline
+	   geometry (position/color/state), since the trigger button lives in the
+	   InfoPopover component scope where these scoped rules wouldn't match. */
 
 	.cache-tick-labels {
 		position: relative;

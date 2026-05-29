@@ -22,9 +22,20 @@ interface Props {
 	trigger: Snippet;
 	/** Popover body. Falls back to `label` when omitted. */
 	children?: Snippet;
+	/** Extra class on the trigger button (e.g. to position it absolutely). */
+	triggerClass?: string;
+	/** Inline style on the trigger button (e.g. absolute left/color). */
+	triggerStyle?: string;
 }
 
-const { label, placement = "top", trigger, children }: Props = $props();
+const {
+	label,
+	placement = "top",
+	trigger,
+	children,
+	triggerClass = "",
+	triggerStyle = "",
+}: Props = $props();
 
 let visible = $state(false);
 let left = $state(0);
@@ -55,7 +66,8 @@ function hide(): void {
 <button
 	bind:this={triggerEl}
 	type="button"
-	class="info-trigger"
+	class="info-trigger {triggerClass}"
+	style={triggerStyle}
 	aria-label={label}
 	onmouseenter={show}
 	onmouseleave={hide}
@@ -89,6 +101,12 @@ function hide(): void {
 		color: inherit;
 		text-decoration: underline dotted var(--ink-4);
 		text-underline-offset: 3px;
+	}
+
+	/* Callers that pass a triggerClass for non-text triggers (e.g. an
+	   absolutely-positioned gauge tick) opt out of the dotted underline. */
+	.info-trigger.bare {
+		text-decoration: none;
 	}
 
 	.info-trigger:focus-visible {
