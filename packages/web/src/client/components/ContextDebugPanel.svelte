@@ -7,7 +7,19 @@ import { navigateTo } from "../lib/router";
 import ContextBar from "./ContextBar.svelte";
 import ContextSectionList from "./ContextSectionList.svelte";
 import ContextSparkline from "./ContextSparkline.svelte";
+import InfoPopover from "./InfoPopover.svelte";
 import LineBadge from "./LineBadge.svelte";
+
+/** Human-readable explanation for each cache-path reason code. */
+const CACHE_REASON_LABEL: Record<string, string> = {
+	"no-stored-state": "first turn on this thread, or the warm cache was evicted",
+	"cache-expired": "the prompt-cache TTL elapsed since the last turn",
+	"tool-change": "the available tool set changed, invalidating the cached prefix",
+	"orphaned-tool-call": "an unanswered tool call forced a structural rebuild",
+	"budget-exceeded": "the estimate exceeded the budget even after in-place compaction",
+	"no-history": "no-history task threads always cold-assemble",
+	"warm-eligible": "the warm path completed within budget — cached prefix reused",
+};
 
 interface Props {
 	threadId: string;
@@ -197,15 +209,24 @@ function openCrossThread(src: CrossThreadSource): void {
 			{@const inflationRatio = actualTokens !== null && estimatedTokens > 0 ? actualTokens / estimatedTokens : null}
 			<div class="turn-summary">
 				<div class="summary-row summary-row-total">
-					<span
-						class="total-num mono tnum"
-						class:total-pressure={ctxDebug.budgetPressure}
-						title="{headlineSource === 'actual'
-							? 'Actual input tokens reported by the LLM driver this turn (cache_read + cache_write + raw_input). Includes tokenizer drift between the local cl100k_base estimator and the provider tokenizer.'
-							: 'Pre-LLM token estimate (cl100k_base). The actual count is recorded after the LLM responds; this turn has no actual yet.'}"
+					<InfoPopover
+						placement="bottom"
+						label={headlineSource === "actual"
+							? "Actual input tokens reported by the LLM driver this turn (cache_read + cache_write + raw_input). Includes tokenizer drift between the local cl100k_base estimator and the provider tokenizer."
+							: "Pre-LLM token estimate (cl100k_base). The actual count is recorded after the LLM responds; this turn has no actual yet."}
 					>
-						{headlineTokens.toLocaleString()}
-					</span>
+						{#snippet trigger()}<span
+								class="total-num mono tnum"
+								class:total-pressure={ctxDebug.budgetPressure}>{headlineTokens.toLocaleString()}</span
+							>{/snippet}
+						{#if headlineSource === "actual"}
+							Actual input tokens the driver reported this turn (raw + cache read +
+							cache write). Reflects the provider tokenizer, not the local estimate.
+						{:else}
+							Pre-LLM cl100k_base estimate. The actual count lands after the LLM
+							responds — this turn doesn't have it yet.
+						{/if}
+					</InfoPopover>
 					<span class="total-den">
 						/ {ctxDebug.contextWindow.toLocaleString()} tokens
 					</span>
@@ -214,11 +235,15 @@ function openCrossThread(src: CrossThreadSource): void {
 					</span>
 				</div>
 				{#if actualTokens !== null && actualTokens !== estimatedTokens}
-					<div
-						class="summary-row summary-row-estimate"
-						title="Pre-LLM tiktoken estimate vs. the LLM-reported actual input. The ratio reveals tokenizer drift between cl100k_base (local estimator) and the provider tokenizer; per-thread inflation drives the adaptive truncation ratio."
-					>
-						<span class="estimate-kicker">Pre-LLM est</span>
+					<div class="summary-row summary-row-estimate">
+						<InfoPopover
+							placement="bottom"
+							label="Pre-LLM tiktoken estimate vs. the LLM-reported actual input. The ratio reveals tokenizer drift between cl100k_base (local estimator) and the provider tokenizer; per-thread inflation drives the adaptive truncation ratio."
+						>
+							{#snippet trigger()}<span class="estimate-kicker">Pre-LLM est</span>{/snippet}
+							What the local estimator predicted before the call. The ×ratio is this
+							turn's drift; the running average drives the adaptive budget.
+						</InfoPopover>
 						<span class="estimate-num mono tnum">
 							{estimatedTokens.toLocaleString()}
 						</span>
@@ -238,11 +263,33 @@ function openCrossThread(src: CrossThreadSource): void {
 				{@const ttl = markers[0]?.ttl ?? null}
 				{@const variant = markers.find((m) => m.kind === "message")?.variant ?? null}
 				{@const capabilityOff = markers.length > 0 && markers.every((m) => !m.capabilityEnabled)}
-				<div
-					class="cache-row"
-					title="Per-marker attribution is heuristic: the AI SDK reports cache_read / cache_write at the request level, so the bar's tick labels are signposting rather than exact accounting. Totals here are authoritative."
-				>
-					<span class="cache-kicker">Cache</span>
+				{@const cachePath = selectedTurn.context_debug.cachePath ?? null}
+				{@const cacheReason = selectedTurn.context_debug.cachePathReason ?? null}
+				<div class="cache-row">
+					<InfoPopover
+						label="Per-marker attribution is heuristic: the AI SDK reports cache_read / cache_write at the request level, so the bar's tick labels are signposting rather than exact accounting. Totals here are authoritative."
+					>
+						{#snippet trigger()}<span class="cache-kicker">Cache</span>{/snippet}
+						Read/write totals are exact (reported by the driver). The per-tick
+						positions on the bar are heuristic signposting, since the provider
+						reports caching at the request level, not per breakpoint.
+					</InfoPopover>
+					{#if cachePath}
+						<InfoPopover
+							label={cacheReason ? CACHE_REASON_LABEL[cacheReason] ?? cacheReason : cachePath}
+						>
+							{#snippet trigger()}<span
+									class="cache-path mono"
+									class:cache-path-warm={cachePath === "warm"}
+									class:cache-path-cold={cachePath === "cold"}>{cachePath}</span
+								>{/snippet}
+							{cachePath === "warm"
+								? "Warm path: cached prefix reused; only the volatile tail was rebuilt."
+								: "Cold path: full context assembly ran and seeded a fresh cache prefix."}
+							{#if cacheReason}<br />Reason: {CACHE_REASON_LABEL[cacheReason] ?? cacheReason}{/if}
+						</InfoPopover>
+						<span class="cache-sep">·</span>
+					{/if}
 					{#if capabilityOff}
 						<span class="cache-state cache-disabled mono">disabled</span>
 						<span class="cache-detail">backend lacks prompt_caching</span>
@@ -266,6 +313,42 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			{/if}
 
+			{#if selectedTurn.context_debug.effectiveTruncationRatio !== undefined}
+				{@const ratio = selectedTurn.context_debug.effectiveTruncationRatio}
+				{@const inflation = selectedTurn.context_debug.measuredInflation}
+				{@const tightened = ratio < 0.84}
+				<div class="adaptive-row">
+					<InfoPopover
+						label="The cold-assembly budget targets this fraction of the context window. The base is 0.85; it tightens automatically when the local token estimator under-counts the real prompt (the inflation EMA), so thinking-heavy threads telescope sooner instead of overflowing the window."
+					>
+						{#snippet trigger()}<span class="cache-kicker">Adaptive</span>{/snippet}
+						Budget target = 0.85 ÷ inflation EMA. Lower means the thread
+						telescopes more aggressively because the estimator under-counts the
+						real wire prompt.
+					</InfoPopover>
+					<span class="adaptive-num mono tnum" class:adaptive-tight={tightened}>
+						ratio {ratio.toFixed(2)}
+					</span>
+					{#if inflation !== null && inflation !== undefined}
+						<span class="cache-sep">·</span>
+						<InfoPopover
+							label="Mean actual/estimated token ratio over recent turns. Above 1.0 means the local estimator under-counts the real prompt; the adaptive ratio divides 0.85 by this to keep the wire payload inside the window."
+						>
+							{#snippet trigger()}<span
+									class="adaptive-num mono tnum"
+									class:adaptive-tight={inflation > 1.3}>inflation ×{inflation.toFixed(2)}</span
+								>{/snippet}
+							Running mean of actual ÷ estimated tokens. &gt; 1.0 means the
+							estimator under-counts the real prompt; that's why the budget
+							tightens.
+						</InfoPopover>
+					{:else}
+						<span class="cache-sep">·</span>
+						<span class="cache-meta mono">inflation: sampling</span>
+					{/if}
+				</div>
+			{/if}
+
 			<ContextBar
 				sections={selectedTurn.context_debug.sections}
 				contextWindow={selectedTurn.context_debug.contextWindow}
@@ -274,14 +357,53 @@ function openCrossThread(src: CrossThreadSource): void {
 				cacheWriteTokens={selectedTurn.tokens_cache_write}
 			/>
 
-			{#if selectedTurn.context_debug.budgetPressure || selectedTurn.context_debug.truncated > 0}
-				<div class="pressure-banner">
-					<div class="pressure-title">⚠ Budget pressure</div>
-					<div class="pressure-body">
-						{#if selectedTurn.context_debug.truncated > 0}
-							{selectedTurn.context_debug.truncated} item{selectedTurn.context_debug.truncated === 1 ? "" : "s"} truncated ·
+			{@const pf = selectedTurn.context_debug.progressiveFidelity}
+			{@const folded = pf?.middleFolded ?? 0}
+			{@const dropped = pf?.ancientDropped ?? 0}
+			{@const truncated = selectedTurn.context_debug.truncated}
+			{#if pf}
+				<!-- Telescope model active: distinguish FOLDED (compressed to the
+				     action-log digest, recall preserved) from DROPPED (replaced by the
+				     summary marker, full detail shed). Only a large dropped count is a
+				     real recall concern — folding is normal, healthy operation. -->
+				{@const heavyDrop = dropped > pf.recentKept}
+				<div class="telescope-banner" class:telescope-warn={heavyDrop}>
+					<div class="telescope-title">
+						{heavyDrop ? "⚠ Deep telescoping" : "▤ Telescoped history"}
+					</div>
+					<div class="telescope-body">
+						<InfoPopover
+							placement="bottom"
+							label="Older history is compressed in tiers rather than summarized by an LLM. Recent messages stay at full resolution; middle messages fold into a compact action log (still readable); only the oldest are dropped to a summary marker."
+						>
+							{#snippet trigger()}<span class="telescope-explain">{folded.toLocaleString()} folded</span>{/snippet}
+							Compressed into the action-log digest — the agent can still read
+							what these turns did. No content was summarized away.
+						</InfoPopover>
+						<span class="telescope-sep">·</span>
+						<span class="telescope-dropped" class:telescope-dropped-hot={dropped > 0}>
+							{dropped.toLocaleString()} dropped
+						</span>
+						<span class="telescope-sep">·</span>
+						<span class="telescope-kept">{pf.recentKept.toLocaleString()} kept full-res</span>
+					</div>
+					{#if heavyDrop}
+						<div class="telescope-note">
+							A single turn's history exceeds the window: the oldest turns are shed to
+							the summary marker. This is expected on very long autonomous runs.
+						</div>
+					{/if}
+				</div>
+			{:else if selectedTurn.context_debug.budgetPressure || truncated > 0}
+				<!-- Pre-telescope / warm-path fallback: no tier breakdown available. -->
+				<div class="telescope-banner">
+					<div class="telescope-title">▤ Truncated history</div>
+					<div class="telescope-body">
+						{#if truncated > 0}
+							{truncated.toLocaleString()} earlier message{truncated === 1 ? "" : "s"} dropped to fit the window.
+						{:else}
+							Context is near the budget gate.
 						{/if}
-						recall is degraded. Consider summarizing earlier turns or pinning fewer memories.
 					</div>
 				</div>
 			{/if}
@@ -570,24 +692,105 @@ function openCrossThread(src: CrossThreadSource): void {
 		font-variant-numeric: tabular-nums;
 	}
 
-	.pressure-banner {
+	/* Telescope banner: neutral by default (folding is normal), red only on a
+	   genuinely deep drop where full-resolution recall is actually lost. */
+	.telescope-banner {
 		padding: 8px 10px;
 		margin-bottom: 14px;
-		background: rgba(178, 34, 34, 0.08);
-		border: 1px solid var(--err);
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
 		font-size: 11.5px;
 		line-height: 1.45;
 	}
 
-	.pressure-title {
-		color: var(--err);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		margin-bottom: 2px;
+	.telescope-banner.telescope-warn {
+		background: rgba(178, 34, 34, 0.08);
+		border-color: var(--err);
 	}
 
-	.pressure-body {
+	.telescope-title {
 		color: var(--ink-2);
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		margin-bottom: 3px;
+	}
+
+	.telescope-warn .telescope-title {
+		color: var(--err);
+	}
+
+	.telescope-body {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		flex-wrap: wrap;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--ink-2);
+	}
+
+	.telescope-explain {
+		color: var(--ok);
+	}
+
+	.telescope-dropped {
+		color: var(--ink-3);
+	}
+
+	.telescope-dropped-hot {
+		color: var(--warn);
+	}
+
+	.telescope-kept {
+		color: var(--ink-2);
+	}
+
+	.telescope-sep {
+		color: var(--ink-4);
+	}
+
+	.telescope-note {
+		margin-top: 5px;
+		color: var(--ink-3);
+		font-size: 11px;
+		font-style: italic;
+	}
+
+	.cache-path {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+	}
+
+	.cache-path-warm {
+		color: var(--ok);
+	}
+
+	.cache-path-cold {
+		color: var(--ink-3);
+	}
+
+	.adaptive-row {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		padding: 4px 8px;
+		margin-bottom: 8px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-faint);
+		font-size: 11.5px;
+	}
+
+	.adaptive-num {
+		font-family: var(--font-mono);
+		font-size: 11.5px;
+		font-variant-numeric: tabular-nums;
+		color: var(--ink-2);
+	}
+
+	.adaptive-tight {
+		color: var(--warn);
 	}
 
 	.cross-section {

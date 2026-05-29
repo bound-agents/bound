@@ -187,6 +187,65 @@ export interface ContextDebugInfo {
 	 * turns where the backend disabled caching entirely.
 	 */
 	cacheMarkers?: CacheMarker[];
+	/**
+	 * contextWindow - safetyMargin: the gate the truncation decision actually
+	 * compares against. Optional on older rows.
+	 */
+	effectiveBudget?: number;
+	/**
+	 * Which assembly path produced this turn's wire payload. `"warm"` reuses
+	 * cached state (only the volatile tail + rolling marker rebuilt); `"cold"`
+	 * ran full assembly. Optional on older rows.
+	 */
+	cachePath?: "warm" | "cold";
+	/**
+	 * Why `cachePath` resolved as it did — the same signal the agent loop logs.
+	 * Cold reasons explain a rebuild (`budget-exceeded`, `tool-change`,
+	 * `cache-expired`, `orphaned-tool-call`, `no-stored-state`, `no-history`);
+	 * `warm-eligible` means the warm path completed within budget. Optional on
+	 * older rows.
+	 */
+	cachePathReason?:
+		| "no-stored-state"
+		| "cache-expired"
+		| "tool-change"
+		| "orphaned-tool-call"
+		| "budget-exceeded"
+		| "no-history"
+		| "warm-eligible";
+	/**
+	 * Per-thread adaptive truncation ratio used this turn: base 0.85 divided by
+	 * the inflation EMA, clamped so an over-counting estimator never loosens the
+	 * gate. Lower means the thread telescopes more aggressively. Optional on
+	 * older rows.
+	 */
+	effectiveTruncationRatio?: number;
+	/**
+	 * Raw inflation EMA (mean `actual / estimated` over recent turns) behind
+	 * `effectiveTruncationRatio`. `null` when the thread has too few samples and
+	 * the resolver fell back to the base ratio. Optional on older rows.
+	 */
+	measuredInflation?: number | null;
+	/**
+	 * Tokens reclaimed by in-place warm-path compaction this turn. `0` when
+	 * compaction did not run; `undefined` on cold turns and older rows.
+	 */
+	warmCompactionTokensSaved?: number;
+	/**
+	 * Progressive-fidelity ("telescope") tier breakdown. Present on cold turns
+	 * where tiered truncation fired and the middle tier had messages to fold.
+	 * `recentKept` messages stay at full resolution; `middleFolded` are
+	 * compressed into the action-log digest (recall preserved); `ancientDropped`
+	 * are replaced by the summary marker (full detail shed). Absent on warm
+	 * turns, non-truncating turns, and older rows.
+	 */
+	progressiveFidelity?: {
+		ancientDropped: number;
+		middleFolded: number;
+		recentKept: number;
+		tierBudgets: { ancient: number; middle: number; recent: number };
+		tierTokens: { ancient: number; middle: number; recent: number };
+	};
 }
 
 export interface ContextDebugTurn {
