@@ -32,11 +32,11 @@ const ringWidth = $derived(size === "compact" ? 3 : size === "large" ? 7 : 4);
 		background: #fff;
 		border: {ringWidth}px solid {color};
 		color: #1a1a1a;
-		font-family: var(--font-display);
-		font-weight: 700;
+		font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+		font-weight: 800;
 		font-size: {fontSize}px;
 		line-height: 1;
-		letter-spacing: 0.01em;
+		letter-spacing: 0;
 		flex-shrink: 0;
 	"
 >
