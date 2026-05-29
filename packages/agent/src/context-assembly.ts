@@ -1612,10 +1612,28 @@ Original output was too large for the context window. If you need the full conte
 			// also consumes window on the wire, so subtract it here (it is part of
 			// the physical fixed cost) even though the soft `historyBudget` above
 			// does not — the ceiling must reflect true history-only headroom.
+			//
+			// INFLATION CONSISTENCY. The tier function bounds the recent tier using
+			// `countContentTokens` (tiktoken cl100k_base) estimates, but the real
+			// wire prompt inflates above that — typically 10-15%, but 1.5-2x on
+			// thinking-heavy threads. If the ceiling were the raw tiktoken
+			// `effectiveBudget`, a recent tier "fitting" the ceiling in estimator
+			// units could occupy far more real tokens and breach the window. The
+			// agent loop already measures this as an EMA and folds it into
+			// `effectiveTruncationRatio = TRUNCATION_TARGET_RATIO / inflationEMA`,
+			// so `effectiveTruncationRatio / TRUNCATION_TARGET_RATIO == 1 /
+			// inflationEMA`. Scaling the physical budget by that factor expresses
+			// the ceiling in the SAME estimator units the tier function compares
+			// against, so "recent fits the ceiling (estimated)" implies "recent
+			// fits the window (real)". The factor is clamped to ≤ 1 so an
+			// estimator that over-counts (inflation < 1) never loosens the ceiling.
 			const volatileTokens = suffixContent ? countTokens(suffixContent) : 0;
+			const inflationDeflator = Math.min(1, effectiveTruncationRatio / TRUNCATION_TARGET_RATIO);
+			const physicalHistoryHeadroom =
+				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTokens;
 			const recentHardCeiling = Math.max(
 				0,
-				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTokens,
+				Math.floor(physicalHistoryHeadroom * inflationDeflator),
 			);
 
 			// Progressive fidelity: three-tier truncation replaces the binary cliff.

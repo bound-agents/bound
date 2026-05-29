@@ -200,9 +200,9 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 	// the window — a degenerate tiny-window case), the clamp is disabled: there
 	// is no headroom to clamp into and forcing a step would only thrash. The
 	// semantic anchor + ≥2-message floor win, matching the pre-clamp behavior
-	// the byte-stability invariant relies on. Force-trim from the FRONT so
-	// dropped messages cascade into the middle/ancient tiers; re-strip leading
-	// `tool_result` rows after each step to keep the opener wire-legal.
+	// the byte-stability invariant relies on. The clamp force-trims from the
+	// FRONT so dropped messages cascade into the middle/ancient tiers; the
+	// step/back-off mechanics are documented inline below.
 	//
 	// TRIGGER vs TARGET. The clamp TRIGGERS on the physical ceiling (only step
 	// the anchor when a user turn genuinely overflows the window) but TARGETS
@@ -218,13 +218,41 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 	// regime.
 	if (recentHardCeiling !== undefined && recentHardCeiling > 0) {
 		const minFloor = Math.min(2, n);
+		// Absolute floor: recentSliceStart may never advance past `maxStart`, so
+		// at least `minFloor` messages always survive in the recent tier.
+		const maxStart = Math.max(0, n - minFloor);
 		const clampTarget = Math.min(recentBudget, recentHardCeiling);
 		if (suffixTokens[recentSliceStart] > recentHardCeiling) {
-			while (n - recentSliceStart > minFloor && suffixTokens[recentSliceStart] > clampTarget) {
+			// Step forward one message at a time while over budget. `suffixTokens`
+			// is monotonically decreasing in the start index, so single-stepping
+			// converges to the target just as a multi-skip would. `maxStart` caps
+			// the advance so at least `minFloor` messages always survive.
+			while (recentSliceStart < maxStart && suffixTokens[recentSliceStart] > clampTarget) {
 				recentSliceStart++;
-				while (recentSliceStart < n && historyMessages[recentSliceStart].role === "tool_result") {
-					recentSliceStart++;
-				}
+			}
+			// Prefer a wire-legal opener. A leading `tool_result` opens the recent
+			// tier mid-tool-pair; walking backward lands on its preceding
+			// `tool_call`. Back-off only DECREASES the index (adds messages), so it
+			// can re-inflate the recent tier — only take it while the result still
+			// fits the physical ceiling. If backing off to a clean opener would
+			// breach the ceiling, keep the `tool_result` opener: it is NOT fatal
+			// (the driver's conversation-start invariant prepends a synthetic user
+			// message and wraps the orphan result), and the ceiling is the hard
+			// constraint that prevents context runaway. `wireLegalOpener` below
+			// reports which case occurred.
+			//
+			// History: the previous implementation stripped tool_results by
+			// advancing FORWARD with no floor guard, which ran the start index off
+			// the end on a trailing-tool_result tail, leaving recentKept = 0/1 with
+			// an empty recent tier. On a thinking-heavy thread (inflation shrinks
+			// the soft budget, so the clamp trims aggressively) that starved the
+			// agent of its own recent work and drove a re-derivation loop.
+			while (
+				recentSliceStart > 0 &&
+				historyMessages[recentSliceStart].role === "tool_result" &&
+				suffixTokens[recentSliceStart - 1] <= recentHardCeiling
+			) {
+				recentSliceStart--;
 			}
 		}
 	}

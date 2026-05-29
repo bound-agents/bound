@@ -67,25 +67,26 @@ const llmMessage: fc.Arbitrary<LLMMessage> = fc.oneof(
 );
 
 /**
- * Message array with at least one user message (required for wire-legal tests).
+ * Message array with a mix of roles. Fully deterministic in fast-check's RNG —
+ * all randomness flows through declared arbitraries, never `Math.random()` or
+ * `fc.sample()` inside `.map()` (those break shrinking and make counterexamples
+ * non-reproducible, which previously made P1 flaky).
+ *
+ * User placement is driven by a generated boolean-and-content tuple per message
+ * so fast-check can shrink toward minimal failing cases. Some arrays will have
+ * no user message at all — that is intentional coverage for the autonomous
+ * tool-only-run shape.
  */
 const messageArray: fc.Arbitrary<LLMMessage[]> = fc
-	.tuple(fc.array(llmMessage, { minLength: 0, maxLength: 100 }), fc.integer({ min: 0, max: 10 }))
-	.map(([msgs, userCount]) => {
-		// Ensure at least one user message by replacing some messages
-		const result = [...msgs];
-		const indices = new Set<number>();
-		while (indices.size < Math.min(userCount, result.length)) {
-			indices.add(Math.floor(Math.random() * result.length));
-		}
-		for (const idx of indices) {
-			result[idx] = {
-				role: "user",
-				content: fc.sample(fc.string({ minLength: 5, maxLength: 100 }), 1)[0],
-			};
-		}
-		return result;
-	});
+	.array(fc.tuple(llmMessage, fc.boolean(), fc.string({ minLength: 5, maxLength: 100 })), {
+		minLength: 0,
+		maxLength: 100,
+	})
+	.map((entries) =>
+		entries.map(([msg, forceUser, userContent]) =>
+			forceUser ? ({ role: "user", content: userContent } as LLMMessage) : msg,
+		),
+	);
 
 /**
  * Budget range: 100-50000 tokens (realistic for production context windows).
@@ -119,27 +120,24 @@ describe("tieredHistoryTruncation — property tests", () => {
 		fc.assert(
 			fc.property(tieredHistoryParams, (params) => {
 				const result = tieredHistoryTruncation(params);
-				const { ancient, middle, recent } = result.tierTokens;
-				const totalTokens = ancient + middle + recent;
+				const { ancient, middle } = result.tierTokens;
 
-				// NOTE on the contract. These params do NOT pass `recentHardCeiling`,
-				// so the physical-window clamp is disabled and the recent tier is
-				// anchored at the latest user message for cache stability. Under that
-				// configuration the recent tier MAY exceed the soft `historyBudget`
-				// (an inner-loop run within a single user turn legitimately overshoots
-				// the soft target while still fitting the physical window). The strict
-				// recent ≤ ceiling invariant is exercised separately by the
-				// "long tool-only tail" suite below, which passes a real
-				// `recentHardCeiling`. Here we keep the historical total-with-tolerance
-				// check, which still catches gross over-allocation of the folded tiers.
-				if (params.historyMessages.length <= 2) {
-					// Floor case — tolerance is higher
-					return totalTokens <= params.historyBudget * 2;
-				}
-
-				// Normal case — should be under budget (with small epsilon for estimation error)
+				// CONTRACT. These params do NOT pass `recentHardCeiling`, so the
+				// physical-window clamp is disabled and the recent tier is anchored
+				// at the latest user message for cache stability. Under that
+				// configuration the recent tier MAY legitimately exceed
+				// `historyBudget` — when no user message follows the budget boundary
+				// (a long autonomous tool-only run), the anchor honors the latest
+				// historical user message and pulls the whole tail into recent.
+				// That is the cache-warm behavior the clamp exists to bound; without
+				// a ceiling there is nothing to bound it, BY DESIGN. So P1 bounds the
+				// tiers the soft budget actually controls — the FOLDED tiers
+				// (ancient + middle) — not the anchored recent tier. The strict
+				// recent ≤ ceiling invariant is exercised by the "long tool-only
+				// tail" suite below, which passes a real `recentHardCeiling`.
+				const foldedTokens = ancient + middle;
 				const tolerance = Math.max(100, params.historyBudget * 0.1);
-				return totalTokens <= params.historyBudget + tolerance;
+				return foldedTokens <= params.historyBudget + tolerance;
 			}),
 			{ numRuns: 100 },
 		);
@@ -515,6 +513,85 @@ describe("tieredHistoryTruncation — long tool-only tail (budget bypass regress
 		expect(result.recentKept).toBe(messages.length);
 		expect(result.middleFolded).toBe(0);
 		expect(result.ancientDropped).toBe(0);
+	});
+
+	// DEFECT A — floor violation via the clamp's tool_result re-strip.
+	// When the recent tail ends in trailing tool_result(s), the clamp steps the
+	// slice start forward and then strips leading tool_results; with no floor
+	// guard that inner strip runs off the end, leaving recentKept < 2 (observed
+	// 0/1 in production). An empty or single-message recent tier with no
+	// wire-legal opener starves the agent of its own recent work.
+	it("clamp never trims recent below the 2-message floor (trailing tool_result tail)", () => {
+		const blobTok = (n: number) => Array(n).fill("x").join(" ");
+		const shapes: { label: string; messages: LLMMessage[] }[] = [
+			{
+				label: "ends tool_call, tool_result, tool_result",
+				messages: [
+					{ role: "user", content: "go" },
+					...Array.from({ length: 20 }, () => ({
+						role: "tool_call" as const,
+						content: `tc ${blobTok(1500)}`,
+					})),
+					{ role: "tool_result", content: `tr ${blobTok(1500)}` },
+					{ role: "tool_result", content: `tr final ${blobTok(1500)}` },
+				],
+			},
+			{
+				label: "three trailing tool_results",
+				messages: [
+					{ role: "user", content: "go" },
+					...Array.from({ length: 20 }, () => ({
+						role: "tool_call" as const,
+						content: `tc ${blobTok(1500)}`,
+					})),
+					{ role: "tool_result", content: `r1 ${blobTok(1500)}` },
+					{ role: "tool_result", content: `r2 ${blobTok(1500)}` },
+					{ role: "tool_result", content: `r3 ${blobTok(1500)}` },
+				],
+			},
+		];
+
+		for (const { label, messages } of shapes) {
+			for (const budget of [2000, 1000, 500]) {
+				const result = tieredHistoryTruncation({
+					historyMessages: messages,
+					historyBudget: budget,
+					recentHardCeiling: budget,
+					threadId: "floor",
+				});
+				// HARD: the recent tier must always retain at least the 2-message
+				// floor and must never be empty — the production starvation bug
+				// left recentKept = 0/1. (`label` documents the adversarial shape.)
+				expect(result.recentKept, label).toBeGreaterThanOrEqual(Math.min(2, messages.length));
+				expect(result.recentMessages.length, label).toBeGreaterThan(0);
+			}
+		}
+	});
+
+	// DEFECT B — the physical ceiling must be expressed in the SAME token basis
+	// as the recent-tier token estimate. The caller derives `recentHardCeiling`
+	// so that "recent fits the ceiling" implies "recent fits the real window".
+	// This property pins the local contract: when the clamp is active, the
+	// resulting recent tier never exceeds the supplied ceiling (above the floor).
+	it("recent tier never exceeds the supplied ceiling regardless of soft budget", () => {
+		fc.assert(
+			fc.property(
+				userThenLargeToolTail,
+				fc.integer({ min: 500, max: 20000 }),
+				(messages, ceiling) => {
+					const result = tieredHistoryTruncation({
+						historyMessages: messages,
+						// Soft budget deliberately far larger than the ceiling: the
+						// ceiling must be the binding constraint, not the soft target.
+						historyBudget: ceiling * 4,
+						recentHardCeiling: ceiling,
+						threadId: "ceil",
+					});
+					return result.recentKept <= 2 || result.tierTokens.recent <= ceiling;
+				},
+			),
+			{ numRuns: 50 },
+		);
 	});
 });
 
