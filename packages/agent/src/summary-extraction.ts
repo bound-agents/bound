@@ -916,8 +916,9 @@ export function renderDiscoverableArchive(
 	}
 
 	if (total <= VC15_TIER1_THRESHOLD) {
-		// Tier 1: flat list, last_accessed_at DESC (already sorted upstream by R-VC4 SELECT).
-		for (const entry of visible) {
+		// Tier 1: flat list, rendered key-sorted (NOT last_accessed_at order) so
+		// the output is invariant to bump-driven access-time reordering.
+		for (const entry of sortDetailEntriesForRender(visible)) {
 			lines.push(formatDetailLine(entry, input.budgetPressure));
 		}
 		lines.push("");
@@ -926,12 +927,12 @@ export function renderDiscoverableArchive(
 	}
 
 	if (total <= input.tunables.n) {
-		// Tier 2: cluster compression.
+		// Tier 2: cluster compression. Within-cluster lines rendered key-sorted.
 		const clusters = groupByCluster(visible, input.parentSummaryByKey);
 		const sorted = sortClusters(clusters);
 		for (const cluster of sorted) {
 			lines.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
-			for (const entry of cluster.entries) {
+			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
 				lines.push(formatDetailLine(entry, input.budgetPressure));
 			}
 			lines.push(""); // blank line between clusters for readability
@@ -944,6 +945,9 @@ export function renderDiscoverableArchive(
 	}
 
 	// Tier 3: heading-only compression with M most-recent per cluster.
+	// SELECTION stays by recency (cluster.entries arrive last_accessed_at DESC,
+	// so slice(0, m) keeps the M most-recently-accessed); RENDER order is then
+	// key-sorted so the kept set's bytes don't shift when bumps reorder it.
 	const clusters = groupByCluster(visible, input.parentSummaryByKey);
 	const sorted = sortClusters(clusters);
 	let synthesisBacklogCount: number | null = null;
@@ -953,7 +957,7 @@ export function renderDiscoverableArchive(
 		lines.push(
 			`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
 		);
-		for (const entry of tail) {
+		for (const entry of sortDetailEntriesForRender(tail)) {
 			lines.push(formatDetailLine(entry, input.budgetPressure));
 		}
 		lines.push("");
@@ -1011,46 +1015,44 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 	});
 }
 
-function formatDetailLine(entry: DetailEntry, budgetPressure: boolean): string {
-	if (budgetPressure) {
-		return `- ${entry.key}`;
-	}
-	const dateFragment = formatAbsoluteDate(entry.last_accessed_at);
-	return `- ${entry.key} (accessed ${dateFragment})`;
+function formatDetailLine(entry: DetailEntry, _budgetPressure: boolean): string {
+	// Title-only, no `last_accessed_at`-derived suffix. The access time is a
+	// continuously-bumped column (bumpRenderedDetailEntries, debounced 1h/entry);
+	// rendering any function of it — date OR sort order — leaks wall-clock into
+	// the cached stable prefix bytes and busts the provider cache on every bump
+	// fracture for no information change. The line is now a pure function of the
+	// entry key, so the Discoverable Archive bytes are invariant to bumps. The
+	// `budgetPressure` parameter is retained for call-site compatibility but no
+	// longer changes output (the date suffix it used to drop is gone for all).
+	return `- ${entry.key}`;
 }
 
 /**
- * Render a `last_accessed_at` ISO timestamp as the literal calendar date
- * prefix (`YYYY-MM-DD`), or `"never"` when the input is null or malformed.
+ * Order detail entries for RENDERING by key (ascending), decoupled from the
+ * `last_accessed_at DESC` order they arrive in. Selection of WHICH entries to
+ * render (Tier-3's M-most-recent-per-cluster) still uses access time upstream;
+ * only the final rendered sequence is key-sorted, so the output bytes do not
+ * shift when a bump reorders the access-time ranking. Pure + deterministic.
  *
- * Pure in `iso` alone — no `Date.now()`, no `Date.parse()` round-trip, no
- * timezone math. The output is byte-stable across renders for the same
- * input string. This is the key property that lets `composeStablePrefix`
- * be byte-stable across cold rebuilds within the cache TTL window: the
- * displayed date only changes when the underlying `last_accessed_at`
- * column changes, and `bumpRenderedDetailEntries` debounces those writes
- * to ≥ cache TTL.
- *
- * The prior `Nm/h/d/mo/y ago` formatter was the documented direct cause
- * of the 554-token volatile-prefix wobble observed on thread
- * `2d055bbe-...` (see `docs/design/specs/2026-05-22-volatile-context.md`,
- * "Stable-prefix purity invariant"): the relative-time string ticked
- * with wall-clock between renders, breaking byte-stability and driving
- * the prompt cache hit rate to ~12%.
+ * Generic over the entry shape (reads only `key`) so the stable-prefix shadow
+ * renderer in `stable-prefix/compose.ts` calls the SAME helper, keeping the two
+ * Discoverable Archive paths byte-equivalent by construction (R-VC25 parity,
+ * pinned by parity-with-production.test.ts).
  */
-function formatAbsoluteDate(iso: string | null): string {
-	if (!iso) return "never";
-	const match = /^(\d{4}-\d{2}-\d{2})/.exec(iso);
-	return match ? match[1] : "never";
+export function sortDetailEntriesForRender<T extends { key: string }>(
+	entries: ReadonlyArray<T>,
+): T[] {
+	return entries.slice().sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /**
  * Render an ISO timestamp as a humanized relative-age fragment
  * (`"just now"`, `"5m ago"`, `"3d ago"`, etc.). Used ONLY by the
  * **varying** side of the volatile context (Live State applied-advisory
- * line). Stable-side renderers must not call this — they have no
- * `nowMs` parameter to pass in (see `formatAbsoluteDate` for the
- * stable-side equivalent and the byte-stability rationale).
+ * line). Stable-side renderers must not call this — they have no `nowMs`
+ * parameter to pass in, and the stable Discoverable Archive deliberately
+ * renders no time-derived fragment at all (bare key titles) to stay
+ * byte-invariant to `last_accessed_at` bumps.
  */
 function relativeTimeFragment(iso: string | null, nowMs: number): string {
 	if (!iso) return "never";

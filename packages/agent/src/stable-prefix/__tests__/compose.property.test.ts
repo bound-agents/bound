@@ -130,11 +130,12 @@ describe("composeStableVolatileSubsection — property tests", () => {
 					(inputs, mockNowMs) => {
 						const baseline = composeStableVolatileSubsection(inputs).join("\n");
 						Date.now = () => mockNowMs;
-						// Date.parse is not mocked — `formatAbsoluteDate` uses a
-						// regex on the ISO string and never reaches Date.parse,
-						// so a regression that introduces Date.parse on the
-						// stable path would surface as an indirect mismatch
-						// here (different mock would parse differently).
+						// The stable Discoverable Archive renders no time-derived
+						// content at all (bare `- <key>` titles, key-sorted), so it
+						// touches neither Date.now nor Date.parse. A regression that
+						// reintroduced any wall-clock read on the stable path would
+						// surface as a mismatch here (the two mocked clocks would
+						// render differently).
 						Date.parse = realParse;
 						const mocked = composeStableVolatileSubsection(inputs).join("\n");
 						return baseline === mocked;
@@ -233,10 +234,13 @@ describe("composeStableVolatileSubsection — property tests", () => {
 		);
 	});
 
-	it("P6: tier-1 stability — adding entries past the threshold doesn't reorder existing ones", () => {
-		// Fix the tier-1 boundary so we can reason about which path runs.
-		// VC15_TIER1_THRESHOLD is 200 — we keep the base under that and add
-		// extra entries to push past tier-1 only on the second call.
+	it("P6: tier-1 stability — adding entries preserves existing lines as an ordered subsequence", () => {
+		// Detail lines now render key-sorted (NOT last_accessed_at order) so the
+		// output is invariant to bump churn. Under key-sort, adding `extras` no
+		// longer keeps base lines as a literal PREFIX of grown output — a new key
+		// can sort between two base keys. The correct stability invariant is
+		// SUBSEQUENCE preservation: every base line still appears in grown output,
+		// in the same relative order (a stable merge of two key-sorted lists).
 		fc.assert(
 			fc.property(
 				fc.array(detailEntryView, { minLength: 0, maxLength: 50 }),
@@ -252,27 +256,22 @@ describe("composeStableVolatileSubsection — property tests", () => {
 						tunables: { n: 1000, m: 20 },
 						skillIndex: [],
 					};
-					const baseOut = composeStableVolatileSubsection(baseInputs);
-					// Find the line range corresponding to the base entries
-					// so we can compare them in isolation. Header is line 1
-					// (after a leading blank); the first body line is at
-					// index 3.
-					const baseEntryLines = baseOut.filter((l) => l.startsWith("- "));
-					const grownInputs: StableVolatileInputs = {
+					const baseEntryLines = composeStableVolatileSubsection(baseInputs).filter((l) =>
+						l.startsWith("- "),
+					);
+					const grownEntryLines = composeStableVolatileSubsection({
 						...baseInputs,
 						detailEntries: [...base, ...extras],
-					};
-					const grownOut = composeStableVolatileSubsection(grownInputs);
-					const grownEntryLines = grownOut.filter((l) => l.startsWith("- "));
-					// The first `base.length` lines of grown output must be
-					// the same as base output's lines. (Tier 1: flat list
-					// preserves order; Tier 2/3: clustering reshuffles, so
-					// we only assert when both fit in tier 1.)
-					if (base.length + extras.length > 200) return true; // tier transition; skip
-					for (let i = 0; i < baseEntryLines.length; i++) {
-						if (baseEntryLines[i] !== grownEntryLines[i]) return false;
+					}).filter((l) => l.startsWith("- "));
+					// Stay within Tier 1 on both calls; clustering reshuffles in 2/3.
+					if (base.length + extras.length > 200) return true;
+					// Every base line appears in grown output, in the same relative
+					// order: walk grown once, matching base lines in sequence.
+					let bi = 0;
+					for (const line of grownEntryLines) {
+						if (bi < baseEntryLines.length && line === baseEntryLines[bi]) bi++;
 					}
-					return true;
+					return bi === baseEntryLines.length;
 				},
 			),
 			{ numRuns: 50 },

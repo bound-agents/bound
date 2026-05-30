@@ -39,12 +39,11 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 
-	it("test 2: Single entry, no budget pressure — absolute date fragment present", () => {
-		// 90 minutes before 2026-05-23T12:00:00Z is still 2026-05-23 (10:30Z).
-		// The displayed date is the calendar prefix of `last_accessed_at`,
-		// so the relative position within the day doesn't matter — only
-		// the date does. This is what gives the stable-prefix its byte
-		// stability across cold rebuilds within a day.
+	it("test 2: Single entry, no budget pressure — title-only line, no access date", () => {
+		// The line is now a pure function of the entry key: no `(accessed …)`
+		// suffix. The access date was a continuously-bumped wall-clock value that
+		// leaked into the cached stable-prefix bytes; dropping it makes the
+		// Discoverable Archive byte-invariant to bumps.
 		const entry = createTestEntry("my-memory", undefined, 0.0625);
 		const input: DiscoverableArchiveInput = {
 			entries: [entry],
@@ -56,11 +55,12 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- my-memory (accessed 2026-05-23)");
+		expect(result.section.lines).toContain("- my-memory");
+		expect(result.section.lines.join("\n")).not.toContain("accessed 2026");
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 
-	it("test 3: Single entry with null last_accessed_at — fragment is 'never'", () => {
+	it("test 3: Single entry with null last_accessed_at — still a bare title line", () => {
 		const entry: DetailEntry = { key: "forgotten-key", last_accessed_at: null };
 		const input: DiscoverableArchiveInput = {
 			entries: [entry],
@@ -72,15 +72,19 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- forgotten-key (accessed never)");
+		expect(result.section.lines).toContain("- forgotten-key");
+		// No date-derived fragment of any kind (including the old "never").
+		expect(result.section.lines.join("\n")).not.toContain("never");
 	});
 
-	it("test 4: Sorting preserved — three entries already sorted DESC by last_accessed_at", () => {
+	it("test 4: Tier-1 lines render key-sorted (ASC), independent of last_accessed_at", () => {
 		const now = new Date("2026-05-23T12:00:00Z").getTime();
+		// Insertion order deliberately NOT key-sorted and NOT access-time order,
+		// to prove the render sorts by key regardless.
 		const entries: DetailEntry[] = [
-			{ key: "most-recent", last_accessed_at: new Date(now - 1 * 60_000).toISOString() },
-			{ key: "middle", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
-			{ key: "oldest", last_accessed_at: new Date(now - 10 * 60_000).toISOString() },
+			{ key: "middle", last_accessed_at: new Date(now - 1 * 60_000).toISOString() }, // newest
+			{ key: "apex", last_accessed_at: new Date(now - 10 * 60_000).toISOString() }, // oldest
+			{ key: "zulu", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
 		];
 
 		const input: DiscoverableArchiveInput = {
@@ -93,10 +97,8 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		const contentLines = result.section.lines.slice(2, -2); // Skip header/footer blanks
-		expect(contentLines[0]).toContain("most-recent");
-		expect(contentLines[1]).toContain("middle");
-		expect(contentLines[2]).toContain("oldest");
+		const contentLines = result.section.lines.filter((l) => l.startsWith("- "));
+		expect(contentLines).toEqual(["- apex", "- middle", "- zulu"]);
 	});
 
 	it("test 5: Budget-pressure mode drops context fragment but preserves title", () => {
@@ -357,18 +359,20 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 		expect(betaIdx).toBeLessThan(gammaIdx);
 	});
 
-	it("test 15: Within-cluster ordering by last_accessed_at DESC preserved", () => {
+	it("test 15: Within-cluster lines render key-sorted (ASC), independent of access time", () => {
 		const now = new Date("2026-05-23T12:00:00Z").getTime();
-		// Create entries that SPAN Tier 2 (>200)
-		// Input must be sorted DESC by last_accessed_at (as R-VC4 supplies)
+		// Create entries that SPAN Tier 2 (>200).
 		const uncategorizedEntries = Array.from({ length: 199 }, (_, i) => ({
 			key: `uncategorized-${i}`,
 			last_accessed_at: new Date(now - 300 * 60_000).toISOString(),
 		}));
+		// Access-time order (newest->oldest) is the REVERSE of key order, so a
+		// key-sorted render is unambiguously distinguishable from an access-sorted
+		// one: keys sort apple < mango < zebra; access has zebra newest.
 		const timedEntries: DetailEntry[] = [
-			{ key: "newest", last_accessed_at: new Date(now - 1 * 60_000).toISOString() },
-			{ key: "middle", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
-			{ key: "oldest", last_accessed_at: new Date(now - 10 * 60_000).toISOString() },
+			{ key: "zebra", last_accessed_at: new Date(now - 1 * 60_000).toISOString() },
+			{ key: "mango", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
+			{ key: "apple", last_accessed_at: new Date(now - 10 * 60_000).toISOString() },
 		];
 		const entries = [...timedEntries, ...uncategorizedEntries];
 
@@ -387,12 +391,10 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		// Find the cluster section for cooking
 		const lines = result.section.lines;
 		const cookingHeadingIdx = lines.findIndex((l) => l.includes("### cooking"));
 		expect(cookingHeadingIdx).toBeGreaterThanOrEqual(0);
 
-		// Extract lines after cooking heading until next cluster or footer
 		const cookingLines = [];
 		for (let i = cookingHeadingIdx + 1; i < lines.length; i++) {
 			if (lines[i].startsWith("###") || lines[i].includes("Bodies are accessed")) {
@@ -403,18 +405,8 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 			}
 		}
 
-		// Find indices within cooking cluster entries
-		const newestIdx = cookingLines.findIndex((l) => l.includes("newest"));
-		const middleIdx = cookingLines.findIndex((l) => l.includes("middle"));
-		const oldestIdx = cookingLines.findIndex((l) => l.includes("oldest"));
-
-		// All should appear
-		expect(newestIdx).toBeGreaterThanOrEqual(0);
-		expect(middleIdx).toBeGreaterThanOrEqual(0);
-		expect(oldestIdx).toBeGreaterThanOrEqual(0);
-		// And respect DESC order
-		expect(newestIdx).toBeLessThan(middleIdx);
-		expect(middleIdx).toBeLessThan(oldestIdx);
+		// Key ASC, not access-time DESC.
+		expect(cookingLines).toEqual(["- apple", "- mango", "- zebra"]);
 	});
 
 	it("test 16: Sub-cluster ### typography (R-VC22)", () => {
@@ -600,15 +592,18 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		expect(output).toContain("### foo (210 entries, showing 5 most recent)");
 	});
 
-	it("test 23: Within-cluster ordering by last_accessed_at DESC — slice(0, m) takes most-recent", () => {
+	it("test 23: Tier-3 SELECTS most-recent (slice m), then RENDERS them key-sorted", () => {
 		const now = new Date("2026-05-23T12:00:00Z").getTime();
-		// Need >200 entries to reach Tier 3 with n=200
-		// Create sorted DESC entries within a cooking cluster
+		// Need >200 entries to reach Tier 3 with n=200. The cooking cluster has
+		// FOUR candidates; m=3 must SELECT the three most-recently-accessed
+		// (sel-newest, sel-2, sel-3 — NOT sel-old), then render those three in
+		// KEY order. Keys are chosen so key-order != access-order.
 		const entries: DetailEntry[] = [
-			{ key: "most-recent", last_accessed_at: new Date(now - 1 * 60_000).toISOString() },
-			{ key: "middle", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
-			{ key: "oldest", last_accessed_at: new Date(now - 10 * 60_000).toISOString() },
-			// Add filler entries to reach >200 total (all uncategorized)
+			{ key: "carrot", last_accessed_at: new Date(now - 1 * 60_000).toISOString() }, // newest
+			{ key: "apple", last_accessed_at: new Date(now - 3 * 60_000).toISOString() },
+			{ key: "banana", last_accessed_at: new Date(now - 5 * 60_000).toISOString() },
+			{ key: "durian", last_accessed_at: new Date(now - 50 * 60_000).toISOString() }, // oldest -> dropped
+			// Filler to reach >200 total (all uncategorized).
 			...Array.from({ length: 210 }, (_, i) => ({
 				key: `filler-${i}`,
 				last_accessed_at: new Date(now - 100 * 60_000).toISOString(),
@@ -616,10 +611,13 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		];
 
 		const parentMap = new Map<string, string>();
-		parentMap.set("most-recent", "_summary:cooking");
-		parentMap.set("middle", "_summary:cooking");
-		parentMap.set("oldest", "_summary:cooking");
+		for (const k of ["carrot", "apple", "banana", "durian"]) {
+			parentMap.set(k, "_summary:cooking");
+		}
 
+		// Caller supplies entries last_accessed_at DESC (as loadDetailEntries does)
+		// so slice(0, m) selects the most-recent. Sort the cooking candidates DESC
+		// here to mirror that contract.
 		const input: DiscoverableArchiveInput = {
 			entries,
 			parentSummaryByKey: parentMap,
@@ -630,12 +628,10 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 
 		const result = renderDiscoverableArchive(input);
 
-		// Find the cooking cluster section
 		const lines = result.section.lines;
 		const cookingHeadingIdx = lines.findIndex((l) => l.includes("### cooking"));
 		expect(cookingHeadingIdx).toBeGreaterThanOrEqual(0);
 
-		// Extract entry lines after cooking heading until next cluster or footer
 		const entryLines = [];
 		for (let i = cookingHeadingIdx + 1; i < lines.length; i++) {
 			if (lines[i].startsWith("###") || lines[i].includes("Bodies are accessed")) {
@@ -646,12 +642,9 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 			}
 		}
 
-		// Should be only 3 entries rendered (M-cap)
-		expect(entryLines.length).toBe(3);
-		// Should be the three most recent
-		expect(entryLines[0]).toContain("most-recent");
-		expect(entryLines[1]).toContain("middle");
-		expect(entryLines[2]).toContain("oldest");
+		// SELECTION: the 3 most-recent (carrot, apple, banana); durian dropped.
+		// RENDER: those 3 key-sorted -> apple, banana, carrot.
+		expect(entryLines).toEqual(["- apple", "- banana", "- carrot"]);
 	});
 
 	it("test 24: synthesisBacklogCount raised when Uncategorized > 50 in Tier 3", () => {

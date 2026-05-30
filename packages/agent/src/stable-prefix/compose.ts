@@ -42,6 +42,7 @@ import {
 	WORKING_KNOWLEDGE_HEADER,
 	capWorkingKnowledgeSummaries,
 	formatStableDetailLine,
+	sortDetailEntriesForRender,
 	truncateGlossForSummary,
 } from "../summary-extraction";
 import type { DetailEntryView, MemoryEntryView, StableVolatileInputs } from "./types";
@@ -127,7 +128,8 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 	}
 
 	if (total <= VC15_TIER1_THRESHOLD) {
-		for (const entry of visible) {
+		// Key-sorted render (mirrors production renderDiscoverableArchive).
+		for (const entry of sortDetailEntriesForRender(visible)) {
 			out.push(formatStableDetailLine(entry, inputs.budgetPressure));
 		}
 		out.push("");
@@ -139,10 +141,10 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 	const sorted = sortClusters(clusters);
 
 	if (total <= inputs.tunables.n) {
-		// Tier 2: cluster compression.
+		// Tier 2: cluster compression. Within-cluster lines key-sorted.
 		for (const cluster of sorted) {
 			out.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
-			for (const entry of cluster.entries) {
+			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
 				out.push(formatStableDetailLine(entry, inputs.budgetPressure));
 			}
 			out.push("");
@@ -153,14 +155,15 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 		return out;
 	}
 
-	// Tier 3: heading-only with M most-recent per cluster.
+	// Tier 3: heading-only with M most-recent per cluster. Recency SELECTION
+	// (slice), key-sorted RENDER (mirrors production).
 	for (const cluster of sorted) {
 		const totalCount = cluster.entries.length;
 		const tail = cluster.entries.slice(0, inputs.tunables.m);
 		out.push(
 			`### ${cluster.name} (${totalCount} entries, showing ${inputs.tunables.m} most recent)`,
 		);
-		for (const entry of tail) {
+		for (const entry of sortDetailEntriesForRender(tail)) {
 			out.push(formatStableDetailLine(entry, inputs.budgetPressure));
 		}
 		out.push("");

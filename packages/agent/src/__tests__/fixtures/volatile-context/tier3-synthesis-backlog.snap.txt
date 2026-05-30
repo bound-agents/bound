@@ -137,706 +137,706 @@ Bodies of summary entries are accessed via memory search using terms from the en
 ## Discoverable Archive — title-only; bodies via memory search
 
 ### Uncategorized (100 entries)
-- curiosity:item-0-det000000 (accessed 2026-05-21)
-- curiosity:item-1-det000001 (accessed 2026-05-21)
-- curiosity:item-2-det000002 (accessed 2026-05-21)
-- curiosity:item-3-det000003 (accessed 2026-05-21)
-- curiosity:item-4-det000004 (accessed 2026-05-21)
-- curiosity:item-5-det000005 (accessed 2026-05-21)
-- curiosity:item-6-det000006 (accessed 2026-05-21)
-- curiosity:item-7-det000007 (accessed 2026-05-21)
-- curiosity:item-8-det000008 (accessed 2026-05-21)
-- curiosity:item-9-det000009 (accessed 2026-05-21)
-- curiosity:item-10-det000010 (accessed 2026-05-21)
-- curiosity:item-11-det000011 (accessed 2026-05-21)
-- curiosity:item-12-det000012 (accessed 2026-05-21)
-- curiosity:item-13-det000013 (accessed 2026-05-21)
-- curiosity:item-14-det000014 (accessed 2026-05-21)
-- curiosity:item-15-det000015 (accessed 2026-05-21)
-- curiosity:item-16-det000016 (accessed 2026-05-21)
-- curiosity:item-17-det000017 (accessed 2026-05-21)
-- curiosity:item-18-det000018 (accessed 2026-05-21)
-- curiosity:item-19-det000019 (accessed 2026-05-21)
-- curiosity:item-20-det000020 (accessed 2026-05-21)
-- curiosity:item-21-det000021 (accessed 2026-05-21)
-- curiosity:item-22-det000022 (accessed 2026-05-21)
-- curiosity:item-23-det000023 (accessed 2026-05-21)
-- curiosity:item-24-det000024 (accessed 2026-05-21)
-- curiosity:item-25-det000025 (accessed 2026-05-21)
-- curiosity:item-26-det000026 (accessed 2026-05-21)
-- curiosity:item-27-det000027 (accessed 2026-05-21)
-- curiosity:item-28-det000028 (accessed 2026-05-21)
-- curiosity:item-29-det000029 (accessed 2026-05-21)
-- curiosity:item-30-det000030 (accessed 2026-05-21)
-- curiosity:item-31-det000031 (accessed 2026-05-21)
-- curiosity:item-32-det000032 (accessed 2026-05-21)
-- curiosity:item-33-det000033 (accessed 2026-05-21)
-- curiosity:item-34-det000034 (accessed 2026-05-21)
-- curiosity:item-35-det000035 (accessed 2026-05-21)
-- curiosity:item-36-det000036 (accessed 2026-05-21)
-- curiosity:item-37-det000037 (accessed 2026-05-21)
-- curiosity:item-38-det000038 (accessed 2026-05-21)
-- curiosity:item-39-det000039 (accessed 2026-05-21)
-- curiosity:item-40-det000040 (accessed 2026-05-21)
-- curiosity:item-41-det000041 (accessed 2026-05-21)
-- curiosity:item-42-det000042 (accessed 2026-05-21)
-- curiosity:item-43-det000043 (accessed 2026-05-21)
-- curiosity:item-44-det000044 (accessed 2026-05-21)
-- curiosity:item-45-det000045 (accessed 2026-05-21)
-- curiosity:item-46-det000046 (accessed 2026-05-21)
-- curiosity:item-47-det000047 (accessed 2026-05-21)
-- curiosity:item-48-det000048 (accessed 2026-05-21)
-- curiosity:item-49-det000049 (accessed 2026-05-21)
-- curiosity:item-50-det000050 (accessed 2026-05-21)
-- curiosity:item-51-det000051 (accessed 2026-05-21)
-- curiosity:item-52-det000052 (accessed 2026-05-21)
-- curiosity:item-53-det000053 (accessed 2026-05-21)
-- curiosity:item-54-det000054 (accessed 2026-05-21)
-- curiosity:item-55-det000055 (accessed 2026-05-21)
-- curiosity:item-56-det000056 (accessed 2026-05-21)
-- curiosity:item-57-det000057 (accessed 2026-05-21)
-- curiosity:item-58-det000058 (accessed 2026-05-21)
-- curiosity:item-59-det000059 (accessed 2026-05-21)
-- curiosity:item-60-det000060 (accessed 2026-05-21)
-- curiosity:item-61-det000061 (accessed 2026-05-21)
-- curiosity:item-62-det000062 (accessed 2026-05-21)
-- curiosity:item-63-det000063 (accessed 2026-05-21)
-- curiosity:item-64-det000064 (accessed 2026-05-21)
-- curiosity:item-65-det000065 (accessed 2026-05-21)
-- curiosity:item-66-det000066 (accessed 2026-05-21)
-- curiosity:item-67-det000067 (accessed 2026-05-21)
-- curiosity:item-68-det000068 (accessed 2026-05-21)
-- curiosity:item-69-det000069 (accessed 2026-05-21)
-- curiosity:item-70-det000070 (accessed 2026-05-21)
-- curiosity:item-71-det000071 (accessed 2026-05-21)
-- curiosity:item-72-det000072 (accessed 2026-05-21)
-- curiosity:item-73-det000073 (accessed 2026-05-21)
-- curiosity:item-74-det000074 (accessed 2026-05-21)
-- curiosity:item-75-det000075 (accessed 2026-05-21)
-- curiosity:item-76-det000076 (accessed 2026-05-21)
-- curiosity:item-77-det000077 (accessed 2026-05-21)
-- curiosity:item-78-det000078 (accessed 2026-05-21)
-- curiosity:item-79-det000079 (accessed 2026-05-21)
-- curiosity:item-80-det000080 (accessed 2026-05-21)
-- curiosity:item-81-det000081 (accessed 2026-05-21)
-- curiosity:item-82-det000082 (accessed 2026-05-21)
-- curiosity:item-83-det000083 (accessed 2026-05-21)
-- curiosity:item-84-det000084 (accessed 2026-05-21)
-- curiosity:item-85-det000085 (accessed 2026-05-21)
-- curiosity:item-86-det000086 (accessed 2026-05-21)
-- curiosity:item-87-det000087 (accessed 2026-05-21)
-- curiosity:item-88-det000088 (accessed 2026-05-21)
-- curiosity:item-89-det000089 (accessed 2026-05-21)
-- curiosity:item-90-det000090 (accessed 2026-05-21)
-- curiosity:item-91-det000091 (accessed 2026-05-21)
-- curiosity:item-92-det000092 (accessed 2026-05-21)
-- curiosity:item-93-det000093 (accessed 2026-05-21)
-- curiosity:item-94-det000094 (accessed 2026-05-21)
-- curiosity:item-95-det000095 (accessed 2026-05-21)
-- curiosity:item-96-det000096 (accessed 2026-05-21)
-- curiosity:item-97-det000097 (accessed 2026-05-21)
-- curiosity:item-98-det000098 (accessed 2026-05-21)
-- curiosity:item-99-det000099 (accessed 2026-05-21)
+- curiosity:item-0-det000000
+- curiosity:item-1-det000001
+- curiosity:item-10-det000010
+- curiosity:item-11-det000011
+- curiosity:item-12-det000012
+- curiosity:item-13-det000013
+- curiosity:item-14-det000014
+- curiosity:item-15-det000015
+- curiosity:item-16-det000016
+- curiosity:item-17-det000017
+- curiosity:item-18-det000018
+- curiosity:item-19-det000019
+- curiosity:item-2-det000002
+- curiosity:item-20-det000020
+- curiosity:item-21-det000021
+- curiosity:item-22-det000022
+- curiosity:item-23-det000023
+- curiosity:item-24-det000024
+- curiosity:item-25-det000025
+- curiosity:item-26-det000026
+- curiosity:item-27-det000027
+- curiosity:item-28-det000028
+- curiosity:item-29-det000029
+- curiosity:item-3-det000003
+- curiosity:item-30-det000030
+- curiosity:item-31-det000031
+- curiosity:item-32-det000032
+- curiosity:item-33-det000033
+- curiosity:item-34-det000034
+- curiosity:item-35-det000035
+- curiosity:item-36-det000036
+- curiosity:item-37-det000037
+- curiosity:item-38-det000038
+- curiosity:item-39-det000039
+- curiosity:item-4-det000004
+- curiosity:item-40-det000040
+- curiosity:item-41-det000041
+- curiosity:item-42-det000042
+- curiosity:item-43-det000043
+- curiosity:item-44-det000044
+- curiosity:item-45-det000045
+- curiosity:item-46-det000046
+- curiosity:item-47-det000047
+- curiosity:item-48-det000048
+- curiosity:item-49-det000049
+- curiosity:item-5-det000005
+- curiosity:item-50-det000050
+- curiosity:item-51-det000051
+- curiosity:item-52-det000052
+- curiosity:item-53-det000053
+- curiosity:item-54-det000054
+- curiosity:item-55-det000055
+- curiosity:item-56-det000056
+- curiosity:item-57-det000057
+- curiosity:item-58-det000058
+- curiosity:item-59-det000059
+- curiosity:item-6-det000006
+- curiosity:item-60-det000060
+- curiosity:item-61-det000061
+- curiosity:item-62-det000062
+- curiosity:item-63-det000063
+- curiosity:item-64-det000064
+- curiosity:item-65-det000065
+- curiosity:item-66-det000066
+- curiosity:item-67-det000067
+- curiosity:item-68-det000068
+- curiosity:item-69-det000069
+- curiosity:item-7-det000007
+- curiosity:item-70-det000070
+- curiosity:item-71-det000071
+- curiosity:item-72-det000072
+- curiosity:item-73-det000073
+- curiosity:item-74-det000074
+- curiosity:item-75-det000075
+- curiosity:item-76-det000076
+- curiosity:item-77-det000077
+- curiosity:item-78-det000078
+- curiosity:item-79-det000079
+- curiosity:item-8-det000008
+- curiosity:item-80-det000080
+- curiosity:item-81-det000081
+- curiosity:item-82-det000082
+- curiosity:item-83-det000083
+- curiosity:item-84-det000084
+- curiosity:item-85-det000085
+- curiosity:item-86-det000086
+- curiosity:item-87-det000087
+- curiosity:item-88-det000088
+- curiosity:item-89-det000089
+- curiosity:item-9-det000009
+- curiosity:item-90-det000090
+- curiosity:item-91-det000091
+- curiosity:item-92-det000092
+- curiosity:item-93-det000093
+- curiosity:item-94-det000094
+- curiosity:item-95-det000095
+- curiosity:item-96-det000096
+- curiosity:item-97-det000097
+- curiosity:item-98-det000098
+- curiosity:item-99-det000099
 
 ### topic-0 (10 entries)
-- curiosity:item-100-det000100 (accessed 2026-05-21)
-- curiosity:item-150-det000150 (accessed 2026-05-21)
-- curiosity:item-200-det000200 (accessed 2026-05-21)
-- curiosity:item-250-det000250 (accessed 2026-05-21)
-- curiosity:item-300-det000300 (accessed 2026-05-21)
-- curiosity:item-350-det000350 (accessed 2026-05-21)
-- curiosity:item-400-det000400 (accessed 2026-05-21)
-- curiosity:item-450-det000450 (accessed 2026-05-21)
-- curiosity:item-500-det000500 (accessed 2026-05-21)
-- curiosity:item-550-det000550 (accessed 2026-05-21)
+- curiosity:item-100-det000100
+- curiosity:item-150-det000150
+- curiosity:item-200-det000200
+- curiosity:item-250-det000250
+- curiosity:item-300-det000300
+- curiosity:item-350-det000350
+- curiosity:item-400-det000400
+- curiosity:item-450-det000450
+- curiosity:item-500-det000500
+- curiosity:item-550-det000550
 
 ### topic-1 (10 entries)
-- curiosity:item-101-det000101 (accessed 2026-05-21)
-- curiosity:item-151-det000151 (accessed 2026-05-21)
-- curiosity:item-201-det000201 (accessed 2026-05-21)
-- curiosity:item-251-det000251 (accessed 2026-05-21)
-- curiosity:item-301-det000301 (accessed 2026-05-21)
-- curiosity:item-351-det000351 (accessed 2026-05-21)
-- curiosity:item-401-det000401 (accessed 2026-05-21)
-- curiosity:item-451-det000451 (accessed 2026-05-21)
-- curiosity:item-501-det000501 (accessed 2026-05-21)
-- curiosity:item-551-det000551 (accessed 2026-05-21)
+- curiosity:item-101-det000101
+- curiosity:item-151-det000151
+- curiosity:item-201-det000201
+- curiosity:item-251-det000251
+- curiosity:item-301-det000301
+- curiosity:item-351-det000351
+- curiosity:item-401-det000401
+- curiosity:item-451-det000451
+- curiosity:item-501-det000501
+- curiosity:item-551-det000551
 
 ### topic-10 (10 entries)
-- curiosity:item-110-det000110 (accessed 2026-05-21)
-- curiosity:item-160-det000160 (accessed 2026-05-21)
-- curiosity:item-210-det000210 (accessed 2026-05-21)
-- curiosity:item-260-det000260 (accessed 2026-05-21)
-- curiosity:item-310-det000310 (accessed 2026-05-21)
-- curiosity:item-360-det000360 (accessed 2026-05-21)
-- curiosity:item-410-det000410 (accessed 2026-05-21)
-- curiosity:item-460-det000460 (accessed 2026-05-21)
-- curiosity:item-510-det000510 (accessed 2026-05-21)
-- curiosity:item-560-det000560 (accessed 2026-05-21)
+- curiosity:item-110-det000110
+- curiosity:item-160-det000160
+- curiosity:item-210-det000210
+- curiosity:item-260-det000260
+- curiosity:item-310-det000310
+- curiosity:item-360-det000360
+- curiosity:item-410-det000410
+- curiosity:item-460-det000460
+- curiosity:item-510-det000510
+- curiosity:item-560-det000560
 
 ### topic-11 (10 entries)
-- curiosity:item-111-det000111 (accessed 2026-05-21)
-- curiosity:item-161-det000161 (accessed 2026-05-21)
-- curiosity:item-211-det000211 (accessed 2026-05-21)
-- curiosity:item-261-det000261 (accessed 2026-05-21)
-- curiosity:item-311-det000311 (accessed 2026-05-21)
-- curiosity:item-361-det000361 (accessed 2026-05-21)
-- curiosity:item-411-det000411 (accessed 2026-05-21)
-- curiosity:item-461-det000461 (accessed 2026-05-21)
-- curiosity:item-511-det000511 (accessed 2026-05-21)
-- curiosity:item-561-det000561 (accessed 2026-05-21)
+- curiosity:item-111-det000111
+- curiosity:item-161-det000161
+- curiosity:item-211-det000211
+- curiosity:item-261-det000261
+- curiosity:item-311-det000311
+- curiosity:item-361-det000361
+- curiosity:item-411-det000411
+- curiosity:item-461-det000461
+- curiosity:item-511-det000511
+- curiosity:item-561-det000561
 
 ### topic-12 (10 entries)
-- curiosity:item-112-det000112 (accessed 2026-05-21)
-- curiosity:item-162-det000162 (accessed 2026-05-21)
-- curiosity:item-212-det000212 (accessed 2026-05-21)
-- curiosity:item-262-det000262 (accessed 2026-05-21)
-- curiosity:item-312-det000312 (accessed 2026-05-21)
-- curiosity:item-362-det000362 (accessed 2026-05-21)
-- curiosity:item-412-det000412 (accessed 2026-05-21)
-- curiosity:item-462-det000462 (accessed 2026-05-21)
-- curiosity:item-512-det000512 (accessed 2026-05-21)
-- curiosity:item-562-det000562 (accessed 2026-05-21)
+- curiosity:item-112-det000112
+- curiosity:item-162-det000162
+- curiosity:item-212-det000212
+- curiosity:item-262-det000262
+- curiosity:item-312-det000312
+- curiosity:item-362-det000362
+- curiosity:item-412-det000412
+- curiosity:item-462-det000462
+- curiosity:item-512-det000512
+- curiosity:item-562-det000562
 
 ### topic-13 (10 entries)
-- curiosity:item-113-det000113 (accessed 2026-05-21)
-- curiosity:item-163-det000163 (accessed 2026-05-21)
-- curiosity:item-213-det000213 (accessed 2026-05-21)
-- curiosity:item-263-det000263 (accessed 2026-05-21)
-- curiosity:item-313-det000313 (accessed 2026-05-21)
-- curiosity:item-363-det000363 (accessed 2026-05-21)
-- curiosity:item-413-det000413 (accessed 2026-05-21)
-- curiosity:item-463-det000463 (accessed 2026-05-21)
-- curiosity:item-513-det000513 (accessed 2026-05-21)
-- curiosity:item-563-det000563 (accessed 2026-05-21)
+- curiosity:item-113-det000113
+- curiosity:item-163-det000163
+- curiosity:item-213-det000213
+- curiosity:item-263-det000263
+- curiosity:item-313-det000313
+- curiosity:item-363-det000363
+- curiosity:item-413-det000413
+- curiosity:item-463-det000463
+- curiosity:item-513-det000513
+- curiosity:item-563-det000563
 
 ### topic-14 (10 entries)
-- curiosity:item-114-det000114 (accessed 2026-05-21)
-- curiosity:item-164-det000164 (accessed 2026-05-21)
-- curiosity:item-214-det000214 (accessed 2026-05-21)
-- curiosity:item-264-det000264 (accessed 2026-05-21)
-- curiosity:item-314-det000314 (accessed 2026-05-21)
-- curiosity:item-364-det000364 (accessed 2026-05-21)
-- curiosity:item-414-det000414 (accessed 2026-05-21)
-- curiosity:item-464-det000464 (accessed 2026-05-21)
-- curiosity:item-514-det000514 (accessed 2026-05-21)
-- curiosity:item-564-det000564 (accessed 2026-05-21)
+- curiosity:item-114-det000114
+- curiosity:item-164-det000164
+- curiosity:item-214-det000214
+- curiosity:item-264-det000264
+- curiosity:item-314-det000314
+- curiosity:item-364-det000364
+- curiosity:item-414-det000414
+- curiosity:item-464-det000464
+- curiosity:item-514-det000514
+- curiosity:item-564-det000564
 
 ### topic-15 (10 entries)
-- curiosity:item-115-det000115 (accessed 2026-05-21)
-- curiosity:item-165-det000165 (accessed 2026-05-21)
-- curiosity:item-215-det000215 (accessed 2026-05-21)
-- curiosity:item-265-det000265 (accessed 2026-05-21)
-- curiosity:item-315-det000315 (accessed 2026-05-21)
-- curiosity:item-365-det000365 (accessed 2026-05-21)
-- curiosity:item-415-det000415 (accessed 2026-05-21)
-- curiosity:item-465-det000465 (accessed 2026-05-21)
-- curiosity:item-515-det000515 (accessed 2026-05-21)
-- curiosity:item-565-det000565 (accessed 2026-05-21)
+- curiosity:item-115-det000115
+- curiosity:item-165-det000165
+- curiosity:item-215-det000215
+- curiosity:item-265-det000265
+- curiosity:item-315-det000315
+- curiosity:item-365-det000365
+- curiosity:item-415-det000415
+- curiosity:item-465-det000465
+- curiosity:item-515-det000515
+- curiosity:item-565-det000565
 
 ### topic-16 (10 entries)
-- curiosity:item-116-det000116 (accessed 2026-05-21)
-- curiosity:item-166-det000166 (accessed 2026-05-21)
-- curiosity:item-216-det000216 (accessed 2026-05-21)
-- curiosity:item-266-det000266 (accessed 2026-05-21)
-- curiosity:item-316-det000316 (accessed 2026-05-21)
-- curiosity:item-366-det000366 (accessed 2026-05-21)
-- curiosity:item-416-det000416 (accessed 2026-05-21)
-- curiosity:item-466-det000466 (accessed 2026-05-21)
-- curiosity:item-516-det000516 (accessed 2026-05-21)
-- curiosity:item-566-det000566 (accessed 2026-05-21)
+- curiosity:item-116-det000116
+- curiosity:item-166-det000166
+- curiosity:item-216-det000216
+- curiosity:item-266-det000266
+- curiosity:item-316-det000316
+- curiosity:item-366-det000366
+- curiosity:item-416-det000416
+- curiosity:item-466-det000466
+- curiosity:item-516-det000516
+- curiosity:item-566-det000566
 
 ### topic-17 (10 entries)
-- curiosity:item-117-det000117 (accessed 2026-05-21)
-- curiosity:item-167-det000167 (accessed 2026-05-21)
-- curiosity:item-217-det000217 (accessed 2026-05-21)
-- curiosity:item-267-det000267 (accessed 2026-05-21)
-- curiosity:item-317-det000317 (accessed 2026-05-21)
-- curiosity:item-367-det000367 (accessed 2026-05-21)
-- curiosity:item-417-det000417 (accessed 2026-05-21)
-- curiosity:item-467-det000467 (accessed 2026-05-21)
-- curiosity:item-517-det000517 (accessed 2026-05-21)
-- curiosity:item-567-det000567 (accessed 2026-05-21)
+- curiosity:item-117-det000117
+- curiosity:item-167-det000167
+- curiosity:item-217-det000217
+- curiosity:item-267-det000267
+- curiosity:item-317-det000317
+- curiosity:item-367-det000367
+- curiosity:item-417-det000417
+- curiosity:item-467-det000467
+- curiosity:item-517-det000517
+- curiosity:item-567-det000567
 
 ### topic-18 (10 entries)
-- curiosity:item-118-det000118 (accessed 2026-05-21)
-- curiosity:item-168-det000168 (accessed 2026-05-21)
-- curiosity:item-218-det000218 (accessed 2026-05-21)
-- curiosity:item-268-det000268 (accessed 2026-05-21)
-- curiosity:item-318-det000318 (accessed 2026-05-21)
-- curiosity:item-368-det000368 (accessed 2026-05-21)
-- curiosity:item-418-det000418 (accessed 2026-05-21)
-- curiosity:item-468-det000468 (accessed 2026-05-21)
-- curiosity:item-518-det000518 (accessed 2026-05-21)
-- curiosity:item-568-det000568 (accessed 2026-05-21)
+- curiosity:item-118-det000118
+- curiosity:item-168-det000168
+- curiosity:item-218-det000218
+- curiosity:item-268-det000268
+- curiosity:item-318-det000318
+- curiosity:item-368-det000368
+- curiosity:item-418-det000418
+- curiosity:item-468-det000468
+- curiosity:item-518-det000518
+- curiosity:item-568-det000568
 
 ### topic-19 (10 entries)
-- curiosity:item-119-det000119 (accessed 2026-05-21)
-- curiosity:item-169-det000169 (accessed 2026-05-21)
-- curiosity:item-219-det000219 (accessed 2026-05-21)
-- curiosity:item-269-det000269 (accessed 2026-05-21)
-- curiosity:item-319-det000319 (accessed 2026-05-21)
-- curiosity:item-369-det000369 (accessed 2026-05-21)
-- curiosity:item-419-det000419 (accessed 2026-05-21)
-- curiosity:item-469-det000469 (accessed 2026-05-21)
-- curiosity:item-519-det000519 (accessed 2026-05-21)
-- curiosity:item-569-det000569 (accessed 2026-05-21)
+- curiosity:item-119-det000119
+- curiosity:item-169-det000169
+- curiosity:item-219-det000219
+- curiosity:item-269-det000269
+- curiosity:item-319-det000319
+- curiosity:item-369-det000369
+- curiosity:item-419-det000419
+- curiosity:item-469-det000469
+- curiosity:item-519-det000519
+- curiosity:item-569-det000569
 
 ### topic-2 (10 entries)
-- curiosity:item-102-det000102 (accessed 2026-05-21)
-- curiosity:item-152-det000152 (accessed 2026-05-21)
-- curiosity:item-202-det000202 (accessed 2026-05-21)
-- curiosity:item-252-det000252 (accessed 2026-05-21)
-- curiosity:item-302-det000302 (accessed 2026-05-21)
-- curiosity:item-352-det000352 (accessed 2026-05-21)
-- curiosity:item-402-det000402 (accessed 2026-05-21)
-- curiosity:item-452-det000452 (accessed 2026-05-21)
-- curiosity:item-502-det000502 (accessed 2026-05-21)
-- curiosity:item-552-det000552 (accessed 2026-05-21)
+- curiosity:item-102-det000102
+- curiosity:item-152-det000152
+- curiosity:item-202-det000202
+- curiosity:item-252-det000252
+- curiosity:item-302-det000302
+- curiosity:item-352-det000352
+- curiosity:item-402-det000402
+- curiosity:item-452-det000452
+- curiosity:item-502-det000502
+- curiosity:item-552-det000552
 
 ### topic-20 (10 entries)
-- curiosity:item-120-det000120 (accessed 2026-05-21)
-- curiosity:item-170-det000170 (accessed 2026-05-21)
-- curiosity:item-220-det000220 (accessed 2026-05-21)
-- curiosity:item-270-det000270 (accessed 2026-05-21)
-- curiosity:item-320-det000320 (accessed 2026-05-21)
-- curiosity:item-370-det000370 (accessed 2026-05-21)
-- curiosity:item-420-det000420 (accessed 2026-05-21)
-- curiosity:item-470-det000470 (accessed 2026-05-21)
-- curiosity:item-520-det000520 (accessed 2026-05-21)
-- curiosity:item-570-det000570 (accessed 2026-05-21)
+- curiosity:item-120-det000120
+- curiosity:item-170-det000170
+- curiosity:item-220-det000220
+- curiosity:item-270-det000270
+- curiosity:item-320-det000320
+- curiosity:item-370-det000370
+- curiosity:item-420-det000420
+- curiosity:item-470-det000470
+- curiosity:item-520-det000520
+- curiosity:item-570-det000570
 
 ### topic-21 (10 entries)
-- curiosity:item-121-det000121 (accessed 2026-05-21)
-- curiosity:item-171-det000171 (accessed 2026-05-21)
-- curiosity:item-221-det000221 (accessed 2026-05-21)
-- curiosity:item-271-det000271 (accessed 2026-05-21)
-- curiosity:item-321-det000321 (accessed 2026-05-21)
-- curiosity:item-371-det000371 (accessed 2026-05-21)
-- curiosity:item-421-det000421 (accessed 2026-05-21)
-- curiosity:item-471-det000471 (accessed 2026-05-21)
-- curiosity:item-521-det000521 (accessed 2026-05-21)
-- curiosity:item-571-det000571 (accessed 2026-05-21)
+- curiosity:item-121-det000121
+- curiosity:item-171-det000171
+- curiosity:item-221-det000221
+- curiosity:item-271-det000271
+- curiosity:item-321-det000321
+- curiosity:item-371-det000371
+- curiosity:item-421-det000421
+- curiosity:item-471-det000471
+- curiosity:item-521-det000521
+- curiosity:item-571-det000571
 
 ### topic-22 (10 entries)
-- curiosity:item-122-det000122 (accessed 2026-05-21)
-- curiosity:item-172-det000172 (accessed 2026-05-21)
-- curiosity:item-222-det000222 (accessed 2026-05-21)
-- curiosity:item-272-det000272 (accessed 2026-05-21)
-- curiosity:item-322-det000322 (accessed 2026-05-21)
-- curiosity:item-372-det000372 (accessed 2026-05-21)
-- curiosity:item-422-det000422 (accessed 2026-05-21)
-- curiosity:item-472-det000472 (accessed 2026-05-21)
-- curiosity:item-522-det000522 (accessed 2026-05-21)
-- curiosity:item-572-det000572 (accessed 2026-05-21)
+- curiosity:item-122-det000122
+- curiosity:item-172-det000172
+- curiosity:item-222-det000222
+- curiosity:item-272-det000272
+- curiosity:item-322-det000322
+- curiosity:item-372-det000372
+- curiosity:item-422-det000422
+- curiosity:item-472-det000472
+- curiosity:item-522-det000522
+- curiosity:item-572-det000572
 
 ### topic-23 (10 entries)
-- curiosity:item-123-det000123 (accessed 2026-05-21)
-- curiosity:item-173-det000173 (accessed 2026-05-21)
-- curiosity:item-223-det000223 (accessed 2026-05-21)
-- curiosity:item-273-det000273 (accessed 2026-05-21)
-- curiosity:item-323-det000323 (accessed 2026-05-21)
-- curiosity:item-373-det000373 (accessed 2026-05-21)
-- curiosity:item-423-det000423 (accessed 2026-05-21)
-- curiosity:item-473-det000473 (accessed 2026-05-21)
-- curiosity:item-523-det000523 (accessed 2026-05-21)
-- curiosity:item-573-det000573 (accessed 2026-05-21)
+- curiosity:item-123-det000123
+- curiosity:item-173-det000173
+- curiosity:item-223-det000223
+- curiosity:item-273-det000273
+- curiosity:item-323-det000323
+- curiosity:item-373-det000373
+- curiosity:item-423-det000423
+- curiosity:item-473-det000473
+- curiosity:item-523-det000523
+- curiosity:item-573-det000573
 
 ### topic-24 (10 entries)
-- curiosity:item-124-det000124 (accessed 2026-05-21)
-- curiosity:item-174-det000174 (accessed 2026-05-21)
-- curiosity:item-224-det000224 (accessed 2026-05-21)
-- curiosity:item-274-det000274 (accessed 2026-05-21)
-- curiosity:item-324-det000324 (accessed 2026-05-21)
-- curiosity:item-374-det000374 (accessed 2026-05-21)
-- curiosity:item-424-det000424 (accessed 2026-05-21)
-- curiosity:item-474-det000474 (accessed 2026-05-21)
-- curiosity:item-524-det000524 (accessed 2026-05-21)
-- curiosity:item-574-det000574 (accessed 2026-05-21)
+- curiosity:item-124-det000124
+- curiosity:item-174-det000174
+- curiosity:item-224-det000224
+- curiosity:item-274-det000274
+- curiosity:item-324-det000324
+- curiosity:item-374-det000374
+- curiosity:item-424-det000424
+- curiosity:item-474-det000474
+- curiosity:item-524-det000524
+- curiosity:item-574-det000574
 
 ### topic-25 (10 entries)
-- curiosity:item-125-det000125 (accessed 2026-05-21)
-- curiosity:item-175-det000175 (accessed 2026-05-21)
-- curiosity:item-225-det000225 (accessed 2026-05-21)
-- curiosity:item-275-det000275 (accessed 2026-05-21)
-- curiosity:item-325-det000325 (accessed 2026-05-21)
-- curiosity:item-375-det000375 (accessed 2026-05-21)
-- curiosity:item-425-det000425 (accessed 2026-05-21)
-- curiosity:item-475-det000475 (accessed 2026-05-21)
-- curiosity:item-525-det000525 (accessed 2026-05-21)
-- curiosity:item-575-det000575 (accessed 2026-05-21)
+- curiosity:item-125-det000125
+- curiosity:item-175-det000175
+- curiosity:item-225-det000225
+- curiosity:item-275-det000275
+- curiosity:item-325-det000325
+- curiosity:item-375-det000375
+- curiosity:item-425-det000425
+- curiosity:item-475-det000475
+- curiosity:item-525-det000525
+- curiosity:item-575-det000575
 
 ### topic-26 (10 entries)
-- curiosity:item-126-det000126 (accessed 2026-05-21)
-- curiosity:item-176-det000176 (accessed 2026-05-21)
-- curiosity:item-226-det000226 (accessed 2026-05-21)
-- curiosity:item-276-det000276 (accessed 2026-05-21)
-- curiosity:item-326-det000326 (accessed 2026-05-21)
-- curiosity:item-376-det000376 (accessed 2026-05-21)
-- curiosity:item-426-det000426 (accessed 2026-05-21)
-- curiosity:item-476-det000476 (accessed 2026-05-21)
-- curiosity:item-526-det000526 (accessed 2026-05-21)
-- curiosity:item-576-det000576 (accessed 2026-05-21)
+- curiosity:item-126-det000126
+- curiosity:item-176-det000176
+- curiosity:item-226-det000226
+- curiosity:item-276-det000276
+- curiosity:item-326-det000326
+- curiosity:item-376-det000376
+- curiosity:item-426-det000426
+- curiosity:item-476-det000476
+- curiosity:item-526-det000526
+- curiosity:item-576-det000576
 
 ### topic-27 (10 entries)
-- curiosity:item-127-det000127 (accessed 2026-05-21)
-- curiosity:item-177-det000177 (accessed 2026-05-21)
-- curiosity:item-227-det000227 (accessed 2026-05-21)
-- curiosity:item-277-det000277 (accessed 2026-05-21)
-- curiosity:item-327-det000327 (accessed 2026-05-21)
-- curiosity:item-377-det000377 (accessed 2026-05-21)
-- curiosity:item-427-det000427 (accessed 2026-05-21)
-- curiosity:item-477-det000477 (accessed 2026-05-21)
-- curiosity:item-527-det000527 (accessed 2026-05-21)
-- curiosity:item-577-det000577 (accessed 2026-05-21)
+- curiosity:item-127-det000127
+- curiosity:item-177-det000177
+- curiosity:item-227-det000227
+- curiosity:item-277-det000277
+- curiosity:item-327-det000327
+- curiosity:item-377-det000377
+- curiosity:item-427-det000427
+- curiosity:item-477-det000477
+- curiosity:item-527-det000527
+- curiosity:item-577-det000577
 
 ### topic-28 (10 entries)
-- curiosity:item-128-det000128 (accessed 2026-05-21)
-- curiosity:item-178-det000178 (accessed 2026-05-21)
-- curiosity:item-228-det000228 (accessed 2026-05-21)
-- curiosity:item-278-det000278 (accessed 2026-05-21)
-- curiosity:item-328-det000328 (accessed 2026-05-21)
-- curiosity:item-378-det000378 (accessed 2026-05-21)
-- curiosity:item-428-det000428 (accessed 2026-05-21)
-- curiosity:item-478-det000478 (accessed 2026-05-21)
-- curiosity:item-528-det000528 (accessed 2026-05-21)
-- curiosity:item-578-det000578 (accessed 2026-05-21)
+- curiosity:item-128-det000128
+- curiosity:item-178-det000178
+- curiosity:item-228-det000228
+- curiosity:item-278-det000278
+- curiosity:item-328-det000328
+- curiosity:item-378-det000378
+- curiosity:item-428-det000428
+- curiosity:item-478-det000478
+- curiosity:item-528-det000528
+- curiosity:item-578-det000578
 
 ### topic-29 (10 entries)
-- curiosity:item-129-det000129 (accessed 2026-05-21)
-- curiosity:item-179-det000179 (accessed 2026-05-21)
-- curiosity:item-229-det000229 (accessed 2026-05-21)
-- curiosity:item-279-det000279 (accessed 2026-05-21)
-- curiosity:item-329-det000329 (accessed 2026-05-21)
-- curiosity:item-379-det000379 (accessed 2026-05-21)
-- curiosity:item-429-det000429 (accessed 2026-05-21)
-- curiosity:item-479-det000479 (accessed 2026-05-21)
-- curiosity:item-529-det000529 (accessed 2026-05-21)
-- curiosity:item-579-det000579 (accessed 2026-05-21)
+- curiosity:item-129-det000129
+- curiosity:item-179-det000179
+- curiosity:item-229-det000229
+- curiosity:item-279-det000279
+- curiosity:item-329-det000329
+- curiosity:item-379-det000379
+- curiosity:item-429-det000429
+- curiosity:item-479-det000479
+- curiosity:item-529-det000529
+- curiosity:item-579-det000579
 
 ### topic-3 (10 entries)
-- curiosity:item-103-det000103 (accessed 2026-05-21)
-- curiosity:item-153-det000153 (accessed 2026-05-21)
-- curiosity:item-203-det000203 (accessed 2026-05-21)
-- curiosity:item-253-det000253 (accessed 2026-05-21)
-- curiosity:item-303-det000303 (accessed 2026-05-21)
-- curiosity:item-353-det000353 (accessed 2026-05-21)
-- curiosity:item-403-det000403 (accessed 2026-05-21)
-- curiosity:item-453-det000453 (accessed 2026-05-21)
-- curiosity:item-503-det000503 (accessed 2026-05-21)
-- curiosity:item-553-det000553 (accessed 2026-05-21)
+- curiosity:item-103-det000103
+- curiosity:item-153-det000153
+- curiosity:item-203-det000203
+- curiosity:item-253-det000253
+- curiosity:item-303-det000303
+- curiosity:item-353-det000353
+- curiosity:item-403-det000403
+- curiosity:item-453-det000453
+- curiosity:item-503-det000503
+- curiosity:item-553-det000553
 
 ### topic-30 (10 entries)
-- curiosity:item-130-det000130 (accessed 2026-05-21)
-- curiosity:item-180-det000180 (accessed 2026-05-21)
-- curiosity:item-230-det000230 (accessed 2026-05-21)
-- curiosity:item-280-det000280 (accessed 2026-05-21)
-- curiosity:item-330-det000330 (accessed 2026-05-21)
-- curiosity:item-380-det000380 (accessed 2026-05-21)
-- curiosity:item-430-det000430 (accessed 2026-05-21)
-- curiosity:item-480-det000480 (accessed 2026-05-21)
-- curiosity:item-530-det000530 (accessed 2026-05-21)
-- curiosity:item-580-det000580 (accessed 2026-05-21)
+- curiosity:item-130-det000130
+- curiosity:item-180-det000180
+- curiosity:item-230-det000230
+- curiosity:item-280-det000280
+- curiosity:item-330-det000330
+- curiosity:item-380-det000380
+- curiosity:item-430-det000430
+- curiosity:item-480-det000480
+- curiosity:item-530-det000530
+- curiosity:item-580-det000580
 
 ### topic-31 (10 entries)
-- curiosity:item-131-det000131 (accessed 2026-05-21)
-- curiosity:item-181-det000181 (accessed 2026-05-21)
-- curiosity:item-231-det000231 (accessed 2026-05-21)
-- curiosity:item-281-det000281 (accessed 2026-05-21)
-- curiosity:item-331-det000331 (accessed 2026-05-21)
-- curiosity:item-381-det000381 (accessed 2026-05-21)
-- curiosity:item-431-det000431 (accessed 2026-05-21)
-- curiosity:item-481-det000481 (accessed 2026-05-21)
-- curiosity:item-531-det000531 (accessed 2026-05-21)
-- curiosity:item-581-det000581 (accessed 2026-05-21)
+- curiosity:item-131-det000131
+- curiosity:item-181-det000181
+- curiosity:item-231-det000231
+- curiosity:item-281-det000281
+- curiosity:item-331-det000331
+- curiosity:item-381-det000381
+- curiosity:item-431-det000431
+- curiosity:item-481-det000481
+- curiosity:item-531-det000531
+- curiosity:item-581-det000581
 
 ### topic-32 (10 entries)
-- curiosity:item-132-det000132 (accessed 2026-05-21)
-- curiosity:item-182-det000182 (accessed 2026-05-21)
-- curiosity:item-232-det000232 (accessed 2026-05-21)
-- curiosity:item-282-det000282 (accessed 2026-05-21)
-- curiosity:item-332-det000332 (accessed 2026-05-21)
-- curiosity:item-382-det000382 (accessed 2026-05-21)
-- curiosity:item-432-det000432 (accessed 2026-05-21)
-- curiosity:item-482-det000482 (accessed 2026-05-21)
-- curiosity:item-532-det000532 (accessed 2026-05-21)
-- curiosity:item-582-det000582 (accessed 2026-05-21)
+- curiosity:item-132-det000132
+- curiosity:item-182-det000182
+- curiosity:item-232-det000232
+- curiosity:item-282-det000282
+- curiosity:item-332-det000332
+- curiosity:item-382-det000382
+- curiosity:item-432-det000432
+- curiosity:item-482-det000482
+- curiosity:item-532-det000532
+- curiosity:item-582-det000582
 
 ### topic-33 (10 entries)
-- curiosity:item-133-det000133 (accessed 2026-05-21)
-- curiosity:item-183-det000183 (accessed 2026-05-21)
-- curiosity:item-233-det000233 (accessed 2026-05-21)
-- curiosity:item-283-det000283 (accessed 2026-05-21)
-- curiosity:item-333-det000333 (accessed 2026-05-21)
-- curiosity:item-383-det000383 (accessed 2026-05-21)
-- curiosity:item-433-det000433 (accessed 2026-05-21)
-- curiosity:item-483-det000483 (accessed 2026-05-21)
-- curiosity:item-533-det000533 (accessed 2026-05-21)
-- curiosity:item-583-det000583 (accessed 2026-05-21)
+- curiosity:item-133-det000133
+- curiosity:item-183-det000183
+- curiosity:item-233-det000233
+- curiosity:item-283-det000283
+- curiosity:item-333-det000333
+- curiosity:item-383-det000383
+- curiosity:item-433-det000433
+- curiosity:item-483-det000483
+- curiosity:item-533-det000533
+- curiosity:item-583-det000583
 
 ### topic-34 (10 entries)
-- curiosity:item-134-det000134 (accessed 2026-05-21)
-- curiosity:item-184-det000184 (accessed 2026-05-21)
-- curiosity:item-234-det000234 (accessed 2026-05-21)
-- curiosity:item-284-det000284 (accessed 2026-05-21)
-- curiosity:item-334-det000334 (accessed 2026-05-21)
-- curiosity:item-384-det000384 (accessed 2026-05-21)
-- curiosity:item-434-det000434 (accessed 2026-05-21)
-- curiosity:item-484-det000484 (accessed 2026-05-21)
-- curiosity:item-534-det000534 (accessed 2026-05-21)
-- curiosity:item-584-det000584 (accessed 2026-05-21)
+- curiosity:item-134-det000134
+- curiosity:item-184-det000184
+- curiosity:item-234-det000234
+- curiosity:item-284-det000284
+- curiosity:item-334-det000334
+- curiosity:item-384-det000384
+- curiosity:item-434-det000434
+- curiosity:item-484-det000484
+- curiosity:item-534-det000534
+- curiosity:item-584-det000584
 
 ### topic-35 (10 entries)
-- curiosity:item-135-det000135 (accessed 2026-05-21)
-- curiosity:item-185-det000185 (accessed 2026-05-21)
-- curiosity:item-235-det000235 (accessed 2026-05-21)
-- curiosity:item-285-det000285 (accessed 2026-05-21)
-- curiosity:item-335-det000335 (accessed 2026-05-21)
-- curiosity:item-385-det000385 (accessed 2026-05-21)
-- curiosity:item-435-det000435 (accessed 2026-05-21)
-- curiosity:item-485-det000485 (accessed 2026-05-21)
-- curiosity:item-535-det000535 (accessed 2026-05-21)
-- curiosity:item-585-det000585 (accessed 2026-05-21)
+- curiosity:item-135-det000135
+- curiosity:item-185-det000185
+- curiosity:item-235-det000235
+- curiosity:item-285-det000285
+- curiosity:item-335-det000335
+- curiosity:item-385-det000385
+- curiosity:item-435-det000435
+- curiosity:item-485-det000485
+- curiosity:item-535-det000535
+- curiosity:item-585-det000585
 
 ### topic-36 (10 entries)
-- curiosity:item-136-det000136 (accessed 2026-05-21)
-- curiosity:item-186-det000186 (accessed 2026-05-21)
-- curiosity:item-236-det000236 (accessed 2026-05-21)
-- curiosity:item-286-det000286 (accessed 2026-05-21)
-- curiosity:item-336-det000336 (accessed 2026-05-21)
-- curiosity:item-386-det000386 (accessed 2026-05-21)
-- curiosity:item-436-det000436 (accessed 2026-05-21)
-- curiosity:item-486-det000486 (accessed 2026-05-21)
-- curiosity:item-536-det000536 (accessed 2026-05-21)
-- curiosity:item-586-det000586 (accessed 2026-05-21)
+- curiosity:item-136-det000136
+- curiosity:item-186-det000186
+- curiosity:item-236-det000236
+- curiosity:item-286-det000286
+- curiosity:item-336-det000336
+- curiosity:item-386-det000386
+- curiosity:item-436-det000436
+- curiosity:item-486-det000486
+- curiosity:item-536-det000536
+- curiosity:item-586-det000586
 
 ### topic-37 (10 entries)
-- curiosity:item-137-det000137 (accessed 2026-05-21)
-- curiosity:item-187-det000187 (accessed 2026-05-21)
-- curiosity:item-237-det000237 (accessed 2026-05-21)
-- curiosity:item-287-det000287 (accessed 2026-05-21)
-- curiosity:item-337-det000337 (accessed 2026-05-21)
-- curiosity:item-387-det000387 (accessed 2026-05-21)
-- curiosity:item-437-det000437 (accessed 2026-05-21)
-- curiosity:item-487-det000487 (accessed 2026-05-21)
-- curiosity:item-537-det000537 (accessed 2026-05-21)
-- curiosity:item-587-det000587 (accessed 2026-05-21)
+- curiosity:item-137-det000137
+- curiosity:item-187-det000187
+- curiosity:item-237-det000237
+- curiosity:item-287-det000287
+- curiosity:item-337-det000337
+- curiosity:item-387-det000387
+- curiosity:item-437-det000437
+- curiosity:item-487-det000487
+- curiosity:item-537-det000537
+- curiosity:item-587-det000587
 
 ### topic-38 (10 entries)
-- curiosity:item-138-det000138 (accessed 2026-05-21)
-- curiosity:item-188-det000188 (accessed 2026-05-21)
-- curiosity:item-238-det000238 (accessed 2026-05-21)
-- curiosity:item-288-det000288 (accessed 2026-05-21)
-- curiosity:item-338-det000338 (accessed 2026-05-21)
-- curiosity:item-388-det000388 (accessed 2026-05-21)
-- curiosity:item-438-det000438 (accessed 2026-05-21)
-- curiosity:item-488-det000488 (accessed 2026-05-21)
-- curiosity:item-538-det000538 (accessed 2026-05-21)
-- curiosity:item-588-det000588 (accessed 2026-05-21)
+- curiosity:item-138-det000138
+- curiosity:item-188-det000188
+- curiosity:item-238-det000238
+- curiosity:item-288-det000288
+- curiosity:item-338-det000338
+- curiosity:item-388-det000388
+- curiosity:item-438-det000438
+- curiosity:item-488-det000488
+- curiosity:item-538-det000538
+- curiosity:item-588-det000588
 
 ### topic-39 (10 entries)
-- curiosity:item-139-det000139 (accessed 2026-05-21)
-- curiosity:item-189-det000189 (accessed 2026-05-21)
-- curiosity:item-239-det000239 (accessed 2026-05-21)
-- curiosity:item-289-det000289 (accessed 2026-05-21)
-- curiosity:item-339-det000339 (accessed 2026-05-21)
-- curiosity:item-389-det000389 (accessed 2026-05-21)
-- curiosity:item-439-det000439 (accessed 2026-05-21)
-- curiosity:item-489-det000489 (accessed 2026-05-21)
-- curiosity:item-539-det000539 (accessed 2026-05-21)
-- curiosity:item-589-det000589 (accessed 2026-05-21)
+- curiosity:item-139-det000139
+- curiosity:item-189-det000189
+- curiosity:item-239-det000239
+- curiosity:item-289-det000289
+- curiosity:item-339-det000339
+- curiosity:item-389-det000389
+- curiosity:item-439-det000439
+- curiosity:item-489-det000489
+- curiosity:item-539-det000539
+- curiosity:item-589-det000589
 
 ### topic-4 (10 entries)
-- curiosity:item-104-det000104 (accessed 2026-05-21)
-- curiosity:item-154-det000154 (accessed 2026-05-21)
-- curiosity:item-204-det000204 (accessed 2026-05-21)
-- curiosity:item-254-det000254 (accessed 2026-05-21)
-- curiosity:item-304-det000304 (accessed 2026-05-21)
-- curiosity:item-354-det000354 (accessed 2026-05-21)
-- curiosity:item-404-det000404 (accessed 2026-05-21)
-- curiosity:item-454-det000454 (accessed 2026-05-21)
-- curiosity:item-504-det000504 (accessed 2026-05-21)
-- curiosity:item-554-det000554 (accessed 2026-05-21)
+- curiosity:item-104-det000104
+- curiosity:item-154-det000154
+- curiosity:item-204-det000204
+- curiosity:item-254-det000254
+- curiosity:item-304-det000304
+- curiosity:item-354-det000354
+- curiosity:item-404-det000404
+- curiosity:item-454-det000454
+- curiosity:item-504-det000504
+- curiosity:item-554-det000554
 
 ### topic-40 (10 entries)
-- curiosity:item-140-det000140 (accessed 2026-05-21)
-- curiosity:item-190-det000190 (accessed 2026-05-21)
-- curiosity:item-240-det000240 (accessed 2026-05-21)
-- curiosity:item-290-det000290 (accessed 2026-05-21)
-- curiosity:item-340-det000340 (accessed 2026-05-21)
-- curiosity:item-390-det000390 (accessed 2026-05-21)
-- curiosity:item-440-det000440 (accessed 2026-05-21)
-- curiosity:item-490-det000490 (accessed 2026-05-21)
-- curiosity:item-540-det000540 (accessed 2026-05-21)
-- curiosity:item-590-det000590 (accessed 2026-05-21)
+- curiosity:item-140-det000140
+- curiosity:item-190-det000190
+- curiosity:item-240-det000240
+- curiosity:item-290-det000290
+- curiosity:item-340-det000340
+- curiosity:item-390-det000390
+- curiosity:item-440-det000440
+- curiosity:item-490-det000490
+- curiosity:item-540-det000540
+- curiosity:item-590-det000590
 
 ### topic-41 (10 entries)
-- curiosity:item-141-det000141 (accessed 2026-05-21)
-- curiosity:item-191-det000191 (accessed 2026-05-21)
-- curiosity:item-241-det000241 (accessed 2026-05-21)
-- curiosity:item-291-det000291 (accessed 2026-05-21)
-- curiosity:item-341-det000341 (accessed 2026-05-21)
-- curiosity:item-391-det000391 (accessed 2026-05-21)
-- curiosity:item-441-det000441 (accessed 2026-05-21)
-- curiosity:item-491-det000491 (accessed 2026-05-21)
-- curiosity:item-541-det000541 (accessed 2026-05-21)
-- curiosity:item-591-det000591 (accessed 2026-05-21)
+- curiosity:item-141-det000141
+- curiosity:item-191-det000191
+- curiosity:item-241-det000241
+- curiosity:item-291-det000291
+- curiosity:item-341-det000341
+- curiosity:item-391-det000391
+- curiosity:item-441-det000441
+- curiosity:item-491-det000491
+- curiosity:item-541-det000541
+- curiosity:item-591-det000591
 
 ### topic-42 (10 entries)
-- curiosity:item-142-det000142 (accessed 2026-05-21)
-- curiosity:item-192-det000192 (accessed 2026-05-21)
-- curiosity:item-242-det000242 (accessed 2026-05-21)
-- curiosity:item-292-det000292 (accessed 2026-05-21)
-- curiosity:item-342-det000342 (accessed 2026-05-21)
-- curiosity:item-392-det000392 (accessed 2026-05-21)
-- curiosity:item-442-det000442 (accessed 2026-05-21)
-- curiosity:item-492-det000492 (accessed 2026-05-21)
-- curiosity:item-542-det000542 (accessed 2026-05-21)
-- curiosity:item-592-det000592 (accessed 2026-05-21)
+- curiosity:item-142-det000142
+- curiosity:item-192-det000192
+- curiosity:item-242-det000242
+- curiosity:item-292-det000292
+- curiosity:item-342-det000342
+- curiosity:item-392-det000392
+- curiosity:item-442-det000442
+- curiosity:item-492-det000492
+- curiosity:item-542-det000542
+- curiosity:item-592-det000592
 
 ### topic-43 (10 entries)
-- curiosity:item-143-det000143 (accessed 2026-05-21)
-- curiosity:item-193-det000193 (accessed 2026-05-21)
-- curiosity:item-243-det000243 (accessed 2026-05-21)
-- curiosity:item-293-det000293 (accessed 2026-05-21)
-- curiosity:item-343-det000343 (accessed 2026-05-21)
-- curiosity:item-393-det000393 (accessed 2026-05-21)
-- curiosity:item-443-det000443 (accessed 2026-05-21)
-- curiosity:item-493-det000493 (accessed 2026-05-21)
-- curiosity:item-543-det000543 (accessed 2026-05-21)
-- curiosity:item-593-det000593 (accessed 2026-05-21)
+- curiosity:item-143-det000143
+- curiosity:item-193-det000193
+- curiosity:item-243-det000243
+- curiosity:item-293-det000293
+- curiosity:item-343-det000343
+- curiosity:item-393-det000393
+- curiosity:item-443-det000443
+- curiosity:item-493-det000493
+- curiosity:item-543-det000543
+- curiosity:item-593-det000593
 
 ### topic-44 (10 entries)
-- curiosity:item-144-det000144 (accessed 2026-05-21)
-- curiosity:item-194-det000194 (accessed 2026-05-21)
-- curiosity:item-244-det000244 (accessed 2026-05-21)
-- curiosity:item-294-det000294 (accessed 2026-05-21)
-- curiosity:item-344-det000344 (accessed 2026-05-21)
-- curiosity:item-394-det000394 (accessed 2026-05-21)
-- curiosity:item-444-det000444 (accessed 2026-05-21)
-- curiosity:item-494-det000494 (accessed 2026-05-21)
-- curiosity:item-544-det000544 (accessed 2026-05-21)
-- curiosity:item-594-det000594 (accessed 2026-05-21)
+- curiosity:item-144-det000144
+- curiosity:item-194-det000194
+- curiosity:item-244-det000244
+- curiosity:item-294-det000294
+- curiosity:item-344-det000344
+- curiosity:item-394-det000394
+- curiosity:item-444-det000444
+- curiosity:item-494-det000494
+- curiosity:item-544-det000544
+- curiosity:item-594-det000594
 
 ### topic-45 (10 entries)
-- curiosity:item-145-det000145 (accessed 2026-05-21)
-- curiosity:item-195-det000195 (accessed 2026-05-21)
-- curiosity:item-245-det000245 (accessed 2026-05-21)
-- curiosity:item-295-det000295 (accessed 2026-05-21)
-- curiosity:item-345-det000345 (accessed 2026-05-21)
-- curiosity:item-395-det000395 (accessed 2026-05-21)
-- curiosity:item-445-det000445 (accessed 2026-05-21)
-- curiosity:item-495-det000495 (accessed 2026-05-21)
-- curiosity:item-545-det000545 (accessed 2026-05-21)
-- curiosity:item-595-det000595 (accessed 2026-05-21)
+- curiosity:item-145-det000145
+- curiosity:item-195-det000195
+- curiosity:item-245-det000245
+- curiosity:item-295-det000295
+- curiosity:item-345-det000345
+- curiosity:item-395-det000395
+- curiosity:item-445-det000445
+- curiosity:item-495-det000495
+- curiosity:item-545-det000545
+- curiosity:item-595-det000595
 
 ### topic-46 (10 entries)
-- curiosity:item-146-det000146 (accessed 2026-05-21)
-- curiosity:item-196-det000196 (accessed 2026-05-21)
-- curiosity:item-246-det000246 (accessed 2026-05-21)
-- curiosity:item-296-det000296 (accessed 2026-05-21)
-- curiosity:item-346-det000346 (accessed 2026-05-21)
-- curiosity:item-396-det000396 (accessed 2026-05-21)
-- curiosity:item-446-det000446 (accessed 2026-05-21)
-- curiosity:item-496-det000496 (accessed 2026-05-21)
-- curiosity:item-546-det000546 (accessed 2026-05-21)
-- curiosity:item-596-det000596 (accessed 2026-05-21)
+- curiosity:item-146-det000146
+- curiosity:item-196-det000196
+- curiosity:item-246-det000246
+- curiosity:item-296-det000296
+- curiosity:item-346-det000346
+- curiosity:item-396-det000396
+- curiosity:item-446-det000446
+- curiosity:item-496-det000496
+- curiosity:item-546-det000546
+- curiosity:item-596-det000596
 
 ### topic-47 (10 entries)
-- curiosity:item-147-det000147 (accessed 2026-05-21)
-- curiosity:item-197-det000197 (accessed 2026-05-21)
-- curiosity:item-247-det000247 (accessed 2026-05-21)
-- curiosity:item-297-det000297 (accessed 2026-05-21)
-- curiosity:item-347-det000347 (accessed 2026-05-21)
-- curiosity:item-397-det000397 (accessed 2026-05-21)
-- curiosity:item-447-det000447 (accessed 2026-05-21)
-- curiosity:item-497-det000497 (accessed 2026-05-21)
-- curiosity:item-547-det000547 (accessed 2026-05-21)
-- curiosity:item-597-det000597 (accessed 2026-05-21)
+- curiosity:item-147-det000147
+- curiosity:item-197-det000197
+- curiosity:item-247-det000247
+- curiosity:item-297-det000297
+- curiosity:item-347-det000347
+- curiosity:item-397-det000397
+- curiosity:item-447-det000447
+- curiosity:item-497-det000497
+- curiosity:item-547-det000547
+- curiosity:item-597-det000597
 
 ### topic-48 (10 entries)
-- curiosity:item-148-det000148 (accessed 2026-05-21)
-- curiosity:item-198-det000198 (accessed 2026-05-21)
-- curiosity:item-248-det000248 (accessed 2026-05-21)
-- curiosity:item-298-det000298 (accessed 2026-05-21)
-- curiosity:item-348-det000348 (accessed 2026-05-21)
-- curiosity:item-398-det000398 (accessed 2026-05-21)
-- curiosity:item-448-det000448 (accessed 2026-05-21)
-- curiosity:item-498-det000498 (accessed 2026-05-21)
-- curiosity:item-548-det000548 (accessed 2026-05-21)
-- curiosity:item-598-det000598 (accessed 2026-05-21)
+- curiosity:item-148-det000148
+- curiosity:item-198-det000198
+- curiosity:item-248-det000248
+- curiosity:item-298-det000298
+- curiosity:item-348-det000348
+- curiosity:item-398-det000398
+- curiosity:item-448-det000448
+- curiosity:item-498-det000498
+- curiosity:item-548-det000548
+- curiosity:item-598-det000598
 
 ### topic-49 (10 entries)
-- curiosity:item-149-det000149 (accessed 2026-05-21)
-- curiosity:item-199-det000199 (accessed 2026-05-21)
-- curiosity:item-249-det000249 (accessed 2026-05-21)
-- curiosity:item-299-det000299 (accessed 2026-05-21)
-- curiosity:item-349-det000349 (accessed 2026-05-21)
-- curiosity:item-399-det000399 (accessed 2026-05-21)
-- curiosity:item-449-det000449 (accessed 2026-05-21)
-- curiosity:item-499-det000499 (accessed 2026-05-21)
-- curiosity:item-549-det000549 (accessed 2026-05-21)
-- curiosity:item-599-det000599 (accessed 2026-05-21)
+- curiosity:item-149-det000149
+- curiosity:item-199-det000199
+- curiosity:item-249-det000249
+- curiosity:item-299-det000299
+- curiosity:item-349-det000349
+- curiosity:item-399-det000399
+- curiosity:item-449-det000449
+- curiosity:item-499-det000499
+- curiosity:item-549-det000549
+- curiosity:item-599-det000599
 
 ### topic-5 (10 entries)
-- curiosity:item-105-det000105 (accessed 2026-05-21)
-- curiosity:item-155-det000155 (accessed 2026-05-21)
-- curiosity:item-205-det000205 (accessed 2026-05-21)
-- curiosity:item-255-det000255 (accessed 2026-05-21)
-- curiosity:item-305-det000305 (accessed 2026-05-21)
-- curiosity:item-355-det000355 (accessed 2026-05-21)
-- curiosity:item-405-det000405 (accessed 2026-05-21)
-- curiosity:item-455-det000455 (accessed 2026-05-21)
-- curiosity:item-505-det000505 (accessed 2026-05-21)
-- curiosity:item-555-det000555 (accessed 2026-05-21)
+- curiosity:item-105-det000105
+- curiosity:item-155-det000155
+- curiosity:item-205-det000205
+- curiosity:item-255-det000255
+- curiosity:item-305-det000305
+- curiosity:item-355-det000355
+- curiosity:item-405-det000405
+- curiosity:item-455-det000455
+- curiosity:item-505-det000505
+- curiosity:item-555-det000555
 
 ### topic-6 (10 entries)
-- curiosity:item-106-det000106 (accessed 2026-05-21)
-- curiosity:item-156-det000156 (accessed 2026-05-21)
-- curiosity:item-206-det000206 (accessed 2026-05-21)
-- curiosity:item-256-det000256 (accessed 2026-05-21)
-- curiosity:item-306-det000306 (accessed 2026-05-21)
-- curiosity:item-356-det000356 (accessed 2026-05-21)
-- curiosity:item-406-det000406 (accessed 2026-05-21)
-- curiosity:item-456-det000456 (accessed 2026-05-21)
-- curiosity:item-506-det000506 (accessed 2026-05-21)
-- curiosity:item-556-det000556 (accessed 2026-05-21)
+- curiosity:item-106-det000106
+- curiosity:item-156-det000156
+- curiosity:item-206-det000206
+- curiosity:item-256-det000256
+- curiosity:item-306-det000306
+- curiosity:item-356-det000356
+- curiosity:item-406-det000406
+- curiosity:item-456-det000456
+- curiosity:item-506-det000506
+- curiosity:item-556-det000556
 
 ### topic-7 (10 entries)
-- curiosity:item-107-det000107 (accessed 2026-05-21)
-- curiosity:item-157-det000157 (accessed 2026-05-21)
-- curiosity:item-207-det000207 (accessed 2026-05-21)
-- curiosity:item-257-det000257 (accessed 2026-05-21)
-- curiosity:item-307-det000307 (accessed 2026-05-21)
-- curiosity:item-357-det000357 (accessed 2026-05-21)
-- curiosity:item-407-det000407 (accessed 2026-05-21)
-- curiosity:item-457-det000457 (accessed 2026-05-21)
-- curiosity:item-507-det000507 (accessed 2026-05-21)
-- curiosity:item-557-det000557 (accessed 2026-05-21)
+- curiosity:item-107-det000107
+- curiosity:item-157-det000157
+- curiosity:item-207-det000207
+- curiosity:item-257-det000257
+- curiosity:item-307-det000307
+- curiosity:item-357-det000357
+- curiosity:item-407-det000407
+- curiosity:item-457-det000457
+- curiosity:item-507-det000507
+- curiosity:item-557-det000557
 
 ### topic-8 (10 entries)
-- curiosity:item-108-det000108 (accessed 2026-05-21)
-- curiosity:item-158-det000158 (accessed 2026-05-21)
-- curiosity:item-208-det000208 (accessed 2026-05-21)
-- curiosity:item-258-det000258 (accessed 2026-05-21)
-- curiosity:item-308-det000308 (accessed 2026-05-21)
-- curiosity:item-358-det000358 (accessed 2026-05-21)
-- curiosity:item-408-det000408 (accessed 2026-05-21)
-- curiosity:item-458-det000458 (accessed 2026-05-21)
-- curiosity:item-508-det000508 (accessed 2026-05-21)
-- curiosity:item-558-det000558 (accessed 2026-05-21)
+- curiosity:item-108-det000108
+- curiosity:item-158-det000158
+- curiosity:item-208-det000208
+- curiosity:item-258-det000258
+- curiosity:item-308-det000308
+- curiosity:item-358-det000358
+- curiosity:item-408-det000408
+- curiosity:item-458-det000458
+- curiosity:item-508-det000508
+- curiosity:item-558-det000558
 
 ### topic-9 (10 entries)
-- curiosity:item-109-det000109 (accessed 2026-05-21)
-- curiosity:item-159-det000159 (accessed 2026-05-21)
-- curiosity:item-209-det000209 (accessed 2026-05-21)
-- curiosity:item-259-det000259 (accessed 2026-05-21)
-- curiosity:item-309-det000309 (accessed 2026-05-21)
-- curiosity:item-359-det000359 (accessed 2026-05-21)
-- curiosity:item-409-det000409 (accessed 2026-05-21)
-- curiosity:item-459-det000459 (accessed 2026-05-21)
-- curiosity:item-509-det000509 (accessed 2026-05-21)
-- curiosity:item-559-det000559 (accessed 2026-05-21)
+- curiosity:item-109-det000109
+- curiosity:item-159-det000159
+- curiosity:item-209-det000209
+- curiosity:item-259-det000259
+- curiosity:item-309-det000309
+- curiosity:item-359-det000359
+- curiosity:item-409-det000409
+- curiosity:item-459-det000459
+- curiosity:item-509-det000509
+- curiosity:item-559-det000559
 
 Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
