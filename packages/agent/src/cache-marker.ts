@@ -53,7 +53,8 @@ export interface CacheMarkerPlacement {
 	 * actual bytes Bedrock will see riding the cachePoint, distinct from the
 	 * section-aggregate fallback used in legacy paths. Undefined when not
 	 * provided by the placer; `buildCacheMarkers` then falls back to summing
-	 * `system + skill-context + volatile-prefix + history` section tokens.
+	 * `system + skill-context + volatile-prefix + tools + history` section
+	 * tokens.
 	 */
 	positionTokens?: number;
 	reason?: "capability-disabled" | "too-short";
@@ -488,10 +489,13 @@ export function coldPathPlaceCacheMarker(
  * caching at all):
  *
  * 1. **System** — boundary at the end of the stable system-prefix per R-VC24.
- *    `positionTokens` sums the `system + skill-context + volatile-prefix`
- *    section tokens, matching the cumulative offset where the system-level
- *    `cache_control` / `cachePoint` rides on the wire. Always `variant:
- *    "fixed"` because the system prefix is byte-stable across warm reuse.
+ *    `positionTokens` sums the `system + skill-context + volatile-prefix +
+ *    tools` section tokens, matching the cumulative offset where the
+ *    system-level `cache_control` / `cachePoint` rides on the wire. Tool
+ *    definitions are part of the cacheable prefix (Anthropic/Bedrock order:
+ *    tools → system → messages), so the system breakpoint caches them and they
+ *    count toward this offset (#97). Always `variant: "fixed"` because the
+ *    system prefix is byte-stable across warm reuse.
  *
  * 2. **Message** — boundary at `messages[length - 2]`, i.e. just before the
  *    volatile-tail developer message. `positionTokens` adds the `history`
@@ -522,7 +526,10 @@ export function buildCacheMarkers(args: {
 	const tokensFor = (name: string): number => sections.find((s) => s.name === name)?.tokens ?? 0;
 
 	const stablePrefixTokens =
-		tokensFor("system") + tokensFor("skill-context") + tokensFor("volatile-prefix");
+		tokensFor("system") +
+		tokensFor("skill-context") +
+		tokensFor("volatile-prefix") +
+		tokensFor("tools");
 	// Prefer the placer-supplied positionTokens (set by `coldPathPlaceCacheMarker`,
 	// represents the actual on-wire bytes leading up to the cachePoint) over the
 	// section-aggregate fallback. The fallback covers legacy/warm-path paths that
