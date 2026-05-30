@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { CacheMarker } from "@bound/client";
+import { type CacheMarkerState, deriveCacheMarkerStates } from "../lib/cache-marker-state";
 import { CACHE_MARKER_COLORS, FREE_SPACE_COLOR, SECTION_COLORS } from "../lib/context-colors";
 import InfoPopover from "./InfoPopover.svelte";
 
@@ -67,32 +68,38 @@ function formatTokensCompact(n: number): string {
 
 // Each marker resolves to one of four states, driving its color:
 //
-// - `hit`      — read dominated this turn. The cached prefix served bytes; the
-//                 small write that may also have happened (e.g., the new user
-//                 message extending the cache) is a footnote on top of that.
-// - `write`    — write dominated. Either a cold reassembly seeded a fresh
-//                 prefix, or an extension wrote more than it read.
+// - `hit`      — this breakpoint served a cache read this turn (warm path). On
+//                 a split turn it is the durable system prefix; on a pure-read
+//                 turn every breakpoint reads.
+// - `write`    — this breakpoint seeded or extended a cache entry this turn. On
+//                 a split turn it is the growing message tail; on a pure-write
+//                 turn (e.g. a cold reassembly) every breakpoint writes.
 // - `disabled` — backend `prompt_caching` capability is off; nothing was
 //                 cached this turn.
 // - `idle`     — capability on but no cache activity attributable to the turn.
 //                 Renders as a faint tick with the TTL label so the position
 //                 is still visible.
 //
-// Both the system and message markers SHARE the same state per turn — the AI
-// SDK aggregates cache_read / cache_write at request level, so per-marker
-// attribution would be a fabrication. Painting them with one shared "story"
-// matches operational reality (e.g., on a cold turn that wrote 162k, BOTH
-// breakpoints participated in seeding the write — painting only one as
-// "write" misled operators into thinking the other did nothing).
+// On a UNIFORM turn (only reads, or only writes) both breakpoints share one
+// state — the AI SDK aggregates cache_read / cache_write at request level, so a
+// single "story" matches reality (e.g. a cold turn that wrote 162k seeded BOTH
+// breakpoints; painting only one "write" would imply the other did nothing). On
+// a MIXED turn (both a read and a write) we split: the durable system prefix
+// reads "hit" and the growing message tail reads "write" (#98). The byte split
+// is not attributable per-breakpoint on the wire, but the presence of both a
+// read and a write lets us infer at least one of each. See
+// `deriveCacheMarkerStates` for the full heuristic.
 //
-// Inline numeric labels are placed only on the message marker to avoid
-// rendering the same number twice underneath the bar. The system marker
-// shows its TTL inline when present and otherwise relies on the tooltip.
-type MarkerState = "hit" | "write" | "disabled" | "idle";
+// Inline numeric labels: on a split turn each tick carries its own distinct
+// number (read on the hit tick, write on the write tick), so there is no
+// duplication. On a uniform turn the single number is placed only on the
+// message marker to avoid printing the same value twice under the bar; the
+// system marker shows its TTL inline when present and otherwise relies on the
+// tooltip.
 
 interface RenderedMarker {
 	pct: number;
-	state: MarkerState;
+	state: CacheMarkerState;
 	color: string;
 	label: string;
 	tooltip: string;
@@ -102,26 +109,21 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 	if (!cacheMarkers || cacheMarkers.length === 0) return [];
 	const cacheRead = cacheReadTokens ?? 0;
 	const cacheWrite = cacheWriteTokens ?? 0;
-	const anyDisabled = cacheMarkers.some((m) => !m.capabilityEnabled);
+	const states = deriveCacheMarkerStates(cacheMarkers, cacheRead, cacheWrite);
+	// A split turn carries both a hit tick and a write tick; only then do the
+	// two markers show different numbers.
+	const isSplit = states.includes("hit") && states.includes("write");
 
-	let dominantState: MarkerState;
-	if (anyDisabled) {
-		dominantState = "disabled";
-	} else if (cacheRead > cacheWrite) {
-		dominantState = "hit";
-	} else if (cacheWrite > 0) {
-		dominantState = "write";
-	} else {
-		dominantState = "idle";
-	}
-
-	return cacheMarkers.map((m) => {
+	return cacheMarkers.map((m, i) => {
 		const pct = Math.max(0, Math.min(100, (m.positionTokens / contextWindow) * 100));
-		const state: MarkerState = m.capabilityEnabled ? dominantState : "disabled";
+		const state: CacheMarkerState = states[i] ?? "idle";
 		const color = CACHE_MARKER_COLORS[state];
 
 		let label = "";
-		if (m.kind === "message") {
+		if (isSplit) {
+			if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
+			else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
+		} else if (m.kind === "message") {
 			if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
 			else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
 			else if (state === "idle") label = m.ttl;
