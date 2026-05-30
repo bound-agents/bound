@@ -428,6 +428,36 @@ describe("Stage Functions - L1 Summary Entries", () => {
 
 		expect(staleChildren.length).toBe(2);
 	});
+
+	it("orders summaries by modified_at DESC (most-recent first), then key ASC", () => {
+		// The Working Knowledge summary cap keeps the N most-recent at full gloss.
+		// loadSummaryEntries must return them recency-ordered so the positional cap
+		// keeps the freshest, not an arbitrary key-sorted subset.
+		const rows: Array<[string, string]> = [
+			["_summary:oldest", "2026-05-20T10:00:00Z"],
+			["_summary:newest", "2026-05-28T10:00:00Z"],
+			["_summary:middle", "2026-05-24T10:00:00Z"],
+			// Two with the SAME modified_at — tiebreak must be key ASC, deterministic.
+			["_summary:tie-b", "2026-05-26T10:00:00Z"],
+			["_summary:tie-a", "2026-05-26T10:00:00Z"],
+		];
+		for (const [key, mod] of rows) {
+			db.prepare(
+				`INSERT INTO semantic_memory (id, key, value, tier, created_at, modified_at, last_accessed_at, deleted)
+				 VALUES (?, ?, ?, 'summary', ?, ?, ?, 0)`,
+			).run(`id-${key}`, key, `body ${key}`, mod, mod, mod);
+		}
+
+		const result = loadSummaryEntries(db, new Set());
+		const keys = result.entries.map((e) => e.key);
+		expect(keys).toEqual([
+			"_summary:newest",
+			"_summary:tie-a", // same time as tie-b, key ASC wins
+			"_summary:tie-b",
+			"_summary:middle",
+			"_summary:oldest",
+		]);
+	});
 });
 
 describe("loadPinnedEntries function", () => {

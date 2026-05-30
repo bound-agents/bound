@@ -84,6 +84,14 @@ User ID: test-user, Thread ID: 36eba76a-a76b-5cb5-8817-15a7364bb3cd
 - _pinned:9: pinned body 9
 - _summary:topic-0: Summary for topic 0: this is a brief overview.
 - _summary:topic-1: Summary for topic 1: this is a brief overview.
+- _summary:topic-2: Summary for topic 2: this is a brief overview.
+- _summary:topic-3: Summary for topic 3: this is a brief overview.
+- _summary:topic-4: Summary for topic 4: this is a brief overview.
+- _summary:topic-5: Summary for topic 5: this is a brief overview.
+- _summary:topic-6: Summary for topic 6: this is a brief overview.
+- _summary:topic-7: Summary for topic 7: this is a brief overview.
+- _summary:topic-8: Summary for topic 8: this is a brief overview.
+- _summary:topic-9: Summary for topic 9: this is a brief overview.
 - _summary:topic-10: Summary for topic 10: this is a brief overview.
 - _summary:topic-11: Summary for topic 11: this is a brief overview.
 - _summary:topic-12: Summary for topic 12: this is a brief overview.
@@ -94,7 +102,6 @@ User ID: test-user, Thread ID: 36eba76a-a76b-5cb5-8817-15a7364bb3cd
 - _summary:topic-17: Summary for topic 17: this is a brief overview.
 - _summary:topic-18: Summary for topic 18: this is a brief overview.
 - _summary:topic-19: Summary for topic 19: this is a brief overview.
-- _summary:topic-2: Summary for topic 2: this is a brief overview.
 - _summary:topic-20: Summary for topic 20: this is a brief overview.
 - _summary:topic-21: Summary for topic 21: this is a brief overview.
 - _summary:topic-22: Summary for topic 22: this is a brief overview.
@@ -105,7 +112,6 @@ User ID: test-user, Thread ID: 36eba76a-a76b-5cb5-8817-15a7364bb3cd
 - _summary:topic-27: Summary for topic 27: this is a brief overview.
 - _summary:topic-28: Summary for topic 28: this is a brief overview.
 - _summary:topic-29: Summary for topic 29: this is a brief overview.
-- _summary:topic-3: Summary for topic 3: this is a brief overview.
 - _summary:topic-30: Summary for topic 30: this is a brief overview.
 - _summary:topic-31: Summary for topic 31: this is a brief overview.
 - _summary:topic-32: Summary for topic 32: this is a brief overview.
@@ -116,7 +122,6 @@ User ID: test-user, Thread ID: 36eba76a-a76b-5cb5-8817-15a7364bb3cd
 - _summary:topic-37: Summary for topic 37: this is a brief overview.
 - _summary:topic-38: Summary for topic 38: this is a brief overview.
 - _summary:topic-39: Summary for topic 39: this is a brief overview.
-- _summary:topic-4: Summary for topic 4: this is a brief overview.
 - _summary:topic-40: Summary for topic 40: this is a brief overview.
 - _summary:topic-41: Summary for topic 41: this is a brief overview.
 - _summary:topic-42: Summary for topic 42: this is a brief overview.
@@ -127,11 +132,6 @@ User ID: test-user, Thread ID: 36eba76a-a76b-5cb5-8817-15a7364bb3cd
 - _summary:topic-47: Summary for topic 47: this is a brief overview.
 - _summary:topic-48: Summary for topic 48: this is a brief overview.
 - _summary:topic-49: Summary for topic 49: this is a brief overview.
-- _summary:topic-5: Summary for topic 5: this is a brief overview.
-- _summary:topic-6: Summary for topic 6: this is a brief overview.
-- _summary:topic-7: Summary for topic 7: this is a brief overview.
-- _summary:topic-8: Summary for topic 8: this is a brief overview.
-- _summary:topic-9: Summary for topic 9: this is a brief overview.
 
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search
@@ -252,6 +252,14 @@ Bodies are accessed via memory search or query against semantic_memory.
 - _pinned:9 [changed since last turn]
 - _summary:topic-0 [changed since last turn]
 - _summary:topic-1 [changed since last turn]
+- _summary:topic-2 [changed since last turn]
+- _summary:topic-3 [changed since last turn]
+- _summary:topic-4 [changed since last turn]
+- _summary:topic-5 [changed since last turn]
+- _summary:topic-6 [changed since last turn]
+- _summary:topic-7 [changed since last turn]
+- _summary:topic-8 [changed since last turn]
+- _summary:topic-9 [changed since last turn]
 - _summary:topic-10 [changed since last turn]
 - _summary:topic-11 [changed since last turn]
 - _summary:topic-12 [changed since last turn]
@@ -262,7 +270,6 @@ Bodies are accessed via memory search or query against semantic_memory.
 - _summary:topic-17 [changed since last turn]
 - _summary:topic-18 [changed since last turn]
 - _summary:topic-19 [changed since last turn]
-- _summary:topic-2 [changed since last turn]
 - _summary:topic-20 [changed since last turn]
 - _summary:topic-21 [changed since last turn]
 - _summary:topic-22 [changed since last turn]
@@ -273,7 +280,6 @@ Bodies are accessed via memory search or query against semantic_memory.
 - _summary:topic-27 [changed since last turn]
 - _summary:topic-28 [changed since last turn]
 - _summary:topic-29 [changed since last turn]
-- _summary:topic-3 [changed since last turn]
 - _summary:topic-30 [changed since last turn]
 - _summary:topic-31 [changed since last turn]
 - _summary:topic-32 [changed since last turn]
@@ -284,7 +290,6 @@ Bodies are accessed via memory search or query against semantic_memory.
 - _summary:topic-37 [changed since last turn]
 - _summary:topic-38 [changed since last turn]
 - _summary:topic-39 [changed since last turn]
-- _summary:topic-4 [changed since last turn]
 - _summary:topic-40 [changed since last turn]
 - _summary:topic-41 [changed since last turn]
 - _summary:topic-42 [changed since last turn]
@@ -295,11 +300,6 @@ Bodies are accessed via memory search or query against semantic_memory.
 - _summary:topic-47 [changed since last turn]
 - _summary:topic-48 [changed since last turn]
 - _summary:topic-49 [changed since last turn]
-- _summary:topic-5 [changed since last turn]
-- _summary:topic-6 [changed since last turn]
-- _summary:topic-7 [changed since last turn]
-- _summary:topic-8 [changed since last turn]
-- _summary:topic-9 [changed since last turn]
 ## Live State — pointers to canonical sources
 
 

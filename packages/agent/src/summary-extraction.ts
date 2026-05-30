@@ -1357,7 +1357,7 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
 			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
 			 WHERE m.tier = 'summary' AND m.deleted = 0
-			 ORDER BY m.key ASC`,
+			 ORDER BY m.modified_at DESC, m.key ASC`,
 		)
 		.all() as Array<{
 		key: string;
@@ -1722,6 +1722,50 @@ export const WORKING_KNOWLEDGE_FOOTER =
 export const SUMMARY_GLOSS_MAX = 200;
 
 /**
+ * Maximum number of summary entries rendered at full gloss in the stable
+ * Working Knowledge section. The stable prefix rode EVERY `tier='summary'`
+ * entry at full 200-char gloss, uncapped — the largest growable slab in the
+ * cached system prefix (166 entries / ~8.3k tokens observed live on a single
+ * node). Summaries beyond this cap are demoted to title-only lines (see
+ * `capWorkingKnowledgeSummaries`) so the agent still sees every summary exists
+ * and can query its body, while the cached prefix stays bounded as memory
+ * accumulates over months.
+ *
+ * 50 keeps roughly the last week of operational summaries at full gloss on the
+ * reference node. The cap is positional over the recency-ordered list that
+ * `loadSummaryEntries` returns (modified_at DESC, key ASC), so it keeps the
+ * freshest summaries, deterministically.
+ */
+export const WORKING_KNOWLEDGE_SUMMARY_CAP = 50;
+
+/**
+ * Sub-header introducing the demoted (title-only) summary overflow in the
+ * stable Working Knowledge section. Distinct from WORKING_KNOWLEDGE_HEADER so
+ * the agent can tell full-gloss bodies (above) from query-for-body titles
+ * (below).
+ */
+export const WORKING_KNOWLEDGE_DEMOTED_HEADER =
+	"### Older summaries (titles only — search the key for the body)";
+
+/**
+ * Split a recency-ordered summary list into the `kept` prefix (rendered at full
+ * gloss) and the `demoted` overflow (rendered title-only). Pure positional
+ * split — no sorting, no I/O — so it is byte-stable across cold rebuilds and
+ * safe on the R-VC25 stable channel. Generic over the entry shape so BOTH the
+ * production renderer (`StageEntry`) and the narrow stable-path view
+ * (`{key, value}`) call the SAME function, keeping the two renderers
+ * byte-equivalent by construction (pinned by parity-with-production.test.ts).
+ */
+export function capWorkingKnowledgeSummaries<T extends { key: string }>(
+	summaries: ReadonlyArray<T>,
+): { kept: T[]; demoted: T[] } {
+	return {
+		kept: summaries.slice(0, WORKING_KNOWLEDGE_SUMMARY_CAP),
+		demoted: summaries.slice(WORKING_KNOWLEDGE_SUMMARY_CAP),
+	};
+}
+
+/**
  * Truncate a summary value to `SUMMARY_GLOSS_MAX` chars with `…`
  * suffix when over budget. Exposed so `stable-prefix/compose.ts`
  * can render summary bodies byte-equivalently to
@@ -1790,10 +1834,24 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 		stableLines.push(`- ${entry.key}: ${entry.value}`);
 	}
 
-	// R-VC3: summary bodies with 200-char gloss, no inline markers.
-	for (const summary of input.summaries) {
+	// R-VC3: summary bodies with 200-char gloss, no inline markers. Capped at
+	// WORKING_KNOWLEDGE_SUMMARY_CAP most-recent (input.summaries arrives
+	// recency-ordered from loadSummaryEntries); the overflow is demoted to
+	// title-only lines so the cached prefix stays bounded without hiding any
+	// summary from the agent.
+	const { kept: keptSummaries, demoted: demotedSummaries } = capWorkingKnowledgeSummaries(
+		input.summaries,
+	);
+	for (const summary of keptSummaries) {
 		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
 		stableLines.push(`- ${summary.key}: ${gloss}`);
+	}
+	if (demotedSummaries.length > 0) {
+		stableLines.push("");
+		stableLines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
+		for (const summary of demotedSummaries) {
+			stableLines.push(`- ${summary.key}`);
+		}
 	}
 
 	stableLines.push("");

@@ -37,8 +37,10 @@ import {
 	UNCATEGORIZED_CLUSTER_NAME,
 	VC15_TIER1_THRESHOLD,
 	VC15_UNCATEGORIZED_BACKLOG_THRESHOLD,
+	WORKING_KNOWLEDGE_DEMOTED_HEADER,
 	WORKING_KNOWLEDGE_FOOTER,
 	WORKING_KNOWLEDGE_HEADER,
+	capWorkingKnowledgeSummaries,
 	formatStableDetailLine,
 	truncateGlossForSummary,
 } from "../summary-extraction";
@@ -78,8 +80,19 @@ function renderWorkingKnowledgeStable(
 	for (const entry of pinned) {
 		out.push(`- ${entry.key}: ${entry.value}`);
 	}
-	for (const summary of summaries) {
+	// Identical cap+demote to renderWorkingKnowledge's stable channel — via the
+	// SAME shared helper so the two paths cannot drift (R-VC25 parity, pinned by
+	// parity-with-production.test.ts).
+	const { kept, demoted } = capWorkingKnowledgeSummaries(summaries);
+	for (const summary of kept) {
 		out.push(`- ${summary.key}: ${truncateGlossForSummary(summary.value)}`);
+	}
+	if (demoted.length > 0) {
+		out.push("");
+		out.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
+		for (const summary of demoted) {
+			out.push(`- ${summary.key}`);
+		}
 	}
 	out.push("");
 	out.push(WORKING_KNOWLEDGE_FOOTER);
