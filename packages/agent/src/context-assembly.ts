@@ -1856,6 +1856,9 @@ Original output was too large for the context window. If you need the full conte
 						}
 					: undefined;
 
+			// #97: tools ride in the cached prefix — render the slice after system.
+			placeToolsAfterSystem(sections);
+
 			return {
 				messages: truncatedMessages,
 				systemPrompt,
@@ -1892,6 +1895,9 @@ Original output was too large for the context window. If you need the full conte
 	stage7Span.setAttribute("context.truncated_messages", truncatedCount);
 	stage7Span.end();
 	stage8Span.end();
+
+	// #97: tools ride in the cached prefix — render the slice after system.
+	placeToolsAfterSystem(sections);
 
 	return {
 		messages: assembled,
@@ -1935,6 +1941,29 @@ Original output was too large for the context window. If you need the full conte
  * Used by cold-path assembleContext, rebuildWarmSections, and the
  * per-inner-loop refresh in agent-loop's refreshVolatileTailForNextTurn.
  */
+/**
+ * Reorder `sections` in place so the `tools` section renders immediately after
+ * `system` (#97).
+ *
+ * Tool definitions ride in the cacheable prefix on the wire (Anthropic/Bedrock
+ * order: tools → system → messages), so a system-level cache breakpoint caches
+ * them. The context-debug visualization previously pushed `tools` last, drawing
+ * it at the far right after BOTH cachePoints and implying tools were uncached.
+ * Moving the slice next to `system` places it inside the cached region; the
+ * complementary offset fix in `buildCacheMarkers` folds tool tokens into the
+ * system-prefix offset so the cachePoint ticks land to the right of the slice.
+ *
+ * No-op when there is no `tools` section. When there is no `system` section
+ * (defensive — assembly always emits one), the slice is inserted at the front.
+ */
+export function placeToolsAfterSystem(sections: ContextSection[]): void {
+	const toolsIdx = sections.findIndex((s) => s.name === "tools");
+	if (toolsIdx < 0) return;
+	const [toolsSection] = sections.splice(toolsIdx, 1);
+	const sysIdx = sections.findIndex((s) => s.name === "system");
+	sections.splice(sysIdx + 1, 0, toolsSection);
+}
+
 export function computeVolatileTailSection(volatileCtx: VolatileContext): ContextSection | null {
 	if (volatileCtx.varyingTokenEstimate <= 0) return null;
 	const memoryLines = volatileCtx.allVaryingLines.slice(
@@ -2020,6 +2049,9 @@ export function rebuildWarmSections(params: {
 			sections.push(s);
 		}
 	}
+
+	// #97: tools ride in the cached prefix — render the slice after system.
+	placeToolsAfterSystem(sections);
 
 	return sections;
 }

@@ -8868,7 +8868,7 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 		expect(result.find((s) => s.name === "volatile-other")).toBeUndefined();
 	});
 
-	it("emits sections in canonical order: system → skill-context → history → volatile-tail → tools (memory/task-digest/volatile-other are children of volatile-tail)", () => {
+	it("emits sections in canonical order: system → tools → skill-context → history → volatile-tail (tools rides the cached prefix per #97; memory/task-digest/volatile-other are children of volatile-tail)", () => {
 		const volatileCtx = buildVolatileCtx({
 			memoryText: "memory content here",
 			taskDigestText: "task digest content here",
@@ -8887,10 +8887,10 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 
 		expect(result.map((s) => s.name)).toEqual([
 			"system",
+			"tools",
 			"skill-context",
 			"history",
 			"volatile-tail",
-			"tools",
 		]);
 
 		// volatile-tail aggregates memory/task-digest/volatile-other as drill-down
