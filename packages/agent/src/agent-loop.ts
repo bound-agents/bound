@@ -1086,6 +1086,11 @@ export class AgentLoop {
 				const result = await context.with(
 					trace.setSpan(context.active(), assembleContextSpan),
 					async () => {
+						// #68: spoke when a hub URL is configured, hub otherwise
+						// (mirrors `isHub: !syncConfig.hub` in start/sync.ts).
+						const syncResult = this.ctx.optionalConfig?.sync;
+						const syncConfig = syncResult?.ok ? (syncResult.value as SyncConfig) : undefined;
+						const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
 						return assembleContext({
 							db: this.ctx.db,
 							threadId: this.config.threadId,
@@ -1095,6 +1100,7 @@ export class AgentLoop {
 							contextWindow: contextWindow,
 							hostName: this.ctx.hostName,
 							siteId: this.ctx.siteId,
+							topologyRole,
 							relayInfo,
 							platformContext: this.config.platform
 								? {

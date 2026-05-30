@@ -209,7 +209,31 @@ describe("buildStaticSystemParts — property tests", () => {
 		const orientation = out.find((p) => p.startsWith("## Orientation"));
 		if (!orientation) throw new Error("orientation missing");
 		if (!orientation.includes("Host: unknown")) throw new Error("hostName fallback regression");
-		if (!orientation.includes("Site ID: unknown")) throw new Error("siteId fallback regression");
+		if (!orientation.includes("(site unknown)")) throw new Error("siteId fallback regression");
+		// No role suffix when topologyRole is omitted.
+		if (orientation.includes("role:")) throw new Error("role should be absent when undefined");
+		db.close();
+	});
+
+	it("Y8: topologyRole renders inline on the Host line when provided (#68)", () => {
+		const db = freshDb();
+		const out = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "7cf34dd659c0",
+			siteId: "110ef7e107b038db961083b2b1b0ad83",
+			topologyRole: "spoke",
+		});
+		const orientation = out.find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes(
+				"Host: 7cf34dd659c0 (site 110ef7e107b038db961083b2b1b0ad83, role: spoke)",
+			)
+		) {
+			throw new Error("topologyRole not rendered inline on Host line");
+		}
 		db.close();
 	});
 

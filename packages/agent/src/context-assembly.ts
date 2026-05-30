@@ -112,6 +112,8 @@ export interface ContextParams {
 	configDir?: string;
 	hostName?: string;
 	siteId?: string;
+	/** Cluster topology role ("hub" | "spoke"), rendered on the orientation Host line. See #68. */
+	topologyRole?: "hub" | "spoke";
 	relayInfo?: {
 		remoteHost: string;
 		localHost: string;
@@ -1080,6 +1082,7 @@ Original output was too large for the context window. If you need the full conte
 		commandRegistry: params.commandRegistry ?? [],
 		hostName,
 		siteId,
+		topologyRole: params.topologyRole,
 	});
 
 	const assembled: LLMMessage[] = [];
