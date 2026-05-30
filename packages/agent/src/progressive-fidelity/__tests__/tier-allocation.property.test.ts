@@ -160,11 +160,23 @@ describe("tieredHistoryTruncation — property tests", () => {
 		);
 	});
 
-	it("P3: wire-legal opener — recentMessages[0].role !== 'tool_result'", () => {
+	it("P3: wire-legal opener — opener is non-tool_result whenever wireLegalOpener is reported", () => {
 		fc.assert(
 			fc.property(tieredHistoryParams, (params) => {
 				const result = tieredHistoryTruncation(params);
 				if (result.recentMessages.length === 0) return true;
+				// The function reports `wireLegalOpener` precisely because a wire-legal
+				// opener is not always achievable: when the retained slice is entirely
+				// tool_results (no preceding tool_call/user to back off onto), the only
+				// possible opener IS a tool_result. That is not fatal — the flag is set
+				// false and the driver's conversation-start invariant prepends a
+				// synthetic user message and wraps the orphan result. So the real
+				// contract is conditional on the flag: a REPORTED wire-legal opener
+				// must never be a tool_result. (Pre-floor-fix this degenerate case
+				// produced an EMPTY recent tier, which masked the orphan-opener path
+				// behind the empty-check escape above; the floor fix keeps the slice
+				// non-empty, so the flag now carries the invariant.)
+				if (!result.wireLegalOpener) return true;
 				return result.recentMessages[0].role !== "tool_result";
 			}),
 			{ numRuns: 100 },
@@ -302,6 +314,39 @@ describe("tieredHistoryTruncation — property tests", () => {
 				},
 			),
 			{ numRuns: 100 },
+		);
+	});
+
+	it("P9: floor — recentKept is never below min(2, n) when input is non-empty", () => {
+		// The documented recent-tier floor is "keep at least 2 messages". It must
+		// survive the wire-legal-opener advance and the physical-ceiling clamp.
+		// Production regression: a thinking-heavy thread that ended a long
+		// tool-only run with a short trailing user message ("Continue"/"bump")
+		// telescoped to recentKept = 1 — the advance loop stepped past the
+		// 2-message floor onto the trailing user message, and the clamp never
+		// recovered it because that tiny message already fit the ceiling.
+		fc.assert(
+			fc.property(
+				messageArray,
+				threadId,
+				threadSummary,
+				fc.integer({ min: 100, max: 10000 }),
+				// Exercise BOTH the clamp-disabled path (ceiling undefined) and the
+				// clamp-active path (a real ceiling), since the floor must hold on both.
+				fc.option(fc.integer({ min: 200, max: 10000 }), { nil: undefined }),
+				(messages, tid, summary, budget, ceiling) => {
+					if (messages.length === 0) return true;
+					const result = tieredHistoryTruncation({
+						historyMessages: messages,
+						historyBudget: budget,
+						threadId: tid,
+						threadSummary: summary,
+						recentHardCeiling: ceiling,
+					});
+					return result.recentKept >= Math.min(2, messages.length);
+				},
+			),
+			{ numRuns: 200 },
 		);
 	});
 
@@ -564,6 +609,50 @@ describe("tieredHistoryTruncation — long tool-only tail (budget bypass regress
 				// left recentKept = 0/1. (`label` documents the adversarial shape.)
 				expect(result.recentKept, label).toBeGreaterThanOrEqual(Math.min(2, messages.length));
 				expect(result.recentMessages.length, label).toBeGreaterThan(0);
+			}
+		}
+	});
+
+	// DEFECT C — floor violation via the wire-legal-opener advance onto a
+	// trailing user message. Distinct from DEFECT A (which is the clamp's
+	// tool_result re-strip running off the end). Here the recent tail is
+	// `[…, tool_result, user]` — the boundless "Continue"/"bump" pattern that
+	// ends a long autonomous run. The floor clamp keeps 2 (`tool_result`,
+	// `user`), but the wire-legal advance loop then steps PAST the tool_result
+	// onto the trailing user message, leaving recentKept = 1. The physical
+	// clamp never recovers it: the lone short user message already fits the
+	// ceiling, so the `suffixTokens > ceiling` guard is false and the clamp is
+	// a no-op. Observed live on 17 thinking-heavy turns (thread 24ac7854).
+	it("floor holds when the recent tail ends in a trailing user message", () => {
+		const blobTok = (n: number) => Array(n).fill("x").join(" ");
+		const trailers = ["Continue", "bump", "keep going"];
+		for (const trailer of trailers) {
+			const messages: LLMMessage[] = [
+				{ role: "user", content: "Kick off the autonomous TDD run." },
+				...Array.from({ length: 20 }, () => ({
+					role: "tool_call" as const,
+					content: `tc ${blobTok(1500)}`,
+				})),
+				{ role: "tool_result", content: `tr final ${blobTok(1500)}` },
+				// The poke that ends the burst — small, so it slips under the ceiling.
+				{ role: "user", content: trailer },
+			];
+			for (const budget of [2000, 1000, 500]) {
+				const result = tieredHistoryTruncation({
+					historyMessages: messages,
+					historyBudget: budget,
+					recentHardCeiling: budget,
+					threadId: "floor-trailing-user",
+				});
+				// HARD: the 2-message floor must survive the advance. Pre-fix this
+				// returned recentKept = 1 (the lone trailing user message), starving
+				// the agent of the work it just did and driving a re-derivation loop.
+				expect(result.recentKept, `trailer=${trailer} budget=${budget}`).toBeGreaterThanOrEqual(
+					Math.min(2, messages.length),
+				);
+				expect(result.recentMessages.length, `trailer=${trailer} budget=${budget}`).toBeGreaterThan(
+					0,
+				);
 			}
 		}
 	});
