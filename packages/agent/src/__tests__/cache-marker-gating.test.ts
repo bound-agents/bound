@@ -183,8 +183,11 @@ describe("buildCacheMarkers", () => {
 		{ name: "volatile-tail", tokens: 4000 },
 		{ name: "tools", tokens: 2000 },
 	];
-	// stable prefix: 5000 + 1500 + 3500 = 10000
-	// message boundary: 10000 + 80000 = 90000
+	// stable prefix (#97): tool definitions ride in the cacheable prefix
+	// (Anthropic/Bedrock order: tools → system → messages), so the system-level
+	// breakpoint caches them. The offset therefore includes the tools section:
+	//   system + skill-context + volatile-prefix + tools = 5000 + 1500 + 3500 + 2000 = 12000
+	//   message boundary: 12000 + 80000 = 92000
 
 	it("emits system + message markers when message placement succeeded (cold path)", () => {
 		const markers = buildCacheMarkers({
@@ -195,18 +198,35 @@ describe("buildCacheMarkers", () => {
 		expect(markers).toHaveLength(2);
 		expect(markers[0]).toEqual({
 			kind: "system",
-			positionTokens: 10000,
+			positionTokens: 12000,
 			variant: "fixed",
 			ttl: "1h",
 			capabilityEnabled: true,
 		});
 		expect(markers[1]).toEqual({
 			kind: "message",
-			positionTokens: 90000,
+			positionTokens: 92000,
 			variant: "fixed",
 			ttl: "1h",
 			capabilityEnabled: true,
 		});
+	});
+
+	it("includes tool-definition tokens in the system-prefix offset (#97)", () => {
+		// Tools are part of the cached prefix; dropping the tools section must
+		// shrink the system marker by exactly the tool-token count.
+		const withTools = buildCacheMarkers({
+			sections,
+			messagePlacement: { placed: true, variant: "fixed", index: 14 },
+			ttl: "1h",
+		});
+		const withoutTools = buildCacheMarkers({
+			sections: sections.filter((s) => s.name !== "tools"),
+			messagePlacement: { placed: true, variant: "fixed", index: 14 },
+			ttl: "1h",
+		});
+		expect(withTools[0].positionTokens - withoutTools[0].positionTokens).toBe(2000);
+		expect(withTools[1].positionTokens - withoutTools[1].positionTokens).toBe(2000);
 	});
 
 	it("emits markers with rolling variant when message placement was warm-path", () => {
