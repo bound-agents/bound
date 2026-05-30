@@ -6,7 +6,12 @@
 
 import { describe, expect, it } from "bun:test";
 import type { LLMMessage } from "@bound/llm";
-import { MAX_FOLDED_LINE_CHARS, foldMessages } from "../tool-cycle-fold.ts";
+import {
+	type FoldedLine,
+	MAX_FOLDED_LINE_CHARS,
+	dedupeFoldedLines,
+	foldMessages,
+} from "../tool-cycle-fold.ts";
 
 // ---------------------------------------------------------------------------
 // Property F1: Coverage
@@ -202,7 +207,9 @@ describe("foldMessages — F2: Tool-pair grouping", () => {
 
 		expect(result).toHaveLength(2);
 		expect(result[0].text).toMatch(/bash\(pwd\)/);
-		expect(result[1].text).toMatch(/read\(/);
+		// `read` is a read-class tool: it folds to an action line built from args
+		// (path), NOT a body fragment. See the "read-class action log" suite.
+		expect(result[1].text).toMatch(/\[read\] \/tmp\/test\.txt/);
 	});
 });
 
@@ -926,5 +933,221 @@ describe("foldMessages — result-summary fidelity (Defect C)", () => {
 		];
 		const [line] = foldMessages(messages, 0, messages.length);
 		expect(line.text.length).toBeLessThanOrEqual(MAX_FOLDED_LINE_CHARS);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Read-class action-log folding (Defect: content-loss re-read loop).
+//
+// A read-class tool (read/boundless_read/grep/glob/list) returns the file body
+// as its result. The old fold rendered `[tool] boundless_read(file_path=…) →
+// <first line of the slice>` — a near-random body fragment that is both useless
+// (not the lines the agent needs) and misleading (looks like content but is
+// only line 1). Worse, the file is usually being EDITED, so any preserved bytes
+// are stale. Live impact: 99 of 105 scheduler.ts reads on thread 91f3a340 were
+// re-reads of already-folded regions.
+//
+// The fix renders an accurate ACTION line from the tool_call ARGS (path + line
+// range + line count), never the body. The agent gets a faithful map of what it
+// already examined and a precise re-read target, converting blind repeated
+// re-reads into targeted single re-reads.
+// ---------------------------------------------------------------------------
+describe("foldMessages — read-class action log", () => {
+	const readResult = (bodyLines: string[]): string =>
+		JSON.stringify([
+			{ type: "text", text: "[boundless] host=abc cwd=/repo tool=boundless_read" },
+			{ type: "text", text: bodyLines.join("\n") },
+		]);
+
+	it("renders a read as an action line from args, not a body fragment", () => {
+		const body = Array.from({ length: 240 }, (_, k) => `  ${95 + k}\tcode line ${95 + k}`);
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "boundless_read",
+						input: { file_path: "/repo/packages/agent/src/scheduler.ts", offset: 95, limit: 240 },
+					},
+				]),
+			},
+			{ role: "tool_result", content: readResult(body) },
+		];
+
+		const [line] = foldMessages(messages, 0, messages.length);
+		// Accurate action line: path + line range + count.
+		expect(line.text).toContain("/repo/packages/agent/src/scheduler.ts");
+		expect(line.text).toContain("95");
+		expect(line.text).toContain("334"); // 95 + 240 - 1
+		expect(line.text).toMatch(/read/i);
+		// MUST NOT leak the body content (that is what was being lost/re-read).
+		expect(line.text).not.toContain("code line 95");
+		expect(line.text).not.toContain("code line 96");
+	});
+
+	it("renders a read with no offset/limit (whole file) without a bogus range", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "t1", name: "read", input: { file_path: "/repo/README.md" } },
+				]),
+			},
+			{ role: "tool_result", content: readResult(["# Title", "body"]) },
+		];
+		const [line] = foldMessages(messages, 0, messages.length);
+		expect(line.text).toContain("/repo/README.md");
+		expect(line.text).not.toContain("# Title");
+	});
+
+	it("does NOT false-flag a successful read whose file body contains the word 'error'", () => {
+		// Source files routinely contain "error" mid-body (comments, identifiers
+		// like consecutive_failures, "error string"). Read output is line-number
+		// prefixed, so body lines never START with an error token — anchor on that
+		// to avoid both a bogus error suffix AND a leaked body fragment.
+		const body = [
+			"  100\t * soft errors, hard errors, and model validation failures.",
+			"  101\t",
+			"  102\treturn { kind: 'error', reason } as ModelResolution;",
+		];
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "boundless_read",
+						input: { file_path: "/repo/scheduler.ts", offset: 100, limit: 3 },
+					},
+				]),
+			},
+			{ role: "tool_result", content: readResult(body) },
+		];
+		const [line] = foldMessages(messages, 0, messages.length);
+		expect(line.text).toBe("[read] /repo/scheduler.ts lines 100-102 (3 lines)");
+		// No error suffix, no body fragment.
+		expect(line.text).not.toMatch(/->/);
+		expect(line.text).not.toContain("soft errors");
+	});
+
+	it("preserves a read ERROR signal instead of claiming a successful read", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "boundless_read",
+						input: { file_path: "/repo/missing.ts" },
+					},
+				]),
+			},
+			{
+				role: "tool_result",
+				content: JSON.stringify([{ type: "text", text: "Error: ENOENT no such file" }]),
+			},
+		];
+		const [line] = foldMessages(messages, 0, messages.length);
+		expect(line.text).toContain("/repo/missing.ts");
+		expect(line.text).toMatch(/error|ENOENT/i);
+	});
+
+	it("read action line is byte-identical across repeated folds (cache stability)", () => {
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "boundless_read",
+						input: { file_path: "/repo/scheduler.ts", offset: 95, limit: 240 },
+					},
+				]),
+			},
+			{ role: "tool_result", content: readResult(["  95\tx"]) },
+		];
+		const a = foldMessages(messages, 0, messages.length)
+			.map((l) => l.text)
+			.join("\n");
+		const b = foldMessages(messages, 0, messages.length)
+			.map((l) => l.text)
+			.join("\n");
+		expect(a).toBe(b);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// dedupeFoldedLines — a pure render-time pass that collapses CONSECUTIVE
+// identical folded lines into one `… ×N` line. Applied at digest build (after
+// the tier budget-trim), NOT inside foldMessages — so it never perturbs the
+// sourceCount-based, contiguous, monotonic tier-allocation math. Sums the
+// collapsed lines' tokens/sourceCount so coverage and budget accounting stay
+// exact. Live impact: the action-log fold turns 99 re-reads into 99 identical
+// `[read] scheduler.ts …` lines; dedup renders that as one `… ×99`.
+// ---------------------------------------------------------------------------
+describe("dedupeFoldedLines", () => {
+	const line = (text: string, tokens = 5, sourceCount = 1): FoldedLine => ({
+		text,
+		tokens,
+		sourceCount,
+	});
+
+	it("collapses a run of identical lines into one with ×N and summed accounting", () => {
+		const input: FoldedLine[] = [
+			line("[read] scheduler.ts lines 95-334 (240 lines)", 12, 2),
+			line("[read] scheduler.ts lines 95-334 (240 lines)", 12, 2),
+			line("[read] scheduler.ts lines 95-334 (240 lines)", 12, 2),
+		];
+		const out = dedupeFoldedLines(input);
+		expect(out).toHaveLength(1);
+		expect(out[0].text).toMatch(/×3$|x3$/);
+		// Accounting is summed across the collapsed run.
+		expect(out[0].sourceCount).toBe(6);
+		// Token cost reflects the single rendered line, not the run.
+		expect(out[0].tokens).toBeGreaterThan(0);
+	});
+
+	it("does NOT collapse non-adjacent duplicates (preserves chronological story)", () => {
+		const input: FoldedLine[] = [
+			line("[read] a.ts"),
+			line("[edit] a.ts (1 hunk)"),
+			line("[read] a.ts"),
+		];
+		const out = dedupeFoldedLines(input);
+		expect(out).toHaveLength(3);
+		expect(out.every((l) => !/×|x\d/.test(l.text.replace("a.ts", "")))).toBe(true);
+	});
+
+	it("is a no-op on already-distinct adjacent lines", () => {
+		const input: FoldedLine[] = [line("[read] a.ts"), line("[read] b.ts"), line("[edit] a.ts")];
+		const out = dedupeFoldedLines(input);
+		expect(out.map((l) => l.text)).toEqual(input.map((l) => l.text));
+	});
+
+	it("preserves total sourceCount (coverage invariant) across dedup", () => {
+		const input: FoldedLine[] = [
+			line("x", 1, 3),
+			line("x", 1, 1),
+			line("y", 1, 2),
+			line("x", 1, 5),
+		];
+		const out = dedupeFoldedLines(input);
+		const totalIn = input.reduce((s, l) => s + l.sourceCount, 0);
+		const totalOut = out.reduce((s, l) => s + l.sourceCount, 0);
+		expect(totalOut).toBe(totalIn);
+	});
+
+	it("is deterministic / byte-stable", () => {
+		const input: FoldedLine[] = [line("[read] s.ts"), line("[read] s.ts"), line("[read] s.ts")];
+		expect(JSON.stringify(dedupeFoldedLines(input))).toBe(JSON.stringify(dedupeFoldedLines(input)));
+	});
+
+	it("empty input -> empty output", () => {
+		expect(dedupeFoldedLines([])).toEqual([]);
 	});
 });

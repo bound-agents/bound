@@ -23,7 +23,7 @@
 
 import type { LLMMessage } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
-import { type FoldedLine, foldMessages } from "./tool-cycle-fold";
+import { type FoldedLine, dedupeFoldedLines, foldMessages } from "./tool-cycle-fold";
 
 // Budget allocation ratios.
 export const RECENT_RATIO = 0.65;
@@ -399,7 +399,11 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 // ---------------------------------------------------------------------------
 
 function buildMiddleHeader(messageCount: number, threadId: string): string {
-	return `[Compressed history: ${messageCount} messages folded into action summaries. For full content: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${threadId}' ORDER BY created_at"]`;
+	// `[read] <path> lines A-B` action lines below are a MAP of what was already
+	// examined, not the file contents — the bodies were dropped (they go stale as
+	// files are edited). To recover a specific region, re-read it directly
+	// (read(<path>, offset, limit)); for any other folded message, query the row.
+	return `[Compressed history: ${messageCount} messages folded into action summaries. [read] lines are a map of prior reads, not file contents — re-read a region with read(<path>, offset, limit). For other full content: query "SELECT role, substr(content, 1, 200), created_at FROM messages WHERE thread_id = '${threadId}' ORDER BY created_at"]`;
 }
 
 function buildMiddleDigest(
@@ -408,8 +412,10 @@ function buildMiddleDigest(
 	threadId: string,
 ): string {
 	const header = buildMiddleHeader(messageCount, threadId);
-	const body = foldedLines
-		.filter((line) => line.text.length > 0)
+	// Collapse consecutive identical action lines (e.g. a tight re-read loop)
+	// into one `… ×N` line before rendering. Pure + deterministic, so the digest
+	// stays byte-stable across cold rebuilds.
+	const body = dedupeFoldedLines(foldedLines.filter((line) => line.text.length > 0))
 		.map((line) => line.text)
 		.join("\n");
 	return `${header}\n\n${body}`;

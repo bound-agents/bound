@@ -71,7 +71,9 @@ export function foldMessages(
 			} else if (resultCount === 0) {
 				// Orphan tool_call — no result followed.
 				for (const tu of toolUses) {
-					const line = clamp(`[tool] ${tu.name}(${tu.hint}) → (no result)`);
+					const line = isReadClassTool(tu.name)
+						? buildReadActionLine(tu.input, "(no result)")
+						: clamp(`[tool] ${tu.name}(${tu.hint}) → (no result)`);
 					results.push({ text: line, tokens: estimateTokens(line), sourceCount: 0 });
 				}
 				// Attribute sourceCount to the first line only.
@@ -85,14 +87,17 @@ export function foldMessages(
 				for (let p = 0; p < pairCount; p++) {
 					const tu = toolUses[p];
 					const resultMsg = messages[resultStartIdx + p];
-					const resultSummary = extractResultSummary(resultMsg.content);
-					const line = clamp(`[tool] ${tu.name}(${tu.hint}) → ${resultSummary}`);
+					const line = isReadClassTool(tu.name)
+						? buildReadActionLine(tu.input, detectResultError(resultMsg.content))
+						: clamp(`[tool] ${tu.name}(${tu.hint}) → ${extractResultSummary(resultMsg.content)}`);
 					results.push({ text: line, tokens: estimateTokens(line), sourceCount: 0 });
 				}
 				// Extra tool_uses without results.
 				for (let p = pairCount; p < toolUses.length; p++) {
 					const tu = toolUses[p];
-					const line = clamp(`[tool] ${tu.name}(${tu.hint}) → (no result)`);
+					const line = isReadClassTool(tu.name)
+						? buildReadActionLine(tu.input, "(no result)")
+						: clamp(`[tool] ${tu.name}(${tu.hint}) → (no result)`);
 					results.push({ text: line, tokens: estimateTokens(line), sourceCount: 0 });
 				}
 				// Extra tool_results without tool_uses.
@@ -155,6 +160,96 @@ export function foldMessages(
 interface ToolUseInfo {
 	name: string;
 	hint: string;
+	/** Raw tool input, when structurally available (JSON ContentBlock[] form). */
+	input?: Record<string, unknown>;
+}
+
+/**
+ * Read-class tools return a file BODY as their result. Folding that body is
+ * both lossy (a near-random fragment, not the lines the agent needs) and
+ * stale-prone (the file is usually being edited concurrently). Instead we fold
+ * read-class calls to an accurate ACTION line derived from the call args
+ * (path + line range), never the body — see `buildReadActionLine`.
+ *
+ * Matched by exact name `read` or any `*_read` suffix (e.g. `boundless_read`),
+ * so platform-prefixed variants are covered without an enumerated list. Other
+ * file-inspecting tools (grep/glob/list) are intentionally NOT read-class:
+ * their results are already compact match/path lists that `extractResultSummary`
+ * folds usefully, and they are the agent's actual findings, not a file body.
+ */
+function isReadClassTool(name: string): boolean {
+	return name === "read" || name.endsWith("_read");
+}
+
+/**
+ * Render a read-class call as an action line from its ARGS. Drops the file body
+ * (the lost-then-re-read content) but keeps a precise re-read target: the full
+ * path and, when present, the exact line range. On a failed read the error
+ * signal is preserved instead of silently implying success.
+ */
+function buildReadActionLine(
+	input: Record<string, unknown> | undefined,
+	errorDetail: string | null,
+): string {
+	const path =
+		typeof input?.file_path === "string"
+			? input.file_path
+			: typeof input?.path === "string"
+				? input.path
+				: "(unknown path)";
+	const offset = typeof input?.offset === "number" ? input.offset : undefined;
+	const limit = typeof input?.limit === "number" ? input.limit : undefined;
+
+	let range = "";
+	if (offset !== undefined && limit !== undefined) {
+		range = ` lines ${offset}-${offset + limit - 1} (${limit} lines)`;
+	} else if (limit !== undefined) {
+		range = ` (${limit} lines)`;
+	} else if (offset !== undefined) {
+		range = ` from line ${offset}`;
+	}
+
+	const errSuffix = errorDetail ? ` -> ${errorDetail}` : "";
+	return clamp(`[read] ${path}${range}${errSuffix}`);
+}
+
+/**
+ * Detect a read failure from the frozen result content. Returns a short error
+ * fragment, or null on success. Pure: same frozen content -> same verdict.
+ *
+ * CRITICAL: a successful read returns the file BODY, which routinely contains
+ * the word "error" mid-line (comments, identifiers, string literals). A naive
+ * substring scan both false-flags success AND leaks a body fragment into the
+ * error suffix — the exact content-loss-adjacent bug this fold fix exists to
+ * prevent. Read output is line-number prefixed (`  95<tab>...`), so a real body
+ * line never STARTS with an error token. Anchor detection accordingly:
+ *   1. a non-zero `Exit code:` (the unambiguous failure signal), or
+ *   2. an error token at the START of a content line (after stripping the
+ *      boundless banner / `stdout:` markers / leading whitespace) — i.e. the
+ *      result IS an error message, not a body that mentions one.
+ */
+function detectResultError(content: string | unknown[]): string | null {
+	const text = extractTextContent(content);
+
+	const exitMatch = text.match(/exit[_ ]code:?\s*(\d+)/i);
+	if (exitMatch) return exitMatch[1] === "0" ? null : `exit ${exitMatch[1]}`;
+
+	for (const raw of text.split("\n")) {
+		const line = raw.trim();
+		if (line.length === 0) continue;
+		// Skip structural noise (banner, stream markers).
+		if (line.startsWith("[boundless]") || /^(stdout|stderr):?$/i.test(line)) continue;
+		// A line-number-prefixed line is body content — read succeeded.
+		if (/^\d+\t/.test(raw) || /^\s*\d+[:\t]/.test(raw)) return null;
+		// First substantive line: error only if it OPENS with an error token.
+		if (/^(error\b|enoent\b|eacces\b|eisdir\b|failed\b|no such file|not found)/i.test(line)) {
+			return line.length > 60 ? `${line.slice(0, 57)}...` : line;
+		}
+		// Any other first substantive line means a non-error result; stop scanning
+		// so a later body line that happens to start with "error" can't trip us.
+		return null;
+	}
+	return null;
 }
 
 function extractToolUses(content: string | unknown[]): ToolUseInfo[] {
@@ -169,6 +264,10 @@ function extractToolUses(content: string | unknown[]): ToolUseInfo[] {
 			uses.push({
 				name: block.name ?? "unknown",
 				hint: extractInputHint(block.input),
+				input:
+					block.input && typeof block.input === "object"
+						? (block.input as Record<string, unknown>)
+						: undefined,
 			});
 		}
 	}
@@ -331,4 +430,42 @@ function estimateTokens(text: string): number {
 	// Short strings: chars/4 is a reasonable heuristic for cl100k_base.
 	// Avoids the cost of running tiktoken on every folded line during assembly.
 	return Math.ceil(text.length / 4);
+}
+
+/**
+ * Collapse runs of CONSECUTIVE identical folded lines into a single `… ×N`
+ * line. A long autonomous run that re-reads the same region produces many
+ * byte-identical `[read] …` action lines; this renders them as one.
+ *
+ * Applied at digest-render time (after the tier budget-trim in tier-allocation),
+ * NEVER inside `foldMessages`: the tier allocator walks folded lines assuming
+ * each covers a contiguous, monotonically-advancing source range, and collapsing
+ * non-adjacent lines would corrupt that accounting. Restricting dedup to
+ * ADJACENT duplicates keeps the chronological story intact (a read, an edit,
+ * then the same read again stays three lines) and is what the agent actually
+ * needs to see — a tight loop, not scattered coincidences.
+ *
+ * Accounting: the collapsed line sums `sourceCount` across the run (coverage
+ * invariant) but keeps a single line's `tokens` (the rendered cost). Pure and
+ * deterministic: same input -> byte-identical output, so the digest stays
+ * cache-stable.
+ */
+export function dedupeFoldedLines(lines: FoldedLine[]): FoldedLine[] {
+	if (lines.length === 0) return [];
+	const out: FoldedLine[] = [];
+	let i = 0;
+	while (i < lines.length) {
+		let runEnd = i + 1;
+		while (runEnd < lines.length && lines[runEnd].text === lines[i].text) runEnd++;
+		const runLength = runEnd - i;
+		const summedSource = lines.slice(i, runEnd).reduce((sum, l) => sum + l.sourceCount, 0);
+		if (runLength === 1) {
+			out.push({ ...lines[i], sourceCount: summedSource });
+		} else {
+			const text = clamp(`${lines[i].text} ×${runLength}`);
+			out.push({ text, tokens: estimateTokens(text), sourceCount: summedSource });
+		}
+		i = runEnd;
+	}
+	return out;
 }
