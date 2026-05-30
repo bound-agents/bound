@@ -117,7 +117,7 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 
 <Page>
 	{#snippet children()}
-		<SectionHeader number={1} subtitle="Performance Analytics" title="Metrics" />
+		<SectionHeader number={7} subtitle="Performance Analytics" title="Metrics" />
 
 		<DateRangeBar {from} {to} onRangeChange={handleRangeChange} disabled={initialLoading} />
 
@@ -145,7 +145,7 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 					<p>No data recorded in the selected range. Try expanding the date range.</p>
 				</div>
 			{:else}
-				<SectionHeader number={1} subtitle="Performance Analytics" title="Tokens" />
+				<SectionHeader number={1} subtitle="Cost observability" title="Tokens" />
 
 				{#if data.tokens.totals.turn_count === 0}
 					<div class="state">
