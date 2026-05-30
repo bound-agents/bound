@@ -44,6 +44,13 @@ export interface BuildStaticSystemPartsParams {
 	commandRegistry: ReadonlyArray<CommandRegistryEntry>;
 	hostName: string | undefined;
 	siteId: string | undefined;
+	/**
+	 * Cluster topology role of this host: `"hub"` (no `sync.hub` configured) or
+	 * `"spoke"` (a hub URL is configured). Rendered inline on the Host Identity
+	 * line so cross-host reasoning has the role alongside the site_id. Omitted
+	 * when undefined (e.g. tests, hub/spoke not yet resolved). See issue #68.
+	 */
+	topologyRole?: "hub" | "spoke";
 }
 
 export function buildStaticSystemParts(params: BuildStaticSystemPartsParams): string[] {
@@ -56,7 +63,14 @@ export function buildStaticSystemParts(params: BuildStaticSystemPartsParams): st
 		parts.push(params.persona);
 	}
 
-	parts.push(buildOrientationBlock(params.commandRegistry, params.hostName, params.siteId));
+	parts.push(
+		buildOrientationBlock(
+			params.commandRegistry,
+			params.hostName,
+			params.siteId,
+			params.topologyRole,
+		),
+	);
 
 	const schemaBlock = buildSchemaBlock(params.db);
 	if (schemaBlock !== null) {
@@ -70,6 +84,7 @@ function buildOrientationBlock(
 	registry: ReadonlyArray<CommandRegistryEntry>,
 	hostName: string | undefined,
 	siteId: string | undefined,
+	topologyRole: "hub" | "spoke" | undefined,
 ): string {
 	const lines: string[] = ["## Orientation", ""];
 
@@ -89,7 +104,13 @@ function buildOrientationBlock(
 		);
 	}
 
-	lines.push(`### Host Identity\nHost: ${hostName || "unknown"}\nSite ID: ${siteId || "unknown"}`);
+	// #68: pre-resolve the host_name -> site_id join and the hub/spoke topology
+	// role onto a single line so all three land in the same privileged-attention
+	// slot. The role is omitted when not resolved (kept stable for tests).
+	const host = hostName || "unknown";
+	const site = siteId || "unknown";
+	const roleSuffix = topologyRole ? `, role: ${topologyRole}` : "";
+	lines.push(`### Host Identity\nHost: ${host} (site ${site}${roleSuffix})`);
 	return lines.join("\n");
 }
 
