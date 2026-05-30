@@ -520,6 +520,39 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM advisories WHERE detail LIKE ?", [`%${taskId}%`]);
 		});
 
+		// #67: a connectivity-class failure (host offline / remote model unreachable)
+		// reaching the alert threshold must NOT file an advisory — the failure is
+		// environmental and self-resolves, and filing one per task floods the operator.
+		// The task still fails and increments consecutive_failures; only the advisory
+		// is suppressed.
+		it("does NOT create an advisory for a connectivity-class error at threshold (#67)", async () => {
+			const taskId = randomUUID();
+			insertTask(taskId, { consecutiveFailures: 1, alertThreshold: 2 });
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(
+				ctx as any,
+				softErrorFactory('Model "opus" not available on any remote host') as any,
+			);
+			const { stop } = scheduler.start(10);
+			await waitFor(
+				() =>
+					((
+						db.query("SELECT consecutive_failures FROM tasks WHERE id = ?").get(taskId) as {
+							consecutive_failures: number;
+						} | null
+					)?.consecutive_failures ?? 0) >= 2,
+				{ message: "task did not reach threshold" },
+			);
+			stop();
+
+			const advisories = db
+				.query("SELECT id FROM advisories WHERE detail LIKE ?")
+				.all(`%${taskId}%`) as Array<{ id: string }>;
+			expect(advisories.length).toBe(0);
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
 		it("creates an advisory when consecutive_failures reaches alert_threshold (hard error)", async () => {
 			const taskId = randomUUID();
 			// One failure already — next hard-error throw crosses threshold of 2

@@ -95,6 +95,53 @@ export const DEFERRED_MAX_RETRIES = 2;
 export const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecutive failure
 
 /**
+ * Connectivity-error signatures (lowercased substrings). Matched against task
+ * error strings to decide whether a failure is environmental (host offline /
+ * remote inference unreachable) rather than a genuine task-config or logic fault.
+ * See `isConnectivityFailure`.
+ */
+const CONNECTIVITY_ERROR_SIGNATURES = [
+	"not available on any remote host", // relay-router: model/tool unresolvable (no reachable peer)
+	"eligible host(s) timed out", // relay-stream$: relay inference timed out across all hosts
+	"fetch failed", // undici/AI SDK wrapper for a failed network call
+	"getaddrinfo", // DNS resolution failed (offline)
+	"enotfound", // DNS: host not found
+	"eai_again", // DNS: transient failure (offline)
+	"econnrefused", // TCP connect refused
+	"econnreset", // connection reset mid-flight
+	"etimedout", // TCP/socket timeout
+	"socket hang up", // connection dropped before response
+	"network error", // generic transport-layer failure
+	"unable to connect", // generic connect failure
+	"connection refused", // generic connect failure (worded)
+] as const;
+
+/**
+ * Heuristic: does this task error indicate an environmental connectivity /
+ * remote-model reachability problem rather than a genuine task-configuration or
+ * logic fault?
+ *
+ * Tasks that require a remote model fail repeatedly while the host is
+ * disconnected from the internet (or the hub / remote inference host is
+ * unreachable). Those failures are expected and self-resolve when connectivity
+ * returns — but filing a "task has failed N times" advisory for each such task
+ * floods the operator with unactionable noise (#67). We skip the advisory for
+ * these; the failure is still recorded on the task row (status + error +
+ * consecutive_failures) and cron/heartbeat tasks keep retrying, so nothing is
+ * lost — only the redundant advisory.
+ *
+ * Deliberately conservative: matches only signatures that are unambiguously
+ * connectivity- or remote-availability-related. A genuine task bug that happens
+ * to contain one of these substrings is rare, and the cost of a missed advisory
+ * (the operator can still see the failed task row) is far lower than the cost of
+ * the flood the issue describes.
+ */
+export function isConnectivityFailure(error: string): boolean {
+	const lowered = error.toLowerCase();
+	return CONNECTIVITY_ERROR_SIGNATURES.some((sig) => lowered.includes(sig));
+}
+
+/**
  * Reschedules a cron task to its next run time and resets status to 'pending'.
  * Extracted as a helper because this logic is needed across the run path
  * (completion, soft errors, hard errors, model validation failures, template
@@ -1982,6 +2029,18 @@ export class Scheduler {
 	}
 
 	private triggerFailureAdvisory(task: Task, error: string, consecutiveFailures: number): void {
+		// #67: suppress advisories for environmental connectivity failures. A host
+		// disconnected from the internet fails every remote-model task at once, which
+		// would otherwise file one unactionable "task failed N times" advisory per
+		// task — a flood. The failure remains recorded on the task row; only the
+		// redundant advisory is skipped, and it self-resolves when connectivity returns.
+		if (isConnectivityFailure(error)) {
+			this.ctx.logger.info(
+				"[scheduler] Suppressing failure advisory for connectivity-class error (#67)",
+				{ taskId: task.id, consecutiveFailures, error: error.slice(0, 200) },
+			);
+			return;
+		}
 		try {
 			createAdvisory(
 				this.ctx.db,
