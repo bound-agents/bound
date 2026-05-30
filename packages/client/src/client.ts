@@ -123,7 +123,7 @@ export class BoundClient {
 
 	// ---- Internal helpers ----
 
-	private async fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
+	private async fetchOk(path: string, options?: RequestInit): Promise<Response> {
 		let res: Response;
 		try {
 			res = await fetch(`${this.baseUrl}${path}`, options);
@@ -139,6 +139,11 @@ export class BoundClient {
 			}
 			throw new BoundApiError(body?.error ?? `HTTP ${res.status}`, res.status, body?.details);
 		}
+		return res;
+	}
+
+	private async fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
+		const res = await this.fetchOk(path, options);
 		return res.json() as Promise<T>;
 	}
 
@@ -417,6 +422,22 @@ export class BoundClient {
 		 */
 		before?: { last_message_at: string; id: string };
 	}): Promise<ThreadListEntry[]> {
+		return (await this.listThreadsPage(opts)).threads;
+	}
+
+	/**
+	 * Like {@link listThreads} but also returns `total` — the server's count
+	 * of threads matching the same filter, independent of the cursor/limit
+	 * window, read from the `X-Total-Count` response header. Use this when
+	 * rendering a "N threads" total alongside a paginated list so the count
+	 * reflects the full set rather than the loaded page. Falls back to the
+	 * returned page length if the header is missing.
+	 */
+	async listThreadsPage(opts?: {
+		includeEmpty?: boolean;
+		limit?: number;
+		before?: { last_message_at: string; id: string };
+	}): Promise<{ threads: ThreadListEntry[]; total: number }> {
 		const params = new URLSearchParams();
 		if (opts?.includeEmpty) params.set("include_empty", "true");
 		if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
@@ -425,7 +446,12 @@ export class BoundClient {
 			params.set("before_id", opts.before.id);
 		}
 		const qs = params.toString();
-		return this.fetchJson(`/api/threads${qs ? `?${qs}` : ""}`);
+		const res = await this.fetchOk(`/api/threads${qs ? `?${qs}` : ""}`);
+		const threads = (await res.json()) as ThreadListEntry[];
+		const headerValue = res.headers.get("X-Total-Count");
+		const parsed = headerValue !== null ? Number.parseInt(headerValue, 10) : Number.NaN;
+		const total = Number.isFinite(parsed) ? parsed : threads.length;
+		return { threads, total };
 	}
 
 	/**
