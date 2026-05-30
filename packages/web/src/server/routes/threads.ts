@@ -114,6 +114,26 @@ export function createThreadsRoutes(
 				return { ...rest, active };
 			});
 
+			// Total count of threads matching the same filter, independent of
+			// the cursor/limit window, exposed via X-Total-Count so the UI can
+			// render an accurate "N threads" total even while paginating. The
+			// JSON body stays a bare array, preserving the existing contract.
+			const totalRow = db
+				.query(`
+					SELECT COUNT(*) as total
+					FROM threads t
+					WHERE t.deleted = 0 AND t.user_id = ?
+						AND (
+							? = 1
+							OR EXISTS(
+								SELECT 1 FROM messages m
+								WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
+							)
+						)
+				`)
+				.get(webUserId, includeEmpty ? 1 : 0) as { total: number } | null;
+			c.header("X-Total-Count", String(totalRow?.total ?? enriched.length));
+
 			return c.json(enriched);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
