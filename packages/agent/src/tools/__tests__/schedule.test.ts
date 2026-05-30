@@ -211,6 +211,35 @@ describe("Native Schedule Tool", () => {
 		expect(task.alert_threshold).toBe(5);
 	});
 
+	it("should fold task_description into payload when payload is omitted (#64)", async () => {
+		const tool = createScheduleTool(toolContext);
+		const result = await getExecute(tool)({
+			task_description: "Draft the RFC for state-aware backfill",
+			delay: "5m",
+		});
+
+		expect(typeof result).toBe("string");
+		expect(result).not.toMatch(/Error/);
+
+		const taskId = result.trim();
+		const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+		expect(task).not.toBeNull();
+		expect(task.payload).toBe("Draft the RFC for state-aware backfill");
+	});
+
+	it("should prefer an explicit payload over task_description (#64)", async () => {
+		const tool = createScheduleTool(toolContext);
+		const result = await getExecute(tool)({
+			task_description: "human-readable summary",
+			payload: '{"instructions":"actual instructions"}',
+			delay: "5m",
+		});
+
+		const taskId = result.trim();
+		const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+		expect(task.payload).toBe('{"instructions":"actual instructions"}');
+	});
+
 	it("tool should have valid RegisteredTool shape", () => {
 		const tool = createScheduleTool(toolContext);
 		expect(tool.kind).toBe("builtin");
