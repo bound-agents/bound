@@ -71,6 +71,36 @@ describe("webhooks routes", () => {
 			);
 			expect(response2.status).toBe(400);
 		});
+
+		it("allows reusing a name after the prior webhook was deleted", async () => {
+			// Regression for #59: creating a webhook with the same name as a
+			// soft-deleted webhook used to fail.
+			const app = createWebhooksRoutes(db);
+
+			// Create the original webhook.
+			const body1 = JSON.stringify({ name: "reusable-name" });
+			const response1 = await app.fetch(
+				new Request("http://localhost/", { method: "POST", body: body1 }),
+			);
+			expect(response1.status).toBe(201);
+			const created = (await response1.json()) as { id: string };
+
+			// Delete it (soft-delete + cancel task).
+			const deleteResponse = await app.fetch(
+				new Request(`http://localhost/${created.id}`, { method: "DELETE" }),
+			);
+			expect(deleteResponse.status).toBe(204);
+
+			// Create a fresh webhook with the same name. This must succeed.
+			const body2 = JSON.stringify({ name: "reusable-name" });
+			const response2 = await app.fetch(
+				new Request("http://localhost/", { method: "POST", body: body2 }),
+			);
+			if (response2.status !== 201) {
+				console.error("recreate failed:", await response2.text());
+			}
+			expect(response2.status).toBe(201);
+		});
 	});
 
 	describe("AC5.2: GET /api/webhooks returns list without secret", () => {
