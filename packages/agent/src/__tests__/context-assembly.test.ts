@@ -4001,6 +4001,160 @@ This skill reviews pull requests.`;
 		});
 	});
 
+	// #69: stale-child memory entries (detail entries whose `modified_at` is newer
+	// than their parent summary) surface in the "Working Knowledge — updates"
+	// (varying) block as glossed `[stale child of _summary:X]` bullets. These are a
+	// memory-consolidation signal — re-summarization candidates — with no topic
+	// relevance to the active conversation. They belong on the heartbeat surface
+	// where consolidation runs, not in active-conversation contexts where they
+	// crowd out relevant context (~5K tokens / ~50 entries observed in a real
+	// diagnostic turn). These cases assert the surface split for the two surfaces
+	// the #69 flag gates: heartbeat keeps the `[stale child of …]` bullets; active
+	// conversations strip them AND do not let the child fall back to a
+	// Discoverable-Archive title.
+	//
+	// Out of scope by design: the child also rides `loadSummaryEntries` as a
+	// `[stale-detail]`-tagged summary entry, which `renderWorkingKnowledge` renders
+	// as an unlabeled `- key: gloss` line on the STABLE Working Knowledge body —
+	// identical on both surfaces (it keeps the stable channel byte-identical). So
+	// AC-SC2 asserts the absence of the `[stale child of` marker and of a DA title,
+	// NOT the absence of the key everywhere; the stable-body line is expected.
+	describe("stale-child stripping in volatile context (#69)", () => {
+		const STALE_SUMMARY_KEY = "_summary:sc-topic";
+		const STALE_CHILD_KEY = "sc:stale-detail";
+		const STALE_EDGE_ID = "sc-edge-69";
+
+		// Seed one summary plus one detail child whose `modified_at` is NEWER than
+		// the summary's — the R-HM7 staleness condition that `buildStaleChildrenMap`
+		// keys on. Cleanup deletes by the fixed keys above.
+		function seedStaleChild() {
+			const summaryTime = new Date(Date.now() - 60_000).toISOString(); // older
+			const childTime = new Date(Date.now() - 5_000).toISOString(); // newer => stale
+			db.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, last_accessed_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					STALE_SUMMARY_KEY,
+					"Summary body for the stale-child topic.",
+					null,
+					summaryTime,
+					summaryTime,
+					null,
+					0,
+					"summary",
+				],
+			);
+			db.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, last_accessed_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					STALE_CHILD_KEY,
+					"Off-topic stale child body that should not crowd active context.",
+					null,
+					childTime,
+					childTime,
+					null,
+					0,
+					"detail",
+				],
+			);
+			db.run(
+				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted, context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					STALE_EDGE_ID,
+					STALE_SUMMARY_KEY,
+					STALE_CHILD_KEY,
+					"summarizes",
+					1,
+					childTime,
+					childTime,
+					0,
+					null,
+				],
+			);
+		}
+
+		function cleanupStaleChild() {
+			db.run("DELETE FROM memory_edges WHERE id = ?", [STALE_EDGE_ID]);
+			db.run("DELETE FROM semantic_memory WHERE key IN (?, ?)", [
+				STALE_SUMMARY_KEY,
+				STALE_CHILD_KEY,
+			]);
+		}
+
+		it("renders stale-child bullets on the heartbeat surface (AC-SC1, #69)", () => {
+			seedStaleChild();
+			try {
+				const result = assembleContext({
+					db,
+					threadId,
+					userId,
+					siteId: "test-site",
+					contextWindow: 200000,
+					// Heartbeat surface: no-history + taskType "heartbeat".
+					noHistory: true,
+					taskType: "heartbeat",
+				});
+				const devMsg = result.messages.find((m) => m.role === "developer");
+				const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
+				expect(systemSuffix).toContain(`[stale child of ${STALE_SUMMARY_KEY}]`);
+			} finally {
+				cleanupStaleChild();
+			}
+		});
+
+		it("strips stale-child bullets on an active conversation surface (AC-SC2, #69)", () => {
+			seedStaleChild();
+			try {
+				// No taskType => active conversation surface (history path).
+				const result = assembleContext({
+					db,
+					threadId,
+					userId,
+					siteId: "test-site",
+					contextWindow: 200000,
+				});
+				const systemPrompt = result.systemPrompt ?? "";
+				const devMsg = result.messages.find((m) => m.role === "developer");
+				const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
+				// On the active path the Working Knowledge summary body rides the stable
+				// channel (systemPrompt); the varying WK-updates block (where stale-child
+				// bullets would live) rides the developer tail message.
+				const allContent = [
+					systemPrompt,
+					...result.messages.map((m) => (typeof m.content === "string" ? m.content : "")),
+				].join("\n");
+
+				// The summary body still renders (Working Knowledge is present), so the
+				// absences below are real strips, not an empty context.
+				expect(allContent).toContain(STALE_SUMMARY_KEY);
+
+				// PRIMARY (#69): the `[stale child of …]` re-summarization bullets are
+				// stripped on the active surface — neither the marker nor a per-summary
+				// bullet appears anywhere.
+				expect(allContent).not.toContain("[stale child of");
+
+				// DA-title fallback prevented: the stripped child is not re-surfaced as a
+				// bare Discoverable-Archive title line (`- <key>` with no gloss).
+				const hasBareTitleLine = allContent
+					.split("\n")
+					.some((l) => l.trim() === `- ${STALE_CHILD_KEY}`);
+				expect(hasBareTitleLine).toBe(false);
+
+				// Out of scope by design (see describe comment): the child rides
+				// `loadSummaryEntries` as a `[stale-detail]` summary entry and renders as
+				// an unlabeled `- key: gloss` line on the STABLE Working Knowledge body.
+				// That line is surface-independent — present here on active and identical
+				// on heartbeat — which keeps the stable channel byte-identical. It lives
+				// in systemPrompt, never in the varying developer tail.
+				expect(systemPrompt).toContain(`- ${STALE_CHILD_KEY}:`);
+				expect(devContent).not.toContain(STALE_CHILD_KEY);
+			} finally {
+				cleanupStaleChild();
+			}
+		});
+	});
+
 	describe("context debug metadata", () => {
 		let debugTestDb: Database;
 		let debugTestTmpDir: string;
