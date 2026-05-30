@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { StageEntry, WorkingKnowledgeInput } from "../summary-extraction";
-import { renderWorkingKnowledge } from "../summary-extraction";
+import {
+	WORKING_KNOWLEDGE_SUMMARY_CAP,
+	capWorkingKnowledgeSummaries,
+	renderWorkingKnowledge,
+} from "../summary-extraction";
 
 describe("renderWorkingKnowledge — stable/varying split", () => {
 	describe("Empty input", () => {
@@ -454,6 +458,92 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			expect(result).toBeDefined();
 			expect(result.stableLines).toBeArray();
 			expect(result.varyingLines).toBeArray();
+		});
+	});
+
+	// Summary cap + demote (volatile-prefix bloat fix). The stable prefix
+	// rendered EVERY tier='summary' entry at full 200-char gloss, uncapped — the
+	// largest growable slab in the cached prefix (166 entries / ~8.3k tok live).
+	// Cap the full-gloss set at WORKING_KNOWLEDGE_SUMMARY_CAP most-recent; demote
+	// the overflow to title-only lines under a sub-header so nothing vanishes from
+	// view (the agent still sees every summary exists and can query the body).
+	describe("Summary cap + demote", () => {
+		const mkSummary = (key: string): StageEntry =>
+			({
+				key,
+				value: `body for ${key} — `.padEnd(300, "x"), // >200 so gloss truncates
+				source: null,
+				modifiedAt: "2026-05-22T10:00:00Z",
+				tier: "summary",
+				tag: "[summary]",
+			}) as StageEntry;
+
+		it("renders all summaries at full gloss when at or below the cap", () => {
+			const summaries = Array.from({ length: WORKING_KNOWLEDGE_SUMMARY_CAP }, (_, i) =>
+				mkSummary(`_summary:k${String(i).padStart(3, "0")}`),
+			);
+			const result = renderWorkingKnowledge({
+				pinned: [],
+				summaries,
+				staleChildrenBySummary: new Map(),
+				deltaKeys: new Set(),
+			});
+			// Every summary appears with its truncated gloss (key + ": " + body…).
+			const glossLines = result.stableLines.filter((l) => /^- _summary:k\d+: body for/.test(l));
+			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
+			// No demote sub-header when nothing overflowed.
+			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(false);
+		});
+
+		it("demotes overflow beyond the cap to title-only lines under a sub-header", () => {
+			const n = WORKING_KNOWLEDGE_SUMMARY_CAP + 16;
+			const summaries = Array.from({ length: n }, (_, i) =>
+				mkSummary(`_summary:k${String(i).padStart(3, "0")}`),
+			);
+			const result = renderWorkingKnowledge({
+				pinned: [],
+				summaries,
+				staleChildrenBySummary: new Map(),
+				deltaKeys: new Set(),
+			});
+
+			// First CAP entries keep their full gloss.
+			const glossLines = result.stableLines.filter((l) => /^- _summary:k\d+: body for/.test(l));
+			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
+
+			// A demote sub-header is present.
+			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(true);
+
+			// Overflow renders as title-only (key, no gloss body) — exactly 16 of them.
+			const titleOnly = result.stableLines.filter(
+				(l) => /^- _summary:k\d+$/.test(l), // no ": body" suffix
+			);
+			expect(titleOnly).toHaveLength(16);
+
+			// Cap is positional: the FIRST CAP keys keep gloss, the REST are titles.
+			expect(result.stableLines).toContain(
+				`- _summary:k000: ${mkSummary("_summary:k000").value.slice(0, 200)}...`,
+			);
+			expect(titleOnly).toContain(`- _summary:k${String(n - 1).padStart(3, "0")}`);
+		});
+
+		it("capWorkingKnowledgeSummaries is a pure positional split (kept + demoted)", () => {
+			const summaries = Array.from({ length: 70 }, (_, i) => ({
+				key: `_summary:k${String(i).padStart(3, "0")}`,
+				value: "v",
+			}));
+			const a = capWorkingKnowledgeSummaries(summaries);
+			const b = capWorkingKnowledgeSummaries(summaries);
+			expect(a.kept.map((e) => e.key)).toEqual(b.kept.map((e) => e.key)); // deterministic
+			expect(a.kept).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
+			expect(a.demoted).toHaveLength(70 - WORKING_KNOWLEDGE_SUMMARY_CAP);
+			// No entry lost or duplicated.
+			expect(a.kept.length + a.demoted.length).toBe(70);
+			// Order preserved (positional, not re-sorted).
+			expect(a.kept[0].key).toBe("_summary:k000");
+			expect(a.demoted[0].key).toBe(
+				`_summary:k${String(WORKING_KNOWLEDGE_SUMMARY_CAP).padStart(3, "0")}`,
+			);
 		});
 	});
 });

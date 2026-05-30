@@ -28,6 +28,7 @@ import {
 	type DetailEntry,
 	type DiscoverableArchiveInput,
 	type StageEntry,
+	WORKING_KNOWLEDGE_SUMMARY_CAP,
 	renderDiscoverableArchive,
 	renderWorkingKnowledge,
 } from "../../summary-extraction";
@@ -136,6 +137,37 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 		const theirs = renderProductionStableConcat(inputs);
 
 		expect(ours).toBe(theirs);
+	});
+
+	it("matches when summaries exceed the cap (kept gloss + demoted titles)", () => {
+		// Cross WORKING_KNOWLEDGE_SUMMARY_CAP so both the full-gloss prefix AND the
+		// title-only demote overflow render. Pins parity on the demote path — the
+		// two renderers share capWorkingKnowledgeSummaries, so this guards against a
+		// future divergence in how either side emits the demoted block.
+		const summaries = Array.from(
+			{ length: WORKING_KNOWLEDGE_SUMMARY_CAP + 12 },
+			(_, i): { key: string; value: string } => ({
+				key: `_summary:k${String(i).padStart(3, "0")}`,
+				value: `summary body number ${i} `.padEnd(260, "z"),
+			}),
+		);
+		const inputs: StableVolatileInputs = {
+			pinned: [{ key: "_standing:tone", value: "be terse" }],
+			summaries,
+			detailEntries: [{ key: "adapter:foo", last_accessed_at: "2026-04-28T12:34:56Z" }],
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			tunables: { n: 1000, m: 20 },
+			skillIndex: [],
+		};
+
+		const ours = composeStableVolatileSubsection(inputs).join("\n");
+		const theirs = renderProductionStableConcat(inputs);
+
+		expect(ours).toBe(theirs);
+		// Sanity: the demote block actually rendered (otherwise this guards nothing).
+		expect(ours).toContain("Older summaries");
 	});
 });
 
