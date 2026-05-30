@@ -1095,6 +1095,7 @@ export class AgentLoop {
 							db: this.ctx.db,
 							threadId: this.config.threadId,
 							taskId: this.config.taskId,
+							taskType: this.config.taskType,
 							userId: this.config.userId,
 							currentModel: resolvedModelForDebug,
 							contextWindow: contextWindow,

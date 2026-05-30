@@ -1619,6 +1619,7 @@ export class Scheduler {
 				const loopConfig: AgentLoopConfig = {
 					threadId,
 					taskId: task.id,
+					taskType: task.type,
 					userId: "system",
 					modelId,
 					modelTier,

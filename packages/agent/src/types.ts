@@ -62,6 +62,14 @@ export const VALID_TRANSITIONS: Record<AgentLoopState, readonly AgentLoopState[]
 export interface AgentLoopConfig {
 	threadId: string;
 	taskId?: string;
+	/**
+	 * Originating task type (`"heartbeat" | "cron" | "event" | "deferred"`) when
+	 * the loop is driven by the scheduler. Flows into `ContextParams.taskType`
+	 * for surface-specific volatile rendering — currently gating resolved-advisory
+	 * operator-ack notifications to the heartbeat surface (#70). Undefined for
+	 * user-facing (web/discord/boundless) loops.
+	 */
+	taskType?: string;
 	userId: string;
 	modelId?: string;
 	/** Tier of the requested model (1-5). When set alongside modelId, enables
