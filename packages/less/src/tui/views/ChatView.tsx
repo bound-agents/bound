@@ -343,7 +343,12 @@ export function ChatView({
 					{/* In-flight tool calls */}
 					{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
 						<Box key={callId} marginBottom={1}>
-							<ToolCallCard toolName={toolName} startTime={startTime} stdout={stdout} />
+							<ToolCallCard
+								toolName={toolName}
+								startTime={startTime}
+								stdout={stdout}
+								terminalColumns={termColumns}
+							/>
 						</Box>
 					))}
 

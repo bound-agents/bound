@@ -257,10 +257,13 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
+			// First line is the header label; body is the remainder, truncated to
+			// the body cap (5 visual rows). 20 logical lines − 1 header = 19 body
+			// lines; first 5 visible, 14 deferred to the "… more lines" tail.
 			expect(frame).toContain("line 1");
-			expect(frame).toContain("line 5");
-			expect(frame).not.toContain("line 6");
-			expect(frame).toContain("… 15 more lines");
+			expect(frame).toContain("line 6");
+			expect(frame).not.toContain("line 7");
+			expect(frame).toContain("… 14 more lines");
 		});
 
 		it("truncates tool_result ContentBlock[] to 5 lines", async () => {
@@ -284,9 +287,9 @@ describe("MessageBlock", () => {
 
 			const frame = lastFrame();
 			expect(frame).toContain("output 1");
-			expect(frame).toContain("output 5");
-			expect(frame).not.toContain("output 6");
-			expect(frame).toContain("… 7 more lines");
+			expect(frame).toContain("output 6");
+			expect(frame).not.toContain("output 7");
+			expect(frame).toContain("… 6 more lines");
 		});
 
 		it("does not truncate tool_result with 5 or fewer lines", async () => {
@@ -340,11 +343,48 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// Should show first 5 content lines, not blank lines
+			// Should show first content line as header + 5 body lines, not blank
+			// lines. 10 content lines − 1 header = 9 body lines; first 5 visible,
+			// 4 deferred to the tail.
 			expect(frame).toContain("content 1");
-			expect(frame).toContain("content 5");
-			expect(frame).not.toContain("content 6");
-			expect(frame).toContain("… 5 more lines");
+			expect(frame).toContain("content 6");
+			expect(frame).not.toContain("content 7");
+			expect(frame).toContain("… 4 more lines");
+		});
+
+		it("counts visual rows, not logical lines, when truncating long unbroken bodies", async () => {
+			// Issues #74 + #75: a single 800-char body line previously counted as
+			// one logical line and slipped past the line-count truncation, blowing
+			// out the terminal at render time and dropping the left stripe on the
+			// first wrapped continuation. After the fix, body lines are pre-wrapped
+			// at the measured visual width (stripeWidth − 6 for terminalColumns=120
+			// = 113), so an 800-char body produces ⌈800 / 113⌉ = 8 visual rows;
+			// only TOOL_RESULT_MAX_LINES (5) are visible, the rest go to the tail.
+			const longBody = "x".repeat(800);
+			const content = `header line\n${longBody}`;
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-trunc-wrap",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 120,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("header line");
+			// 8 visual rows from the wrap, 5 visible, 3 deferred.
+			expect(frame).toContain("… 3 more lines");
+			// At least one wrapped chunk must appear in the body (the row is the
+			// "x" run, which by construction never appears in the header).
+			expect(frame.match(/x{50,}/g)?.length ?? 0).toBeGreaterThan(0);
 		});
 
 		it("renders tool_result with ContentBlock array without crashing", async () => {

@@ -3,6 +3,7 @@ import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
 import { tildifyPath, tildifyText } from "../util/path";
+import { wrapLinesAtWidth } from "../util/wrap";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 import { computeLineDiff, hunkDiff } from "./lineDiff";
@@ -454,8 +455,6 @@ export function MessageBlock({
 		}
 		const allLines =
 			firstNonEmpty >= 0 ? rawLines.slice(firstNonEmpty, lastNonEmpty + 1) : rawLines;
-		const truncated = allLines.length > TOOL_RESULT_MAX_LINES;
-		const displayLines = truncated ? allLines.slice(0, TOOL_RESULT_MAX_LINES) : allLines;
 
 		// Echo the tool name on the result line so the parent tool_call is
 		// visually re-anchored (especially helpful when results scroll past
@@ -477,8 +476,35 @@ export function MessageBlock({
 		// gracefully degrades to plain text rendering.
 		const lang = !isError ? langFromPath(filePath) : undefined;
 		const baseName = filePath ? (filePath.split("/").pop() ?? null) : null;
-		const headerLabel = baseName ?? tildifyText(displayLines[0] ?? "");
-		const bodyLines = (baseName ? displayLines : displayLines.slice(1)).map(tildifyText);
+		const headerLabel = baseName ?? tildifyText(allLines[0] ?? "");
+		const rawBodyLines = (baseName ? allLines : allLines.slice(1)).map(tildifyText);
+
+		// Pre-wrap body lines at the measured visual width when there is no
+		// syntax highlighting active. Two regressions fall out of leaving Ink
+		// to wrap arbitrarily-long body lines on its own:
+		//   - Issue #74: a single 50,000-char line counts as one logical line
+		//     and slips past the line-count truncation, blowing out the
+		//     terminal at render time.
+		//   - Issue #75: Ink Text inside a borderLeft Box drops the left
+		//     stripe on the first wrapped continuation when an unbreakable
+		//     string is one codepoint over the available width.
+		// Pre-wrapping fixes both: every visual row is a separate Text of
+		// known length, so Ink never wraps mid-string and truncation can
+		// count visual rows. Width budget = stripeWidth − (StripeBox
+		// borderLeft 1 + StripeBox paddingLeft 1) − inner Box paddingLeft 2
+		// − per-line "  " prefix 2 = stripeWidth − 6, floored at 10 so a
+		// pathologically narrow terminal still produces forward progress.
+		// Syntax-highlighted lines are left untouched: the renderer keys off
+		// a line-number regex that would not match past a wrap point, and
+		// `read` output rarely contains the unbreakable lines that motivate
+		// this fix.
+		const bodyWrapWidth = Math.max(10, stripeWidth - 6);
+		const expandedBodyLines = lang ? rawBodyLines : wrapLinesAtWidth(rawBodyLines, bodyWrapWidth);
+		const truncated = expandedBodyLines.length > TOOL_RESULT_MAX_LINES;
+		const bodyLines = truncated
+			? expandedBodyLines.slice(0, TOOL_RESULT_MAX_LINES)
+			: expandedBodyLines;
+		const truncatedRemainder = expandedBodyLines.length - TOOL_RESULT_MAX_LINES;
 
 		const lineNumPattern = /^(\s*\d+)\t(.*)$/;
 		const renderResultLine = (line: string, idx: number): React.ReactElement => {
@@ -523,7 +549,7 @@ export function MessageBlock({
 					{bodyLines.map((line, idx) => renderResultLine(line, idx))}
 					{truncated && (
 						<Text dimColor>
-							{"  "}… {allLines.length - TOOL_RESULT_MAX_LINES} more lines
+							{"  "}… {truncatedRemainder} more lines
 						</Text>
 					)}
 				</Box>

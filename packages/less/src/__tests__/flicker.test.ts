@@ -13,6 +13,7 @@ describe("ToolCallCard timer", () => {
 			React.createElement(ToolCallCard, {
 				toolName: "boundless_bash",
 				startTime: Date.now(),
+				terminalColumns: 80,
 			}),
 		);
 		await tick();
@@ -29,6 +30,7 @@ describe("ToolCallCard timer", () => {
 			return React.createElement(ToolCallCard, {
 				toolName: "test_tool",
 				startTime: Date.now() - 5000,
+				terminalColumns: 80,
 			});
 		}
 
