@@ -379,12 +379,49 @@ function computeStablePrefixInputFingerprint(args: {
 	);
 }
 
+/**
+ * Shared empty stale-children map for the active-conversation render path
+ * (#69). `composeVolatileSections` passes this to `renderWorkingKnowledge`
+ * when `includeStaleChildren` is false, suppressing the off-topic
+ * `[stale child of _summary:X]` bullets while leaving the surface-independent
+ * Discoverable-Archive drop intact.
+ */
+const NO_STALE_CHILDREN: ReturnType<typeof buildStaleChildrenMap> = new Map();
+
 interface ComposeVolatileSectionsParams {
 	db: Database;
 	pinned: ReturnType<typeof loadPinnedEntries>["entries"];
 	summaries: ReturnType<typeof loadSummaryEntries>["entries"];
 	detailEntries: ReturnType<typeof loadDetailEntries>["entries"];
 	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
+	/**
+	 * When false, the "Working Knowledge — updates" (varying) block omits the
+	 * `[stale child of _summary:X]` re-summarization bullets (#69). Stale-child
+	 * entries are an off-topic memory-consolidation signal; they belong on the
+	 * heartbeat surface where consolidation runs, not in active-conversation
+	 * contexts where they crowd out relevant attention. This is the ~5K-token /
+	 * ~50-entry block the issue measured.
+	 *
+	 * SCOPE — this flag gates exactly two surfaces, both of which read the FULL
+	 * `staleChildrenMap`:
+	 *   1. the varying `[stale child of _summary:X]` bullets (gated here, omitted
+	 *      on active);
+	 *   2. the Discoverable-Archive drop of the same keys, which is deliberately
+	 *      NOT gated (see `staleChildKeysInWorkingKnowledge` below) so a stripped
+	 *      child is not re-surfaced as a DA title and the stable channel stays
+	 *      byte-identical across surfaces.
+	 *
+	 * It does NOT gate the stable "Working Knowledge — operational and durable"
+	 * body: `loadSummaryEntries` independently promotes each stale child into
+	 * `summaries` as a `[stale-detail]`-tagged entry, and `renderWorkingKnowledge`
+	 * renders every summary entry as an unlabeled `- key: gloss` line on the
+	 * stable channel. That line rides the summary list identically on both
+	 * surfaces, so it is intentionally left in place — narrowing it would diverge
+	 * the stable channel and pull the stable-prefix purity subsystem (parity test
+	 * + drift fingerprint) into scope. In practice the residual is a handful of
+	 * recent children (the bulk of the measured ~5K lived in the varying bullets).
+	 */
+	includeStaleChildren: boolean;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
 	deltaKeys: Set<string>;
 	digest: ReturnType<typeof buildCrossThreadDigest>;
@@ -432,6 +469,18 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	const stableLines: string[] = [];
 	const varyingLines: string[] = [];
 
+	// Surface-independent: computed from the FULL stale map regardless of
+	// `includeStaleChildren`. This set drives the Discoverable-Archive drop
+	// (`renderDiscoverableArchive` below), which lands in `stableLines`. Gating
+	// it on the surface would diverge the stable channel between heartbeat and
+	// active turns and break cross-thread cache reuse. Keeping it full means a
+	// stale-child key dropped here is NOT re-surfaced as a DA title on the active
+	// turn — so on active the only `[stale child of …]`-flagged surfacing (the
+	// varying "Working Knowledge — updates" bullets, gated below) disappears, and
+	// the child does not leak back in via a DA title. Note this does NOT remove
+	// the child's `[stale-detail]` summary-body line from the stable Working
+	// Knowledge block: that line rides `summaries` (see `includeStaleChildren`
+	// docs) and is intentionally identical on both surfaces.
 	const staleChildKeysInWorkingKnowledge = new Set(
 		Array.from(params.staleChildrenMap.values())
 			.flat()
@@ -442,7 +491,10 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	const wk = renderWorkingKnowledge({
 		pinned: params.pinned,
 		summaries: params.summaries,
-		staleChildrenBySummary: params.staleChildrenMap,
+		// #69: stale-child bullets render only on the heartbeat surface.
+		staleChildrenBySummary: params.includeStaleChildren
+			? params.staleChildrenMap
+			: NO_STALE_CHILDREN,
 		deltaKeys: params.deltaKeys,
 	});
 	stableLines.push("");
@@ -647,6 +699,8 @@ export function buildVolatileContext(params: {
 			summaries: summaries.entries,
 			detailEntries: detailEntries.entries,
 			staleChildrenMap,
+			// #69: gate stale-child bullets to the heartbeat surface.
+			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap,
 			deltaKeys,
 			digest,
@@ -1364,6 +1418,8 @@ Original output was too large for the context window. If you need the full conte
 			summaries: inputs.summaries.entries,
 			detailEntries: inputs.detailEntries.entries,
 			staleChildrenMap: inputs.staleChildrenMap,
+			// #69: gate stale-child bullets to the heartbeat surface.
+			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
 			digest: inputs.digest,
@@ -1503,6 +1559,8 @@ Original output was too large for the context window. If you need the full conte
 			summaries: inputs.summaries.entries,
 			detailEntries: inputs.detailEntries.entries,
 			staleChildrenMap: inputs.staleChildrenMap,
+			// #69: gate stale-child bullets to the heartbeat surface.
+			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
 			digest: inputs.digest,
