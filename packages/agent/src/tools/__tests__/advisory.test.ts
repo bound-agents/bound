@@ -269,4 +269,35 @@ describe("advisory tool", () => {
 		expect(listProposed).toContain("Advisory 2");
 		expect(listProposed).not.toContain("Advisory 1");
 	});
+
+	// #93: the tool stamps the originating thread so the web UI can link to it.
+	it("stamps ctx.threadId onto created advisories", async () => {
+		const tool = createAdvisoryTool({ ...ctx, threadId: "thread-xyz-789" });
+		const result = await tool.execute({
+			title: "Thread-linked Advisory",
+			detail: "Came from a specific thread",
+		});
+
+		const advisoryId = result.match(/Advisory created: ([a-f0-9-]+)/)?.[1];
+		expect(advisoryId).toBeTruthy();
+
+		const row = db.prepare("SELECT thread_id FROM advisories WHERE id = ?").get(advisoryId) as {
+			thread_id: string | null;
+		};
+		expect(row.thread_id).toBe("thread-xyz-789");
+	});
+
+	it("leaves thread_id NULL when ctx has no threadId", async () => {
+		const tool = createAdvisoryTool(ctx);
+		const result = await tool.execute({
+			title: "Unlinked Advisory",
+			detail: "No thread context",
+		});
+
+		const advisoryId = result.match(/Advisory created: ([a-f0-9-]+)/)?.[1];
+		const row = db.prepare("SELECT thread_id FROM advisories WHERE id = ?").get(advisoryId) as {
+			thread_id: string | null;
+		};
+		expect(row.thread_id).toBeNull();
+	});
 });

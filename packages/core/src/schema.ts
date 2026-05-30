@@ -340,6 +340,7 @@ export function applySchema(db: Database): void {
 			defer_until TEXT,
 			resolved_at TEXT,
 			created_by  TEXT,
+			thread_id   TEXT,
 			modified_at TEXT NOT NULL,
 			deleted     INTEGER DEFAULT 0
 		) STRICT
@@ -584,13 +585,21 @@ export function applySchema(db: Database): void {
 
 	// ── Platform connector migrations (Phase 1) ──────────────────────────────
 
+	// #93: link an advisory to the thread it originated from so the web UI can
+	// navigate operators straight to the source conversation. Idempotent — older
+	// databases gain the column on next startup; existing rows default to NULL.
+	try {
+		db.run("ALTER TABLE advisories ADD COLUMN thread_id TEXT");
+	} catch {
+		/* already exists */
+	}
+
 	// Add platform_ids column to users (replaces discord_id)
 	try {
 		db.run("ALTER TABLE users ADD COLUMN platform_ids TEXT");
 	} catch {
 		/* already exists */
 	}
-
 	// Migrate existing discord_id values → platform_ids JSON {"discord":"<id>"}
 	// Safe to re-run: WHERE clause skips rows already migrated
 	// Uses PRAGMA table_info to check if discord_id column still exists before migrating

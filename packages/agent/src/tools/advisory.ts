@@ -98,6 +98,7 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 							evidence: null,
 						},
 						ctx.siteId,
+						ctx.threadId ?? null,
 					);
 					return `Advisory created: ${id}`;
 				}

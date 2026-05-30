@@ -298,6 +298,7 @@ async function handleRetire(ctx: ToolContext, input: z.infer<typeof skillSchema>
 					defer_until: null,
 					resolved_at: null,
 					created_by: ctx.siteId,
+					thread_id: task.thread_id ?? null,
 					modified_at: now,
 					deleted: 0,
 				},

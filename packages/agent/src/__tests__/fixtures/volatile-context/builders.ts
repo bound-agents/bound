@@ -268,6 +268,7 @@ export function makeAppliedAdvisory(
 			defer_until: null,
 			resolved_at: resolvedAt,
 			created_by: null,
+			thread_id: null,
 			modified_at: now,
 			deleted: 0,
 		},

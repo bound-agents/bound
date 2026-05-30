@@ -507,4 +507,47 @@ describe("pruneResolvedAdvisories", () => {
 			.all(id);
 		expect(entries.length).toBeGreaterThanOrEqual(1);
 	});
+
+	// #93: advisories carry the originating thread so the web UI can link to it.
+	it("persists the originating thread_id when provided", () => {
+		const threadId = "thread-abc-123";
+		const advisoryId = createAdvisory(
+			db,
+			{
+				type: "general",
+				title: "Linked advisory",
+				detail: "Detail",
+				action: null,
+				impact: null,
+				evidence: null,
+			},
+			siteId,
+			threadId,
+		);
+
+		const row = db.prepare("SELECT thread_id FROM advisories WHERE id = ?").get(advisoryId) as {
+			thread_id: string | null;
+		};
+		expect(row.thread_id).toBe(threadId);
+	});
+
+	it("defaults thread_id to NULL when no thread is provided", () => {
+		const advisoryId = createAdvisory(
+			db,
+			{
+				type: "general",
+				title: "Unlinked advisory",
+				detail: "Detail",
+				action: null,
+				impact: null,
+				evidence: null,
+			},
+			siteId,
+		);
+
+		const row = db.prepare("SELECT thread_id FROM advisories WHERE id = ?").get(advisoryId) as {
+			thread_id: string | null;
+		};
+		expect(row.thread_id).toBeNull();
+	});
 });

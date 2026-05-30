@@ -246,6 +246,8 @@ export interface Advisory {
 	defer_until: string | null;
 	resolved_at: string | null;
 	created_by: string | null;
+	/** Thread the advisory originated from (null for advisories with no source thread). #93 */
+	thread_id: string | null;
 	modified_at: string;
 	deleted: number;
 }

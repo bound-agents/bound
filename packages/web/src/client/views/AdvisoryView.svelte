@@ -8,6 +8,7 @@ import StatusChip from "../components/StatusChip.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
+import { navigateTo } from "../lib/router";
 
 let advisories: Advisory[] = $state([]);
 let loading = $state(true);
@@ -235,6 +236,17 @@ $effect(() => {
 										{#if adv.evidence}
 											<div class="kicker">Evidence</div>
 											<pre class="evidence">{adv.evidence}</pre>
+										{/if}
+										{#if adv.thread_id}
+											<div class="field-block source-thread">
+												<div class="kicker">Source</div>
+												<button
+													class="thread-link"
+													onclick={() => navigateTo(`/line/${adv.thread_id}?from=/advisories`)}
+												>
+													View originating thread →
+												</button>
+											</div>
 										{/if}
 									</div>
 								</div>
@@ -524,6 +536,30 @@ $effect(() => {
 
 	.field-block {
 		margin-bottom: 16px;
+	}
+
+	.source-thread {
+		margin-top: 16px;
+	}
+
+	.thread-link {
+		background: transparent;
+		border: none;
+		padding: 0;
+		margin: 0;
+		font-family: var(--font-mono);
+		font-size: 12px;
+		color: var(--accent);
+		cursor: pointer;
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.thread-link:hover {
+		color: var(--ink);
 	}
 
 	.field-body {
