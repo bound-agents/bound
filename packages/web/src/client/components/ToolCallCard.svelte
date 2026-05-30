@@ -104,7 +104,13 @@ function parseBlocks(raw: string): ParsedMessage {
 
 const parsedMessages = $derived(messages.map((m) => parseBlocks(m.content)));
 const firstParsed = $derived(parsedMessages[0]);
-const headModelId = $derived(messages[0]?.model_id ?? null);
+// Use the first non-null model_id in the group rather than messages[0].
+// When a turn starts with a system-injected synthetic tool_call (typically
+// retrieve_task), messages[0].model_id is null because the row was forged
+// by the scheduler, not produced by the agent. The model_id we want to
+// display in the AGENT header lives on the first real assistant-produced
+// tool_call message that follows.
+const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null);
 
 const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
 const totalCount = $derived(allToolUses.length);
