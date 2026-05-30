@@ -177,6 +177,28 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 		}
 	}
 
+	// Re-assert the ≥2-message floor AFTER the wire-legal advance. The advance
+	// loop and the no-user fallback only move the slice start FORWARD; on a tail
+	// that ends in a trailing user message — the "Continue"/"bump" pattern that
+	// ends a long autonomous run, leaving the tail as
+	// [..., tool_call, tool_result, user] — the advance lands on that lone
+	// trailing user message and leaves recentKept = 1, below the floor. The
+	// physical clamp below cannot recover it: the short trailing message already
+	// fits the ceiling, so the clamp's overflow guard is false and the clamp is a
+	// no-op (and on the clamp-disabled path the clamp never runs at all). Pull the
+	// start back to the floor here, then prefer a wire-legal opener the same way
+	// the clamp's back-off does — walking back off a leading tool_result onto its
+	// preceding tool_call. Backing up only ADDS messages (decreases the index), so
+	// it can never re-violate the floor, and it is a pure function of message
+	// roles so the drop count stays byte-stable across cold rebuilds.
+	const floorStart = Math.max(0, n - Math.min(2, n));
+	if (recentSliceStart > floorStart) {
+		recentSliceStart = floorStart;
+		while (recentSliceStart > 0 && historyMessages[recentSliceStart].role === "tool_result") {
+			recentSliceStart--;
+		}
+	}
+
 	// Physical-window clamp — the authoritative recent-tier ceiling and the
 	// fix for the budget-bypass failure mode. The semantic anchor above can
 	// resolve far before the backward-fill boundary (the backward scan
