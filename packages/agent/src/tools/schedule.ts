@@ -117,7 +117,13 @@ export function createScheduleTool(ctx: ToolContext): RegisteredTool {
 					return "Error: must specify one of cron, delay, or on_event";
 				}
 
-				const payload = input.payload ?? null;
+				// #64: `task_description` is labeled "What the task should do", so LLMs
+				// routinely populate it with full instructions and leave `payload` empty,
+				// producing a task that wakes with a null payload and exits without doing
+				// the work. Fold `task_description` into `payload` when `payload` is omitted
+				// so the field does what its label promises. Backward-compatible: an explicit
+				// `payload` still wins.
+				const payload = input.payload ?? input.task_description ?? null;
 				const modelHint = input.model_hint ?? null;
 
 				// Validate model-hint against the cluster-wide pool when modelRouter is available
