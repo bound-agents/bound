@@ -21,6 +21,10 @@ const PAGE_SIZE = 50;
 // Holding the map lets us merge poll results without throwing away threads
 // loaded by paginated "load more" calls.
 let threadsById: Map<string, ThreadListEntry> = $state(new Map());
+// Server-reported total of threads matching the directory filter, independent
+// of how many pages are currently loaded. Drives the "Active Lines · N" count
+// so it reflects the full set rather than the loaded window (#94).
+let totalThreadCount = $state(0);
 let hasMoreThreads = $state(false);
 let isLoadingMore = $state(false);
 let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
@@ -110,7 +114,8 @@ function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean
 // re-fetched per-poll, but their per-thread status updates flow over WS.
 async function loadThreads(): Promise<void> {
 	try {
-		const next = await client.listThreads({ limit: PAGE_SIZE });
+		const { threads: next, total } = await client.listThreadsPage({ limit: PAGE_SIZE });
+		totalThreadCount = total;
 		mergeBatch(next, { prunePage1Window: true });
 		// We only know "no more" definitively when the page came back short;
 		// a full page tells us nothing about further pages without paginating.
@@ -132,10 +137,11 @@ async function loadMoreThreads(): Promise<void> {
 	const last = list[list.length - 1];
 	isLoadingMore = true;
 	try {
-		const next = await client.listThreads({
+		const { threads: next, total } = await client.listThreadsPage({
 			limit: PAGE_SIZE,
 			before: { last_message_at: last.last_message_at, id: last.id },
 		});
+		totalThreadCount = total;
 		mergeBatch(next);
 		hasMoreThreads = next.length === PAGE_SIZE;
 	} catch (error) {
@@ -193,7 +199,7 @@ onDestroy(() => {
 		<div class="panel-header">
 			<div class="header-top">
 				<div>
-					<div class="kicker">Active Lines · {threads.length}</div>
+					<div class="kicker">Active Lines · {totalThreadCount}</div>
 					<h2 class="panel-title">Directory</h2>
 				</div>
 				<Btn variant="accent" size="sm" onclick={newThread} disabled={creating} title="Start a new thread">

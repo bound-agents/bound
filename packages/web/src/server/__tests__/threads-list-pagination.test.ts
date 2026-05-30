@@ -51,6 +51,14 @@ describe("GET /api/threads cursor-based pagination", () => {
 		return (await res.json()) as ListedThread[];
 	}
 
+	async function fetchTotalCount(query: string): Promise<number> {
+		const res = await app.fetch(new Request(`http://localhost/${query}`));
+		expect(res.status).toBe(200);
+		const header = res.headers.get("X-Total-Count");
+		expect(header).not.toBeNull();
+		return Number.parseInt(header as string, 10);
+	}
+
 	it("respects ?limit=N and returns the most-recent N", async () => {
 		// Insert 10 threads with strictly-decreasing timestamps; t-1 newest, t-10 oldest.
 		for (let i = 1; i <= 10; i++) {
@@ -167,5 +175,59 @@ describe("GET /api/threads cursor-based pagination", () => {
 		expect(huge.status).toBe(400);
 		const garbage = await app.fetch(new Request("http://localhost/?limit=abc"));
 		expect(garbage.status).toBe(400);
+	});
+
+	describe("X-Total-Count header", () => {
+		it("reports the full matching total on an unpaginated request", async () => {
+			for (let i = 1; i <= 7; i++) {
+				insertThread(`t-${i}`, `2026-05-20T00:00:0${i}Z`);
+			}
+			const all = await fetchPage("");
+			expect(all).toHaveLength(7);
+			expect(await fetchTotalCount("")).toBe(7);
+		});
+
+		it("reports the full total even when a page is limited", async () => {
+			for (let i = 1; i <= 10; i++) {
+				const ts = `2026-05-20T00:0${i < 10 ? `0:0${i}` : "0:10"}Z`;
+				insertThread(`t-${i}`, ts);
+			}
+			// Only 3 rows come back, but the count is the full set.
+			const page = await fetchPage("?limit=3");
+			expect(page).toHaveLength(3);
+			expect(await fetchTotalCount("?limit=3")).toBe(10);
+		});
+
+		it("reports the full total on a cursor page, not the page length", async () => {
+			for (let i = 1; i <= 10; i++) {
+				const ts = `2026-05-20T00:0${i < 10 ? `0:0${i}` : "0:10"}Z`;
+				insertThread(`t-${i}`, ts);
+			}
+			const page1 = await fetchPage("?limit=4");
+			const last = page1[page1.length - 1];
+			const cursor = `before_ts=${encodeURIComponent(last.last_message_at)}&before_id=${last.id}`;
+			// Second page returns 4 rows but the header still reflects all 10.
+			expect(await fetchTotalCount(`?limit=4&${cursor}`)).toBe(10);
+		});
+
+		it("reflects the include_empty filter", async () => {
+			insertThread("t-with-user-1", "2026-05-20T00:00:01Z");
+			insertThread("t-with-user-2", "2026-05-20T00:00:02Z");
+			const systemOnly = (id: string, ts: string) => {
+				db.prepare(
+					"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+				).run(id, operatorId, "web", "localhost:3000", 0, id, ts, ts, ts);
+				db.prepare(
+					"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+				).run(`${id}-system`, id, "system", "x", ts, ts, "localhost:3000");
+			};
+			systemOnly("t-empty-1", "2026-05-20T00:00:03Z");
+			systemOnly("t-empty-2", "2026-05-20T00:00:04Z");
+
+			// Default filter hides empty threads → 2.
+			expect(await fetchTotalCount("")).toBe(2);
+			// include_empty surfaces all 4.
+			expect(await fetchTotalCount("?include_empty=true")).toBe(4);
+		});
 	});
 });
