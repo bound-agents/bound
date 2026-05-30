@@ -98,3 +98,42 @@ export const SPELLING_VARIANTS: Record<string, CanonicalRelation> = {
 	synthesis_of: "synthesizes",
 	"synthesis-of": "synthesizes",
 };
+
+/** Generic canonical relation used when a non-canonical relation has no known variant. */
+export const FALLBACK_RELATION: CanonicalRelation = "related_to";
+
+/**
+ * Pure normalization of a single (relation, context) pair to the canonical set.
+ *
+ * - Canonical relation → returned unchanged (`changed: false`).
+ * - Known spelling variant → mapped to its canonical form, `context` preserved.
+ * - Bespoke / unknown relation → rewritten to {@link FALLBACK_RELATION}, with the
+ *   original relation string prepended to `context` (joined with " | ") so the
+ *   bespoke phrasing is not lost.
+ *
+ * Single source of truth for relation healing, used by:
+ * - `normalizeEdgeRelations()` — startup self-heal of local rows (active + tombstones).
+ * - the sync LWW reducer and snapshot apply — heal-on-receive so a peer's
+ *   non-canonical relation never trips the canonical-relation trigger and the
+ *   receiver's copy self-heals instead of being rejected and re-warned on every
+ *   reconnection.
+ */
+export function normalizeRelationValue(
+	relation: string,
+	context: string | null,
+): { relation: CanonicalRelation; context: string | null; changed: boolean } {
+	if (isCanonicalRelation(relation)) {
+		return { relation, context, changed: false };
+	}
+
+	const variant = SPELLING_VARIANTS[relation.toLowerCase()];
+	if (variant) {
+		// Known spelling variant → map to canonical, leave context untouched.
+		return { relation: variant, context, changed: true };
+	}
+
+	// Bespoke / unknown relation → fallback, preserving the original phrasing in context.
+	const parts: string[] = [relation];
+	if (context) parts.push(context);
+	return { relation: FALLBACK_RELATION, context: parts.join(" | "), changed: true };
+}

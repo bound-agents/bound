@@ -327,7 +327,7 @@ describe("reducers", () => {
 					id: "edge-1",
 					source_key: "memory_a",
 					target_key: "memory_b",
-					relation: "depends_on",
+					relation: "informs",
 					weight: 1.0,
 					created_at: "2026-03-22T10:00:00Z",
 					modified_at: "2026-03-22T10:00:00Z",
@@ -344,7 +344,7 @@ describe("reducers", () => {
 			expect(row).toBeDefined();
 			expect(row?.source_key).toBe("memory_a");
 			expect(row?.target_key).toBe("memory_b");
-			expect(row?.relation).toBe("depends_on");
+			expect(row?.relation).toBe("informs");
 			expect(row?.weight).toBe(1.0);
 		});
 

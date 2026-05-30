@@ -862,7 +862,7 @@ describe("Hub-side row pull under backpressure", () => {
 });
 
 describe("applySnapshotRows per-row fallback", () => {
-	it("applies valid rows when trigger rejects some in a batch", () => {
+	it("heals non-canonical relations in a row-pull batch instead of skipping them (#105)", () => {
 		const db = new Database(":memory:");
 		createTestSchema(db);
 
@@ -972,13 +972,28 @@ describe("applySnapshotRows per-row fallback", () => {
 			last: true,
 		});
 
-		const applied = db.query("SELECT id, relation FROM memory_edges ORDER BY id").all() as Array<{
+		// Heal-on-receive (#105): non-canonical relations (edge-2 "INVALID_RELATION",
+		// edge-4 "old_custom_relation") are rewritten to the canonical fallback before
+		// the INSERT, so the whole batch lands instead of the bad rows being skipped
+		// and re-warned on every reseed. Canonical rows pass through untouched.
+		const applied = db
+			.query("SELECT id, relation, context FROM memory_edges ORDER BY id")
+			.all() as Array<{
 			id: string;
 			relation: string;
+			context: string | null;
 		}>;
-		expect(applied.length).toBe(3);
-		expect(applied.map((r) => r.id)).toEqual(["edge-1", "edge-3", "edge-5"]);
-		expect(applied.map((r) => r.relation)).toEqual(["related_to", "supports", "informs"]);
+		expect(applied.map((r) => r.id)).toEqual(["edge-1", "edge-2", "edge-3", "edge-4", "edge-5"]);
+		expect(applied.map((r) => r.relation)).toEqual([
+			"related_to",
+			"related_to",
+			"supports",
+			"related_to",
+			"informs",
+		]);
+		// Original bespoke relations preserved in context for the healed rows.
+		expect(applied.find((r) => r.id === "edge-2")?.context).toBe("INVALID_RELATION");
+		expect(applied.find((r) => r.id === "edge-4")?.context).toBe("old_custom_relation");
 
 		transport.stop();
 		db.close();
