@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { softDelete, updateRow } from "./change-log";
-import { CANONICAL_RELATIONS, SPELLING_VARIANTS } from "./memory-relations";
+import { CANONICAL_RELATIONS, normalizeRelationValue } from "./memory-relations";
 
 export interface NormalizationSummary {
 	variants_mapped: number;
 	moved_to_context: number;
 	collisions_merged: number;
+	tombstones_normalized: number;
 	total_scanned: number;
 }
 
@@ -15,6 +16,13 @@ export interface NormalizationSummary {
  * Must be called AFTER applySchema() (so the context column and triggers exist)
  * and AFTER siteId is available (because updateRow() needs it for changelog entries).
  *
+ * Scans BOTH active rows and soft-deleted tombstones. Tombstones matter because a
+ * soft-delete (UPDATE without touching `relation`) leaves the invalid relation value
+ * in place — and the canonical-relation INSERT trigger fires for ANY row (regardless
+ * of `deleted`), so a peer reseeding from a snapshot or backfill rejects the invalid
+ * tombstone and re-warns on every reconnection until the source rewrites it. Rewriting
+ * tombstones to a canonical relation makes them sync cleanly.
+ *
  * Idempotent: when all rows are already canonical, returns zeros.
  */
 export function normalizeEdgeRelations(db: Database, siteId: string): NormalizationSummary {
@@ -22,19 +30,19 @@ export function normalizeEdgeRelations(db: Database, siteId: string): Normalizat
 		variants_mapped: 0,
 		moved_to_context: 0,
 		collisions_merged: 0,
+		tombstones_normalized: 0,
 		total_scanned: 0,
 	};
 
 	// Build the NOT IN clause from canonical set
 	const canonicalList = CANONICAL_RELATIONS.map((r) => `'${r}'`).join(", ");
 
-	// Select all non-deleted rows with non-canonical relations
+	// Select all rows with non-canonical relations — active AND soft-deleted.
 	const rows = db
 		.prepare(
-			`SELECT id, source_key, target_key, relation, weight, context
+			`SELECT id, source_key, target_key, relation, weight, context, deleted
 			 FROM memory_edges
-			 WHERE relation NOT IN (${canonicalList})
-			   AND deleted = 0`,
+			 WHERE relation NOT IN (${canonicalList})`,
 		)
 		.all() as Array<{
 		id: string;
@@ -43,25 +51,30 @@ export function normalizeEdgeRelations(db: Database, siteId: string): Normalizat
 		relation: string;
 		weight: number;
 		context: string | null;
+		deleted: number;
 	}>;
 
 	summary.total_scanned = rows.length;
 
 	for (const row of rows) {
-		const lowerRel = row.relation.toLowerCase();
+		const normalized = normalizeRelationValue(row.relation, row.context);
+		const preserveInContext =
+			normalized.relation !== row.relation && normalized.context !== row.context;
 
-		// Determine the target canonical relation
-		let targetRelation: string;
-		let preserveInContext = false;
-
-		if (SPELLING_VARIANTS[lowerRel]) {
-			// Known spelling variant → map to canonical
-			targetRelation = SPELLING_VARIANTS[lowerRel];
-		} else {
-			// Bespoke relation → rewrite to related_to, preserve original in context
-			targetRelation = "related_to";
-			preserveInContext = true;
+		// Soft-deleted tombstones: rewrite the relation in place (no collision merge —
+		// a deleted edge must never fold its weight/context into an active edge). This
+		// makes the tombstone sync cleanly without tripping the receiving trigger.
+		if (row.deleted === 1) {
+			const updates: Record<string, unknown> = { relation: normalized.relation };
+			if (normalized.context !== row.context) {
+				updates.context = normalized.context;
+			}
+			updateRow(db, "memory_edges", row.id, updates, siteId);
+			summary.tombstones_normalized++;
+			continue;
 		}
+
+		const targetRelation = normalized.relation;
 
 		// Check for collision: does an active row already exist with
 		// (source_key, target_key, targetRelation)?

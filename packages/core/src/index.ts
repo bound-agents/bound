@@ -122,5 +122,7 @@ export {
 	isCanonicalRelation,
 	InvalidRelationError,
 	SPELLING_VARIANTS,
+	FALLBACK_RELATION,
+	normalizeRelationValue,
 } from "./memory-relations";
 export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";

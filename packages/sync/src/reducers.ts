@@ -1,5 +1,5 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { createChangeLogEntry } from "@bound/core";
+import { createChangeLogEntry, normalizeRelationValue } from "@bound/core";
 import type { ChangeLogEntry, Logger, SyncedTableName, TypedEventEmitter } from "@bound/shared";
 import { TABLE_REDUCER_MAP, parseJsonUntyped } from "@bound/shared";
 
@@ -188,6 +188,26 @@ export function applyLWWReducer(
 		return { applied: false };
 	}
 	const rowData = value as RowData;
+
+	// Heal-on-receive (issue #105): a peer may push a memory_edges row whose
+	// `relation` is not in the canonical set — legacy data, a relation that was
+	// later removed from the set, or a soft-deleted tombstone that kept its
+	// pre-enforcement relation. The canonical-relation trigger RAISE(ABORT)s on any
+	// INSERT (and on UPDATE OF relation), so the row is rejected and the receiver
+	// re-warns on every reconnection. Normalize the relation here so the receiver's
+	// copy self-heals instead. This write does not create a change_log entry (replay
+	// path), so it neither echoes nor loops; the source converges via its own startup
+	// normalize.
+	if (event.table_name === "memory_edges" && typeof rowData.relation === "string") {
+		const healed = normalizeRelationValue(
+			rowData.relation,
+			typeof rowData.context === "string" ? rowData.context : null,
+		);
+		if (healed.changed) {
+			rowData.relation = healed.relation;
+			rowData.context = healed.context;
+		}
+	}
 
 	if (violatesMessageRoleInvariant(event, rowData, options?.logger)) {
 		return { applied: false };
@@ -434,6 +454,25 @@ export function applySnapshotRows(
 	}
 
 	if (rows.length === 0) return 0;
+
+	// Heal-on-receive (issue #105): rewrite non-canonical memory_edges relations
+	// before the INSERT OR REPLACE. Otherwise the canonical-relation trigger
+	// RAISE(ABORT)s, the whole batch rolls back to the slow per-row fallback, and
+	// the invalid rows are skipped + warned on every reseed.
+	if (tableName === "memory_edges") {
+		for (const row of rows) {
+			if (typeof row.relation === "string") {
+				const healed = normalizeRelationValue(
+					row.relation,
+					typeof row.context === "string" ? row.context : null,
+				);
+				if (healed.changed) {
+					row.relation = healed.relation;
+					row.context = healed.context;
+				}
+			}
+		}
+	}
 
 	// Gather column names from the first row (all rows in a table share columns).
 	const firstRow = rows[0];

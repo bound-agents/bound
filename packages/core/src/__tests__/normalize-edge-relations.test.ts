@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { updateRow } from "../change-log";
 import { applySchema, createDatabase } from "../index";
+import { normalizeRelationValue } from "../memory-relations";
 import { normalizeEdgeRelations } from "../normalize-edge-relations";
 
 interface TestDb {
@@ -37,6 +38,7 @@ function insertNonCanonicalEdge(
 	relation: string,
 	weight: number,
 	context: string | null,
+	deleted = 0,
 ) {
 	// Drop triggers temporarily
 	testDb.db.exec(`
@@ -48,9 +50,9 @@ function insertNonCanonicalEdge(
 	testDb.db
 		.prepare(
 			`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, context, created_at, modified_at, deleted)
-		 VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), 0)`,
+		 VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)`,
 		)
-		.run(id, source_key, target_key, relation, weight, context);
+		.run(id, source_key, target_key, relation, weight, context, deleted);
 
 	// Recreate the triggers by running the relevant part of applySchema
 	const canonicalList = [
@@ -637,5 +639,121 @@ describe("normalizeEdgeRelations", () => {
 			db1.close();
 			db2.close();
 		});
+	});
+
+	describe("soft-deleted tombstone normalization (#105)", () => {
+		it("rewrites a bespoke relation on a soft-deleted tombstone, preserving deleted=1", () => {
+			insertNonCanonicalEdge("tomb1", "mem1", "mem2", "validates", 1.0, null, 1);
+
+			const summary = normalizeEdgeRelations(testDb.db, TEST_SITE_ID);
+
+			expect(summary.tombstones_normalized).toBe(1);
+			expect(summary.total_scanned).toBe(1);
+			expect(summary.collisions_merged).toBe(0);
+			expect(summary.variants_mapped).toBe(0);
+			expect(summary.moved_to_context).toBe(0);
+
+			const tomb = testDb.db
+				.prepare("SELECT relation, context, deleted FROM memory_edges WHERE id = ?")
+				.get("tomb1") as { relation: string; context: string | null; deleted: number };
+			expect(tomb.relation).toBe("related_to");
+			expect(tomb.context).toBe("validates");
+			expect(tomb.deleted).toBe(1); // still a tombstone
+		});
+
+		it("maps a spelling-variant relation on a tombstone without touching context", () => {
+			insertNonCanonicalEdge("tomb2", "mem3", "mem4", "relates_to", 1.0, "keep-me", 1);
+
+			const summary = normalizeEdgeRelations(testDb.db, TEST_SITE_ID);
+
+			expect(summary.tombstones_normalized).toBe(1);
+
+			const tomb = testDb.db
+				.prepare("SELECT relation, context, deleted FROM memory_edges WHERE id = ?")
+				.get("tomb2") as { relation: string; context: string | null; deleted: number };
+			expect(tomb.relation).toBe("related_to");
+			expect(tomb.context).toBe("keep-me");
+			expect(tomb.deleted).toBe(1);
+		});
+
+		it("does NOT merge a tombstone into a colliding active edge", () => {
+			// Active canonical edge with the same endpoints the tombstone would map to.
+			testDb.db
+				.prepare(
+					`INSERT INTO memory_edges (id, source_key, target_key, relation, weight, context, created_at, modified_at, deleted)
+					 VALUES ('active1', 'mem5', 'mem6', 'related_to', 2.0, 'active-ctx', datetime('now'), datetime('now'), 0)`,
+				)
+				.run();
+			// Soft-deleted tombstone with a bespoke relation that maps to related_to.
+			insertNonCanonicalEdge("tomb3", "mem5", "mem6", "supersedes", 1.0, null, 1);
+
+			const summary = normalizeEdgeRelations(testDb.db, TEST_SITE_ID);
+
+			// Tombstone rewritten in place, no merge into the active survivor.
+			expect(summary.tombstones_normalized).toBe(1);
+			expect(summary.collisions_merged).toBe(0);
+
+			const active = testDb.db
+				.prepare("SELECT weight, context, deleted FROM memory_edges WHERE id = ?")
+				.get("active1") as { weight: number; context: string | null; deleted: number };
+			expect(active.weight).toBe(2.0); // untouched by the tombstone
+			expect(active.context).toBe("active-ctx");
+			expect(active.deleted).toBe(0);
+
+			const tomb = testDb.db
+				.prepare("SELECT relation, deleted FROM memory_edges WHERE id = ?")
+				.get("tomb3") as { relation: string; deleted: number };
+			expect(tomb.relation).toBe("related_to");
+			expect(tomb.deleted).toBe(1);
+		});
+
+		it("is idempotent across active and tombstone rows", () => {
+			insertNonCanonicalEdge("a1", "p1", "p2", "relates_to", 1.0, null, 0);
+			insertNonCanonicalEdge("t1", "p3", "p4", "validates", 1.0, null, 1);
+
+			const first = normalizeEdgeRelations(testDb.db, TEST_SITE_ID);
+			expect(first.total_scanned).toBe(2);
+			expect(first.variants_mapped).toBe(1);
+			expect(first.tombstones_normalized).toBe(1);
+
+			const second = normalizeEdgeRelations(testDb.db, TEST_SITE_ID);
+			expect(second.total_scanned).toBe(0);
+			expect(second.tombstones_normalized).toBe(0);
+		});
+	});
+});
+
+describe("normalizeRelationValue (pure helper, #105)", () => {
+	it("returns canonical relations unchanged", () => {
+		const r = normalizeRelationValue("related_to", "ctx");
+		expect(r.changed).toBe(false);
+		expect(r.relation).toBe("related_to");
+		expect(r.context).toBe("ctx");
+	});
+
+	it("maps a known spelling variant and preserves context", () => {
+		const r = normalizeRelationValue("relates_to", "ctx");
+		expect(r.changed).toBe(true);
+		expect(r.relation).toBe("related_to");
+		expect(r.context).toBe("ctx");
+	});
+
+	it("maps a spelling variant case-insensitively", () => {
+		const r = normalizeRelationValue("Cited_By", null);
+		expect(r.relation).toBe("cites");
+		expect(r.changed).toBe(true);
+	});
+
+	it("rewrites a bespoke relation to the fallback, prepending it to context", () => {
+		const r = normalizeRelationValue("validates", "existing");
+		expect(r.changed).toBe(true);
+		expect(r.relation).toBe("related_to");
+		expect(r.context).toBe("validates | existing");
+	});
+
+	it("rewrites a bespoke relation with null context to just the relation", () => {
+		const r = normalizeRelationValue("supersedes", null);
+		expect(r.relation).toBe("related_to");
+		expect(r.context).toBe("supersedes");
 	});
 });
