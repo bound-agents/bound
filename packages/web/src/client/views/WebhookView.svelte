@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { ClusterModelInfo, WebhookListEntry } from "@bound/client";
+import type { ClusterModelInfo, WebhookListEntry, WebhookUrlEntry } from "@bound/client";
 import { onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import DataTable from "../components/DataTable.svelte";
@@ -8,7 +8,6 @@ import SecretModal from "../components/SecretModal.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
-import { getWebhookEndpointUrl } from "../lib/webhook-utils";
 
 let webhooks: WebhookListEntry[] = $state([]);
 let loading = $state(true);
@@ -16,6 +15,14 @@ let view = $state<"list" | "create" | "detail">("list");
 let selectedWebhook = $state<WebhookListEntry | null>(null);
 let secretModal = $state<{ secret: string; name: string } | null>(null);
 let error = $state<string | null>(null);
+
+// Cluster-wide webhook URL enumeration for the selected webhook (#36).
+// Fetched server-side because the URL is the SYNC port (default 3000), not
+// the web port — the browser's window.location.origin is the wrong place to
+// derive it from. Updates whenever selectedWebhook changes.
+let urlEntries: WebhookUrlEntry[] = $state([]);
+let urlsLoading = $state(false);
+let urlsError = $state<string | null>(null);
 
 // Cluster model catalogue (for dropdowns). Empty = use cluster default.
 let availableModels: ClusterModelInfo[] = $state([]);
@@ -205,6 +212,33 @@ function handleSelectWebhook(webhook: WebhookListEntry): void {
 	editNoHistory = webhook.no_history === true;
 	editError = null;
 	view = "detail";
+	loadWebhookUrls(webhook.id);
+}
+
+async function loadWebhookUrls(id: string): Promise<void> {
+	try {
+		urlsLoading = true;
+		urlsError = null;
+		urlEntries = [];
+		const resp = await client.listWebhookUrls(id);
+		urlEntries = resp.urls;
+	} catch (err: unknown) {
+		console.error("Failed to load webhook URLs:", err);
+		urlsError = err instanceof Error ? err.message : "Failed to load webhook URLs.";
+	} finally {
+		urlsLoading = false;
+	}
+}
+
+function urlSourceLabel(entry: WebhookUrlEntry): string {
+	switch (entry.source) {
+		case "hub":
+			return "Hub";
+		case "local":
+			return entry.host_name ? `Local (${entry.host_name})` : "Local";
+		case "cluster":
+			return entry.host_name ? `Cluster (${entry.host_name})` : "Cluster";
+	}
 }
 
 function handleBackToList(): void {
@@ -216,6 +250,9 @@ function handleBackToList(): void {
 	editModel = "";
 	editNoHistory = false;
 	editError = null;
+	urlEntries = [];
+	urlsLoading = false;
+	urlsError = null;
 }
 
 function handleCreateNew(): void {
@@ -454,8 +491,27 @@ function formatDate(iso: string): string {
 					</div>
 
 					<div class="detail-section">
-						<div class="section-label">Endpoint URL</div>
-						<code class="mono-text">{getWebhookEndpointUrl(selectedWebhook.id, window.location.origin)}</code>
+						<div class="section-label">Endpoint URLs</div>
+						{#if urlsLoading}
+							<p class="muted">Loading…</p>
+						{:else if urlsError}
+							<p class="error-text">{urlsError}</p>
+						{:else if urlEntries.length === 0}
+							<p class="muted">No URLs available.</p>
+						{:else}
+							<ul class="url-list">
+								{#each urlEntries as entry (entry.url)}
+									<li class="url-row">
+										<span class="url-label">{urlSourceLabel(entry)}</span>
+										<code class="mono-text url-value">{entry.url}</code>
+									</li>
+								{/each}
+							</ul>
+							<p class="muted url-hint">
+								Webhook ingestion is on the sync server. Pick the URL whose host is reachable from the
+								service that will deliver events — public for external services, local for testing.
+							</p>
+						{/if}
 					</div>
 
 					<div class="detail-section">
@@ -843,6 +899,51 @@ function formatDate(iso: string): string {
 		font-size: 12px;
 		color: var(--ink-2);
 		word-break: break-all;
+	}
+
+	.url-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.url-row {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.url-label {
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		color: var(--ink-3);
+	}
+
+	.url-value {
+		display: block;
+	}
+
+	.url-hint {
+		font-size: 12px;
+		color: var(--ink-3);
+		margin: 8px 0 0;
+	}
+
+	.muted {
+		font-size: 13px;
+		color: var(--ink-3);
+		margin: 0;
+	}
+
+	.error-text {
+		font-size: 13px;
+		color: var(--danger, #c0392b);
+		margin: 0;
 	}
 
 	.detail-section p {

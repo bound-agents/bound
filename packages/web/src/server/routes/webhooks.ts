@@ -5,8 +5,22 @@ import { getSiteId, insertRow, softDelete, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 import { Hono } from "hono";
+import { type ClusterHostRow, buildWebhookUrls } from "../webhook-urls";
 
-export function createWebhooksRoutes(db: Database): Hono {
+export interface WebhooksRoutesConfig {
+	/** Sync server bind host (process.env.BIND_HOST). */
+	syncBindHost?: string;
+	/** Sync server bind port (process.env.PORT). */
+	syncPort?: number;
+	/** sync.hub config field (set on spokes). */
+	hubUrl?: string;
+	/** Local host display name (hosts.host_name). */
+	hostName?: string;
+	/** Local host site_id; used to skip self when joining cluster rows. */
+	siteId?: string;
+}
+
+export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig = {}): Hono {
 	const app = new Hono();
 
 	function resolveSiteId(): string {
@@ -82,6 +96,49 @@ export function createWebhooksRoutes(db: Database): Hono {
 			return c.json(
 				{
 					error: "Failed to get webhook",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
+	// GET /:id/urls — Enumerate webhook delivery URLs across the cluster (#36)
+	app.get("/:id/urls", (c) => {
+		try {
+			const id = c.req.param("id");
+
+			// Look up by id to get the webhook's name (delivery URLs use name).
+			const webhook = db
+				.prepare("SELECT name FROM webhooks WHERE id = ? AND deleted = 0")
+				.get(id) as { name: string } | null;
+
+			if (!webhook) {
+				return c.json({ error: "Webhook not found" }, 404);
+			}
+
+			// Non-deleted hosts. Rows with null/empty sync_url are filtered
+			// inside the helper.
+			const clusterHosts = db
+				.prepare("SELECT site_id, host_name, sync_url FROM hosts WHERE deleted = 0")
+				.all() as ClusterHostRow[];
+
+			const urls = buildWebhookUrls({
+				name: webhook.name,
+				syncBindHost: config.syncBindHost ?? "localhost",
+				syncPort: config.syncPort ?? 3000,
+				localHostName: config.hostName,
+				localSiteId: config.siteId,
+				hubUrl: config.hubUrl,
+				clusterHosts,
+			});
+
+			return c.json({ name: webhook.name, urls });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to list webhook URLs",
 					details: message,
 				},
 				500,

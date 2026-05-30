@@ -39,6 +39,7 @@ import type {
 	WebhookCreateResponse,
 	WebhookListEntry,
 	WebhookRotateResponse,
+	WebhookUrlsResponse,
 } from "./types.js";
 
 export class BoundNotRunningError extends Error {
@@ -634,6 +635,16 @@ export class BoundClient {
 
 	async rotateWebhookSecret(id: string): Promise<WebhookRotateResponse> {
 		return this.fetchJson(`/api/webhooks/${id}/rotate`, { method: "POST" });
+	}
+
+	/**
+	 * Enumerate webhook delivery URLs across the cluster (#36). Returns the
+	 * webhook's name and an array of URL entries — hub URL (if this node is
+	 * a spoke), local URL(s) from the sync server bind config, and one URL
+	 * per peer host with a non-empty `sync_url`.
+	 */
+	async listWebhookUrls(id: string): Promise<WebhookUrlsResponse> {
+		return this.fetchJson(`/api/webhooks/${id}/urls`);
 	}
 
 	// ---- Status ----
