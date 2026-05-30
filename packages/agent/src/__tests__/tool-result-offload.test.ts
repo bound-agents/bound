@@ -280,7 +280,8 @@ describe("AgentLoop tool result offloading", () => {
 			.all(threadId) as Array<{ content: string }>;
 
 		expect(results.length).toBe(1);
-		expect(results[0].content).toBe(smallOutput);
+		expect(results[0].content).toContain(smallOutput);
+		expect(results[0].content).toMatch(/\[duration: \d+\.\d{3}s\]$/);
 	});
 
 	it("should gracefully skip offloading when writeFile is not available", async () => {
@@ -318,6 +319,7 @@ describe("AgentLoop tool result offloading", () => {
 			.all(threadId) as Array<{ content: string }>;
 
 		expect(results.length).toBe(1);
-		expect(results[0].content).toBe(largeOutput);
+		expect(results[0].content).toContain(largeOutput);
+		expect(results[0].content).toMatch(/\[duration: \d+\.\d{3}s\]$/);
 	});
 });

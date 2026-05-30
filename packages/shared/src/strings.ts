@@ -83,6 +83,44 @@ export function capToolResultContent(content: string): string {
 }
 
 /**
+ * Append a `[duration: N.NNNs]` suffix to a tool result string. The shape
+ * of the returned content matches the input shape:
+ *
+ * - Plain string content → suffix is appended as `\n\n[duration: N.NNNs]`.
+ * - JSON-serialized `ContentBlock[]` content → an additional `text`
+ *   ContentBlock is appended to the array.
+ *
+ * Negative `elapsedMs` returns the input unchanged (defensive against
+ * clock skew on the WS-deferred client tool path where elapsed is derived
+ * from `now - dispatch_queue.created_at` across hosts).
+ *
+ * Call BEFORE `capToolResultContent` so the universal 256 KiB cap honors
+ * the total budget; the middle-cut marker preserves the suffix in the tail.
+ *
+ * See bound-agents/bound#77.
+ */
+export function appendToolDuration(content: string, elapsedMs: number): string {
+	if (elapsedMs < 0) return content;
+
+	const seconds = (elapsedMs / 1000).toFixed(3);
+	const suffix = `[duration: ${seconds}s]`;
+
+	if (content.length > 0 && content[0] === "[") {
+		try {
+			const parsed = JSON.parse(content);
+			if (Array.isArray(parsed)) {
+				parsed.push({ type: "text", text: suffix });
+				return JSON.stringify(parsed);
+			}
+		} catch {
+			// Fall through — plain string starting with '[' but not valid JSON.
+		}
+	}
+
+	return `${content}\n\n${suffix}`;
+}
+
+/**
  * Slice a string at a code-unit boundary without splitting surrogate pairs.
  * JavaScript strings are UTF-16; characters outside the BMP (emoji, CJK
  * Extension B, etc.) are stored as two code units (a surrogate pair).

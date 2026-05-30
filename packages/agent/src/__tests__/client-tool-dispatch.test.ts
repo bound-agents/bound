@@ -585,7 +585,8 @@ describe("Client tool dispatch in AgentLoop", () => {
 		// Verify tool_result for server tool was persisted
 		const toolResultMsgs = (messages as any[]).filter((m: any) => m.role === "tool_result");
 		expect(toolResultMsgs.length).toBe(1); // Only server tool result
-		expect(toolResultMsgs[0].content).toBe("server result");
+		expect(toolResultMsgs[0].content).toContain("server result");
+		expect(toolResultMsgs[0].content).toMatch(/\[duration: \d+\.\d{3}s\]$/);
 
 		// Verify dispatch_queue entry was created for client tool only
 		const dispatchEntries = db

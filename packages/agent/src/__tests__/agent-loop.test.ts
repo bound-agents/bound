@@ -403,7 +403,8 @@ describe("AgentLoop", () => {
 		expect(msgs.length).toBe(3);
 		expect(msgs[0].role).toBe("tool_call");
 		expect(msgs[1].role).toBe("tool_result");
-		expect(msgs[1].content).toBe("Memory saved: color\n");
+		expect(msgs[1].content).toContain("Memory saved: color\n");
+		expect(msgs[1].content).toMatch(/\[duration: \d+\.\d{3}s\]$/);
 		expect(msgs[2].role).toBe("assistant");
 		expect(msgs[2].content).toBe("Done!");
 	});
