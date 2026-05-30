@@ -1,5 +1,6 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
+import { type DisplayItem as GroupedDisplayItem, groupMessages } from "../lib/message-grouping";
 import MessageBubble from "./MessageBubble.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
 
@@ -143,68 +144,12 @@ const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
 	return map;
 });
 
-// Group consecutive tool_call messages into a single display item.
-type DisplayItem =
-	| { kind: "message"; msg: Message; key: string; earliest: string | undefined }
-	| {
-			kind: "toolGroup";
-			messages: Message[];
-			key: string;
-			earliest: string | undefined;
-			timestamps: string[];
-	  };
+// Group consecutive tool_call messages into a single display item. The pure
+// grouping logic (incl. issue #66's break-on-user-facing-text rule) lives in
+// ../lib/message-grouping so it can be unit-tested without mounting the view.
+type DisplayItem = GroupedDisplayItem<Message>;
 
-const displayItems = $derived.by((): DisplayItem[] => {
-	const items: DisplayItem[] = [];
-	let i = 0;
-	while (i < messages.length) {
-		const m = messages[i];
-		if (m.role === "tool_result") {
-			i++;
-			continue;
-		}
-		if (m.role === "tool_call") {
-			const group: Message[] = [m];
-			let j = i + 1;
-			while (j < messages.length) {
-				const next = messages[j];
-				if (next.role === "tool_call") {
-					group.push(next);
-					j++;
-				} else if (next.role === "tool_result") {
-					j++;
-				} else {
-					break;
-				}
-			}
-			// Key on the group's first message id so appending a new
-			// tool_call to the in-progress run doesn't mutate the key and
-			// remount the ToolCallCard. A remount would reset the group's
-			// expanded state, every per-tool expandedTools entry, and every
-			// child ReasoningBlock's open disclosure — producing the "my
-			// collapsible snaps shut when a new message arrives" bug.
-			const anchor = group[0];
-			const key = anchor.id ?? anchor.created_at ?? `tg-${i}`;
-			items.push({
-				kind: "toolGroup",
-				messages: group,
-				key,
-				earliest: group[0].created_at,
-				timestamps: group.map((g) => g.created_at ?? "").filter(Boolean),
-			});
-			i = j;
-		} else {
-			items.push({
-				kind: "message",
-				msg: m,
-				key: m.id ?? m.created_at ?? `m-${i}`,
-				earliest: m.created_at,
-			});
-			i++;
-		}
-	}
-	return items;
-});
+const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
 
 function isItemInRange(item: DisplayItem): boolean {
 	if (!turnRange) return true;
