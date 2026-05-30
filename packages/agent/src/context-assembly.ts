@@ -114,6 +114,14 @@ export interface ContextParams {
 	siteId?: string;
 	/** Cluster topology role ("hub" | "spoke"), rendered on the orientation Host line. See #68. */
 	topologyRole?: "hub" | "spoke";
+	/**
+	 * Originating task type (`"heartbeat"`, `"cron"`, `"event"`, `"deferred"`),
+	 * when this assembly is driven by a scheduled task. Drives surface-specific
+	 * volatile rendering — currently the resolved-advisory operator-ack
+	 * notifications, which are restricted to the heartbeat surface (#70).
+	 * Undefined for user-facing (web/discord/boundless) assemblies.
+	 */
+	taskType?: string;
 	relayInfo?: {
 		remoteHost: string;
 		localHost: string;
@@ -511,6 +519,13 @@ export function buildVolatileContext(params: {
 	/** Referenced inactive skill name, if any */
 	inactiveSkillRef?: string;
 	/**
+	 * Originating task type, when driven by a scheduled task. Gates the
+	 * resolved-advisory operator-ack notifications to the heartbeat surface
+	 * (#70); active-conversation assemblies leave this undefined and therefore
+	 * never surface those acks.
+	 */
+	taskType?: string;
+	/**
 	 * Wall-clock anchor for relative-time formatting (`Nd ago`, applied-advisory
 	 * recency cutoffs, etc.). Defaults to `Date.now()` for production callers;
 	 * tests inject a fixed timestamp so snapshot fixtures stay deterministic
@@ -681,9 +696,24 @@ export function buildVolatileContext(params: {
 	}
 
 	// --- VARYING: operator-feedback notifications (24h window). Surfaces
-	// recent operator actions on this site's skills + advisories so the
-	// agent learns when its proposals were acted on. See `notifications/`. ---
-	const notifInputs = loadNotificationInputs({ db: params.db, siteId: params.siteId });
+	// recent operator actions on this site's skills so the agent learns when
+	// its skill proposals were acted on. See `notifications/`.
+	//
+	// Resolved-advisory operator-acks are deliberately NOT loaded here (#70):
+	// they are post-resolution maintenance signals with no attached decision,
+	// and surfacing them in this privileged-attention position primes a false
+	// "advisories are happening right now" framing that competes with the live
+	// `tasks.error` column. They are preserved only on the heartbeat surface
+	// (rendered in the no-history branch of `assembleContext`), where
+	// advisory-hygiene tracking is part of the role. `buildVolatileContext`
+	// only ever runs on the !noHistory active-conversation path, so the
+	// `taskType === "heartbeat"` gate evaluates false here in practice and is
+	// kept for defensive generality. ---
+	const notifInputs = loadNotificationInputs({
+		db: params.db,
+		siteId: params.siteId,
+		includeResolvedAdvisories: params.taskType === "heartbeat",
+	});
 	const notifLines = renderNotifications(notifInputs);
 	for (const line of notifLines) {
 		suffixLines.push("");
@@ -1242,6 +1272,7 @@ Original output was too large for the context window. If you need the full conte
 			userMessageText,
 			threadSummary,
 			inactiveSkillRef,
+			taskType: params.taskType,
 		});
 
 		// STABLE PREFIX: fold WK bodies + DA titles + skill index into systemParts.
@@ -1361,6 +1392,8 @@ Original output was too large for the context window. If you need the full conte
 			activeSkills: [],
 		});
 
+		const varyingTailLines: string[] = [];
+
 		if (renderedEnrichmentLines.length > 0) {
 			totalMemCount = (
 				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
@@ -1372,29 +1405,53 @@ Original output was too large for the context window. If you need the full conte
 				systemParts.push(nhStable.join("\n"));
 			}
 
-			const varyingTailLines: string[] = [...nhVarying];
+			varyingTailLines.push(...nhVarying);
 			// In noHistory the varying tail begins with nhVarying (no
 			// User/Thread ID prefix lines), so the enrichment section sits
 			// at indices [0, nhVarying.length).
 			varyingEnrichmentStartIdx = 0;
 			varyingEnrichmentEndIdx = nhVarying.length;
 
-			// Append systemPromptAddition if present for the noHistory path.
-			// Operator-supplied per-task instruction stays varying (re-runnable).
-			if (params.systemPromptAddition) {
-				varyingTailLines.push("");
-				varyingTailLines.push(params.systemPromptAddition);
-			}
-
-			if (varyingTailLines.length > 0) {
-				enrichmentMessageIndex = assembled.length;
-				assembled.push({ role: "developer", content: varyingTailLines.join("\n") });
-				allVaryingLines = varyingTailLines;
-			}
-
 			// Track noHistory volatile section tokens (combined for debug parity)
 			const noHistVolatileTokens = countTokens(renderedEnrichmentLines.join("\n"));
 			sections.push({ name: "volatile-enrichment", tokens: noHistVolatileTokens });
+		}
+
+		// --- VARYING: heartbeat-only resolved-advisory operator-acks (#70).
+		// The maintenance surface keeps advisory-hygiene tracking; active
+		// conversations strip these (see buildVolatileContext). Skill-retirement
+		// notes stay active-only and are not loaded here. Computed independent of
+		// enrichment presence so a heartbeat with no memory enrichment still
+		// surfaces its acks. These lines sit after the enrichment window
+		// [start, end), so they do not perturb any indices (and the
+		// budget-pressure splice is gated off for noHistory anyway). ---
+		if (params.taskType === "heartbeat") {
+			const advisoryNotifLines = renderNotifications(
+				loadNotificationInputs({
+					db,
+					siteId,
+					includeRetiredSkills: false,
+					includeResolvedAdvisories: true,
+					nowMs,
+				}),
+			);
+			for (const line of advisoryNotifLines) {
+				varyingTailLines.push("");
+				varyingTailLines.push(line);
+			}
+		}
+
+		// Append systemPromptAddition if present for the noHistory path.
+		// Operator-supplied per-task instruction stays varying (re-runnable).
+		if (params.systemPromptAddition) {
+			varyingTailLines.push("");
+			varyingTailLines.push(params.systemPromptAddition);
+		}
+
+		if (varyingTailLines.length > 0) {
+			enrichmentMessageIndex = assembled.length;
+			assembled.push({ role: "developer", content: varyingTailLines.join("\n") });
+			allVaryingLines = varyingTailLines;
 		}
 	}
 	stage5_5Span.end();

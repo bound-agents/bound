@@ -500,7 +500,7 @@ describe("volatile-context-integration", () => {
 		expect(result.content).toContain("test-skill");
 	});
 
-	test("Advisory feedback-loop preserved", () => {
+	test("Advisory feedback-loop stripped from active conversation (#70)", () => {
 		// Create an approved advisory authored by local site within 24h
 		const now = new Date();
 		const withinLast24h = new Date(now.getTime() - 60 * 60 * 1000).toISOString(); // 1 hour ago
@@ -518,11 +518,47 @@ describe("volatile-context-integration", () => {
 			modified_at: withinLast24h,
 		});
 
+		// Active-conversation surface: no taskType. Resolved-advisory acks must
+		// NOT appear (they would prime a false "advisories happening now" framing
+		// in privileged-attention position).
 		const result = buildVolatileContext({
 			db,
 			threadId,
 			userId,
 			siteId,
+		});
+
+		expect(result.content).not.toContain("[Advisory notification]");
+		expect(result.content).not.toContain("Test Advisory");
+	});
+
+	test("Advisory feedback-loop preserved on heartbeat surface (#70)", () => {
+		// Create an approved advisory authored by local site within 24h
+		const now = new Date();
+		const withinLast24h = new Date(now.getTime() - 60 * 60 * 1000).toISOString(); // 1 hour ago
+
+		dbInsert(db, "advisories", {
+			id: "test-advisory",
+			created_by: siteId,
+			title: "Test Advisory",
+			detail: "Test detail",
+			type: "general",
+			status: "approved",
+			proposed_at: withinLast24h,
+			resolved_at: withinLast24h,
+			deleted: 0,
+			modified_at: withinLast24h,
+		});
+
+		// Heartbeat surface keeps advisory-hygiene tracking. (Note: in production
+		// the heartbeat runs the no-history branch of assembleContext, not
+		// buildVolatileContext; this asserts the gate's generality.)
+		const result = buildVolatileContext({
+			db,
+			threadId,
+			userId,
+			siteId,
+			taskType: "heartbeat",
 		});
 
 		// Advisory feedback-loop should inject [Advisory notification] line
