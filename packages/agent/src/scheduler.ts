@@ -521,12 +521,22 @@ export function healStuckTasks(
 			//      row failed + claimed. Re-selecting it every cycle produced no
 			//      recovery, only a repeated WARN ("recovering stuck row") — the
 			//      reported log spam. Such rows are excluded so they settle.
+			//
+			// Heartbeats also recover from 'completed' (#104). A heartbeat passes
+			// transiently through status='completed' between the completion write and
+			// rescheduleHeartbeat; if a crash/eviction lands in that window (or
+			// rescheduleHeartbeat early-returns), the heartbeat is left stuck in
+			// 'completed' with nothing to re-arm it. Heartbeats are perpetual, so
+			// 'completed' is a recoverable wedge for them — but NOT for cron/event,
+			// whose completion is terminal. The claimed_at < threshold guard keeps a
+			// healthy heartbeat (claim always fresh, completed for only microseconds)
+			// from ever matching.
 			`SELECT * FROM tasks
 			WHERE deleted = 0
 			  AND claimed_by IS NOT NULL
 			  AND claimed_at < ?
 			  AND (
-			    (type = 'heartbeat' AND status IN ('failed', 'cancelled'))
+			    (type = 'heartbeat' AND status IN ('failed', 'cancelled', 'completed'))
 			    OR (type IN ('cron', 'event') AND status = 'failed')
 			    OR (type = 'deferred' AND status = 'failed' AND consecutive_failures < ?)
 			  )`,

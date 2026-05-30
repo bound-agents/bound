@@ -490,5 +490,41 @@ describe("healStuckTasks", () => {
 				| undefined;
 			expect(updated?.status).toBe("pending");
 		});
+
+		// #104: a heartbeat transiently passes through status='completed' between the
+		// completion write and rescheduleHeartbeat. If the process dies (or is evicted)
+		// in that window — or rescheduleHeartbeat early-returns — the heartbeat is left
+		// stuck in 'completed'. The pending sweep only looks at 'pending', and the
+		// healer historically only covered 'failed'/'cancelled', so nothing re-armed a
+		// completed heartbeat. Heartbeats are perpetual by design and must never durably
+		// rest in a terminal state; the healer recovers them.
+		it("revives a heartbeat stuck in completed state (#104)", () => {
+			cleanupDb();
+			const taskId = randomUUID();
+			insertStuckTask(taskId, "heartbeat", "completed", 0, '{"interval_ms":120000}');
+
+			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
+
+			expect(recovered).toBe(1);
+			const updated = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as
+				| Partial<Task>
+				| undefined;
+			expect(updated?.status).toBe("pending");
+			expect(updated?.next_run_at).not.toBeNull();
+		});
+
+		it("does not revive a completed cron task (cron completion is terminal)", () => {
+			cleanupDb();
+			const taskId = randomUUID();
+			insertStuckTask(taskId, "cron", "completed", 0, "0 * * * *");
+
+			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
+
+			expect(recovered).toBe(0);
+			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
+				| Partial<Task>
+				| undefined;
+			expect(updated?.status).toBe("completed");
+		});
 	});
 });
