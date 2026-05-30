@@ -7,9 +7,17 @@ export function createAdvisory(
 	db: Database,
 	advisory: Omit<
 		Advisory,
-		"id" | "proposed_at" | "modified_at" | "created_by" | "defer_until" | "resolved_at" | "deleted"
+		| "id"
+		| "proposed_at"
+		| "modified_at"
+		| "created_by"
+		| "defer_until"
+		| "resolved_at"
+		| "deleted"
+		| "thread_id"
 	>,
 	siteId: string,
+	threadId?: string | null,
 ): string {
 	const id = randomUUID();
 	const now = new Date().toISOString();
@@ -31,6 +39,7 @@ export function createAdvisory(
 			resolved_at: null,
 			modified_at: now,
 			created_by: siteId,
+			thread_id: threadId ?? null,
 			deleted: 0,
 		},
 		siteId,

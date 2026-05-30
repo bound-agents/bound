@@ -2060,6 +2060,7 @@ export class Scheduler {
 					}),
 				},
 				this.ctx.siteId,
+				task.thread_id ?? null,
 			);
 		} catch (advisoryError) {
 			this.ctx.logger.error("[scheduler] Failed to create task failure advisory", {
