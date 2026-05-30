@@ -749,6 +749,61 @@ describe("tieredHistoryTruncation — long tool-only tail (budget bypass regress
 		expect(reappearing.length).toBeGreaterThan(0);
 		expect(reappearing.length / lines1.length).toBeGreaterThanOrEqual(0.9);
 	});
+
+	// READ-CLASS ACTION LOG (content-loss fix). A long autonomous run that
+	// repeatedly re-reads the same file region must fold into a compact,
+	// deduplicated action log that (a) never leaks stale body bytes and (b)
+	// carries a precise re-read hint so the agent can re-fetch a specific range
+	// rather than blindly re-reading. Live shape: 99 re-reads of scheduler.ts.
+	it("folds a run of identical file re-reads into a deduped action log with a re-read hint", () => {
+		const readCycle = (): LLMMessage[] => [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "boundless_read",
+						input: { file_path: "/repo/packages/agent/src/scheduler.ts", offset: 95, limit: 240 },
+					},
+				]),
+			},
+			{
+				role: "tool_result",
+				content: JSON.stringify([
+					{ type: "text", text: "[boundless] host=abc cwd=/repo tool=boundless_read" },
+					{
+						type: "text",
+						text: Array.from(
+							{ length: 240 },
+							(_, k) => `  ${95 + k}\tsecret body line ${95 + k}`,
+						).join("\n"),
+					},
+				]),
+			},
+		];
+		const messages: LLMMessage[] = [{ role: "user", content: "TDD the scheduler fix" }];
+		for (let i = 0; i < 30; i++) messages.push(...readCycle());
+
+		const result = tieredHistoryTruncation({
+			historyMessages: messages,
+			historyBudget: 4000,
+			recentHardCeiling: 4000,
+			threadId: "read-log",
+		});
+		expect(result.middleDigestMsg).not.toBeNull();
+		const digest =
+			typeof result.middleDigestMsg?.content === "string" ? result.middleDigestMsg.content : "";
+
+		// The body bytes must NOT appear in the digest (they were the lost content).
+		expect(digest).not.toContain("secret body line");
+		// The folded reads collapse to a single deduped line with a count.
+		const readLineMatches = digest.match(/scheduler\.ts/g) ?? [];
+		expect(readLineMatches.length).toBeLessThanOrEqual(2); // one action line (+ maybe header)
+		expect(digest).toMatch(/×\d|x\d/);
+		// A precise re-read hint is present.
+		expect(digest).toMatch(/re-?read|read\(/i);
+	});
 });
 
 // ---------- Unit Tests ----------
