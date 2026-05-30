@@ -151,6 +151,11 @@ onDestroy(() => {
 	.nav-links {
 		display: flex;
 		align-items: stretch;
+		/* The top bar is align-items: center, which would vertically center this
+		   row inside the taller brand block and leave a gap above/below the active
+		   tab's highlight. Stretch the row to the full bar height so the selected
+		   tab background fills the space edge to edge (#99). */
+		align-self: stretch;
 	}
 
 	.nav-btn {
