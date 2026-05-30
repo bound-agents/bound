@@ -3511,6 +3511,10 @@ This skill reviews pull requests.`;
 	// Advisory resolution notification: when the operator applies/approves/dismisses an
 	// advisory that this agent posted (created_by = siteId), the agent should see a
 	// [Advisory notification] line in its volatile context so it can continue work.
+	// As of #70 these acks render ONLY on the heartbeat surface (taskType ===
+	// "heartbeat"); active conversations strip them. The AC-ADV1..5 cases below
+	// therefore assemble with noHistory + taskType: "heartbeat", and AC-ADV6
+	// asserts the active-path strip.
 	describe("advisory resolution notifications in volatile context", () => {
 		it("injects notification when agent's advisory is applied within 24h (AC-ADV1)", () => {
 			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
@@ -3571,6 +3575,9 @@ This skill reviews pull requests.`;
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
+				// #70: advisory acks render only on the heartbeat surface.
+				noHistory: true,
+				taskType: "heartbeat",
 			});
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
@@ -3646,16 +3653,20 @@ This skill reviews pull requests.`;
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
+				// #70: advisory acks render only on the heartbeat surface.
+				noHistory: true,
+				taskType: "heartbeat",
 			});
 
-			const hasOldAdvisoryNotif = messages.some(
-				(m) =>
-					m.role === "system" &&
-					typeof m.content === "string" &&
-					m.content.includes("Old advisory"),
-			);
+			// The >24h advisory must not appear in the [Advisory notification]
+			// operator-ack block (the loader's 24h window filters it out).
+			const oldAdvisoryNotifLines = messages
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n")
+				.split("\n")
+				.filter((l) => l.includes("Advisory notification"));
 
-			expect(hasOldAdvisoryNotif).toBe(false);
+			expect(oldAdvisoryNotifLines.join("\n")).not.toContain("Old advisory");
 
 			// Cleanup
 			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);
@@ -3726,6 +3737,9 @@ This skill reviews pull requests.`;
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
+				// #70: advisory acks render only on the heartbeat surface.
+				noHistory: true,
+				taskType: "heartbeat",
 			});
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
@@ -3806,6 +3820,9 @@ This skill reviews pull requests.`;
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
+				// #70: advisory acks render only on the heartbeat surface.
+				noHistory: true,
+				taskType: "heartbeat",
 			});
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
@@ -3882,16 +3899,100 @@ This skill reviews pull requests.`;
 				userId: localUserId,
 				siteId: localSiteId,
 				contextWindow: 200000,
+				// #70: advisory acks render only on the heartbeat surface.
+				noHistory: true,
+				taskType: "heartbeat",
 			});
 
-			const hasOtherSiteNotif = messages.some(
-				(m) =>
-					m.role === "system" &&
-					typeof m.content === "string" &&
-					m.content.includes("Other site advisory"),
+			// The cross-site advisory must not appear in the [Advisory notification]
+			// operator-ack block. (It may still appear in the Live State section,
+			// which is cluster-wide and out of scope for #70.)
+			const otherSiteNotifLines = messages
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n")
+				.split("\n")
+				.filter((l) => l.includes("Advisory notification"));
+
+			expect(otherSiteNotifLines.join("\n")).not.toContain("Other site advisory");
+
+			// Cleanup
+			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
+		it("does NOT inject advisory acks on an active conversation surface (AC-ADV6, #70)", () => {
+			const localSiteId = `test-site-${randomUUID().slice(0, 8)}`;
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Adv Notif User", now, now, 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Adv Thread",
+					null,
+					null,
+					null,
+					null,
+					now,
+					now,
+					now,
+					0,
+				],
 			);
 
-			expect(hasOtherSiteNotif).toBe(false);
+			// Eligible advisory: local site, resolved 5 min ago. Would render on
+			// the heartbeat surface, must NOT render on an active conversation.
+			const advisoryId = randomUUID();
+			const resolvedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+			db.run(
+				"INSERT INTO advisories (id, type, status, title, detail, action, impact, evidence, proposed_at, defer_until, resolved_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					advisoryId,
+					"general",
+					"applied",
+					"Active-surface advisory",
+					"Detail text",
+					null,
+					null,
+					null,
+					now,
+					null,
+					resolvedAt,
+					localSiteId,
+					resolvedAt,
+					0,
+				],
+			);
+
+			// No taskType => active conversation surface (history path).
+			const result = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				siteId: localSiteId,
+				contextWindow: 200000,
+			});
+
+			const allContent = result.messages
+				.map((m) => (typeof m.content === "string" ? m.content : ""))
+				.join("\n");
+
+			// #70 targets only the [Advisory notification] operator-ack block, which
+			// must be absent on an active conversation surface. The Live State section
+			// legitimately still lists the advisory as a pointer ("[advisory] … —
+			// applied Nm ago") — that surface is out of scope for #70.
+			expect(allContent).not.toContain("Advisory notification");
 
 			// Cleanup
 			db.run("DELETE FROM advisories WHERE id = ?", [advisoryId]);

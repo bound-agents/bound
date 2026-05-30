@@ -1678,13 +1678,14 @@ export class RelayProcessor {
 			threadModelId = threadRow.model_hint;
 		}
 
-		// Resolve task-level settings (no_history, system_prompt_addition) from the owning task, if any.
+		// Resolve task-level settings (type, no_history, system_prompt_addition) from the owning task, if any.
 		const owningTask = this.db
 			.query(
-				"SELECT id, no_history, system_prompt_addition FROM tasks WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				"SELECT id, type, no_history, system_prompt_addition FROM tasks WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
 			)
 			.get(payload.thread_id) as {
 			id: string;
+			type: string;
 			no_history: number;
 			system_prompt_addition: string | null;
 		} | null;
@@ -1693,6 +1694,10 @@ export class RelayProcessor {
 			threadId: payload.thread_id,
 			userId: payload.user_id,
 			taskId: owningTask?.id ?? `delegated-${entry.id}`,
+			// Surface-gating for volatile rendering (#70): a delegated heartbeat
+			// keeps its resolved-advisory operator-acks; all other surfaces strip
+			// them. Undefined when no owning task row resolves.
+			taskType: owningTask?.type,
 			modelId: threadModelId,
 			noHistory: owningTask?.no_history === 1,
 			systemPromptAddition: owningTask?.system_prompt_addition ?? undefined,
