@@ -88,7 +88,7 @@ describe("edge-context-sync (AC5)", () => {
 		expect(row?.weight).toBe(1.5);
 	});
 
-	it("AC5.2: Trigger fires on replay of non-canonical relation", async () => {
+	it("AC5.2 (#105): heals a non-canonical relation on replay instead of rejecting it", async () => {
 		// Manually create a ChangeLogEntry with a non-canonical relation
 		const nonCanonicalEntry: ChangeLogEntry = {
 			hlc: "2026-03-22T10:00:00.000Z_0001_peer-b",
@@ -100,7 +100,7 @@ describe("edge-context-sync (AC5)", () => {
 				id: "edge-bad",
 				source_key: "mem1",
 				target_key: "mem2",
-				relation: "invalid-relation", // Non-canonical!
+				relation: "invalid-relation", // Non-canonical, bespoke (no spelling variant)
 				weight: 1.0,
 				context: null,
 				created_at: "2026-03-22T10:00:00Z",
@@ -109,18 +109,22 @@ describe("edge-context-sync (AC5)", () => {
 			}),
 		};
 
-		// Try to apply this through the LWW reducer
-		// The trigger should prevent the insert (application fails)
+		// Apply through the LWW reducer. Pre-#105 the trigger rejected this and the
+		// row was dropped + re-warned on every reconnection. Now the receiver heals
+		// the relation to the canonical fallback and the row lands.
 		const result = applyLWWReducer(db, nonCanonicalEntry);
 
-		// Verify the trigger prevented the insert (applied = false)
-		expect(result.applied).toBe(false);
+		expect(result.applied).toBe(true);
 
-		// Verify the row was not inserted into the database
 		const row = db.prepare("SELECT * FROM memory_edges WHERE id = ?").get("edge-bad") as {
 			id: string;
+			relation: string;
+			context: string | null;
 		} | null;
-		expect(row).toBeNull();
+		expect(row).not.toBeNull();
+		expect(row?.relation).toBe("related_to");
+		// Original bespoke relation preserved in context so phrasing is not lost.
+		expect(row?.context).toBe("invalid-relation");
 	});
 
 	it("AC5.3: FULL_SCHEMA includes context column and triggers", async () => {
@@ -145,8 +149,9 @@ describe("edge-context-sync (AC5)", () => {
 		expect(triggers.some((t) => t.name.includes("insert"))).toBe(true);
 		expect(triggers.some((t) => t.name.includes("update"))).toBe(true);
 
-		// Verify trigger actually enforces canonical relations
-		// Try to insert a non-canonical relation
+		// On replay, a non-canonical relation is healed (issue #105) rather than
+		// rejected — the trigger still guards LOCAL writes, but synced rows from a
+		// peer self-heal so they never trip it.
 		const result = applyLWWReducer(db, {
 			hlc: "2026-03-22T10:00:00.000Z_0001_test",
 			table_name: "memory_edges",
@@ -166,16 +171,21 @@ describe("edge-context-sync (AC5)", () => {
 			}),
 		});
 
-		// The trigger should reject it
-		expect(result.applied).toBe(false);
+		// The row lands with a healed relation instead of being dropped.
+		expect(result.applied).toBe(true);
 
-		// Verify it wasn't inserted
 		const badRow = db.prepare("SELECT * FROM memory_edges WHERE id = ?").get("edge-test-bad") as {
 			id: string;
+			relation: string;
+			context: string | null;
 		} | null;
-		expect(badRow).toBeNull();
+		expect(badRow).not.toBeNull();
+		expect(badRow?.relation).toBe("related_to");
+		expect(badRow?.context).toBe("non-canonical-relation");
 
-		// Now verify that canonical relations ARE allowed
+		// Now verify that canonical relations ARE allowed (distinct endpoints so this
+		// is not affected by the healed edge-test-bad above, which now occupies
+		// (m1, m2, related_to)).
 		const validResult = applyLWWReducer(db, {
 			hlc: "2026-03-22T10:00:00.000Z_0002_test",
 			table_name: "memory_edges",
@@ -184,8 +194,8 @@ describe("edge-context-sync (AC5)", () => {
 			timestamp: "2026-03-22T10:00:00Z",
 			row_data: JSON.stringify({
 				id: "edge-test-good",
-				source_key: "m1",
-				target_key: "m2",
+				source_key: "m3",
+				target_key: "m4",
 				relation: "related_to", // Canonical!
 				weight: 1.0,
 				context: "test context",
