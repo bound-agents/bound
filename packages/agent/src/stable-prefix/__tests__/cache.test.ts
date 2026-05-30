@@ -178,8 +178,12 @@ describe("StableSubsectionCache — invariant tests", () => {
 			ttlMs: customTtl,
 		});
 
-		// Bump after TTL elapsed — re-collect should pick up the change.
-		bump("ttl-a", "2026-05-25T13:00:00Z");
+		// Add a NEW entry after TTL elapsed — re-collect should pick up the change.
+		// (A bare last_accessed_at bump is intentionally NOT observable here: the
+		// Discoverable Archive renders key-sorted with no access-date suffix, so
+		// bumps are byte-invariant by design. A genuine content change — a new
+		// key — is the right signal that re-collection happened.)
+		insertDetailEntry("ttl-c", "2026-05-25T13:00:00Z");
 
 		const lines2 = cache.get({
 			db,
@@ -190,6 +194,7 @@ describe("StableSubsectionCache — invariant tests", () => {
 		});
 
 		expect(lines2.join("\n")).not.toBe(lines1.join("\n"));
+		expect(lines2.join("\n")).toContain("- ttl-c");
 	});
 
 	it("K4: cold-start fidelity — first call equals direct collect+compose output", () => {
@@ -217,13 +222,16 @@ describe("StableSubsectionCache — invariant tests", () => {
 		const threadId = randomUUID();
 
 		const lines1 = cache.get({ db, threadId, budgetPressure: false, nowMs: T_NOW }).join("\n");
-		bump("inv-a", "2026-05-25T13:00:00Z");
+		// Genuine content change (new key), not a bare access-time bump — the DA is
+		// bump-invariant by design, so a bump would not prove re-collection.
+		insertDetailEntry("inv-c", "2026-05-25T13:00:00Z");
 		cache.invalidate(threadId);
 		const lines2 = cache
 			.get({ db, threadId, budgetPressure: false, nowMs: T_NOW + 1000 })
 			.join("\n");
 
 		expect(lines2).not.toBe(lines1);
+		expect(lines2).toContain("- inv-c");
 	});
 
 	it("STABLE_SUBSECTION_TTL_MS is 1h to align with Bedrock cache TTL", () => {

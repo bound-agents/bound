@@ -17,11 +17,11 @@ with detailed information.
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search
 
-- curiosity:item-0-det000000 (accessed 2026-05-21)
-- curiosity:item-1-det000001 (accessed 2026-05-21)
-- curiosity:item-2-det000002 (accessed 2026-05-21)
-- curiosity:item-3-det000003 (accessed 2026-05-21)
-- curiosity:item-4-det000004 (accessed 2026-05-21)
+- curiosity:item-0-det000000
+- curiosity:item-1-det000001
+- curiosity:item-2-det000002
+- curiosity:item-3-det000003
+- curiosity:item-4-det000004
 
 Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates

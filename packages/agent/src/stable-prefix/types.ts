@@ -13,11 +13,16 @@
  *   2. **This subsection**: Working Knowledge bodies + Discoverable
  *      Archive titles + skill index. These three are rendered from
  *      `semantic_memory` / `skills` table content. They were the
- *      historical leak surface (relative-time `Nm/h/d ago` strings in
- *      DA titles, see `summary-extraction.ts` `formatAbsoluteDate`
- *      JSDoc and the spec at
- *      `docs/design/specs/2026-05-22-volatile-context.md`,
- *      "Stable-prefix purity invariant").
+ *      historical leak surface: first relative-time `Nm/h/d ago`
+ *      strings, then the `(accessed YYYY-MM-DD)` calendar suffix and
+ *      `last_accessed_at`-ordered DA lines. Both `last_accessed_at`
+ *      leaks were removed — DA titles now render bare `- <key>` in
+ *      key-sorted order (see `sortDetailEntriesForRender` /
+ *      `formatDetailLine` in `summary-extraction.ts`), so the rendered
+ *      bytes are a pure function of {keys, cluster structure, tier},
+ *      invariant to render-time `last_accessed_at` bumps. See the spec
+ *      at `docs/design/specs/2026-05-22-volatile-context.md`,
+ *      "Stable-prefix purity invariant".
  *
  * The point of this type is to make the wall-clock-purity contract
  * legible at a function signature: anything that could perturb the
