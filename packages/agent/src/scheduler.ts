@@ -507,13 +507,31 @@ export function healStuckTasks(
 	const stuckThreshold = new Date(Date.now() - STUCK_THRESHOLD).toISOString();
 	const stuck = db
 		.query(
+			// Type-aware recovery predicate (#87). The old predicate was
+			// `status IN ('failed', 'cancelled')` for every type, which had two
+			// defects:
+			//   1. Heartbeats are uncancellable by design, so a cancelled heartbeat
+			//      must be revived — that is the ONLY type for which 'cancelled' is
+			//      a recoverable state. For cron/event/deferred, cancellation is a
+			//      deliberate terminal action and re-dispatching them resurrects
+			//      work the operator explicitly stopped.
+			//   2. A deferred task whose retries are exhausted
+			//      (consecutive_failures >= DEFERRED_MAX_RETRIES) can no longer be
+			//      retried — retryDeferredTask refuses at prev+1 > MAX and leaves the
+			//      row failed + claimed. Re-selecting it every cycle produced no
+			//      recovery, only a repeated WARN ("recovering stuck row") — the
+			//      reported log spam. Such rows are excluded so they settle.
 			`SELECT * FROM tasks
 			WHERE deleted = 0
 			  AND claimed_by IS NOT NULL
 			  AND claimed_at < ?
-			  AND status IN ('failed', 'cancelled')`,
+			  AND (
+			    (type = 'heartbeat' AND status IN ('failed', 'cancelled'))
+			    OR (type IN ('cron', 'event') AND status = 'failed')
+			    OR (type = 'deferred' AND status = 'failed' AND consecutive_failures < ?)
+			  )`,
 		)
-		.all(stuckThreshold) as Task[];
+		.all(stuckThreshold, DEFERRED_MAX_RETRIES) as Task[];
 
 	let recovered = 0;
 	for (const task of stuck) {
