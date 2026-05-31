@@ -8,6 +8,7 @@ import type { McpServerConfig } from "../config";
 import { acquireLock as defaultAcquireLock, releaseLock as defaultReleaseLock } from "../lockfile";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
+import type { ResolvedShell } from "../tools/shell";
 import { type AttachResult, performAttach as defaultPerformAttach } from "./attach";
 import type { AttachParams } from "./attach";
 
@@ -37,6 +38,8 @@ export interface TransitionParams {
 	inFlightTools: Map<string, AbortController>;
 	confirmFn?: (toolName: string) => Promise<boolean>;
 	model?: string | null;
+	/** Resolved shell for the bash-family tool, threaded into re-attach. */
+	shell: ResolvedShell;
 	/** Override deps for testing (avoids mock.module leaks in bun). */
 	deps?: Partial<TransitionDeps>;
 }
@@ -74,6 +77,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 		inFlightTools,
 		confirmFn,
 		model,
+		shell,
 		deps: _deps,
 	} = params;
 
@@ -163,6 +167,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 			hostname,
 			logger,
 			confirmFn,
+			shell,
 		});
 
 		logger.info("transition_complete", {

@@ -7,6 +7,7 @@ import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { transitionThread } from "../session/transition";
+import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import { useCancelHandler } from "./hooks/useCancelHandler";
 import { useConnectionState } from "./hooks/useConnectionState";
@@ -75,6 +76,8 @@ export interface AppProps {
 	initialMessages: Message[];
 	model: string | null;
 	toolHandlers: Map<string, ToolHandler>;
+	/** Resolved shell for the bash-family tool (streaming + spawn invocation). */
+	shell: ResolvedShell;
 }
 
 /**
@@ -96,6 +99,7 @@ export function App({
 	initialMessages,
 	model: initialModel,
 	toolHandlers,
+	shell,
 }: AppProps): React.ReactElement {
 	const [state, dispatch] = useReducer(appReducer, {
 		view: "chat",
@@ -114,7 +118,7 @@ export function App({
 		appendPendingUserMessage,
 		clearPendingUserMessage,
 	} = useMessages(client, initialMessages);
-	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
+	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd, shell);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 	const connectionState = useConnectionState(client);
 
@@ -187,6 +191,7 @@ export function App({
 				logger,
 				inFlightTools: abortMap,
 				model: state.model,
+				shell,
 			});
 
 			if (!result.ok) {
@@ -224,6 +229,7 @@ export function App({
 			logger,
 			inFlightTools,
 			replaceMessages,
+			shell,
 		],
 	);
 
@@ -256,6 +262,7 @@ export function App({
 			logger,
 			inFlightTools: abortMap,
 			model: state.model,
+			shell,
 		});
 
 		if (!result.ok) {
@@ -289,6 +296,7 @@ export function App({
 		logger,
 		inFlightTools,
 		clearMessages,
+		shell,
 	]);
 
 	const handleSendMessage = async (message: string) => {
