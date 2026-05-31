@@ -769,8 +769,9 @@ export function buildVolatileContext(params: {
 		db: params.db,
 		siteId: params.siteId,
 		includeResolvedAdvisories: params.taskType === "heartbeat",
+		nowMs,
 	});
-	const notifLines = renderNotifications(notifInputs);
+	const notifLines = renderNotifications({ ...notifInputs, nowMs });
 	for (const line of notifLines) {
 		suffixLines.push("");
 		suffixLines.push(line);
@@ -1496,15 +1497,16 @@ Original output was too large for the context window. If you need the full conte
 		// [start, end), so they do not perturb any indices (and the
 		// budget-pressure splice is gated off for noHistory anyway). ---
 		if (params.taskType === "heartbeat") {
-			const advisoryNotifLines = renderNotifications(
-				loadNotificationInputs({
+			const advisoryNotifLines = renderNotifications({
+				...loadNotificationInputs({
 					db,
 					siteId,
 					includeRetiredSkills: false,
 					includeResolvedAdvisories: true,
 					nowMs,
 				}),
-			);
+				nowMs,
+			});
 			for (const line of advisoryNotifLines) {
 				varyingTailLines.push("");
 				varyingTailLines.push(line);

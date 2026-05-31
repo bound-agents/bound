@@ -75,16 +75,25 @@ export function loadNotificationInputs(params: LoadNotificationInputsParams): No
 	let resolvedAdvisories: ResolvedAdvisoryRow[] = [];
 	if (includeResolvedAdvisories && params.siteId) {
 		try {
-			resolvedAdvisories = params.db
+			const rows = params.db
 				.query(
-					`SELECT title, status FROM advisories
+					`SELECT title, status, resolved_at FROM advisories
 					 WHERE created_by = ?
 					   AND status IN ('approved', 'applied', 'dismissed')
 					   AND resolved_at > ?
 					   AND deleted = 0
 					 ORDER BY resolved_at DESC`,
 				)
-				.all(params.siteId, cutoff24h) as ResolvedAdvisoryRow[];
+				.all(params.siteId, cutoff24h) as Array<{
+				title: string;
+				status: string;
+				resolved_at: string;
+			}>;
+			resolvedAdvisories = rows.map((r) => ({
+				title: r.title,
+				status: r.status,
+				resolvedAt: r.resolved_at,
+			}));
 		} catch (_error) {
 			// Non-fatal: resolved advisories query failed.
 		}
