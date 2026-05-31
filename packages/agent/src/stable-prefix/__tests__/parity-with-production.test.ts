@@ -35,12 +35,20 @@ import {
 import { composeStableVolatileSubsection, renderSkillIndex } from "../compose";
 import type { StableVolatileInputs } from "../types";
 
-function makeStageEntry(key: string, value: string): StageEntry {
+/**
+ * Fixed `modifiedAt` for every WK fixture entry. Both the compose path
+ * (via `StableVolatileInputs.pinned/summaries[].modifiedAt`) and the
+ * production path (via `makeStageEntry`) must see the same value, or the
+ * `(modified YYYY-MM-DD)` prefix (#71) would diverge and break byte-parity.
+ */
+const WK_MOD_AT = "2026-05-25T12:00:00Z";
+
+function makeStageEntry(key: string, value: string, modifiedAt: string): StageEntry {
 	return {
 		key,
 		value,
 		source: "test",
-		modifiedAt: "2026-05-25T12:00:00Z",
+		modifiedAt,
 		tier: "summary",
 		tag: "[summary]",
 		deleted: false,
@@ -73,11 +81,15 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 	it("matches for a tier-1 DA workload with pinned + summary", () => {
 		const inputs: StableVolatileInputs = {
 			pinned: [
-				{ key: "_standing:tone", value: "be terse and factual" },
-				{ key: "_pinned:user-name", value: "user" },
+				{ key: "_standing:tone", value: "be terse and factual", modifiedAt: WK_MOD_AT },
+				{ key: "_pinned:user-name", value: "user", modifiedAt: WK_MOD_AT },
 			],
 			summaries: [
-				{ key: "_summary:transit", value: "notes on the local transit network and connections" },
+				{
+					key: "_summary:transit",
+					value: "notes on the local transit network and connections",
+					modifiedAt: WK_MOD_AT,
+				},
 			],
 			detailEntries: [
 				{ key: "adapter:foo", last_accessed_at: "2026-04-28T12:34:56Z" },
@@ -99,7 +111,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 
 	it("matches under budget pressure (DA renders title-only)", () => {
 		const inputs: StableVolatileInputs = {
-			pinned: [{ key: "_standing:tone", value: "be terse" }],
+			pinned: [{ key: "_standing:tone", value: "be terse", modifiedAt: WK_MOD_AT }],
 			summaries: [],
 			detailEntries: [
 				{ key: "adapter:foo", last_accessed_at: "2026-04-28T12:34:56Z" },
@@ -121,7 +133,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 	it("matches when a stale child is excluded from DA via the workingKnowledge set", () => {
 		const inputs: StableVolatileInputs = {
 			pinned: [],
-			summaries: [{ key: "_summary:transit", value: "transit notes" }],
+			summaries: [{ key: "_summary:transit", value: "transit notes", modifiedAt: WK_MOD_AT }],
 			detailEntries: [
 				{ key: "adapter:foo", last_accessed_at: "2026-04-28T12:34:56Z" },
 				{ key: "stale:dropped-from-da", last_accessed_at: "2026-05-25T08:00:00Z" },
@@ -146,13 +158,14 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 		// future divergence in how either side emits the demoted block.
 		const summaries = Array.from(
 			{ length: WORKING_KNOWLEDGE_SUMMARY_CAP + 12 },
-			(_, i): { key: string; value: string } => ({
+			(_, i): { key: string; value: string; modifiedAt: string } => ({
 				key: `_summary:k${String(i).padStart(3, "0")}`,
 				value: `summary body number ${i} `.padEnd(260, "z"),
+				modifiedAt: WK_MOD_AT,
 			}),
 		);
 		const inputs: StableVolatileInputs = {
-			pinned: [{ key: "_standing:tone", value: "be terse" }],
+			pinned: [{ key: "_standing:tone", value: "be terse", modifiedAt: WK_MOD_AT }],
 			summaries,
 			detailEntries: [{ key: "adapter:foo", last_accessed_at: "2026-04-28T12:34:56Z" }],
 			parentSummaryByKey: new Map(),
@@ -179,8 +192,10 @@ describe("composeStableVolatileSubsection — parity with production renderers",
  */
 function renderProductionStableConcat(inputs: StableVolatileInputs): string {
 	const wkInput = {
-		pinned: inputs.pinned.map((e): StageEntry => makeStageEntry(e.key, e.value)),
-		summaries: inputs.summaries.map((e): StageEntry => makeStageEntry(e.key, e.value)),
+		pinned: inputs.pinned.map((e): StageEntry => makeStageEntry(e.key, e.value, e.modifiedAt)),
+		summaries: inputs.summaries.map(
+			(e): StageEntry => makeStageEntry(e.key, e.value, e.modifiedAt),
+		),
 		staleChildrenBySummary: new Map(),
 		deltaKeys: new Set<string>(),
 	};

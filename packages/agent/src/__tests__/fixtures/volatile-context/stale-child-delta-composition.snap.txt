@@ -2,14 +2,14 @@ User ID: test-user, Thread ID: 0f529918-4b1c-52d8-b90d-e0c8f2f1f6e9
 
 ## Working Knowledge — operational and durable
 
-- _pinned:0: pinned body 0
-- _pinned:1: pinned body 1
-- _pinned:2: pinned body 2
-- _pinned:3: pinned body 3
-- _pinned:4: pinned body 4
-- _summary:topic-0: Summary for topic 0: this is a brief overview.
-- _summary:topic-1: Summary for topic 1: this is a brief overview.
-- _summary:topic-2: Summary for topic 2: this is a brief overview.
+- _pinned:0 (modified 2026-05-22): pinned body 0
+- _pinned:1 (modified 2026-05-21): pinned body 1
+- _pinned:2 (modified 2026-05-21): pinned body 2
+- _pinned:3 (modified 2026-05-21): pinned body 3
+- _pinned:4 (modified 2026-05-21): pinned body 4
+- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
+- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
+- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
 
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search

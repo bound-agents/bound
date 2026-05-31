@@ -99,8 +99,12 @@ export interface LoadedStableInputs {
  */
 export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableVolatileInputs {
 	return {
-		pinned: loaded.pinned.map((e) => ({ key: e.key, value: e.value })),
-		summaries: loaded.summaries.map((e) => ({ key: e.key, value: e.value })),
+		pinned: loaded.pinned.map((e) => ({ key: e.key, value: e.value, modifiedAt: e.modifiedAt })),
+		summaries: loaded.summaries.map((e) => ({
+			key: e.key,
+			value: e.value,
+			modifiedAt: e.modifiedAt,
+		})),
 		detailEntries: loaded.detailEntries.map((e) => ({
 			key: e.key,
 			last_accessed_at: e.last_accessed_at,

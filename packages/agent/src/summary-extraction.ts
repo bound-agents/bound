@@ -1790,6 +1790,26 @@ export function truncateGloss(s: string, max: number): string {
 }
 
 /**
+ * Render the capture-time calendar-date prefix (`YYYY-MM-DD`, UTC) for a
+ * stored ISO timestamp. Used on the STABLE Working Knowledge path (#71) to
+ * surface when each pinned / summary body was last captured, alongside the
+ * body itself.
+ *
+ * Wall-clock purity (R-VC25): this is a pure function of its argument — no
+ * `Date.now()`, no `Date.parse`, no relative offsets. It slices the calendar
+ * prefix directly off the stored UTC ISO string, so the rendered bytes change
+ * only when the source column (`semantic_memory.modified_at`) advances, which
+ * happens exactly on a real body rewrite. Stored timestamps are always written
+ * UTC-ISO via the outbox helpers; malformed/empty input renders the literal
+ * `unknown` so the line shape stays uniform.
+ */
+export function formatCalendarDate(iso: string | null | undefined): string {
+	if (!iso || iso.length < 10) return "unknown";
+	const datePart = iso.slice(0, 10);
+	return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : "unknown";
+}
+
+/**
  * Header line emitted on the varying side when there are any updates to
  * report (deltas, stale children). Distinct from WORKING_KNOWLEDGE_HEADER so
  * the agent can visually pair updates with the stable bodies above without
@@ -1831,9 +1851,15 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 	stableLines.push(WORKING_KNOWLEDGE_HEADER);
 	stableLines.push("");
 
-	// R-VC3: pinned bodies in full text, no inline markers.
+	// R-VC3: pinned bodies in full text, no inline markers. The `(modified
+	// YYYY-MM-DD)` capture-time prefix (#71) rides the stable channel because
+	// its source column advances only on a real body rewrite — the same event
+	// that already busts the prefix cache — so it carries provenance without
+	// adding cache churn.
 	for (const entry of input.pinned) {
-		stableLines.push(`- ${entry.key}: ${entry.value}`);
+		stableLines.push(
+			`- ${entry.key} (modified ${formatCalendarDate(entry.modifiedAt)}): ${entry.value}`,
+		);
 	}
 
 	// R-VC3: summary bodies with 200-char gloss, no inline markers. Capped at
@@ -1846,7 +1872,9 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 	);
 	for (const summary of keptSummaries) {
 		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
-		stableLines.push(`- ${summary.key}: ${gloss}`);
+		stableLines.push(
+			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${gloss}`,
+		);
 	}
 	if (demotedSummaries.length > 0) {
 		stableLines.push("");
