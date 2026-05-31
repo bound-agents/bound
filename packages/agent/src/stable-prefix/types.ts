@@ -50,13 +50,24 @@ import type { Vc15Tunables } from "../summary-extraction";
 /**
  * Working-Knowledge tier projection. Mirrors the fields read by
  * `renderWorkingKnowledge`'s stable-output path: `key` and `value` for
- * the pinned/summary line bodies. Fields that participate only in the
- * varying side (delta markers, stale-child references) are NOT here —
- * they're declared on the varying-side input type, not this one.
+ * the pinned/summary line bodies, plus `modifiedAt` for the `(modified
+ * YYYY-MM-DD)` capture-time prefix (#71). `modifiedAt` is a legitimate
+ * stable-side wall-clock signal under R-VC25: it enters only via the
+ * persisted `semantic_memory.modified_at` column, which advances solely
+ * on a real body rewrite — the same event that already busts the prefix
+ * cache — so rendering its calendar prefix adds provenance without
+ * introducing render-time cache churn. Fields that participate only in
+ * the varying side (delta markers, stale-child references) are NOT here.
  */
 export interface MemoryEntryView {
 	key: string;
 	value: string;
+	/**
+	 * UTC ISO timestamp of the entry's last body rewrite
+	 * (`semantic_memory.modified_at`). Rendered as a `YYYY-MM-DD` calendar
+	 * prefix via `formatCalendarDate`; never parsed into a relative offset.
+	 */
+	modifiedAt: string;
 }
 
 /**

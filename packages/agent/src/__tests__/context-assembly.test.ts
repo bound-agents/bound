@@ -4180,10 +4180,12 @@ This skill reviews pull requests.`;
 				// stale-detail child past the delta baseline leaked a bare
 				// `- <key> [changed since last turn]` line onto the active varying tail.
 				// The fix restricts summary deltas to genuine `[summary]` tags. The child's
-				// unlabeled `- key: gloss` line still renders on the STABLE body
-				// (systemPrompt) — surface-independent, keeping the stable channel
-				// byte-identical — but it must never appear in the varying developer tail.
-				expect(systemPrompt).toContain(`- ${STALE_CHILD_KEY}:`);
+				// unlabeled `- key (modified YYYY-MM-DD): gloss` line still renders on the
+				// STABLE body (systemPrompt) — surface-independent, keeping the stable
+				// channel byte-identical — but it must never appear in the varying
+				// developer tail. The `(modified …)` capture-time prefix (#71) sits
+				// between the key and the colon, so match on the key + prefix opener.
+				expect(systemPrompt).toContain(`- ${STALE_CHILD_KEY} (modified `);
 				expect(devContent).not.toContain(STALE_CHILD_KEY);
 			} finally {
 				cleanupStaleChild();

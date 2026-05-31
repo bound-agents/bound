@@ -1,20 +1,20 @@
 ## Working Knowledge — operational and durable
 
-- _internal.file_thread.build/output.js: 45926555-c65d-55a4-b439-09c3167e4000
-- _internal.file_thread.config/settings.json: 50777cb5-6d75-5280-9d9a-b8c803869883
-- _internal.file_thread.docs/README.md: 45926555-c65d-55a4-b439-09c3167e4000
-- _internal.file_thread.src/main.ts: 19e2ff49-7e57-5ae2-aafb-5da2182afb37
-- _internal.file_thread.test/fixtures.ts: 19e2ff49-7e57-5ae2-aafb-5da2182afb37
-- _pinned:0: pinned body 0
-- _pinned:1: pinned body 1
-- _pinned:2: pinned body 2
-- _pinned:3: pinned body 3
-- _pinned:4: pinned body 4
-- _summary:topic-0: Summary for topic 0: this is a brief overview.
-- _summary:topic-1: Summary for topic 1: this is a brief overview.
-- _summary:topic-2: Summary for topic 2: this is a brief overview.
-- _summary:topic-3: Summary for topic 3: this is a brief overview.
-- _summary:topic-4: Summary for topic 4: this is a brief overview.
+- _internal.file_thread.build/output.js (modified 2026-05-22): 45926555-c65d-55a4-b439-09c3167e4000
+- _internal.file_thread.config/settings.json (modified 2026-05-22): 50777cb5-6d75-5280-9d9a-b8c803869883
+- _internal.file_thread.docs/README.md (modified 2026-05-22): 45926555-c65d-55a4-b439-09c3167e4000
+- _internal.file_thread.src/main.ts (modified 2026-05-22): 19e2ff49-7e57-5ae2-aafb-5da2182afb37
+- _internal.file_thread.test/fixtures.ts (modified 2026-05-22): 19e2ff49-7e57-5ae2-aafb-5da2182afb37
+- _pinned:0 (modified 2026-05-22): pinned body 0
+- _pinned:1 (modified 2026-05-21): pinned body 1
+- _pinned:2 (modified 2026-05-21): pinned body 2
+- _pinned:3 (modified 2026-05-21): pinned body 3
+- _pinned:4 (modified 2026-05-21): pinned body 4
+- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
+- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
+- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
+- _summary:topic-3 (modified 2026-05-21): Summary for topic 3: this is a brief overview.
+- _summary:topic-4 (modified 2026-05-21): Summary for topic 4: this is a brief overview.
 
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search

@@ -61,11 +61,6 @@ const memoryValue = fc.string({ minLength: 0, maxLength: 300 }).filter(
 	(s) => !/[\n\r]/.test(s),
 );
 
-const memoryEntryView: fc.Arbitrary<MemoryEntryView> = fc.record({
-	key: memoryKey,
-	value: memoryValue,
-});
-
 const isoDate = fc
 	.tuple(
 		fc.integer({ min: 2024, max: 2030 }),
@@ -76,6 +71,12 @@ const isoDate = fc
 		([y, m, d]) =>
 			`${String(y)}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T12:00:00Z`,
 	);
+
+const memoryEntryView: fc.Arbitrary<MemoryEntryView> = fc.record({
+	key: memoryKey,
+	value: memoryValue,
+	modifiedAt: isoDate,
+});
 
 const detailEntryView: fc.Arbitrary<DetailEntryView> = fc.record({
 	key: memoryKey,

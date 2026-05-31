@@ -57,10 +57,10 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			expect(result.stableLines).toContain(
-				"- stand_rule_one: Always validate input before processing",
+				"- stand_rule_one (modified 2026-05-22): Always validate input before processing",
 			);
 			expect(result.stableLines).toContain(
-				"- stand_rule_two: Logging must include timestamp and level",
+				"- stand_rule_two (modified 2026-05-22): Logging must include timestamp and level",
 			);
 			expect(result.varyingLines).toEqual([]);
 		});
@@ -89,9 +89,13 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const summaryLine = result.stableLines.find((line) => line.startsWith("- summary_key_1: "));
+			const summaryLine = result.stableLines.find((line) =>
+				line.startsWith("- summary_key_1 (modified 2026-05-22): "),
+			);
 			expect(summaryLine).toBeDefined();
-			const truncatedValue = (summaryLine ?? "").substring("- summary_key_1: ".length);
+			const truncatedValue = (summaryLine ?? "").substring(
+				"- summary_key_1 (modified 2026-05-22): ".length,
+			);
 			expect(truncatedValue).toContain("...");
 			const beforeEllipsis = truncatedValue.substring(0, truncatedValue.length - 3);
 			expect(beforeEllipsis.length).toBe(200);
@@ -128,7 +132,9 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.stableLines).toContain("- parent_summary: Parent summary entry");
+			expect(result.stableLines).toContain(
+				"- parent_summary (modified 2026-05-22): Parent summary entry",
+			);
 			// No marker in stable section.
 			for (const line of result.stableLines) {
 				expect(line).not.toContain("[stale child of");
@@ -163,7 +169,9 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.stableLines).toContain("- changed_summary: This summary was recently updated");
+			expect(result.stableLines).toContain(
+				"- changed_summary (modified 2026-05-22): This summary was recently updated",
+			);
 			for (const line of result.stableLines) {
 				expect(line).not.toContain("[changed since last turn]");
 			}
@@ -191,7 +199,9 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.stableLines).toContain("- changed_pinned: This pinned rule was just updated");
+			expect(result.stableLines).toContain(
+				"- changed_pinned (modified 2026-05-22): This pinned rule was just updated",
+			);
 			for (const line of result.stableLines) {
 				expect(line).not.toContain("[changed since last turn]");
 			}
@@ -220,7 +230,7 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			const stableJoined = result.stableLines.join("\n");
-			expect(stableJoined).toContain("- multi_line_pinned:");
+			expect(stableJoined).toContain("- multi_line_pinned (modified 2026-05-22):");
 			expect(stableJoined).toContain(
 				"Line 1 of the pinned rule\nLine 2 of the pinned rule\nLine 3 continues",
 			);
@@ -488,8 +498,10 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 				staleChildrenBySummary: new Map(),
 				deltaKeys: new Set(),
 			});
-			// Every summary appears with its truncated gloss (key + ": " + body…).
-			const glossLines = result.stableLines.filter((l) => /^- _summary:k\d+: body for/.test(l));
+			// Every summary appears with its truncated gloss (key + " (modified …): " + body…).
+			const glossLines = result.stableLines.filter((l) =>
+				/^- _summary:k\d+ \(modified \d{4}-\d{2}-\d{2}\): body for/.test(l),
+			);
 			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
 			// No demote sub-header when nothing overflowed.
 			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(false);
@@ -508,7 +520,9 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			});
 
 			// First CAP entries keep their full gloss.
-			const glossLines = result.stableLines.filter((l) => /^- _summary:k\d+: body for/.test(l));
+			const glossLines = result.stableLines.filter((l) =>
+				/^- _summary:k\d+ \(modified \d{4}-\d{2}-\d{2}\): body for/.test(l),
+			);
 			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
 
 			// A demote sub-header is present.
@@ -522,7 +536,7 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			// Cap is positional: the FIRST CAP keys keep gloss, the REST are titles.
 			expect(result.stableLines).toContain(
-				`- _summary:k000: ${mkSummary("_summary:k000").value.slice(0, 200)}...`,
+				`- _summary:k000 (modified 2026-05-22): ${mkSummary("_summary:k000").value.slice(0, 200)}...`,
 			);
 			expect(titleOnly).toContain(`- _summary:k${String(n - 1).padStart(3, "0")}`);
 		});

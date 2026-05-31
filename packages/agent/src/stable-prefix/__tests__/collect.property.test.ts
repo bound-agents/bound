@@ -124,19 +124,22 @@ describe("projectStableVolatileInputs — property tests", () => {
 		);
 	});
 
-	it("K2: locality — extra fields on StageEntry don't influence output", () => {
+	it("K2: locality — non-projected fields on StageEntry don't influence output", () => {
 		fc.assert(
 			fc.property(loadedArb, (loaded) => {
-				// Synthetic "extra" fields on the wider StageEntry shape
-				// (modifiedAt, source, tier, tag, taskName, threadId,
-				// threadTitle) MUST NOT affect the projection.
+				// The projection keeps key, value, and modifiedAt (the last drives
+				// the `(modified YYYY-MM-DD)` capture-time prefix, #71). Every OTHER
+				// field on the wider StageEntry shape (source, tier, tag, taskName,
+				// threadId, threadTitle) MUST NOT affect the projection. modifiedAt
+				// is held constant here so the pollution only exercises the
+				// dropped fields.
 				const polluted: LoadedStableInputs = {
 					...loaded,
 					pinned: loaded.pinned.map((e) =>
 						makeStageEntry({
 							key: e.key,
 							value: e.value,
-							modifiedAt: "1999-01-01T00:00:00Z",
+							modifiedAt: e.modifiedAt,
 							source: "MUTATED",
 							tier: "default",
 							tag: "[MUTATED]",
