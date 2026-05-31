@@ -24,6 +24,7 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"connector_handles",
 	"webhooks",
 	"turns",
+	"client_sessions",
 ];
 
 describe("getSyncedTableSchemas", () => {

@@ -119,7 +119,7 @@ describe("DI Container", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(29); // 16 main tables (+ skills + connector_handles + webhooks) + 3 relay tables + dispatch_queue + 2 metrics tables (turns, daily_summary) + 1 FTS5 virtual + 5 FTS5 shadow
+		expect(tables.length).toBe(30); // 16 main tables (+ skills + connector_handles + webhooks + client_sessions) + 3 relay tables + dispatch_queue + 2 metrics tables (turns, daily_summary) + 1 FTS5 virtual + 5 FTS5 shadow
 		testDb.close();
 	});
 });

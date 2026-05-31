@@ -437,6 +437,33 @@ export function applySchema(db: Database): void {
 		ON webhooks(name) WHERE deleted = 0
 	`);
 
+	// 14b. client_sessions (synced) — tracks which host holds the live WS
+	// connection (boundless / external BoundClient) subscribed to a thread, so
+	// notify/introspect wakeups can be routed to the host that can actually
+	// supply the thread's client tools. See invariant #21 (client-session
+	// affinity) and issue #91.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS client_sessions (
+			id            TEXT PRIMARY KEY,
+			connection_id TEXT NOT NULL,
+			thread_id     TEXT NOT NULL,
+			site_id       TEXT NOT NULL,
+			created_at    TEXT NOT NULL,
+			deleted       INTEGER NOT NULL DEFAULT 0,
+			modified_at   TEXT NOT NULL
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_client_sessions_thread
+		ON client_sessions(thread_id) WHERE deleted = 0
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_client_sessions_connection
+		ON client_sessions(connection_id) WHERE deleted = 0
+	`);
+
 	// 15. change_log (non-replicated, local-only)
 	// Migration: if old seq-based table exists, migrate to HLC-based table
 	migrateChangeLogToHlc(db);

@@ -122,6 +122,7 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"tasks",
 	"connector_handles",
 	"webhooks",
+	"client_sessions",
 	"files",
 	"advisories",
 	"skills",

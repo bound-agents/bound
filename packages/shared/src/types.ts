@@ -37,6 +37,7 @@ export type SyncedTableName =
 	| "memory_edges"
 	| "connector_handles"
 	| "webhooks"
+	| "client_sessions"
 	| "turns";
 
 export type ReducerType = "lww" | "append-only";
@@ -309,6 +310,23 @@ export interface ConnectorHandleRow {
 	modified_at: string; // ISO 8601
 }
 
+/**
+ * client_sessions (synced, LWW): records which host holds the live WS
+ * connection (boundless / external BoundClient) subscribed to a thread.
+ * Notify/introspect wakeups consult this to route to the host that can
+ * supply the thread's client tools (issue #91, invariant #21). One row per
+ * (connection_id, thread_id) subscription; `id` is `${connection_id}::${thread_id}`.
+ */
+export interface ClientSession {
+	id: string;
+	connection_id: string;
+	thread_id: string;
+	site_id: string;
+	created_at: string; // ISO 8601
+	deleted: number; // 0 | 1
+	modified_at: string; // ISO 8601
+}
+
 export interface Turn {
 	id: string;
 	thread_id: string | null;
@@ -344,6 +362,7 @@ export interface SyncedTableRowMap {
 	memory_edges: MemoryEdge;
 	connector_handles: ConnectorHandleRow;
 	webhooks: Webhook;
+	client_sessions: ClientSession;
 	turns: Turn;
 }
 
@@ -365,6 +384,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	memory_edges: "lww",
 	connector_handles: "lww",
 	webhooks: "lww",
+	client_sessions: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
 	// for local-only columns (context_debug, relay_target, relay_latency_ms)

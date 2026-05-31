@@ -9,10 +9,12 @@ import {
 	HandleMessageTracker,
 	createRelayOutboxEntry,
 	generateThreadTitle,
+	getClientSessionDelegationTarget,
 	getDelegationTarget,
+	hasLocalClientSession,
 	runIntrospectResponseStamp,
 } from "@bound/agent";
-import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
+import type { AgentLoop, AgentLoopConfig, ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	type DispatchEntry,
@@ -259,6 +261,7 @@ export interface ServerDeps {
 		setPlatformMcpRegistry(registry: PlatformMcpRegistry): void;
 		setAgentLoopFactory(factory: AgentLoopFactory): void;
 		setThreadExecutor(executor: ThreadExecutor): void;
+		setWsRegistry(registry: ClientToolResolver): void;
 	};
 }
 
@@ -394,6 +397,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Capture connection registry from web server for client tool lookup in handleThread
 		const wsRegistry = webServer?.wsRegistry;
+
+		// Wire it into the relay processor too, so a delegated loop on this host
+		// (a notify/introspect wakeup routed here because the live session lives
+		// here) can resolve the thread's client tools (issue #91).
+		if (wsRegistry) {
+			relayProcessor.setWsRegistry(wsRegistry);
+		}
 
 		// Start sync server if sync prerequisites are available
 		if (appContext.siteId && keyring && appContext.logger) {
@@ -537,13 +547,33 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							routerConfig.default,
 						);
 
-						const delegationTarget = getDelegationTarget(
-							appContext.db,
-							thread_id,
-							activeModelId,
-							modelRouter,
-							appContext.siteId,
-						);
+						const delegationTarget = ((): ReturnType<typeof getDelegationTarget> => {
+							// Client-session affinity wins over model-based delegation
+							// (issue #91). A notify/introspect wakeup can fire on any
+							// host; the loop must run where the live WS session is so
+							// client tools resolve. Three cases:
+							//   1. session lives on another host → delegate there
+							//   2. session lives here → force local (suppress model
+							//      delegation, which would otherwise pull an opus-backed
+							//      boundless loop to the hub and strip its client tools)
+							//   3. no live session → fall back to model-based delegation
+							const sessionTarget = getClientSessionDelegationTarget(
+								appContext.db,
+								thread_id,
+								appContext.siteId,
+							);
+							if (sessionTarget) return sessionTarget;
+							if (hasLocalClientSession(appContext.db, thread_id, appContext.siteId)) {
+								return null;
+							}
+							return getDelegationTarget(
+								appContext.db,
+								thread_id,
+								activeModelId,
+								modelRouter,
+								appContext.siteId,
+							);
+						})();
 
 						const threadRow = appContext.db
 							.query("SELECT user_id, interface FROM threads WHERE id = ?")
