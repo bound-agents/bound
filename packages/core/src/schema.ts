@@ -285,6 +285,7 @@ export function applySchema(db: Database): void {
 			site_id      TEXT PRIMARY KEY,
 			host_name    TEXT NOT NULL,
 			version      TEXT,
+			commit_hash  TEXT,
 			sync_url     TEXT,
 			mcp_servers  TEXT,
 			mcp_tools    TEXT,
@@ -639,6 +640,16 @@ export function applySchema(db: Database): void {
 	// Shape: {[serverName]: {[toolName]: {idempotentHint?, readOnlyHint?}}}
 	try {
 		db.run("ALTER TABLE hosts ADD COLUMN mcp_tool_annotations TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// #120: record each node's build commit hash so `hostinfo` can surface it,
+	// letting agents reason about inconsistent cluster behavior across nodes
+	// running different builds. Idempotent — older databases gain the column on
+	// next startup; existing rows default to NULL until the host re-registers.
+	try {
+		db.run("ALTER TABLE hosts ADD COLUMN commit_hash TEXT");
 	} catch {
 		/* already exists */
 	}
