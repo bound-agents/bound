@@ -253,6 +253,9 @@ export function initScheduler(
 							return readOnlyTools;
 						}
 					: undefined,
+				platformInstructionsResolver: platformMcpRegistry
+					? (threadId: string) => platformMcpRegistry.getInstructionsForThread(threadId)
+					: undefined,
 			},
 			sandbox?.bash,
 		);

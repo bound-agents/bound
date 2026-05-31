@@ -1827,6 +1827,33 @@ describe("Context Assembly Pipeline", () => {
 		});
 	});
 
+	describe("platformInstructions surfacing", () => {
+		it("surfaces connector-authored instructions in the developer tail when provided", () => {
+			const instructions = "Discord formatting: **bold**. Messages over 2000 chars are rejected.";
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				platformInstructions: instructions,
+			});
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const tail = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(tail).toContain(instructions);
+		});
+
+		it("does not surface platform instructions when absent", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				// no platformInstructions
+			});
+			const devMsg = result.messages.find((m) => m.role === "developer");
+			const tail = typeof devMsg?.content === "string" ? devMsg.content : "";
+			expect(tail).not.toContain("Discord formatting");
+		});
+	});
+
 	describe("skill context injection", () => {
 		let tmpDir2: string;
 		let dbPath2: string;

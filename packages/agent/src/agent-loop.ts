@@ -350,6 +350,7 @@ export class AgentLoop {
 			currentModel: resolvedModelForDebug,
 			relayInfo,
 			systemPromptAddition: this.config.systemPromptAddition,
+			platformInstructions: this.config.platformInstructions,
 		});
 
 		// Replace the LAST developer-role message — that's the
@@ -853,6 +854,7 @@ export class AgentLoop {
 							currentModel: resolvedModelForDebug,
 							relayInfo,
 							systemPromptAddition: this.config.systemPromptAddition,
+							platformInstructions: this.config.platformInstructions,
 						});
 
 						storedMessages.push({
@@ -1103,6 +1105,7 @@ export class AgentLoop {
 							effectiveTruncationRatio: adaptiveTruncationRatio,
 							noHistory: this.config.noHistory,
 							systemPromptAddition: this.config.systemPromptAddition,
+							platformInstructions: this.config.platformInstructions,
 							commandRegistry: this.ctx.commandRegistry,
 							stableSubsectionCache: sharedStableSubsectionCache,
 						});
