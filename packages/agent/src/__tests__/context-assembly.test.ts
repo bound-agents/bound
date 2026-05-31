@@ -1827,61 +1827,6 @@ describe("Context Assembly Pipeline", () => {
 		});
 	});
 
-	describe("platformContext injection", () => {
-		it("includes platform system message when platformContext is set (AC5.1)", () => {
-			const result = assembleContext({
-				db,
-				threadId,
-				userId,
-				platformContext: { platform: "discord", toolNames: ["discord_send_message"] },
-			});
-			const devMsg = result.messages.find((m) => m.role === "developer");
-			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-
-			// Platform context should be in systemSuffix
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("discord_send_message");
-			// Should mention silence/invisibility semantics
-			expect(systemSuffix).toMatch(/sees nothing|silence|cannot see/i);
-		});
-
-		it("no platform system message when platformContext is absent (AC5.2)", () => {
-			const { messages } = assembleContext({
-				db,
-				threadId,
-				userId,
-				// no platformContext
-			});
-
-			const systemMessages = messages.filter((m) => m.role === "system");
-			const platformMsg = systemMessages.find(
-				(m) => typeof m.content === "string" && m.content.includes("discord_send_message"),
-			);
-
-			expect(platformMsg).toBeUndefined();
-		});
-
-		it("uses toolNames from platformContext in platform system message, not hardcoded discord_send_message (AC5.3)", () => {
-			// Bug: when a second platform (e.g. Telegram) is added, the context message hardcodes
-			// "discord_send_message" even for Telegram threads. Fix: toolNames in platformContext
-			// should be referenced dynamically.
-			const result = assembleContext({
-				db,
-				threadId,
-				userId,
-				platformContext: { platform: "telegram", toolNames: ["telegram_send_message"] },
-			});
-			const devMsg = result.messages.find((m) => m.role === "developer");
-			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-
-			expect(systemSuffix).toBeDefined();
-			// Tool name should be from platformContext.toolNames, not hardcoded
-			expect(systemSuffix).toContain("telegram_send_message");
-			expect(systemSuffix).not.toContain("discord_send_message");
-			expect(systemSuffix).toMatch(/sees nothing|silence|cannot see/i);
-		});
-	});
-
 	describe("skill context injection", () => {
 		let tmpDir2: string;
 		let dbPath2: string;

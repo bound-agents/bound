@@ -128,11 +128,6 @@ export interface ContextParams {
 		model: string;
 		provider: string;
 	};
-	/** When set, assembleContext() prepends a system message explaining silence semantics.
-	 * toolNames lists the tools the agent should use to send messages on this platform.
-	 * When omitted, a generic reference is used instead of a specific tool name.
-	 */
-	platformContext?: { platform: string; toolNames?: string[] };
 	/**
 	 * When set, context assembly performs in-place substitution of content blocks
 	 * that the target backend does not support. Image blocks are replaced with text
@@ -562,7 +557,6 @@ export function buildVolatileContext(params: {
 	hostName?: string;
 	currentModel?: string;
 	relayInfo?: ContextParams["relayInfo"];
-	platformContext?: ContextParams["platformContext"];
 	systemPromptAddition?: string;
 	/** Last user message text for relevance-aware memory boosting */
 	userMessageText?: string;
@@ -589,7 +583,7 @@ export function buildVolatileContext(params: {
 	// Suffix-prefix split (RFC 2026-05-22-volatile-context):
 	//   varyingLines  — per-thread / per-turn content. Driver places these
 	//                   AFTER history; uncached. Includes the User/Thread ID
-	//                   line, relay/platform/model context, Live State,
+	//                   line, relay/model context, Live State,
 	//                   Working Knowledge update markers, advisory and skill
 	//                   notifications, inactive-skill references, and any
 	//                   systemPromptAddition.
@@ -607,13 +601,12 @@ export function buildVolatileContext(params: {
 	const varyingLines: string[] = [];
 	const suffixLines: string[] = [];
 
-	// --- VARYING: User/Thread ID, relay info, platform context, current model.
+	// --- VARYING: User/Thread ID, relay info, current model.
 	// Pure projection in `varying-prefix/build.ts`; pinned by V1-V8 props. ---
 	const prefixLines = buildVaryingPrefix({
 		userId: params.userId,
 		threadId: params.threadId,
 		relayInfo: params.relayInfo,
-		platformContext: params.platformContext,
 		currentModel: params.currentModel,
 	});
 	suffixLines.push(...prefixLines);
@@ -936,7 +929,6 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		hostName,
 		siteId,
 		relayInfo,
-		platformContext,
 		targetCapabilities,
 		effectiveTruncationRatio = TRUNCATION_TARGET_RATIO,
 	} = params;
@@ -1321,7 +1313,6 @@ Original output was too large for the context window. If you need the full conte
 			hostName,
 			currentModel,
 			relayInfo,
-			platformContext,
 			systemPromptAddition: params.systemPromptAddition,
 			userMessageText,
 			threadSummary,
