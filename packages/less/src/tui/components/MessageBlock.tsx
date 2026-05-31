@@ -567,18 +567,36 @@ export function MessageBlock({
 	}
 
 	if (message.role === "alert") {
+		// System-generated error surfacing (e.g. failed inference). Red stripe
+		// + "alert" header so it reads as a turn in the transcript like every
+		// other message, not as raw floating text (#139).
 		return (
-			<Text color="red">
-				{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}
-			</Text>
+			<StripeBox color="red" width={stripeWidth}>
+				<Text bold color="red">
+					alert
+				</Text>
+				<Text color="red">
+					{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}
+				</Text>
+			</StripeBox>
 		);
 	}
 
-	if (message.role === "system") {
+	// System notifications. Per invariant #19, `role: "system"` is forbidden in
+	// the messages table — injected system context (notify/introspect wakeups,
+	// interruption notices) lands as `role: "developer"`. Both render with a
+	// yellow stripe + "system" header so notifications read as transcript turns
+	// rather than raw dimmed text (#139).
+	if (message.role === "system" || message.role === "developer") {
 		return (
-			<Text dimColor>
-				{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}
-			</Text>
+			<StripeBox color="yellow" width={stripeWidth}>
+				<Text bold color="yellow">
+					system
+				</Text>
+				<Text>
+					{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}
+				</Text>
+			</StripeBox>
 		);
 	}
 
