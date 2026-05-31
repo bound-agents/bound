@@ -4023,11 +4023,49 @@ This skill reviews pull requests.`;
 		const STALE_SUMMARY_KEY = "_summary:sc-topic";
 		const STALE_CHILD_KEY = "sc:stale-detail";
 		const STALE_EDGE_ID = "sc-edge-69";
+		// Genuine `[summary]`-tier control entry, recently modified so it is itself a
+		// delta. AC-SC2 asserts ITS `[changed since last turn]` marker DOES appear on
+		// the varying tail — proving the delta machinery is live on this thread, so
+		// the absence of STALE_CHILD_KEY's marker is a real suppression rather than a
+		// baseline that never aged past the seeded entries' modified_at.
+		const STALE_CONTROL_SUMMARY_KEY = "_summary:sc-control";
+
+		// Dedicated thread with an OLD created_at and no user messages. computeBaseline
+		// on the active path is MAX(last-user-message-or-thread.created_at, now-24h), so
+		// an old, message-less thread pins the delta baseline to the 24h recency floor.
+		// Every recently-modified entry below is therefore DETERMINISTICALLY a delta.
+		// The prior version reused the shared thread, whose baseline floated to roughly
+		// test-start time; AC-SC2's suppression only got exercised when the suite ran
+		// fast enough that the child never crossed the baseline — so the child usually
+		// was not a delta at all and the assertion passed for the wrong reason. That is
+		// the CI flake this fixture removes.
+		const STALE_THREAD_ID = randomUUID();
 
 		// Seed one summary plus one detail child whose `modified_at` is NEWER than
 		// the summary's — the R-HM7 staleness condition that `buildStaleChildrenMap`
-		// keys on. Cleanup deletes by the fixed keys above.
+		// keys on — plus the dedicated old thread and the genuine-delta control
+		// summary. Cleanup deletes by the fixed keys / id below.
 		function seedStaleChild() {
+			const oldThreadTime = new Date(Date.now() - 48 * 3600_000).toISOString();
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					STALE_THREAD_ID,
+					userId,
+					"web",
+					"local",
+					0,
+					"Stale Child Test Thread",
+					null,
+					null,
+					null,
+					null,
+					oldThreadTime,
+					oldThreadTime,
+					oldThreadTime,
+					0,
+				],
+			);
 			const summaryTime = new Date(Date.now() - 60_000).toISOString(); // older
 			const childTime = new Date(Date.now() - 5_000).toISOString(); // newer => stale
 			db.run(
@@ -4072,14 +4110,31 @@ This skill reviews pull requests.`;
 					null,
 				],
 			);
+			// Genuine `[summary]`-tier delta control (no children => not stale).
+			db.run(
+				"INSERT INTO semantic_memory (id, key, value, source, created_at, modified_at, last_accessed_at, deleted, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					STALE_CONTROL_SUMMARY_KEY,
+					"Genuine summary that is itself a delta (control).",
+					null,
+					childTime,
+					childTime,
+					null,
+					0,
+					"summary",
+				],
+			);
 		}
 
 		function cleanupStaleChild() {
 			db.run("DELETE FROM memory_edges WHERE id = ?", [STALE_EDGE_ID]);
-			db.run("DELETE FROM semantic_memory WHERE key IN (?, ?)", [
+			db.run("DELETE FROM semantic_memory WHERE key IN (?, ?, ?)", [
 				STALE_SUMMARY_KEY,
 				STALE_CHILD_KEY,
+				STALE_CONTROL_SUMMARY_KEY,
 			]);
+			db.run("DELETE FROM threads WHERE id = ?", [STALE_THREAD_ID]);
 		}
 
 		it("renders stale-child bullets on the heartbeat surface (AC-SC1, #69)", () => {
@@ -4087,7 +4142,7 @@ This skill reviews pull requests.`;
 			try {
 				const result = assembleContext({
 					db,
-					threadId,
+					threadId: STALE_THREAD_ID,
 					userId,
 					siteId: "test-site",
 					contextWindow: 200000,
@@ -4109,7 +4164,7 @@ This skill reviews pull requests.`;
 				// No taskType => active conversation surface (history path).
 				const result = assembleContext({
 					db,
-					threadId,
+					threadId: STALE_THREAD_ID,
 					userId,
 					siteId: "test-site",
 					contextWindow: 200000,
@@ -4129,6 +4184,12 @@ This skill reviews pull requests.`;
 				// absences below are real strips, not an empty context.
 				expect(allContent).toContain(STALE_SUMMARY_KEY);
 
+				// CONTROL: the genuine `[summary]` delta DOES surface on the varying tail.
+				// This proves the delta baseline is old enough that the seeded entries
+				// qualify as deltas — so the STALE_CHILD_KEY suppression below is exercised
+				// against a real would-be delta, not a no-op.
+				expect(devContent).toContain(`- ${STALE_CONTROL_SUMMARY_KEY} [changed since last turn]`);
+
 				// PRIMARY (#69): the `[stale child of …]` re-summarization bullets are
 				// stripped on the active surface — neither the marker nor a per-summary
 				// bullet appears anywhere.
@@ -4141,12 +4202,15 @@ This skill reviews pull requests.`;
 					.some((l) => l.trim() === `- ${STALE_CHILD_KEY}`);
 				expect(hasBareTitleLine).toBe(false);
 
-				// Out of scope by design (see describe comment): the child rides
-				// `loadSummaryEntries` as a `[stale-detail]` summary entry and renders as
-				// an unlabeled `- key: gloss` line on the STABLE Working Knowledge body.
-				// That line is surface-independent — present here on active and identical
-				// on heartbeat — which keeps the stable channel byte-identical. It lives
-				// in systemPrompt, never in the varying developer tail.
+				// REGRESSION GUARD: the stale-detail child also rides `loadSummaryEntries`
+				// as a `[stale-detail]`-tagged entry in `input.summaries`. Before the fix,
+				// `summaryDeltas` filtered `input.summaries` on `deltaKeys` alone, so a
+				// stale-detail child past the delta baseline leaked a bare
+				// `- <key> [changed since last turn]` line onto the active varying tail.
+				// The fix restricts summary deltas to genuine `[summary]` tags. The child's
+				// unlabeled `- key: gloss` line still renders on the STABLE body
+				// (systemPrompt) — surface-independent, keeping the stable channel
+				// byte-identical — but it must never appear in the varying developer tail.
 				expect(systemPrompt).toContain(`- ${STALE_CHILD_KEY}:`);
 				expect(devContent).not.toContain(STALE_CHILD_KEY);
 			} finally {
