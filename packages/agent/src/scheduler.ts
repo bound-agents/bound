@@ -1677,6 +1677,17 @@ export class Scheduler {
 				});
 
 				let result: Awaited<ReturnType<typeof agentLoop.run>>;
+				// Emit "thinking" so WebSocket clients (web UI / TUI) watching this
+				// thread show an active indicator while a scheduler-driven wakeup
+				// (event, cron, deferred) runs its agent loop. Without this the web
+				// UI shows the thread as idle for event wakeups, since the scheduler
+				// path never went through the web/relay status:forward emitters (#42).
+				this.ctx.eventBus.emit("status:forward", {
+					thread_id: loopConfig.threadId,
+					status: "thinking",
+					tokens: 0,
+					detail: null,
+				});
 				try {
 					result = await context.with(trace.setSpan(context.active(), rootSpan), () =>
 						agentLoop.run(),
@@ -1690,6 +1701,16 @@ export class Scheduler {
 					throw err;
 				} finally {
 					rootSpan.end();
+					// Signal completion regardless of success/failure so the indicator
+					// clears. Cross-host watchers (web on a different host than the one
+					// running the task) rely on the synced tasks.status='running' poll
+					// instead; this local emit covers same-host live updates.
+					this.ctx.eventBus.emit("status:forward", {
+						thread_id: loopConfig.threadId,
+						status: "idle",
+						tokens: 0,
+						detail: null,
+					});
 				}
 
 				// Verify lease_id still matches

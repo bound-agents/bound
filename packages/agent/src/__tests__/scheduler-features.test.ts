@@ -2657,4 +2657,125 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// status:forward on task execution (#42)
+	// -----------------------------------------------------------------------
+	describe("status:forward on task execution", () => {
+		it("emits thinking then idle around an event/deferred task's agent loop", async () => {
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			// A thread the agent is "watching" — the task runs against it.
+			db.run(
+				`INSERT INTO threads (
+					id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted
+				) VALUES (?, 'system', 'web', ?, ?, ?, ?, 0)`,
+				[threadId, siteId, now, now, now],
+			);
+
+			const taskId = randomUUID();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, pastTime, now, now],
+			);
+
+			const events: Array<{ thread_id: string; status: string }> = [];
+			eventBus.on("status:forward", (p) => {
+				events.push({ thread_id: p.thread_id, status: p.status });
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(() => events.some((e) => e.thread_id === threadId && e.status === "idle"), {
+				timeoutMs: 5000,
+				message: "no idle status:forward emitted for task thread",
+			});
+			stop();
+
+			const forThread = events.filter((e) => e.thread_id === threadId);
+			const thinkingIdx = forThread.findIndex((e) => e.status === "thinking");
+			const idleIdx = forThread.findIndex((e) => e.status === "idle");
+			expect(thinkingIdx).toBeGreaterThanOrEqual(0);
+			expect(idleIdx).toBeGreaterThanOrEqual(0);
+			// thinking must precede idle
+			expect(thinkingIdx).toBeLessThan(idleIdx);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM threads WHERE id = ?", [threadId]);
+		});
+
+		it("emits idle even when the agent loop throws", async () => {
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+
+			db.run(
+				`INSERT INTO threads (
+					id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted
+				) VALUES (?, 'system', 'web', ?, ?, ?, ?, 0)`,
+				[threadId, siteId, now, now, now],
+			);
+
+			const taskId = randomUUID();
+			// consecutive_failures=2 so it stays failed and doesn't loop-retry.
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					2, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, pastTime, now, now],
+			);
+
+			const events: Array<{ thread_id: string; status: string }> = [];
+			eventBus.on("status:forward", (p) => {
+				events.push({ thread_id: p.thread_id, status: p.status });
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeFailingAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(() => events.some((e) => e.thread_id === threadId && e.status === "idle"), {
+				timeoutMs: 5000,
+				message: "no idle status:forward emitted on throwing loop",
+			});
+			stop();
+
+			const forThread = events.filter((e) => e.thread_id === threadId);
+			expect(forThread.some((e) => e.status === "thinking")).toBe(true);
+			expect(forThread.some((e) => e.status === "idle")).toBe(true);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM threads WHERE id = ?", [threadId]);
+		});
+	});
 });
