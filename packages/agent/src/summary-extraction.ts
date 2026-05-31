@@ -1863,7 +1863,20 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 
 	// Collect all per-key annotations (deltas + stale children) on the varying side.
 	const pinnedDeltas = input.pinned.filter((e) => input.deltaKeys.has(e.key));
-	const summaryDeltas = input.summaries.filter((s) => input.deltaKeys.has(s.key));
+	// R-VC11(a): summary delta — keyed reference (body lives in stable). Only
+	// genuine "[summary]" entries qualify. "[stale-detail]" children ALSO ride
+	// `input.summaries` (so their body renders on the stable Working Knowledge
+	// channel, identical on every surface), but their varying-side representation
+	// is the "[stale child of …]" sub-bullet below — gated by
+	// `staleChildrenBySummary`, which is empty on the active surface (#69). Without
+	// this tag guard, a recently-modified stale-detail child whose `modified_at`
+	// is past the delta baseline leaks a bare `- <key> [changed since last turn]`
+	// line onto the active varying tail — the exact active-context crowding #69
+	// removes, and a timing-dependent one (it only fired once the baseline aged
+	// past the child's `modified_at`).
+	const summaryDeltas = input.summaries.filter(
+		(s) => s.tag === "[summary]" && input.deltaKeys.has(s.key),
+	);
 	let hasStaleChildren = false;
 	for (const summary of input.summaries) {
 		const children = input.staleChildrenBySummary.get(summary.key);

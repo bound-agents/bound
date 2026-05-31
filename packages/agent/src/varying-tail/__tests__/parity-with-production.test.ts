@@ -240,8 +240,14 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 	for (const s of inputs.workingKnowledgeUpdates.summariesWithStaleChildren) {
 		allSummaryKeys.add(s.summaryKey);
 	}
+	// Entries in production `input.summaries` are always `[summary]`-tagged
+	// (or `[stale-detail]` for stale children, which live in a separate map) —
+	// `loadSummaryEntries` never emits a `[graph]`/`[recency]` tag into this
+	// array. `renderWorkingKnowledge` now restricts summary deltas to genuine
+	// `[summary]` tags, so the synthesized entries must carry that tag to model
+	// the real input shape (a key in `summaryDeltaKeys` IS a `[summary]` delta).
 	const summariesArr = [...allSummaryKeys].map((k) =>
-		makeStageEntry({ key: k, value: `body of ${k}` }),
+		makeStageEntry({ key: k, value: `body of ${k}`, tag: "[summary]" }),
 	);
 	// Order summaries to match summariesWithStaleChildren order so stale
 	// children render in the same order as ours.
