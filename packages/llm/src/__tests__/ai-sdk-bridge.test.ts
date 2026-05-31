@@ -333,6 +333,53 @@ describe("toModelMessages — conversation-end invariant (developer injection af
 		});
 	});
 
+	it("truncated-loop shape: [assistant, tool_call, tool_result, assistant, developer] (NO user in window) ends with user", () => {
+		// Regression for thread 60db514d (2026-05-31, notify-into-truncated-
+		// opus-loop): a long autonomous boundless loop gets truncated to a
+		// window of ONLY assistant/tool turns — every user message scrolled
+		// out of context. A background-task notification then lands as a tail
+		// developer message. The 2026-05-17 fix discriminated HEAD vs TAIL by
+		// `result.some(user)`; with no surviving user message that check was
+		// false, so the dev was wrongly `unshift`ed as a head user, leaving
+		// the conversation STILL ending on the assistant message → Bedrock's
+		// "This model does not support assistant message prefill" rejection.
+		//
+		// The correct discriminator is positional: the dev batch began
+		// accumulating AFTER content was emitted, so it is tail content and
+		// must become a trailing user message.
+		const out = toModelMessages([
+			{ role: "assistant", content: "earlier turn" },
+			{
+				role: "tool_call",
+				content: [{ type: "tool_use", id: "tc1", name: "memory", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "tc1",
+				content: [{ type: "text", text: "saved" }],
+			},
+			{ role: "assistant", content: "PR merged" },
+			{
+				role: "developer",
+				content: "[notification from background task] candidate: issue #59",
+			},
+		]);
+		// Must END with a user-role message (the prefill constraint).
+		expect(out[out.length - 1].role).toBe("user");
+		expect(out[out.length - 1].content).toEqual(
+			"<system-context>\n[notification from background task] candidate: issue #59\n</system-context>",
+		);
+		// The dev is positioned at the TAIL (after the assistant turn it
+		// followed), NOT unshifted as a head. The window's first emitted
+		// message stays the original leading assistant — guarded by the
+		// conversation-start invariant which prepends a placeholder, so the
+		// dev itself is never relocated to the head.
+		const devIdx = out.findIndex(
+			(m) => typeof m.content === "string" && m.content.includes("issue #59"),
+		);
+		expect(devIdx).toBe(out.length - 1);
+	});
+
 	it("when last message is already user, dev content appends rather than creating a new user (no consecutive-user emission)", () => {
 		// Regression guard: don't accidentally start emitting two consecutive
 		// user-role messages — that's the failure case the original merge

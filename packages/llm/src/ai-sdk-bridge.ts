@@ -259,11 +259,21 @@ export function toModelMessages(
 	// prepending into the next user message; any remainder is appended onto
 	// the last emitted user message after the loop.
 	const pendingDev: string[] = [];
+	// Whether the CURRENT pendingDev batch began accumulating while `result`
+	// was still empty. This is the positional HEAD-vs-TAIL discriminator for
+	// leftover dev content (see the leftover-pendingDev handler after the
+	// loop). It is the genuine "this dev is the conversation kickoff" signal —
+	// independent of whether a user message was ever emitted, which the old
+	// `hasUser` check conflated and which truncation can strip from the window.
+	let pendingDevStartedAtEmptyResult = false;
 
 	for (const msg of messages) {
 		if (msg.role === "developer") {
 			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
-			if (text) pendingDev.push(text);
+			if (text) {
+				if (pendingDev.length === 0) pendingDevStartedAtEmptyResult = result.length === 0;
+				pendingDev.push(text);
+			}
 			continue;
 		}
 
@@ -437,19 +447,18 @@ export function toModelMessages(
 	// Any developer content still pending here was not consumed by a
 	// following user message. Two possible shapes:
 	//
-	//   (1) HEAD content — pendingDev appeared before any user message in
-	//       history. The canonical case is the scheduler wakeup shape:
+	//   (1) HEAD content — pendingDev began accumulating while `result` was
+	//       still empty. The canonical case is the scheduler wakeup shape:
 	//       [developer(wakeup), tool_call(retrieve_task), tool_result(payload)].
 	//       Result has [assistant, tool] but no user. The dev IS the
 	//       conversation kickoff; it should become a head user message.
 	//
-	//   (2) TAIL content — at least one user message has already been
-	//       emitted, and pendingDev arrived after a complete turn. The
-	//       canonical case is notification injection (introspect, notify,
+	//   (2) TAIL content — content was already emitted before pendingDev
+	//       began accumulating, and pendingDev arrived after a complete turn.
+	//       The canonical case is notification injection (introspect, notify,
 	//       advisory) into a thread with prior history:
-	//       [..., user, assistant, developer]. The dev IS the latest event
-	//       the model needs to respond to; it should become a tail user
-	//       message.
+	//       [..., assistant, developer]. The dev IS the latest event the model
+	//       needs to respond to; it should become a tail user message.
 	//
 	// Bug fixed (2026-05-17, thread f096a101 / 98926e2d, introspect-into-
 	// claude-opus): the old logic walked `result` from end to front looking
@@ -459,13 +468,25 @@ export function toModelMessages(
 	// assistant message — which Anthropic strict mode rejects with "This
 	// model does not support assistant message prefill. The conversation
 	// must end with a user message." Introspect injection was unusable on
-	// those adapters until this fix.
+	// those adapters until that fix.
 	//
-	// New rule: discriminate by whether ANY user-role message was already
-	// emitted into `result`.
+	// Bug fixed (2026-05-31, thread 60db514d, notify-into-truncated-opus-loop):
+	// that 2026-05-17 fix discriminated HEAD vs TAIL by `result.some(user)`.
+	// But a long autonomous loop can be truncated to a window of ONLY
+	// assistant/tool turns — every user message scrolled out. A background-task
+	// notification then lands as a tail developer message, `hasUser` is false,
+	// and the old rule wrongly took the HEAD branch: it `unshift`ed the dev as
+	// a head user, leaving the conversation STILL ending on the assistant
+	// message → the same prefill rejection the 2026-05-17 fix was meant to
+	// prevent, now firing on plain notify/introspect wakeups into any
+	// sufficiently long thread.
+	//
+	// Correct rule: discriminate POSITIONALLY — was `result` empty when this
+	// pendingDev batch began accumulating? That is the true "dev is the
+	// conversation kickoff" signal, independent of whether a user message
+	// survived the truncation window.
 	if (pendingDev.length > 0) {
-		const hasUser = result.some((m) => m.role === "user");
-		if (!hasUser) {
+		if (pendingDevStartedAtEmptyResult) {
 			// Head content: prepend as synthetic head user. Conversation-start
 			// invariant (below) would otherwise prepend a "<system-notification />"
 			// placeholder and lose the wakeup payload; doing it here preserves
