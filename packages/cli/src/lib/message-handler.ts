@@ -32,6 +32,8 @@ export interface RunLocalLoopParams {
 	systemPromptAddition?: string;
 	/** Platform MCP tools with execute closures (e.g., discord_send_message). */
 	platformTools?: PlatformRegisteredTool[];
+	/** Connector-authored server instructions for connector-bound threads. */
+	platformInstructions?: string;
 	/**
 	 * Cross-handler-invocation span tracker. Forwarded into AgentLoopConfig
 	 * so client tool dispatches open `tool.dispatch` spans on it.
@@ -89,6 +91,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		connectionId,
 		systemPromptAddition,
 		platformTools,
+		platformInstructions,
 		handleMessageTracker,
 	} = params;
 
@@ -131,6 +134,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			connectionId,
 			systemPromptAddition,
 			platformTools,
+			platformInstructions,
 			handleMessageTracker,
 		});
 		const agentResult = await agentLoop.run();

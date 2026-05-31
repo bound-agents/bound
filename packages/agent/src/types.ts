@@ -130,6 +130,13 @@ export interface AgentLoopConfig {
 	 */
 	systemPromptAddition?: string;
 	/**
+	 * Connector-authored server instructions for a connector-bound thread,
+	 * resolved from PlatformMcpRegistry.getInstructionsForThread(). Passed
+	 * through to ContextParams and surfaced verbatim on the varying side.
+	 * Undefined for threads not bound to a connector.
+	 */
+	platformInstructions?: string;
+	/**
 	 * Platform MCP tools with execute closures that call MCP client.callTool.
 	 * These are passed through to the tool registry with their execute functions intact.
 	 */

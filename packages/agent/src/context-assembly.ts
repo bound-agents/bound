@@ -145,6 +145,13 @@ export interface ContextParams {
 	compactRecentWindow?: number;
 	/** Optional system prompt addition from client connection. Appended to system suffix. */
 	systemPromptAddition?: string;
+	/**
+	 * Server-level instructions authored by the connector this thread is bound
+	 * to, resolved via PlatformMcpRegistry.getInstructionsForThread(). Surfaced
+	 * verbatim on the varying side. bound core does not interpret it — the
+	 * connector owns the prose. Undefined for threads not bound to a connector.
+	 */
+	platformInstructions?: string;
 	/** MCP commands to display in orientation block. Passed explicitly from AppContext. */
 	commandRegistry?: readonly CommandRegistryEntry[];
 	/**
@@ -558,6 +565,8 @@ export function buildVolatileContext(params: {
 	currentModel?: string;
 	relayInfo?: ContextParams["relayInfo"];
 	systemPromptAddition?: string;
+	/** Connector-authored server instructions for connector-bound threads. */
+	platformInstructions?: string;
 	/** Last user message text for relevance-aware memory boosting */
 	userMessageText?: string;
 	/** Thread summary for keyword seeding */
@@ -776,6 +785,19 @@ export function buildVolatileContext(params: {
 		suffixLines.push(line);
 		varyingLines.push("");
 		varyingLines.push(line);
+	}
+
+	// --- VARYING: platform (connector) instructions ---
+	// Connector-authored orientation for connector-bound threads. Varying
+	// because the bound connector can change between runs and the connector
+	// may revise its own instructions; placing it in the cached prefix would
+	// silently freeze old text. Ordered before systemPromptAddition so an
+	// operator's per-task instruction remains the last word.
+	if (params.platformInstructions) {
+		suffixLines.push("");
+		suffixLines.push(params.platformInstructions);
+		varyingLines.push("");
+		varyingLines.push(params.platformInstructions);
 	}
 
 	// --- VARYING: systemPromptAddition ---
@@ -1314,6 +1336,7 @@ Original output was too large for the context window. If you need the full conte
 			currentModel,
 			relayInfo,
 			systemPromptAddition: params.systemPromptAddition,
+			platformInstructions: params.platformInstructions,
 			userMessageText,
 			threadSummary,
 			inactiveSkillRef,
@@ -1488,8 +1511,12 @@ Original output was too large for the context window. If you need the full conte
 			}
 		}
 
-		// Append systemPromptAddition if present for the noHistory path.
-		// Operator-supplied per-task instruction stays varying (re-runnable).
+		// Append connector instructions then systemPromptAddition for the
+		// noHistory path, preserving the same order as the primary tail.
+		if (params.platformInstructions) {
+			varyingTailLines.push("");
+			varyingTailLines.push(params.platformInstructions);
+		}
 		if (params.systemPromptAddition) {
 			varyingTailLines.push("");
 			varyingTailLines.push(params.systemPromptAddition);
@@ -1590,10 +1617,14 @@ Original output was too large for the context window. If you need the full conte
 				assembled[devIdx] = { role: "developer", content: rebuiltVarying.join("\n") };
 			} else if (params.noHistory) {
 				// noHistory: developer tail is varying-only by construction.
-				// Replace with reduced varying lines + trailing
-				// systemPromptAddition (preserved verbatim from the unreduced
-				// path's tail).
+				// Replace with reduced varying lines + trailing connector
+				// instructions and systemPromptAddition (preserved verbatim
+				// from the unreduced path's tail, same order).
 				const noHistVaryingLines: string[] = [...bpVarying];
+				if (params.platformInstructions) {
+					noHistVaryingLines.push("");
+					noHistVaryingLines.push(params.platformInstructions);
+				}
 				if (params.systemPromptAddition) {
 					noHistVaryingLines.push("");
 					noHistVaryingLines.push(params.systemPromptAddition);

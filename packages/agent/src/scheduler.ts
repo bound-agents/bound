@@ -725,6 +725,11 @@ interface SchedulerConfig {
 	generateTitle?: (threadId: string) => Promise<void>;
 	/** Optional resolver for platform tools available for a thread. */
 	platformToolResolver?: (threadId: string) => PlatformRegisteredTool[];
+	/**
+	 * Optional resolver for connector-authored server instructions available
+	 * for a thread. Returns undefined for threads not bound to a connector.
+	 */
+	platformInstructionsResolver?: (threadId: string) => string | undefined;
 	/** Override deferred retry backoff (default 5000ms). Useful for tests. */
 	retryBackoffMs?: number;
 	/** Override base poll interval for getEffectivePollInterval (default 5000ms). Useful for tests. */
@@ -1652,6 +1657,11 @@ export class Scheduler {
 					if (platformTools.length > 0) {
 						loopConfig.platformTools = platformTools;
 					}
+				}
+
+				// Inject connector-authored instructions for connector-bound threads
+				if (this.config.platformInstructionsResolver) {
+					loopConfig.platformInstructions = this.config.platformInstructionsResolver(threadId);
 				}
 
 				const agentLoop = this.agentLoopFactory(loopConfig);

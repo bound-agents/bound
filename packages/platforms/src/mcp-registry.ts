@@ -21,6 +21,12 @@ export interface PlatformServerEntry {
 	client: Client;
 	clientTransport: InMemoryTransport;
 	serverTransport: InMemoryTransport;
+	/**
+	 * Server-level instructions from the connector's InitializeResult, captured
+	 * at registration. Surfaced to threads bound to this connector via
+	 * getInstructionsForThread(). Undefined when the connector declares none.
+	 */
+	instructions?: string;
 }
 
 export interface PlatformMcpRegistryDeps {
@@ -231,6 +237,8 @@ export class PlatformMcpRegistry {
 			client,
 			clientTransport,
 			serverTransport,
+			// Available post-connect from the server's InitializeResult.
+			instructions: client.getInstructions(),
 		};
 
 		// Install notification handlers via the SDK's public API.
@@ -816,24 +824,47 @@ export class PlatformMcpRegistry {
 	 * Implements AC3.4: scoping resolution through the handle chain.
 	 */
 	getToolsForThread(threadId: string): Map<string, PlatformRegisteredTool> {
-		// Find task that owns this thread
+		const serverName = this.resolveBoundServerName(threadId);
+		if (!serverName) return new Map(); // AC3.3: no event task / handle → no platform tools
+
+		// AC3.1: return only this server's tools
+		return this.getToolsForServer(serverName);
+	}
+
+	/**
+	 * Resolves the connector server bound to a thread via its event task.
+	 * Traces: thread → event task → connector_handle → server_name.
+	 * Returns undefined for threads not bound to any connector handle.
+	 */
+	private resolveBoundServerName(threadId: string): string | undefined {
+		// Find the event task that owns this thread
 		const task = this.deps.db
 			.query(
-				"SELECT id, payload FROM tasks WHERE thread_id = ? AND type = 'event' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				"SELECT id FROM tasks WHERE thread_id = ? AND type = 'event' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
 			)
-			.get(threadId) as { id: string; payload: string | null } | null;
+			.get(threadId) as { id: string } | null;
 
-		if (!task) return new Map(); // AC3.3: no event task → no platform tools
+		if (!task) return undefined;
 
-		// Find connector handle for this task
+		// Find the connector handle for this task
 		const handle = this.deps.db
 			.query("SELECT server_name FROM connector_handles WHERE task_id = ? AND deleted = 0")
 			.get(task.id) as { server_name: string } | null;
 
-		if (!handle) return new Map(); // AC3.3: no handle → no platform tools
+		return handle?.server_name;
+	}
 
-		// AC3.1: return only this server's tools
-		return this.getToolsForServer(handle.server_name);
+	/**
+	 * Resolves the server-level instructions for a thread bound to a connector.
+	 * Mirrors getToolsForThread's scoping: only event-task-bound threads receive
+	 * their connector's instructions; all other threads receive undefined. The
+	 * connector authors this prose itself (via its InitializeResult), so bound
+	 * core surfaces it without interpreting it.
+	 */
+	getInstructionsForThread(threadId: string): string | undefined {
+		const serverName = this.resolveBoundServerName(threadId);
+		if (!serverName) return undefined;
+		return this.servers.get(serverName)?.instructions;
 	}
 
 	/**

@@ -85,10 +85,29 @@ export function createDiscordServer(
 	client: DiscordClient,
 	logger: Logger,
 ): McpServer {
-	const mcpServer = new McpServer({
-		name: "discord-mcp",
-		version: "1.0.0",
-	});
+	const mcpServer = new McpServer(
+		{
+			name: "discord-mcp",
+			version: "1.0.0",
+		},
+		{
+			// Server-level orientation prose, surfaced to threads bound to this
+			// connector via PlatformMcpRegistry.getInstructionsForThread(). This
+			// is the decoupled channel for connector-specific guidance: bound
+			// core makes no claims about a connector's tools or formatting — the
+			// connector authors its own. Send semantics and the character limit
+			// are already self-described by the send tool's description/schema;
+			// this carries only the Discord markdown dialect, which has no other
+			// protocol-native home.
+			instructions:
+				"Discord formatting: **bold**, *italic*, __underline__, ~~strikethrough~~, " +
+				"`inline code`, ```code blocks```, > block quotes, >>> multi-line quotes, " +
+				"# ## ### headers, -# subtext, [masked links](url), ||spoilers||, " +
+				"- bulleted lists (2-space indent to nest). " +
+				"Tables do NOT render — use lists or code blocks instead. " +
+				"Messages over 2000 characters are rejected; split long content across multiple calls.",
+		},
+	);
 	const server = mcpServer.server;
 
 	// Internal state. NOTE: no in-process cursor counter — we use the

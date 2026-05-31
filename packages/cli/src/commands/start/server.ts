@@ -639,10 +639,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							// - Event task threads: scoped to their bound server's full tool set
 							// - All other threads: read-only platform tools + connector tool
 							let platformTools: PlatformRegisteredTool[] | undefined;
+							// Connector-authored instructions, surfaced only to event-bound
+							// threads (mirrors getInstructionsForThread's scoping).
+							let platformInstructions: string | undefined;
 							if (platformMcpRegistry) {
 								const scopedTools = platformMcpRegistry.getToolsForThread(thread_id);
 								if (scopedTools.size > 0) {
 									platformTools = Array.from(scopedTools.values());
+									platformInstructions = platformMcpRegistry.getInstructionsForThread(thread_id);
 								} else {
 									const readOnlyTools = Array.from(
 										platformMcpRegistry.getReadOnlyPlatformTools().values(),
@@ -715,6 +719,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										connectionId: resolvedConnectionId,
 										systemPromptAddition,
 										platformTools,
+										platformInstructions,
 										handleMessageTracker,
 									}),
 								);

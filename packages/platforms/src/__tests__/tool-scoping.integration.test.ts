@@ -61,11 +61,15 @@ async function createMockMcpServer(
 			openWorldHint?: boolean;
 		};
 	}[],
+	instructions?: string,
 ): Promise<Server> {
-	const server = new Server({
-		name: "test-server",
-		version: "1.0.0",
-	});
+	const server = new Server(
+		{
+			name: "test-server",
+			version: "1.0.0",
+		},
+		instructions ? { instructions } : undefined,
+	);
 
 	// Define request schema for tools/list
 	const listToolsSchema = z.object({
@@ -709,5 +713,123 @@ describe("Tool Scoping Integration", () => {
 
 		// Note: Connector tool is not part of scopedTools (it's added separately in the resolver)
 		// This test just verifies scoping doesn't leak tools from other servers
+	});
+
+	describe("getInstructionsForThread — connector-authored instructions scoping", () => {
+		const INSTRUCTIONS =
+			"Discord formatting: **bold**. Messages over 2000 characters are rejected.";
+
+		function seedThread(threadId: string): void {
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: "user-1",
+					host_origin: siteId,
+					title: "test",
+					created_at: new Date().toISOString(),
+					modified_at: new Date().toISOString(),
+					last_message_at: new Date().toISOString(),
+					deleted: 0,
+					interface: "web",
+					summary: null,
+				},
+				siteId,
+			);
+		}
+
+		function seedEventTask(taskId: string, threadId: string): void {
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "event",
+					thread_id: threadId,
+					status: "running",
+					created_at: new Date().toISOString(),
+					modified_at: new Date().toISOString(),
+					deleted: 0,
+					trigger_spec: "",
+					payload: null,
+					last_run_at: null,
+					next_run_at: null,
+					consecutive_failures: 0,
+					alert_threshold: 3,
+				},
+				siteId,
+			);
+		}
+
+		function seedHandle(handleId: string, taskId: string, serverName: string): void {
+			insertRow(
+				db,
+				"connector_handles",
+				{
+					id: handleId,
+					task_id: taskId,
+					server_name: serverName,
+					event_name: "message",
+					event_args: "{}",
+					delivery_mode: "poll",
+					created_at: new Date().toISOString(),
+					modified_at: new Date().toISOString(),
+					deleted: 0,
+					cursor: null,
+				},
+				siteId,
+			);
+		}
+
+		it("returns the bound server's instructions for an event-bound thread", async () => {
+			const server = await createMockMcpServer(
+				[{ name: "discord_send", description: "Send" }],
+				INSTRUCTIONS,
+			);
+			await registry.registerServer("discord", server);
+
+			seedThread("instr-thread-1");
+			seedEventTask("instr-task-1", "instr-thread-1");
+			seedHandle("instr-handle-1", "instr-task-1", "discord");
+
+			expect(registry.getInstructionsForThread("instr-thread-1")).toBe(INSTRUCTIONS);
+		});
+
+		it("returns undefined for a thread with no event task", async () => {
+			const server = await createMockMcpServer(
+				[{ name: "discord_send", description: "Send" }],
+				INSTRUCTIONS,
+			);
+			await registry.registerServer("discord", server);
+
+			seedThread("instr-orphan");
+
+			expect(registry.getInstructionsForThread("instr-orphan")).toBeUndefined();
+		});
+
+		it("returns undefined for an event task with no connector handle", async () => {
+			const server = await createMockMcpServer(
+				[{ name: "discord_send", description: "Send" }],
+				INSTRUCTIONS,
+			);
+			await registry.registerServer("discord", server);
+
+			seedThread("instr-thread-2");
+			seedEventTask("instr-task-2", "instr-thread-2");
+
+			expect(registry.getInstructionsForThread("instr-thread-2")).toBeUndefined();
+		});
+
+		it("returns undefined when the bound server declares no instructions", async () => {
+			const server = await createMockMcpServer([{ name: "discord_send", description: "Send" }]);
+			await registry.registerServer("discord", server);
+
+			seedThread("instr-thread-3");
+			seedEventTask("instr-task-3", "instr-thread-3");
+			seedHandle("instr-handle-3", "instr-task-3", "discord");
+
+			expect(registry.getInstructionsForThread("instr-thread-3")).toBeUndefined();
+		});
 	});
 });
