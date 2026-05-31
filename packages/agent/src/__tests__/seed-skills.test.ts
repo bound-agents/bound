@@ -1,6 +1,7 @@
 /**
- * Tests for seedSkillAuthoring startup seeding.
- * Verifies AC5.1–AC5.5: skill-authoring bundled skill is always present.
+ * Tests for seedBundledSkills startup seeding.
+ * Verifies AC5.1–AC5.5 against the skill-authoring bundled skill, plus that
+ * every bundled skill (not just skill-authoring) is seeded.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -11,10 +12,17 @@ import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { SKILL_AUTHORING_FORMAT_REFERENCE_MD, SKILL_AUTHORING_SKILL_MD } from "../bundled-skills";
-import { seedSkillAuthoring } from "../seed-skills";
+import { BUNDLED_SKILLS } from "../bundled-skills";
+import { seedBundledSkills } from "../seed-skills";
 
-describe("seedSkillAuthoring", () => {
+const SKILL_AUTHORING = BUNDLED_SKILLS.find((s) => s.name === "skill-authoring");
+if (!SKILL_AUTHORING) throw new Error("skill-authoring missing from BUNDLED_SKILLS");
+const SKILL_AUTHORING_SKILL_MD = SKILL_AUTHORING.files.find((f) => f.path === "SKILL.md")?.content;
+const SKILL_AUTHORING_FORMAT_REFERENCE_MD = SKILL_AUTHORING.files.find(
+	(f) => f.path === "references/format-reference.md",
+)?.content;
+
+describe("seedBundledSkills", () => {
 	let tmpDir: string;
 	let dbPath: string;
 	let db: ReturnType<typeof createDatabase>;
@@ -41,7 +49,7 @@ describe("seedSkillAuthoring", () => {
 	});
 
 	it("AC5.1: Creates skill-authoring files in files table after first startup", () => {
-		seedSkillAuthoring(db, siteId);
+		seedBundledSkills(db, siteId);
 
 		const skillMdFile = db
 			.prepare("SELECT id, path, content FROM files WHERE path = ? AND deleted = 0")
@@ -61,7 +69,7 @@ describe("seedSkillAuthoring", () => {
 	});
 
 	it("AC5.2: Creates skills table row with correct ID and active status", () => {
-		seedSkillAuthoring(db, siteId);
+		seedBundledSkills(db, siteId);
 
 		const expectedSkillId = deterministicUUID(BOUND_NAMESPACE, "skill-authoring");
 		const skillRow = db
@@ -107,7 +115,7 @@ describe("seedSkillAuthoring", () => {
 		);
 
 		// Call seeding
-		seedSkillAuthoring(db, siteId);
+		seedBundledSkills(db, siteId);
 
 		// Verify status remains retired
 		const skillRow = db.prepare("SELECT status, retired_by FROM skills WHERE id = ?").get(skillId);
@@ -125,7 +133,7 @@ describe("seedSkillAuthoring", () => {
 
 	it("AC5.4: Restores soft-deleted files on next startup", () => {
 		// First seed
-		seedSkillAuthoring(db, siteId);
+		seedBundledSkills(db, siteId);
 
 		const skillMdPath = "/home/user/skills/skill-authoring/SKILL.md";
 		const fileRow = db
@@ -145,7 +153,7 @@ describe("seedSkillAuthoring", () => {
 		expect(deletedRow).toBeNull();
 
 		// Seed again
-		seedSkillAuthoring(db, siteId);
+		seedBundledSkills(db, siteId);
 
 		// Verify restored
 		const restoredRow = db
@@ -157,8 +165,8 @@ describe("seedSkillAuthoring", () => {
 		expect(restoredRow?.content).toBe(SKILL_AUTHORING_SKILL_MD);
 	});
 
-	it("AC5.5: Content hash of seeded files matches bundled-skills.ts", () => {
-		seedSkillAuthoring(db, siteId);
+	it("AC5.5: Content hash of seeded files matches bundled skill source", () => {
+		seedBundledSkills(db, siteId);
 
 		// Verify SKILL.md content and hash match
 		const skillMdFile = db
@@ -167,7 +175,9 @@ describe("seedSkillAuthoring", () => {
 
 		expect(skillMdFile?.content).toBe(SKILL_AUTHORING_SKILL_MD);
 
-		const expectedSkillHash = createHash("sha256").update(SKILL_AUTHORING_SKILL_MD).digest("hex");
+		const expectedSkillHash = createHash("sha256")
+			.update(SKILL_AUTHORING_SKILL_MD ?? "")
+			.digest("hex");
 
 		const skillRowHash = db
 			.prepare("SELECT content_hash FROM skills WHERE name = ?")
@@ -181,5 +191,27 @@ describe("seedSkillAuthoring", () => {
 			.get("/home/user/skills/skill-authoring/references/format-reference.md");
 
 		expect(refFile?.content).toBe(SKILL_AUTHORING_FORMAT_REFERENCE_MD);
+	});
+
+	it("seeds every bundled skill (files + active skills row)", () => {
+		seedBundledSkills(db, siteId);
+
+		for (const skill of BUNDLED_SKILLS) {
+			const skillId = deterministicUUID(BOUND_NAMESPACE, skill.name);
+			const row = db.prepare("SELECT name, status FROM skills WHERE id = ?").get(skillId) as {
+				name: string;
+				status: string;
+			} | null;
+			expect(row?.name).toBe(skill.name);
+			expect(row?.status).toBe("active");
+
+			for (const file of skill.files) {
+				const path = `/home/user/skills/${skill.name}/${file.path}`;
+				const fileRow = db
+					.prepare("SELECT content FROM files WHERE path = ? AND deleted = 0")
+					.get(path) as { content: string } | null;
+				expect(fileRow?.content).toBe(file.content);
+			}
+		}
 	});
 });
