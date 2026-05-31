@@ -349,7 +349,6 @@ export class AgentLoop {
 			hostName: this.ctx.hostName,
 			currentModel: resolvedModelForDebug,
 			relayInfo,
-			platformContext: this.config.platform ? { platform: this.config.platform } : undefined,
 			systemPromptAddition: this.config.systemPromptAddition,
 		});
 
@@ -853,11 +852,6 @@ export class AgentLoop {
 							hostName: this.ctx.hostName,
 							currentModel: resolvedModelForDebug,
 							relayInfo,
-							platformContext: this.config.platform
-								? {
-										platform: this.config.platform,
-									}
-								: undefined,
 							systemPromptAddition: this.config.systemPromptAddition,
 						});
 
@@ -1103,11 +1097,6 @@ export class AgentLoop {
 							siteId: this.ctx.siteId,
 							topologyRole,
 							relayInfo,
-							platformContext: this.config.platform
-								? {
-										platform: this.config.platform,
-									}
-								: undefined,
 							targetCapabilities: resolvedCaps ?? undefined,
 							toolTokenEstimate,
 							compactToolResults: true,
