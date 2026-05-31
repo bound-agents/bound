@@ -741,6 +741,8 @@ Send a proactive notification to another thread. Enqueues a message and triggers
 
 Enqueues a proactive notification to the specified thread. The target thread runs inference upon delivery, allowing it to act on the notification using whatever tools are available in its context (e.g., platform tools on event-task threads).
 
+When the target is a `boundless` thread (an interface in `CLIENT_TOOL_INTERFACES`) with no live client session anywhere in the cluster, the result appends a non-fatal warning: the message still enqueues and is delivered when the client reconnects, but the woken loop cannot run client tools (`boundless_*`) until then (issue #96). The warning is advisory — the enqueue is correct on its own terms.
+
 Example invocation:
 
 ```json
@@ -766,6 +768,8 @@ Mechanism: enqueues an `introspect`-type notification to the target thread, emit
 
 Guards: self-introspect (same thread) is rejected; target must exist and not be deleted.
 
+Like `notify`, an introspect to a `boundless` thread with no live client session prepends the same non-fatal warning (issue #96) to whatever the call returns (response, target error/abort, or timeout) — the request still dispatches and the target can answer, but its client tools won't run until it reconnects.
+
 Example invocation:
 ```json
 {
@@ -785,6 +789,8 @@ Read operational information about the current host.
 | (no params) | - | - | Read-only operation |
 
 Returns host identity, model availability, MCP server status, and cluster configuration. No parameters required.
+
+It also surfaces a **Client Sessions** section (issue #96): one line per distinct (thread, host) live `boundless` / `BoundClient` WS session, tagged `live` or `stale` (the holding host's heartbeat is past `CLIENT_SESSION_HOST_STALE_MS`). This makes the routing-affinity state behind invariant #21 queryable — the agent can see which boundless threads have a session that can run client tools before issuing a `notify` / `introspect`.
 
 Example invocation:
 ```json

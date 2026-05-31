@@ -1,5 +1,6 @@
 import { enqueueNotification } from "@bound/core";
 import { z } from "zod";
+import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
@@ -69,7 +70,9 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 				}
 
 				enqueueAndSignal(ctx, thread.id, ctx.threadId, message.trim());
-				return `Notification enqueued for thread ${thread_id}.`;
+				const warning = clientSessionWakeupWarning(ctx.db, thread.id);
+				const confirmation = `Notification enqueued for thread ${thread_id}.`;
+				return warning ? `${confirmation}\n${warning}` : confirmation;
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				return `Error: ${msg}`;

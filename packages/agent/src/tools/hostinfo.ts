@@ -1,5 +1,6 @@
 import { formatError } from "@bound/shared";
 import { z } from "zod";
+import { getClientSessions } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema.js";
 
@@ -209,6 +210,21 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 						lines.push(
 							`  ${localName} ↔ ${peerName} (${sync.sync_errors} errors, last ${relativeTime(sync.last_sync_at)})`,
 						);
+					}
+					lines.push("");
+				}
+
+				// Client (WS) sessions — boundless / BoundClient connections (issue #96).
+				// A thread's client tools (boundless_*) can only run on the host
+				// holding a live session; notify/introspect consults this before
+				// delegating. "stale" means the holding host's heartbeat is past the
+				// liveness window — the session row exists but can't serve tool calls.
+				const sessions = getClientSessions(ctx.db);
+				if (sessions.length > 0) {
+					lines.push("Client Sessions:");
+					for (const s of sessions) {
+						const tag = s.threadInterface ? `${s.threadInterface} ` : "";
+						lines.push(`  ${s.threadId} → ${tag}@ ${s.hostName} (${s.live ? "live" : "stale"})`);
 					}
 					lines.push("");
 				}

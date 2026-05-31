@@ -2,6 +2,7 @@ import type { Database as BunDatabase } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { enqueueNotification, writeMessageMetadata } from "@bound/core";
 import { z } from "zod";
+import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
@@ -59,6 +60,14 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 					return `Error: Thread not found or is deleted: ${input.thread_id}`;
 				}
 
+				// Non-fatal advisory (issue #96): if the target is a boundless thread
+				// with no live session, the introspect still enqueues and is answered
+				// on reconnect, but the woken loop can't run client tools meanwhile.
+				// Prepend it to every post-enqueue return so it always surfaces.
+				const warning = clientSessionWakeupWarning(ctx.db, input.thread_id);
+				const withWarning = (result: string): string =>
+					warning ? `${warning}\n\n${result}` : result;
+
 				// Generate correlation ID
 				const correlationId = randomUUID();
 
@@ -101,7 +110,7 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 								(Array.isArray(meta.introspect_response_id) &&
 									meta.introspect_response_id.includes(correlationId))
 							) {
-								return row.content; // BuiltInToolResult — the target's assistant message
+								return withWarning(row.content); // BuiltInToolResult — the target's assistant message
 							}
 						} catch {
 							// malformed metadata, skip
@@ -116,15 +125,17 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 						.get(input.thread_id, dispatchTime) as { status: string | null } | null;
 
 					if (latestTurn?.status === "error") {
-						return "Error: Target thread encountered an error during processing.";
+						return withWarning("Error: Target thread encountered an error during processing.");
 					}
 					if (latestTurn?.status === "aborted") {
-						return "Error: Target thread's turn was aborted.";
+						return withWarning("Error: Target thread's turn was aborted.");
 					}
 
 					// Check timeout
 					if (Date.now() - startTime >= timeout) {
-						return `Error: Introspect request timed out after ${timeout}ms waiting for response from thread ${input.thread_id}.`;
+						return withWarning(
+							`Error: Introspect request timed out after ${timeout}ms waiting for response from thread ${input.thread_id}.`,
+						);
 					}
 
 					// Sleep before next poll

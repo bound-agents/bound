@@ -33,3 +33,25 @@ export function isUserFacingInterface(threadInterface: string | null | undefined
 	if (!threadInterface) return false;
 	return !(NON_USER_FACING_INTERFACES as readonly string[]).includes(threadInterface);
 }
+
+/**
+ * Interface tags whose threads rely on a live client (WS) session to execute
+ * their `client`-kind tools (e.g. the `boundless_*` file tools). A
+ * notify/introspect wakeup to such a thread still enqueues correctly and is
+ * delivered when the client reconnects, but the woken loop cannot run those
+ * tools while the session is detached — see invariant #21 and issue #91.
+ *
+ * Used by the notify/introspect non-fatal warning (issue #96). Add a tag here
+ * when a new surface registers client-deferred tools.
+ */
+export const CLIENT_TOOL_INTERFACES = ["boundless"] as const;
+
+/**
+ * Returns true when a thread interface tag represents a surface that relies on
+ * a live client WS session for its tools. Returns false for null/undefined/empty
+ * and for every non-client surface.
+ */
+export function isClientToolInterface(threadInterface: string | null | undefined): boolean {
+	if (!threadInterface) return false;
+	return (CLIENT_TOOL_INTERFACES as readonly string[]).includes(threadInterface);
+}

@@ -196,6 +196,79 @@ describe("notify tool", () => {
 		expect(emittedEvents.length).toBe(0);
 	});
 
+	describe("client-session warning (#96)", () => {
+		function insertThread(id: string, threadInterface: string): void {
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"threads",
+				{
+					id,
+					user_id: deterministicUUID(BOUND_NAMESPACE, "test-user"),
+					interface: threadInterface,
+					host_origin: "test-host",
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				ctx.siteId,
+			);
+		}
+
+		it("warns when notifying a boundless thread with no live session", async () => {
+			insertThread("bl-thread", "boundless");
+			const tool = createNotifyTool(ctx);
+			const result = await tool.execute({ thread_id: "bl-thread", message: "hi" });
+			expect(result).toContain("enqueued");
+			expect(result).toContain("no live boundless session");
+		});
+
+		it("does not warn when notifying a non-client (web) thread", async () => {
+			insertThread("web-thread", "web");
+			const tool = createNotifyTool(ctx);
+			const result = await tool.execute({ thread_id: "web-thread", message: "hi" });
+			expect(result).toContain("enqueued");
+			expect(result).not.toContain("no live boundless session");
+		});
+
+		it("does not warn when the boundless thread has a live local session", async () => {
+			insertThread("bl-live", "boundless");
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"hosts",
+				{
+					site_id: ctx.siteId,
+					host_name: ctx.siteId,
+					sync_url: null,
+					online_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				ctx.siteId,
+			);
+			insertRow(
+				db,
+				"client_sessions",
+				{
+					id: "conn::bl-live",
+					connection_id: "conn",
+					thread_id: "bl-live",
+					site_id: ctx.siteId,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				ctx.siteId,
+			);
+			const tool = createNotifyTool(ctx);
+			const result = await tool.execute({ thread_id: "bl-live", message: "hi" });
+			expect(result).toContain("enqueued");
+			expect(result).not.toContain("no live boundless session");
+		});
+	});
+
 	describe("tool schema", () => {
 		it("schema has thread_id and message as required params", () => {
 			const tool = createNotifyTool(ctx);
