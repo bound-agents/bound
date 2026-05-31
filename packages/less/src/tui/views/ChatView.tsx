@@ -13,6 +13,7 @@ import {
 	TextInput,
 	ToolCallCard,
 } from "../components";
+import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 
 /**
@@ -114,6 +115,29 @@ type StaticItem = SplashItem | MessageItem;
  */
 const SPLASH_ITEM: SplashItem = { kind: "splash" };
 
+/**
+ * Split the message list into the committed history (everything Ink's <Static>
+ * may safely render once and forget) and the single optimistic "sending…"
+ * placeholder, if present.
+ *
+ * #134: the placeholder MUST NOT enter the <Static> stream. <Static> commits
+ * each index exactly once and never repaints it, so the in-place reconciliation
+ * in useMessages (placeholder → real message at the same array slot) updates the
+ * data model but leaves the grey line frozen in the terminal's scrollback. By
+ * keeping the placeholder out of `committed` and rendering it in the redrawn
+ * dynamic area instead, the reconciliation removes it cleanly and the real user
+ * message lands at a fresh Static index that renders correctly. Only one send is
+ * ever in flight in boundless, so there is at most one placeholder.
+ */
+export function partitionPendingMessage(messages: Message[]): {
+	committed: Message[];
+	pending: Message | null;
+} {
+	const pending = messages.find((m) => m.id === PENDING_USER_MESSAGE_ID) ?? null;
+	const committed = pending ? messages.filter((m) => m.id !== PENDING_USER_MESSAGE_ID) : messages;
+	return { committed, pending };
+}
+
 export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
@@ -191,16 +215,21 @@ export function ChatView({
 	// keeping per-frame cost flat as scrollback grows.
 	const toolResultMeta = useMemo(() => buildToolResultMetaMap(messages), [messages]);
 
-	// Static items: discriminated union of [splash header sentinel, ...messages].
+	// Split off the optimistic "sending…" placeholder: it renders in the
+	// dynamic area below, NOT in <Static>. See partitionPendingMessage / #134.
+	const { committed, pending } = useMemo(() => partitionPendingMessage(messages), [messages]);
+
+	// Static items: discriminated union of [splash header sentinel, ...committed].
 	// Ink's <Static> tracks rendered indices internally and only renders items at
 	// indices >= its high-water mark on each update. Putting the splash sentinel
 	// at index 0 lets it commit once at session start and scroll into the
 	// terminal's native scrollback alongside the message log, exactly matching
-	// the desired behavior. Messages always append at the tail, so the appended-
-	// only invariant holds.
+	// the desired behavior. Committed messages always append at the tail, so the
+	// appended-only invariant holds. The pending placeholder is deliberately
+	// excluded — Static can never repaint an in-place reconciliation (#134).
 	const staticItems = useMemo<StaticItem[]>(
-		() => [SPLASH_ITEM, ...messages.map((msg): StaticItem => ({ kind: "message", msg }))],
-		[messages],
+		() => [SPLASH_ITEM, ...committed.map((msg): StaticItem => ({ kind: "message", msg }))],
+		[committed],
 	);
 	// Account for the rounded input frame: 2 cols of border + 2 cols of
 	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
@@ -337,6 +366,16 @@ export function ChatView({
 					{commandError && (
 						<Box marginBottom={1}>
 							<Banner type="error" message={commandError} onDismiss={() => setCommandError(null)} />
+						</Box>
+					)}
+
+					{/* Optimistic "sending…" placeholder. Rendered here in the redrawn
+					    dynamic area — NOT in <Static> — so the reconciliation that
+					    removes it once the real user message:created arrives actually
+					    repaints. See partitionPendingMessage / #134. */}
+					{pending && (
+						<Box marginBottom={1}>
+							<MessageBlock message={pending} terminalColumns={termColumns} />
 						</Box>
 					)}
 

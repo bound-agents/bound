@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "bun:test";
 import type { Message } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
-import { ChatView, type ChatViewProps, buildToolResultMetaMap } from "../tui/views/ChatView";
+import { PENDING_USER_MESSAGE_ID } from "../tui/hooks/useMessages";
+import {
+	ChatView,
+	type ChatViewProps,
+	buildToolResultMetaMap,
+	partitionPendingMessage,
+} from "../tui/views/ChatView";
 
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
@@ -252,5 +258,48 @@ describe("buildToolResultMetaMap", () => {
 			filePath: undefined,
 			isLastInGroup: true,
 		});
+	});
+});
+
+/**
+ * #134: the optimistic "sending…" placeholder must NOT live in the <Static>
+ * stream. Ink's <Static> commits each index exactly once and never repaints it,
+ * so reconciling the placeholder in place (the #88 data-layer behavior, which
+ * its own unit tests cover and still pass) leaves the grey line frozen in
+ * scrollback while assistant replies append fresh at higher indices. The fix
+ * renders the placeholder in the redrawn dynamic area and keeps it out of the
+ * committed (Static) list. partitionPendingMessage is the pure seam that
+ * enforces that split.
+ */
+describe("partitionPendingMessage (#134)", () => {
+	function userMsg(id: string, content: string): Message {
+		return msg({ id, role: "user", content });
+	}
+	function pendingMsg(content: string): Message {
+		return msg({ id: PENDING_USER_MESSAGE_ID, role: "user", content });
+	}
+
+	it("excludes the pending placeholder from the committed (Static) list", () => {
+		const real = userMsg("real-1", "world");
+		const pending = pendingMsg("hello");
+		const { committed, pending: p } = partitionPendingMessage([real, pending]);
+		expect(committed).toEqual([real]);
+		expect(p).toBe(pending);
+	});
+
+	it("returns null pending and the full list when no placeholder is present", () => {
+		const real = userMsg("real-1", "world");
+		const { committed, pending } = partitionPendingMessage([real]);
+		expect(committed).toEqual([real]);
+		expect(pending).toBeNull();
+	});
+
+	it("preserves committed order when the placeholder sits mid-list", () => {
+		const a = userMsg("a", "first");
+		const b = msg({ id: "b", role: "assistant", content: "reply" });
+		const pending = pendingMsg("in-flight");
+		const { committed, pending: p } = partitionPendingMessage([a, b, pending]);
+		expect(committed).toEqual([a, b]);
+		expect(p).toBe(pending);
 	});
 });
