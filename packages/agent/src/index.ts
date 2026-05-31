@@ -118,7 +118,7 @@ export {
 } from "./task-resolution";
 
 // Export skill seeding
-export { seedSkillAuthoring } from "./seed-skills";
+export { seedBundledSkills } from "./seed-skills";
 
 // Export skill utilities
 export {

@@ -15,7 +15,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { seedSkillAuthoring } from "@bound/agent";
+import { seedBundledSkills } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	createAppContext,
@@ -332,11 +332,11 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	// 5.1 Provision mcp system user (idempotent)
 	ensureMcpUser(appContext.db, appContext.siteId);
 
-	// 5.5. Skill-authoring seeding
+	// 5.5. Bundled-skill seeding (skill-authoring, bound-reference, …)
 	try {
-		seedSkillAuthoring(appContext.db, appContext.siteId);
+		seedBundledSkills(appContext.db, appContext.siteId);
 	} catch (error) {
-		appContext.logger.warn("[skills] Failed to seed skill-authoring skill", {
+		appContext.logger.warn("[skills] Failed to seed bundled skills", {
 			error: String(error),
 		});
 	}
