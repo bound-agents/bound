@@ -116,12 +116,26 @@ interface IdempotencyCacheEntry {
 	expiresAt: number;
 }
 
+/**
+ * Minimal view of the web-layer WS connection registry needed to wire client
+ * tools into a delegated loop (issue #91). Defined here rather than imported
+ * from `@bound/web` because `web` depends on `agent`, not the reverse — the
+ * concrete `ConnectionRegistry` is structurally assignable and injected at
+ * startup via {@link RelayProcessor.setWsRegistry}.
+ */
+export interface ClientToolResolver {
+	getClientToolsForThread(threadId: string): AgentLoopConfig["clientTools"];
+	getConnectionForTool(threadId: string, toolName: string): string | undefined;
+	getSystemPromptAdditionForThread(threadId: string): string | undefined;
+}
+
 export class RelayProcessor {
 	private idempotencyCache = new Map<string, IdempotencyCacheEntry>();
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformMcpRegistry: PlatformMcpRegistry | null = null;
+	private wsRegistry: ClientToolResolver | null = null;
 	private fileReader?: (path: string) => Promise<Uint8Array>;
 	private threadExecutor: ThreadExecutor | null = null;
 
@@ -180,6 +194,14 @@ export class RelayProcessor {
 	/** Inject the platform MCP registry after startup completes (avoids circular init order). */
 	setPlatformMcpRegistry(registry: PlatformMcpRegistry): void {
 		this.platformMcpRegistry = registry;
+	}
+
+	/**
+	 * Inject the WS connection registry so a delegated loop on this host can
+	 * resolve client tools for threads whose live session lives here (issue #91).
+	 */
+	setWsRegistry(registry: ClientToolResolver): void {
+		this.wsRegistry = registry;
 	}
 
 	/** Inject the thread executor for dispatch queue integration (avoids circular init order). */
@@ -1713,6 +1735,28 @@ export class RelayProcessor {
 			const platformToolsMap = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
 			if (platformToolsMap.size > 0) {
 				loopConfig.platformTools = Array.from(platformToolsMap.values());
+			}
+		}
+
+		// Inject client tools when a live WS session for this thread lives on
+		// THIS host (issue #91). Client tool calls defer over this host's local
+		// event bus + dispatch queue, so the loop must run where the connection
+		// is — which is why handleThread routed the wakeup here. Mirrors the
+		// local-path resolution in start/server.ts.
+		if (this.wsRegistry) {
+			const clientToolsFromRegistry = this.wsRegistry.getClientToolsForThread(payload.thread_id);
+			if (clientToolsFromRegistry && clientToolsFromRegistry.size > 0) {
+				loopConfig.clientTools = clientToolsFromRegistry;
+				const firstToolName = clientToolsFromRegistry.keys().next().value;
+				loopConfig.connectionId = firstToolName
+					? this.wsRegistry.getConnectionForTool(payload.thread_id, firstToolName)
+					: undefined;
+			}
+			// A live boundless session's per-connection systemPromptAddition is
+			// more current than any owning-task value; prefer it when present.
+			const sessionSysPrompt = this.wsRegistry.getSystemPromptAdditionForThread(payload.thread_id);
+			if (sessionSysPrompt !== undefined) {
+				loopConfig.systemPromptAddition = sessionSysPrompt;
 			}
 		}
 

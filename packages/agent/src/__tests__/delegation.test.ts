@@ -4,7 +4,12 @@ import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
-import { getDelegationTarget, getRecentToolCalls } from "../delegation.js";
+import {
+	getClientSessionDelegationTarget,
+	getDelegationTarget,
+	getRecentToolCalls,
+	hasLocalClientSession,
+} from "../delegation.js";
 
 // Test database setup
 let db: Database;
@@ -657,6 +662,106 @@ describe("Delegation", () => {
 			// test documents the delegated taskId pattern and confirms the check will apply.
 
 			expect(delegatedTaskId).toBeDefined();
+		});
+	});
+});
+
+describe("getClientSessionDelegationTarget", () => {
+	const LOCAL = "local-site";
+	const REMOTE = "remote-site";
+	const THREAD = "thread-cs";
+
+	function insertHost(siteId: string, ageMs: number): void {
+		const ts = new Date(Date.now() - ageMs).toISOString();
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: siteId,
+				host_name: siteId,
+				sync_url: null,
+				online_at: ts,
+				modified_at: ts,
+				deleted: 0,
+			},
+			"test-writer-site",
+		);
+	}
+
+	function insertSession(connectionId: string, threadId: string, siteId: string): void {
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id: `${connectionId}::${threadId}`,
+				connection_id: connectionId,
+				thread_id: threadId,
+				site_id: siteId,
+				created_at: now,
+				deleted: 0,
+				modified_at: now,
+			},
+			"test-writer-site",
+		);
+	}
+
+	it("returns null when no client session exists for the thread", () => {
+		expect(getClientSessionDelegationTarget(db, THREAD, LOCAL)).toBeNull();
+	});
+
+	it("returns null when the session is on the local host (tools resolve here)", () => {
+		insertHost(LOCAL, 0);
+		insertSession("conn-local", THREAD, LOCAL);
+		expect(getClientSessionDelegationTarget(db, THREAD, LOCAL)).toBeNull();
+	});
+
+	it("returns the remote host when a live session lives there", () => {
+		insertHost(REMOTE, 0);
+		insertSession("conn-remote", THREAD, REMOTE);
+		expect(getClientSessionDelegationTarget(db, THREAD, LOCAL)).toMatchObject({ site_id: REMOTE });
+	});
+
+	it("returns null when the only remote session host is stale/offline", () => {
+		insertHost(REMOTE, 10 * 60 * 1000); // 10 min old — past the 5 min window
+		insertSession("conn-remote", THREAD, REMOTE);
+		expect(getClientSessionDelegationTarget(db, THREAD, LOCAL)).toBeNull();
+	});
+
+	it("prefers running locally when sessions exist on both local and remote", () => {
+		insertHost(LOCAL, 0);
+		insertHost(REMOTE, 0);
+		insertSession("conn-local", THREAD, LOCAL);
+		insertSession("conn-remote", THREAD, REMOTE);
+		expect(getClientSessionDelegationTarget(db, THREAD, LOCAL)).toBeNull();
+	});
+
+	it("ignores soft-deleted session rows", () => {
+		insertHost(REMOTE, 0);
+		insertSession("conn-remote", THREAD, REMOTE);
+		db.run("UPDATE client_sessions SET deleted = 1 WHERE thread_id = ?", [THREAD]);
+		expect(getClientSessionDelegationTarget(db, THREAD, LOCAL)).toBeNull();
+	});
+
+	describe("hasLocalClientSession", () => {
+		it("is false when no session exists", () => {
+			expect(hasLocalClientSession(db, THREAD, LOCAL)).toBe(false);
+		});
+
+		it("is true when a live session lives on the local host", () => {
+			insertSession("conn-local", THREAD, LOCAL);
+			expect(hasLocalClientSession(db, THREAD, LOCAL)).toBe(true);
+		});
+
+		it("is false when the only session is on a remote host", () => {
+			insertSession("conn-remote", THREAD, REMOTE);
+			expect(hasLocalClientSession(db, THREAD, LOCAL)).toBe(false);
+		});
+
+		it("ignores soft-deleted local session rows", () => {
+			insertSession("conn-local", THREAD, LOCAL);
+			db.run("UPDATE client_sessions SET deleted = 1 WHERE thread_id = ?", [THREAD]);
+			expect(hasLocalClientSession(db, THREAD, LOCAL)).toBe(false);
 		});
 	});
 });

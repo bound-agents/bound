@@ -33,7 +33,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 19 tables + FTS5", () => {
+	it("applies schema successfully creating all 20 tables + FTS5", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -71,9 +71,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 21 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 27
+		// 22 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 28
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(22); // 21 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(23); // 22 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -235,8 +235,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 27 tables (21 base + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(27);
+		// Still exactly 28 tables (22 base + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(28);
 
 		db.close();
 	});
