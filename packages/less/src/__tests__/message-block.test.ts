@@ -148,7 +148,7 @@ describe("MessageBlock", () => {
 	});
 
 	describe("alert rendering", () => {
-		it("renders alert messages with error styling", async () => {
+		it("renders alert messages with a red stripe and header", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
 					message: {
@@ -166,6 +166,9 @@ describe("MessageBlock", () => {
 			const frame = lastFrame();
 			// Should show the error message, not "[alert: ...]" fallback
 			expect(frame).toContain("Bedrock request failed");
+			// Striped like a normal turn (#139): "alert" header + stripe glyph.
+			expect(frame).toContain("alert");
+			expect(frame).toContain("│");
 		});
 	});
 
@@ -416,7 +419,7 @@ describe("MessageBlock", () => {
 	});
 
 	describe("system message rendering", () => {
-		it("renders system messages with dim styling", async () => {
+		it("renders system messages with a yellow stripe and header", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
 					message: {
@@ -433,6 +436,34 @@ describe("MessageBlock", () => {
 
 			const frame = lastFrame();
 			expect(frame).toContain("Client tool call expired");
+			// Striped like a normal turn (#139): "system" header + stripe glyph.
+			expect(frame).toContain("system");
+			expect(frame).toContain("│");
+		});
+
+		it("renders developer messages (system notifications) with a yellow stripe and header", async () => {
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-dev",
+						role: "developer",
+						content: "New PR opened: #140",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 120,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Per invariant #19, injected system context lands as role:"developer";
+			// it should render with the system stripe + header, not the
+			// "[developer: …]" raw fallback (#139).
+			expect(frame).toContain("New PR opened: #140");
+			expect(frame).toContain("system");
+			expect(frame).toContain("│");
+			expect(frame).not.toContain("[developer:");
 		});
 	});
 
