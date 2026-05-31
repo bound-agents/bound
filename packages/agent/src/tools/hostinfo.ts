@@ -7,6 +7,7 @@ interface HostRow {
 	site_id: string;
 	host_name: string;
 	version: string | null;
+	commit_hash: string | null;
 	sync_url: string | null;
 	mcp_servers: string | null;
 	mcp_tools: string | null;
@@ -246,6 +247,7 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 					);
 					lines.push(`  site_id:     ${host.site_id}`);
 
+					if (host.commit_hash) lines.push(`  commit:      ${host.commit_hash}`);
 					if (host.version) lines.push(`  version:     ${host.version}`);
 					if (host.sync_url) lines.push(`  sync_url:    ${host.sync_url}`);
 
