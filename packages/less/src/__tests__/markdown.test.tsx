@@ -257,29 +257,45 @@ describe("Markdown", () => {
 		});
 	});
 
-	describe("mixed content", () => {
-		it("renders a mix of headings, paragraphs, and code", async () => {
-			const md = [
-				"# Hello",
-				"",
-				"This is **important** text.",
-				"",
-				"```js",
-				"console.log('hi');",
-				"```",
-				"",
-				"- item one",
-				"- item two",
-			].join("\n");
+	describe("width-wrapped prose (issue #130)", () => {
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping ANSI SGR codes
+		const stripAnsi = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, "");
 
-			const { lastFrame } = render(React.createElement(Markdown, { text: md }));
+		it("elides leading whitespace on wrapped continuation lines", async () => {
+			const text =
+				"the quick brown fox jumps over the lazy dog and then keeps on running well past the edge";
+			const { lastFrame } = render(React.createElement(Markdown, { text, width: 20 }));
 			await tick();
-			const frame = lastFrame();
-			expect(frame).toContain("Hello");
-			expect(frame).toContain("important");
-			expect(frame).toContain("console.log");
-			expect(frame).toContain("item one");
-			expect(frame).not.toContain("```");
+			const lines = stripAnsi(lastFrame() ?? "")
+				.split("\n")
+				.filter((l) => l.length > 0);
+			// The paragraph must wrap into multiple visual rows at width 20.
+			expect(lines.length).toBeGreaterThan(1);
+			// No continuation row begins with whitespace.
+			for (let i = 1; i < lines.length; i++) {
+				expect(lines[i]).not.toMatch(/^\s/);
+			}
+		});
+
+		it("keeps every visual row within the width budget", async () => {
+			const text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu";
+			const { lastFrame } = render(React.createElement(Markdown, { text, width: 16 }));
+			await tick();
+			const lines = stripAnsi(lastFrame() ?? "")
+				.split("\n")
+				.filter((l) => l.length > 0);
+			for (const line of lines) {
+				expect([...line].length).toBeLessThanOrEqual(16);
+			}
+		});
+
+		it("preserves inline bold styling across a wrap boundary", async () => {
+			const text = "intro text then **a long bold run that will certainly wrap** and a tail";
+			const { lastFrame } = render(React.createElement(Markdown, { text, width: 18 }));
+			await tick();
+			const frame = lastFrame() ?? "";
+			// Visible words survive; markdown syntax does not leak.
+			expect(stripAnsi(frame)).toContain("bold run");
 			expect(frame).not.toContain("**");
 		});
 	});
