@@ -236,4 +236,11 @@ export interface ToolContext {
 	taskId?: string;
 	modelRouter?: import("@bound/llm").ModelRouter;
 	fs?: import("just-bash").IFileSystem;
+	/**
+	 * Caps on pinned-memory creation/promotion (issue #101). When absent the
+	 * enforcement code falls back to DEFAULT_PINNED_COUNT_CAP /
+	 * DEFAULT_PINNED_SIZE_CAP, so the feature is enabled by default even on
+	 * ToolContext construction sites that do not wire config.
+	 */
+	memoryLimits?: { pinnedCountCap: number; pinnedSizeCap: number };
 }

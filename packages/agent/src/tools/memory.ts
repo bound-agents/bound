@@ -1,5 +1,11 @@
 import { insertRow, softDelete, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, type MemoryTier, deterministicUUID } from "@bound/shared";
+import {
+	BOUND_NAMESPACE,
+	DEFAULT_PINNED_COUNT_CAP,
+	DEFAULT_PINNED_SIZE_CAP,
+	type MemoryTier,
+	deterministicUUID,
+} from "@bound/shared";
 import { z } from "zod";
 import {
 	cascadeDeleteEdges,
@@ -58,6 +64,31 @@ type MemoryInput = z.infer<typeof memorySchema>;
  * human-facing naming convention, but they no longer auto-pin. To
  * pin a memory, pass `tier: "pinned"` on store.
  */
+/**
+ * Keys for system-authored memories that are exempt from the pinned-memory
+ * COUNT cap (but still subject to the per-entry SIZE cap). The heartbeat
+ * standing instructions are the canonical case; add future system keys here.
+ * Issue #101.
+ */
+const SYSTEM_MEMORY_KEYS = new Set<string>(["_heartbeat_instructions"]);
+
+/**
+ * Count the pinned, non-system, live memory entries currently stored. This is
+ * the denominator for the count cap — system keys are excluded so they never
+ * consume an operator's pinned budget.
+ */
+function countNonSystemPinned(ctx: ToolContext): number {
+	const systemKeys = [...SYSTEM_MEMORY_KEYS];
+	const placeholders = systemKeys.map(() => "?").join(", ");
+	const notInClause = systemKeys.length > 0 ? ` AND key NOT IN (${placeholders})` : "";
+	const row = ctx.db
+		.prepare(
+			`SELECT COUNT(*) as n FROM semantic_memory WHERE tier = 'pinned' AND deleted = 0${notInClause}`,
+		)
+		.get(...systemKeys) as { n: number };
+	return row.n;
+}
+
 export function resolveTierForKey(_key: string, explicitTier?: MemoryTier): MemoryTier {
 	return explicitTier ?? "default";
 }
@@ -79,6 +110,42 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 	const existing = ctx.db
 		.prepare("SELECT id, deleted, tier FROM semantic_memory WHERE key = ?")
 		.get(key) as { id: string; deleted: number; tier: MemoryTier } | null;
+
+	// Pinned-memory caps (issue #101). Enforced at creation, modification, and
+	// promotion; never on demotion (so existing setups that already violate the
+	// caps stay editable down toward compliance). Defaults apply even when no
+	// memory.json is present, so the feature is enabled by default.
+	const countCap = ctx.memoryLimits?.pinnedCountCap ?? DEFAULT_PINNED_COUNT_CAP;
+	const sizeCap = ctx.memoryLimits?.pinnedSizeCap ?? DEFAULT_PINNED_SIZE_CAP;
+	// The tier the entry will hold after this write (mirrors the write branches
+	// below): existing rows preserve their tier unless explicitly overridden.
+	const finalTier: MemoryTier = existing
+		? args.tier
+			? resolvedTier
+			: existing.tier
+		: resolvedTier;
+	const wasPinned = existing?.tier === "pinned";
+	const willBePinned = finalTier === "pinned";
+	// Demotion (was pinned, now not) is always allowed — skip every cap so an
+	// over-budget setup can shrink toward compliance.
+	const isDemotion = wasPinned && !willBePinned;
+	if (willBePinned && !isDemotion) {
+		const isSystemKey = SYSTEM_MEMORY_KEYS.has(key);
+		// SIZE cap: applies to every pinned write, system keys included.
+		if (value.length > sizeCap) {
+			return `Error: pinned memory "${key}" is ${value.length} characters, over the per-entry cap of ${sizeCap}. Rewrite it more concisely to fit, or store it at a lower tier (omit tier or pass a non-pinned tier). The size cap applies only to pinned entries.`;
+		}
+		// COUNT cap: only on count-increasing writes (a new pinned entry or a
+		// promotion from non-pinned), and only for non-system keys. Updating an
+		// already-pinned entry in place does not consume additional budget.
+		const isCountIncreasing = !wasPinned;
+		if (isCountIncreasing && !isSystemKey) {
+			const currentPinned = countNonSystemPinned(ctx);
+			if (currentPinned >= countCap) {
+				return `Error: pinned-memory count cap reached (${currentPinned}/${countCap}). Pinned memory is a limited resource — consolidate, rewrite, demote (re-store an existing pinned entry at a lower tier), or forget an existing pinned entry before creating or promoting another. Demoting an existing pinned memory is always allowed, even when over the cap.`;
+			}
+		}
+	}
 
 	if (existing) {
 		// Updating existing entry: preserve tier unless explicitly overridden.

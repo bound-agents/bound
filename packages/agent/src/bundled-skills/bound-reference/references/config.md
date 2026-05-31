@@ -29,6 +29,7 @@ about *running* behavior, the loaded config is what matters, not the file on dis
 | `mcp.json` | no | MCP server connections (stdio or http transport) |
 | `overlay.json` | no | codebase mount points (drives the sandbox overlays) |
 | `cron_schedules.json` | no | recurring task definitions |
+| `memory.json` | no | pinned-memory caps (`pinned_count_cap`, `pinned_size_cap`) |
 | `persona.md` | no | custom system-prompt personality |
 
 ## Schemas are strict — unknown keys fail loudly

@@ -227,6 +227,16 @@ export function createAgentLoopFactory(
 			})) ?? [];
 
 		// Create ToolContext for native agent tools
+		const memoryConfigResult = appContext.optionalConfig.memory;
+		const memoryLimits =
+			memoryConfigResult?.ok && memoryConfigResult.value
+				? {
+						pinnedCountCap: (memoryConfigResult.value as { pinned_count_cap: number })
+							.pinned_count_cap,
+						pinnedSizeCap: (memoryConfigResult.value as { pinned_size_cap: number })
+							.pinned_size_cap,
+					}
+				: undefined;
 		const toolCtx: ToolContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -236,6 +246,7 @@ export function createAgentLoopFactory(
 			taskId: config.taskId,
 			modelRouter,
 			fs: clusterFsObj?.fs,
+			memoryLimits,
 		};
 		const agentTools = createAgentTools(toolCtx);
 

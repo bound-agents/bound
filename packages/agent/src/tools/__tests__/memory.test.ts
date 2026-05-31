@@ -1039,3 +1039,157 @@ describe("memory tool", () => {
 		});
 	});
 });
+
+describe("memory tool — pinned caps (issue #101)", () => {
+	let db: Database;
+	const siteId = deterministicUUID(BOUND_NAMESPACE, "test-site-caps");
+	const testLogger = {
+		debug: () => {},
+		info: () => {},
+		warn: () => {},
+		error: () => {},
+	};
+	const testEventBus = new (require("@bound/shared").TypedEventEmitter)() as TypedEventEmitter;
+
+	function makeCtx(limits?: { pinnedCountCap: number; pinnedSizeCap: number }): ToolContext {
+		return {
+			db,
+			siteId,
+			eventBus: testEventBus,
+			logger: testLogger,
+			threadId: "test-thread",
+			taskId: "test-task",
+			memoryLimits: limits,
+		};
+	}
+
+	async function store(
+		ctx: ToolContext,
+		key: string,
+		value: string,
+		tier?: "pinned" | "default" | "summary" | "detail",
+	): Promise<string> {
+		const tool = createMemoryTool(ctx);
+		return (await getExecute(tool)({ action: "store", key, value, tier })) as string;
+	}
+
+	function tierOf(key: string): string | null {
+		const row = db
+			.prepare("SELECT tier FROM semantic_memory WHERE key = ? AND deleted = 0")
+			.get(key) as { tier: string } | null;
+		return row?.tier ?? null;
+	}
+
+	beforeEach(() => {
+		db = createTestDb();
+	});
+
+	afterEach(() => {
+		try {
+			db.close();
+		} catch {
+			// ignore
+		}
+	});
+
+	it("allows a new pinned entry under the count cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 2, pinnedSizeCap: 100 });
+		expect(await store(ctx, "p1", "x", "pinned")).toContain("Memory saved");
+		expect(tierOf("p1")).toBe("pinned");
+	});
+
+	it("blocks a new pinned entry once the count cap is reached", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 2, pinnedSizeCap: 100 });
+		await store(ctx, "p1", "x", "pinned");
+		await store(ctx, "p2", "x", "pinned");
+		const result = await store(ctx, "p3", "x", "pinned");
+		expect(result).toContain("count cap reached (2/2)");
+		expect(result).toContain("Demoting");
+		expect(tierOf("p3")).toBeNull();
+	});
+
+	it("blocks promoting a non-pinned entry to pinned when at the count cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 1, pinnedSizeCap: 100 });
+		await store(ctx, "p1", "x", "pinned");
+		await store(ctx, "d1", "x"); // default tier, not capped
+		const result = await store(ctx, "d1", "x", "pinned"); // promotion attempt
+		expect(result).toContain("count cap reached (1/1)");
+		expect(tierOf("d1")).toBe("default"); // unchanged
+	});
+
+	it("allows updating an already-pinned entry in place even at the count cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 1, pinnedSizeCap: 100 });
+		await store(ctx, "p1", "original", "pinned");
+		// at cap (1/1), but this is an in-place update of an existing pinned row
+		const result = await store(ctx, "p1", "updated body", "pinned");
+		expect(result).toContain("Memory saved");
+		const row = db.prepare("SELECT value FROM semantic_memory WHERE key = ?").get("p1") as {
+			value: string;
+		};
+		expect(row.value).toBe("updated body");
+	});
+
+	it("always allows demoting a pinned entry, even when over the count cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 2, pinnedSizeCap: 100 });
+		await store(ctx, "p1", "x", "pinned");
+		await store(ctx, "p2", "x", "pinned");
+		// demote p1 to default — must be allowed despite being at cap
+		const result = await store(ctx, "p1", "x", "default");
+		expect(result).toContain("Memory saved");
+		expect(tierOf("p1")).toBe("default");
+	});
+
+	it("blocks a pinned entry whose value exceeds the size cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 10 });
+		const result = await store(ctx, "p1", "12345678901", "pinned"); // 11 chars
+		expect(result).toContain("over the");
+		expect(result).toContain("per-entry cap of 10");
+		expect(tierOf("p1")).toBeNull();
+	});
+
+	it("does not size-cap non-pinned entries", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 10 });
+		const result = await store(ctx, "d1", "a very long default value well over cap");
+		expect(result).toContain("Memory saved");
+		expect(tierOf("d1")).toBe("default");
+	});
+
+	it("exempts system keys from the count cap but still enforces the size cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 1, pinnedSizeCap: 20 });
+		await store(ctx, "p1", "x", "pinned"); // fills the budget (1/1)
+		// system key is exempt from count cap
+		const ok = await store(ctx, "_heartbeat_instructions", "short", "pinned");
+		expect(ok).toContain("Memory saved");
+		expect(tierOf("_heartbeat_instructions")).toBe("pinned");
+		// but still subject to the size cap
+		const tooBig = await store(
+			ctx,
+			"_heartbeat_instructions",
+			"this is definitely longer than twenty chars",
+			"pinned",
+		);
+		expect(tooBig).toContain("per-entry cap of 20");
+	});
+
+	it("does not count system-key pinned entries against the count cap denominator", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 1, pinnedSizeCap: 100 });
+		await store(ctx, "_heartbeat_instructions", "short", "pinned");
+		// system pinned entry should not consume the budget; a fresh pinned still fits
+		const result = await store(ctx, "p1", "x", "pinned");
+		expect(result).toContain("Memory saved");
+		expect(tierOf("p1")).toBe("pinned");
+	});
+
+	it("applies default caps (10/2000) when memoryLimits is unset", async () => {
+		const ctx = makeCtx(undefined);
+		// size: 2001 chars over the 2000 default
+		const tooBig = await store(ctx, "big", "a".repeat(2001), "pinned");
+		expect(tooBig).toContain("per-entry cap of 2000");
+		// count: 10 default — fill it, 11th blocked
+		for (let i = 0; i < 10; i++) {
+			expect(await store(ctx, `dp${i}`, "x", "pinned")).toContain("Memory saved");
+		}
+		const eleventh = await store(ctx, "dp10", "x", "pinned");
+		expect(eleventh).toContain("count cap reached (10/10)");
+	});
+});
