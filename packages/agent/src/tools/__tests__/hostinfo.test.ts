@@ -81,6 +81,45 @@ describe("hostinfo tool", () => {
 		expect(result).toContain("online");
 	});
 
+	it("renders the commit hash for a node when present (#120)", async () => {
+		db.prepare(
+			`INSERT INTO hosts (site_id, host_name, version, commit_hash, modified_at, deleted, mcp_servers, mcp_tools, models, platforms)
+			 VALUES (?, 'commit-host', '1.0.0', 'a1b2c3d', datetime('now'), 0, '[]', '[]', '[]', '{}')`,
+		).run(siteId);
+
+		const toolCtx: ToolContext = {
+			db,
+			siteId,
+			eventBus: { emit: () => {} } as any,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+		};
+
+		const tool = createHostinfoTool(toolCtx);
+		const result = await tool.execute({});
+
+		expect(result).toContain("commit:");
+		expect(result).toContain("a1b2c3d");
+	});
+
+	it("omits the commit line when commit_hash is null (#120)", async () => {
+		db.prepare(
+			`INSERT INTO hosts (site_id, host_name, version, modified_at, deleted, mcp_servers, mcp_tools, models, platforms)
+			 VALUES (?, 'no-commit-host', '1.0.0', datetime('now'), 0, '[]', '[]', '[]', '{}')`,
+		).run(siteId);
+
+		const toolCtx: ToolContext = {
+			db,
+			siteId,
+			eventBus: { emit: () => {} } as any,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+		};
+
+		const tool = createHostinfoTool(toolCtx);
+		const result = await tool.execute({});
+
+		expect(result).not.toContain("commit:");
+	});
+
 	it("tool definition has correct shape", () => {
 		const toolCtx: ToolContext = {
 			db,
