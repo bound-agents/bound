@@ -503,4 +503,48 @@ describe("MessageBlock", () => {
 			}
 		});
 	});
+
+	describe("optimistic pending user message (#88)", () => {
+		it("renders the pending placeholder with a sending cue", async () => {
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "__pending_user__",
+						role: "user",
+						content: "deploy the thing",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 80,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("you");
+			expect(frame).toContain("sending");
+			expect(frame).toContain("deploy the thing");
+		});
+
+		it("renders a committed user message without the sending cue", async () => {
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "real-1",
+						role: "user",
+						content: "deploy the thing",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 80,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("you");
+			expect(frame).not.toContain("sending");
+			expect(frame).toContain("deploy the thing");
+		});
+	});
 });

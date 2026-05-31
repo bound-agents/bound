@@ -2,6 +2,7 @@ import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
+import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tildifyPath, tildifyText } from "../util/path";
 import { wrapLinesAtWidth } from "../util/wrap";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
@@ -343,12 +344,20 @@ export function MessageBlock({
 
 	// Render based on role
 	if (message.role === "user") {
+		// Optimistic placeholder (#88): the user's message is echoed locally
+		// before the server persists + broadcasts it. Render dimmed with a
+		// "sending…" cue so it reads as in-flight, not yet committed.
+		const isPending = message.id === PENDING_USER_MESSAGE_ID;
 		return (
-			<StripeBox color="green" width={stripeWidth}>
-				<Text bold color="green">
-					you
+			<StripeBox color={isPending ? "gray" : "green"} width={stripeWidth}>
+				<Text bold color={isPending ? "gray" : "green"}>
+					you{isPending ? <Text dimColor> · sending…</Text> : null}
 				</Text>
-				{renderContent(parsedContent)}
+				{isPending ? (
+					<Text dimColor>{typeof parsedContent === "string" ? parsedContent : ""}</Text>
+				) : (
+					renderContent(parsedContent)
+				)}
 			</StripeBox>
 		);
 	}
