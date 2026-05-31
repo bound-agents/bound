@@ -8,6 +8,7 @@ import {
 	err,
 	keyringSchema,
 	mcpSchema,
+	memoryConfigSchema,
 	networkSchema,
 	ok,
 	overlaySchema,
@@ -214,6 +215,7 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 			schema: cronSchedulesSchema as ZodSchema<unknown>,
 			key: "cronSchedules",
 		},
+		{ filename: "memory.json", schema: memoryConfigSchema as ZodSchema<unknown>, key: "memory" },
 	];
 
 	for (const { filename, schema, key } of optionalConfigs) {
