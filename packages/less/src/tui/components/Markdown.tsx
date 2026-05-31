@@ -1,12 +1,125 @@
 import { Box, Text } from "ink";
 import { Lexer, type Token, type Tokens } from "marked";
 import type React from "react";
+import { type StyledRun, wrapStyledRuns } from "../util/wrap-styled";
 import { HighlightedCodeBlock } from "./HighlightedCode";
 
 const HR_WIDTH = 40;
 
 export interface MarkdownProps {
 	text: string;
+	/**
+	 * Available content width in columns. When provided, prose blocks
+	 * (paragraphs, headings, list items, blockquotes) are pre-wrapped at this
+	 * width with leading whitespace elided on continuation lines (issue #130).
+	 * When omitted, prose is rendered as a single logical line and Ink wraps it
+	 * (which leaves leading whitespace on continuations — the pre-fix behavior,
+	 * retained only as a width-less fallback for tests and ad-hoc callers).
+	 */
+	width?: number;
+}
+
+/** Visual style carried by an inline run. Mirrors {@link StyledRun}'s flags. */
+type InlineStyle = Omit<StyledRun, "text">;
+
+/**
+ * Flatten marked inline tokens into a sequence of styled runs. Parallel to
+ * {@link renderInline} but produces data (runs) instead of Ink elements, so the
+ * result can be width-wrapped by {@link wrapStyledRuns} before rendering. Nested
+ * styles (e.g. bold inside a link) merge down the recursion via `base`.
+ */
+function inlineTokensToRuns(tokens: Token[], base: InlineStyle = {}): StyledRun[] {
+	const runs: StyledRun[] = [];
+	for (const token of tokens) {
+		switch (token.type) {
+			case "text": {
+				const t = token as Tokens.Text;
+				if ("tokens" in t && Array.isArray(t.tokens) && t.tokens.length > 0) {
+					runs.push(...inlineTokensToRuns(t.tokens, base));
+				} else {
+					runs.push({ ...base, text: t.text });
+				}
+				break;
+			}
+			case "strong":
+				runs.push(...inlineTokensToRuns((token as Tokens.Strong).tokens, { ...base, bold: true }));
+				break;
+			case "em":
+				runs.push(...inlineTokensToRuns((token as Tokens.Em).tokens, { ...base, italic: true }));
+				break;
+			case "codespan":
+				runs.push({ ...base, color: "yellow", text: `\`${(token as Tokens.Codespan).text}\`` });
+				break;
+			case "link": {
+				const t = token as Tokens.Link;
+				runs.push({ ...base, color: "cyan", underline: true, text: t.text });
+				runs.push({ ...base, dim: true, text: ` (${t.href})` });
+				break;
+			}
+			case "del":
+				runs.push(
+					...inlineTokensToRuns((token as Tokens.Del).tokens, { ...base, strikethrough: true }),
+				);
+				break;
+			case "br":
+				runs.push({ ...base, text: "\n" });
+				break;
+			default: {
+				if ("text" in token && typeof token.text === "string") {
+					runs.push({ ...base, text: token.text });
+				} else if ("raw" in token && typeof token.raw === "string") {
+					runs.push({ ...base, text: token.raw });
+				}
+				break;
+			}
+		}
+	}
+	return runs;
+}
+
+/** Render a single styled run as an Ink `<Text>` element. */
+function renderRun(run: StyledRun, key: string): React.ReactElement {
+	return (
+		<Text
+			key={key}
+			bold={run.bold}
+			italic={run.italic}
+			underline={run.underline}
+			strikethrough={run.strikethrough}
+			dimColor={run.dim}
+			color={run.color}
+		>
+			{run.text}
+		</Text>
+	);
+}
+
+/**
+ * Render prose inline tokens as a pre-wrapped `<Text>`. Break points are
+ * computed at `width` (when > 0) and leading whitespace on continuation lines
+ * is elided; each visual line is emitted as its own styled run sequence joined
+ * by explicit newlines, so every line fits within `width` and Ink does not
+ * re-wrap (and so cannot reintroduce leading-whitespace continuations).
+ */
+function renderProse(
+	tokens: Token[],
+	width: number | undefined,
+	key: string,
+	base: InlineStyle = {},
+): React.ReactElement {
+	const runs = inlineTokensToRuns(tokens, base);
+	const lines = width && width > 0 ? wrapStyledRuns(runs, width) : [runs];
+	const children: React.ReactNode[] = [];
+	for (let li = 0; li < lines.length; li++) {
+		if (li > 0) {
+			children.push("\n");
+		}
+		const line = lines[li];
+		for (let ri = 0; ri < line.length; ri++) {
+			children.push(renderRun(line[ri], `${li}-${ri}`));
+		}
+	}
+	return <Text key={key}>{children}</Text>;
 }
 
 /**
@@ -98,22 +211,20 @@ function renderInline(tokens: Token[], key = ""): React.ReactElement[] {
 }
 
 /**
- * Renders a single block-level token as an Ink element.
+ * Renders a single block-level token as an Ink element. `width`, when set, is
+ * the content column budget used to pre-wrap prose (issue #130); it is
+ * narrowed for nested blocks (list-item text, blockquote inner) before recursion.
  */
-function renderBlock(token: Token, index: number): React.ReactElement | null {
+function renderBlock(token: Token, index: number, width?: number): React.ReactElement | null {
 	switch (token.type) {
 		case "heading": {
 			const t = token as Tokens.Heading;
 			const color = t.depth === 1 ? "magenta" : t.depth === 2 ? "blue" : "cyan";
-			return (
-				<Text key={`block-${index}`} bold color={color}>
-					{renderInline(t.tokens, `h${index}-`)}
-				</Text>
-			);
+			return renderProse(t.tokens, width, `block-${index}`, { bold: true, color });
 		}
 		case "paragraph": {
 			const t = token as Tokens.Paragraph;
-			return <Text key={`block-${index}`}>{renderInline(t.tokens, `p${index}-`)}</Text>;
+			return renderProse(t.tokens, width, `block-${index}`);
 		}
 		case "code": {
 			const t = token as Tokens.Code;
@@ -144,11 +255,16 @@ function renderBlock(token: Token, index: number): React.ReactElement | null {
 				<Box key={`block-${index}`} flexDirection="column">
 					{t.items.map((item, idx) => {
 						const marker = t.ordered ? `${(t.start || 1) + idx}.` : "\u2022";
+						// The marker Text renders `${marker} ` (marker + one space)
+						// alongside the item text, so the item's wrap budget is the
+						// content width minus that prefix.
+						const itemWidth =
+							width !== undefined ? Math.max(1, width - (marker.length + 1)) : undefined;
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: list items are immutable tokens
 							<Box key={`li-${index}-${idx}`}>
 								<Text>{marker} </Text>
-								<Text>{renderInline(item.tokens, `li${index}-${idx}-`)}</Text>
+								{renderProse(item.tokens, itemWidth, `li${index}-${idx}`)}
 							</Box>
 						);
 					})}
@@ -229,10 +345,12 @@ function renderBlock(token: Token, index: number): React.ReactElement | null {
 		}
 		case "blockquote": {
 			const t = token as Tokens.Blockquote;
-			// Blockquote contains block-level tokens; render them inline-ish
+			// Blockquote renders a "│ " prefix (paddingLeft 1 + pipe + space ≈ 3
+			// cols), so its inner blocks wrap at the narrowed budget.
+			const innerWidth = width !== undefined ? Math.max(1, width - 3) : undefined;
 			const inner = t.tokens
 				.filter((bt) => bt.type !== "space")
-				.map((bt, bi) => renderBlock(bt, bi))
+				.map((bt, bi) => renderBlock(bt, bi, innerWidth))
 				.filter(Boolean);
 			return (
 				<Box key={`block-${index}`} paddingLeft={1}>
@@ -267,14 +385,14 @@ function renderBlock(token: Token, index: number): React.ReactElement | null {
  * Supports: headings, paragraphs, bold, italic, inline code, fenced code blocks,
  * ordered/unordered lists, blockquotes, links, strikethrough, and horizontal rules.
  */
-export function Markdown({ text }: MarkdownProps): React.ReactElement {
+export function Markdown({ text, width }: MarkdownProps): React.ReactElement {
 	if (!text) {
 		return <Text>{""}</Text>;
 	}
 
 	const tokens = Lexer.lex(text);
 	const blocks = tokens
-		.map((token, index) => renderBlock(token, index))
+		.map((token, index) => renderBlock(token, index, width))
 		.filter((el): el is React.ReactElement => el !== null);
 
 	if (blocks.length === 0) {
