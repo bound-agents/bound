@@ -1,8 +1,17 @@
 import { formatProvenance } from "./provenance";
+import type { ResolvedShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
 const HALF_OUTPUT_BYTES = 50000; // 50KB per half
+
+/** POSIX `sh` fallback for callers that don't supply a resolved shell. */
+const POSIX_DEFAULT_SHELL: ResolvedShell = {
+	command: "sh",
+	execFlag: "-c",
+	toolName: "boundless_bash",
+	label: "POSIX shell (sh)",
+};
 
 export interface BashToolWithStreamingOptions {
 	onStdoutChunk?: (chunk: string) => void;
@@ -52,9 +61,12 @@ function truncateOutput(output: string, maxBytes: number): string {
 	return `${first}\n... [truncated ${truncatedBytes} bytes from middle] ...\n${last}`;
 }
 
-export function createBashTool(hostname: string): ToolHandler {
+export function createBashTool(
+	hostname: string,
+	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
+): ToolHandler {
 	return (args, signal, cwd) => {
-		return bashToolWithStreaming(args, signal, cwd, undefined, hostname);
+		return bashToolWithStreaming(args, signal, cwd, undefined, hostname, shell);
 	};
 }
 
@@ -64,13 +76,14 @@ export async function bashToolWithStreaming(
 	cwd: string,
 	options?: BashToolWithStreamingOptions,
 	hostname = "unknown",
+	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
 ): Promise<ToolResult> {
 	const { command, timeout } = args as {
 		command?: string;
 		timeout?: number;
 	};
 
-	const provenance = formatProvenance(hostname, cwd, "boundless_bash");
+	const provenance = formatProvenance(hostname, cwd, shell.toolName);
 
 	if (!command || typeof command !== "string") {
 		const result: ToolResult = {
@@ -104,7 +117,7 @@ export async function bashToolWithStreaming(
 
 		try {
 			// Spawn the subprocess
-			const proc = Bun.spawn(["sh", "-c", command], {
+			const proc = Bun.spawn([shell.command, shell.execFlag, command], {
 				cwd,
 				stdout: "pipe",
 				stderr: "pipe",

@@ -142,6 +142,7 @@ All other input lines not matching `^/[a-z]+(\s|$)` are treated as message conte
 **R-BL6.** `config.json` shall contain camelCase JSON with fields:
 - `url: string` — bound server URL. Default `http://localhost:3001` if missing or file absent.
 - `model: string | null` — optional default model. Null means server chooses.
+- `shell: string` — optional override for the shell backing the bash-family tool. Accepts a bare executable name (resolved on `PATH`) or an absolute path. A configured shell that cannot be found is a fatal error at startup. When absent, the shell is auto-detected: POSIX `sh` on non-Windows; on Windows, PowerShell if present (`pwsh`, then legacy `powershell.exe`), else `%COMSPEC%`/`cmd.exe`. The resolved shell family also determines the LLM-facing tool name — `boundless_bash` (POSIX `-c`), `boundless_cmd` (`/c`), or `boundless_pwsh` (`-Command`) — so smaller models are not confused by a name/semantics mismatch.
 
 Unknown fields shall be preserved on write (forward compatibility with future schema additions).
 

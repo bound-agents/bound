@@ -14,6 +14,11 @@ const configSchema = z
 		contextFiles: z
 			.array(z.string())
 			.default(["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"]),
+		// Override the shell used by the boundless bash-family tool. Accepts a bare
+		// executable name (resolved on PATH) or an absolute path. When unset, the
+		// shell is auto-detected: POSIX `sh` on non-Windows, PowerShell (else
+		// cmd.exe) on Windows. An invalid override is a fatal error at attach.
+		shell: z.string().optional(),
 	})
 	.passthrough();
 

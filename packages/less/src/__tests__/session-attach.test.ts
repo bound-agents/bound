@@ -143,6 +143,12 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 		};
 
 		await performAttach(params);
@@ -160,6 +166,12 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 		};
 
 		const result = await performAttach(params);
@@ -181,6 +193,12 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 		};
 
 		const result = await performAttach(params);
@@ -198,6 +216,12 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 		};
 
 		const result = await performAttach(params);

@@ -72,6 +72,12 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 			deps: mockDeps,
 		};
 
@@ -101,6 +107,12 @@ describe("transitionThread", () => {
 			logger: mockLogger,
 			inFlightTools: new Map(),
 			model: "claude-opus", // preserved
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 			deps: mockDeps,
 		};
 
@@ -134,6 +146,12 @@ describe("transitionThread", () => {
 				["tool1", controller1],
 				["tool2", controller2],
 			]),
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 			deps: mockDeps,
 		};
 
@@ -170,6 +188,12 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 			deps: mockDeps,
 		};
 
@@ -199,6 +223,12 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
 			deps: mockDeps,
 		};
 

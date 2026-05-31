@@ -1,6 +1,7 @@
 import type { BoundClient, ToolCallRequest, ToolCallResult, ToolCancelEvent } from "@bound/client";
 import { useEffect, useState } from "react";
 import { bashToolWithStreaming } from "../../tools/bash";
+import type { ResolvedShell } from "../../tools/shell";
 import type { ToolHandler } from "../../tools/types";
 
 export interface InFlightTool {
@@ -27,6 +28,7 @@ export function useToolCalls(
 	handlers: Map<string, ToolHandler>,
 	hostname: string,
 	cwd: string,
+	shell: ResolvedShell,
 ): UseToolCallsResult {
 	const [inFlightTools, setInFlightTools] = useState<Map<string, InFlightTool>>(new Map());
 
@@ -71,9 +73,9 @@ export function useToolCalls(
 					};
 				}
 
-				// For bash tool, use streaming with stdout callback
+				// For the shell tool, use streaming with stdout callback
 				const result =
-					toolName === "boundless_bash"
+					toolName === shell.toolName
 						? await bashToolWithStreaming(
 								args,
 								controller.signal,
@@ -92,6 +94,7 @@ export function useToolCalls(
 									},
 								},
 								hostname,
+								shell,
 							)
 						: await handler(args, controller.signal, cwd);
 
@@ -149,7 +152,7 @@ export function useToolCalls(
 		return () => {
 			client.off("tool:cancel", handleToolCancel);
 		};
-	}, [client, handlers, hostname, cwd]);
+	}, [client, handlers, hostname, cwd, shell]);
 
 	const abortAll = () => {
 		setInFlightTools((prev) => {

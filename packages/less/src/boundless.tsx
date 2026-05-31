@@ -21,6 +21,7 @@ import { AppLogger } from "./logging";
 import { McpServerManager } from "./mcp/manager";
 import { performAttach } from "./session/attach";
 import { buildToolSet } from "./tools/registry";
+import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
 
 export interface ParsedArgs {
@@ -109,6 +110,16 @@ async function main(): Promise<void> {
 			config.url = urlArg;
 		}
 
+		// Resolve the shell for the bash-family tool. An invalid override is a
+		// fatal error at startup — surface it cleanly rather than falling back.
+		let shell: ResolvedShell;
+		try {
+			shell = resolveShell(config.shell);
+		} catch (error) {
+			process.stderr.write(`${(error as Error).message}\n`);
+			process.exit(1);
+		}
+
 		// Step 3: Connect BoundClient with timeout
 		const client = new BoundClient(config.url);
 		try {
@@ -161,11 +172,12 @@ async function main(): Promise<void> {
 			hostname,
 			logger,
 			injectContextFiles: config.contextFiles,
+			shell,
 		});
 
 		// Step 8: Build tool set for App
 		const mcpTools = mcpManager.getRunningTools();
-		const toolSet = buildToolSet(process.cwd(), hostname, mcpTools, undefined, config.url);
+		const toolSet = buildToolSet(process.cwd(), hostname, mcpTools, undefined, config.url, shell);
 
 		// Block on the shiki highlighter before render so initial message
 		// history (committed to Ink's <Static>) is fully syntax-highlighted.
@@ -190,6 +202,7 @@ async function main(): Promise<void> {
 				initialMessages={attachResult.messages}
 				model={config.model}
 				toolHandlers={toolSet.handlers}
+				shell={shell}
 			/>,
 			{ exitOnCtrlC: false },
 		);

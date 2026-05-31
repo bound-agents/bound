@@ -6,6 +6,7 @@ import { createBashTool } from "./bash";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
+import { type ResolvedShell, resolveShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 import { createWriteTool } from "./write";
 
@@ -26,7 +27,9 @@ export function buildToolSet(
 	mcpTools?: Map<string, { tools: Tool[]; config: McpServerConfig }>,
 	confirmFn?: (toolName: string) => Promise<boolean>,
 	boundUrl?: string,
+	shell?: ResolvedShell,
 ): BuildToolSetResult {
+	const resolvedShell = shell ?? resolveShell(undefined);
 	const toolDefinitions: ToolDefinition[] = [];
 	const handlers = new Map<string, ToolHandler>();
 	const toolNameMapping = new Map<string, ToolNameMapping>();
@@ -107,8 +110,8 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
-				name: "boundless_bash",
-				description: "Execute a shell command with AbortSignal support",
+				name: resolvedShell.toolName,
+				description: `Execute a command via ${resolvedShell.label} with AbortSignal support`,
 				parameters: {
 					type: "object",
 					required: ["command"],
@@ -165,7 +168,7 @@ export function buildToolSet(
 	handlers.set("boundless_read", createReadTool(_hostname));
 	handlers.set("boundless_write", createWriteTool(_hostname));
 	handlers.set("boundless_edit", createEditTool(_hostname));
-	handlers.set("boundless_bash", createBashTool(_hostname));
+	handlers.set(resolvedShell.toolName, createBashTool(_hostname, resolvedShell));
 	handlers.set(
 		"boundless_copy",
 		createCopyTool({
@@ -390,10 +393,11 @@ export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
 	mcpServers: string[],
-	options?: { injectContextFiles?: string[] },
+	options?: { injectContextFiles?: string[]; shellToolName?: string },
 ): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
-	const toolList = `boundless_read, boundless_write, boundless_edit, boundless_bash, boundless_copy${
+	const shellToolName = options?.shellToolName ?? "boundless_bash";
+	const toolList = `boundless_read, boundless_write, boundless_edit, ${shellToolName}, boundless_copy${
 		mcpNamespaces ? `, ${mcpNamespaces}` : ""
 	}`;
 
