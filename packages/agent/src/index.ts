@@ -29,7 +29,12 @@ export {
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
 
 // Export delegation
-export { getDelegationTarget, getRecentToolCalls } from "./delegation";
+export {
+	getClientSessionDelegationTarget,
+	getDelegationTarget,
+	getRecentToolCalls,
+	hasLocalClientSession,
+} from "./delegation";
 
 // Export agent loop
 export { AgentLoop } from "./agent-loop";
@@ -57,6 +62,7 @@ export { Scheduler } from "./scheduler";
 
 // Export relay processor
 export { RelayProcessor } from "./relay-processor";
+export type { ClientToolResolver } from "./relay-processor";
 export { createRelayOutboxEntry } from "./relay-router";
 
 // Export native tools

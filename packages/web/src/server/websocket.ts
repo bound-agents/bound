@@ -5,6 +5,7 @@ import {
 	enqueueToolResult,
 	getPendingClientToolCalls,
 	insertRow,
+	softDelete,
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
@@ -373,6 +374,12 @@ export function createWebSocketHandler(
 	): void {
 		conn.subscriptions.add(msg.thread_id);
 
+		// Record client-session affinity so notify/introspect wakeups fired on
+		// other hosts can be routed back here (issue #91, invariant #21). The
+		// session lives wherever the WS connection is — client tool calls defer
+		// over this host's local event bus and can't be reached cross-host.
+		recordClientSession(conn, msg.thread_id);
+
 		// Propagate systemPromptAddition to the new subscription (AC2.3)
 		if (conn.systemPromptAddition !== undefined) {
 			conn.systemPromptAdditions.set(msg.thread_id, conn.systemPromptAddition);
@@ -389,8 +396,66 @@ export function createWebSocketHandler(
 	): void {
 		conn.subscriptions.delete(msg.thread_id);
 
+		// Drop client-session affinity for this (connection, thread) pair.
+		clearClientSession(conn, msg.thread_id);
+
 		// Clean up systemPromptAddition for this thread (AC2.5)
 		conn.systemPromptAdditions.delete(msg.thread_id);
+	}
+
+	/**
+	 * Upsert a client_sessions row for (connection, thread) on this host.
+	 * Idempotent across re-subscribes: a re-subscribe on the same connection
+	 * re-undeletes/bumps the existing row rather than failing on the PK.
+	 */
+	function recordClientSession(conn: ClientConnection, threadId: string): void {
+		if (!db || !siteId) return;
+		const id = `${conn.connectionId}::${threadId}`;
+		const now = new Date().toISOString();
+		const existing = db.query("SELECT id FROM client_sessions WHERE id = ?").get(id) as {
+			id: string;
+		} | null;
+		if (existing) {
+			updateRow(db, "client_sessions", id, { site_id: siteId, deleted: 0 }, siteId);
+			return;
+		}
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id,
+				connection_id: conn.connectionId,
+				thread_id: threadId,
+				site_id: siteId,
+				created_at: now,
+				deleted: 0,
+				modified_at: now,
+			},
+			siteId,
+		);
+	}
+
+	/** Soft-delete the client_sessions row for one (connection, thread) pair. */
+	function clearClientSession(conn: ClientConnection, threadId: string): void {
+		if (!db || !siteId) return;
+		const id = `${conn.connectionId}::${threadId}`;
+		const existing = db
+			.query("SELECT id FROM client_sessions WHERE id = ? AND deleted = 0")
+			.get(id) as { id: string } | null;
+		if (existing) {
+			softDelete(db, "client_sessions", id, siteId);
+		}
+	}
+
+	/** Soft-delete all client_sessions rows held by a connection (on disconnect). */
+	function clearAllClientSessions(conn: ClientConnection): void {
+		if (!db || !siteId) return;
+		const rows = db
+			.query("SELECT id FROM client_sessions WHERE connection_id = ? AND deleted = 0")
+			.all(conn.connectionId) as Array<{ id: string }>;
+		for (const { id } of rows) {
+			softDelete(db, "client_sessions", id, siteId);
+		}
 	}
 
 	function handleMessageSend(conn: ClientConnection, msg: z.infer<typeof messageSendSchema>): void {
@@ -1041,6 +1106,11 @@ export function createWebSocketHandler(
 						emitToolCancel(claimedByThisConnection, threadId, "session_reset", conn.connectionId);
 					}
 				}
+
+				// Drop client-session affinity rows held by this connection so
+				// notify/introspect wakeups stop being routed to a host whose
+				// session just went away (issue #91).
+				clearAllClientSessions(conn);
 			}
 			clients.delete(ws);
 		},

@@ -38,6 +38,7 @@ const SYNCED_TABLE_NAMES: readonly SyncedTableName[] = [
 	"memory_edges",
 	"connector_handles",
 	"webhooks",
+	"client_sessions",
 	"turns",
 ];
 

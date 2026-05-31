@@ -108,7 +108,7 @@ These rules exist because violating them has historically caused real production
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
 overlay_index, cluster_config, advisories, skills, memory_edges,
-connector_handles, webhooks, turns
+connector_handles, webhooks, turns, client_sessions
 ```
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
@@ -229,6 +229,8 @@ this table.
 **16. Extended-thinking routing.** `ChatParams.thinking` is a discriminated union; `ChatParams.effort` rides alongside. The Bedrock driver folds both into `providerOptions.bedrock.reasoningConfig`. Temperature is suppressed whenever `reasoningConfig` is set. Config lives in `model_backends.json` and must be mirrored in `inferenceRequestPayloadSchema` to forward over the relay.
 
 **18. ProcessPayload.message_id must reference a real `messages` row.** When `handleThread()` (spoke side) delegates to a remote host, the `message_id` it forwards via `ProcessPayload` must exist in the `messages` table on the delegating host so the receiving host's `executeProcess()` can resolve it. User-message entries are safe because `enqueueMessage(db, messageId, threadId)` stores the real `messages.id` as `dispatch_queue.message_id`. **Notifications are the trap**: `enqueueNotification()` generates a synthetic UUID — the injected system message gets a fresh UUID in a separate `insertRow()` call. Historically the spoke forwarded the dispatch-queue id, the hub's lookup returned null, and the notification was silently dropped. Use `resolveDelegationMessageId()` in `packages/cli/src/commands/start/server.ts` — it injects notifications AND returns the id to forward. The receiving side no longer hard-rejects on missing rows (it warns and proceeds on thread state alone), but the spoke is still the source of truth and should always forward a real id.
+
+**21. Client-session affinity wins over model-based delegation.** A `notify` / `introspect` wakeup can fire on any host (webhook ingestion and PR-watch tasks run hub-side; the dispatch fires `handleThread` wherever the notify was enqueued). But a thread with a live boundless / `BoundClient` WS session can only execute `client`-kind tools (`boundless_*`) on the host holding that connection — client tool calls defer over that host's local event bus and are unreachable cross-host. So the delegation decision in `packages/cli/src/commands/start/server.ts` consults the `client_sessions` table (synced, LWW) BEFORE model-based `getDelegationTarget()`: (1) a live session on another host → delegate there; (2) a live session on this host → run locally and suppress model delegation (otherwise an opus-backed boundless loop gets pulled to the hub and stripped of its client tools — issue #91); (3) no live session → fall back to model-based delegation. `getClientSessionDelegationTarget()` answers cases 1+3 (returns the remote `EligibleHost` or null), `hasLocalClientSession()` disambiguates case 2. Sessions are recorded on `thread:subscribe`, soft-deleted on `thread:unsubscribe` and on WS close, and a staleness window (`CLIENT_SESSION_HOST_STALE_MS`) guards against a host that died without a clean close. `client_sessions` must stay in `SYNCED_TABLE_NAMES` / `SNAPSHOT_TABLE_ORDER` so peers learn session locations.
 
 ### Shared-config → router hand-off
 
