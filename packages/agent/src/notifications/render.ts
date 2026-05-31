@@ -16,8 +16,11 @@
  *   F7 Order preservation — input order drives output order.
  *
  * The DB-loading wrapper lives in `load.ts`; this module never touches
- * SQL or wall-clock time, so it is trivially testable.
+ * SQL or wall-clock time (the `nowMs` anchor is passed in, never read),
+ * so it is trivially testable.
  */
+
+import { relativeTimeAt } from "../summary-extraction";
 
 /** Advisory dedup cap — limits *distinct titles* emitted, not summed counts. */
 export const ADVISORY_NOTIF_CAP = 5;
@@ -30,11 +33,19 @@ export interface RetiredSkillRow {
 export interface ResolvedAdvisoryRow {
 	title: string;
 	status: string;
+	/** ISO timestamp the operator resolved the advisory (advisories.resolved_at). */
+	resolvedAt: string;
 }
 
 export interface RenderNotificationsParams {
 	retiredSkills: ReadonlyArray<RetiredSkillRow>;
 	resolvedAdvisories: ReadonlyArray<ResolvedAdvisoryRow>;
+	/**
+	 * Wall-clock anchor for the advisory-ack relative-time fragment. Plumbed
+	 * in (never read here) so the renderer stays a pure projection of its
+	 * inputs — same contract as the rest of the varying-side renderers.
+	 */
+	nowMs: number;
 }
 
 /**
@@ -53,21 +64,27 @@ export function renderNotifications(params: RenderNotificationsParams): string[]
 		lines.push(`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`);
 	}
 
-	const titleGroups = new Map<string, { status: string; count: number }>();
+	// Dedup by title. The loader hands rows newest-first (ORDER BY resolved_at
+	// DESC), so the first occurrence of a title is its most-recent resolution —
+	// that is the timestamp we surface, so a stale ack reads as stale.
+	const titleGroups = new Map<string, { status: string; count: number; resolvedAt: string }>();
 	for (const adv of params.resolvedAdvisories) {
 		const existing = titleGroups.get(adv.title);
 		if (existing) {
 			existing.count++;
 		} else {
-			titleGroups.set(adv.title, { status: adv.status, count: 1 });
+			titleGroups.set(adv.title, { status: adv.status, count: 1, resolvedAt: adv.resolvedAt });
 		}
 	}
 
 	let notifCount = 0;
-	for (const [title, { status, count }] of titleGroups) {
+	for (const [title, { status, count, resolvedAt }] of titleGroups) {
 		if (notifCount >= ADVISORY_NOTIF_CAP) break;
 		const countStr = count > 1 ? ` (×${count})` : "";
-		lines.push(`[Advisory notification] Advisory '${title}' was ${status} by operator${countStr}.`);
+		const when = relativeTimeAt(resolvedAt, params.nowMs);
+		lines.push(
+			`[Advisory notification] Advisory '${title}' was ${status} by operator ${when}${countStr}.`,
+		);
 		notifCount++;
 	}
 
