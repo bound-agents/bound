@@ -304,7 +304,7 @@ describe("tool registry", () => {
 			expect(hostinfoTool.execute).toBeDefined();
 		});
 
-		it("agent tools include schedule, cancel, query, emit, and other core tools", () => {
+		it("agent tools include task, cancel, query, emit, and other core tools", () => {
 			const mockContext = {
 				db: {} as any,
 				siteId: "test-site",
@@ -320,7 +320,7 @@ describe("tool registry", () => {
 			const registry = createToolRegistry(undefined, undefined, agentTools, logger);
 
 			// Verify core agent tools are registered
-			expect(registry.has("schedule")).toBe(true);
+			expect(registry.has("task")).toBe(true);
 			expect(registry.has("cancel")).toBe(true);
 			expect(registry.has("query")).toBe(true);
 			expect(registry.has("purge")).toBe(true);
@@ -382,7 +382,7 @@ describe("tool registry", () => {
 
 			const agentTools = createAgentTools(mockContext);
 
-			// Verify we have 12 agent tools (schedule, cancel, query, purge,
+			// Verify we have 12 agent tools (task, cancel, query, purge,
 			// advisory, notify, introspect, archive, model_hint, hostinfo, memory, skill)
 			expect(agentTools.length).toBe(12);
 

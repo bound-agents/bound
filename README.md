@@ -157,7 +157,7 @@ The system uses an event-sourced architecture with SQLite as the storage layer:
 - **Agent loop** processes messages through a state machine: hydrate filesystem, assemble context, call LLM, execute tools, persist results
 - **Scheduler** fires cron, deferred, and event-driven tasks with DAG dependency resolution
 - **Sync protocol** replicates state between hosts over encrypted WebSocket frames (Ed25519 identity, XChaCha20-Poly1305 at frame level, HLC-ordered change log). Keypair is auto-generated at `data/host.key` / `data/host.pub`.
-- **12 native agent tools** with structured JSON schemas (`schedule`, `query`, `memory`, `skill`, `advisory`, `cancel`, `purge`, `notify`, `introspect`, `archive`, `model_hint`, `hostinfo`). Tools receive typed parameters directly from the LLM, eliminating argument-parsing bugs.
+- **12 native agent tools** with structured JSON schemas (`task`, `query`, `memory`, `skill`, `advisory`, `cancel`, `purge`, `notify`, `introspect`, `archive`, `model_hint`, `hostinfo`). Tools receive typed parameters directly from the LLM, eliminating argument-parsing bugs.
 - **MCP integration** auto-generates one command per connected MCP server (stdio or http transport), dispatched via a `subcommand` parameter. Tools are available during chat and via a cross-host MCP proxy.
 - **Platform connectors** (Discord, etc.) are implemented as in-process MCP servers. A unified connector tool manages event subscriptions (connector handles), and platform tools are scoped per-thread through annotation-based filtering. Leader election ensures only one host runs active subscriptions.
 - **Web UI** is built as a Svelte 5 SPA and embedded into the compiled binary for zero external dependencies.

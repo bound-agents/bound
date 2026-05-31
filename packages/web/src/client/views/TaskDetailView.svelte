@@ -28,6 +28,7 @@ interface TaskDetail {
 	created_at: string;
 	created_by: string | null;
 	error: string | null;
+	no_history: number;
 }
 
 interface Message {
@@ -46,6 +47,7 @@ let task: TaskDetail | null = $state(null);
 let messages: Message[] = $state([]);
 let loading = $state(true);
 let errorMsg = $state<string | null>(null);
+let togglingHistory = $state(false);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -120,6 +122,20 @@ async function fetchData() {
 		}
 	} finally {
 		loading = false;
+	}
+}
+
+async function toggleNoHistory() {
+	if (!task || togglingHistory) return;
+	togglingHistory = true;
+	const next = task.no_history !== 1;
+	try {
+		const updated = (await client.updateTask(task.id, { no_history: next })) as TaskDetail;
+		task = updated;
+	} catch {
+		// Leave the prior state in place; the poll will reconcile.
+	} finally {
+		togglingHistory = false;
 	}
 }
 
@@ -204,6 +220,22 @@ onDestroy(() => {
 							<span class="stat-value">{task.claimed_by}</span>
 						</span>
 					{/if}
+				</div>
+
+				<!-- History toggle (#100): flip no_history without recreating the task -->
+				<div class="meta-row controls">
+					<span class="stat-label">History</span>
+					<button
+						class="history-toggle"
+						class:off={task.no_history === 1}
+						onclick={toggleNoHistory}
+						disabled={togglingHistory}
+						title={task.no_history === 1
+							? "Conversation history is disabled — click to re-enable"
+							: "Conversation history is enabled — click to disable"}
+					>
+						{togglingHistory ? "…" : task.no_history === 1 ? "DISABLED" : "ENABLED"}
+					</button>
 				</div>
 
 				<!-- Error message for failed tasks -->
