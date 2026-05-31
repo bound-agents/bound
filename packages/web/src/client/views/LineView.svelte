@@ -106,6 +106,21 @@ async function pollMessages(): Promise<void> {
 	}
 }
 
+// Re-poll the server-computed thread status on the same cadence as messages.
+// The status chip otherwise only updates from live `thread:status` WS events,
+// which the scheduler does not emit cross-host — so a thread woken by an event
+// on another host would stay "idle" in this view. The `/status` endpoint
+// derives `active` from the synced `tasks.status='running'` signal, which is
+// correct regardless of which host runs the task (#42).
+async function pollStatus(): Promise<void> {
+	try {
+		const data = await client.getThreadStatus(threadId);
+		handleThreadStatus(data);
+	} catch {
+		// Transient — the next tick retries. Don't spam the console.
+	}
+}
+
 function handleThreadStatus(data: unknown): void {
 	const status = data as { thread_id?: string; active?: boolean; state?: string | null };
 	// `thread:status` is a global event — filter to events for this thread only,
@@ -139,7 +154,10 @@ onMount(async () => {
 		console.error("Failed to load thread:", error);
 	}
 
-	pollInterval = setInterval(pollMessages, 5000);
+	pollInterval = setInterval(() => {
+		void pollMessages();
+		void pollStatus();
+	}, 5000);
 	client.on("thread:status", handleThreadStatus);
 	client.on("stream:chunk", handleStreamChunk);
 
