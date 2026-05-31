@@ -107,11 +107,13 @@ export function App({
 	});
 
 	// Wire in React hooks for state management
-	// biome-ignore lint/correctness/noUnusedVariables: appendMessage is managed by the hook and exposed for future use
-	const { messages, appendMessage, clearMessages, replaceMessages } = useMessages(
-		client,
-		initialMessages,
-	);
+	const {
+		messages,
+		clearMessages,
+		replaceMessages,
+		appendPendingUserMessage,
+		clearPendingUserMessage,
+	} = useMessages(client, initialMessages);
 	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 	const connectionState = useConnectionState(client);
@@ -291,9 +293,16 @@ export function App({
 
 	const handleSendMessage = async (message: string) => {
 		if (client) {
+			// Optimistically render the user's message immediately. The real
+			// `message:created` (sometimes >3s later) reconciles this placeholder;
+			// see #88 and useMessages.appendPendingUserMessage.
+			appendPendingUserMessage(state.threadId, message);
 			try {
 				await client.sendMessage(state.threadId, message, { modelId: state.model || undefined });
 			} catch (error) {
+				// The send never reached the server — drop the placeholder so it
+				// doesn't linger as a phantom turn.
+				clearPendingUserMessage();
 				const errorMsg = error instanceof Error ? error.message : String(error);
 				handleSetBanner(`Failed to send message: ${errorMsg}`, "error");
 			}
