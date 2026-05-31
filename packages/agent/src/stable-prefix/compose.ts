@@ -41,6 +41,7 @@ import {
 	WORKING_KNOWLEDGE_FOOTER,
 	WORKING_KNOWLEDGE_HEADER,
 	capWorkingKnowledgeSummaries,
+	formatCalendarDate,
 	formatStableDetailLine,
 	sortDetailEntriesForRender,
 	truncateGlossForSummary,
@@ -79,14 +80,16 @@ function renderWorkingKnowledgeStable(
 	out.push(WORKING_KNOWLEDGE_HEADER);
 	out.push("");
 	for (const entry of pinned) {
-		out.push(`- ${entry.key}: ${entry.value}`);
+		out.push(`- ${entry.key} (modified ${formatCalendarDate(entry.modifiedAt)}): ${entry.value}`);
 	}
 	// Identical cap+demote to renderWorkingKnowledge's stable channel — via the
 	// SAME shared helper so the two paths cannot drift (R-VC25 parity, pinned by
 	// parity-with-production.test.ts).
 	const { kept, demoted } = capWorkingKnowledgeSummaries(summaries);
 	for (const summary of kept) {
-		out.push(`- ${summary.key}: ${truncateGlossForSummary(summary.value)}`);
+		out.push(
+			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${truncateGlossForSummary(summary.value)}`,
+		);
 	}
 	if (demoted.length > 0) {
 		out.push("");

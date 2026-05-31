@@ -39,10 +39,15 @@ const HEX_16 = /^[0-9a-f]{16}$/;
 
 const safeKey = fc.string({ minLength: 1, maxLength: 30 }).filter((s) => !/[\n\r]/.test(s));
 const safeValue = fc.string({ minLength: 0, maxLength: 60 }).filter((s) => !/[\n\r]/.test(s));
+const safeModifiedAt = fc.constant("2026-05-25T12:00:00Z");
 
 const stableInputsArb: fc.Arbitrary<StableVolatileInputs> = fc.record({
-	pinned: fc.array(fc.record({ key: safeKey, value: safeValue }), { maxLength: 5 }),
-	summaries: fc.array(fc.record({ key: safeKey, value: safeValue }), { maxLength: 5 }),
+	pinned: fc.array(fc.record({ key: safeKey, value: safeValue, modifiedAt: safeModifiedAt }), {
+		maxLength: 5,
+	}),
+	summaries: fc.array(fc.record({ key: safeKey, value: safeValue, modifiedAt: safeModifiedAt }), {
+		maxLength: 5,
+	}),
 	detailEntries: fc.array(
 		fc.record({
 			key: safeKey,
@@ -137,7 +142,7 @@ describe("hashStableVolatileInputs — property tests", () => {
 				const a = hashStableVolatileInputs(inputs);
 				const b = hashStableVolatileInputs({
 					...inputs,
-					pinned: [...inputs.pinned, { key, value }],
+					pinned: [...inputs.pinned, { key, value, modifiedAt: "2026-05-25T12:00:00Z" }],
 				});
 				return a !== b;
 			}),

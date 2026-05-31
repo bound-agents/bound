@@ -75,8 +75,8 @@ export function hashStableVolatileInputs(inputs: StableVolatileInputs): string {
 }
 
 interface CanonicalInputs {
-	pinned: ReadonlyArray<{ key: string; value: string }>;
-	summaries: ReadonlyArray<{ key: string; value: string }>;
+	pinned: ReadonlyArray<{ key: string; value: string; modifiedAt: string }>;
+	summaries: ReadonlyArray<{ key: string; value: string; modifiedAt: string }>;
 	detailEntries: ReadonlyArray<{ key: string; last_accessed_at: string | null }>;
 	parentSummaryByKey: ReadonlyArray<[string, string]>;
 	staleChildKeysInWorkingKnowledge: ReadonlyArray<string>;
@@ -87,8 +87,18 @@ interface CanonicalInputs {
 
 function canonicalizeInputs(inputs: StableVolatileInputs): CanonicalInputs {
 	return {
-		pinned: inputs.pinned.map((e) => ({ key: e.key, value: e.value })),
-		summaries: inputs.summaries.map((e) => ({ key: e.key, value: e.value })),
+		// `modifiedAt` participates in the fingerprint because the `(modified
+		// YYYY-MM-DD)` prefix it drives (#71) is part of the rendered stable
+		// bytes — omitting it would make a body-rewrite that shifts the
+		// calendar date advance the output hash without advancing the input
+		// fingerprint, which the drift detector would misclassify as a
+		// renderer (compose) leak.
+		pinned: inputs.pinned.map((e) => ({ key: e.key, value: e.value, modifiedAt: e.modifiedAt })),
+		summaries: inputs.summaries.map((e) => ({
+			key: e.key,
+			value: e.value,
+			modifiedAt: e.modifiedAt,
+		})),
 		detailEntries: inputs.detailEntries.map((e) => ({
 			key: e.key,
 			last_accessed_at: e.last_accessed_at,

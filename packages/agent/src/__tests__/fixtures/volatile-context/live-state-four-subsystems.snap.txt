@@ -2,23 +2,23 @@ User ID: test-user, Thread ID: d2a1fd52-a74d-56e8-a7da-2f81b9b5feb0
 
 ## Working Knowledge — operational and durable
 
-- _internal.file_thread./src/main.ts: 42af641e-0efb-5b68-ad3d-5734ccacc69e
-- _internal.file_thread./src/utils.ts: 8d46c412-1f7f-5fe5-9702-cfe97e720551
-- _pinned:0: pinned body 0
-- _pinned:1: pinned body 1
-- _pinned:2: pinned body 2
-- _pinned:3: pinned body 3
-- _pinned:4: pinned body 4
-- _pinned:5: pinned body 5
-- _pinned:6: pinned body 6
-- _pinned:7: pinned body 7
-- _pinned:8: pinned body 8
-- _pinned:9: pinned body 9
-- _summary:topic-0: Summary for topic 0: this is a brief overview.
-- _summary:topic-1: Summary for topic 1: this is a brief overview.
-- _summary:topic-2: Summary for topic 2: this is a brief overview.
-- _summary:topic-3: Summary for topic 3: this is a brief overview.
-- _summary:topic-4: Summary for topic 4: this is a brief overview.
+- _internal.file_thread./src/main.ts (modified 2026-05-22): 42af641e-0efb-5b68-ad3d-5734ccacc69e
+- _internal.file_thread./src/utils.ts (modified 2026-05-22): 8d46c412-1f7f-5fe5-9702-cfe97e720551
+- _pinned:0 (modified 2026-05-22): pinned body 0
+- _pinned:1 (modified 2026-05-21): pinned body 1
+- _pinned:2 (modified 2026-05-21): pinned body 2
+- _pinned:3 (modified 2026-05-21): pinned body 3
+- _pinned:4 (modified 2026-05-21): pinned body 4
+- _pinned:5 (modified 2026-05-21): pinned body 5
+- _pinned:6 (modified 2026-05-21): pinned body 6
+- _pinned:7 (modified 2026-05-21): pinned body 7
+- _pinned:8 (modified 2026-05-21): pinned body 8
+- _pinned:9 (modified 2026-05-21): pinned body 9
+- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
+- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
+- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
+- _summary:topic-3 (modified 2026-05-21): Summary for topic 3: this is a brief overview.
+- _summary:topic-4 (modified 2026-05-21): Summary for topic 4: this is a brief overview.
 
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search
