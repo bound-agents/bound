@@ -9,13 +9,13 @@ import { createModelHintTool } from "./model-hint.js";
 import { createNotifyTool } from "./notify.js";
 import { createPurgeTool } from "./purge.js";
 import { createQueryTool } from "./query.js";
-import { createScheduleTool } from "./schedule.js";
 import { createSkillTool } from "./skill.js";
+import { createTaskTool } from "./task.js";
 
 export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 	return [
 		// Standalone (Phase 2)
-		createScheduleTool(ctx),
+		createTaskTool(ctx),
 		createCancelTool(ctx),
 		createQueryTool(ctx),
 		createPurgeTool(ctx),
@@ -31,7 +31,7 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 	];
 }
 
-export { createScheduleTool } from "./schedule.js";
+export { createTaskTool } from "./task.js";
 export { createQueryTool } from "./query.js";
 export { createCancelTool } from "./cancel.js";
 export { createPurgeTool } from "./purge.js";
