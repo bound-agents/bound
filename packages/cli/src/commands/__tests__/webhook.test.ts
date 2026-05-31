@@ -172,6 +172,59 @@ describe("webhook commands", () => {
 				webhookCreate(db, SITE_ID, ["--name", "duplicate"]);
 			}).toThrow(/already exists/);
 		});
+
+		it("should allow reusing the name of a previously-deleted webhook", () => {
+			setup();
+
+			console.log = () => {};
+
+			// Create, capture the deterministic id + original secret/task/thread.
+			webhookCreate(db, SITE_ID, ["--name", "recycle"]);
+			const original = db
+				.prepare(
+					"SELECT id, secret, task_id, thread_id FROM webhooks WHERE name = ? AND deleted = 0",
+				)
+				.get("recycle") as {
+				id: string;
+				secret: string;
+				task_id: string;
+				thread_id: string;
+			};
+
+			// Soft-delete it: the deterministic-id row is still present with deleted=1.
+			webhookDelete(db, SITE_ID, "recycle");
+			const afterDelete = db
+				.prepare("SELECT deleted FROM webhooks WHERE id = ?")
+				.get(original.id) as { deleted: number } | null;
+			expect(afterDelete?.deleted).toBe(1);
+
+			// Re-create the same name. Pre-fix this throws on the PK collision;
+			// post-fix it restores the soft-deleted row in place.
+			expect(() => {
+				webhookCreate(db, SITE_ID, ["--name", "recycle"]);
+			}).not.toThrow();
+
+			// Exactly one row for this id, restored to deleted=0, with a fresh
+			// secret and fresh task/thread wiring.
+			const restored = db
+				.prepare("SELECT id, secret, task_id, thread_id, deleted FROM webhooks WHERE id = ?")
+				.get(original.id) as {
+				id: string;
+				secret: string;
+				task_id: string;
+				thread_id: string;
+				deleted: number;
+			} | null;
+			expect(restored).not.toBeNull();
+			expect(restored?.deleted).toBe(0);
+			expect(restored?.secret).not.toBe(original.secret);
+
+			// Only one webhook with this name should be live.
+			const liveCount = db
+				.prepare("SELECT COUNT(*) AS n FROM webhooks WHERE name = ? AND deleted = 0")
+				.get("recycle") as { n: number };
+			expect(liveCount.n).toBe(1);
+		});
 	});
 
 	// Task 2: webhookList
