@@ -106,7 +106,7 @@ describe("createAgentTools", () => {
 		const names = new Set(tools.map((t) => t.toolDefinition.function.name));
 
 		const expectedTools = [
-			"schedule",
+			"task",
 			"query",
 			"cancel",
 			"purge",

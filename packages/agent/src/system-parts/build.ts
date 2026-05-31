@@ -26,7 +26,7 @@ export const ENVIRONMENT_PARAGRAPH =
 
 export const CONCURRENCY_PARAGRAPH =
 	"**Concurrency model.** Each conversation is a *thread*, and bound can run many threads " +
-	"in parallel — including threads you spawn for yourself. Use `schedule` to fan work out " +
+	"in parallel — including threads you spawn for yourself. Use `task` (action=schedule) to fan work out " +
 	"into sibling threads (deferred `--in`, recurring `--every`, or event-driven `--on`); " +
 	"each scheduled task runs in its own thread with its own context window, so they don't " +
 	"consume this conversation's budget. Use `--after` to chain dependencies, `--inject " +

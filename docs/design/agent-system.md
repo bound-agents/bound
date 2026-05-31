@@ -311,7 +311,7 @@ The 15 native tools replace the previous 20 bash-dispatched commands:
 | `memory` | action: store, forget, search, connect, disconnect, traverse, neighbors | Grouped |
 | `cache` | action: warm, pin, unpin, evict | Grouped |
 | `skill` | action: activate, list, read, retire | Grouped |
-| `schedule` | task_description, cron, delay, on_event, model_hint, ... | Standalone |
+| `task` | action: schedule, update | Grouped |
 | `cancel` | task_id, payload_match | Standalone |
 | `query` | sql | Standalone |
 | `emit` | event, payload | Standalone |
@@ -361,7 +361,11 @@ Native memory tool dispatched by action parameter: `store`, `forget`, `search`, 
 
 ---
 
-### `schedule`
+### `task`
+
+Manage scheduled tasks via an `action` parameter: `schedule` (create) or `update` (mutate an existing task).
+
+#### `action: "schedule"`
 
 Create a new task in the `tasks` table. Exactly one of `delay`, `cron`, or `on_event` must be provided.
 
@@ -385,6 +389,7 @@ Returns the new task UUID.
 Example invocations:
 ```json
 {
+  "action": "schedule",
   "task_description": "Run nightly cleanup",
   "delay": "30m",
   "payload": "{\"action\":\"sweep\"}"
@@ -393,9 +398,32 @@ Example invocations:
 
 ```json
 {
+  "action": "schedule",
   "task_description": "Hourly digest",
   "cron": "0 * * * *",
   "model_hint": "opus"
+}
+```
+
+#### `action: "update"`
+
+Mutate the config of an existing task in place — the original motivation (#100) was toggling `no_history` without forcing the agent to recreate the task. Updatable fields are limited to task *configuration*; lifecycle/scheduling fields (`status`, trigger, `payload`) are not mutable here (use `cancel` to stop a task).
+
+| Parameter | Required | Type | Description |
+|---|---|---|---|
+| `task_id` | yes | string | ID of the task to update |
+| `no_history` | no | boolean | `true` disables history, `false` re-enables it; omit to leave unchanged |
+| `model_hint` | no | string | Set the hint; empty string clears it back to the system default |
+| `alert_threshold` | no | integer | Consecutive failures before advisory (must be > 0) |
+
+Omitted fields are left unchanged. At least one updatable field is required. Returns a confirmation string naming the fields that changed.
+
+Example invocation:
+```json
+{
+  "action": "update",
+  "task_id": "a83b945f-...",
+  "no_history": true
 }
 ```
 

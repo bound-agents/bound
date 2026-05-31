@@ -600,6 +600,17 @@ export class BoundClient {
 		return this.fetchJson(`/api/tasks/${id}/cancel`, { method: "POST" });
 	}
 
+	async updateTask(
+		id: string,
+		updates: { no_history?: boolean; model_hint?: string; alert_threshold?: number },
+	): Promise<Task> {
+		return this.fetchJson(`/api/tasks/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(updates),
+		});
+	}
+
 	// ---- Advisories ----
 
 	async listAdvisories(options?: { status?: AdvisoryStatus }): Promise<Advisory[]> {

@@ -139,5 +139,78 @@ export function createTasksRoutes(db: Database): Hono {
 		}
 	});
 
+	// PATCH /:id — update mutable task config (no_history, model_hint,
+	// alert_threshold) in place. Mirrors the agent `task` tool's update action
+	// so the agent doesn't have to recreate a task to toggle these (#100).
+	// Lifecycle/scheduling fields are not mutable here — use the cancel route.
+	app.patch("/:id", async (c) => {
+		try {
+			const { id } = c.req.param();
+			const task = db
+				.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0")
+				.get(id) as Task | null;
+
+			if (!task) {
+				return c.json({ error: "Task not found" }, 404);
+			}
+
+			const body = (await c.req.json().catch(() => null)) as {
+				no_history?: unknown;
+				model_hint?: unknown;
+				alert_threshold?: unknown;
+			} | null;
+
+			if (!body || typeof body !== "object") {
+				return c.json({ error: "Request body must be a JSON object" }, 400);
+			}
+
+			const updates: Record<string, unknown> = {};
+
+			if (body.no_history !== undefined) {
+				if (typeof body.no_history !== "boolean") {
+					return c.json({ error: "no_history must be a boolean" }, 400);
+				}
+				updates.no_history = body.no_history ? 1 : 0;
+			}
+
+			if (body.model_hint !== undefined) {
+				if (typeof body.model_hint !== "string") {
+					return c.json({ error: "model_hint must be a string" }, 400);
+				}
+				// Empty string clears back to the system default (null).
+				updates.model_hint = body.model_hint === "" ? null : body.model_hint;
+			}
+
+			if (body.alert_threshold !== undefined) {
+				if (typeof body.alert_threshold !== "number" || body.alert_threshold <= 0) {
+					return c.json({ error: "alert_threshold must be a number greater than 0" }, 400);
+				}
+				updates.alert_threshold = body.alert_threshold;
+			}
+
+			if (Object.keys(updates).length === 0) {
+				return c.json(
+					{ error: "Provide at least one of: no_history, model_hint, alert_threshold" },
+					400,
+				);
+			}
+
+			const siteId = getSiteId(db);
+			updateRow(db, "tasks", id, updates, siteId);
+
+			const updated = db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Task;
+			return c.json(updated);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to update task",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
 	return app;
 }

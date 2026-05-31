@@ -110,7 +110,7 @@ describe("Context Assembly Pipeline", () => {
 			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("Concurrency model");
-			expect(result.systemPrompt).toContain("schedule");
+			expect(result.systemPrompt).toContain("sibling threads");
 			expect(result.systemPrompt).toContain("await");
 		});
 

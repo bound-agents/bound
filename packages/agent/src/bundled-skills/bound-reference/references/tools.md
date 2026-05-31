@@ -30,14 +30,21 @@ These twelve are registered in `createAgentTools()`
 (`packages/agent/src/tools/index.ts`). The set is the source of truth; this
 catalog is kept in sync with it by a test.
 
-### `schedule`
-Schedule a deferred, cron, or event-driven task. Each scheduled task runs in its
-own thread with its own context window, so it does not consume the current
-conversation's budget. Use `delay` for one-shot deferred work, `cron` for
+### `task`
+Manage scheduled tasks via an `action` parameter.
+
+- **`action=schedule`** — create a deferred, cron, or event-driven task. Each task
+runs in its own thread with its own context window, so it does not consume the
+current conversation's budget. Use `delay` for one-shot deferred work, `cron` for
 recurring work, `on_event` for event-driven work. Use `after` / `require_success`
 to chain dependencies and `inject_mode` to feed a dependency's results forward.
 **Always populate `payload`** with the full instructions — the `task_description`
 field is display-only metadata and is not delivered to the waking thread.
+- **`action=update`** — mutate an existing task by `task_id` without recreating it.
+Updatable config fields: `no_history` (false re-enables history), `model_hint`
+(empty string clears back to the system default), `alert_threshold`. Omitted fields
+are left unchanged. Lifecycle/scheduling fields are not updatable here — use
+`cancel` to stop a task.
 
 ### `cancel`
 Cancel a scheduled task. Targets either a specific `task_id` or every task whose

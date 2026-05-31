@@ -14,6 +14,7 @@ import { runSetHub } from "./commands/set-hub.js";
 import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
+import { taskUpdate } from "./commands/task.js";
 import {
 	webhookCreate,
 	webhookDelete,
@@ -409,6 +410,31 @@ EXAMPLES:
 			process.exit(1);
 		} catch (error) {
 			console.error("webhook command failed:", error);
+			db.close();
+			process.exit(1);
+		}
+	}
+
+	if (command === "task") {
+		const subcommand = args[1];
+		const dataDir = getArgValue(args, "--data-dir") || "data";
+		const db = openBoundDB(dataDir);
+		const siteId = getSiteId(db);
+
+		try {
+			if (subcommand === "update") {
+				taskUpdate(db, siteId, args.slice(2));
+				db.close();
+				process.exit(0);
+			}
+
+			console.error(
+				"Usage: boundctl task update <id> [--no-history|--history] [--model <id>] [--alert-threshold <n>]",
+			);
+			db.close();
+			process.exit(1);
+		} catch (error) {
+			console.error("task command failed:", error);
 			db.close();
 			process.exit(1);
 		}
