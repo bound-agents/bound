@@ -320,6 +320,30 @@ export const heartbeatConfigSchema = z
 
 export type HeartbeatConfig = z.infer<typeof heartbeatConfigSchema>;
 
+// Memory Config — caps on pinned-memory creation as a context-management
+// control. Enabled by default: when memory.json is absent the loader skips it,
+// so the enforcement code falls back to these same defaults (see
+// DEFAULT_PINNED_COUNT_CAP / DEFAULT_PINNED_SIZE_CAP).
+export const DEFAULT_PINNED_COUNT_CAP = 10;
+export const DEFAULT_PINNED_SIZE_CAP = 2000;
+
+export const memoryConfigSchema = z
+	.object({
+		pinned_count_cap: z
+			.number()
+			.int()
+			.min(1, "pinned_count_cap must be at least 1")
+			.default(DEFAULT_PINNED_COUNT_CAP),
+		pinned_size_cap: z
+			.number()
+			.int()
+			.min(1, "pinned_size_cap must be at least 1")
+			.default(DEFAULT_PINNED_SIZE_CAP),
+	})
+	.strict();
+
+export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
+
 export const cronEntrySchema = z
 	.object({
 		schedule: z.string().min(1),
@@ -351,7 +375,8 @@ export type ConfigType =
 	| KeyringConfig
 	| McpConfig
 	| OverlayConfig
-	| CronSchedulesConfig;
+	| CronSchedulesConfig
+	| MemoryConfig;
 
 // Schema map for programmatic validation
 export const configSchemaMap = {

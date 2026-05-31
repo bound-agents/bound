@@ -21,6 +21,24 @@ truth for how an entry is treated:
 The historical `_standing:` / `_feedback:` / `_policy:` key shorthand no longer
 auto-pins anything — pass `tier: "pinned"` explicitly.
 
+## Pinned-memory caps
+
+Pinned memory is a deliberately limited resource. `memory.store` enforces two
+caps on pinned entries (configurable via `memory.json`, defaulting to **10**
+pinned entries of **2000** characters each):
+
+- **Count cap** — creating a new pinned entry or promoting a non-pinned entry to
+  pinned fails once the cap is reached. Updating an entry that is *already*
+  pinned does not consume additional budget.
+- **Size cap** — a pinned entry whose value exceeds the per-entry character cap
+  is rejected. The size cap applies only to pinned entries.
+
+**Demotion is always allowed**, even when over the caps — re-storing a pinned
+entry at a lower tier (or omitting `tier`) never fails. This is the escape hatch:
+when you hit a cap, consolidate, rewrite more concisely, demote, or forget an
+existing pinned entry to make room. System memories (e.g. the heartbeat standing
+instructions) are exempt from the count cap but still obey the size cap.
+
 ## Key conventions
 
 Keys are free-form, but consistent prefixes make the graph navigable. Common

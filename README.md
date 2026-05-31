@@ -125,6 +125,7 @@ After `bound init`, the `config/` directory contains:
 | `mcp.json` | No | MCP server connections (stdio or http transport) |
 | `overlay.json` | No | Codebase mount points |
 | `cron_schedules.json` | No | Recurring task definitions |
+| `memory.json` | No | Pinned-memory caps (`pinned_count_cap`, default 10; `pinned_size_cap`, default 2000 chars) |
 | `persona.md` | No | Custom system prompt personality |
 
 All config schemas are **strict** — unknown keys fail parse. Declare new fields in the Zod schema (`packages/shared/src/config-schemas.ts`) before using them.
