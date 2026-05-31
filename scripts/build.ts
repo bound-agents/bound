@@ -227,6 +227,16 @@ async function build() {
 		console.warn("Warning: Failed to generate build info (non-fatal)");
 	}
 
+	// Step 0b: Embed bundled skills (skill-authoring, bound-reference, …) so the
+	// compiled binary can seed them with no FS access at runtime.
+	console.log("0b. Embedding bundled skills...");
+	try {
+		execSync("bun run scripts/embed-bundled-skills.ts", { stdio: "inherit" });
+	} catch {
+		console.error("Failed to embed bundled skills");
+		process.exit(1);
+	}
+
 	// Step 1: Build web assets + embed for binary
 	console.log("1. Building web UI...");
 	try {
