@@ -216,6 +216,66 @@ describe("Markdown", () => {
 			expect(frame).toContain("\u2022 bullet");
 			expect(frame).not.toContain("\u2022bullet");
 		});
+
+		// Issue #142 follow-up: a list item's children are a mix of inline
+		// content and nested block tokens. The earlier code flattened every
+		// child through renderProse (inline-only), so a nested list dropped to
+		// its raw-text default (`now1.`) and loose-list paragraphs lost inline
+		// styling. Children are now dispatched by type — `text` through prose,
+		// everything else (including nested `list`) through renderBlock.
+		it("renders a nested ordered list with its own markers and indent", async () => {
+			const { lastFrame } = render(
+				React.createElement(Markdown, {
+					text: "1. parent item one\n   1. child a\n   2. child b\n2. sibling",
+					width: 40,
+				}),
+			);
+			await tick();
+			const frame = lastFrame() ?? "";
+			// Nested markers render as real list items, not raw text.
+			expect(frame).toContain("1. parent");
+			expect(frame).toContain("2. sibling");
+			expect(frame).toContain("1. child a");
+			expect(frame).toContain("2. child b");
+			// The raw-text fallback would have glued the child marker onto the
+			// parent's wrapped text (`parent item one1.`); it must not appear.
+			expect(frame).not.toMatch(/one1\./);
+			// Child markers are indented under the parent's content column.
+			const lines = frame.split("\n");
+			const childLine = lines.find((l) => l.includes("1. child a"));
+			expect(childLine).toBeDefined();
+			expect((childLine ?? "").startsWith("   ")).toBe(true);
+		});
+
+		it("renders a nested unordered list inside an ordered item", async () => {
+			const { lastFrame } = render(
+				React.createElement(Markdown, {
+					text: "1. parent\n   - bullet a\n   - bullet b",
+					width: 40,
+				}),
+			);
+			await tick();
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("1. parent");
+			expect(frame).toContain("\u2022 bullet a");
+			expect(frame).toContain("\u2022 bullet b");
+		});
+
+		it("preserves inline styling in loose-list paragraphs", async () => {
+			const { lastFrame } = render(
+				React.createElement(Markdown, {
+					text: "1. first with **bold** word\n\n2. second item",
+					width: 40,
+				}),
+			);
+			await tick();
+			const frame = lastFrame() ?? "";
+			// The word still renders (styling is ANSI, not visible in the frame
+			// text), and the marker gutter is intact for both items.
+			expect(frame).toContain("1. first");
+			expect(frame).toContain("bold");
+			expect(frame).toContain("2. second");
+		});
 	});
 
 	describe("blockquotes", () => {
