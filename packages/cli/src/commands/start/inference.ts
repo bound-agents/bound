@@ -51,6 +51,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				effort: b.effort,
 				maxOutputTokens: b.max_output_tokens,
 				cacheTtl: b.cache_ttl,
+				cacheWarmMaxPokes: b.max_pokes_per_active_period,
 			}),
 		),
 		default: rawBackends.default,

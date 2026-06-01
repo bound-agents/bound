@@ -49,13 +49,19 @@ const CLIENT_TOOL_INTERFACES = new Set(["boundless"]);
 
 export interface WarmPokeSelectionOptions {
 	/**
-	 * Resolve a thread's cache TTL in ms from its backend's `cache_ttl`, or null
-	 * when caching is not configured for that backend (nothing to keep warm — a
-	 * poke would re-warm a prefix the provider won't cache anyway). Deriving the
-	 * window per-thread is what lets one driver serve backends with different
-	 * TTLs (e.g. 5m and 1h) correctly; a single global cadence cannot.
+	 * Resolve a thread's warm-poke policy from its backend, or null when caching
+	 * is not configured for that backend (nothing to keep warm — a poke would
+	 * re-warm a prefix the provider won't cache anyway). Both knobs are derived
+	 * per-thread from one model resolution so a single driver serves a mixed
+	 * cluster correctly:
+	 *  - `ttlMs`: the cache TTL in ms (from the backend's `cache_ttl`), which
+	 *    sets the just-in-time poke window (backends differ, e.g. 5m vs 1h).
+	 *  - `maxPokes`: the per-active-period poke cap (from the backend's
+	 *    `max_pokes_per_active_period`), the load-bearing economic control —
+	 *    break-even varies dramatically by provider's cache-write/read pricing.
+	 *    0 means "never warm threads on this backend".
 	 */
-	resolveTtlMs: (threadId: string) => number | null;
+	resolvePokePolicy: (threadId: string) => { ttlMs: number; maxPokes: number } | null;
 	/**
 	 * Driver scan period in ms. A thread is "near expiry" when it would go cold
 	 * before the next scan, so the just-in-time window for a thread is
@@ -65,8 +71,6 @@ export interface WarmPokeSelectionOptions {
 	scanIntervalMs: number;
 	/** A thread counts as active if it had real activity within this window. */
 	activeWindowMs: number;
-	/** Max warm pokes per thread since its last real activity. */
-	maxPokesPerActivePeriod: number;
 	/** Wall clock override (tests). */
 	now?: number;
 	/** Client-session staleness window (passed through to isClientSessionLive). */
@@ -86,13 +90,7 @@ interface CandidateRow {
  * real current time for the warm/cold determination to stay consistent.
  */
 export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOptions): string[] {
-	const {
-		resolveTtlMs,
-		scanIntervalMs,
-		activeWindowMs,
-		maxPokesPerActivePeriod,
-		staleClientSessionMs,
-	} = options;
+	const { resolvePokePolicy, scanIntervalMs, activeWindowMs, staleClientSessionMs } = options;
 	const now = options.now ?? Date.now();
 	const activeCutoff = new Date(now - activeWindowMs).toISOString();
 
@@ -135,10 +133,12 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 	const targets: string[] = [];
 
 	for (const [threadId, anchor] of candidates) {
-		// Per-thread cache TTL from the thread's backend. Null = caching not
-		// configured for that backend, so there is no warm prefix to keep alive.
-		const ttlMs = resolveTtlMs(threadId);
-		if (ttlMs === null) continue;
+		// Per-thread warm-poke policy from the thread's backend. Null = caching
+		// not configured for that backend, so there is no warm prefix to keep
+		// alive. Both the TTL window and the poke cap ride on this one lookup.
+		const policy = resolvePokePolicy(threadId);
+		if (policy === null) continue;
+		const { ttlMs, maxPokes } = policy;
 
 		// Must have prior inference (something to keep cached).
 		const turn = db
@@ -157,7 +157,9 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 		const msSinceTurn = now - new Date(turn.created_at).getTime();
 		if (msSinceTurn < ttlMs - scanIntervalMs) continue;
 
-		// Per-active-period poke cap (the load-bearing economic control).
+		// Per-active-period poke cap (the load-bearing economic control,
+		// derived per-backend). maxPokes === 0 means "never warm this backend",
+		// which this check enforces naturally (0 >= 0).
 		const pokeRow = db
 			.query(
 				`SELECT COUNT(*) AS n FROM messages
@@ -165,7 +167,7 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 				       AND created_at > ? AND content LIKE ?`,
 			)
 			.get(threadId, anchor, `${WARM_POKE_MARKER}%`) as { n: number };
-		if (pokeRow.n >= maxPokesPerActivePeriod) continue;
+		if (pokeRow.n >= maxPokes) continue;
 
 		// Client-tool threads (boundless) with no live session: nothing to warm
 		// for, and the woken loop can't run client tools anyway.

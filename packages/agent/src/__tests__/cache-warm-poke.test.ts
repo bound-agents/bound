@@ -11,10 +11,9 @@ const MAX_POKES = 3;
 
 function baseOptions(overrides: Record<string, unknown> = {}) {
 	return {
-		resolveTtlMs: () => TTL,
+		resolvePokePolicy: () => ({ ttlMs: TTL, maxPokes: MAX_POKES }),
 		scanIntervalMs: SCAN_INTERVAL,
 		activeWindowMs: ACTIVE_WINDOW,
-		maxPokesPerActivePeriod: MAX_POKES,
 		...overrides,
 	};
 }

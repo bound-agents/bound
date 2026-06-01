@@ -118,7 +118,7 @@ After `bound init`, the `config/` directory contains:
 | File | Required | Description |
 |------|----------|-------------|
 | `allowlist.json` | Yes | Users allowed to interact with the agent |
-| `model_backends.json` | Yes | LLM backend configuration. Optional `cache_warming` block (`enabled`, default false; `max_pokes_per_active_period`) opts into the warm-poke driver that keeps active threads' prompt cache hot; the poke window is derived per-thread from each backend's `cache_ttl`. |
+| `model_backends.json` | Yes | LLM backend configuration. Optional `cache_warming` block (`enabled`, default false) opts into the warm-poke driver that keeps active threads' prompt cache hot; the poke window and the per-active-period poke cap (`max_pokes_per_active_period`, default 3; 0 = never warm) are both derived per-thread from each backend's `cache_ttl` and its own field. |
 | `platforms.json` | No | Platform connector config (Discord bot token, MCP server settings) |
 | `sync.json` | No | Hub URL, sync interval, relay and WS settings |
 | `keyring.json` | No | Per-host identity keys (auto-populated) |
@@ -126,7 +126,6 @@ After `bound init`, the `config/` directory contains:
 | `overlay.json` | No | Codebase mount points |
 | `cron_schedules.json` | No | Recurring task definitions |
 | `memory.json` | No | Pinned-memory caps (`pinned_count_cap`, default 10; `pinned_size_cap`, default 2000 chars) |
-| `cache_warming.json` | No | Opt-in warm-poke driver that keeps active threads' prompt cache hot (`enabled`, default false; `cadence_ms`, `active_window_ms`, `max_pokes_per_active_period`) |
 | `persona.md` | No | Custom system prompt personality |
 
 All config schemas are **strict** — unknown keys fail parse. Declare new fields in the Zod schema (`packages/shared/src/config-schemas.ts`) before using them.

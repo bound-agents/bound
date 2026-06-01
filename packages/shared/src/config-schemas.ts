@@ -114,6 +114,17 @@ const modelBackendSchema = z
 		// doesn't support extended TTL is silently ignored by the provider
 		// and falls back to the default 5m behavior.
 		cache_ttl: z.enum(["5m", "1h"]).optional(),
+		// Per-backend cap on warm pokes per thread since its last real activity
+		// (issue #10). The cap is the load-bearing economic control of the
+		// cache-warming driver, and break-even varies dramatically by provider:
+		// it scales with the ratio of cache-write to cache-read price, so a 5m
+		// backend with cheap cache-reads tolerates many more pokes per caught
+		// arrival than a 1h backend with expensive writes. Living per-backend
+		// (sibling to `cache_ttl`, whose economics it shares) lets one driver
+		// serve a mixed cluster correctly. Absent → DEFAULT_WARM_POKE_MAX_PER_PERIOD.
+		// 0 → never warm threads on this backend (a clean per-backend opt-out
+		// even while the driver is globally enabled).
+		max_pokes_per_active_period: z.number().int().min(0).optional(),
 	})
 	.strict();
 
@@ -144,11 +155,6 @@ export const WARM_POKE_SCAN_INTERVAL_MS = 2 * 60_000; // 2m
 export const cacheWarmingConfigSchema = z
 	.object({
 		enabled: z.boolean().default(false),
-		max_pokes_per_active_period: z
-			.number()
-			.int()
-			.min(1, "max_pokes_per_active_period must be at least 1")
-			.default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
 	})
 	.strict();
 

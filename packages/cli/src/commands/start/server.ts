@@ -1061,27 +1061,32 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		let warmPokeInterval: ReturnType<typeof setInterval> | undefined;
 		const warmCfg = appContext.config.modelBackends.cache_warming;
 		if (warmCfg?.enabled) {
-			const maxPokes = warmCfg.max_pokes_per_active_period ?? DEFAULT_WARM_POKE_MAX_PER_PERIOD;
 			appContext.logger.info(
-				`[warm-poke] Cache-warming driver enabled (scan ${Math.round(WARM_POKE_SCAN_INTERVAL_MS / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h, cap ${maxPokes}/period; per-thread TTL derived from backend cache_ttl)`,
+				`[warm-poke] Cache-warming driver enabled (scan ${Math.round(WARM_POKE_SCAN_INTERVAL_MS / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h; per-thread TTL + poke cap derived from each thread's backend)`,
 			);
-			// Resolve a thread's cache TTL in ms from its backend's `cache_ttl`
-			// (issue #10). Returns null when the backend doesn't cache — nothing to
-			// keep warm. Deriving per-thread is what lets one driver serve backends
-			// with different TTLs (5m vs 1h) correctly; a single global cadence
-			// could only ever be right for one of them.
-			const resolveTtlMs = (threadId: string): number | null => {
+			// Resolve a thread's warm-poke policy from its backend (issue #10):
+			// the cache TTL in ms (from `cache_ttl`) and the per-active-period poke
+			// cap (from `max_pokes_per_active_period`). Returns null when the
+			// backend doesn't cache — nothing to keep warm. Deriving both per-thread
+			// from one model resolution is what lets a single driver serve a mixed
+			// cluster correctly: TTL handles 5m-vs-1h backends, and the cap handles
+			// the dramatically different break-even economics between providers
+			// (cap 0 = never warm threads on that backend). A single global cadence
+			// or cap could only ever be right for one backend.
+			const resolvePokePolicy = (threadId: string): { ttlMs: number; maxPokes: number } | null => {
 				const modelId = resolveThreadModel(appContext.db, threadId, routerConfig.default);
 				const ttl = modelRouter.getCacheTtl(modelId);
-				return ttl ? CACHE_TTL_MS[ttl] : null;
+				if (!ttl) return null;
+				const maxPokes =
+					modelRouter.getCacheWarmMaxPokes(modelId) ?? DEFAULT_WARM_POKE_MAX_PER_PERIOD;
+				return { ttlMs: CACHE_TTL_MS[ttl], maxPokes };
 			};
 			warmPokeInterval = setInterval(() => {
 				try {
 					const targets = selectWarmPokeTargets(appContext.db, {
-						resolveTtlMs,
+						resolvePokePolicy,
 						scanIntervalMs: WARM_POKE_SCAN_INTERVAL_MS,
 						activeWindowMs: DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
-						maxPokesPerActivePeriod: maxPokes,
 					});
 					for (const threadId of targets) {
 						enqueueNotification(appContext.db, threadId, { type: "cache_warm_poke" });

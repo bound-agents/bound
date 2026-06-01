@@ -241,6 +241,13 @@ export interface BackendConfig {
 	 * ignored by the provider and falls back to default 5m behavior.
 	 */
 	cacheTtl?: "5m" | "1h";
+	/**
+	 * Per-backend cap on warm pokes per thread since its last real activity
+	 * (issue #10), consumed only by the cache-warming driver — never at
+	 * inference time. Absent → the driver's DEFAULT_WARM_POKE_MAX_PER_PERIOD.
+	 * 0 → never warm threads on this backend (per-backend opt-out).
+	 */
+	cacheWarmMaxPokes?: number;
 	[key: string]: unknown;
 }
 
