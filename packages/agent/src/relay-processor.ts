@@ -1438,8 +1438,11 @@ export class RelayProcessor {
 
 		try {
 			if (traceCarrier) {
-				// Create scoped collector for hub-side tracing (AC5.2, AC5.3)
-				const collector = createScopedTraceCollector();
+				// Create scoped collector for hub-side tracing (AC5.2, AC5.3).
+				// Stamp the executing hub's site ID on every span (issue #152) so the
+				// re-exported delegated-inference spans arrive on the requesting spoke
+				// tagged with the site that actually ran the loop.
+				const collector = createScopedTraceCollector(this.appCtx?.siteId);
 				const tracer = collector.getTracer("bound.relay-hub");
 
 				// Run inference within extracted parent context

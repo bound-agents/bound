@@ -13,6 +13,14 @@ OpenTelemetry distributed tracing across all binaries (`bound`, `boundless`, `bo
 
 Both register a `BasicTracerProvider` with `BatchSpanProcessor` and call `shutdownTelemetry()` to flush on graceful shutdown. `packages/cli/src/commands/start/telemetry.ts` is a thin re-export of the shared helpers for backward compat.
 
+### Site ID span tag (`bound.site_id`)
+
+Every span is stamped with the **executing host's site ID** as the `bound.site_id` span attribute (issue #152), so a trace store fed by multiple hosts — or one that ingests re-exported remote spans (see cross-host propagation below) — can tell which site actually ran a given loop. A trace consumer (e.g. an OTel-querying MCP server) filters on `bound.site_id` to scope "loops this host can introspect" rather than assuming every collected trace is local.
+
+It is a *span* attribute, not a resource attribute, on purpose: resource attributes are dropped when a span is serialized and re-exported (`reExportSpans` builds a fresh `service.name: "bound-client"` resource), whereas span attributes survive `serializeReadableSpan` → `reExportSpans` on the wire. So a delegated-inference span re-exported on the requesting spoke arrives tagged with the *hub's* site ID.
+
+Wiring: `SiteIdSpanProcessor` (in `@bound/shared`) stamps the tag on span start. The global provider's processor is populated via `setTelemetrySiteId(siteId)` — called in `runStart()` right after bootstrap derives the site ID from the host keypair, since `initTelemetry` runs at Phase 0 before the site ID exists (spans started in that startup window carry no tag, which is fine — they are infra spans, not agent loops). Hub-side relay inference passes the executing site ID into `createScopedTraceCollector(siteId)` so its spans carry it before serialization.
+
 ## Instrumentation layers
 
 All layers use `@opentelemetry/api` directly; no auto-instrumentation.
