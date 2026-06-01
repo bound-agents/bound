@@ -211,6 +211,17 @@ function handleUpdate(input: TaskInput, ctx: ToolContext): string {
 		return "Error: update requires 'task_id'";
 	}
 
+	// A task's own agent loop must not rewrite its own config. When the loop is
+	// driven by the scheduler, `ctx.taskId` is the running task's id; if it
+	// matches the update target, refuse. This closes the class of incident where
+	// a webhook/event task cleared its own model_hint mid-run, silently
+	// upgrading cost (see bound_issue:task-self-clears-own-model_hint-via-task-update-20260601).
+	// To change the running task's model specifically, use the `model_hint` tool,
+	// which is the deliberate, single-field path for that intent.
+	if (ctx.taskId && ctx.taskId === taskId) {
+		return "Error: a task cannot modify itself via the task tool";
+	}
+
 	// bun:sqlite .get() returns null (not undefined) when no row found
 	const existing = ctx.db.prepare("SELECT id, deleted FROM tasks WHERE id = ?").get(taskId) as {
 		id: string;
@@ -269,7 +280,7 @@ export function createTaskTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "task",
 				description:
-					"Manage scheduled tasks. action=schedule creates a deferred, cron, or event-driven task; action=update toggles no_history / model_hint / alert_threshold on an existing task by id.",
+					"Manage scheduled tasks. action=schedule creates a deferred, cron, or event-driven task; action=update toggles no_history / model_hint / alert_threshold on an existing task by id. A task cannot update itself (use the model_hint tool to change the running task's model).",
 				parameters: jsonSchema,
 			},
 		},

@@ -373,6 +373,49 @@ describe("Native Task Tool", () => {
 			expect(result).toMatch(/Error/);
 			expect(result).toMatch(/at least one/i);
 		});
+
+		it("should refuse a task modifying itself (ctx.taskId === task_id)", async () => {
+			// A task's own agent loop must not be able to rewrite its own config.
+			// This closes the class of incident where a webhook/event task cleared
+			// its own model_hint mid-run (silently upgrading cost). See
+			// bound_issue:task-self-clears-own-model_hint-via-task-update-20260601.
+			const taskId = await scheduleTask(createTaskTool(toolContext), { model_hint: "opus" });
+
+			// Build a context whose running task IS the task being updated.
+			const selfContext: ToolContext = { ...toolContext, taskId };
+			const selfTool = createTaskTool(selfContext);
+
+			const result = await getExecute(selfTool)({
+				action: "update",
+				task_id: taskId,
+				model_hint: "",
+			});
+
+			expect(result).toMatch(/Error/);
+			expect(result).toMatch(/itself|own/i);
+
+			// The hint must be untouched.
+			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+			expect(task.model_hint).toBe("opus");
+		});
+
+		it("should still allow updating a different task when running inside a task loop", async () => {
+			const runningTaskId = await scheduleTask(createTaskTool(toolContext));
+			const otherTaskId = await scheduleTask(createTaskTool(toolContext), { model_hint: "opus" });
+
+			const selfContext: ToolContext = { ...toolContext, taskId: runningTaskId };
+			const selfTool = createTaskTool(selfContext);
+
+			const result = await getExecute(selfTool)({
+				action: "update",
+				task_id: otherTaskId,
+				model_hint: "haiku",
+			});
+
+			expect(result).toMatch(/Updated task/);
+			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(otherTaskId) as any;
+			expect(task.model_hint).toBe("haiku");
+		});
 	});
 
 	it("tool should have valid RegisteredTool shape", () => {
