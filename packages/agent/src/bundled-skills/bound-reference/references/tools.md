@@ -44,7 +44,10 @@ field is display-only metadata and is not delivered to the waking thread.
 Updatable config fields: `no_history` (false re-enables history), `model_hint`
 (empty string clears back to the system default), `alert_threshold`. Omitted fields
 are left unchanged. Lifecycle/scheduling fields are not updatable here — use
-`cancel` to stop a task.
+`cancel` to stop a task. A task cannot update *itself*: when the running task's id
+matches `task_id` the call is refused, so a task loop can't silently rewrite its own
+config (e.g. clearing its own `model_hint` mid-run). To change the running task's
+model, use the `model_hint` tool.
 
 ### `cancel`
 Cancel a scheduled task. Targets either a specific `task_id` or every task whose
