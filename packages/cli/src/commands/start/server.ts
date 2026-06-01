@@ -9,11 +9,13 @@ import {
 	CACHE_TTL_MS,
 	HandleMessageTracker,
 	WARM_POKE_MARKER,
+	WARM_POKE_MAX_OUTPUT_TOKENS,
 	createRelayOutboxEntry,
 	generateThreadTitle,
 	getClientSessionDelegationTarget,
 	getDelegationTarget,
 	hasLocalClientSession,
+	isWarmPokeNotificationPayload,
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
 } from "@bound/agent";
@@ -542,16 +544,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					// run with full tools, defeating the clamp.
 					const isCacheWarmPoke =
 						claimed.length > 0 &&
-						claimed.every((c) => {
-							if (c.event_type !== "notification" || !c.event_payload) return false;
-							try {
-								return (
-									(JSON.parse(c.event_payload) as { type?: string }).type === "cache_warm_poke"
-								);
-							} catch {
-								return false;
-							}
-						});
+						claimed.every(
+							(c) =>
+								c.event_type === "notification" && isWarmPokeNotificationPayload(c.event_payload),
+						);
 
 					try {
 						// Inject notification context as system messages so the agent
@@ -578,8 +574,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						);
 
 						const delegationTarget = ((): ReturnType<typeof getDelegationTarget> => {
-							// Warm pokes (issue #10) never delegate: cacheWarmOnly lives in
-							// the local AgentLoopConfig and would be lost on the remote host.
+							// Warm pokes (issue #10) never delegate: noTools/maxOutputTokens
+							// live in the local AgentLoopConfig and would be lost on the
+							// remote host.
 							if (isCacheWarmPoke) return null;
 							// Client-session affinity wins over model-based delegation
 							// (issue #91). A notify/introspect wakeup can fire on any
@@ -784,7 +781,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										platformTools,
 										platformInstructions,
 										handleMessageTracker,
-										cacheWarmOnly: isCacheWarmPoke,
+										noTools: isCacheWarmPoke,
+										maxOutputTokens: isCacheWarmPoke ? WARM_POKE_MAX_OUTPUT_TOKENS : undefined,
 									}),
 								);
 								agentLoopResult = result;
@@ -1056,11 +1054,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// each thread's backend `cache_ttl`.
 		// Pokes only fire from the leader-eligible web host that owns dispatch;
 		// each poke is a `cache_warm_poke` notification handled locally with
-		// cacheWarmOnly clamping (see runFn above).
+		// noTools/maxOutputTokens clamping (see runFn above).
 		let warmPokeInterval: ReturnType<typeof setInterval> | undefined;
 		// Cache-warming is fully per-backend (issue #10): a backend opts in via
-		// its own `cache_warming.enabled`. Start the single global driver iff at
-		// least one backend opts in; per-thread `resolvePokePolicy` then gates
+		// its own `cache_warming.enabled`. Start the single global driver only if
+		// at least one backend opts in; per-thread `resolvePokePolicy` then gates
 		// each thread on its own backend's config.
 		const warmingEnabled = appContext.config.modelBackends.backends.some(
 			(b) => b.cache_warming?.enabled,
@@ -1072,7 +1070,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// Resolve a thread's warm-poke policy from its backend (issue #10):
 			// whether the backend opts into warming at all (`cache_warming.enabled`),
 			// the cache TTL in ms (from `cache_ttl`), and the per-active-period poke
-			// cap (from `cache_warming.max_pokes_per_active_period`). Returns null
+			// cap (from `cache_warming.max_pokes`). Returns null
 			// when the backend doesn't opt in or doesn't cache — nothing to keep
 			// warm. Deriving all three per-thread from one model resolution is what
 			// lets a single driver serve a mixed cluster correctly: enabled gates

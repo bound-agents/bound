@@ -60,6 +60,7 @@ export { predictCacheState, selectCacheTtl, CACHE_TTL_MS } from "./cache-predict
 // Export cache warm-poke (issue #10)
 export {
 	selectWarmPokeTargets,
+	isWarmPokeNotificationPayload,
 	WARM_POKE_MARKER,
 	WARM_POKE_MAX_OUTPUT_TOKENS,
 	type WarmPokeSelectionOptions,

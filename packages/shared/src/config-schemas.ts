@@ -96,7 +96,7 @@ const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
 // Economics: a poke costs ~one cache-read of the prefix; a caught cold arrival
 // saves ~one cache-write. Break-even varies dramatically by provider — it
 // scales with the cache-write/cache-read price ratio — so the per-backend
-// `max_pokes_per_active_period` is the load-bearing economic control. It
+// `max_pokes` is the load-bearing economic control. It
 // bounds the loss on threads that go quiet after their last real message.
 //
 // The just-in-time poke window is NOT configured: it is derived per-thread from
@@ -120,7 +120,7 @@ export const cacheWarmingConfigSchema = z
 		// arrival than a 1h backend with expensive writes. Absent →
 		// DEFAULT_WARM_POKE_MAX_PER_PERIOD. 0 → never warm threads on this
 		// backend (a clean opt-out even with `enabled: true`).
-		max_pokes_per_active_period: z.number().int().min(0).default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
+		max_pokes: z.number().int().min(0).default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
 	})
 	.strict();
 

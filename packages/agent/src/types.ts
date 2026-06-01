@@ -112,11 +112,13 @@ export interface AgentLoopConfig {
 	 *  standing instructions). Used for autonomous tasks like heartbeat where history
 	 *  is stale self-referential output. */
 	noHistory?: boolean;
-	/** When true, this is a cache-warming "warm poke" turn (issue #10): assemble
-	 *  context as normal so the cached prefix is touched, but disable all tools
-	 *  and clamp output generation so the turn does nothing but re-read the cache.
-	 *  With no tools the loop ends after a single short response. */
-	cacheWarmOnly?: boolean;
+	/** When true, suppress all tools for this turn — the merged tool list resolves
+	 *  to `undefined`, so the loop ends after a single response. */
+	noTools?: boolean;
+	/** Hard cap on output tokens for this turn, overriding the model default.
+	 *  Used together with `noTools` for cache-warming "warm poke" turns (issue
+	 *  #10), where the turn exists only to re-read the cached prefix. */
+	maxOutputTokens?: number;
 	/**
 	 * Cooperative cancellation callback. Checked at yield points (before tool
 	 * execution, after tool result persistence). When it returns true, the loop

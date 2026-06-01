@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { isClientToolInterface } from "@bound/shared";
+import { z } from "zod";
 import { predictCacheState } from "./cache-prediction";
 import { isClientSessionLive } from "./delegation";
 
@@ -38,14 +40,27 @@ export const WARM_POKE_MARKER = "[cache-warm-poke]";
  */
 export const WARM_POKE_MAX_OUTPUT_TOKENS = 16;
 
+const warmPokePayloadSchema = z.object({ type: z.literal("cache_warm_poke") });
+
 /**
- * Interfaces whose threads can only run their tools on the host holding a live
- * client session. Poking such a thread with no live session is pointless: there
- * is no imminent interaction to keep the cache warm for, and the woken loop
- * cannot run its client tools anyway. Mirrors `CLIENT_TOOL_INTERFACES` in
- * delegation.ts.
+ * True iff `eventPayload` is a warm-poke notification marker (issue #10).
+ *
+ * A payload that isn't valid JSON, or doesn't carry the marker shape, is simply
+ * not a warm poke — callers fall through to a normal full-tools wakeup. There is
+ * no error to surface: most notifications (task completions, etc.) legitimately
+ * are not warm pokes. `safeParse` keeps the shape check non-throwing; the
+ * `JSON.parse` guard treats a malformed payload the same way.
  */
-const CLIENT_TOOL_INTERFACES = new Set(["boundless"]);
+export function isWarmPokeNotificationPayload(eventPayload: string | null | undefined): boolean {
+	if (!eventPayload) return false;
+	let raw: unknown;
+	try {
+		raw = JSON.parse(eventPayload);
+	} catch {
+		return false;
+	}
+	return warmPokePayloadSchema.safeParse(raw).success;
+}
 
 export interface WarmPokeSelectionOptions {
 	/**
@@ -57,7 +72,7 @@ export interface WarmPokeSelectionOptions {
 	 *  - `ttlMs`: the cache TTL in ms (from the backend's `cache_ttl`), which
 	 *    sets the just-in-time poke window (backends differ, e.g. 5m vs 1h).
 	 *  - `maxPokes`: the per-active-period poke cap (from the backend's
-	 *    `cache_warming.max_pokes_per_active_period`), the load-bearing economic control —
+	 *    `cache_warming.max_pokes`), the load-bearing economic control —
 	 *    break-even varies dramatically by provider's cache-write/read pricing.
 	 *    0 means "never warm threads on this backend".
 	 */
@@ -77,10 +92,15 @@ export interface WarmPokeSelectionOptions {
 	staleClientSessionMs?: number;
 }
 
-interface CandidateRow {
-	thread_id: string;
-	anchor: string;
-}
+// Row schemas for the selection queries. Parsed rather than cast so a schema
+// drift surfaces at this boundary instead of as a silent `undefined` downstream.
+const candidateRowSchema = z.object({
+	thread_id: z.string(),
+	anchor: z.string(),
+});
+const turnRowSchema = z.object({ created_at: z.string() });
+const pokeCountRowSchema = z.object({ n: z.number() });
+const threadInterfaceRowSchema = z.object({ interface: z.string() });
 
 /**
  * Returns the thread ids that should receive a warm poke right now.
@@ -106,8 +126,8 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 			 WHERE role = 'user' AND deleted = 0 AND created_at > ?
 			 GROUP BY thread_id`,
 		)
-		.all(activeCutoff) as CandidateRow[];
-	for (const { thread_id, anchor } of userThreads) {
+		.all(activeCutoff);
+	for (const { thread_id, anchor } of candidateRowSchema.array().parse(userThreads)) {
 		candidates.set(thread_id, anchor);
 	}
 
@@ -124,8 +144,8 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 			       AND last_run_at IS NOT NULL AND last_run_at > ?
 			 GROUP BY thread_id`,
 		)
-		.all(activeCutoff) as CandidateRow[];
-	for (const { thread_id, anchor } of cronThreads) {
+		.all(activeCutoff);
+	for (const { thread_id, anchor } of candidateRowSchema.array().parse(cronThreads)) {
 		const existing = candidates.get(thread_id);
 		if (!existing || anchor > existing) candidates.set(thread_id, anchor);
 	}
@@ -141,10 +161,11 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 		const { ttlMs, maxPokes } = policy;
 
 		// Must have prior inference (something to keep cached).
-		const turn = db
+		const turnRow = db
 			.query("SELECT created_at FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
-			.get(threadId) as { created_at: string } | null;
-		if (!turn) continue;
+			.get(threadId);
+		if (!turnRow) continue;
+		const turn = turnRowSchema.parse(turnRow);
 
 		// Only extend a currently-WARM prefix. Never re-warm a cold cache — that
 		// costs a full write with no guarantee a real message follows.
@@ -160,23 +181,25 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 		// Per-active-period poke cap (the load-bearing economic control,
 		// derived per-backend). maxPokes === 0 means "never warm this backend",
 		// which this check enforces naturally (0 >= 0).
-		const pokeRow = db
+		const pokeRaw = db
 			.query(
 				`SELECT COUNT(*) AS n FROM messages
 				 WHERE thread_id = ? AND role = 'developer' AND deleted = 0
 				       AND created_at > ? AND content LIKE ?`,
 			)
-			.get(threadId, anchor, `${WARM_POKE_MARKER}%`) as { n: number };
+			.get(threadId, anchor, `${WARM_POKE_MARKER}%`);
+		const pokeRow = pokeCountRowSchema.parse(pokeRaw);
 		if (pokeRow.n >= maxPokes) continue;
 
 		// Client-tool threads (boundless) with no live session: nothing to warm
 		// for, and the woken loop can't run client tools anyway.
-		const threadRow = db
+		const threadRaw = db
 			.query("SELECT interface FROM threads WHERE id = ? AND deleted = 0")
-			.get(threadId) as { interface: string } | null;
+			.get(threadId);
+		const threadRow = threadRaw ? threadInterfaceRowSchema.parse(threadRaw) : null;
 		if (
 			threadRow &&
-			CLIENT_TOOL_INTERFACES.has(threadRow.interface) &&
+			isClientToolInterface(threadRow.interface) &&
 			!isClientSessionLive(db, threadId, staleClientSessionMs)
 		) {
 			continue;

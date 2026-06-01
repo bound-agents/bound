@@ -2,7 +2,11 @@ import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, insertRow, recordTurn } from "@bound/core";
 import { CACHE_TTL_MS } from "../cache-prediction";
-import { WARM_POKE_MARKER, selectWarmPokeTargets } from "../cache-warm-poke";
+import {
+	WARM_POKE_MARKER,
+	isWarmPokeNotificationPayload,
+	selectWarmPokeTargets,
+} from "../cache-warm-poke";
 
 const TTL = CACHE_TTL_MS["1h"];
 const SCAN_INTERVAL = 2 * 60_000; // 2m
@@ -279,5 +283,29 @@ describe("selectWarmPokeTargets", () => {
 		insertUserMessage("t2", 30 * 60_000);
 		insertWarmTurn("t2", NEAR_EXPIRY);
 		expect(selectWarmPokeTargets(db, baseOptions()).sort()).toEqual(["t1", "t2"]);
+	});
+});
+
+describe("isWarmPokeNotificationPayload", () => {
+	it("accepts the warm-poke marker shape", () => {
+		expect(isWarmPokeNotificationPayload(JSON.stringify({ type: "cache_warm_poke" }))).toBe(true);
+	});
+
+	it("rejects a different notification type", () => {
+		expect(isWarmPokeNotificationPayload(JSON.stringify({ type: "task_complete" }))).toBe(false);
+	});
+
+	it("rejects malformed JSON without throwing", () => {
+		expect(isWarmPokeNotificationPayload("{not json")).toBe(false);
+	});
+
+	it("rejects null / undefined / empty payloads", () => {
+		expect(isWarmPokeNotificationPayload(null)).toBe(false);
+		expect(isWarmPokeNotificationPayload(undefined)).toBe(false);
+		expect(isWarmPokeNotificationPayload("")).toBe(false);
+	});
+
+	it("rejects a non-object JSON payload", () => {
+		expect(isWarmPokeNotificationPayload('"cache_warm_poke"')).toBe(false);
 	});
 });

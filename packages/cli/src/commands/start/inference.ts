@@ -54,7 +54,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				cacheWarming: b.cache_warming
 					? {
 							enabled: b.cache_warming.enabled,
-							maxPokes: b.cache_warming.max_pokes_per_active_period,
+							maxPokes: b.cache_warming.max_pokes,
 						}
 					: undefined,
 			}),
