@@ -241,6 +241,14 @@ export interface BackendConfig {
 	 * ignored by the provider and falls back to default 5m behavior.
 	 */
 	cacheTtl?: "5m" | "1h";
+	/**
+	 * Per-backend cache-warming config (issue #10), consumed only by the
+	 * cache-warming driver — never at inference time. Absent → this backend is
+	 * never warmed. `enabled` gates whether the driver pokes this backend's
+	 * threads at all; `maxPokes` caps warm pokes per thread per active period
+	 * (0 → never warm, a clean opt-out even with `enabled: true`).
+	 */
+	cacheWarming?: { enabled: boolean; maxPokes: number };
 	[key: string]: unknown;
 }
 

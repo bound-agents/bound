@@ -118,7 +118,7 @@ After `bound init`, the `config/` directory contains:
 | File | Required | Description |
 |------|----------|-------------|
 | `allowlist.json` | Yes | Users allowed to interact with the agent |
-| `model_backends.json` | Yes | LLM backend configuration |
+| `model_backends.json` | Yes | LLM backend configuration (per-backend model routing, pricing, and optional cache warming) |
 | `platforms.json` | No | Platform connector config (Discord bot token, MCP server settings) |
 | `sync.json` | No | Hub URL, sync interval, relay and WS settings |
 | `keyring.json` | No | Per-host identity keys (auto-populated) |

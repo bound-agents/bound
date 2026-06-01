@@ -1333,7 +1333,7 @@ export class AgentLoop {
 								messages: llmMessages,
 								tools: mergedTools,
 								system: systemPrompt || undefined,
-								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+								max_tokens: this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
 								// cache_ttl is omitted on the remote-dispatch payload — the
@@ -1469,7 +1469,7 @@ export class AgentLoop {
 											system: systemPrompt || undefined,
 											tools: mergedTools,
 											max_tokens: clampMaxOutputTokens(
-												DEFAULT_MAX_OUTPUT_TOKENS,
+												this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
 												resolution.maxOutputTokens,
 											),
 											thinking: resolution.thinkingConfig,
@@ -2558,6 +2558,9 @@ export class AgentLoop {
 
 	/** Merge server tools and client tool definitions into a single LLM tool list. */
 	private getMergedTools(): Array<ToolDefinition> | undefined {
+		// `noTools` turns (e.g. cache-warming pokes, issue #10) run tool-less: the
+		// merged list resolves to undefined and the loop ends after one response.
+		if (this.config.noTools) return undefined;
 		if (this.config.toolRegistry) {
 			const registryTools: ToolDefinition[] = [];
 			for (const registered of this.config.toolRegistry.values()) {

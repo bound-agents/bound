@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { WARM_POKE_MARKER } from "@bound/agent";
 import { formatNotification } from "../commands/start/server";
 
 describe("formatNotification", () => {
@@ -62,5 +63,16 @@ describe("formatNotification", () => {
 		});
 		expect(result).toContain("[notification]");
 		expect(result).toContain("custom_thing");
+	});
+
+	it("formats cache_warm_poke notifications with the warm-poke marker (issue #10)", () => {
+		const result = formatNotification({ type: "cache_warm_poke" });
+		// The marker prefix is load-bearing: selectWarmPokeTargets counts prior
+		// pokes via a `content LIKE '<marker>%'` query, so the rendered message
+		// MUST begin with WARM_POKE_MARKER.
+		expect(result.startsWith(WARM_POKE_MARKER)).toBe(true);
+		// And it must tell the agent to do nothing.
+		expect(result.toLowerCase()).toContain("no action is required");
+		expect(result.toLowerCase()).toContain("stop immediately");
 	});
 });

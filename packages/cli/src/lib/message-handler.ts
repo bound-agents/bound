@@ -39,6 +39,10 @@ export interface RunLocalLoopParams {
 	 * so client tool dispatches open `tool.dispatch` spans on it.
 	 */
 	handleMessageTracker?: HandleMessageTracker;
+	/** Suppress all tools for this turn (see AgentLoopConfig.noTools). */
+	noTools?: boolean;
+	/** Hard cap on output tokens for this turn (see AgentLoopConfig.maxOutputTokens). */
+	maxOutputTokens?: number;
 }
 
 export interface RunLocalLoopResult {
@@ -93,6 +97,8 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		platformTools,
 		platformInstructions,
 		handleMessageTracker,
+		noTools,
+		maxOutputTokens,
 	} = params;
 
 	const abortController = new AbortController();
@@ -136,6 +142,8 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 			platformTools,
 			platformInstructions,
 			handleMessageTracker,
+			noTools,
+			maxOutputTokens,
 		});
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };
