@@ -569,8 +569,9 @@ export function buildCacheMarkers(args: {
 }
 
 /**
- * Evict any prior inner-loop rolling cache marker, then place a fresh one
- * before the volatile-tail.
+ * Maintain a bounded trailing PAIR of inner-loop rolling cache markers: keep
+ * the most recent prior rolling marker as an explicit "previous write position"
+ * breakpoint and place a fresh one at the tip.
  *
  * Inner-loop semantics. Inside `while (continueLoop)` in agent-loop.ts,
  * each iteration appends `tool_call + tool_result(s)` to `llmMessages`.
@@ -578,45 +579,78 @@ export function buildCacheMarkers(args: {
  * threads) caches the system + user prompt, but every byte appended after
  * it pays full price on the next inner iteration. Without a rolling
  * cachePoint, a 5-iter inner loop with ~10k tool roundtrips per iter
- * pays the full ~50k cumulative on each inference. Live evidence
- * (agent-harness production-shape, 2026-05-26, /tmp/h8/turn-{2..6}.json):
- * cr stuck at 59,510 (system + user_1 floor) across 5 inner-loop
- * iterations while ti climbed 63k → 84k.
+ * pays the full ~50k cumulative on each inference.
  *
- * Placing a rolling marker just before the dev-tail captures iteration
- * K-1's appended content so iteration K reads it back. Inner-loop
- * cumulative cache then grows monotonically across the inner loop, and
- * the next outer-turn's warm-path arrival doesn't have to re-seed the
- * inner-loop content from cold.
+ * Why a PAIR, not a single rolling marker. A single rolling marker moves to
+ * the tip every iteration, so iteration K has NO cachePoint at iteration
+ * K-1's write position. Bedrock's exact-byte-position cache then has to bridge
+ * P_{K-1} → P_K via its ~20-block auto-lookback. Live data (heavy coding
+ * thread 60db514d, May 29-31) shows that lookback does NOT bridge for these
+ * threads: a single large `tool_result` (file / bash blob) blows past the
+ * window, the prior write is orphaned, `cr` stays pinned at the fixed floor
+ * (~58,745) while `cw` re-writes the whole grown prefix (66-95k). Write-once-
+ * read-never → cache-write/read ratio ~1.12 (paying for writes consumed once).
  *
- * Eviction. Mirrors the warm-path eviction (`agent-loop.ts:749-757`):
- * drop every `role: "cache"` entry except the one at `fixedCacheIdx`.
- * Walks backwards so splice indices don't shift under us. The fixed
- * marker survives at its original index because eviction never touches
- * indices ≤ `fixedCacheIdx` (the fixed marker is always at or near the
- * head).
+ * Keeping iteration K-1's marker in place gives iteration K an EXPLICIT
+ * breakpoint at exactly K-1's write position. The preceding bytes are
+ * committed history (byte-identical across iterations), so the bridge attaches
+ * the cachePoint to the same wire position and Bedrock serves an exact-match
+ * read — no reliance on lookback. Inner-loop cumulative cache then grows
+ * monotonically, and the next outer turn's warm-path arrival doesn't re-seed
+ * the inner-loop content from cold.
  *
- * Placement. Delegates to `maybePlaceCacheMarker(.., "rolling", caps)`,
- * which already handles trailing-developer awareness and the bridge-
- * drop avoidance from `computeCacheMarkerIndex`.
+ * Eviction / bounding. Keep the single MOST RECENT prior rolling marker (the
+ * prev breakpoint); evict every OLDER rolling marker so the pair never grows
+ * unbounded. With caching disabled, evict every non-fixed marker and place
+ * nothing (a stray cachePoint on a no-cache backend risks a 403). Walks
+ * backwards so splice indices don't shift under us; the fixed marker is never
+ * touched.
  *
- * 4-cachePoint cap. With this helper engaged, a single chat() call
- * carries: 1 system-level + 1 fixed + 1 rolling = 3 cachePoints. Under
- * Anthropic's 4-marker cap.
+ * Placement. Delegates the new tip marker to
+ * `maybePlaceCacheMarker(.., "rolling", caps)`, which handles trailing-
+ * developer awareness and the bridge-drop avoidance from
+ * `computeCacheMarkerIndex`.
  *
- * Pure-ish: mutates `messages` in place (eviction + splice). Returns the
- * placement record from the underlying `maybePlaceCacheMarker` call so
- * the caller can record it on `contextDebug.cacheMarkers` if desired.
+ * 4-cachePoint cap. With this helper engaged, a single chat() call carries:
+ * 1 system-level + 1 fixed + 1 prev-rolling + 1 new-rolling = 4 cachePoints,
+ * exactly at Anthropic's 4-marker cap. The trailing-pair is BOUNDED (older
+ * rollings are evicted every refresh), so the count is deterministic and never
+ * exceeds 4. On the first inner refresh — before any prior rolling exists —
+ * the call carries 3 (system + fixed + new).
+ *
+ * Mutates `messages` in place (eviction + splice). Returns the placement
+ * record from the underlying `maybePlaceCacheMarker` call so the caller can
+ * record it on `contextDebug.cacheMarkers` if desired.
  */
 export function refreshInnerLoopRollingMarker(
 	messages: LLMMessage[],
 	fixedCacheIdx: number,
 	caps: CacheMarkerCaps | undefined,
 ): CacheMarkerPlacement {
-	for (let i = messages.length - 1; i >= 0; i--) {
+	// Collect all non-fixed cache markers (prior rolling markers), ascending.
+	const rollingIdxs: number[] = [];
+	for (let i = 0; i < messages.length; i++) {
 		if (messages[i].role === "cache" && i !== fixedCacheIdx) {
-			messages.splice(i, 1);
+			rollingIdxs.push(i);
 		}
+	}
+
+	if (caps && caps.prompt_caching === false) {
+		// Caching disabled: evict every non-fixed marker (a stray cachePoint on a
+		// no-cache backend risks a 403) and place nothing. Walk high→low so
+		// splice indices don't shift under us.
+		for (let i = rollingIdxs.length - 1; i >= 0; i--) {
+			messages.splice(rollingIdxs[i], 1);
+		}
+		return { placed: false, variant: "rolling", index: -1, reason: "capability-disabled" };
+	}
+
+	// Trailing-pair. Keep the MOST RECENT prior rolling marker in place as the
+	// explicit "previous write position" breakpoint, and evict every OLDER
+	// rolling marker. Walk the older markers high→low so splice indices don't
+	// shift under us; the most-recent (highest index) is left untouched.
+	for (let i = rollingIdxs.length - 2; i >= 0; i--) {
+		messages.splice(rollingIdxs[i], 1);
 	}
 	return maybePlaceCacheMarker(messages, "rolling", caps);
 }
