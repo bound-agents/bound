@@ -255,15 +255,22 @@ function renderBlock(token: Token, index: number, width?: number): React.ReactEl
 				<Box key={`block-${index}`} flexDirection="column">
 					{t.items.map((item, idx) => {
 						const marker = t.ordered ? `${(t.start || 1) + idx}.` : "\u2022";
-						// The marker Text renders `${marker} ` (marker + one space)
-						// alongside the item text, so the item's wrap budget is the
-						// content width minus that prefix.
-						const itemWidth =
-							width !== undefined ? Math.max(1, width - (marker.length + 1)) : undefined;
+						// The marker sits in its own fixed-width column (marker length
+						// plus a one-column gutter), so the item's wrap budget is the
+						// content width minus that prefix. The marker column reserves
+						// the gutter via `width` rather than a trailing space in the
+						// marker Text: Ink trims trailing whitespace from a Text node
+						// that is a flex-row sibling, which would butt the content
+						// against the marker (`1.content`) and misalign wrapped
+						// continuation lines by one column (issue #142).
+						const markerWidth = marker.length + 1;
+						const itemWidth = width !== undefined ? Math.max(1, width - markerWidth) : undefined;
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: list items are immutable tokens
 							<Box key={`li-${index}-${idx}`}>
-								<Text>{marker} </Text>
+								<Box flexShrink={0} width={markerWidth}>
+									<Text>{marker}</Text>
+								</Box>
 								{renderProse(item.tokens, itemWidth, `li${index}-${idx}`)}
 							</Box>
 						);

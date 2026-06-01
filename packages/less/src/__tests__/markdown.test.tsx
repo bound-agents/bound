@@ -159,6 +159,63 @@ describe("Markdown", () => {
 			expect(frame).toContain("2.");
 			expect(frame).toContain("second");
 		});
+
+		// Issue #142: the marker sits in its own fixed-width column so there is a
+		// gutter space between the number and the content, and wrapped
+		// continuation lines stay aligned with the first content column. The
+		// regression was a missing space (`1.content`) plus a one-column
+		// misalignment on continuations, surfacing on the Ink-wrapped path where
+		// Ink trims trailing whitespace from a flex-row-sibling Text node.
+		it("renders a gutter space after an ordered marker (no-width / Ink-wrapped path)", async () => {
+			const { lastFrame } = render(
+				React.createElement(Markdown, {
+					text: "1. content line one that is quite long and will wrap around now and keep going past the width",
+				}),
+			);
+			await tick();
+			const frame = lastFrame() ?? "";
+			// Space between the number and the content — NOT `1.content`.
+			expect(frame).toContain("1. content");
+			expect(frame).not.toContain("1.content");
+		});
+
+		it("renders a gutter space and aligns wrapped continuations (width path)", async () => {
+			const { lastFrame } = render(
+				React.createElement(Markdown, {
+					text: "1. first item that is long enough to wrap\n2. second item also long enough to wrap",
+					width: 30,
+				}),
+			);
+			await tick();
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("1. first");
+			expect(frame).toContain("2. second");
+			expect(frame).not.toContain("1.first");
+			// Continuation lines align under the content column (markerWidth = 3),
+			// i.e. they are indented by exactly three spaces, matching the gutter.
+			const lines = frame.split("\n");
+			const continuations = lines.filter(
+				(l) => /^\s/.test(l) && !/^\s*\d+\.\s/.test(l) && l.trim().length > 0,
+			);
+			expect(continuations.length).toBeGreaterThan(0);
+			for (const line of continuations) {
+				expect(line.startsWith("   ")).toBe(true);
+				expect(line.startsWith("    ")).toBe(false);
+			}
+		});
+
+		it("renders a gutter space after a bullet marker", async () => {
+			const { lastFrame } = render(
+				React.createElement(Markdown, {
+					text: "- bullet item long enough to wrap onto a second visual line for sure",
+					width: 28,
+				}),
+			);
+			await tick();
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("\u2022 bullet");
+			expect(frame).not.toContain("\u2022bullet");
+		});
 	});
 
 	describe("blockquotes", () => {
