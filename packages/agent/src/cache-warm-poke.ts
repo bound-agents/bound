@@ -48,11 +48,21 @@ export const WARM_POKE_MAX_OUTPUT_TOKENS = 16;
 const CLIENT_TOOL_INTERFACES = new Set(["boundless"]);
 
 export interface WarmPokeSelectionOptions {
-	/** Cache TTL in ms (e.g. `CACHE_TTL_MS["1h"]`). */
-	ttlMs: number;
-	/** Driver cadence in ms. A thread is "near expiry" when it would go cold
-	 *  before the next driver tick. Must be < ttlMs. */
-	cadenceMs: number;
+	/**
+	 * Resolve a thread's cache TTL in ms from its backend's `cache_ttl`, or null
+	 * when caching is not configured for that backend (nothing to keep warm — a
+	 * poke would re-warm a prefix the provider won't cache anyway). Deriving the
+	 * window per-thread is what lets one driver serve backends with different
+	 * TTLs (e.g. 5m and 1h) correctly; a single global cadence cannot.
+	 */
+	resolveTtlMs: (threadId: string) => number | null;
+	/**
+	 * Driver scan period in ms. A thread is "near expiry" when it would go cold
+	 * before the next scan, so the just-in-time window for a thread is
+	 * `ttlMs − scanIntervalMs`. Must be < the smallest TTL in play to stay
+	 * positive.
+	 */
+	scanIntervalMs: number;
 	/** A thread counts as active if it had real activity within this window. */
 	activeWindowMs: number;
 	/** Max warm pokes per thread since its last real activity. */
@@ -76,8 +86,13 @@ interface CandidateRow {
  * real current time for the warm/cold determination to stay consistent.
  */
 export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOptions): string[] {
-	const { ttlMs, cadenceMs, activeWindowMs, maxPokesPerActivePeriod, staleClientSessionMs } =
-		options;
+	const {
+		resolveTtlMs,
+		scanIntervalMs,
+		activeWindowMs,
+		maxPokesPerActivePeriod,
+		staleClientSessionMs,
+	} = options;
 	const now = options.now ?? Date.now();
 	const activeCutoff = new Date(now - activeWindowMs).toISOString();
 
@@ -120,6 +135,11 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 	const targets: string[] = [];
 
 	for (const [threadId, anchor] of candidates) {
+		// Per-thread cache TTL from the thread's backend. Null = caching not
+		// configured for that backend, so there is no warm prefix to keep alive.
+		const ttlMs = resolveTtlMs(threadId);
+		if (ttlMs === null) continue;
+
 		// Must have prior inference (something to keep cached).
 		const turn = db
 			.query("SELECT created_at FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1")
@@ -131,9 +151,11 @@ export function selectWarmPokeTargets(db: Database, options: WarmPokeSelectionOp
 		if (predictCacheState(db, threadId, ttlMs) !== "warm") continue;
 
 		// Just-in-time: skip threads whose cache will still be warm at the next
-		// tick. Only poke when it would otherwise lapse before then.
+		// scan. Only poke when it would otherwise lapse before then. The window
+		// width is exactly one scan interval, so a scan running every
+		// `scanIntervalMs` is guaranteed to catch the thread before it goes cold.
 		const msSinceTurn = now - new Date(turn.created_at).getTime();
-		if (msSinceTurn < ttlMs - cadenceMs) continue;
+		if (msSinceTurn < ttlMs - scanIntervalMs) continue;
 
 		// Per-active-period poke cap (the load-bearing economic control).
 		const pokeRow = db

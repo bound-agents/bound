@@ -4,7 +4,6 @@ import {
 	type RelayConfig,
 	type Result,
 	type SyncConfig,
-	cacheWarmingConfigSchema,
 	cronSchedulesSchema,
 	err,
 	keyringSchema,
@@ -217,11 +216,6 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 			key: "cronSchedules",
 		},
 		{ filename: "memory.json", schema: memoryConfigSchema as ZodSchema<unknown>, key: "memory" },
-		{
-			filename: "cache_warming.json",
-			schema: cacheWarmingConfigSchema as ZodSchema<unknown>,
-			key: "cacheWarming",
-		},
 	];
 
 	for (const { filename, schema, key } of optionalConfigs) {

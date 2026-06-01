@@ -49,6 +49,9 @@ import type { ClusterFsResult } from "@bound/sandbox";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
+	DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
+	DEFAULT_WARM_POKE_MAX_PER_PERIOD,
+	WARM_POKE_SCAN_INTERVAL_MS,
 	deterministicUUID,
 	extractTraceContext,
 	formatError,
@@ -1046,36 +1049,38 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			}
 		}, EXPIRY_SCAN_INTERVAL_MS);
 
-		// Task 2: Cache-warming "warm poke" driver (issue #10). Opt-in via
-		// cache_warming.json. Periodically finds active threads whose prompt
-		// cache is warm but near expiry and enqueues a tool-less poke wakeup so
-		// the next real message lands on a cache-read instead of a cache-write.
+		// Task 2: Cache-warming "warm poke" driver (issue #10). Opt-in via the
+		// `cache_warming` block in model_backends.json. Periodically finds active
+		// threads whose prompt cache is warm but near expiry and enqueues a
+		// tool-less poke wakeup so the next real message lands on a cache-read
+		// instead of a cache-write. The poke window is derived per-thread from
+		// each thread's backend `cache_ttl`.
 		// Pokes only fire from the leader-eligible web host that owns dispatch;
 		// each poke is a `cache_warm_poke` notification handled locally with
 		// cacheWarmOnly clamping (see runFn above).
 		let warmPokeInterval: ReturnType<typeof setInterval> | undefined;
-		const warmCfgResult = appContext.optionalConfig.cacheWarming;
-		const warmCfg = warmCfgResult?.ok
-			? (warmCfgResult.value as {
-					enabled?: boolean;
-					cadence_ms?: number;
-					active_window_ms?: number;
-					max_pokes_per_active_period?: number;
-				})
-			: undefined;
+		const warmCfg = appContext.config.modelBackends.cache_warming;
 		if (warmCfg?.enabled) {
-			const cadenceMs = warmCfg.cadence_ms ?? 45 * 60_000;
-			const activeWindowMs = warmCfg.active_window_ms ?? 24 * 60 * 60_000;
-			const maxPokes = warmCfg.max_pokes_per_active_period ?? 3;
+			const maxPokes = warmCfg.max_pokes_per_active_period ?? DEFAULT_WARM_POKE_MAX_PER_PERIOD;
 			appContext.logger.info(
-				`[warm-poke] Cache-warming driver enabled (cadence ${Math.round(cadenceMs / 60_000)}m, window ${Math.round(activeWindowMs / 3_600_000)}h, cap ${maxPokes}/period)`,
+				`[warm-poke] Cache-warming driver enabled (scan ${Math.round(WARM_POKE_SCAN_INTERVAL_MS / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h, cap ${maxPokes}/period; per-thread TTL derived from backend cache_ttl)`,
 			);
+			// Resolve a thread's cache TTL in ms from its backend's `cache_ttl`
+			// (issue #10). Returns null when the backend doesn't cache — nothing to
+			// keep warm. Deriving per-thread is what lets one driver serve backends
+			// with different TTLs (5m vs 1h) correctly; a single global cadence
+			// could only ever be right for one of them.
+			const resolveTtlMs = (threadId: string): number | null => {
+				const modelId = resolveThreadModel(appContext.db, threadId, routerConfig.default);
+				const ttl = modelRouter.getCacheTtl(modelId);
+				return ttl ? CACHE_TTL_MS[ttl] : null;
+			};
 			warmPokeInterval = setInterval(() => {
 				try {
 					const targets = selectWarmPokeTargets(appContext.db, {
-						ttlMs: CACHE_TTL_MS["1h"],
-						cadenceMs,
-						activeWindowMs,
+						resolveTtlMs,
+						scanIntervalMs: WARM_POKE_SCAN_INTERVAL_MS,
+						activeWindowMs: DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
 						maxPokesPerActivePeriod: maxPokes,
 					});
 					for (const threadId of targets) {
@@ -1095,7 +1100,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						error: formatError(error),
 					});
 				}
-			}, cadenceMs);
+			}, WARM_POKE_SCAN_INTERVAL_MS);
 		}
 
 		// Clean up on server stop — store interval ID for cleanup

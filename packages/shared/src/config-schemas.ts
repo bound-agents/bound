@@ -117,6 +117,43 @@ const modelBackendSchema = z
 	})
 	.strict();
 
+// Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
+// cache hot on active threads so the next real message lands on a cache-read
+// rather than a cache-write (issue #10). Disabled by default. Lives as an
+// optional `cache_warming` block inside model_backends.json, co-located with
+// the per-backend `cache_ttl` and cache pricing its economics depend on (rather
+// than as a standalone config file).
+//
+// Economics: a poke costs ~one cache-read of the prefix; a caught cold arrival
+// saves ~one cache-write. Break-even is ~11.5 pokes per caught arrival, so the
+// driver is only net-positive on threads that actually receive follow-up
+// messages. `max_pokes_per_active_period` bounds the loss on threads that go
+// quiet after their last real message.
+//
+// The just-in-time poke window is NOT configured: it is derived per-thread from
+// that thread's backend `cache_ttl` (a poke fires only when the cache would
+// otherwise lapse before the next scan). A single global cadence knob cannot be
+// correct for a cluster whose backends have different TTLs (e.g. 5m vs 1h).
+export const DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS = 24 * 60 * 60_000; // 24h
+export const DEFAULT_WARM_POKE_MAX_PER_PERIOD = 3;
+// Driver scan period. Must be < the smallest supported cache TTL (5m) so the
+// derived just-in-time window (ttl − scan) stays positive. This is a mechanical
+// knob (how often to look), not an economic one, so it is a constant.
+export const WARM_POKE_SCAN_INTERVAL_MS = 2 * 60_000; // 2m
+
+export const cacheWarmingConfigSchema = z
+	.object({
+		enabled: z.boolean().default(false),
+		max_pokes_per_active_period: z
+			.number()
+			.int()
+			.min(1, "max_pokes_per_active_period must be at least 1")
+			.default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
+	})
+	.strict();
+
+export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
+
 export const modelBackendsSchema = z
 	.object({
 		// An empty array is valid for hub-only nodes that relay inference to spokes.
@@ -124,6 +161,9 @@ export const modelBackendsSchema = z
 		// Empty string is the sentinel value meaning "no local default" (hub-only mode).
 		default: z.string().default(""),
 		daily_budget_usd: z.number().min(0).optional(),
+		// Opt-in cache-warming driver (issue #10). Co-located here because its
+		// economics derive from per-backend `cache_ttl` + cache pricing above.
+		cache_warming: cacheWarmingConfigSchema.optional(),
 	})
 	.strict()
 	.refine(
@@ -344,45 +384,6 @@ export const memoryConfigSchema = z
 
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
-// Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
-// cache hot on active threads so the next real message lands on a cache-read
-// rather than a cache-write (issue #10). Disabled by default: when
-// cache_warming.json is absent the driver never starts.
-//
-// Economics: a poke costs ~one cache-read of the prefix; a caught cold arrival
-// saves ~one cache-write. Break-even is ~11.5 pokes per caught arrival, so the
-// driver is only net-positive on threads that actually receive follow-up
-// messages. `max_pokes_per_active_period` bounds the loss on threads that go
-// quiet after their last real message; `cadence_ms` must be < the cache TTL
-// (1h) or pokes never land while the cache is still warm.
-export const DEFAULT_WARM_POKE_CADENCE_MS = 45 * 60_000; // 45m (< 1h TTL)
-export const DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS = 24 * 60 * 60_000; // 24h
-export const DEFAULT_WARM_POKE_MAX_PER_PERIOD = 3;
-
-export const cacheWarmingConfigSchema = z
-	.object({
-		enabled: z.boolean().default(false),
-		cadence_ms: z
-			.number()
-			.int()
-			.min(60_000, "cache-warming cadence must be at least 60 seconds")
-			.max(60 * 60_000, "cache-warming cadence must be under the 1h cache TTL")
-			.default(DEFAULT_WARM_POKE_CADENCE_MS),
-		active_window_ms: z
-			.number()
-			.int()
-			.min(60_000, "active_window_ms must be at least 60 seconds")
-			.default(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS),
-		max_pokes_per_active_period: z
-			.number()
-			.int()
-			.min(1, "max_pokes_per_active_period must be at least 1")
-			.default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
-	})
-	.strict();
-
-export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
-
 export const cronEntrySchema = z
 	.object({
 		schedule: z.string().min(1),
@@ -429,5 +430,4 @@ export const configSchemaMap = {
 	"mcp.json": mcpSchema,
 	"overlay.json": overlaySchema,
 	"cron_schedules.json": cronSchedulesSchema,
-	"cache_warming.json": cacheWarmingConfigSchema,
 } as const;

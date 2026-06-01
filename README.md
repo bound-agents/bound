@@ -118,7 +118,7 @@ After `bound init`, the `config/` directory contains:
 | File | Required | Description |
 |------|----------|-------------|
 | `allowlist.json` | Yes | Users allowed to interact with the agent |
-| `model_backends.json` | Yes | LLM backend configuration |
+| `model_backends.json` | Yes | LLM backend configuration. Optional `cache_warming` block (`enabled`, default false; `max_pokes_per_active_period`) opts into the warm-poke driver that keeps active threads' prompt cache hot; the poke window is derived per-thread from each backend's `cache_ttl`. |
 | `platforms.json` | No | Platform connector config (Discord bot token, MCP server settings) |
 | `sync.json` | No | Hub URL, sync interval, relay and WS settings |
 | `keyring.json` | No | Per-host identity keys (auto-populated) |

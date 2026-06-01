@@ -5,14 +5,14 @@ import { CACHE_TTL_MS } from "../cache-prediction";
 import { WARM_POKE_MARKER, selectWarmPokeTargets } from "../cache-warm-poke";
 
 const TTL = CACHE_TTL_MS["1h"];
-const CADENCE = 45 * 60_000; // 45m
+const SCAN_INTERVAL = 2 * 60_000; // 2m
 const ACTIVE_WINDOW = 24 * 60 * 60_000; // 24h
 const MAX_POKES = 3;
 
 function baseOptions(overrides: Record<string, unknown> = {}) {
 	return {
-		ttlMs: TTL,
-		cadenceMs: CADENCE,
+		resolveTtlMs: () => TTL,
+		scanIntervalMs: SCAN_INTERVAL,
 		activeWindowMs: ACTIVE_WINDOW,
 		maxPokesPerActivePeriod: MAX_POKES,
 		...overrides,
@@ -169,8 +169,10 @@ describe("selectWarmPokeTargets", () => {
 		);
 	}
 
-	// near-expiry = msSinceTurn >= TTL - CADENCE = 60m - 45m = 15m.
-	const NEAR_EXPIRY = 20 * 60_000; // 20m ago: warm AND near expiry
+	// near-expiry = msSinceTurn >= TTL - SCAN_INTERVAL = 60m - 2m = 58m. The poke
+	// window is derived per-thread from the resolved TTL; with a 2m scan the
+	// thread is only poked in the last 2m before its cache would lapse.
+	const NEAR_EXPIRY = 59 * 60_000; // 59m ago: still warm (< 60m TTL) AND near expiry (>= 58m)
 	const FRESH = 5 * 60_000; // 5m ago: warm but NOT near expiry
 
 	it("selects a warm, near-expiry thread with a recent user message", () => {
