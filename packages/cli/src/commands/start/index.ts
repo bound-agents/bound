@@ -19,7 +19,7 @@ import { initSandbox } from "./sandbox.js";
 import { initScheduler, setupGracefulShutdown } from "./scheduler.js";
 import { initServer } from "./server.js";
 import { initSync } from "./sync.js";
-import { initTelemetry } from "./telemetry.js";
+import { initTelemetry, setTelemetrySiteId } from "./telemetry.js";
 
 export async function runStart(args: StartArgs): Promise<void> {
 	// Phase 0: Telemetry (must be first so all subsequent operations are traced)
@@ -27,6 +27,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 
 	// Phase 1: Bootstrap (config, DB, keypair, users, host, crash recovery)
 	const { appContext, keypair, configDir } = await initBootstrap(args);
+
+	// Now that bootstrap has derived the site ID from the host keypair, stamp it
+	// onto every subsequently-traced span (issue #152). initTelemetry ran at Phase 0
+	// before the site ID existed, so its span processor started empty.
+	setTelemetrySiteId(appContext.siteId);
 
 	// Phase 2: MCP connections and command generation
 	const { mcpClientsMap, mcpCommands, mcpServerNames, confirmGates } = await initMcp(appContext);

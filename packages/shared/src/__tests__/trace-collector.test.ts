@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { context, trace } from "@opentelemetry/api";
+import { SITE_ID_ATTR } from "../site-id-span-processor";
 import {
 	createScopedTraceCollector,
 	extractTraceContext,
@@ -86,6 +87,31 @@ describe("trace-collector", () => {
 			expect(s1.spanId).toBeDefined();
 			expect(s2.spanId).toBeDefined();
 			expect(s1.spanId).not.toBe(s2.spanId);
+		});
+
+		it("issue-152: stamps bound.site_id on serialized spans when siteId given", async () => {
+			const collector = createScopedTraceCollector("hub-site-99");
+			const tracer = collector.getTracer("bound.relay-hub");
+
+			const span = tracer.startSpan("relay.hub-inference");
+			span.end();
+
+			const spans = await collector.flush();
+			expect(spans).toHaveLength(1);
+			// The attribute lives on the serialized span (not the resource), so it
+			// survives the wire back to the requesting spoke's reExportSpans.
+			expect(spans[0]?.attributes[SITE_ID_ATTR]).toBe("hub-site-99");
+		});
+
+		it("issue-152: omits bound.site_id when no siteId is provided", async () => {
+			const collector = createScopedTraceCollector();
+			const tracer = collector.getTracer("bound.relay-hub");
+
+			const span = tracer.startSpan("relay.hub-inference");
+			span.end();
+
+			const spans = await collector.flush();
+			expect(spans[0]?.attributes[SITE_ID_ATTR]).toBeUndefined();
 		});
 	});
 
