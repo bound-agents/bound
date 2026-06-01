@@ -57,6 +57,14 @@ export { assembleContext } from "./context-assembly";
 // Export cache prediction
 export { predictCacheState, selectCacheTtl, CACHE_TTL_MS } from "./cache-prediction";
 
+// Export cache warm-poke (issue #10)
+export {
+	selectWarmPokeTargets,
+	WARM_POKE_MARKER,
+	WARM_POKE_MAX_OUTPUT_TOKENS,
+	type WarmPokeSelectionOptions,
+} from "./cache-warm-poke";
+
 // Export scheduler
 export { Scheduler } from "./scheduler";
 

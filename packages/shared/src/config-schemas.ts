@@ -344,6 +344,45 @@ export const memoryConfigSchema = z
 
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
+// Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
+// cache hot on active threads so the next real message lands on a cache-read
+// rather than a cache-write (issue #10). Disabled by default: when
+// cache_warming.json is absent the driver never starts.
+//
+// Economics: a poke costs ~one cache-read of the prefix; a caught cold arrival
+// saves ~one cache-write. Break-even is ~11.5 pokes per caught arrival, so the
+// driver is only net-positive on threads that actually receive follow-up
+// messages. `max_pokes_per_active_period` bounds the loss on threads that go
+// quiet after their last real message; `cadence_ms` must be < the cache TTL
+// (1h) or pokes never land while the cache is still warm.
+export const DEFAULT_WARM_POKE_CADENCE_MS = 45 * 60_000; // 45m (< 1h TTL)
+export const DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS = 24 * 60 * 60_000; // 24h
+export const DEFAULT_WARM_POKE_MAX_PER_PERIOD = 3;
+
+export const cacheWarmingConfigSchema = z
+	.object({
+		enabled: z.boolean().default(false),
+		cadence_ms: z
+			.number()
+			.int()
+			.min(60_000, "cache-warming cadence must be at least 60 seconds")
+			.max(60 * 60_000, "cache-warming cadence must be under the 1h cache TTL")
+			.default(DEFAULT_WARM_POKE_CADENCE_MS),
+		active_window_ms: z
+			.number()
+			.int()
+			.min(60_000, "active_window_ms must be at least 60 seconds")
+			.default(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS),
+		max_pokes_per_active_period: z
+			.number()
+			.int()
+			.min(1, "max_pokes_per_active_period must be at least 1")
+			.default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
+	})
+	.strict();
+
+export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
+
 export const cronEntrySchema = z
 	.object({
 		schedule: z.string().min(1),
@@ -376,7 +415,8 @@ export type ConfigType =
 	| McpConfig
 	| OverlayConfig
 	| CronSchedulesConfig
-	| MemoryConfig;
+	| MemoryConfig
+	| CacheWarmingConfig;
 
 // Schema map for programmatic validation
 export const configSchemaMap = {
@@ -389,4 +429,5 @@ export const configSchemaMap = {
 	"mcp.json": mcpSchema,
 	"overlay.json": overlaySchema,
 	"cron_schedules.json": cronSchedulesSchema,
+	"cache_warming.json": cacheWarmingConfigSchema,
 } as const;

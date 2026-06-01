@@ -49,6 +49,7 @@ import {
 	refreshInnerLoopRollingMarker,
 } from "./cache-marker";
 import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
+import { WARM_POKE_MAX_OUTPUT_TOKENS } from "./cache-warm-poke";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
 	TRUNCATION_TARGET_RATIO,
@@ -1333,7 +1334,9 @@ export class AgentLoop {
 								messages: llmMessages,
 								tools: mergedTools,
 								system: systemPrompt || undefined,
-								max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
+								max_tokens: this.config.cacheWarmOnly
+									? WARM_POKE_MAX_OUTPUT_TOKENS
+									: DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
 								// cache_ttl is omitted on the remote-dispatch payload — the
@@ -1468,10 +1471,12 @@ export class AgentLoop {
 											messages: llmMessages,
 											system: systemPrompt || undefined,
 											tools: mergedTools,
-											max_tokens: clampMaxOutputTokens(
-												DEFAULT_MAX_OUTPUT_TOKENS,
-												resolution.maxOutputTokens,
-											),
+											max_tokens: this.config.cacheWarmOnly
+												? WARM_POKE_MAX_OUTPUT_TOKENS
+												: clampMaxOutputTokens(
+														DEFAULT_MAX_OUTPUT_TOKENS,
+														resolution.maxOutputTokens,
+													),
 											thinking: resolution.thinkingConfig,
 											effort: resolution.effort,
 											cache_ttl: resolution.cacheTtl,
@@ -2558,6 +2563,9 @@ export class AgentLoop {
 
 	/** Merge server tools and client tool definitions into a single LLM tool list. */
 	private getMergedTools(): Array<ToolDefinition> | undefined {
+		// Warm-poke turns run tool-less: the turn exists only to re-read the
+		// cached prefix, and with no tools the loop ends after one short response.
+		if (this.config.cacheWarmOnly) return undefined;
 		if (this.config.toolRegistry) {
 			const registryTools: ToolDefinition[] = [];
 			for (const registered of this.config.toolRegistry.values()) {
