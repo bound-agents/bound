@@ -59,7 +59,7 @@ const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
  * prevent) or move the keyword onto an unmarked line that re-trips the validator.
  */
 export const STALE_TASK_RESET_SQL =
-	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ? AND (heartbeat_at IS NULL OR heartbeat_at < ?)"; // outbox-exempt: crash recovery, scoped to booting host (R-LR10)
+	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ?"; // outbox-exempt: crash recovery, scoped to booting host (R-LR10)
 
 /**
  * Crash-recovery scan for threads whose last meaningful message is a tool_call
@@ -405,18 +405,24 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	// 7. Crash recovery scan
 	appContext.logger.info("Scanning for crash recovery...");
 	{
-		const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+		// On boot, this host's scheduler is not yet running, so any row still marked
+		// status='running' AND claimed_by=self is necessarily a crashed prior
+		// incarnation — independent of how fresh its heartbeat looks. (A process that
+		// died shortly after its last heartbeat write leaves a fresh-looking heartbeat;
+		// a heartbeat-staleness filter here would refuse to reset it until the lease
+		// aged out, wedging the task — the bootstrap-path analogue of the d2ecf42d
+		// webhook wedge.) Peer-claimed stale rows are handled separately by the
+		// scheduler's host-liveness eviction (R-LR2) plus its orphan-heartbeat arm.
 		const staleRunning = appContext.db
 			.query(
 				`SELECT id FROM tasks
 				 WHERE status = 'running'
-				   AND claimed_by = ?
-				   AND (heartbeat_at IS NULL OR heartbeat_at < ?)`,
+				   AND claimed_by = ?`,
 			)
-			.all(appContext.siteId, staleThreshold) as Array<{ id: string }>;
+			.all(appContext.siteId) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
-			appContext.db.query(STALE_TASK_RESET_SQL).run(appContext.siteId, staleThreshold);
+			appContext.db.query(STALE_TASK_RESET_SQL).run(appContext.siteId);
 			appContext.logger.info(
 				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
 			);

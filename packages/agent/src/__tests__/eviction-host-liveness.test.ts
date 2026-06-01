@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { Task } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { EVICTION_SELECTOR_SQL } from "../scheduler";
 
 describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 	let tmpDir: string;
@@ -16,6 +17,7 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 	const EVICTION_TIMEOUT = 600_000; // 10 minutes
 	const HOST_HEARTBEAT_INTERVAL = 120_000;
 	const HOST_OFFLINE_TIMEOUT = Math.max(EVICTION_TIMEOUT, 2 * HOST_HEARTBEAT_INTERVAL);
+	const ORPHAN_HEARTBEAT_TIMEOUT = 2 * EVICTION_TIMEOUT; // 20 minutes
 
 	beforeAll(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "eviction-host-liveness-test-"));
@@ -35,25 +37,21 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		db.exec("DELETE FROM hosts");
 	});
 
-	function runEvictionSelector(evictionTimeMs: number, hostOfflineTimeoutMs: number): Task[] {
+	function runEvictionSelector(
+		evictionTimeMs: number,
+		hostOfflineTimeoutMs: number,
+		orphanTimeoutMs: number = ORPHAN_HEARTBEAT_TIMEOUT,
+	): Task[] {
 		const now = new Date();
 		const evictionTime = new Date(now.getTime() - evictionTimeMs).toISOString();
 		const hostOfflineThreshold = new Date(now.getTime() - hostOfflineTimeoutMs).toISOString();
+		const orphanThreshold = new Date(now.getTime() - orphanTimeoutMs).toISOString();
 
+		// Exercise the exact production statement, not a hand-copied duplicate, so any
+		// drift in the production SQL surfaces here (mirrors the STALE_TASK_RESET_SQL pattern).
 		const tasksToEvict = db
-			.query<Task, [string, string]>(
-				`SELECT t.*
-				 FROM tasks t
-				 LEFT JOIN hosts h ON h.site_id = t.claimed_by
-				 WHERE t.status = 'running'
-				   AND t.deleted = 0
-				   AND t.heartbeat_at < ?
-				   AND (
-					   h.site_id IS NULL
-					   OR COALESCE(h.modified_at, h.online_at) < ?
-				   )`,
-			)
-			.all(evictionTime, hostOfflineThreshold) as Task[];
+			.query<Task, [string, string, string]>(EVICTION_SELECTOR_SQL)
+			.all(evictionTime, hostOfflineThreshold, orphanThreshold) as Task[];
 
 		return tasksToEvict;
 	}
@@ -150,8 +148,11 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		const taskId = randomUUID();
 		const siteB = "site-B";
 
-		// Insert running task with stale heartbeat_at (30 minutes old)
-		insertTask(taskId, siteB, 30 * 60 * 1000);
+		// Heartbeat 12 minutes stale: past EVICTION_TIMEOUT (10min) but below
+		// ORPHAN_HEARTBEAT_TIMEOUT (20min), so the host-liveness gate still protects it.
+		// (Beyond the orphan threshold a fresh host no longer protects the task — see the
+		// ORPHAN test below.)
+		insertTask(taskId, siteB, 12 * 60 * 1000);
 
 		// Insert host row with fresh modified_at (30 seconds old)
 		insertHost(siteB, 30 * 1000, null);
@@ -183,8 +184,10 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		const taskId = randomUUID();
 		const siteD = "site-D";
 
-		// Insert running task with stale heartbeat_at (30 minutes old)
-		insertTask(taskId, siteD, 30 * 60 * 1000);
+		// Heartbeat 12 minutes stale: past EVICTION_TIMEOUT but below ORPHAN_HEARTBEAT_TIMEOUT,
+		// so the orphan arm does not fire and the COALESCE(modified_at, …) precedence is what's
+		// under test here.
+		insertTask(taskId, siteD, 12 * 60 * 1000);
 
 		// Insert host row: fresh modified_at (30s), stale online_at (30min)
 		// COALESCE(modified_at, online_at) = fresh modified_at → does NOT permit eviction
@@ -231,6 +234,42 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 
 		expect(evicted).toHaveLength(1);
 		expect(evicted[0].id).toBe(taskId);
+	});
+
+	it("ORPHAN: evicts a running task whose heartbeat is stale beyond the orphan threshold even when the host process is fresh (issue: d2ecf42d)", () => {
+		const taskId = randomUUID();
+		const siteF = "site-F";
+
+		// Task heartbeat 25 minutes stale — past ORPHAN_HEARTBEAT_TIMEOUT (20min).
+		insertTask(taskId, siteF, 25 * 60 * 1000);
+
+		// Host process is alive and fresh (modified_at 30s ago). Under the pure
+		// host-liveness gate this protected the task forever, wedging it. Host-process
+		// liveness is NOT task-lease liveness: a live host can leave a task orphaned
+		// (e.g. its agent loop was interrupted mid-flight by a restart that re-registered
+		// the host row before the in-flight task could resume). The orphan arm makes a
+		// heartbeat this stale sufficient on its own, regardless of host liveness.
+		insertHost(siteF, 30 * 1000, null);
+
+		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
+
+		expect(evicted).toHaveLength(1);
+		expect(evicted[0].id).toBe(taskId);
+	});
+
+	it("ORPHAN boundary: host-liveness still protects a task stale past eviction but not yet orphaned", () => {
+		const taskId = randomUUID();
+		const siteG = "site-G";
+
+		// Heartbeat 12 minutes stale: past EVICTION_TIMEOUT (10min) so it clears the
+		// AND gate, but below ORPHAN_HEARTBEAT_TIMEOUT (20min). With a fresh host the
+		// task is NOT yet orphaned, so host liveness still protects it.
+		insertTask(taskId, siteG, 12 * 60 * 1000);
+		insertHost(siteG, 30 * 1000, null);
+
+		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
+
+		expect(evicted).toHaveLength(0);
 	});
 
 	it("Edge case: claimed_by IS NULL (corruption state) permits eviction", () => {

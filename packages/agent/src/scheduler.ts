@@ -90,6 +90,47 @@ const HOST_OFFLINE_TIMEOUT = Math.max(EVICTION_TIMEOUT, 2 * HOST_HEARTBEAT_INTER
  * R-LR4 and §4.1 sequencing.
  */
 export const STUCK_THRESHOLD = 2 * EVICTION_TIMEOUT;
+
+/**
+ * Orphaned-task eviction threshold. A `running` task whose `heartbeat_at` is stale
+ * beyond this is evictable by a peer REGARDLESS of host-process liveness.
+ *
+ * The host-liveness gate (R-LR2) treats a fresh `hosts.modified_at` as proof the
+ * lease holder is alive and protects its task from peer eviction. But host-process
+ * liveness is NOT task-lease liveness: `hosts.modified_at` is bumped every
+ * HOST_HEARTBEAT_INTERVAL independent of task servicing, so a host that restarted and
+ * re-registered — but whose interrupted task never resumed — looks "alive" forever and
+ * wedges the task indefinitely (observed: webhook task d2ecf42d, ~17h stuck after a hub
+ * restart). Set to 2× EVICTION_TIMEOUT so the orphan arm never races the normal gate:
+ * the host-liveness path owns the first eviction window, and the orphan arm is the
+ * backstop for the host-alive-but-task-orphaned case the gate cannot see.
+ */
+export const ORPHAN_HEARTBEAT_TIMEOUT = 2 * EVICTION_TIMEOUT;
+
+/**
+ * Peer eviction selector for crashed/orphaned `running` tasks. Exported so tests
+ * exercise the exact production statement rather than a hand-copied duplicate (the
+ * divergence that previously hid a syntax error in the bootstrap SQL).
+ *
+ * Bind order: (evictionTime, hostOfflineThreshold, orphanThreshold).
+ * - heartbeat_at < evictionTime gates all eviction (task missed its lease refresh).
+ * - host offline/gone (R-LR2) OR heartbeat_at < orphanThreshold (orphan backstop)
+ *   permits eviction. The orphan arm fires when heartbeat is stale past
+ *   ORPHAN_HEARTBEAT_TIMEOUT even if the host process looks alive.
+ * - LEFT JOIN with claimed_by=NULL: ON clause never matches → h.site_id IS NULL fires
+ *   → row evicted. Covers the corruption state where status='running' but lease is unset.
+ */
+export const EVICTION_SELECTOR_SQL = `SELECT t.*
+	 FROM tasks t
+	 LEFT JOIN hosts h ON h.site_id = t.claimed_by
+	 WHERE t.status = 'running'
+	   AND t.deleted = 0
+	   AND t.heartbeat_at < ?
+	   AND (
+		   h.site_id IS NULL
+		   OR COALESCE(h.modified_at, h.online_at) < ?
+		   OR t.heartbeat_at < ?
+	   )`;
 const CRON_THREAD_ROTATION_THRESHOLD = 200;
 export const DEFERRED_MAX_RETRIES = 2;
 export const DEFERRED_RETRY_BACKOFF_MS_DEFAULT = 5_000; // 5 seconds per consecutive failure
@@ -918,22 +959,10 @@ export class Scheduler {
 		// (b) Evict crashed running tasks
 		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
 		const hostOfflineThreshold = new Date(now.getTime() - HOST_OFFLINE_TIMEOUT).toISOString();
-		// LEFT JOIN with claimed_by=NULL: ON clause never matches → h.site_id IS NULL fires → row evicted.
-		// Covers the unlikely corruption state where status='running' but the lease holder is unset.
+		const orphanThreshold = new Date(now.getTime() - ORPHAN_HEARTBEAT_TIMEOUT).toISOString();
 		const tasksToEvict = this.ctx.db
-			.query<Task, [string, string]>(
-				`SELECT t.*
-				 FROM tasks t
-				 LEFT JOIN hosts h ON h.site_id = t.claimed_by
-				 WHERE t.status = 'running'
-				   AND t.deleted = 0
-				   AND t.heartbeat_at < ?
-				   AND (
-					   h.site_id IS NULL
-					   OR COALESCE(h.modified_at, h.online_at) < ?
-				   )`,
-			)
-			.all(evictionTime, hostOfflineThreshold) as Task[];
+			.query<Task, [string, string, string]>(EVICTION_SELECTOR_SQL)
+			.all(evictionTime, hostOfflineThreshold, orphanThreshold) as Task[];
 
 		if (tasksToEvict.length > 0) {
 			this.ctx.logger.warn("[scheduler] Evicting crashed tasks", {

@@ -579,8 +579,56 @@ describe("Startup Wiring", () => {
 			// Use the exact constant bootstrap.ts uses, so this test would catch any
 			// syntax error introduced into the production SQL (previously they had
 			// diverged hand-copies of the SQL, hiding bugs in the production string).
-			const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-			db.query(STALE_TASK_RESET_SQL).run(claimedBySiteId, staleThreshold);
+			db.query(STALE_TASK_RESET_SQL).run(claimedBySiteId);
+
+			const task = db
+				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
+				.get(taskId) as {
+				status: string;
+				lease_id: string | null;
+				claimed_by: string | null;
+			} | null;
+
+			expect(task).not.toBeNull();
+			expect(task?.status).toBe("pending");
+			expect(task?.lease_id).toBeNull();
+			expect(task?.claimed_by).toBeNull();
+		});
+
+		it("(gap1) resets an own-claimed running task even when its heartbeat is fresh", () => {
+			// On boot the booting host's scheduler is not yet running, so ANY row with
+			// status='running' AND claimed_by=self is necessarily a crashed prior
+			// incarnation — regardless of heartbeat freshness. A process that crashed
+			// shortly after its last heartbeat write leaves a fresh-looking heartbeat;
+			// the old heartbeat filter refused to reset it, wedging it until the lease
+			// aged out (the bootstrap-path analogue of the d2ecf42d webhook wedge).
+			const taskId = randomUUID();
+			const localSiteId = randomUUID();
+			const now = new Date();
+			// Heartbeat only 2 minutes old — well within the old 10-minute filter window.
+			const freshHeartbeat = new Date(now.getTime() - 2 * 60 * 1000).toISOString();
+			const nowStr = now.toISOString();
+
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', 'running', 'manual', NULL, NULL,
+					?, ?, ?, NULL, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					?, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, localSiteId, nowStr, randomUUID(), freshHeartbeat, nowStr, nowStr],
+			);
+
+			db.query(STALE_TASK_RESET_SQL).run(localSiteId);
 
 			const task = db
 				.query("SELECT status, lease_id, claimed_by FROM tasks WHERE id = ?")
@@ -602,7 +650,6 @@ describe("Startup Wiring", () => {
 			const now = new Date();
 			const staleHeartbeat = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
 			const nowStr = now.toISOString();
-			const staleThreshold = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 
 			// Insert one stale running task claimed by the local host
 			const localTaskId = randomUUID();
@@ -648,8 +695,8 @@ describe("Startup Wiring", () => {
 				[peerTaskId, peerSiteId, nowStr, peerLeaseId, staleHeartbeat, nowStr, nowStr],
 			);
 
-			// Run the stale task reset with localSiteId as the first parameter
-			db.query(STALE_TASK_RESET_SQL).run(localSiteId, staleThreshold);
+			// Run the stale task reset with localSiteId as the only parameter
+			db.query(STALE_TASK_RESET_SQL).run(localSiteId);
 
 			// Verify local task was reset
 			const localTask = db
