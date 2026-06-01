@@ -881,13 +881,20 @@ describe("inner-loop temporal-frame coherence", () => {
 		// to seed what the inner loop produced cold.
 		//
 		// Fix: at the top of each inner-loop iteration after the first,
-		// place a rolling cachePoint just before the volatile-tail. This
-		// captures iter K-1's appended content into the cache so iter K
-		// reads it back. The fixed semantic-anchor at user_1 is preserved.
+		// maintain a bounded trailing PAIR of rolling cachePoints — retain
+		// iter K-1's rolling marker (the explicit "previous write position"
+		// breakpoint) and place a fresh one before the volatile-tail. This
+		// gives iter K an exact-byte-position breakpoint at iter K-1's write
+		// position rather than relying on Bedrock's lookback to bridge a
+		// large tool_result append. The fixed semantic-anchor at user_1 is
+		// preserved; older rollings (iter K-2 and earlier) are evicted so the
+		// pair never accumulates unbounded.
 		//
 		// This test pins the contract by inspecting `params.messages`
-		// captured per chat() call: iter 1 carries exactly 1 message-level
-		// cache marker (the fixed); iter 2+ carries 2 (fixed + rolling).
+		// captured per chat() call: iter 1 carries the fixed marker only;
+		// iter 2 adds the first rolling (fixed + 1 rolling); iter 3 fills the
+		// trailing pair (fixed + prev-rolling + new-rolling) and stays bounded
+		// there for all later iterations.
 		seedThreadWithUserMessage(globalThreadId, "Run 3 bash commands");
 		const mockBackend = new MockLLMBackend();
 
@@ -958,24 +965,24 @@ describe("inner-loop temporal-frame coherence", () => {
 		const calls = mockBackend.getCapturedMessages();
 		expect(calls.length).toBeGreaterThanOrEqual(3);
 
-		// The contract: iter K (K >= 2) sends EXACTLY ONE more cache
-		// marker than iter 1, regardless of whether iter 1 had a fixed
-		// marker placed (which depends on whether the assembled message
-		// array satisfied the placer's no-eligible-anchor gate). The
-		// added marker is the inner-loop rolling, capturing iter K-1's
-		// `tool_call + tool_result` append into the cache.
+		// The contract: iter 2 adds the first inner-loop rolling marker (no
+		// prior rolling exists yet, so it's fixed + 1). Iter 3 fills the
+		// trailing PAIR — iter 2's rolling is RETAINED as the previous-write
+		// breakpoint and a fresh rolling is placed at the tip, so iter 3
+		// carries one more marker than iter 2. Older rollings are evicted so
+		// the pair stays bounded (iter 4+ would also carry iter1 + 2).
 		const countCacheMarkers = (msgs: (typeof calls)[0]) =>
 			msgs.filter((m) => m.role === "cache").length;
 		const iter1Count = countCacheMarkers(calls[0]);
 		const iter2Count = countCacheMarkers(calls[1]);
 		const iter3Count = countCacheMarkers(calls[2]);
 
-		// Iter 2 carries the rolling that iter 1 didn't.
+		// Iter 2 carries the first rolling that iter 1 didn't.
 		expect(iter2Count).toBe(iter1Count + 1);
 
-		// Iter 3: prior rolling evicted, new rolling placed — count
-		// matches iter 2 (no accumulation).
-		expect(iter3Count).toBe(iter2Count);
+		// Iter 3: prior rolling RETAINED + new rolling placed — the trailing
+		// pair is now full, one more marker than iter 2.
+		expect(iter3Count).toBe(iter2Count + 1);
 
 		// Stronger property: iter 2's rolling marker sits at a strictly
 		// later index than any marker iter 1 carried. The rolling rides

@@ -311,32 +311,58 @@ describe("maybePlaceCacheMarker — MiniMax regression scenario", () => {
 	});
 });
 
-describe("refreshInnerLoopRollingMarker", () => {
-	it("evicts a prior rolling marker and places a fresh one before the volatile-tail", () => {
-		// Shape: [user_1, FIXED_cache, assistant, user_tool_result_1,
-		//         OLD_rolling_cache, developer_tail].
-		// After refresh: prior rolling at idx 4 is evicted, new rolling
-		// is spliced before the developer tail (computeCacheMarkerIndex
-		// places before the user the bridge will merge dev into; here the
-		// last non-developer is `user_tool_result_1`).
+describe("refreshInnerLoopRollingMarker — trailing-pair", () => {
+	// CONTRACT (2026-06-01, trailing-pair fix):
+	// The single rolling marker the inner loop placed last iteration moves
+	// every iteration, so Bedrock's exact-byte-position cache has no breakpoint
+	// at the PRIOR write position and must rely on its ~20-block auto-lookback
+	// to bridge P_{K-1} → P_K. Live data (May 29-31) shows that lookback does
+	// NOT bridge for heavy coding threads: a single large tool_result blows past
+	// the window, the prior write is orphaned, and `cr` stays pinned at the
+	// fixed floor while `cw` re-writes the whole grown prefix (ratio ~1.12).
+	//
+	// Fix: keep the MOST RECENT prior rolling marker in place as an EXPLICIT
+	// "previous write position" breakpoint, and place a fresh rolling marker at
+	// the tip. Iteration K then reads back iteration K-1's write at an exact
+	// byte-position match — no reliance on lookback. Older rolling markers are
+	// evicted so the pair stays bounded at exactly two (prev + new); with the
+	// fixed marker and the system-level marker that is 4 cachePoints on the
+	// wire, exactly at Anthropic's per-request cap.
+
+	it("keeps the single prior rolling as prev and places a fresh tip marker (3 total)", () => {
+		// Shape: [user_1, FIXED@1, a1, tr1, PREV_rolling@4, a2, tr2, dev_tail].
+		// PREV@4 was placed by iteration K-1 (riding tr1's roundtrip); iteration
+		// K-1's inference then appended a2 + tr2. On this refresh PREV@4 is the
+		// MOST RECENT prior rolling, so it is KEPT as the explicit prev-write
+		// breakpoint, and a fresh rolling is spliced at the tip (riding a2,
+		// downstream of PREV). Total = fixed + prev + new = 3, distinct positions.
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "u1" },
 			{ role: "cache", content: "" },
 			{ role: "assistant", content: "a1" },
 			{ role: "user", content: "tr1" },
 			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a2" },
+			{ role: "user", content: "tr2" },
 			{ role: "developer", content: "vt" },
 		];
 		const placement = refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
 		expect(placement.placed).toBe(true);
 		expect(placement.variant).toBe("rolling");
 		const cacheMsgs = messages.filter((m) => m.role === "cache");
-		expect(cacheMsgs.length).toBe(2);
+		expect(cacheMsgs.length).toBe(3);
 		// The fixed marker stays at its original index 1.
 		expect(messages[1].role).toBe("cache");
+		// Exactly two NON-fixed markers (prev + new), at distinct positions, and
+		// the new tip marker sits strictly after the kept prev marker.
+		const nonFixed = messages
+			.map((m, i) => (m.role === "cache" ? i : -1))
+			.filter((i) => i >= 0 && i !== 1);
+		expect(nonFixed.length).toBe(2);
+		expect(nonFixed[0]).toBeLessThan(nonFixed[1]);
 	});
 
-	it("places a rolling marker even when no prior rolling exists", () => {
+	it("places a single rolling marker on the first refresh when no prior rolling exists", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "u1" },
 			{ role: "cache", content: "" },
@@ -346,10 +372,11 @@ describe("refreshInnerLoopRollingMarker", () => {
 		];
 		const placement = refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
 		expect(placement.placed).toBe(true);
+		// fixed + new = 2 (no prior rolling to keep yet).
 		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
 	});
 
-	it("preserves the fixed marker index across multiple inner-loop refreshes", () => {
+	it("converges to a bounded trailing pair across multiple inner-loop refreshes", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "u1" },
 			{ role: "cache", content: "" },
@@ -357,22 +384,28 @@ describe("refreshInnerLoopRollingMarker", () => {
 			{ role: "user", content: "tr1" },
 			{ role: "developer", content: "vt" },
 		];
-		// First refresh — places rolling.
+		// First refresh — fixed + new = 2 (no prior rolling).
 		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
 		expect(messages[1].role).toBe("cache");
 
-		// Simulate the inner loop's next iter appending another tool round.
-		// The dev tail moves further down; the pre-existing rolling marker
-		// is still in place and must be evicted on the next refresh.
-		const beforeRefresh = messages.length;
+		// Inner loop's next iter appends another tool round; the dev tail moves
+		// further down and the prior rolling marker stays in place.
 		messages.push({ role: "assistant", content: "a2" });
 		messages.push({ role: "user", content: "tr2" });
-		expect(messages.length).toBe(beforeRefresh + 2);
 
+		// Second refresh — prior rolling kept as prev, new placed at tip:
+		// fixed + prev + new = 3.
 		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
-		// Still exactly 2 cache markers — fixed + new rolling, prior rolling evicted.
-		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
-		// Fixed at index 1 untouched.
+		expect(messages.filter((m) => m.role === "cache").length).toBe(3);
+		expect(messages[1].role).toBe("cache");
+
+		// Third refresh after another round — the pair stays bounded at 3
+		// (older prev evicted, most-recent prev kept, new placed).
+		messages.push({ role: "assistant", content: "a3" });
+		messages.push({ role: "user", content: "tr3" });
+		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
+		expect(messages.filter((m) => m.role === "cache").length).toBe(3);
 		expect(messages[1].role).toBe("cache");
 	});
 
@@ -387,15 +420,16 @@ describe("refreshInnerLoopRollingMarker", () => {
 		const placement = refreshInnerLoopRollingMarker(messages, 1, NO_CACHING_CAPS);
 		expect(placement.placed).toBe(false);
 		expect(placement.reason).toBe("capability-disabled");
-		// Eviction still ran. The fixed marker survives because the eviction
-		// loop preserves indices == fixedCacheIdx.
+		// With caching disabled, every non-fixed marker is evicted and nothing
+		// is placed — only the fixed marker survives.
 		expect(messages.filter((m) => m.role === "cache").length).toBe(1);
 		expect(messages[1].role).toBe("cache");
 	});
 
-	it("evicts ALL prior rolling markers in one call (defense against accumulation)", () => {
-		// Pathological input: somehow two rolling markers landed in the
-		// array. The eviction loop must drop both, not just one.
+	it("evicts a stale rolling pile down to a single prev plus the new tip (bounded)", () => {
+		// Pathological input: three rolling markers somehow accumulated. Only the
+		// MOST RECENT survives as prev; the older two are evicted; a new tip is
+		// placed. Result = fixed + prev + new = 3 (never grows unbounded).
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "u1" },
 			{ role: "cache", content: "" },
@@ -403,10 +437,13 @@ describe("refreshInnerLoopRollingMarker", () => {
 			{ role: "cache", content: "" },
 			{ role: "user", content: "tr1" },
 			{ role: "cache", content: "" },
+			{ role: "assistant", content: "a2" },
+			{ role: "cache", content: "" },
+			{ role: "user", content: "tr2" },
 			{ role: "developer", content: "vt" },
 		];
 		refreshInnerLoopRollingMarker(messages, 1, CACHING_CAPS);
-		// Exactly 2 left: the fixed (untouched) and the new rolling.
-		expect(messages.filter((m) => m.role === "cache").length).toBe(2);
+		expect(messages.filter((m) => m.role === "cache").length).toBe(3);
+		expect(messages[1].role).toBe("cache");
 	});
 });
