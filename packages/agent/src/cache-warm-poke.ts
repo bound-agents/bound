@@ -43,7 +43,7 @@ export const WARM_POKE_MAX_OUTPUT_TOKENS = 16;
 const warmPokePayloadSchema = z.object({ type: z.literal("cache_warm_poke") });
 
 /**
- * True iff `eventPayload` is a warm-poke notification marker (issue #10).
+ * True when `eventPayload` is a warm-poke notification marker (issue #10).
  *
  * A payload that isn't valid JSON, or doesn't carry the marker shape, is simply
  * not a warm poke — callers fall through to a normal full-tools wakeup. There is
