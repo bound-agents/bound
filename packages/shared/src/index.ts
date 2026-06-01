@@ -42,6 +42,7 @@ export * from "./syntax.js";
 
 // OpenTelemetry trace collection
 export * from "./telemetry.js";
+export * from "./site-id-span-processor.js";
 export * from "./trace-collector.js";
 export * from "./trace-exporter-context.js";
 export * from "./trace-reexport.js";

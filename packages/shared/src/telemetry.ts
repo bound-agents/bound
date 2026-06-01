@@ -9,10 +9,12 @@ import {
 	type SpanExporter,
 } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { SiteIdSpanProcessor } from "./site-id-span-processor";
 import { setTraceExporter } from "./trace-exporter-context";
 
 let provider: BasicTracerProvider | null = null;
 let exporter: SpanExporter | null = null;
+let siteIdProcessor: SiteIdSpanProcessor | null = null;
 
 /**
  * Initialize OpenTelemetry tracing when OTEL_ENABLED is set.
@@ -40,6 +42,13 @@ export function initTelemetry(serviceName: string, testExporter?: SpanExporter):
 
 	provider = new BasicTracerProvider({ resource });
 
+	// Stamp the executing site ID on every span (issue #152). The site ID is not
+	// known at this point — initTelemetry runs at Phase 0, before bootstrap derives
+	// it from the host keypair — so the processor starts empty and is populated via
+	// setTelemetrySiteId() once bootstrap completes.
+	siteIdProcessor = new SiteIdSpanProcessor();
+	provider.addSpanProcessor(siteIdProcessor);
+
 	if (testExporter) {
 		exporter = testExporter;
 		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
@@ -63,6 +72,15 @@ export function initTelemetry(serviceName: string, testExporter?: SpanExporter):
 }
 
 /**
+ * Set the executing site ID stamped onto every subsequently-started span as the
+ * `bound.site_id` attribute (issue #152). Called after bootstrap derives the site
+ * ID from the host keypair. No-op when telemetry was never initialized.
+ */
+export function setTelemetrySiteId(siteId: string): void {
+	siteIdProcessor?.setSiteId(siteId);
+}
+
+/**
  * Flush pending spans and shut down the TracerProvider.
  * Returns immediately if telemetry was never initialized.
  */
@@ -72,6 +90,7 @@ export async function shutdownTelemetry(): Promise<void> {
 	await provider.shutdown();
 	provider = null;
 	exporter = null;
+	siteIdProcessor = null;
 
 	trace.disable();
 	context.disable();

@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { SITE_ID_ATTR } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import { initTelemetry, shutdownTelemetry } from "../commands/start/telemetry.js";
+import {
+	initTelemetry,
+	setTelemetrySiteId,
+	shutdownTelemetry,
+} from "../commands/start/telemetry.js";
 
 describe("telemetry", () => {
 	beforeEach(() => {
@@ -167,5 +172,49 @@ describe("telemetry", () => {
 
 		// Assert: No error thrown
 		expect(true).toBe(true);
+	});
+
+	it("issue-152: setTelemetrySiteId stamps bound.site_id on subsequently-started spans", async () => {
+		// Arrange
+		process.env.OTEL_ENABLED = "1";
+		const exporter = new InMemorySpanExporter();
+		initTelemetry("test-service", exporter);
+
+		// Act: populate the site ID (mirrors the post-bootstrap call in runStart)
+		setTelemetrySiteId("site-abc-123");
+
+		const tracer = trace.getTracer("test-tracer");
+		const span = tracer.startSpan("test-span");
+		span.end();
+
+		// Assert: the span carries the executing site ID
+		const spans = exporter.getFinishedSpans();
+		expect(spans.length).toBeGreaterThan(0);
+		expect(spans[0]?.attributes[SITE_ID_ATTR]).toBe("site-abc-123");
+
+		await shutdownTelemetry();
+	});
+
+	it("issue-152: spans started before setTelemetrySiteId carry no site_id tag", async () => {
+		// Arrange: mirror the Phase 0 window where initTelemetry has run but the site
+		// ID is not yet known (bootstrap derives it from the keypair in Phase 1).
+		process.env.OTEL_ENABLED = "1";
+		const exporter = new InMemorySpanExporter();
+		initTelemetry("test-service", exporter);
+
+		const tracer = trace.getTracer("test-tracer");
+		const span = tracer.startSpan("bootstrap-span");
+		span.end();
+
+		// Assert: no tag yet — acceptable, these are startup-infra spans, not agent loops
+		const spans = exporter.getFinishedSpans();
+		expect(spans[0]?.attributes[SITE_ID_ATTR]).toBeUndefined();
+
+		await shutdownTelemetry();
+	});
+
+	it("issue-152: setTelemetrySiteId is a no-op when telemetry was never initialized", () => {
+		// Act + Assert: must not throw even though no provider/processor exists
+		expect(() => setTelemetrySiteId("site-xyz")).not.toThrow();
 	});
 });
