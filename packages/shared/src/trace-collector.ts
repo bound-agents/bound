@@ -5,6 +5,7 @@ import {
 	type ReadableSpan,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import { SiteIdSpanProcessor } from "./site-id-span-processor.js";
 
 export interface SerializedLink {
 	traceId: string;
@@ -66,10 +67,20 @@ export function serializeReadableSpan(span: ReadableSpan): SerializedSpan {
  * Create a scoped trace collector that buffers spans in memory.
  * Used by hub nodes processing relay requests with trace_context —
  * the hub does NOT need OTEL_ENABLED or a global provider.
+ *
+ * When `siteId` is provided, every span created through this collector is stamped
+ * with the `bound.site_id` attribute (issue #152). For hub-side relay inference this
+ * is the *executing* hub's site ID, which survives serialization back to the
+ * requesting spoke's `reExportSpans` (span attributes are preserved on the wire,
+ * unlike the resource), so a re-exported delegated-inference span arrives tagged
+ * with the site that actually ran the loop.
  */
-export function createScopedTraceCollector() {
+export function createScopedTraceCollector(siteId?: string) {
 	const exporter = new InMemorySpanExporter();
 	const provider = new BasicTracerProvider();
+	if (siteId) {
+		provider.addSpanProcessor(new SiteIdSpanProcessor(siteId));
+	}
 	provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
 
 	return {
