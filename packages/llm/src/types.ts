@@ -242,12 +242,13 @@ export interface BackendConfig {
 	 */
 	cacheTtl?: "5m" | "1h";
 	/**
-	 * Per-backend cap on warm pokes per thread since its last real activity
-	 * (issue #10), consumed only by the cache-warming driver — never at
-	 * inference time. Absent → the driver's DEFAULT_WARM_POKE_MAX_PER_PERIOD.
-	 * 0 → never warm threads on this backend (per-backend opt-out).
+	 * Per-backend cache-warming config (issue #10), consumed only by the
+	 * cache-warming driver — never at inference time. Absent → this backend is
+	 * never warmed. `enabled` gates whether the driver pokes this backend's
+	 * threads at all; `maxPokes` caps warm pokes per thread per active period
+	 * (0 → never warm, a clean opt-out even with `enabled: true`).
 	 */
-	cacheWarmMaxPokes?: number;
+	cacheWarming?: { enabled: boolean; maxPokes: number };
 	[key: string]: unknown;
 }
 

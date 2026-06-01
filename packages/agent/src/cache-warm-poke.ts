@@ -57,7 +57,7 @@ export interface WarmPokeSelectionOptions {
 	 *  - `ttlMs`: the cache TTL in ms (from the backend's `cache_ttl`), which
 	 *    sets the just-in-time poke window (backends differ, e.g. 5m vs 1h).
 	 *  - `maxPokes`: the per-active-period poke cap (from the backend's
-	 *    `max_pokes_per_active_period`), the load-bearing economic control —
+	 *    `cache_warming.max_pokes_per_active_period`), the load-bearing economic control —
 	 *    break-even varies dramatically by provider's cache-write/read pricing.
 	 *    0 means "never warm threads on this backend".
 	 */

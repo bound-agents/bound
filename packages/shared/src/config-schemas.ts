@@ -83,6 +83,49 @@ const thinkingConfigSchema = z.union([
 // recommended default for coding/agentic work; `max` is Opus-tier only.
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
 
+// Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
+// cache hot on active threads so the next real message lands on a cache-read
+// rather than a cache-write (issue #10). Disabled by default. Lives as an
+// optional per-backend `cache_warming` block on each entry in
+// model_backends.json, co-located with that backend's `cache_ttl` and cache
+// pricing — the signals its economics depend on. The whole feature is
+// per-backend (rather than a global `enabled` switch plus a per-backend cap)
+// so the decision to warm at all sits at the same altitude as the parameter
+// that decides whether warming is economical.
+//
+// Economics: a poke costs ~one cache-read of the prefix; a caught cold arrival
+// saves ~one cache-write. Break-even varies dramatically by provider — it
+// scales with the cache-write/cache-read price ratio — so the per-backend
+// `max_pokes_per_active_period` is the load-bearing economic control. It
+// bounds the loss on threads that go quiet after their last real message.
+//
+// The just-in-time poke window is NOT configured: it is derived per-thread from
+// that thread's backend `cache_ttl` (a poke fires only when the cache would
+// otherwise lapse before the next scan). A single global cadence knob cannot be
+// correct for a cluster whose backends have different TTLs (e.g. 5m vs 1h).
+export const DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS = 24 * 60 * 60_000; // 24h
+export const DEFAULT_WARM_POKE_MAX_PER_PERIOD = 3;
+// Driver scan period. Must be < the smallest supported cache TTL (5m) so the
+// derived just-in-time window (ttl − scan) stays positive. This is a mechanical
+// knob (how often to look), not an economic one, so it is a constant.
+export const WARM_POKE_SCAN_INTERVAL_MS = 2 * 60_000; // 2m
+
+export const cacheWarmingConfigSchema = z
+	.object({
+		enabled: z.boolean().default(false),
+		// Cap on warm pokes per thread since its last real activity. The
+		// load-bearing economic control: break-even varies dramatically by
+		// provider (it scales with the cache-write/cache-read price ratio), so a
+		// 5m backend with cheap cache-reads tolerates many more pokes per caught
+		// arrival than a 1h backend with expensive writes. Absent →
+		// DEFAULT_WARM_POKE_MAX_PER_PERIOD. 0 → never warm threads on this
+		// backend (a clean opt-out even with `enabled: true`).
+		max_pokes_per_active_period: z.number().int().min(0).default(DEFAULT_WARM_POKE_MAX_PER_PERIOD),
+	})
+	.strict();
+
+export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
+
 const modelBackendSchema = z
 	.object({
 		id: z.string().min(1),
@@ -114,51 +157,15 @@ const modelBackendSchema = z
 		// doesn't support extended TTL is silently ignored by the provider
 		// and falls back to the default 5m behavior.
 		cache_ttl: z.enum(["5m", "1h"]).optional(),
-		// Per-backend cap on warm pokes per thread since its last real activity
-		// (issue #10). The cap is the load-bearing economic control of the
-		// cache-warming driver, and break-even varies dramatically by provider:
-		// it scales with the ratio of cache-write to cache-read price, so a 5m
-		// backend with cheap cache-reads tolerates many more pokes per caught
-		// arrival than a 1h backend with expensive writes. Living per-backend
-		// (sibling to `cache_ttl`, whose economics it shares) lets one driver
-		// serve a mixed cluster correctly. Absent → DEFAULT_WARM_POKE_MAX_PER_PERIOD.
-		// 0 → never warm threads on this backend (a clean per-backend opt-out
-		// even while the driver is globally enabled).
-		max_pokes_per_active_period: z.number().int().min(0).optional(),
+		// Per-backend opt-in cache-warming (issue #10). When present with
+		// `enabled: true`, the warm-poke driver keeps this backend's threads'
+		// prompt cache hot so the next real message lands on a cache-read. The
+		// whole feature lives per-backend because both the decision to warm and
+		// the poke-count economics depend on this backend's cache pricing + TTL.
+		// Absent → this backend is never warmed. See `cacheWarmingConfigSchema`.
+		cache_warming: cacheWarmingConfigSchema.optional(),
 	})
 	.strict();
-
-// Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
-// cache hot on active threads so the next real message lands on a cache-read
-// rather than a cache-write (issue #10). Disabled by default. Lives as an
-// optional `cache_warming` block inside model_backends.json, co-located with
-// the per-backend `cache_ttl` and cache pricing its economics depend on (rather
-// than as a standalone config file).
-//
-// Economics: a poke costs ~one cache-read of the prefix; a caught cold arrival
-// saves ~one cache-write. Break-even is ~11.5 pokes per caught arrival, so the
-// driver is only net-positive on threads that actually receive follow-up
-// messages. `max_pokes_per_active_period` bounds the loss on threads that go
-// quiet after their last real message.
-//
-// The just-in-time poke window is NOT configured: it is derived per-thread from
-// that thread's backend `cache_ttl` (a poke fires only when the cache would
-// otherwise lapse before the next scan). A single global cadence knob cannot be
-// correct for a cluster whose backends have different TTLs (e.g. 5m vs 1h).
-export const DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS = 24 * 60 * 60_000; // 24h
-export const DEFAULT_WARM_POKE_MAX_PER_PERIOD = 3;
-// Driver scan period. Must be < the smallest supported cache TTL (5m) so the
-// derived just-in-time window (ttl − scan) stays positive. This is a mechanical
-// knob (how often to look), not an economic one, so it is a constant.
-export const WARM_POKE_SCAN_INTERVAL_MS = 2 * 60_000; // 2m
-
-export const cacheWarmingConfigSchema = z
-	.object({
-		enabled: z.boolean().default(false),
-	})
-	.strict();
-
-export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
 
 export const modelBackendsSchema = z
 	.object({

@@ -412,14 +412,15 @@ export class ModelRouter {
 	}
 
 	/**
-	 * Returns the per-backend warm-poke cap (max pokes per thread per active
-	 * period), or undefined when the backend doesn't set one (caller applies
-	 * the driver default). 0 is a meaningful value — "never warm threads on
-	 * this backend" — and is returned as-is, distinct from undefined. Consumed
-	 * only by the cache-warming driver; never read at inference time.
+	 * Returns the per-backend cache-warming config — `{ enabled, maxPokes }` —
+	 * or undefined when the backend declares no `cache_warming` block (the
+	 * backend is never warmed). `enabled` gates whether the driver pokes this
+	 * backend's threads at all; `maxPokes` caps pokes per thread per active
+	 * period (0 = never warm, a clean opt-out even with `enabled: true`).
+	 * Consumed only by the cache-warming driver; never read at inference time.
 	 */
-	getCacheWarmMaxPokes(backendId: string): number | undefined {
-		return this.backendConfigs.get(backendId)?.cacheWarmMaxPokes;
+	getCacheWarmConfig(backendId: string): { enabled: boolean; maxPokes: number } | undefined {
+		return this.backendConfigs.get(backendId)?.cacheWarming;
 	}
 
 	/**

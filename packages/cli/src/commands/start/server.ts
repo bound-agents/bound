@@ -50,7 +50,6 @@ import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from
 import {
 	BOUND_NAMESPACE,
 	DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
-	DEFAULT_WARM_POKE_MAX_PER_PERIOD,
 	WARM_POKE_SCAN_INTERVAL_MS,
 	deterministicUUID,
 	extractTraceContext,
@@ -1059,27 +1058,34 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// each poke is a `cache_warm_poke` notification handled locally with
 		// cacheWarmOnly clamping (see runFn above).
 		let warmPokeInterval: ReturnType<typeof setInterval> | undefined;
-		const warmCfg = appContext.config.modelBackends.cache_warming;
-		if (warmCfg?.enabled) {
+		// Cache-warming is fully per-backend (issue #10): a backend opts in via
+		// its own `cache_warming.enabled`. Start the single global driver iff at
+		// least one backend opts in; per-thread `resolvePokePolicy` then gates
+		// each thread on its own backend's config.
+		const warmingEnabled = appContext.config.modelBackends.backends.some(
+			(b) => b.cache_warming?.enabled,
+		);
+		if (warmingEnabled) {
 			appContext.logger.info(
 				`[warm-poke] Cache-warming driver enabled (scan ${Math.round(WARM_POKE_SCAN_INTERVAL_MS / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h; per-thread TTL + poke cap derived from each thread's backend)`,
 			);
 			// Resolve a thread's warm-poke policy from its backend (issue #10):
-			// the cache TTL in ms (from `cache_ttl`) and the per-active-period poke
-			// cap (from `max_pokes_per_active_period`). Returns null when the
-			// backend doesn't cache — nothing to keep warm. Deriving both per-thread
-			// from one model resolution is what lets a single driver serve a mixed
-			// cluster correctly: TTL handles 5m-vs-1h backends, and the cap handles
+			// whether the backend opts into warming at all (`cache_warming.enabled`),
+			// the cache TTL in ms (from `cache_ttl`), and the per-active-period poke
+			// cap (from `cache_warming.max_pokes_per_active_period`). Returns null
+			// when the backend doesn't opt in or doesn't cache — nothing to keep
+			// warm. Deriving all three per-thread from one model resolution is what
+			// lets a single driver serve a mixed cluster correctly: enabled gates
+			// per-backend opt-in, TTL handles 5m-vs-1h backends, and the cap handles
 			// the dramatically different break-even economics between providers
-			// (cap 0 = never warm threads on that backend). A single global cadence
-			// or cap could only ever be right for one backend.
+			// (cap 0 = never warm threads on that backend).
 			const resolvePokePolicy = (threadId: string): { ttlMs: number; maxPokes: number } | null => {
 				const modelId = resolveThreadModel(appContext.db, threadId, routerConfig.default);
+				const warmCfg = modelRouter.getCacheWarmConfig(modelId);
+				if (!warmCfg?.enabled) return null;
 				const ttl = modelRouter.getCacheTtl(modelId);
 				if (!ttl) return null;
-				const maxPokes =
-					modelRouter.getCacheWarmMaxPokes(modelId) ?? DEFAULT_WARM_POKE_MAX_PER_PERIOD;
-				return { ttlMs: CACHE_TTL_MS[ttl], maxPokes };
+				return { ttlMs: CACHE_TTL_MS[ttl], maxPokes: warmCfg.maxPokes };
 			};
 			warmPokeInterval = setInterval(() => {
 				try {
