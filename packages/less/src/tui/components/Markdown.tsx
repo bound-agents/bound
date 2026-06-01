@@ -265,13 +265,34 @@ function renderBlock(token: Token, index: number, width?: number): React.ReactEl
 						// continuation lines by one column (issue #142).
 						const markerWidth = marker.length + 1;
 						const itemWidth = width !== undefined ? Math.max(1, width - markerWidth) : undefined;
+						const itemKey = `li${index}-${idx}`;
+						// A list item's children are a mix of inline content (`text`
+						// in tight lists, `paragraph` in loose lists) and nested
+						// block tokens (`list` for sublists). Dispatch each child by
+						// type: `text` renders through renderProse so inline styling
+						// survives; everything else routes through renderBlock, which
+						// already handles `paragraph` → prose and recurses for nested
+						// `list`. Flattening every child through renderProse (as the
+						// pre-#142-followup code did) dropped nested lists to their raw
+						// text default (`now1.`) and stripped inline styling from
+						// loose-list paragraphs.
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: list items are immutable tokens
 							<Box key={`li-${index}-${idx}`}>
 								<Box flexShrink={0} width={markerWidth}>
 									<Text>{marker}</Text>
 								</Box>
-								{renderProse(item.tokens, itemWidth, `li${index}-${idx}`)}
+								<Box flexDirection="column">
+									{item.tokens.map((child, ci) => {
+										if (child.type === "space") return null;
+										if (child.type === "text") {
+											const tt = child as Tokens.Text;
+											const inline = tt.tokens && tt.tokens.length > 0 ? tt.tokens : [child];
+											return renderProse(inline, itemWidth, `${itemKey}-c${ci}`);
+										}
+										return renderBlock(child, ci, itemWidth);
+									})}
+								</Box>
 							</Box>
 						);
 					})}
