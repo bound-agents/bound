@@ -412,6 +412,18 @@ export class ModelRouter {
 	}
 
 	/**
+	 * Returns the per-backend cache-warming config — `{ enabled, maxPokes }` —
+	 * or undefined when the backend declares no `cache_warming` block (the
+	 * backend is never warmed). `enabled` gates whether the driver pokes this
+	 * backend's threads at all; `maxPokes` caps pokes per thread per active
+	 * period (0 = never warm, a clean opt-out even with `enabled: true`).
+	 * Consumed only by the cache-warming driver; never read at inference time.
+	 */
+	getCacheWarmConfig(backendId: string): { enabled: boolean; maxPokes: number } | undefined {
+		return this.backendConfigs.get(backendId)?.cacheWarming;
+	}
+
+	/**
 	 * Returns all backends matching the given tier that are not rate-limited and
 	 * satisfy the given capability requirements.
 	 */

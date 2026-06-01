@@ -6,13 +6,18 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
+	CACHE_TTL_MS,
 	HandleMessageTracker,
+	WARM_POKE_MARKER,
+	WARM_POKE_MAX_OUTPUT_TOKENS,
 	createRelayOutboxEntry,
 	generateThreadTitle,
 	getClientSessionDelegationTarget,
 	getDelegationTarget,
 	hasLocalClientSession,
+	isWarmPokeNotificationPayload,
 	runIntrospectResponseStamp,
+	selectWarmPokeTargets,
 } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig, ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -46,6 +51,8 @@ import type { ClusterFsResult } from "@bound/sandbox";
 import type { KeyringConfig, Logger, ProcessPayload, StatusForwardPayload } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
+	DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
+	WARM_POKE_SCAN_INTERVAL_MS,
 	deterministicUUID,
 	extractTraceContext,
 	formatError,
@@ -94,6 +101,11 @@ export function formatNotification(payload: Record<string, unknown>): string {
 			return `[notification from background task — agent-authored summary, unverified; verify against source thread before relying] ${payload.content ?? ""}`.trim();
 		case "introspect":
 			return `[introspect request from thread ${payload.source_thread ?? "unknown"} — agent-authored framing, unverified; verify against source thread before relying] ${payload.content ?? ""}`.trim();
+		case "cache_warm_poke":
+			// Warm-poke wakeup (issue #10). Runs tool-less with clamped output — it
+			// exists only to re-read the cached prefix. The marker prefix lets the
+			// target selector count prior pokes since the last real activity.
+			return `${WARM_POKE_MARKER} This is an automated cache-warming turn. No action is required and no reply is expected; this turn exists only to keep the conversation's prompt cache warm. Stop immediately.`;
 		default:
 			return `[notification] ${JSON.stringify(payload)}`;
 	}
@@ -523,6 +535,20 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 					const claimedIds = claimed.map((e) => e.message_id);
 
+					// Warm-poke detection (issue #10). A poke wakeup runs tool-less with
+					// clamped output — it exists only to re-read the cached prefix. We
+					// require EVERY claimed entry to be a warm poke: if a real user
+					// message or tool result was co-claimed, the turn must run normally
+					// with full tools. Warm pokes are also forced to run locally below —
+					// a delegated poke would rebuild its config on the remote host and
+					// run with full tools, defeating the clamp.
+					const isCacheWarmPoke =
+						claimed.length > 0 &&
+						claimed.every(
+							(c) =>
+								c.event_type === "notification" && isWarmPokeNotificationPayload(c.event_payload),
+						);
+
 					try {
 						// Inject notification context as system messages so the agent
 						// can see and respond to non-user events (task completions, etc.)
@@ -548,6 +574,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						);
 
 						const delegationTarget = ((): ReturnType<typeof getDelegationTarget> => {
+							// Warm pokes (issue #10) never delegate: noTools/maxOutputTokens
+							// live in the local AgentLoopConfig and would be lost on the
+							// remote host.
+							if (isCacheWarmPoke) return null;
 							// Client-session affinity wins over model-based delegation
 							// (issue #91). A notify/introspect wakeup can fire on any
 							// host; the loop must run where the live WS session is so
@@ -751,6 +781,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										platformTools,
 										platformInstructions,
 										handleMessageTracker,
+										noTools: isCacheWarmPoke,
+										maxOutputTokens: isCacheWarmPoke ? WARM_POKE_MAX_OUTPUT_TOKENS : undefined,
 									}),
 								);
 								agentLoopResult = result;
@@ -1014,9 +1046,76 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			}
 		}, EXPIRY_SCAN_INTERVAL_MS);
 
+		// Task 2: Cache-warming "warm poke" driver (issue #10). Opt-in via the
+		// `cache_warming` block in model_backends.json. Periodically finds active
+		// threads whose prompt cache is warm but near expiry and enqueues a
+		// tool-less poke wakeup so the next real message lands on a cache-read
+		// instead of a cache-write. The poke window is derived per-thread from
+		// each thread's backend `cache_ttl`.
+		// Pokes only fire from the leader-eligible web host that owns dispatch;
+		// each poke is a `cache_warm_poke` notification handled locally with
+		// noTools/maxOutputTokens clamping (see runFn above).
+		let warmPokeInterval: ReturnType<typeof setInterval> | undefined;
+		// Cache-warming is fully per-backend (issue #10): a backend opts in via
+		// its own `cache_warming.enabled`. Start the single global driver only if
+		// at least one backend opts in; per-thread `resolvePokePolicy` then gates
+		// each thread on its own backend's config.
+		const warmingEnabled = appContext.config.modelBackends.backends.some(
+			(b) => b.cache_warming?.enabled,
+		);
+		if (warmingEnabled) {
+			appContext.logger.info(
+				`[warm-poke] Cache-warming driver enabled (scan ${Math.round(WARM_POKE_SCAN_INTERVAL_MS / 60_000)}m, window ${Math.round(DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS / 3_600_000)}h; per-thread TTL + poke cap derived from each thread's backend)`,
+			);
+			// Resolve a thread's warm-poke policy from its backend (issue #10):
+			// whether the backend opts into warming at all (`cache_warming.enabled`),
+			// the cache TTL in ms (from `cache_ttl`), and the per-active-period poke
+			// cap (from `cache_warming.max_pokes`). Returns null
+			// when the backend doesn't opt in or doesn't cache — nothing to keep
+			// warm. Deriving all three per-thread from one model resolution is what
+			// lets a single driver serve a mixed cluster correctly: enabled gates
+			// per-backend opt-in, TTL handles 5m-vs-1h backends, and the cap handles
+			// the dramatically different break-even economics between providers
+			// (cap 0 = never warm threads on that backend).
+			const resolvePokePolicy = (threadId: string): { ttlMs: number; maxPokes: number } | null => {
+				const modelId = resolveThreadModel(appContext.db, threadId, routerConfig.default);
+				const warmCfg = modelRouter.getCacheWarmConfig(modelId);
+				if (!warmCfg?.enabled) return null;
+				const ttl = modelRouter.getCacheTtl(modelId);
+				if (!ttl) return null;
+				return { ttlMs: CACHE_TTL_MS[ttl], maxPokes: warmCfg.maxPokes };
+			};
+			warmPokeInterval = setInterval(() => {
+				try {
+					const targets = selectWarmPokeTargets(appContext.db, {
+						resolvePokePolicy,
+						scanIntervalMs: WARM_POKE_SCAN_INTERVAL_MS,
+						activeWindowMs: DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
+					});
+					for (const threadId of targets) {
+						enqueueNotification(appContext.db, threadId, { type: "cache_warm_poke" });
+						handleThread(threadId).catch((err) =>
+							appContext.logger.warn("[warm-poke] Background poke trigger failed", {
+								threadId,
+								error: formatError(err),
+							}),
+						);
+					}
+					if (targets.length > 0) {
+						appContext.logger.info(`[warm-poke] Poked ${targets.length} active thread(s)`);
+					}
+				} catch (error) {
+					appContext.logger.error("[warm-poke] Driver scan failed", {
+						error: formatError(error),
+					});
+				}
+			}, WARM_POKE_SCAN_INTERVAL_MS);
+		}
+
 		// Clean up on server stop — store interval ID for cleanup
 		const cleanup = () => {
 			clearInterval(expiryScanInterval);
+			if (warmPokeInterval) clearInterval(warmPokeInterval);
 		};
 		process.on("exit", cleanup);
 		process.on("SIGINT", cleanup);
