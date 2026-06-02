@@ -102,12 +102,66 @@ describe("AcpSession permission gating", () => {
 		const result = await session.handleToolCall(call());
 
 		expect(rec.permissionRequests.length).toBe(1);
+		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
+			toolCallId: "c1",
+			title: "Read a.txt",
+			kind: "read",
+			status: "pending",
+			rawInput: { file_path: "a.txt" },
+		});
 		expect(ran).toEqual([{ args: { file_path: "a.txt" }, cwd: "/work" }]);
 		expect(result.is_error).toBeFalsy();
 		const statuses = rec.updates
 			.filter((u) => u.sessionUpdate === "tool_call_update")
 			.map((u) => (u as { status: string }).status);
 		expect(statuses).toEqual(["in_progress", "completed"]);
+	});
+
+	it("surfaces shell command and cwd in the tool card and permission request", async () => {
+		const handlers = new Map([
+			[
+				"boundless_bash",
+				async () => ({ content: [{ type: "text" as const, text: "(Bash completed)" }] }),
+			],
+		]);
+		const { session, rec } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
+
+		const result = await session.handleToolCall(
+			call({
+				call_id: "c-bash",
+				tool_name: "boundless_bash",
+				arguments: { command: "sleep 10" },
+			}),
+		);
+
+		expect(result.is_error).toBeFalsy();
+		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
+		expect(created).toMatchObject({
+			toolCallId: "c-bash",
+			title: "sleep 10",
+			kind: "execute",
+			status: "pending",
+			rawInput: { command: "sleep 10" },
+			content: [
+				{
+					type: "content",
+					content: { type: "text", text: "current_directory\n\n/work" },
+				},
+			],
+		});
+		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
+			toolCallId: "c-bash",
+			title: "sleep 10",
+			kind: "execute",
+			status: "pending",
+			rawInput: { command: "sleep 10" },
+			content: [
+				{
+					type: "content",
+					content: { type: "text", text: "current_directory\n\n/work" },
+				},
+			],
+		});
 	});
 
 	it("does not execute the handler on reject_once", async () => {
