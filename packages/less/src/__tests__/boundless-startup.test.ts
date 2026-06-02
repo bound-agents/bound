@@ -54,6 +54,22 @@ describe("boundless startup", () => {
 			expect(result.urlArg).toBe("http://example.com");
 		});
 
+		it("should default acp to false", () => {
+			const result = parseArgs([]);
+			expect(result.acp).toBe(false);
+		});
+
+		it("should parse --acp flag", () => {
+			const result = parseArgs(["--acp"]);
+			expect(result.acp).toBe(true);
+		});
+
+		it("should parse --acp combined with --url", () => {
+			const result = parseArgs(["--acp", "--url", "http://example.com"]);
+			expect(result.acp).toBe(true);
+			expect(result.urlArg).toBe("http://example.com");
+		});
+
 		it("should reject unknown flags", () => {
 			const args = ["--unknown"];
 			expect(() => parseArgs(args)).toThrow("Unknown flag: --unknown");

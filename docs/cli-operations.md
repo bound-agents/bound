@@ -14,9 +14,10 @@ This document covers the Command Line Interface (CLI) for the Bound agent system
    - [boundctl set-hub](#boundctl-set-hub)
    - [boundctl stop / resume](#boundctl-stop--resume)
    - [boundctl restore](#boundctl-restore)
-4. [Configuration Reference](#configuration-reference)
-5. [Bootstrap Sequence](#bootstrap-sequence)
-6. [Build Pipeline](#build-pipeline)
+4. [boundless: Coding Agent Client](#boundless-coding-agent-client)
+5. [Configuration Reference](#configuration-reference)
+6. [Bootstrap Sequence](#bootstrap-sequence)
+7. [Build Pipeline](#build-pipeline)
 
 ---
 
@@ -604,6 +605,49 @@ No external dependencies are needed to serve the UI; it is fully self-contained 
 
 ---
 
+## boundless: Coding Agent Client
+
+`boundless` is a terminal coding-agent client. It connects to a running bound server over the client-tool WebSocket interface, attaches to one thread, and registers host-side filesystem and shell tools (plus optional MCP servers) into that thread's tool set. Session messages, tool calls, and memory operations are written to bound, so other surfaces observe the work.
+
+Configuration lives in `~/.bound/less/` (`config.json` for server URL, default model, injected context files, and shell override; `mcp.json` for MCP servers).
+
+### Syntax
+
+```
+boundless [--url <server-url>] [--attach <thread-id>] [--acp]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | Override the configured server URL for this run (not persisted). Default: `http://localhost:3001`. |
+| `--attach <thread-id>` | Attach to an existing thread instead of creating a new one. |
+| `--acp` | Run as an ACP agent server over stdio instead of rendering the terminal UI. See below. |
+
+### ACP mode (`--acp`)
+
+`boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio, letting ACP-compatible editors (Zed and others) drive bound as their backend agent. The editor spawns `boundless --acp` as a subprocess and speaks JSON-RPC over stdin/stdout. bound provides inference, memory, and model routing; the filesystem and shell tools execute locally in the editor's workspace, gated through the editor's permission prompts. Existing bound threads can be resumed via the protocol's `session/load`.
+
+In this mode stdout is the JSON-RPC channel — boundless writes nothing else to stdout, and diagnostics go to the file logger at `~/.bound/less/logs/` and to stderr for fatal startup errors. `--attach` is ignored in ACP mode; ACP clients open sessions via `session/new` and `session/load`. A running bound server (`bound start`) is required.
+
+Example Zed configuration (`~/.config/zed/settings.json`):
+
+```json
+{
+  "agent_servers": {
+    "bound": {
+      "type": "custom",
+      "command": "boundless",
+      "args": ["--acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+---
+
 ## Build Pipeline
 
 The Bound CLIs are built as standalone binaries via `bun build --compile`, eliminating runtime dependency on Node.js or Bun.
@@ -636,9 +680,10 @@ Output: Static files in `packages/web/dist/`
 bun build --compile packages/cli/src/bound.ts --outfile dist/bound
 bun build --compile packages/cli/src/boundctl.ts --outfile dist/boundctl
 bun build --compile packages/mcp-server/src/server.ts --outfile dist/bound-mcp
+bun build --compile packages/less/src/boundless.tsx --outfile dist/boundless
 ```
 
-Three standalone executables are produced: `bound`, `boundctl`, and `bound-mcp`. Each contains:
+Four standalone executables are produced: `bound`, `boundctl`, `bound-mcp`, and `boundless`. Each contains:
 - The CLI / server code and all compiled dependencies
 - Web assets including the Svelte SPA (embedded in `bound`)
 - The Bun runtime
@@ -659,11 +704,13 @@ Building Bound...
 2. Compiling bound binary...
 3. Compiling boundctl binary...
 4. Compiling bound-mcp binary...
+5. Compiling boundless binary...
 
 --- Build summary ---
   dist/bound (45.23 MB)
   dist/boundctl (38.10 MB)
   dist/bound-mcp (32.05 MB)
+  dist/boundless (72.84 MB)
 ```
 
 ### Development Alternative

@@ -15,6 +15,7 @@ import {
 import { render } from "ink";
 // biome-ignore lint/correctness/noUnusedImports: React is used implicitly in JSX
 import React from "react";
+import { runAcpServer } from "./acp/server";
 import { loadConfig, loadMcpConfig } from "./config";
 import { acquireLock, releaseLock } from "./lockfile";
 import { AppLogger } from "./logging";
@@ -27,11 +28,14 @@ import { App } from "./tui/App";
 export interface ParsedArgs {
 	attachArg: string | null;
 	urlArg: string | null;
+	/** Run as an ACP agent server over stdio instead of rendering the TUI. */
+	acp: boolean;
 }
 
 export function parseArgs(args: string[]): ParsedArgs {
 	let attachArg: string | null = null;
 	let urlArg: string | null = null;
+	let acp = false;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -46,12 +50,14 @@ export function parseArgs(args: string[]): ParsedArgs {
 				throw new Error("Flag --url requires a value");
 			}
 			urlArg = args[++i];
+		} else if (arg === "--acp") {
+			acp = true;
 		} else if (arg.startsWith("--")) {
 			throw new Error(`Unknown flag: ${arg}`);
 		}
 	}
 
-	return { attachArg, urlArg };
+	return { attachArg, urlArg, acp };
 }
 
 export async function resolveThreadId(
@@ -68,12 +74,87 @@ export async function resolveThreadId(
 	return thread.id;
 }
 
+/**
+ * Runs boundless as an ACP agent server over stdio. Loads config, resolves the
+ * shell, initializes the file logger, then hands control to {@link runAcpServer}
+ * which owns the stdio JSON-RPC channel until the connection closes.
+ *
+ * stdout is reserved for ACP frames in this mode — diagnostics go to stderr
+ * (fatal startup errors) or the file logger. `--attach` is accepted but ignored
+ * here: ACP clients open sessions via session/new and session/load.
+ */
+async function runAcpMode(args: {
+	attachArg: string | null;
+	urlArg: string | null;
+}): Promise<void> {
+	// Settle build info so initialize() can report the running commit. This does
+	// not write to stdout, so it is safe in ACP mode.
+	await loadBuildInfo();
+
+	const configDir = join(homedir(), ".bound", "less");
+	mkdirSync(configDir, { recursive: true });
+	const config = loadConfig(configDir);
+	const mcpConfig = loadMcpConfig(configDir);
+	if (args.urlArg) {
+		config.url = args.urlArg;
+	}
+
+	let shell: ResolvedShell;
+	try {
+		shell = resolveShell(config.shell);
+	} catch (error) {
+		process.stderr.write(`${(error as Error).message}\n`);
+		process.exit(1);
+	}
+
+	const logger = new AppLogger(configDir);
+	const hostname = getHostname();
+
+	try {
+		await runAcpServer({
+			url: config.url,
+			configDir,
+			mcpConfigs: mcpConfig.servers,
+			hostname,
+			shell,
+			logger,
+			modelId: config.model,
+			contextFiles: config.contextFiles,
+		});
+	} finally {
+		logger.close();
+		await shutdownTelemetry();
+	}
+}
+
 async function main(): Promise<void> {
 	try {
 		// Step 0: Telemetry. No-op unless OTEL_ENABLED is set. Done first so
 		// every subsequent operation that creates a span (sendMessage, tool
 		// execution, etc.) gets exported to the configured OTLP endpoint.
 		initTelemetry("boundless");
+
+		// Step 1: Parse arguments. Done before any stdout-touching work because
+		// in --acp mode stdout is the JSON-RPC channel and must stay pristine.
+		let attachArg: string | null = null;
+		let urlArg: string | null = null;
+		let acp = false;
+		try {
+			({ attachArg, urlArg, acp } = parseArgs(process.argv.slice(2)));
+		} catch (error) {
+			process.stderr.write(`Error: ${(error as Error).message}\n`);
+			process.exit(1);
+		}
+
+		// ACP mode: run as an ACP agent server over stdio. Branch BEFORE the
+		// highlighter prewarm / build-info / TUI render — none of which may run
+		// here, since anything written to stdout would corrupt the JSON-RPC
+		// frames. Build metadata is still loaded (it does not write to stdout)
+		// so initialize() can report the running commit as the agent version.
+		if (acp) {
+			await runAcpMode({ attachArg, urlArg });
+			return;
+		}
 
 		// Kick off shiki highlighter init in the background. Loading the
 		// Oniguruma WASM and tokyo-night grammars takes ~hundreds of ms;
@@ -88,16 +169,6 @@ async function main(): Promise<void> {
 		// kick off in parallel, must be settled before <App> mounts so the
 		// SessionHeader rendered into <Static> shows the right commit hash.
 		const buildInfoReady = loadBuildInfo();
-
-		// Step 1: Parse arguments
-		let attachArg: string | null = null;
-		let urlArg: string | null = null;
-		try {
-			({ attachArg, urlArg } = parseArgs(process.argv.slice(2)));
-		} catch (error) {
-			process.stderr.write(`Error: ${(error as Error).message}\n`);
-			process.exit(1);
-		}
 
 		// Step 2: Load config
 		const configDir = join(homedir(), ".bound", "less");
