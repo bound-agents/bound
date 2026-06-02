@@ -6,6 +6,7 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"dependencies": {
+		"@agentclientprotocol/sdk": "0.24.0",
 		"@bound/client": "workspace:*",
 		"@bound/llm": "workspace:*",
 		"@bound/shared": "workspace:*",
@@ -19,6 +20,7 @@
 	},
 	"devDependencies": {
 		"@types/react": "^18.3.18",
+		"fast-check": "^4.8.0",
 		"ink-testing-library": "^4.0.0"
 	}
 }

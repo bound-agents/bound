@@ -73,6 +73,54 @@ bun run packages/cli/src/boundctl.ts resume
 bun run packages/cli/src/boundctl.ts restore --before "2026-03-20T10:00:00Z" --preview
 ```
 
+## Coding agent (boundless)
+
+`boundless` is a terminal coding-agent client for bound. It connects to a running
+bound server, attaches to a thread, and registers host-side filesystem and shell
+tools (plus any MCP servers you configure) into the agent's tool set — so the agent
+can read and edit files and run commands in your working directory. The session's
+messages, tool calls, and memory all live in bound, so other surfaces (web, Discord,
+scheduled tasks) see the work too.
+
+```bash
+# Run the terminal UI in your project directory
+bun run packages/cli/src/boundless.ts          # or ./dist/boundless after a build
+
+# Point at a non-default server, or resume an existing thread
+boundless --url http://localhost:3001
+boundless --attach <thread-id>
+```
+
+Config lives at `~/.bound/less/config.json` (server URL, default model, injected
+context files, shell override) and `~/.bound/less/mcp.json` (MCP servers).
+
+### Editor integration (ACP)
+
+`boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com)
+agent over stdio, so ACP-compatible editors (Zed and others) can drive bound as their
+backend agent. The editor spawns `boundless --acp` as a subprocess and speaks JSON-RPC
+over stdin/stdout; bound provides the inference, memory, and model routing, while the
+file and shell tools run locally in the editor's workspace. Tool calls are gated
+through the editor's permission prompts, and existing bound threads can be resumed.
+
+Example Zed configuration (`~/.config/zed/settings.json`):
+
+```json
+{
+  "agent_servers": {
+    "bound": {
+      "type": "custom",
+      "command": "boundless",
+      "args": ["--acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+Pass `--url` after `--acp` to target a non-default server. Requires a running bound
+server (`bound start`).
+
 ## Project structure
 
 ```

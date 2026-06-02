@@ -1,0 +1,201 @@
+/**
+ * Integration tests for BoundAcpAgent over a real in-memory ACP connection.
+ *
+ * These drive the agent through a real ClientSideConnection (real JSON-RPC
+ * framing) backed by a mock BoundClient, asserting on the recorded
+ * session/update notifications and resolved responses. See harness.ts.
+ */
+
+import { describe, expect, it } from "bun:test";
+import type { Message, WsStreamChunk } from "@bound/shared";
+import { type MockBoundClient, makeAcpHarness, mockBoundClient } from "./harness";
+
+/** Resolves after pending microtasks + a macrotask so wire RPCs settle. */
+function flush(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+const PROTOCOL_VERSION = 1;
+
+async function newSession(mock: MockBoundClient) {
+	const { agentProxy, recording } = makeAcpHarness(mock);
+	await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+	const session = await agentProxy.newSession({ cwd: "/work", mcpServers: [] });
+	return { agentProxy, recording, sessionId: session.sessionId };
+}
+
+describe("BoundAcpAgent.initialize", () => {
+	it("advertises loadSession and prompt capabilities", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy } = makeAcpHarness(mock);
+		const res = await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+		expect(res.protocolVersion).toBe(PROTOCOL_VERSION);
+		expect(res.agentCapabilities?.loadSession).toBe(true);
+		expect(res.agentCapabilities?.promptCapabilities?.image).toBe(false);
+		expect(res.agentCapabilities?.promptCapabilities?.embeddedContext).toBe(true);
+		expect(res.agentInfo?.name).toBe("boundless");
+	});
+});
+
+describe("BoundAcpAgent.newSession", () => {
+	it("creates a thread, subscribes, and configures tools", async () => {
+		const mock = mockBoundClient();
+		const { sessionId } = await newSession(mock);
+		expect(sessionId).toBe("thread-1");
+		expect(mock.calls.createThread).toBe(1);
+		expect(mock.calls.subscribe).toContain("thread-1");
+		expect(mock.calls.configureTools).toBeGreaterThanOrEqual(1);
+	});
+});
+
+describe("BoundAcpAgent.prompt", () => {
+	it("streams text/thinking in order and resolves end_turn on idle", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, recording, sessionId } = await newSession(mock);
+
+		const promptP = agentProxy.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "hello" }],
+		});
+		await flush();
+
+		// The user message reached bound.
+		expect(mock.calls.sendMessage).toEqual([{ threadId: sessionId, content: "hello" }]);
+
+		mock.emitThreadStatus(sessionId, true);
+		mock.emitStreamChunk(sessionId, { type: "thinking", content: "hmm" });
+		mock.emitStreamChunk(sessionId, { type: "text", content: "hi " });
+		mock.emitStreamChunk(sessionId, { type: "text", content: "there" });
+		await flush();
+		mock.emitThreadStatus(sessionId, false);
+
+		const res = await promptP;
+		expect(res.stopReason).toBe("end_turn");
+
+		const kinds = recording.notifications.map((n) => n.update.sessionUpdate);
+		expect(kinds).toEqual(["agent_thought_chunk", "agent_message_chunk", "agent_message_chunk"]);
+		const texts = recording.notifications
+			.filter((n) => n.update.sessionUpdate === "agent_message_chunk")
+			.map((n) => (n.update as { content: { text: string } }).content.text);
+		expect(texts.join("")).toBe("hi there");
+	});
+
+	it("does not resolve on a stale idle status before the turn goes active", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, sessionId } = await newSession(mock);
+
+		const promptP = agentProxy.prompt({ sessionId, prompt: [{ type: "text", text: "x" }] });
+		await flush();
+
+		// Idle BEFORE active must be ignored.
+		mock.emitThreadStatus(sessionId, false);
+		await flush();
+		let resolved = false;
+		void promptP.then(() => {
+			resolved = true;
+		});
+		await flush();
+		expect(resolved).toBe(false);
+
+		mock.emitThreadStatus(sessionId, true);
+		mock.emitThreadStatus(sessionId, false);
+		const res = await promptP;
+		expect(res.stopReason).toBe("end_turn");
+	});
+});
+
+describe("BoundAcpAgent.cancel", () => {
+	it("cancels the thread and resolves the turn with cancelled", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, sessionId } = await newSession(mock);
+
+		const promptP = agentProxy.prompt({ sessionId, prompt: [{ type: "text", text: "long task" }] });
+		await flush();
+		mock.emitThreadStatus(sessionId, true);
+
+		await agentProxy.cancel({ sessionId });
+		expect(mock.calls.cancelThread).toContain(sessionId);
+
+		mock.emitThreadStatus(sessionId, false);
+		const res = await promptP;
+		expect(res.stopReason).toBe("cancelled");
+	});
+});
+
+describe("BoundAcpAgent daemon-side tool calls", () => {
+	it("surfaces native tool_use as tool_call/update and closes at turn end", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, recording, sessionId } = await newSession(mock);
+
+		const promptP = agentProxy.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "use a tool" }],
+		});
+		await flush();
+		mock.emitThreadStatus(sessionId, true);
+
+		const chunks: WsStreamChunk[] = [
+			{ type: "tool_use_start", id: "tu-1", name: "memory" },
+			{ type: "tool_use_args", id: "tu-1", partial_json: '{"action":' },
+			{ type: "tool_use_args", id: "tu-1", partial_json: '"store"}' },
+			{ type: "tool_use_end", id: "tu-1" },
+		];
+		for (const c of chunks) mock.emitStreamChunk(sessionId, c);
+		await flush();
+		mock.emitThreadStatus(sessionId, false);
+		await promptP;
+
+		const toolCallUpdates = recording.notifications.filter(
+			(n) =>
+				n.update.sessionUpdate === "tool_call" || n.update.sessionUpdate === "tool_call_update",
+		);
+		const created = toolCallUpdates.find((n) => n.update.sessionUpdate === "tool_call");
+		expect(created).toBeDefined();
+		expect((created?.update as { toolCallId: string }).toolCallId).toBe("tu-1");
+		// No permission prompt for daemon-side tools.
+		expect(recording.permissionRequests.length).toBe(0);
+		// Closed completed by turn end.
+		const completed = toolCallUpdates.some(
+			(n) =>
+				n.update.sessionUpdate === "tool_call_update" &&
+				(n.update as { toolCallId: string; status?: string }).toolCallId === "tu-1" &&
+				(n.update as { status?: string }).status === "completed",
+		);
+		expect(completed).toBe(true);
+	});
+});
+
+describe("BoundAcpAgent.loadSession", () => {
+	it("replays history as session/update notifications", async () => {
+		const mock = mockBoundClient();
+		const history: Message[] = [msg("1", "user", "hi"), msg("2", "assistant", "hello")];
+		mock.setMessages(history);
+
+		const { agentProxy, recording } = makeAcpHarness(mock);
+		await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+		if (!agentProxy.loadSession) throw new Error("loadSession not implemented");
+		await agentProxy.loadSession({ sessionId: "existing-thread", cwd: "/work", mcpServers: [] });
+
+		const kinds = recording.notifications.map((n) => n.update.sessionUpdate);
+		expect(kinds).toEqual(["user_message_chunk", "agent_message_chunk"]);
+	});
+});
+
+// ---- helpers ----
+
+function msg(id: string, role: Message["role"], content: string): Message {
+	return {
+		id,
+		thread_id: "existing-thread",
+		role,
+		content,
+		model_id: null,
+		tool_name: null,
+		created_at: new Date(0).toISOString(),
+		modified_at: null,
+		host_origin: "",
+		deleted: 0,
+		exit_code: null,
+		metadata: null,
+	};
+}
