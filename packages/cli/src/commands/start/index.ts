@@ -170,15 +170,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 				wsClient.updateBackfillInterval(newWsConfig.backfill_interval);
 			}
 		},
-		onKeyringChanged: (newKeyring) => {
-			// Keep relay processor's trusted site-ID set in sync after a keyring hot-reload.
-			// The set is baked in at construction time; without this update a newly-added
-			// peer triggers "Unknown source site" relay errors until the process restarts.
-			relayProcessor.updateKeyringSiteIds(new Set(Object.keys(newKeyring.hosts)));
-			appContext.logger.info("[sighup] Relay processor keyring site IDs updated", {
-				peerCount: Object.keys(newKeyring.hosts).length,
-			});
-		},
 	});
 
 	// Phase 8: Sync loop, pruning, overlay scanner
