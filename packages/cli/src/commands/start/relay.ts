@@ -50,15 +50,11 @@ export async function initRelay(
 		syncConfigResult?.ok ? (syncConfigResult.value as SyncConfig) : undefined,
 	);
 	// In single-host mode (no keyring), trust only self; in multi-host, trust all keyring peers.
-	const keyringSiteIds = keyring
-		? new Set(Object.keys(keyring.hosts))
-		: new Set([appContext.siteId]);
 	const relayProcessor = new RelayProcessor(
 		appContext.db,
 		appContext.siteId,
 		mcpClientsMap,
 		modelRouter ?? null,
-		keyringSiteIds,
 		appContext.logger,
 		appContext.eventBus,
 		appContext,
