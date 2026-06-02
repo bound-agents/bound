@@ -7,10 +7,12 @@
  * multiplexer that consumes them.
  */
 
+import path from "node:path";
 import type {
 	ContentBlock as AcpContentBlock,
 	PermissionOption,
 	SessionUpdate,
+	ToolCallContent,
 	ToolKind,
 } from "@agentclientprotocol/sdk";
 import type { ContentBlock as LlmContentBlock } from "@bound/llm";
@@ -47,6 +49,71 @@ export function toolNameToKind(toolName: string): ToolKind {
 	if (/^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName)) return "execute";
 	if (toolName.startsWith("boundless_mcp_")) return "other";
 	return "other";
+}
+
+export function toolCallTitle(toolName: string, args: Record<string, unknown>): string {
+	const command = typeof args.command === "string" ? args.command.trim() : "";
+	if (/^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName) && command) {
+		return command;
+	}
+
+	const filePath = typeof args.file_path === "string" ? args.file_path : "";
+	if (toolName === "boundless_read" && filePath) return `Read ${filePath}`;
+	if (toolName === "boundless_write" && filePath) return `Write ${filePath}`;
+	if (toolName === "boundless_edit" && filePath) return `Edit ${filePath}`;
+
+	if (toolName === "boundless_copy") {
+		const sourcePath = typeof args.source_path === "string" ? args.source_path : "";
+		const targetPath = typeof args.target_path === "string" ? args.target_path : "";
+		if (sourcePath && targetPath) return `Copy ${sourcePath} to ${targetPath}`;
+	}
+
+	if (toolName.startsWith("boundless_mcp_")) {
+		return toolName.replace(/^boundless_mcp_/, "").replace(/_/g, ".");
+	}
+
+	return toolName;
+}
+
+function absolutePath(cwd: string, filePath: string): string {
+	return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
+}
+
+export function toolCallContent(
+	toolName: string,
+	args: Record<string, unknown>,
+	cwd: string,
+): ToolCallContent[] {
+	const command = typeof args.command === "string" ? args.command.trim() : "";
+	if (/^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName) && command) {
+		return [
+			{
+				type: "content",
+				content: {
+					type: "text",
+					text: `current_directory\n\n${cwd}`,
+				},
+			},
+		];
+	}
+
+	if (toolName === "boundless_edit") {
+		const filePath = typeof args.file_path === "string" ? args.file_path : "";
+		const oldText = typeof args.old_string === "string" ? args.old_string : undefined;
+		const newText = typeof args.new_string === "string" ? args.new_string : undefined;
+		if (filePath && oldText !== undefined && newText !== undefined) {
+			return [
+				{
+					type: "diff",
+					path: absolutePath(cwd, filePath),
+					oldText,
+					newText,
+				},
+			];
+		}
+	}
+
+	return [];
 }
 
 /**

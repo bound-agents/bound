@@ -28,6 +28,8 @@ import type { ToolHandler } from "../tools/types";
 import {
 	PERMISSION_OPTIONS,
 	streamChunkToSessionUpdate,
+	toolCallContent,
+	toolCallTitle,
 	toolNameToKind,
 	toolResultToAcpContent,
 } from "./mapping";
@@ -212,17 +214,20 @@ export class AcpSession {
 	async handleToolCall(call: ToolCallRequest): Promise<ToolCallResult> {
 		const { call_id: callId, tool_name: toolName, arguments: args } = call;
 		const kind = toolNameToKind(toolName);
+		const title = toolCallTitle(toolName, args);
+		const content = toolCallContent(toolName, args, this.deps.cwd);
 
 		await this.send({
 			sessionUpdate: "tool_call",
 			toolCallId: callId,
-			title: toolName,
+			title,
 			kind,
 			status: "pending",
 			rawInput: args,
+			...(content.length > 0 ? { content } : {}),
 		});
 
-		const decision = await this.resolvePermission(callId, toolName);
+		const decision = await this.resolvePermission(callId, toolName, title, kind, args, content);
 		if (decision === "reject") {
 			await this.send({
 				sessionUpdate: "tool_call_update",
@@ -295,7 +300,14 @@ export class AcpSession {
 	 * short-circuits the prompt; otherwise the user is asked. `*_always`
 	 * outcomes are remembered per tool name for the session lifetime.
 	 */
-	private async resolvePermission(callId: string, toolName: string): Promise<PermissionDecision> {
+	private async resolvePermission(
+		callId: string,
+		toolName: string,
+		title: string,
+		kind: ReturnType<typeof toolNameToKind>,
+		args: Record<string, unknown>,
+		content: ReturnType<typeof toolCallContent>,
+	): Promise<PermissionDecision> {
 		const remembered = this.permissionMemory.get(toolName);
 		if (remembered) return remembered;
 
@@ -303,7 +315,14 @@ export class AcpSession {
 		try {
 			response = await this.deps.conn.requestPermission({
 				sessionId: this.deps.sessionId,
-				toolCall: { toolCallId: callId },
+				toolCall: {
+					toolCallId: callId,
+					title,
+					kind,
+					status: "pending",
+					rawInput: args,
+					...(content.length > 0 ? { content } : {}),
+				},
 				options: PERMISSION_OPTIONS,
 			});
 		} catch (error) {
