@@ -146,7 +146,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -266,7 +265,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -355,7 +353,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -430,7 +427,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -530,7 +526,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -646,7 +641,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -774,7 +768,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -881,7 +874,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -989,7 +981,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -1062,7 +1053,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 		);
@@ -1175,7 +1165,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 			appCtxStub,
@@ -1278,7 +1267,6 @@ describe("RelayProcessor - executeInference", () => {
 			"target-site",
 			new Map(),
 			mockRouter,
-			new Set(["requester-site"]),
 			createMockLogger(),
 			createMockEventBus(),
 			// No appCtx stub — exercises the `?? []` fallback

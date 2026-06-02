@@ -175,7 +175,6 @@ export class RelayProcessor {
 		private siteId: string,
 		private mcpClients: Map<string, MCPClient>,
 		private modelRouter: ModelRouter | null,
-		private keyringSiteIds: Set<string>,
 		private logger: Logger,
 		private eventBus: TypedEventEmitter,
 		private appCtx: AppContext | null = null,
@@ -212,20 +211,6 @@ export class RelayProcessor {
 	/** Inject the file reader (e.g. ClusterFs.readFileBuffer) for virtual FS support in platform tools. */
 	setFileReader(fn: (path: string) => Promise<Uint8Array>): void {
 		this.fileReader = fn;
-	}
-
-	/**
-	 * Update the set of trusted keyring site IDs after a hot-reload (e.g. SIGHUP).
-	 *
-	 * The constructor bakes in the site-ID set from the keyring at startup. When
-	 * a new peer is added to keyring.json and a SIGHUP fires, the KeyManager is
-	 * reloaded but the relay processor's set stays stale — causing "Unknown source
-	 * site" errors for the new peer until the process restarts. Calling this method
-	 * from the SIGHUP onKeyringChanged callback keeps the set in sync without a
-	 * restart.
-	 */
-	updateKeyringSiteIds(siteIds: Set<string>): void {
-		this.keyringSiteIds = siteIds;
 	}
 
 	start(
@@ -366,19 +351,14 @@ export class RelayProcessor {
 				return;
 			}
 
-			// Step 1: Validate requester (keyring check)
-			if (!this.keyringSiteIds.has(entry.source_site_id)) {
-				this.writeResponse(
-					entry,
-					"error",
-					JSON.stringify({
-						error: `Unknown source site: ${entry.source_site_id}`,
-						retriable: false,
-					} as ErrorPayload),
-				);
-				markProcessed(this.db, [entry.id]);
-				return;
-			}
+			// Authorization keys on the authenticated delivering peer, not on
+			// entry.source_site_id (#50, R-SR1/R-SR2/R-SR7). The frame that produced
+			// this inbox row was decoded under a keyring peer's per-peer key at the
+			// transport boundary (or originated locally); its mere presence in the
+			// inbox carries that delivery-time authentication. source_site_id is the
+			// hub's attestation of origin, used only for response correlation and
+			// audit. Re-gating on it here rejected hub-vouched spoke-to-spoke traffic
+			// with "Unknown source site". See docs/design/specs/2026-06-02-spoke-relay-trust.md.
 
 			// Step 2: Check expiry (AC9.2)
 			const now = new Date();
@@ -1033,15 +1013,9 @@ export class RelayProcessor {
 		const results: RelayInboxEntry[] = [];
 
 		try {
-			// Step 1: Validate requester (keyring check)
-			if (request.source_site_id && !this.keyringSiteIds.has(request.source_site_id)) {
-				const errorResponse: ErrorPayload = {
-					error: `Unknown source site: ${request.source_site_id}`,
-					retriable: false,
-				};
-				results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-				return results;
-			}
+			// Authorization keys on the authenticated delivering peer, not on
+			// request.source_site_id (#50, R-SR1/R-SR2). See the inbox-processing
+			// path above and docs/design/specs/2026-06-02-spoke-relay-trust.md.
 
 			// Step 2: Check expiry (AC9.2)
 			const now = new Date();

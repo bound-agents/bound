@@ -180,7 +180,6 @@ describe("relay-stream integration tests", () => {
 	let requesterSiteId: string;
 	let targetDb: Database;
 	let targetSiteId: string;
-	let hubSiteId: string;
 
 	beforeEach(async () => {
 		testRunId = randomBytes(4).toString("hex");
@@ -197,7 +196,6 @@ describe("relay-stream integration tests", () => {
 		requesterSiteId = cluster.spokes[0].siteId;
 		targetDb = cluster.spokes[1].db;
 		targetSiteId = cluster.spokes[1].siteId;
-		hubSiteId = cluster.hub.siteId;
 
 		// Apply metrics schema to both instances (needed for turns table)
 		applyMetricsSchema(requesterDb);
@@ -211,7 +209,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(), // No MCP clients
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]), // Keyring: allow hub and requester
 			{
 				info: () => {},
 				warn: () => {},
@@ -276,7 +273,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(),
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]),
 			{
 				info: () => {},
 				warn: () => {},
@@ -396,7 +392,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(),
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]),
 			{
 				info: () => {},
 				warn: () => {},
@@ -743,7 +738,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(),
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]),
 			{
 				info: () => {},
 				warn: () => {},
@@ -881,7 +875,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(),
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]),
 			{
 				info: () => {},
 				warn: () => {},
@@ -1009,7 +1002,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(),
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]),
 			{ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
 			cluster.spokes[1].eventBus,
 			undefined, // appCtx
@@ -1114,7 +1106,6 @@ describe("relay-stream integration tests", () => {
 			targetSiteId,
 			new Map(),
 			modelRouter,
-			new Set([hubSiteId, requesterSiteId]),
 			{ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
 			cluster.spokes[1].eventBus,
 			undefined, // appCtx

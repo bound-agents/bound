@@ -132,13 +132,11 @@ describe("RelayProcessor", () => {
 	describe("background loop", () => {
 		it("creates RelayProcessor and returns stop handle", () => {
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -153,13 +151,11 @@ describe("RelayProcessor", () => {
 
 		it("polls readUnprocessed entries on regular interval", async () => {
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -212,13 +208,11 @@ describe("RelayProcessor", () => {
 
 		it("gracefully stops processing on stop()", async () => {
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set<string>();
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -233,15 +227,26 @@ describe("RelayProcessor", () => {
 	});
 
 	describe("validation", () => {
-		it("rejects unknown source_site_id (AC1.2)", async () => {
+		it("processes an entry whose source_site_id is absent from the keyring (R-SR1/R-SR7/R-SR11)", async () => {
+			// Spoke-to-spoke relay (#50): the delivering peer (the hub) is
+			// authenticated at the transport boundary, so an inbox entry's mere
+			// presence carries delivery-time authentication. The processor
+			// authorizes on that, not on source_site_id, which is a hub-vouched
+			// attestation of origin used only for response correlation and audit.
+			// A sibling spoke's id need not appear in the local keyring.
+			const mockClient = new MockMCPClient(
+				"github",
+				new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]),
+			);
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["trusted-site"]);
+			mcpClients.set("github", mockClient as unknown as MCPClient);
+
+			// Keyring holds the hub only; the source is a sibling spoke absent from it.
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -249,13 +254,13 @@ describe("RelayProcessor", () => {
 			const now = new Date();
 			const inboxEntry: RelayInboxEntry = {
 				id: "entry-1",
-				source_site_id: "unknown-site",
+				source_site_id: "sibling-spoke",
 				kind: "tool_call",
 				ref_id: null,
 				idempotency_key: null,
 				payload: JSON.stringify({
-					tool: "test",
-					args: { subcommand: "test_cmd" },
+					tool: "github",
+					args: { subcommand: "create_issue", title: "Fix bug", body: "Details" },
 				} as ToolCallPayload),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
 				received_at: now.toISOString(),
@@ -282,22 +287,71 @@ describe("RelayProcessor", () => {
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
-			// Should have written error response to outbox
-			const outboxEntries = db
+			// It executed: a result row correlated by ref_id exists.
+			const results = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
+				.all("result", inboxEntry.id) as RelayOutboxEntry[];
+			expect(results.length).toBeGreaterThan(0);
+
+			// It was NOT rejected as an unknown source.
+			const errors = db
 				.query("SELECT * FROM relay_outbox WHERE kind = ?")
 				.all("error") as RelayOutboxEntry[];
-			expect(outboxEntries.length).toBeGreaterThan(0);
+			expect(errors.length).toBe(0);
 		});
 
-		it("discards expired inbox entries (AC9.2)", async () => {
+		it("executeImmediate processes a request whose source_site_id is absent from the keyring (R-SR1)", async () => {
+			// Hub-local synchronous execution route mirrors the inbox path:
+			// source_site_id is not an authorization input here either.
+			const mockClient = new MockMCPClient(
+				"github",
+				new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]),
+			);
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
+			mcpClients.set("github", mockClient as unknown as MCPClient);
+
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
+				createMockLogger(),
+				createMockEventBus(),
+			);
+
+			const now = new Date();
+			const request: RelayOutboxEntry = {
+				id: "req-1",
+				source_site_id: "sibling-spoke",
+				target_site_id: "target-site",
+				kind: "tool_call",
+				ref_id: null,
+				idempotency_key: null,
+				stream_id: null,
+				payload: JSON.stringify({
+					tool: "github",
+					args: { subcommand: "create_issue", title: "Fix bug", body: "Details" },
+				} as ToolCallPayload),
+				created_at: now.toISOString(),
+				expires_at: new Date(now.getTime() + 60000).toISOString(),
+				delivered: 0,
+				trace_context: null,
+			};
+
+			const results = await processor.executeImmediate(request, "hub-site");
+
+			// Returns an execution result, not an "Unknown source site" rejection.
+			expect(results.length).toBeGreaterThan(0);
+			expect(results.every((r) => r.kind !== "error")).toBe(true);
+		});
+
+		it("discards expired inbox entries (AC9.2)", async () => {
+			const mcpClients = new Map<string, MCPClient>();
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				mcpClients,
+				createMockModelRouter(),
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -356,13 +410,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("resource-server", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -417,13 +469,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("prompt-server", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -475,13 +525,11 @@ describe("RelayProcessor", () => {
 	describe("execution - cache_warm (AC1.5)", () => {
 		it("executes cache_warm and writes file contents to outbox (AC1.5)", async () => {
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -572,13 +620,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -658,13 +704,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -765,13 +809,11 @@ describe("RelayProcessor", () => {
 	describe("cancel handling", () => {
 		it("skips execution if cancel arrives before processing (AC7.3)", async () => {
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -855,13 +897,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -950,13 +990,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("test-server", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -1018,13 +1056,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("failing-server", failingClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -1096,13 +1132,11 @@ describe("RelayProcessor", () => {
 				return originalCallTool(name, args);
 			};
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -1159,13 +1193,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("github", mockClient as unknown as MCPClient);
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -1217,13 +1249,11 @@ describe("RelayProcessor", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			// Don't add "unknown-server" to clients map
 
-			const keyringSiteIds = new Set(["requester-site"]);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
 				mcpClients,
 				createMockModelRouter(),
-				keyringSiteIds,
 				createMockLogger(),
 				createMockEventBus(),
 			);
@@ -1276,21 +1306,12 @@ describe("RelayProcessor", () => {
 		it("does not generate error responses for 'error' kind inbox entries", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["remote-site"]);
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
 
 			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 
-			const processor = new RelayProcessor(
-				db,
-				siteId,
-				mcpClients,
-				null,
-				keyringSiteIds,
-				logger,
-				eventBus,
-			);
+			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
 			// Insert an 'error' response kind into relay_inbox
 			// (simulates a hub routing an error response back to this spoke)
@@ -1337,21 +1358,12 @@ describe("RelayProcessor", () => {
 		it("does not generate error responses for 'result' kind inbox entries", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["remote-site"]);
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
 
 			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 
-			const processor = new RelayProcessor(
-				db,
-				siteId,
-				mcpClients,
-				null,
-				keyringSiteIds,
-				logger,
-				eventBus,
-			);
+			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
 			const { insertInbox } = require("@bound/core");
 			insertInbox(db, {
@@ -1397,21 +1409,12 @@ describe("RelayProcessor", () => {
 		it("leaves webhook_intake rows unprocessed for the scheduler to drain", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["remote-site"]);
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
 
 			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 
-			const processor = new RelayProcessor(
-				db,
-				siteId,
-				mcpClients,
-				null,
-				keyringSiteIds,
-				logger,
-				eventBus,
-			);
+			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
 			// HTTP webhook envelope shape — distinct from intakePayloadSchema.
 			// Pre-fix this would have failed to parse and been silently consumed
@@ -1463,21 +1466,12 @@ describe("RelayProcessor", () => {
 			// unprocessed entries each tick.
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
-			const keyringSiteIds = new Set(["remote-site"]);
 			const eventBus = createMockEventBus();
 			const logger = createMockLogger();
 
 			db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', ?)", [siteId]);
 
-			const processor = new RelayProcessor(
-				db,
-				siteId,
-				mcpClients,
-				null,
-				keyringSiteIds,
-				logger,
-				eventBus,
-			);
+			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
 			const { insertInbox } = require("@bound/core");
 			// Passive row — must remain unprocessed
