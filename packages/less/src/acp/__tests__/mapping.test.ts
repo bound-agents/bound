@@ -333,42 +333,112 @@ describe("messageToSessionUpdate", () => {
 	it("maps user/assistant to message chunks", () => {
 		expect(
 			messageToSessionUpdate({ ...base, role: "user", content: "hi", tool_name: null }),
-		).toEqual({
-			sessionUpdate: "user_message_chunk",
-			content: { type: "text", text: "hi" },
-		});
+		).toEqual([
+			{
+				sessionUpdate: "user_message_chunk",
+				content: { type: "text", text: "hi" },
+			},
+		]);
 		expect(
 			messageToSessionUpdate({ ...base, role: "assistant", content: "yo", tool_name: null }),
-		).toEqual({
-			sessionUpdate: "agent_message_chunk",
-			content: { type: "text", text: "yo" },
-		});
+		).toEqual([
+			{
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "yo" },
+			},
+		]);
 	});
 
-	it("maps tool_call/tool_result using tool_name as the call id", () => {
-		const call = messageToSessionUpdate({
+	it("derives tool_call name + id from the tool_use block inside content", () => {
+		// Real row shape: tool_name column is EMPTY on tool_call rows; the id and
+		// name live in the tool_use block of the persisted LlmContentBlock[] JSON.
+		const content = JSON.stringify([
+			{ type: "thinking", thinking: "…", signature: "x" },
+			{ type: "text", text: "Running a probe:" },
+			{
+				type: "tool_use",
+				id: "tooluse_gmYiTpAnEeOLaGRl7p2dZG",
+				name: "boundless_bash",
+				input: { command: "echo hi" },
+			},
+		]);
+		const updates = messageToSessionUpdate({
 			...base,
 			role: "tool_call",
-			content: "",
-			tool_name: "call-123",
+			content,
+			tool_name: null,
 		});
-		expect(call).toMatchObject({ sessionUpdate: "tool_call", toolCallId: "call-123" });
+		// Preceding visible text replays as an agent message chunk, then the call.
+		expect(updates).toEqual([
+			{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Running a probe:" } },
+			{
+				sessionUpdate: "tool_call",
+				toolCallId: "tooluse_gmYiTpAnEeOLaGRl7p2dZG",
+				title: "echo hi",
+				kind: "execute",
+				status: "completed",
+				rawInput: { command: "echo hi" },
+			},
+		]);
+	});
+
+	it("emits one tool_call per tool_use block for parallel calls", () => {
+		const content = JSON.stringify([
+			{ type: "tool_use", id: "tooluse_A", name: "boundless_read", input: { file_path: "/a" } },
+			{ type: "tool_use", id: "tooluse_B", name: "boundless_read", input: { file_path: "/b" } },
+		]);
+		const updates = messageToSessionUpdate({
+			...base,
+			role: "tool_call",
+			content,
+			tool_name: null,
+		});
+		expect(updates).toHaveLength(2);
+		expect(updates[0]).toMatchObject({ sessionUpdate: "tool_call", toolCallId: "tooluse_A" });
+		expect(updates[1]).toMatchObject({ sessionUpdate: "tool_call", toolCallId: "tooluse_B" });
+	});
+
+	it("pairs tool_result to the call via the tool-use id in tool_name", () => {
 		const result = messageToSessionUpdate({
 			...base,
 			role: "tool_result",
-			content: "done",
-			tool_name: "call-123",
+			content: JSON.stringify([{ type: "text", text: "done" }]),
+			tool_name: "tooluse_gmYiTpAnEeOLaGRl7p2dZG",
 		});
-		expect(result).toMatchObject({
-			sessionUpdate: "tool_call_update",
-			toolCallId: "call-123",
-			status: "completed",
-		});
+		expect(result).toEqual([
+			{
+				sessionUpdate: "tool_call_update",
+				toolCallId: "tooluse_gmYiTpAnEeOLaGRl7p2dZG",
+				status: "completed",
+				content: [{ type: "content", content: { type: "text", text: "done" } }],
+			},
+		]);
 	});
 
-	it("returns null for internal roles", () => {
+	it("falls back to a generic tool_call when content has no tool_use block", () => {
+		// Defensive: a tool_call row whose content isn't parseable as blocks still
+		// announces a call keyed by the row id so the result has something to pair to.
+		const updates = messageToSessionUpdate({
+			...base,
+			id: "row-uuid",
+			role: "tool_call",
+			content: "not json",
+			tool_name: null,
+		});
+		expect(updates).toEqual([
+			{
+				sessionUpdate: "tool_call",
+				toolCallId: "row-uuid",
+				title: "tool call",
+				kind: "other",
+				status: "completed",
+			},
+		]);
+	});
+
+	it("returns no updates for internal roles", () => {
 		for (const role of ["system", "developer", "alert", "purge"] as const) {
-			expect(messageToSessionUpdate({ ...base, role, content: "x", tool_name: null })).toBeNull();
+			expect(messageToSessionUpdate({ ...base, role, content: "x", tool_name: null })).toEqual([]);
 		}
 	});
 });

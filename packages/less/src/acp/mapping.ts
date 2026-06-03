@@ -333,41 +333,114 @@ export function streamChunkToSessionUpdate(chunk: WsStreamChunk): SessionUpdate 
 }
 
 /**
- * Translates a persisted bound Message into the SessionUpdate used to replay
- * history during session/load. tool_call/tool_result rows reference the bound
- * tool-call id via `tool_name` (a boundless quirk preserved from attach.ts).
- * Returns null for roles that have no client-visible replay representation
+ * Best-effort parse of a persisted `Message.content` string into the
+ * LlmContentBlock[] it was serialized from. Assistant / tool_call rows persist
+ * their content as a JSON array of blocks (thinking / text / tool_use / …);
+ * plain user and string-content rows are not JSON arrays. Returns null when the
+ * content is not a block array so callers can fall back to treating it as text.
+ */
+function parseContentBlocks(content: string): LlmContentBlock[] | null {
+	if (!content) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(parsed)) return null;
+	if (
+		!parsed.every(
+			(b) => b && typeof b === "object" && typeof (b as { type?: unknown }).type === "string",
+		)
+	) {
+		return null;
+	}
+	return parsed as LlmContentBlock[];
+}
+
+/**
+ * Translates a persisted bound Message into the SessionUpdates used to replay
+ * history during session/load, mirroring the sequence the live path emits for
+ * the same turn (see handleToolCall / handleStreamChunk in session.ts).
+ *
+ * The tool-call linkage is NOT carried by the `tool_name` column the way the
+ * old comment claimed — that's only true for `tool_result` rows, where
+ * `tool_name` holds the originating tool-use id. On `tool_call` rows the
+ * `tool_name` column is empty; the real call id and tool name live in the
+ * `tool_use` block(s) of the persisted LlmContentBlock[] content. A single
+ * `tool_call` row can carry multiple tool_use blocks (parallel calls), so this
+ * returns an array: any visible text replays as an agent_message_chunk, then
+ * one `tool_call` per tool_use keyed by its own id so the matching
+ * `tool_result` update pairs correctly.
+ *
+ * Returns [] for roles that have no client-visible replay representation
  * (system/developer/alert/purge are internal context plumbing).
  */
-export function messageToSessionUpdate(message: Message): SessionUpdate | null {
+export function messageToSessionUpdate(message: Message): SessionUpdate[] {
 	switch (message.role) {
 		case "user":
-			return {
-				sessionUpdate: "user_message_chunk",
-				content: { type: "text", text: message.content },
-			};
+			return [
+				{
+					sessionUpdate: "user_message_chunk",
+					content: { type: "text", text: message.content },
+				},
+			];
 		case "assistant":
-			return {
-				sessionUpdate: "agent_message_chunk",
-				content: { type: "text", text: message.content },
-			};
-		case "tool_call":
-			return {
-				sessionUpdate: "tool_call",
-				toolCallId: message.tool_name ?? message.id,
-				title: message.tool_name ?? "tool call",
-				kind: message.tool_name ? toolNameToKind(message.tool_name) : "other",
-				status: "completed",
-			};
+			return [
+				{
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: message.content },
+				},
+			];
+		case "tool_call": {
+			const blocks = parseContentBlocks(message.content);
+			if (!blocks) {
+				// No structured content to mine; announce a single generic call keyed
+				// by the row id so a paired tool_result still has something to attach
+				// to. Title falls back to the legacy placeholder.
+				return [
+					{
+						sessionUpdate: "tool_call",
+						toolCallId: message.tool_name ?? message.id,
+						title: message.tool_name ?? "tool call",
+						kind: message.tool_name ? toolNameToKind(message.tool_name) : "other",
+						status: "completed",
+					},
+				];
+			}
+			const updates: SessionUpdate[] = [];
+			for (const block of blocks) {
+				if (block.type === "text") {
+					if (block.text) {
+						updates.push({
+							sessionUpdate: "agent_message_chunk",
+							content: { type: "text", text: block.text },
+						});
+					}
+				} else if (block.type === "tool_use") {
+					updates.push({
+						sessionUpdate: "tool_call",
+						toolCallId: block.id,
+						title: toolCallTitle(block.name, block.input),
+						kind: toolNameToKind(block.name),
+						status: "completed",
+						rawInput: block.input,
+					});
+				}
+			}
+			return updates;
+		}
 		case "tool_result":
-			return {
-				sessionUpdate: "tool_call_update",
-				toolCallId: message.tool_name ?? message.id,
-				status: "completed",
-				content: [{ type: "content", content: { type: "text", text: message.content } }],
-			};
+			return [
+				{
+					sessionUpdate: "tool_call_update",
+					toolCallId: message.tool_name ?? message.id,
+					status: "completed",
+					content: toolResultToAcpContent(parseContentBlocks(message.content) ?? message.content),
+				},
+			];
 		default:
-			return null;
+			return [];
 	}
 }
 

@@ -147,8 +147,7 @@ export class BoundAcpAgent implements Agent {
 		// Replay history so the editor can render the prior conversation.
 		const messages = await this.opts.client.listMessages(threadId, { limit: 200 });
 		for (const message of messages) {
-			const update = messageToSessionUpdate(message);
-			if (update) {
+			for (const update of messageToSessionUpdate(message)) {
 				await this.opts.conn.sessionUpdate({ sessionId: threadId, update });
 			}
 		}
