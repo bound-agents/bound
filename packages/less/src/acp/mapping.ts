@@ -21,6 +21,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { ContentBlock as LlmContentBlock } from "@bound/llm";
 import type { Message, WsStreamChunk } from "@bound/shared";
+import { parseContentBlocks } from "../session/tool-call-pairing";
 import { findStringOccurrences } from "../tools/match";
 
 /**
@@ -339,25 +340,6 @@ export function streamChunkToSessionUpdate(chunk: WsStreamChunk): SessionUpdate 
  * plain user and string-content rows are not JSON arrays. Returns null when the
  * content is not a block array so callers can fall back to treating it as text.
  */
-function parseContentBlocks(content: string): LlmContentBlock[] | null {
-	if (!content) return null;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(content);
-	} catch {
-		return null;
-	}
-	if (!Array.isArray(parsed)) return null;
-	if (
-		!parsed.every(
-			(b) => b && typeof b === "object" && typeof (b as { type?: unknown }).type === "string",
-		)
-	) {
-		return null;
-	}
-	return parsed as LlmContentBlock[];
-}
-
 /**
  * Translates a persisted bound Message into the SessionUpdates used to replay
  * history during session/load, mirroring the sequence the live path emits for

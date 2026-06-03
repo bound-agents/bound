@@ -45,6 +45,7 @@ import { acquireLock, releaseLock } from "../lockfile";
 import type { AppLogger } from "../logging";
 import { McpServerManager } from "../mcp/manager";
 import { performAttach } from "../session/attach";
+import { collectToolCallPairing } from "../session/tool-call-pairing";
 import { buildToolSet } from "../tools/registry";
 import type { ResolvedShell } from "../tools/shell";
 import { messageToSessionUpdate, promptToText } from "./mapping";
@@ -147,16 +148,11 @@ export class BoundAcpAgent implements Agent {
 		// Replay history so the editor can render the prior conversation.
 		const messages = await this.opts.client.listMessages(threadId, { limit: 200 });
 		// A tool_use whose id has no matching tool_result was dispatched but never
-		// completed (interrupted turn); collect the resolved ids so replay can mark
-		// those calls failed rather than falsely completed.
-		const resolvedToolCallIds = new Set<string>();
+		// completed (interrupted turn); pass the resolved set so replay marks those
+		// calls failed rather than falsely completed.
+		const { resolvedIds } = collectToolCallPairing(messages);
 		for (const message of messages) {
-			if (message.role === "tool_result" && message.tool_name) {
-				resolvedToolCallIds.add(message.tool_name);
-			}
-		}
-		for (const message of messages) {
-			for (const update of messageToSessionUpdate(message, resolvedToolCallIds)) {
+			for (const update of messageToSessionUpdate(message, resolvedIds)) {
 				await this.opts.conn.sessionUpdate({ sessionId: threadId, update });
 			}
 		}
