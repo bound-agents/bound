@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { findStringOccurrences } from "./match";
 import { formatProvenance } from "./provenance";
 import type { ToolHandler, ToolResult } from "./types";
 
@@ -69,10 +70,9 @@ async function editToolImpl(
 	try {
 		const content = readFileSync(resolvedPath, "utf-8");
 
-		// Count occurrences of old_string
-		const occurrences = content.split(old_string).length - 1;
+		const { count, occurrences } = findStringOccurrences(content, old_string);
 
-		if (occurrences === 0) {
+		if (count === 0) {
 			const result: ToolResult = {
 				content: [
 					provenance,
@@ -86,20 +86,11 @@ async function editToolImpl(
 			return result;
 		}
 
-		if (occurrences > 1) {
-			// Show context for multiple matches
-			const lines = content.split("\n");
-			const matches: Array<{ lineNum: number; line: string }> = [];
-
-			lines.forEach((line, idx) => {
-				if (line.includes(old_string)) {
-					matches.push({ lineNum: idx + 1, line });
-				}
-			});
-
-			const context = matches
+		if (count > 1) {
+			// Show context for the first couple of matches.
+			const context = occurrences
 				.slice(0, 2)
-				.map((m) => `  Line ${m.lineNum}: ${m.line}`)
+				.map((m) => `  Line ${m.line}: ${m.lineText}`)
 				.join("\n");
 
 			const result: ToolResult = {
@@ -107,7 +98,7 @@ async function editToolImpl(
 					provenance,
 					{
 						type: "text",
-						text: `Error: ${occurrences} matches found for old_string in ${file_path}. Cannot edit with multiple matches.\n\nFirst match locations:\n${context}`,
+						text: `Error: ${count} matches found for old_string in ${file_path}. Cannot edit with multiple matches.\n\nFirst match locations:\n${context}`,
 					},
 				],
 				isError: true,

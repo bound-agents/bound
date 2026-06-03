@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ContentBlock as AcpContentBlock } from "@agentclientprotocol/sdk";
 import type { Message, WsStreamChunk } from "@bound/shared";
 import fc from "fast-check";
@@ -84,6 +87,86 @@ describe("toolCallLocations", () => {
 		expect(toolCallLocations("boundless_edit", { file_path: "/tmp/a.ts" }, "/work")).toEqual([
 			{ path: "/tmp/a.ts" },
 		]);
+	});
+
+	it("carries the read offset as the follow-along line", () => {
+		// boundless_read's offset is a 1-based line number; pass it through to
+		// ToolCallLocation.line so the editor can scroll to where we're reading.
+		expect(
+			toolCallLocations("boundless_read", { file_path: "src/a.ts", offset: 200 }, "/work"),
+		).toEqual([{ path: "/work/src/a.ts", line: 200 }]);
+		// offset of 1 is a valid line.
+		expect(
+			toolCallLocations("boundless_read", { file_path: "src/a.ts", offset: 1 }, "/work"),
+		).toEqual([{ path: "/work/src/a.ts", line: 1 }]);
+		// no offset → no line.
+		expect(toolCallLocations("boundless_read", { file_path: "src/a.ts" }, "/work")).toEqual([
+			{ path: "/work/src/a.ts" },
+		]);
+		// non-positive / non-integer offsets are not valid lines.
+		expect(
+			toolCallLocations("boundless_read", { file_path: "src/a.ts", offset: 0 }, "/work"),
+		).toEqual([{ path: "/work/src/a.ts" }]);
+		expect(
+			toolCallLocations("boundless_read", { file_path: "src/a.ts", offset: 12.5 }, "/work"),
+		).toEqual([{ path: "/work/src/a.ts" }]);
+		// offset only applies to reads — write/edit have no line in their args.
+		expect(
+			toolCallLocations("boundless_write", { file_path: "src/a.ts", offset: 200 }, "/work"),
+		).toEqual([{ path: "/work/src/a.ts" }]);
+	});
+
+	it("locates the first old_string match as the edit follow-along line", () => {
+		const dir = join("/tmp", `boundless-acp-test-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		try {
+			writeFileSync(join(dir, "a.ts"), "line 1\nline 2\nTARGET here\nline 4\nTARGET here\n");
+			// First match begins on line 3, even though there are two.
+			expect(
+				toolCallLocations("boundless_edit", { file_path: "a.ts", old_string: "TARGET here" }, dir),
+			).toEqual([{ path: join(dir, "a.ts"), line: 3 }]);
+
+			// Multi-line old_string resolves to the line where the match begins.
+			writeFileSync(join(dir, "b.ts"), "alpha\nbeta\ngamma\ndelta\n");
+			expect(
+				toolCallLocations("boundless_edit", { file_path: "b.ts", old_string: "beta\ngamma" }, dir),
+			).toEqual([{ path: join(dir, "b.ts"), line: 2 }]);
+
+			// old_string absent from the file → path-only, no line.
+			expect(
+				toolCallLocations("boundless_edit", { file_path: "a.ts", old_string: "nope" }, dir),
+			).toEqual([{ path: join(dir, "a.ts") }]);
+
+			// Missing old_string arg → nothing to match → path-only.
+			expect(toolCallLocations("boundless_edit", { file_path: "a.ts" }, dir)).toEqual([
+				{ path: join(dir, "a.ts") },
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("degrades to path-only when the edit target does not exist", () => {
+		expect(
+			toolCallLocations(
+				"boundless_edit",
+				{ file_path: "/tmp/does-not-exist-acp.ts", old_string: "x" },
+				"/work",
+			),
+		).toEqual([{ path: "/tmp/does-not-exist-acp.ts" }]);
+	});
+
+	it("does not compute a line for writes even when the file exists", () => {
+		const dir = join("/tmp", `boundless-acp-test-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		try {
+			writeFileSync(join(dir, "c.ts"), "hello\nworld\n");
+			expect(
+				toolCallLocations("boundless_write", { file_path: "c.ts", old_string: "world" }, dir),
+			).toEqual([{ path: join(dir, "c.ts") }]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("returns only host-side copy locations", () => {

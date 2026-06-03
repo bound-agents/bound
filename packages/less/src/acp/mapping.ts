@@ -1,12 +1,15 @@
 /**
- * Pure mapping functions between bound's wire types and ACP schema types.
+ * Mapping functions between bound's wire types and ACP schema types.
  *
- * These are deliberately side-effect free so the translation logic can be
- * unit- and property-tested in isolation from the WebSocket transport and the
- * ACP connection. See `packages/less/src/acp/session.ts` for the stateful
- * multiplexer that consumes them.
+ * Most of these are deliberately side-effect free so the translation logic can
+ * be unit- and property-tested in isolation from the WebSocket transport and
+ * the ACP connection. The one exception is `toolCallLocations`, which reads the
+ * target file to compute an edit's follow-along line (see its doc comment); it
+ * degrades to path-only on any read failure. See `packages/less/src/acp/session.ts`
+ * for the stateful multiplexer that consumes them.
  */
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type {
 	ContentBlock as AcpContentBlock,
@@ -18,6 +21,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { ContentBlock as LlmContentBlock } from "@bound/llm";
 import type { Message, WsStreamChunk } from "@bound/shared";
+import { findStringOccurrences } from "../tools/match";
 
 /**
  * The four permission options offered to the client for every gated tool call.
@@ -98,15 +102,59 @@ function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd:
 	return [];
 }
 
+/**
+ * Best-effort follow-along line for a host filesystem tool, or `undefined`.
+ *
+ * - `boundless_read`: the 1-based `offset` is the line, passed through verbatim
+ *   (matching the Claude Code shim: Read "from line 200" -> `{ line: 200 }`).
+ * - `boundless_edit`: the line where `old_string` first matches in the file's
+ *   current (pre-edit) contents — this runs before the edit applies. Reads the
+ *   file; any failure (missing file, unreadable, no match) degrades to no line.
+ * - `boundless_write`: a write carries no line in its args and the target may
+ *   not exist yet, so there is nothing to follow.
+ */
+function followAlongLine(
+	toolName: string,
+	args: Record<string, unknown>,
+	cwd: string,
+): number | undefined {
+	if (toolName === "boundless_read") {
+		const offset = args.offset;
+		return typeof offset === "number" && Number.isInteger(offset) && offset > 0
+			? offset
+			: undefined;
+	}
+
+	if (toolName === "boundless_edit") {
+		const filePath = args.file_path;
+		const oldString = args.old_string;
+		if (typeof filePath !== "string" || typeof oldString !== "string" || oldString.length === 0) {
+			return undefined;
+		}
+		try {
+			const content = readFileSync(absolutePath(cwd, filePath), "utf-8");
+			return findStringOccurrences(content, oldString).occurrences[0]?.line;
+		} catch {
+			return undefined;
+		}
+	}
+
+	return undefined;
+}
+
 export function toolCallLocations(
 	toolName: string,
 	args: Record<string, unknown>,
 	cwd: string,
 ): ToolCallLocation[] {
-	const paths: string[] = [];
-	const pushHostPath = (value: unknown) => {
+	const locations: ToolCallLocation[] = [];
+	const pushHostPath = (value: unknown, line?: number) => {
 		if (typeof value === "string" && value.length > 0) {
-			paths.push(absolutePath(cwd, value));
+			locations.push(
+				line === undefined
+					? { path: absolutePath(cwd, value) }
+					: { path: absolutePath(cwd, value), line },
+			);
 		}
 	};
 
@@ -115,13 +163,13 @@ export function toolCallLocations(
 		toolName === "boundless_write" ||
 		toolName === "boundless_edit"
 	) {
-		pushHostPath(args.file_path);
+		pushHostPath(args.file_path, followAlongLine(toolName, args, cwd));
 	} else if (toolName === "boundless_copy") {
 		if (args.source === "host") pushHostPath(args.source_path);
 		if (args.target === "host") pushHostPath(args.target_path);
 	}
 
-	return paths.map((path) => ({ path }));
+	return locations;
 }
 
 export function toolCallContent(
