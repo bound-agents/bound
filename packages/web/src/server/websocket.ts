@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
 	acknowledgeClientToolCall,
 	enqueueToolResult,
+	expireClientToolCallsForConnection,
 	getPendingClientToolCalls,
 	insertRow,
 	softDelete,
@@ -1090,20 +1091,33 @@ export function createWebSocketHandler(
 		close(ws: ServerWebSocket<unknown>): void {
 			const conn = clients.get(ws);
 			if (conn && db && siteId) {
-				// Find all pending client tool calls claimed by this connection
-				const allThreads = db
-					.query(
-						`SELECT DISTINCT thread_id FROM dispatch_queue
-						 WHERE event_type = 'client_tool_call' AND status = 'pending' AND claimed_by = ?`,
-					)
-					.all(conn.connectionId) as Array<{ thread_id: string }>;
-
-				for (const row of allThreads) {
-					const threadId = row.thread_id;
-					const pending = getPendingClientToolCalls(db, threadId);
-					const claimedByThisConnection = pending.filter((e) => e.claimed_by === conn.connectionId);
-					if (claimedByThisConnection.length > 0) {
-						emitToolCancel(claimedByThisConnection, threadId, "session_reset", conn.connectionId);
+				// A closing connection can never return results for the client tool
+				// calls it was handling. Resolve them to a terminal 'expired' state
+				// (both 'pending' and delivered-but-unanswered 'processing'), synthesize
+				// paired error tool_results, and clear the resume barrier so the thread
+				// isn't wedged at one-message-per-turn on the next bump.
+				//
+				// Previously this scanned `status = 'pending'` only, so a call that had
+				// been delivered (→ 'processing') was missed entirely; and even for the
+				// rows it found, `emitToolCancel` writes the paired result but never
+				// flips the dispatch_queue status, so `hasPendingClientToolCalls` stayed
+				// true forever and `server.ts` returned after one tool every turn. An
+				// editor restart re-claims the orphan to the new connection (see
+				// redeliverPendingToolCalls), defeating the TTL expiry scan's live-session
+				// exclusion (1c0027f6) — so connection-close is the only seam that can
+				// reliably reap a delivered-but-unanswered call. The two are complementary:
+				// the TTL scan spares calls a live session may still complete; close reaps
+				// calls whose session just went away.
+				const expired = expireClientToolCallsForConnection(db, conn.connectionId);
+				if (expired.length > 0) {
+					const byThread = new Map<string, typeof expired>();
+					for (const entry of expired) {
+						const list = byThread.get(entry.thread_id) ?? [];
+						list.push(entry);
+						byThread.set(entry.thread_id, list);
+					}
+					for (const [threadId, entries] of byThread) {
+						emitToolCancel(entries, threadId, "session_reset", conn.connectionId);
 					}
 				}
 
