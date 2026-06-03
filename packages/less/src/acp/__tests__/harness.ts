@@ -63,6 +63,8 @@ export interface MockBoundClient {
 	emitStreamChunk(threadId: string, chunk: WsStreamChunk): void;
 	/** Drive a thread:status event. */
 	emitThreadStatus(threadId: string, active: boolean): void;
+	/** Drive a message:created event (e.g. a daemon `role: "alert"` broadcast). */
+	emitMessageCreated(message: Partial<Message> & { thread_id: string; role: string }): void;
 	/** Invoke the registered tool-call handler and return its result. */
 	invokeToolCall(call: ToolCallRequest): Promise<ToolCallResult>;
 	/** Set the messages returned by listMessages (for load replay). */
@@ -168,6 +170,9 @@ export function mockBoundClient(): MockBoundClient {
 				tokens: 0,
 				model: null,
 			});
+		},
+		emitMessageCreated(message) {
+			listeners.get("message:created")?.(message);
 		},
 		async invokeToolCall(call) {
 			if (!toolCallHandler) throw new Error("no tool call handler registered");

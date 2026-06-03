@@ -391,3 +391,51 @@ describe("AcpSession streaming text", () => {
 		]);
 	});
 });
+
+describe("AcpSession turn-fatal alert propagation", () => {
+	it("rejects the prompt with an error when a fatal alert arrives and no assistant text was produced", async () => {
+		const { session } = setup();
+		const promise = session.runPrompt("hi");
+		session.handleThreadStatus(true); // daemon went active
+		session.handleAlert("Error: inference timed out after 300s");
+		session.handleThreadStatus(false); // idle → fatal turn, reject
+		await expect(promise).rejects.toThrow(/inference timed out/);
+	});
+
+	it("surfaces the alert to the editor as agent_message_chunk text", async () => {
+		const { session, rec } = setup();
+		const promise = session.runPrompt("hi");
+		session.handleThreadStatus(true);
+		session.handleAlert("Error: boom");
+		session.handleThreadStatus(false);
+		await promise.catch(() => {}); // rejection asserted in the test above
+		const texts = rec.updates
+			.filter((u) => u.sessionUpdate === "agent_message_chunk")
+			.map((u) => (u as { content: { text: string } }).content.text);
+		expect(texts.some((t) => t.includes("boom"))).toBe(true);
+	});
+
+	it("resolves end_turn when an alert precedes assistant text (informational, e.g. model fallback)", async () => {
+		const { session } = setup();
+		const promise = session.runPrompt("hi");
+		session.handleThreadStatus(true);
+		// Non-fatal alert: model unavailable, falling back to a same-tier model.
+		session.handleAlert('Model "x" unavailable. Using same-tier alternative "y".');
+		// The turn then produces a real assistant response and completes normally.
+		await session.handleStreamChunk({ type: "text", content: "hello" });
+		session.handleThreadStatus(false);
+		const res = await promise;
+		expect(res.stopReason).toBe("end_turn");
+	});
+
+	it("prefers cancelled over a fatal alert when the turn was cancelled", async () => {
+		const { session } = setup();
+		const promise = session.runPrompt("hi");
+		session.handleThreadStatus(true);
+		await session.cancel();
+		session.handleAlert("Error: aborted mid-flight");
+		session.handleThreadStatus(false);
+		const res = await promise;
+		expect(res.stopReason).toBe("cancelled");
+	});
+});

@@ -378,6 +378,19 @@ export class BoundAcpAgent implements Agent {
 			if (entry) entry.session.handleThreadStatus(data.active);
 		});
 
+		// Daemon alerts (`role: "alert"`) carry inference timeouts and
+		// non-retryable LLM errors. They are broadcast as messages, NOT over the
+		// response stream, so without this the editor never sees them and a failed
+		// turn looks like a silent success. Route them to the session, which
+		// surfaces the text and fails the prompt when the turn produced no output.
+		this.opts.client.on("message:created", (msg) => {
+			if (msg.role !== "alert") return;
+			const entry = this.sessions.get(msg.thread_id);
+			if (!entry) return;
+			const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+			entry.session.handleAlert(text);
+		});
+
 		this.opts.client.onToolCall(async (call) => {
 			const entry = this.sessions.get(call.thread_id);
 			if (!entry) {
