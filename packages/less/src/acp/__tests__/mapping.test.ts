@@ -382,6 +382,21 @@ describe("messageToSessionUpdate", () => {
 		]);
 	});
 
+	it("marks an unpaired tool_use as failed when a resolved-id set is supplied", () => {
+		const content = JSON.stringify([
+			{ type: "tool_use", id: "tooluse_done", name: "boundless_read", input: { file_path: "/a" } },
+			{ type: "tool_use", id: "tooluse_orphan", name: "boundless_bash", input: { command: "x" } },
+		]);
+		const resolved = new Set(["tooluse_done"]);
+		const updates = messageToSessionUpdate(
+			{ ...base, role: "tool_call", content, tool_name: null },
+			resolved,
+		);
+		expect(updates).toHaveLength(2);
+		expect(updates[0]).toMatchObject({ toolCallId: "tooluse_done", status: "completed" });
+		expect(updates[1]).toMatchObject({ toolCallId: "tooluse_orphan", status: "failed" });
+	});
+
 	it("emits one tool_call per tool_use block for parallel calls", () => {
 		const content = JSON.stringify([
 			{ type: "tool_use", id: "tooluse_A", name: "boundless_read", input: { file_path: "/a" } },

@@ -375,8 +375,17 @@ function parseContentBlocks(content: string): LlmContentBlock[] | null {
  *
  * Returns [] for roles that have no client-visible replay representation
  * (system/developer/alert/purge are internal context plumbing).
+ *
+ * `resolvedToolCallIds`, when provided, is the set of tool-use ids that have a
+ * matching `tool_result` row in the transcript. A `tool_use` whose id is absent
+ * from the set was dispatched but never completed (an interrupted turn), so it
+ * replays as `failed` rather than falsely as `completed`. Omitting the set
+ * preserves the optimistic `completed` default.
  */
-export function messageToSessionUpdate(message: Message): SessionUpdate[] {
+export function messageToSessionUpdate(
+	message: Message,
+	resolvedToolCallIds?: ReadonlySet<string>,
+): SessionUpdate[] {
 	switch (message.role) {
 		case "user":
 			return [
@@ -418,12 +427,13 @@ export function messageToSessionUpdate(message: Message): SessionUpdate[] {
 						});
 					}
 				} else if (block.type === "tool_use") {
+					const completed = resolvedToolCallIds ? resolvedToolCallIds.has(block.id) : true;
 					updates.push({
 						sessionUpdate: "tool_call",
 						toolCallId: block.id,
 						title: toolCallTitle(block.name, block.input),
 						kind: toolNameToKind(block.name),
-						status: "completed",
+						status: completed ? "completed" : "failed",
 						rawInput: block.input,
 					});
 				}
