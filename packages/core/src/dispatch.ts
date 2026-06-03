@@ -233,14 +233,38 @@ export function getPendingClientToolCalls(db: Database, threadId: string): Dispa
  * Expire stale client tool calls that exceeded TTL.
  * Returns the list of expired entries.
  * Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races.
+ *
+ * `excludeThreadIds` skips entries whose thread is in the set. The TTL clock
+ * starts at enqueue and does not reset, so a call that legitimately holds for a
+ * passenger — a human deliberating at a permission gate, a slow local exec —
+ * burns the same window as a genuinely stuck call. The expiry scan passes the
+ * threads that still have a live client session here so those calls aren't
+ * reaped out from under a connected client; a dead connection has no entry in
+ * the set and expires as before. Liveness is defined in `delegation.ts`
+ * (`getClientSessions`), which lives above `core` in the dep graph, so the
+ * caller resolves the set and hands it down rather than core reaching up for it.
  */
 export function expireClientToolCalls(
 	db: Database,
 	ttlMs: number,
 	threadId?: string,
+	excludeThreadIds?: readonly string[],
 ): DispatchEntry[] {
 	const now = new Date().toISOString();
 	const cutoff = new Date(Date.now() - ttlMs).toISOString();
+
+	const conditions = ["event_type = ?", "status IN ('pending', 'processing')", "created_at < ?"];
+	const params: string[] = [CLIENT_TOOL_CALL, cutoff];
+	if (threadId) {
+		conditions.push("thread_id = ?");
+		params.push(threadId);
+	}
+	const excluded = excludeThreadIds?.filter((t) => t.length > 0) ?? [];
+	if (excluded.length > 0) {
+		conditions.push(`thread_id NOT IN (${excluded.map(() => "?").join(", ")})`);
+		params.push(...excluded);
+	}
+	const whereClause = conditions.join(" AND ");
 
 	// Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races
 	// in multi-process deployments. IMMEDIATE acquires a write lock before the
@@ -248,35 +272,15 @@ export function expireClientToolCalls(
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		// Get the entries that will expire
-		const expired = threadId
-			? (db
-					.prepare(
-						`SELECT * FROM dispatch_queue
-					 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ? AND thread_id = ?`,
-					)
-					.all(CLIENT_TOOL_CALL, cutoff, threadId) as DispatchEntry[])
-			: (db
-					.prepare(
-						`SELECT * FROM dispatch_queue
-					 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ?`,
-					)
-					.all(CLIENT_TOOL_CALL, cutoff) as DispatchEntry[]);
+		const expired = db
+			.prepare(`SELECT * FROM dispatch_queue WHERE ${whereClause}`)
+			.all(...params) as DispatchEntry[];
 
 		// Update the entries to expired status
 		if (expired.length > 0) {
-			if (threadId) {
-				db.prepare(
-					`UPDATE dispatch_queue
-				 SET status = 'expired', modified_at = ?
-				 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ? AND thread_id = ?`,
-				).run(now, CLIENT_TOOL_CALL, cutoff, threadId);
-			} else {
-				db.prepare(
-					`UPDATE dispatch_queue
-				 SET status = 'expired', modified_at = ?
-				 WHERE event_type = ? AND status IN ('pending', 'processing') AND created_at < ?`,
-				).run(now, CLIENT_TOOL_CALL, cutoff);
-			}
+			db.prepare(
+				`UPDATE dispatch_queue SET status = 'expired', modified_at = ? WHERE ${whereClause}`,
+			).run(now, ...params);
 		}
 
 		db.exec("COMMIT");

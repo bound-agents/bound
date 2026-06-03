@@ -31,6 +31,7 @@ export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model
 // Export delegation
 export {
 	getClientSessionDelegationTarget,
+	getClientSessions,
 	getDelegationTarget,
 	getRecentToolCalls,
 	hasLocalClientSession,

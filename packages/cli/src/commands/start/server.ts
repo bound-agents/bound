@@ -13,6 +13,7 @@ import {
 	createRelayOutboxEntry,
 	generateThreadTitle,
 	getClientSessionDelegationTarget,
+	getClientSessions,
 	getDelegationTarget,
 	hasLocalClientSession,
 	isWarmPokeNotificationPayload,
@@ -986,7 +987,20 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		const expiryScanInterval = setInterval(() => {
 			try {
-				const expired = expireClientToolCalls(appContext.db, CLIENT_TOOL_CALL_TTL_MS);
+				// A client tool call holding for a live session — a human at a
+				// permission gate, a slow local exec — is not stuck; the TTL clock
+				// starts at enqueue and never resets, so without this it would reap
+				// healthy calls. Exclude threads whose client is still connected;
+				// a dead connection has no live session and expires as before.
+				const liveThreadIds = getClientSessions(appContext.db)
+					.filter((s) => s.live)
+					.map((s) => s.threadId);
+				const expired = expireClientToolCalls(
+					appContext.db,
+					CLIENT_TOOL_CALL_TTL_MS,
+					undefined,
+					liveThreadIds,
+				);
 				if (expired.length > 0) {
 					// Group by thread_id
 					const threadIds = new Set(expired.map((e) => e.thread_id));

@@ -714,6 +714,63 @@ describe("expireClientToolCalls", () => {
 		expect(recentRow.status).toBe("pending");
 	});
 
+	it("does not expire entries for threads in the exclusion set", () => {
+		const liveThread = randomUUID();
+		const deadThread = randomUUID();
+		const connectionId = "ws-conn-123";
+		const payload = {
+			call_id: "call-456",
+			tool_name: "boundless_write",
+			arguments: { path: "/tmp/x" },
+		};
+
+		const oldTime = new Date(Date.now() - 2 * 3600_000).toISOString();
+		const liveId = randomUUID();
+		const deadId = randomUUID();
+
+		db.run(
+			"INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at) VALUES (?, ?, 'processing', ?, ?, ?, ?, ?)",
+			[
+				liveId,
+				liveThread,
+				CLIENT_TOOL_CALL,
+				JSON.stringify(payload),
+				connectionId,
+				oldTime,
+				oldTime,
+			],
+		);
+		db.run(
+			"INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at) VALUES (?, ?, 'processing', ?, ?, ?, ?, ?)",
+			[
+				deadId,
+				deadThread,
+				CLIENT_TOOL_CALL,
+				JSON.stringify(payload),
+				connectionId,
+				oldTime,
+				oldTime,
+			],
+		);
+
+		// liveThread has a live client session — its call is holding for a
+		// passenger (human approval / slow local exec), not stuck. Exclude it.
+		const expired = expireClientToolCalls(db, 3600_000, undefined, [liveThread]);
+
+		expect(expired).toHaveLength(1);
+		expect(expired[0].thread_id).toBe(deadThread);
+
+		const liveRow = db
+			.query("SELECT status FROM dispatch_queue WHERE message_id = ?")
+			.get(liveId) as { status: string };
+		expect(liveRow.status).toBe("processing");
+
+		const deadRow = db
+			.query("SELECT status FROM dispatch_queue WHERE message_id = ?")
+			.get(deadId) as { status: string };
+		expect(deadRow.status).toBe("expired");
+	});
+
 	it("expires only entries for specified thread when threadId provided", () => {
 		const thread1 = randomUUID();
 		const thread2 = randomUUID();
