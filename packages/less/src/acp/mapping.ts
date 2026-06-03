@@ -210,6 +210,25 @@ export function toolCallContent(
 		}
 	}
 
+	if (toolName === "boundless_write") {
+		const filePath = typeof args.file_path === "string" ? args.file_path : "";
+		const newText = typeof args.content === "string" ? args.content : undefined;
+		if (filePath && newText !== undefined) {
+			const absPath = absolutePath(cwd, filePath);
+			// oldText is the file's *actual* prior state so the editor can render a
+			// real before/after on an overwrite. A missing file is the only case
+			// where there is no prior state: oldText: null renders as all-additions,
+			// which is the truth for a brand-new file (and previews what's created).
+			let oldText: string | null = null;
+			try {
+				oldText = readFileSync(absPath, "utf-8");
+			} catch {
+				oldText = null;
+			}
+			return [{ type: "diff", path: absPath, oldText, newText }];
+		}
+	}
+
 	return [];
 }
 
