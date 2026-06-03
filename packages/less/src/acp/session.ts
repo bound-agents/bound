@@ -401,13 +401,24 @@ export class AcpSession {
 			const shellOutput = isShellToolName(toolName)
 				? shellTerminalOutput(toolName, callId, result.content)
 				: null;
+			// A diff sent in the pending frame is the editor's rendered
+			// representation of the change. ACP tool_call_update content
+			// *replaces* the collection, so sending the tool's text result on a
+			// successful completion would clobber the diff (and edits finish in
+			// milliseconds, so the diff never stays on screen). On success, omit
+			// content entirely — delta semantics leave the diff in place. On
+			// failure, the edit did not apply, so surface the error text instead.
+			// Matches the reference ACP shim (Edit/Write return `{}` on completion).
+			const preservesDiff = !result.isError && content.some((c) => c.type === "diff");
 			await this.send({
 				sessionUpdate: "tool_call_update",
 				toolCallId: callId,
 				status,
 				...(shellOutput
 					? { _meta: shellOutput.meta, rawOutput: shellOutput.rawOutput }
-					: { content: toolResultToAcpContent(result.content) }),
+					: preservesDiff
+						? {}
+						: { content: toolResultToAcpContent(result.content) }),
 			});
 			return {
 				call_id: callId,
