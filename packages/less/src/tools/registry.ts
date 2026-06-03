@@ -2,6 +2,8 @@ import { join } from "node:path";
 import type { ToolDefinition } from "@bound/client";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerConfig } from "../config";
+import type { McpServerManager } from "../mcp/manager";
+import { proxyToolCall } from "../mcp/proxy";
 import { createBashTool } from "./bash";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
@@ -23,11 +25,12 @@ export interface BuildToolSetResult {
 
 export function buildToolSet(
 	_cwd: string,
-	_hostname: string,
+	hostname: string,
 	mcpTools?: Map<string, { tools: Tool[]; config: McpServerConfig }>,
 	confirmFn?: (toolName: string) => Promise<boolean>,
 	boundUrl?: string,
 	shell?: ResolvedShell,
+	mcpManager?: McpServerManager,
 ): BuildToolSetResult {
 	const resolvedShell = shell ?? resolveShell(undefined);
 	const toolDefinitions: ToolDefinition[] = [];
@@ -165,14 +168,14 @@ export function buildToolSet(
 	];
 
 	toolDefinitions.push(...coreToolDefs);
-	handlers.set("boundless_read", createReadTool(_hostname));
-	handlers.set("boundless_write", createWriteTool(_hostname));
-	handlers.set("boundless_edit", createEditTool(_hostname));
-	handlers.set(resolvedShell.toolName, createBashTool(_hostname, resolvedShell));
+	handlers.set("boundless_read", createReadTool(hostname));
+	handlers.set("boundless_write", createWriteTool(hostname));
+	handlers.set("boundless_edit", createEditTool(hostname));
+	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell));
 	handlers.set(
 		"boundless_copy",
 		createCopyTool({
-			hostname: _hostname,
+			hostname: hostname,
 			boundUrl: boundUrl ?? "http://localhost:3001",
 		}),
 	);
@@ -261,26 +264,43 @@ export function buildToolSet(
 				// Check if this tool requires confirmation (AC6.5)
 				const requiresConfirmation = config.confirm?.includes(tool.name) ?? false;
 
-				// For MCP tools, we don't have actual handlers - they would be
-				// proxied through the MCP server. This is a placeholder.
-				// The actual handler would be implemented in a different layer.
-				const baseHandler = async (): Promise<ToolResult> => {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `MCP tool ${mcpToolName} not directly executable`,
-							},
-						],
-					};
+				// MCP tools execute by proxying the call through the server
+				// manager to the live MCP client. When no manager is wired (e.g.
+				// a tool set built purely for definitions), fall back to a clear
+				// error rather than silently dead-ending.
+				const baseHandler: ToolHandler = async (
+					args: Record<string, unknown>,
+					signal: AbortSignal,
+					_cwd: string,
+				): Promise<ToolResult> => {
+					if (!mcpManager) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `MCP tool ${mcpToolName} not directly executable: no MCP server manager available`,
+								},
+							],
+							isError: true,
+						};
+					}
+					const blocks = await proxyToolCall(
+						mcpManager,
+						mcpToolName,
+						args,
+						signal,
+						hostname,
+						toolNameMapping,
+					);
+					return { content: blocks };
 				};
 
 				// Wrap with confirmation gate if needed (AC6.5)
 				if (requiresConfirmation && confirmFn) {
 					const handler: ToolHandler = async (
-						_args: Record<string, unknown>,
-						_signal: AbortSignal,
-						_cwd: string,
+						args: Record<string, unknown>,
+						signal: AbortSignal,
+						cwd: string,
 					): Promise<ToolResult> => {
 						const confirmed = await confirmFn(mcpToolName);
 						if (!confirmed) {
@@ -294,7 +314,7 @@ export function buildToolSet(
 								isError: true,
 							};
 						}
-						return baseHandler();
+						return baseHandler(args, signal, cwd);
 					};
 					handlers.set(mcpToolName, handler);
 				} else {
