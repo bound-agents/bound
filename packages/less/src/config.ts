@@ -37,6 +37,7 @@ const mcpServerHttpSchema = z.object({
 	transport: z.literal("http"),
 	name: z.string(),
 	url: z.string(),
+	headers: z.record(z.string(), z.string()).optional(),
 	enabled: z.boolean().default(true),
 	allowTools: z.array(z.string()).optional(),
 	confirm: z.array(z.string()).optional(),

@@ -60,6 +60,9 @@ function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
 		if (a.url !== b.url) {
 			return false;
 		}
+		if (JSON.stringify(a.headers ?? {}) !== JSON.stringify(b.headers ?? {})) {
+			return false;
+		}
 	}
 
 	return true;
@@ -147,7 +150,10 @@ export class McpServerManager {
 				});
 			} else if (config.transport === "http") {
 				// TypeScript discriminated union narrowing — config is now HttpConfig type
-				transport = new StreamableHTTPClientTransport(new URL(config.url));
+				transport = new StreamableHTTPClientTransport(
+					new URL(config.url),
+					config.headers ? { requestInit: { headers: config.headers } } : undefined,
+				);
 			} else {
 				// Exhaustiveness check — config is never type if a new transport is added
 				throw new Error(`Unknown transport type: ${(config as { transport: string }).transport}`);

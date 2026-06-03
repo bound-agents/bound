@@ -24,8 +24,10 @@ export interface AcpMcpConversion {
  * Transport coverage mirrors what boundless's config schema supports:
  *  - stdio  -> stdio (command/args/env). The bare ACP variant carries no `type`
  *             discriminant; an explicit `type: "stdio"` is treated identically.
- *  - http   -> http (url). boundless's http config has no headers field, so any
- *             ACP-supplied headers are dropped with a degraded-mapping warning.
+ *  - http   -> http (url + headers). ACP supplies headers as an array of
+ *             {name, value} pairs; boundless's http config and the MCP SDK both
+ *             want a Record<string,string>, so the array is folded into a record.
+ *             A later duplicate name wins, matching header-set semantics.
  *  - sse    -> unsupported (no boundless equivalent); skipped with a warning.
  *  - acp    -> unsupported (experimental nested-ACP transport); skipped.
  */
@@ -38,15 +40,21 @@ export function acpMcpServersToConfigs(servers: readonly McpServer[]): AcpMcpCon
 		const name = (server as { name?: string }).name ?? "unnamed";
 
 		if (type === "http") {
-			const http = server as { name: string; url: string; headers?: unknown[] };
-			if (Array.isArray(http.headers) && http.headers.length > 0) {
-				warnings.push({
-					name,
-					mapped: true,
-					reason: `${http.headers.length} HTTP header(s) dropped — boundless http config has no headers field`,
-				});
-			}
-			configs.push({ transport: "http", name: http.name, url: http.url, enabled: true });
+			const http = server as {
+				name: string;
+				url: string;
+				headers?: Array<{ name: string; value: string }>;
+			};
+			const headers: Record<string, string> = {};
+			for (const entry of http.headers ?? []) headers[entry.name] = entry.value;
+			const config: McpServerConfig = {
+				transport: "http",
+				name: http.name,
+				url: http.url,
+				enabled: true,
+			};
+			if (Object.keys(headers).length > 0) config.headers = headers;
+			configs.push(config);
 		} else if (type === "sse") {
 			warnings.push({
 				name,
