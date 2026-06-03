@@ -23,6 +23,8 @@ import {
 	type CloseSessionResponse,
 	type InitializeRequest,
 	type InitializeResponse,
+	type ListSessionsRequest,
+	type ListSessionsResponse,
 	type LoadSessionRequest,
 	type LoadSessionResponse,
 	type NewSessionRequest,
@@ -47,6 +49,7 @@ import { buildToolSet } from "../tools/registry";
 import type { ResolvedShell } from "../tools/shell";
 import { messageToSessionUpdate, promptToText } from "./mapping";
 import { AcpSession } from "./session";
+import { listRememberedAcpSessions, rememberAcpSession } from "./session-registry";
 
 export interface BoundAcpAgentOptions {
 	client: BoundClient;
@@ -100,6 +103,7 @@ export class BoundAcpAgent implements Agent {
 				loadSession: true,
 				sessionCapabilities: {
 					close: {},
+					list: {},
 				},
 				promptCapabilities: {
 					image: false,
@@ -149,6 +153,40 @@ export class BoundAcpAgent implements Agent {
 			}
 		}
 		return { configOptions: await this.modelConfigOptions(entry.modelId) };
+	}
+
+	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+		const remembered = listRememberedAcpSessions(this.opts.configDir);
+		const rememberedById = new Map(
+			remembered
+				.filter((record) => !params.cwd || record.cwd === params.cwd)
+				.map((record) => [record.sessionId, record]),
+		);
+		if (rememberedById.size === 0) return { sessions: [] };
+
+		const threads = await this.opts.client.listThreads({ includeEmpty: true });
+		const sessions = threads
+			.filter((thread) => rememberedById.has(thread.id))
+			.map((thread) => {
+				const record = rememberedById.get(thread.id);
+				if (!record) throw new Error("missing remembered ACP session");
+				return {
+					sessionId: thread.id,
+					cwd: record.cwd,
+					title: thread.title,
+					updatedAt: thread.last_message_at ?? thread.modified_at ?? record.updatedAt,
+				};
+			});
+
+		const offset = params.cursor ? Number.parseInt(params.cursor, 10) : 0;
+		const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
+		const pageSize = 100;
+		const page = sessions.slice(start, start + pageSize);
+		const nextOffset = start + pageSize;
+		return {
+			sessions: page,
+			...(nextOffset < sessions.length ? { nextCursor: String(nextOffset) } : {}),
+		};
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -250,6 +288,7 @@ export class BoundAcpAgent implements Agent {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
+		rememberAcpSession(this.opts.configDir, threadId, cwd);
 
 		const session = new AcpSession({
 			sessionId: threadId,

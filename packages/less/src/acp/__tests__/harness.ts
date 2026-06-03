@@ -51,6 +51,7 @@ export interface MockBoundClient {
 	client: BoundClient;
 	calls: {
 		createThread: number;
+		listThreads: number;
 		subscribe: string[];
 		unsubscribe: string[];
 		sendMessage: Array<{ threadId: string; content: string; modelId?: string }>;
@@ -66,6 +67,8 @@ export interface MockBoundClient {
 	invokeToolCall(call: ToolCallRequest): Promise<ToolCallResult>;
 	/** Set the messages returned by listMessages (for load replay). */
 	setMessages(messages: Message[]): void;
+	/** Set the threads returned by listThreads. */
+	setThreads(threads: Thread[]): void;
 }
 
 /** Builds a mock BoundClient capturing calls and exposing event injectors. */
@@ -73,9 +76,11 @@ export function mockBoundClient(): MockBoundClient {
 	const listeners = new Map<string, (data: unknown) => void>();
 	let toolCallHandler: ((call: ToolCallRequest) => Promise<ToolCallResult>) | null = null;
 	let messages: Message[] = [];
+	let threads: Thread[] = [];
 
 	const calls: MockBoundClient["calls"] = {
 		createThread: 0,
+		listThreads: 0,
 		subscribe: [],
 		unsubscribe: [],
 		sendMessage: [],
@@ -108,9 +113,15 @@ export function mockBoundClient(): MockBoundClient {
 		getBaseUrl: () => "http://localhost:3001",
 		createThread: async (): Promise<Thread> => {
 			calls.createThread += 1;
-			return makeThread(`thread-${calls.createThread}`);
+			const thread = makeThread(`thread-${calls.createThread}`);
+			threads = [thread, ...threads.filter((entry) => entry.id !== thread.id)];
+			return thread;
 		},
 		getThread: async (id: string): Promise<Thread> => makeThread(id),
+		listThreads: async (): Promise<Thread[]> => {
+			calls.listThreads += 1;
+			return threads;
+		},
 		listMessages: async (): Promise<Message[]> => messages,
 		subscribe: (id: string) => {
 			calls.subscribe.push(id);
@@ -165,10 +176,13 @@ export function mockBoundClient(): MockBoundClient {
 		setMessages(next) {
 			messages = next;
 		},
+		setThreads(next) {
+			threads = next;
+		},
 	};
 }
 
-function makeThread(id: string): Thread {
+export function makeThread(id: string): Thread {
 	return {
 		id,
 		user_id: "u",

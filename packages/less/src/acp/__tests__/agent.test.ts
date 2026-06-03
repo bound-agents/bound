@@ -7,8 +7,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Message, WsStreamChunk } from "@bound/shared";
-import { type MockBoundClient, makeAcpHarness, mockBoundClient } from "./harness";
+import { type MockBoundClient, makeAcpHarness, makeThread, mockBoundClient } from "./harness";
 
 /** Resolves after pending microtasks + a macrotask so wire RPCs settle. */
 function flush(): Promise<void> {
@@ -32,6 +35,7 @@ describe("BoundAcpAgent.initialize", () => {
 		expect(res.protocolVersion).toBe(PROTOCOL_VERSION);
 		expect(res.agentCapabilities?.loadSession).toBe(true);
 		expect(res.agentCapabilities?.sessionCapabilities?.close).toEqual({});
+		expect(res.agentCapabilities?.sessionCapabilities?.list).toEqual({});
 		expect(res.agentCapabilities?.promptCapabilities?.image).toBe(false);
 		expect(res.agentCapabilities?.promptCapabilities?.embeddedContext).toBe(true);
 		expect(res.agentInfo?.name).toBe("boundless");
@@ -58,6 +62,58 @@ describe("BoundAcpAgent.newSession", () => {
 				currentValue: "model-default",
 			},
 		]);
+	});
+});
+
+describe("BoundAcpAgent.listSessions", () => {
+	it("lists locally remembered ACP sessions with their cwd", async () => {
+		const configDir = mkdtempSync(join(tmpdir(), "bound-acp-list-"));
+		try {
+			const mock = mockBoundClient();
+			const { agentProxy } = makeAcpHarness(mock, { configDir });
+			await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+			const session = await agentProxy.newSession({ cwd: "/work", mcpServers: [] });
+			if (!agentProxy.listSessions) throw new Error("listSessions not implemented");
+
+			const response = await agentProxy.listSessions({});
+
+			expect(mock.calls.listThreads).toBe(1);
+			expect(response.sessions).toEqual([
+				{
+					sessionId: session.sessionId,
+					cwd: "/work",
+					title: null,
+					updatedAt: new Date(0).toISOString(),
+				},
+			]);
+		} finally {
+			rmSync(configDir, { recursive: true, force: true });
+		}
+	});
+
+	it("records loaded sessions and filters by cwd", async () => {
+		const configDir = mkdtempSync(join(tmpdir(), "bound-acp-list-"));
+		try {
+			const mock = mockBoundClient();
+			const loadedThread = makeThread("loaded-thread");
+			mock.setThreads([loadedThread, makeThread("other-thread")]);
+			const { agentProxy } = makeAcpHarness(mock, { configDir });
+			await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+			await agentProxy.loadSession?.({ sessionId: "loaded-thread", cwd: "/repo", mcpServers: [] });
+			if (!agentProxy.listSessions) throw new Error("listSessions not implemented");
+
+			expect((await agentProxy.listSessions({ cwd: "/repo" })).sessions).toEqual([
+				{
+					sessionId: "loaded-thread",
+					cwd: "/repo",
+					title: null,
+					updatedAt: new Date(0).toISOString(),
+				},
+			]);
+			expect((await agentProxy.listSessions({ cwd: "/elsewhere" })).sessions).toEqual([]);
+		} finally {
+			rmSync(configDir, { recursive: true, force: true });
+		}
 	});
 });
 
