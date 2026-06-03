@@ -27,6 +27,7 @@ import {
 	type ListSessionsResponse,
 	type LoadSessionRequest,
 	type LoadSessionResponse,
+	type McpServer,
 	type NewSessionRequest,
 	type NewSessionResponse,
 	PROTOCOL_VERSION,
@@ -49,6 +50,7 @@ import { collectToolCallPairing } from "../session/tool-call-pairing";
 import { buildToolSet } from "../tools/registry";
 import type { ResolvedShell } from "../tools/shell";
 import { messageToSessionUpdate, promptToText } from "./mapping";
+import { acpMcpServersToConfigs, mergeMcpConfigs } from "./mcp-config";
 import { AcpSession } from "./session";
 import { listRememberedAcpSessions, rememberAcpSession } from "./session-registry";
 
@@ -124,7 +126,7 @@ export class BoundAcpAgent implements Agent {
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
 		const thread = await this.opts.client.createThread({ interface: "boundless" });
 		const threadId = thread.id;
-		const entry = await this.attachAndRegister(threadId, params.cwd);
+		const entry = await this.attachAndRegister(threadId, params.cwd, params.mcpServers);
 		return {
 			sessionId: threadId,
 			configOptions: await this.modelConfigOptions(entry.modelId),
@@ -144,7 +146,7 @@ export class BoundAcpAgent implements Agent {
 			});
 			throw RequestError.resourceNotFound(threadId);
 		}
-		const entry = await this.attachAndRegister(threadId, params.cwd);
+		const entry = await this.attachAndRegister(threadId, params.cwd, params.mcpServers);
 		// Replay history so the editor can render the prior conversation.
 		const messages = await this.opts.client.listMessages(threadId, { limit: 200 });
 		// A tool_use whose id has no matching tool_result was dispatched but never
@@ -253,13 +255,44 @@ export class BoundAcpAgent implements Agent {
 	 * configures it on the shared client, acquires the per-thread lock, and
 	 * registers the AcpSession. Shared by newSession and loadSession.
 	 */
-	private async attachAndRegister(threadId: string, cwd: string): Promise<SessionEntry> {
+	private async attachAndRegister(
+		threadId: string,
+		cwd: string,
+		mcpServers?: McpServer[],
+	): Promise<SessionEntry> {
 		this.opts.client.subscribe(threadId);
+
+		// Merge any MCP servers the ACP client passed at session init/resume into
+		// boundless's own config-file servers. The config-file entry wins on a name
+		// collision (it's the operator's explicit local choice and may carry secrets
+		// in env that a session param should not silently shadow).
+		let mcpConfigs = this.opts.mcpConfigs;
+		if (mcpServers && mcpServers.length > 0) {
+			const { configs, warnings } = acpMcpServersToConfigs(mcpServers);
+			for (const warning of warnings) {
+				this.opts.logger.warn("acp_mcp_server_conversion", {
+					threadId,
+					name: warning.name,
+					mapped: warning.mapped,
+					reason: warning.reason,
+				});
+			}
+			const { merged, collisions } = mergeMcpConfigs(this.opts.mcpConfigs, configs);
+			if (collisions.length > 0) {
+				this.opts.logger.warn("acp_mcp_server_name_collision", {
+					threadId,
+					collisions,
+					note: "config-file server kept; ACP-passed server of the same name ignored",
+				});
+			}
+			mcpConfigs = merged;
+		}
+
 		await performAttach({
 			client: this.opts.client,
 			threadId,
 			mcpManager: this.opts.mcpManager,
-			mcpConfigs: this.opts.mcpConfigs,
+			mcpConfigs,
 			cwd,
 			hostname: this.opts.hostname,
 			logger: this.opts.logger,

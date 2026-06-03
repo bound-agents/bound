@@ -121,6 +121,12 @@ Example Zed configuration (`~/.config/zed/settings.json`):
 Pass `--url` after `--acp` to target a non-default server. Requires a running bound
 server (`bound start`).
 
+MCP servers the editor passes at session init/resume (Zed's `mcp_servers`) are merged
+into the agent's tool set alongside any servers in `~/.bound/less/mcp.json`. `stdio` and
+`http` transports map through; `sse` and nested-`acp` transports are skipped with a log
+warning. On a name collision the local `mcp.json` entry wins, so a session param can't
+silently shadow an operator-configured server (which may carry secrets in `env`).
+
 ## Project structure
 
 ```
