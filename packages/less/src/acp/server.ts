@@ -146,8 +146,17 @@ export class BoundAcpAgent implements Agent {
 		const entry = await this.attachAndRegister(threadId, params.cwd);
 		// Replay history so the editor can render the prior conversation.
 		const messages = await this.opts.client.listMessages(threadId, { limit: 200 });
+		// A tool_use whose id has no matching tool_result was dispatched but never
+		// completed (interrupted turn); collect the resolved ids so replay can mark
+		// those calls failed rather than falsely completed.
+		const resolvedToolCallIds = new Set<string>();
 		for (const message of messages) {
-			for (const update of messageToSessionUpdate(message)) {
+			if (message.role === "tool_result" && message.tool_name) {
+				resolvedToolCallIds.add(message.tool_name);
+			}
+		}
+		for (const message of messages) {
+			for (const update of messageToSessionUpdate(message, resolvedToolCallIds)) {
 				await this.opts.conn.sessionUpdate({ sessionId: threadId, update });
 			}
 		}
