@@ -337,7 +337,7 @@ describe("WebSocket Reconnect and Expiry (AC7.1-AC7.3)", () => {
 	});
 
 	describe("AC7.1 + AC7.2: Reconnect after disconnect", () => {
-		it("re-delivers on new connection after disconnect", () => {
+		it("reaps a live connection's claimed call on close; reconnect does not re-deliver it", () => {
 			// Create a pending client tool call entry
 			const callId = "call-1";
 			const toolName = "test_tool";
@@ -389,29 +389,52 @@ describe("WebSocket Reconnect and Expiry (AC7.1-AC7.3)", () => {
 
 			handler.message(ws1, subscribeMsg);
 
-			// Verify initial re-delivery
+			// The orphaned call (left by a non-live prior connection) is the
+			// legitimate resume case: ws1 picks it up on subscribe. This is the
+			// real half of AC7.1/AC7.2 and must keep working.
 			const messages1 = (ws1 as unknown as MockWebSocket).getSentMessages();
 			const toolCall1 = messages1.find((msg: any) => msg.type === "tool:call");
 			expect(toolCall1).toBeDefined();
+			expect(toolCall1?.call_id).toBe(callId);
 
-			// Disconnect
+			// Re-delivery claimed the call to ws1 (claimed_by + processing).
+			const claimed = db
+				.prepare("SELECT status, claimed_by FROM dispatch_queue WHERE message_id = ?")
+				.get(entryId) as { status: string; claimed_by: string };
+			expect(claimed.status).toBe("processing");
+
+			// Disconnect. A closing connection can never return the result for a
+			// call it was handling, so close() reaps it: the row goes terminal and
+			// a session_reset error tool_result is synthesized to wake the loop.
+			// Letting a reconnect re-claim the orphan instead would defeat the TTL
+			// expiry scan (the call would look live-owned forever) and wedge the
+			// thread at one-message-per-turn — the bug e921a9cc fixed.
 			handler.close(ws1);
 
-			// Reconnect with new connection
+			const reaped = db
+				.prepare("SELECT status FROM dispatch_queue WHERE message_id = ?")
+				.get(entryId) as { status: string };
+			expect(reaped.status).toBe("expired");
+
+			const errorResult = db
+				.prepare(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ?",
+				)
+				.get(threadId, callId) as { content: string } | null;
+			expect(errorResult?.content).toContain("session_reset");
+
+			// Reconnect with a new connection and re-subscribe.
 			const ws2 = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			handler.open(ws2);
-
-			// Reconfigure tools
 			handler.message(ws2, configMsg);
-
-			// Subscribe to thread
 			handler.message(ws2, subscribeMsg);
 
-			// Should re-deliver again to the new connection
+			// The reaped call must NOT be re-delivered — it's terminally resolved.
+			// Re-delivering it would double-deliver a call the agent loop already
+			// saw fail.
 			const messages2 = (ws2 as unknown as MockWebSocket).getSentMessages();
 			const toolCall2 = messages2.find((msg: any) => msg.type === "tool:call");
-			expect(toolCall2).toBeDefined();
-			expect(toolCall2?.call_id).toBe(callId);
+			expect(toolCall2).toBeUndefined();
 		});
 	});
 });
