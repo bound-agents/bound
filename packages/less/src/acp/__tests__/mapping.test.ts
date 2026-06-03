@@ -9,6 +9,7 @@ import {
 	messageToSessionUpdate,
 	promptToText,
 	streamChunkToSessionUpdate,
+	toolCallContent,
 	toolCallLocations,
 	toolCallMeta,
 	toolNameToKind,
@@ -194,6 +195,51 @@ describe("toolCallLocations", () => {
 				"/work",
 			),
 		).toEqual([{ path: "/work/output.txt" }]);
+	});
+});
+
+describe("toolCallContent", () => {
+	it("diffs a write against the existing file contents (overwrite)", () => {
+		const dir = join("/tmp", `boundless-acp-test-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		try {
+			writeFileSync(join(dir, "a.ts"), "old line 1\nold line 2\n");
+			expect(
+				toolCallContent("boundless_write", { file_path: "a.ts", content: "new line 1\n" }, dir),
+			).toEqual([
+				{
+					type: "diff",
+					path: join(dir, "a.ts"),
+					oldText: "old line 1\nold line 2\n",
+					newText: "new line 1\n",
+				},
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("renders a brand-new write as all-additions (oldText null is the truth)", () => {
+		const dir = join("/tmp", `boundless-acp-test-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		try {
+			// File does not exist on disk — there is no prior state to diff against.
+			expect(
+				toolCallContent("boundless_write", { file_path: "fresh.ts", content: "hello\n" }, dir),
+			).toEqual([{ type: "diff", path: join(dir, "fresh.ts"), oldText: null, newText: "hello\n" }]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("diffs an edit from the args without touching disk", () => {
+		expect(
+			toolCallContent(
+				"boundless_edit",
+				{ file_path: "/tmp/x.ts", old_string: "a", new_string: "b" },
+				"/work",
+			),
+		).toEqual([{ type: "diff", path: "/tmp/x.ts", oldText: "a", newText: "b" }]);
 	});
 });
 
