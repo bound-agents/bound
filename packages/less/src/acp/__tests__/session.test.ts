@@ -175,6 +175,47 @@ describe("AcpSession permission gating", () => {
 		});
 	});
 
+	it("surfaces Zed sandbox authorization metadata for write approvals", async () => {
+		const handlers = new Map([
+			[
+				"boundless_write",
+				async () => ({
+					content: [{ type: "text" as const, text: "wrote" }],
+				}),
+			],
+		]);
+		const { session, rec } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
+
+		const result = await session.handleToolCall(
+			call({
+				call_id: "c-write",
+				tool_name: "boundless_write",
+				arguments: { file_path: "src/generated.ts", content: "export {};" },
+			}),
+		);
+
+		expect(result.is_error).toBeFalsy();
+		const expectedMeta = {
+			tool_name: "boundless_write",
+			sandbox_authorization: { write_paths: ["/work/src/generated.ts"] },
+		};
+		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
+		expect(created).toMatchObject({
+			toolCallId: "c-write",
+			_meta: expectedMeta,
+			title: "Write src/generated.ts",
+			kind: "edit",
+			status: "pending",
+		});
+		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
+			toolCallId: "c-write",
+			_meta: expectedMeta,
+			title: "Write src/generated.ts",
+			kind: "edit",
+			status: "pending",
+		});
+	});
+
 	it("does not execute the handler on reject_once", async () => {
 		let ran = false;
 		const handlers = new Map([

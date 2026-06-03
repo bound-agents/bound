@@ -83,6 +83,20 @@ function absolutePath(cwd: string, filePath: string): string {
 	return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
 }
 
+function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd: string): string[] {
+	if (toolName === "boundless_write" || toolName === "boundless_edit") {
+		const filePath = typeof args.file_path === "string" ? args.file_path : "";
+		return filePath ? [absolutePath(cwd, filePath)] : [];
+	}
+
+	if (toolName === "boundless_copy" && args.target === "host") {
+		const targetPath = typeof args.target_path === "string" ? args.target_path : "";
+		return targetPath ? [absolutePath(cwd, targetPath)] : [];
+	}
+
+	return [];
+}
+
 export function toolCallContent(
 	toolName: string,
 	args: Record<string, unknown>,
@@ -128,14 +142,26 @@ export function toolCallMeta(
 	toolName: string,
 	cwd: string,
 	toolCallId: string,
+	args: Record<string, unknown> = {},
 ): Record<string, unknown> | undefined {
-	if (!isShellToolName(toolName)) return undefined;
-	return {
-		terminal_info: {
+	const meta: Record<string, unknown> = {
+		tool_name: toolName,
+	};
+	if (isShellToolName(toolName)) {
+		meta.terminal_info = {
 			terminal_id: toolCallId,
 			cwd,
-		},
-	};
+		};
+	}
+
+	const writePaths = writePathsForTool(toolName, args, cwd);
+	if (writePaths.length > 0) {
+		meta.sandbox_authorization = {
+			write_paths: writePaths,
+		};
+	}
+
+	return meta;
 }
 
 /**

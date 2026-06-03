@@ -6,6 +6,7 @@ import {
 	messageToSessionUpdate,
 	promptToText,
 	streamChunkToSessionUpdate,
+	toolCallMeta,
 	toolNameToKind,
 	toolResultToAcpContent,
 } from "../mapping";
@@ -20,6 +21,56 @@ describe("toolNameToKind", () => {
 		expect(toolNameToKind("boundless_pwsh")).toBe("execute");
 		expect(toolNameToKind("boundless_mcp_github_search")).toBe("other");
 		expect(toolNameToKind("totally_unknown")).toBe("other");
+	});
+});
+
+describe("toolCallMeta", () => {
+	it("includes Zed's programmatic tool name metadata", () => {
+		expect(toolCallMeta("boundless_read", "/work", "c1")).toEqual({
+			tool_name: "boundless_read",
+		});
+	});
+
+	it("includes terminal metadata for shell tools", () => {
+		expect(toolCallMeta("boundless_bash", "/work", "c-bash", { command: "pwd" })).toEqual({
+			tool_name: "boundless_bash",
+			terminal_info: { terminal_id: "c-bash", cwd: "/work" },
+		});
+	});
+
+	it("includes sandbox authorization write paths for host writes", () => {
+		expect(toolCallMeta("boundless_write", "/work", "c-write", { file_path: "src/a.ts" })).toEqual({
+			tool_name: "boundless_write",
+			sandbox_authorization: { write_paths: ["/work/src/a.ts"] },
+		});
+		expect(toolCallMeta("boundless_edit", "/work", "c-edit", { file_path: "/tmp/a.ts" })).toEqual({
+			tool_name: "boundless_edit",
+			sandbox_authorization: { write_paths: ["/tmp/a.ts"] },
+		});
+		expect(
+			toolCallMeta("boundless_copy", "/work", "c-copy", {
+				source: "sandbox",
+				source_path: "/tmp/a.ts",
+				target: "host",
+				target_path: "copied/a.ts",
+			}),
+		).toEqual({
+			tool_name: "boundless_copy",
+			sandbox_authorization: { write_paths: ["/work/copied/a.ts"] },
+		});
+	});
+
+	it("does not report sandbox write paths for sandbox copy targets", () => {
+		expect(
+			toolCallMeta("boundless_copy", "/work", "c-copy", {
+				source: "host",
+				source_path: "a.ts",
+				target: "sandbox",
+				target_path: "/tmp/a.ts",
+			}),
+		).toEqual({
+			tool_name: "boundless_copy",
+		});
 	});
 });
 
