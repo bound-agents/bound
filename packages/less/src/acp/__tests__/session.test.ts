@@ -219,6 +219,76 @@ describe("AcpSession permission gating", () => {
 		});
 	});
 
+	it("preserves the edit diff on completion (no content overwrite on success)", async () => {
+		const handlers = new Map([
+			[
+				"boundless_edit",
+				async () => ({
+					content: [{ type: "text" as const, text: "Edited a.txt" }],
+				}),
+			],
+		]);
+		const { session, rec } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
+
+		const result = await session.handleToolCall(
+			call({
+				call_id: "c-edit",
+				tool_name: "boundless_edit",
+				arguments: { file_path: "src/x.ts", old_string: "a", new_string: "b" },
+			}),
+		);
+
+		expect(result.is_error).toBeFalsy();
+		// The pending frame carried a diff; ACP tool_call_update content replaces
+		// the collection, so the completion frame must NOT send content on success
+		// or the diff is clobbered. It should leave the diff in place (delta).
+		const completed = rec.updates.find(
+			(u) =>
+				u.sessionUpdate === "tool_call_update" &&
+				(u as { status?: string }).status === "completed" &&
+				(u as { toolCallId?: string }).toolCallId === "c-edit",
+		) as Record<string, unknown> | undefined;
+		expect(completed).toBeDefined();
+		expect(completed).not.toHaveProperty("content");
+		// And the pending frame did carry the diff.
+		const pending = rec.updates.find(
+			(u) =>
+				u.sessionUpdate === "tool_call" && (u as { toolCallId?: string }).toolCallId === "c-edit",
+		) as { content?: Array<{ type: string }> } | undefined;
+		expect(pending?.content?.some((c) => c.type === "diff")).toBe(true);
+	});
+
+	it("surfaces the error text on a failed edit (diff not preserved)", async () => {
+		const handlers = new Map([
+			[
+				"boundless_edit",
+				async () => ({
+					content: [{ type: "text" as const, text: "Error: old_string not found" }],
+					isError: true,
+				}),
+			],
+		]);
+		const { session, rec } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
+
+		const result = await session.handleToolCall(
+			call({
+				call_id: "c-edit-fail",
+				tool_name: "boundless_edit",
+				arguments: { file_path: "src/x.ts", old_string: "a", new_string: "b" },
+			}),
+		);
+
+		expect(result.is_error).toBe(true);
+		const failed = rec.updates.find(
+			(u) =>
+				u.sessionUpdate === "tool_call_update" &&
+				(u as { status?: string }).status === "failed" &&
+				(u as { toolCallId?: string }).toolCallId === "c-edit-fail",
+		) as { content?: Array<{ type: string }> } | undefined;
+		expect(failed).toBeDefined();
+		expect(failed?.content?.length).toBeGreaterThan(0);
+	});
+
 	it("does not execute the handler on reject_once", async () => {
 		let ran = false;
 		const handlers = new Map([
