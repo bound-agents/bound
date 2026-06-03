@@ -14,11 +14,12 @@
  *   completes (`thread:status` active:false) or is cancelled.
  */
 
-import type {
-	AgentSideConnection,
-	PermissionOptionId,
-	PromptResponse,
-	ToolCallStatus,
+import {
+	type AgentSideConnection,
+	type PermissionOptionId,
+	type PromptResponse,
+	RequestError,
+	type ToolCallStatus,
 } from "@agentclientprotocol/sdk";
 import type { BoundClient, ToolCallRequest, ToolCallResult } from "@bound/client";
 import type { WsStreamChunk } from "@bound/shared";
@@ -44,12 +45,24 @@ type PermissionDecision = "allow" | "reject";
 interface TurnState {
 	/** Resolves the pending `prompt()` call. Invoked exactly once. */
 	resolve: (response: PromptResponse) => void;
+	/** Rejects the pending `prompt()` call with a JSON-RPC error. Invoked exactly once. */
+	reject: (err: unknown) => void;
 	/** Set when the client sent `session/cancel` during this turn. */
 	cancelled: boolean;
 	/** True once we've observed the daemon enter the active ("thinking") state. */
 	seenActive: boolean;
 	/** Whether the turn has already been resolved (idempotency guard). */
 	resolved: boolean;
+	/**
+	 * Most recent alert (`role: "alert"`) message text seen this turn, or null.
+	 * The daemon surfaces inference timeouts and non-retryable LLM errors via
+	 * `emitAlert` (a broadcast `alert` message), NOT the response stream. When
+	 * the turn goes idle having produced no assistant text, a recorded alert is
+	 * treated as turn-fatal and rejects the prompt.
+	 */
+	alert: string | null;
+	/** True once an `agent_message_chunk` (real response text) has been sent. */
+	sawAgentText: boolean;
 	/** Daemon-side (native) tool calls surfaced this turn, keyed by tool_use id. */
 	openDaemonToolCalls: Set<string>;
 }
@@ -151,12 +164,15 @@ export class AcpSession {
 	 * is cancelled). The promise is resolved by `handleThreadStatus`.
 	 */
 	runPrompt(text: string): Promise<PromptResponse> {
-		return new Promise<PromptResponse>((resolve) => {
+		return new Promise<PromptResponse>((resolve, reject) => {
 			this.turn = {
 				resolve,
+				reject,
 				cancelled: false,
 				seenActive: false,
 				resolved: false,
+				alert: null,
+				sawAgentText: false,
 				openDaemonToolCalls: new Set(),
 			};
 			this.deps.client.sendMessage(this.deps.sessionId, text, {
@@ -201,6 +217,9 @@ export class AcpSession {
 	async handleStreamChunk(chunk: WsStreamChunk): Promise<void> {
 		const simple = streamChunkToSessionUpdate(chunk);
 		if (simple) {
+			if (simple.sessionUpdate === "agent_message_chunk" && this.turn) {
+				this.turn.sawAgentText = true;
+			}
 			await this.send(simple);
 			return;
 		}
@@ -270,7 +289,39 @@ export class AcpSession {
 			return;
 		}
 		if (!turn.seenActive) return;
-		this.resolveTurn(turn.cancelled ? "cancelled" : "end_turn");
+		if (turn.cancelled) {
+			this.resolveTurn("cancelled");
+			return;
+		}
+		// A turn-fatal alert (inference timeout, non-retryable LLM error) arrives
+		// via `emitAlert` — NOT the response stream — and the daemon still reports
+		// the thread idle afterward. If the turn produced no assistant text, treat
+		// the alert as fatal and reject the prompt with a JSON-RPC error so the
+		// editor surfaces a real failure instead of a silent empty turn. An alert
+		// followed by assistant text (e.g. a model-fallback notice) is informational
+		// and resolves normally.
+		if (turn.alert && !turn.sawAgentText) {
+			this.rejectTurn(RequestError.internalError(undefined, turn.alert));
+			return;
+		}
+		this.resolveTurn("end_turn");
+	}
+
+	/**
+	 * Records a daemon alert (`role: "alert"` broadcast message) for the active
+	 * turn and surfaces it to the editor as assistant text. Whether it is treated
+	 * as turn-fatal is decided at idle (see `handleThreadStatus`): an alert with
+	 * no subsequent assistant text rejects the prompt; otherwise it is shown as an
+	 * informational notice and the turn completes normally.
+	 */
+	handleAlert(content: string): void {
+		if (this.turn && !this.turn.resolved) {
+			this.turn.alert = content;
+		}
+		void this.send({
+			sessionUpdate: "agent_message_chunk",
+			content: { type: "text", text: `\n\n${content}` },
+		});
 	}
 
 	/**
@@ -492,6 +543,27 @@ export class AcpSession {
 		}
 		this.turn = null;
 		turn.resolve({ stopReason });
+	}
+
+	/**
+	 * Fails the pending prompt with a JSON-RPC error. Used when a turn-fatal
+	 * alert (inference timeout, non-retryable LLM error) ends the turn without a
+	 * response, so the editor surfaces a real failure rather than a silent
+	 * `end_turn`. Mirrors `resolveTurn`'s open-tool-call cleanup.
+	 */
+	private rejectTurn(err: unknown): void {
+		const turn = this.turn;
+		if (!turn || turn.resolved) return;
+		turn.resolved = true;
+		for (const id of turn.openDaemonToolCalls) {
+			void this.send({
+				sessionUpdate: "tool_call_update",
+				toolCallId: id,
+				status: "failed",
+			});
+		}
+		this.turn = null;
+		turn.reject(err);
 	}
 
 	private async send(

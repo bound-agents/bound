@@ -149,6 +149,32 @@ describe("BoundAcpAgent.prompt", () => {
 		expect(texts.join("")).toBe("hi there");
 	});
 
+	it("rejects the prompt when a turn-fatal alert ends the turn with no output", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, recording, sessionId } = await newSession(mock);
+
+		const promptP = agentProxy.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] });
+		await flush();
+
+		mock.emitThreadStatus(sessionId, true);
+		mock.emitMessageCreated({
+			thread_id: sessionId,
+			role: "alert",
+			content: "Error: inference timed out after 300s",
+		});
+		await flush();
+		mock.emitThreadStatus(sessionId, false);
+
+		// The failed turn surfaces as a JSON-RPC error, not a silent end_turn.
+		await expect(promptP).rejects.toThrow(/inference timed out/);
+
+		// And the alert text reached the editor as assistant content.
+		const texts = recording.notifications
+			.filter((n) => n.update.sessionUpdate === "agent_message_chunk")
+			.map((n) => (n.update as { content: { text: string } }).content.text);
+		expect(texts.some((t) => t.includes("inference timed out"))).toBe(true);
+	});
+
 	it("does not resolve on a stale idle status before the turn goes active", async () => {
 		const mock = mockBoundClient();
 		const { agentProxy, sessionId } = await newSession(mock);
