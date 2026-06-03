@@ -282,7 +282,7 @@ export class AcpSession {
 		const kind = toolNameToKind(toolName);
 		const title = toolCallTitle(toolName, args);
 		const content = toolCallContent(toolName, args, this.deps.cwd, callId);
-		const meta = toolCallMeta(toolName, this.deps.cwd, callId);
+		const meta = toolCallMeta(toolName, this.deps.cwd, callId, args);
 
 		await this.send({
 			sessionUpdate: "tool_call",
