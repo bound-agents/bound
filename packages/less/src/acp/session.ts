@@ -27,8 +27,10 @@ import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import {
 	PERMISSION_OPTIONS,
+	isShellToolName,
 	streamChunkToSessionUpdate,
 	toolCallContent,
+	toolCallMeta,
 	toolCallTitle,
 	toolNameToKind,
 	toolResultToAcpContent,
@@ -69,6 +71,58 @@ export interface AcpSessionDeps {
 	/** Model alias to send with prompts, or null for the cluster default. */
 	modelId: string | null;
 	logger: AppLogger;
+}
+
+function shellDisplayName(toolName: string): string {
+	if (toolName.includes("pwsh") || toolName.includes("powershell")) return "PowerShell";
+	if (toolName.includes("cmd")) return "Command";
+	return "Bash";
+}
+
+function shellTerminalOutput(
+	toolName: string,
+	toolCallId: string,
+	content: ToolCallResult["content"],
+): {
+	meta: Record<string, unknown>;
+	rawOutput: Record<string, unknown>;
+} {
+	const textBlocks =
+		typeof content === "string"
+			? [content]
+			: content
+					.filter((block) => block.type === "text")
+					.map((block) => block.text)
+					.filter((text) => !text.startsWith("[boundless] "));
+	const text = textBlocks.join("\n");
+	const parsed = text.match(/^Exit code: (\d+)\nstdout:\n([\s\S]*)\nstderr:\n([\s\S]*)$/);
+	const exitCode = parsed ? Number(parsed[1]) : null;
+	const stdout = parsed?.[2] ?? text;
+	const stderr = parsed?.[3] ?? "";
+	let output = [stdout, stderr].filter((part) => part.length > 0).join("\n");
+	if (output.length === 0) {
+		output =
+			exitCode && exitCode !== 0
+				? `(${shellDisplayName(toolName)} exited with code ${exitCode})\n`
+				: `(${shellDisplayName(toolName)} completed with no output)\n`;
+	}
+
+	return {
+		meta: {
+			terminal_output: {
+				terminal_id: toolCallId,
+				data: output,
+			},
+			terminal_exit: {
+				terminal_id: toolCallId,
+				...(exitCode !== null ? { exit_code: exitCode } : {}),
+			},
+		},
+		rawOutput: {
+			output: text,
+			...(exitCode !== null ? { exitCode } : {}),
+		},
+	};
 }
 
 export class AcpSession {
@@ -215,11 +269,13 @@ export class AcpSession {
 		const { call_id: callId, tool_name: toolName, arguments: args } = call;
 		const kind = toolNameToKind(toolName);
 		const title = toolCallTitle(toolName, args);
-		const content = toolCallContent(toolName, args, this.deps.cwd);
+		const content = toolCallContent(toolName, args, this.deps.cwd, callId);
+		const meta = toolCallMeta(toolName, this.deps.cwd, callId);
 
 		await this.send({
 			sessionUpdate: "tool_call",
 			toolCallId: callId,
+			...(meta ? { _meta: meta } : {}),
 			title,
 			kind,
 			status: "pending",
@@ -227,7 +283,15 @@ export class AcpSession {
 			...(content.length > 0 ? { content } : {}),
 		});
 
-		const decision = await this.resolvePermission(callId, toolName, title, kind, args, content);
+		const decision = await this.resolvePermission(
+			callId,
+			toolName,
+			title,
+			kind,
+			args,
+			content,
+			meta,
+		);
 		if (decision === "reject") {
 			await this.send({
 				sessionUpdate: "tool_call_update",
@@ -267,11 +331,16 @@ export class AcpSession {
 		try {
 			const result = await handler(args, controller.signal, this.deps.cwd);
 			const status: ToolCallStatus = result.isError ? "failed" : "completed";
+			const shellOutput = isShellToolName(toolName)
+				? shellTerminalOutput(toolName, callId, result.content)
+				: null;
 			await this.send({
 				sessionUpdate: "tool_call_update",
 				toolCallId: callId,
 				status,
-				content: toolResultToAcpContent(result.content),
+				...(shellOutput
+					? { _meta: shellOutput.meta, rawOutput: shellOutput.rawOutput }
+					: { content: toolResultToAcpContent(result.content) }),
 			});
 			return {
 				call_id: callId,
@@ -307,6 +376,7 @@ export class AcpSession {
 		kind: ReturnType<typeof toolNameToKind>,
 		args: Record<string, unknown>,
 		content: ReturnType<typeof toolCallContent>,
+		meta: ReturnType<typeof toolCallMeta>,
 	): Promise<PermissionDecision> {
 		const remembered = this.permissionMemory.get(toolName);
 		if (remembered) return remembered;
@@ -317,6 +387,7 @@ export class AcpSession {
 				sessionId: this.deps.sessionId,
 				toolCall: {
 					toolCallId: callId,
+					...(meta ? { _meta: meta } : {}),
 					title,
 					kind,
 					status: "pending",

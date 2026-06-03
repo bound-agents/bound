@@ -46,14 +46,18 @@ export function toolNameToKind(toolName: string): ToolKind {
 	if (toolName === "boundless_write" || toolName === "boundless_edit") return "edit";
 	if (toolName === "boundless_copy") return "move";
 	// Shell tool: resolveShell names it boundless_bash / boundless_sh / boundless_pwsh / boundless_cmd.
-	if (/^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName)) return "execute";
+	if (isShellToolName(toolName)) return "execute";
 	if (toolName.startsWith("boundless_mcp_")) return "other";
 	return "other";
 }
 
+export function isShellToolName(toolName: string): boolean {
+	return /^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName);
+}
+
 export function toolCallTitle(toolName: string, args: Record<string, unknown>): string {
 	const command = typeof args.command === "string" ? args.command.trim() : "";
-	if (/^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName) && command) {
+	if (isShellToolName(toolName) && command) {
 		return command;
 	}
 
@@ -83,9 +87,13 @@ export function toolCallContent(
 	toolName: string,
 	args: Record<string, unknown>,
 	cwd: string,
+	toolCallId?: string,
 ): ToolCallContent[] {
 	const command = typeof args.command === "string" ? args.command.trim() : "";
-	if (/^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName) && command) {
+	if (isShellToolName(toolName) && command) {
+		if (toolCallId) {
+			return [{ type: "terminal", terminalId: toolCallId }];
+		}
 		return [
 			{
 				type: "content",
@@ -114,6 +122,20 @@ export function toolCallContent(
 	}
 
 	return [];
+}
+
+export function toolCallMeta(
+	toolName: string,
+	cwd: string,
+	toolCallId: string,
+): Record<string, unknown> | undefined {
+	if (!isShellToolName(toolName)) return undefined;
+	return {
+		terminal_info: {
+			terminal_id: toolCallId,
+			cwd,
+		},
+	};
 }
 
 /**

@@ -121,7 +121,9 @@ describe("AcpSession permission gating", () => {
 		const handlers = new Map([
 			[
 				"boundless_bash",
-				async () => ({ content: [{ type: "text" as const, text: "(Bash completed)" }] }),
+				async () => ({
+					content: [{ type: "text" as const, text: "Exit code: 0\nstdout:\ndone\nstderr:\n" }],
+				}),
 			],
 		]);
 		const { session, rec } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
@@ -138,29 +140,38 @@ describe("AcpSession permission gating", () => {
 		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
 		expect(created).toMatchObject({
 			toolCallId: "c-bash",
+			_meta: { terminal_info: { terminal_id: "c-bash", cwd: "/work" } },
 			title: "sleep 10",
 			kind: "execute",
 			status: "pending",
 			rawInput: { command: "sleep 10" },
-			content: [
-				{
-					type: "content",
-					content: { type: "text", text: "current_directory\n\n/work" },
-				},
-			],
+			content: [{ type: "terminal", terminalId: "c-bash" }],
 		});
 		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
 			toolCallId: "c-bash",
+			_meta: { terminal_info: { terminal_id: "c-bash", cwd: "/work" } },
 			title: "sleep 10",
 			kind: "execute",
 			status: "pending",
 			rawInput: { command: "sleep 10" },
-			content: [
-				{
-					type: "content",
-					content: { type: "text", text: "current_directory\n\n/work" },
-				},
-			],
+			content: [{ type: "terminal", terminalId: "c-bash" }],
+		});
+		expect(
+			rec.updates.find(
+				(u) =>
+					u.sessionUpdate === "tool_call_update" &&
+					(u as { toolCallId?: string; status?: string }).toolCallId === "c-bash" &&
+					(u as { status?: string }).status === "completed",
+			),
+		).toMatchObject({
+			_meta: {
+				terminal_output: { terminal_id: "c-bash", data: "done" },
+				terminal_exit: { terminal_id: "c-bash", exit_code: 0 },
+			},
+			rawOutput: {
+				output: "Exit code: 0\nstdout:\ndone\nstderr:\n",
+				exitCode: 0,
+			},
 		});
 	});
 
