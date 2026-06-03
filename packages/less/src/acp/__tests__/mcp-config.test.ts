@@ -64,20 +64,35 @@ describe("acpMcpServersToConfigs", () => {
 		});
 	});
 
-	it("maps http but warns when headers are dropped", () => {
+	it("folds http headers into a record and passes them through", () => {
 		const servers = [
 			{
 				type: "http",
 				name: "authed",
 				url: "https://mcp.example.com",
-				headers: [{ name: "Authorization", value: "Bearer x" }],
+				headers: [
+					{ name: "Authorization", value: "Bearer x" },
+					{ name: "X-Tenant", value: "acme" },
+				],
 			},
 		] as unknown as McpServer[];
 		const { configs, warnings } = acpMcpServersToConfigs(servers);
-		expect(configs[0]).toMatchObject({ transport: "http", name: "authed" });
-		expect(warnings).toHaveLength(1);
-		expect(warnings[0]).toMatchObject({ name: "authed", mapped: true });
-		expect(warnings[0].reason).toContain("header");
+		expect(configs[0]).toMatchObject({
+			transport: "http",
+			name: "authed",
+			url: "https://mcp.example.com",
+			headers: { Authorization: "Bearer x", "X-Tenant": "acme" },
+		});
+		expect(warnings).toHaveLength(0);
+	});
+
+	it("omits the headers field when the http server passes none", () => {
+		const servers = [
+			{ type: "http", name: "bare", url: "https://mcp.example.com", headers: [] },
+		] as unknown as McpServer[];
+		const { configs } = acpMcpServersToConfigs(servers);
+		expect(configs[0]).toMatchObject({ transport: "http", name: "bare" });
+		expect(configs[0]).not.toHaveProperty("headers");
 	});
 
 	it("skips sse and acp transports with warnings", () => {
