@@ -6,6 +6,7 @@ import {
 	messageToSessionUpdate,
 	promptToText,
 	streamChunkToSessionUpdate,
+	toolCallLocations,
 	toolCallMeta,
 	toolNameToKind,
 	toolResultToAcpContent,
@@ -71,6 +72,45 @@ describe("toolCallMeta", () => {
 		).toEqual({
 			tool_name: "boundless_copy",
 		});
+	});
+});
+
+describe("toolCallLocations", () => {
+	it("returns local file locations for host filesystem tools", () => {
+		expect(toolCallLocations("boundless_read", {}, "/work")).toEqual([]);
+		expect(toolCallLocations("boundless_read", { file_path: "src/a.ts" }, "/work")).toEqual([
+			{ path: "/work/src/a.ts" },
+		]);
+		expect(toolCallLocations("boundless_edit", { file_path: "/tmp/a.ts" }, "/work")).toEqual([
+			{ path: "/tmp/a.ts" },
+		]);
+	});
+
+	it("returns only host-side copy locations", () => {
+		expect(
+			toolCallLocations(
+				"boundless_copy",
+				{
+					source: "host",
+					source_path: "input.txt",
+					target: "host",
+					target_path: "output.txt",
+				},
+				"/work",
+			),
+		).toEqual([{ path: "/work/input.txt" }, { path: "/work/output.txt" }]);
+		expect(
+			toolCallLocations(
+				"boundless_copy",
+				{
+					source: "sandbox",
+					source_path: "/tmp/input.txt",
+					target: "host",
+					target_path: "output.txt",
+				},
+				"/work",
+			),
+		).toEqual([{ path: "/work/output.txt" }]);
 	});
 });
 

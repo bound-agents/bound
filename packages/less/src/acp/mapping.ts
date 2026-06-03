@@ -13,6 +13,7 @@ import type {
 	PermissionOption,
 	SessionUpdate,
 	ToolCallContent,
+	ToolCallLocation,
 	ToolKind,
 } from "@agentclientprotocol/sdk";
 import type { ContentBlock as LlmContentBlock } from "@bound/llm";
@@ -95,6 +96,32 @@ function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd:
 	}
 
 	return [];
+}
+
+export function toolCallLocations(
+	toolName: string,
+	args: Record<string, unknown>,
+	cwd: string,
+): ToolCallLocation[] {
+	const paths: string[] = [];
+	const pushHostPath = (value: unknown) => {
+		if (typeof value === "string" && value.length > 0) {
+			paths.push(absolutePath(cwd, value));
+		}
+	};
+
+	if (
+		toolName === "boundless_read" ||
+		toolName === "boundless_write" ||
+		toolName === "boundless_edit"
+	) {
+		pushHostPath(args.file_path);
+	} else if (toolName === "boundless_copy") {
+		if (args.source === "host") pushHostPath(args.source_path);
+		if (args.target === "host") pushHostPath(args.target_path);
+	}
+
+	return paths.map((path) => ({ path }));
 }
 
 export function toolCallContent(

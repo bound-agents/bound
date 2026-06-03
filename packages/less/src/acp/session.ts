@@ -30,6 +30,7 @@ import {
 	isShellToolName,
 	streamChunkToSessionUpdate,
 	toolCallContent,
+	toolCallLocations,
 	toolCallMeta,
 	toolCallTitle,
 	toolNameToKind,
@@ -282,6 +283,7 @@ export class AcpSession {
 		const kind = toolNameToKind(toolName);
 		const title = toolCallTitle(toolName, args);
 		const content = toolCallContent(toolName, args, this.deps.cwd, callId);
+		const locations = toolCallLocations(toolName, args, this.deps.cwd);
 		const meta = toolCallMeta(toolName, this.deps.cwd, callId, args);
 
 		await this.send({
@@ -292,6 +294,7 @@ export class AcpSession {
 			kind,
 			status: "pending",
 			rawInput: args,
+			...(locations.length > 0 ? { locations } : {}),
 			...(content.length > 0 ? { content } : {}),
 		});
 
@@ -302,6 +305,7 @@ export class AcpSession {
 			kind,
 			args,
 			content,
+			locations,
 			meta,
 		);
 		if (decision === "reject") {
@@ -388,6 +392,7 @@ export class AcpSession {
 		kind: ReturnType<typeof toolNameToKind>,
 		args: Record<string, unknown>,
 		content: ReturnType<typeof toolCallContent>,
+		locations: ReturnType<typeof toolCallLocations>,
 		meta: ReturnType<typeof toolCallMeta>,
 	): Promise<PermissionDecision> {
 		const remembered = this.permissionMemory.get(toolName);
@@ -404,6 +409,7 @@ export class AcpSession {
 					kind,
 					status: "pending",
 					rawInput: args,
+					...(locations.length > 0 ? { locations } : {}),
 					...(content.length > 0 ? { content } : {}),
 				},
 				options: PERMISSION_OPTIONS,

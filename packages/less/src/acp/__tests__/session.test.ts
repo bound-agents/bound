@@ -108,6 +108,7 @@ describe("AcpSession permission gating", () => {
 			kind: "read",
 			status: "pending",
 			rawInput: { file_path: "a.txt" },
+			locations: [{ path: "/work/a.txt" }],
 		});
 		expect(ran).toEqual([{ args: { file_path: "a.txt" }, cwd: "/work" }]);
 		expect(result.is_error).toBeFalsy();
@@ -206,6 +207,7 @@ describe("AcpSession permission gating", () => {
 			title: "Write src/generated.ts",
 			kind: "edit",
 			status: "pending",
+			locations: [{ path: "/work/src/generated.ts" }],
 		});
 		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
 			toolCallId: "c-write",
@@ -213,6 +215,7 @@ describe("AcpSession permission gating", () => {
 			title: "Write src/generated.ts",
 			kind: "edit",
 			status: "pending",
+			locations: [{ path: "/work/src/generated.ts" }],
 		});
 	});
 
