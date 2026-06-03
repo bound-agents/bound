@@ -46,6 +46,7 @@ export interface MockBoundClient {
 	calls: {
 		createThread: number;
 		subscribe: string[];
+		unsubscribe: string[];
 		sendMessage: Array<{ threadId: string; content: string }>;
 		configureTools: number;
 		cancelThread: string[];
@@ -69,6 +70,7 @@ export function mockBoundClient(): MockBoundClient {
 	const calls: MockBoundClient["calls"] = {
 		createThread: 0,
 		subscribe: [],
+		unsubscribe: [],
 		sendMessage: [],
 		configureTools: 0,
 		cancelThread: [],
@@ -87,7 +89,9 @@ export function mockBoundClient(): MockBoundClient {
 		subscribe: (id: string) => {
 			calls.subscribe.push(id);
 		},
-		unsubscribe: () => {},
+		unsubscribe: (id: string) => {
+			calls.unsubscribe.push(id);
+		},
 		configureTools: () => {
 			calls.configureTools += 1;
 		},

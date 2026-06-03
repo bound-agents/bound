@@ -31,6 +31,7 @@ describe("BoundAcpAgent.initialize", () => {
 		const res = await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
 		expect(res.protocolVersion).toBe(PROTOCOL_VERSION);
 		expect(res.agentCapabilities?.loadSession).toBe(true);
+		expect(res.agentCapabilities?.sessionCapabilities?.close).toEqual({});
 		expect(res.agentCapabilities?.promptCapabilities?.image).toBe(false);
 		expect(res.agentCapabilities?.promptCapabilities?.embeddedContext).toBe(true);
 		expect(res.agentInfo?.name).toBe("boundless");
@@ -119,6 +120,29 @@ describe("BoundAcpAgent.cancel", () => {
 		mock.emitThreadStatus(sessionId, false);
 		const res = await promptP;
 		expect(res.stopReason).toBe("cancelled");
+	});
+});
+
+describe("BoundAcpAgent.closeSession", () => {
+	it("cancels active work and releases the thread subscription", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, sessionId } = await newSession(mock);
+		if (!agentProxy.closeSession) throw new Error("closeSession not implemented");
+
+		const promptP = agentProxy.prompt({ sessionId, prompt: [{ type: "text", text: "long task" }] });
+		await flush();
+		mock.emitThreadStatus(sessionId, true);
+
+		await agentProxy.closeSession({ sessionId });
+
+		expect(mock.calls.cancelThread).toContain(sessionId);
+		expect(mock.calls.unsubscribe).toContain(sessionId);
+		await expect(
+			agentProxy.prompt({ sessionId, prompt: [{ type: "text", text: "after close" }] }),
+		).rejects.toThrow("Unknown session");
+
+		mock.emitThreadStatus(sessionId, false);
+		expect((await promptP).stopReason).toBe("cancelled");
 	});
 });
 

@@ -19,6 +19,8 @@ import {
 	AgentSideConnection,
 	type AuthenticateResponse,
 	type CancelNotification,
+	type CloseSessionRequest,
+	type CloseSessionResponse,
 	type InitializeRequest,
 	type InitializeResponse,
 	type LoadSessionRequest,
@@ -90,6 +92,9 @@ export class BoundAcpAgent implements Agent {
 			agentInfo: { name: "boundless", version: commitHash },
 			agentCapabilities: {
 				loadSession: true,
+				sessionCapabilities: {
+					close: {},
+				},
 				promptCapabilities: {
 					image: false,
 					audio: false,
@@ -151,6 +156,11 @@ export class BoundAcpAgent implements Agent {
 		if (entry) {
 			await entry.session.cancel();
 		}
+	}
+
+	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+		await this.closeAndReleaseSession(params.sessionId);
+		return {};
 	}
 
 	/** Releases all session resources. Called on connection close. */
@@ -225,6 +235,18 @@ export class BoundAcpAgent implements Agent {
 		const entry: SessionEntry = { session, clientToolNames };
 		this.sessions.set(threadId, entry);
 		return entry;
+	}
+
+	private async closeAndReleaseSession(threadId: string): Promise<void> {
+		const entry = this.sessions.get(threadId);
+		if (entry) {
+			await entry.session.close();
+			this.sessions.delete(threadId);
+		}
+		if (this.lockedThreads.delete(threadId)) {
+			releaseLock(this.opts.configDir, threadId);
+		}
+		this.opts.client.unsubscribe(threadId);
 	}
 
 	/**
