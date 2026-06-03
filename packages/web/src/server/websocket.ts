@@ -122,7 +122,7 @@ interface ClientConnection {
 		}
 	>;
 	systemPromptAddition: string | undefined;
-	systemPromptAdditions: Map<string, string>;
+	threadSystemPromptAdditions: Map<string, string>;
 }
 
 export interface WebSocketConfig {
@@ -353,14 +353,14 @@ export function createWebSocketHandler(
 		// Store or clear systemPromptAddition per connection (AC2.4, AC2.6)
 		conn.systemPromptAddition = msg.systemPromptAddition;
 
-		// Update systemPromptAdditions for all subscribed threads (AC2.4)
+		// Update threadSystemPromptAdditions for all subscribed threads (AC2.4)
 		if (msg.systemPromptAddition !== undefined) {
 			for (const threadId of conn.subscriptions) {
-				conn.systemPromptAdditions.set(threadId, msg.systemPromptAddition);
+				conn.threadSystemPromptAdditions.set(threadId, msg.systemPromptAddition);
 			}
 		} else {
 			// Clear all per-thread entries when systemPromptAddition is undefined (AC2.4, AC2.6)
-			conn.systemPromptAdditions.clear();
+			conn.threadSystemPromptAdditions.clear();
 		}
 
 		// Re-deliver pending client tool calls for each subscribed thread (AC7.1-AC7.2)
@@ -383,7 +383,7 @@ export function createWebSocketHandler(
 
 		// Propagate systemPromptAddition to the new subscription (AC2.3)
 		if (conn.systemPromptAddition !== undefined) {
-			conn.systemPromptAdditions.set(msg.thread_id, conn.systemPromptAddition);
+			conn.threadSystemPromptAdditions.set(msg.thread_id, conn.systemPromptAddition);
 		}
 
 		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
@@ -401,7 +401,7 @@ export function createWebSocketHandler(
 		clearClientSession(conn, msg.thread_id);
 
 		// Clean up systemPromptAddition for this thread (AC2.5)
-		conn.systemPromptAdditions.delete(msg.thread_id);
+		conn.threadSystemPromptAdditions.delete(msg.thread_id);
 	}
 
 	/**
@@ -995,7 +995,7 @@ export function createWebSocketHandler(
 		getSystemPromptAdditionForThread(threadId: string): string | undefined {
 			for (const [, conn] of clients) {
 				if (conn.subscriptions.has(threadId)) {
-					const addition = conn.systemPromptAdditions.get(threadId);
+					const addition = conn.threadSystemPromptAdditions.get(threadId);
 					if (addition !== undefined) {
 						return addition;
 					}
@@ -1025,7 +1025,7 @@ export function createWebSocketHandler(
 				subscriptions: new Set(),
 				clientTools: new Map(),
 				systemPromptAddition: undefined,
-				systemPromptAdditions: new Map(),
+				threadSystemPromptAdditions: new Map(),
 			};
 			clients.set(ws, conn);
 		},
