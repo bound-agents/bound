@@ -27,7 +27,13 @@ import {
 	type SessionNotification,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
-import type { BoundClient, ToolCallRequest, ToolCallResult } from "@bound/client";
+import type {
+	BoundClient,
+	ModelsResponse,
+	SendMessageOptions,
+	ToolCallRequest,
+	ToolCallResult,
+} from "@bound/client";
 import type { Message, Thread, WsStreamChunk } from "@bound/shared";
 import { BoundAcpAgent, type BoundAcpAgentOptions } from "../server";
 
@@ -47,10 +53,11 @@ export interface MockBoundClient {
 		createThread: number;
 		subscribe: string[];
 		unsubscribe: string[];
-		sendMessage: Array<{ threadId: string; content: string }>;
+		sendMessage: Array<{ threadId: string; content: string; modelId?: string }>;
 		configureTools: number;
 		cancelThread: string[];
 	};
+	models: ModelsResponse;
 	/** Drive a stream chunk to the agent's routing. */
 	emitStreamChunk(threadId: string, chunk: WsStreamChunk): void;
 	/** Drive a thread:status event. */
@@ -75,6 +82,25 @@ export function mockBoundClient(): MockBoundClient {
 		configureTools: 0,
 		cancelThread: [],
 	};
+	const models: ModelsResponse = {
+		default: "model-default",
+		models: [
+			{
+				id: "model-default",
+				provider: "anthropic",
+				host: "local",
+				via: "local",
+				status: "local",
+			},
+			{
+				id: "model-alt",
+				provider: "openai",
+				host: "relay",
+				via: "relay",
+				status: "online",
+			},
+		],
+	};
 
 	const client = {
 		connect: () => {},
@@ -95,13 +121,18 @@ export function mockBoundClient(): MockBoundClient {
 		configureTools: () => {
 			calls.configureTools += 1;
 		},
-		sendMessage: (threadId: string, content: string) => {
-			calls.sendMessage.push({ threadId, content });
+		sendMessage: (threadId: string, content: string, options?: SendMessageOptions) => {
+			calls.sendMessage.push({
+				threadId,
+				content,
+				...(options?.modelId ? { modelId: options.modelId } : {}),
+			});
 		},
 		cancelThread: async (threadId: string) => {
 			calls.cancelThread.push(threadId);
 			return { cancelled: true as const, thread_id: threadId };
 		},
+		listModels: async () => models,
 		on: (event: string, handler: (data: unknown) => void) => {
 			listeners.set(event, handler);
 		},
@@ -114,6 +145,7 @@ export function mockBoundClient(): MockBoundClient {
 	return {
 		client,
 		calls,
+		models,
 		emitStreamChunk(threadId, chunk) {
 			listeners.get("stream:chunk")?.({ thread_id: threadId, chunk });
 		},

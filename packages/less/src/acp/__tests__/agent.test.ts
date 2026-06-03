@@ -39,13 +39,25 @@ describe("BoundAcpAgent.initialize", () => {
 });
 
 describe("BoundAcpAgent.newSession", () => {
-	it("creates a thread, subscribes, and configures tools", async () => {
+	it("creates a thread, subscribes, configures tools, and returns model options", async () => {
 		const mock = mockBoundClient();
-		const { sessionId } = await newSession(mock);
+		const { agentProxy } = makeAcpHarness(mock);
+		await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+		const session = await agentProxy.newSession({ cwd: "/work", mcpServers: [] });
+		const sessionId = session.sessionId;
 		expect(sessionId).toBe("thread-1");
 		expect(mock.calls.createThread).toBe(1);
 		expect(mock.calls.subscribe).toContain("thread-1");
 		expect(mock.calls.configureTools).toBeGreaterThanOrEqual(1);
+		expect(session.configOptions).toMatchObject([
+			{
+				id: "model",
+				name: "Model",
+				category: "model",
+				type: "select",
+				currentValue: "model-default",
+			},
+		]);
 	});
 });
 
@@ -120,6 +132,36 @@ describe("BoundAcpAgent.cancel", () => {
 		mock.emitThreadStatus(sessionId, false);
 		const res = await promptP;
 		expect(res.stopReason).toBe("cancelled");
+	});
+});
+
+describe("BoundAcpAgent.setSessionConfigOption", () => {
+	it("switches the model used for later prompts", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, sessionId } = await newSession(mock);
+		if (!agentProxy.setSessionConfigOption) {
+			throw new Error("setSessionConfigOption not implemented");
+		}
+
+		const response = await agentProxy.setSessionConfigOption({
+			sessionId,
+			configId: "model",
+			value: "model-alt",
+		});
+
+		expect(response.configOptions[0]).toMatchObject({
+			id: "model",
+			currentValue: "model-alt",
+		});
+
+		const promptP = agentProxy.prompt({ sessionId, prompt: [{ type: "text", text: "hello" }] });
+		await flush();
+		expect(mock.calls.sendMessage).toEqual([
+			{ threadId: sessionId, content: "hello", modelId: "model-alt" },
+		]);
+		mock.emitThreadStatus(sessionId, true);
+		mock.emitThreadStatus(sessionId, false);
+		await promptP;
 	});
 });
 

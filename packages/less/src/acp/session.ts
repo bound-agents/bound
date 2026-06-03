@@ -128,6 +128,7 @@ function shellTerminalOutput(
 export class AcpSession {
 	private readonly deps: AcpSessionDeps;
 	private turn: TurnState | null = null;
+	private modelId: string | null;
 	private readonly permissionMemory = new Map<string, PermissionDecision>();
 	/** Accumulated argument JSON for in-flight daemon-side tool_use streams. */
 	private readonly daemonToolArgs = new Map<string, string>();
@@ -136,6 +137,7 @@ export class AcpSession {
 
 	constructor(deps: AcpSessionDeps) {
 		this.deps = deps;
+		this.modelId = deps.modelId;
 	}
 
 	get sessionId(): string {
@@ -157,9 +159,13 @@ export class AcpSession {
 				openDaemonToolCalls: new Set(),
 			};
 			this.deps.client.sendMessage(this.deps.sessionId, text, {
-				modelId: this.deps.modelId ?? undefined,
+				modelId: this.modelId ?? undefined,
 			});
 		});
+	}
+
+	setModelId(modelId: string | null): void {
+		this.modelId = modelId;
 	}
 
 	/** Marks the current turn cancelled and asks the daemon to abort it. */

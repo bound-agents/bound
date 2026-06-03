@@ -31,6 +31,9 @@ import {
 	type PromptRequest,
 	type PromptResponse,
 	RequestError,
+	type SessionConfigOption,
+	type SetSessionConfigOptionRequest,
+	type SetSessionConfigOptionResponse,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
 import { BoundClient } from "@bound/client";
@@ -66,7 +69,10 @@ export interface BoundAcpAgentOptions {
 interface SessionEntry {
 	session: AcpSession;
 	clientToolNames: Set<string>;
+	modelId: string | null;
 }
+
+const MODEL_CONFIG_ID = "model";
 
 /**
  * Implements the ACP {@link Agent} interface, bridging to a bound daemon. One
@@ -113,8 +119,11 @@ export class BoundAcpAgent implements Agent {
 	async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
 		const thread = await this.opts.client.createThread({ interface: "boundless" });
 		const threadId = thread.id;
-		await this.attachAndRegister(threadId, params.cwd);
-		return { sessionId: threadId };
+		const entry = await this.attachAndRegister(threadId, params.cwd);
+		return {
+			sessionId: threadId,
+			configOptions: await this.modelConfigOptions(entry.modelId),
+		};
 	}
 
 	async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
@@ -130,7 +139,7 @@ export class BoundAcpAgent implements Agent {
 			});
 			throw RequestError.resourceNotFound(threadId);
 		}
-		await this.attachAndRegister(threadId, params.cwd);
+		const entry = await this.attachAndRegister(threadId, params.cwd);
 		// Replay history so the editor can render the prior conversation.
 		const messages = await this.opts.client.listMessages(threadId, { limit: 200 });
 		for (const message of messages) {
@@ -139,7 +148,7 @@ export class BoundAcpAgent implements Agent {
 				await this.opts.conn.sessionUpdate({ sessionId: threadId, update });
 			}
 		}
-		return {};
+		return { configOptions: await this.modelConfigOptions(entry.modelId) };
 	}
 
 	async prompt(params: PromptRequest): Promise<PromptResponse> {
@@ -161,6 +170,28 @@ export class BoundAcpAgent implements Agent {
 	async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
 		await this.closeAndReleaseSession(params.sessionId);
 		return {};
+	}
+
+	async setSessionConfigOption(
+		params: SetSessionConfigOptionRequest,
+	): Promise<SetSessionConfigOptionResponse> {
+		const entry = this.sessions.get(params.sessionId);
+		if (!entry) {
+			throw RequestError.invalidParams(undefined, `Unknown session: ${params.sessionId}`);
+		}
+		if (params.configId !== MODEL_CONFIG_ID || typeof params.value !== "string") {
+			throw RequestError.invalidParams(undefined, `Unknown config option: ${params.configId}`);
+		}
+
+		const models = await this.opts.client.listModels();
+		const allowed = new Set(models.models.map((model) => model.id));
+		if (!allowed.has(params.value)) {
+			throw RequestError.invalidParams(undefined, `Unknown model: ${params.value}`);
+		}
+
+		entry.modelId = params.value;
+		entry.session.setModelId(params.value);
+		return { configOptions: this.modelConfigOptionsFromResponse(models, entry.modelId) };
 	}
 
 	/** Releases all session resources. Called on connection close. */
@@ -232,9 +263,49 @@ export class BoundAcpAgent implements Agent {
 			modelId: this.opts.modelId,
 			logger: this.opts.logger,
 		});
-		const entry: SessionEntry = { session, clientToolNames };
+		const entry: SessionEntry = { session, clientToolNames, modelId: this.opts.modelId };
 		this.sessions.set(threadId, entry);
 		return entry;
+	}
+
+	private async modelConfigOptions(currentModelId: string | null): Promise<SessionConfigOption[]> {
+		try {
+			return this.modelConfigOptionsFromResponse(
+				await this.opts.client.listModels(),
+				currentModelId,
+			);
+		} catch (error) {
+			this.opts.logger.warn("acp_list_models_failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return [];
+		}
+	}
+
+	private modelConfigOptionsFromResponse(
+		models: Awaited<ReturnType<BoundClient["listModels"]>>,
+		currentModelId: string | null,
+	): SessionConfigOption[] {
+		if (models.models.length === 0) return [];
+		const currentValue =
+			currentModelId && models.models.some((model) => model.id === currentModelId)
+				? currentModelId
+				: models.default;
+		return [
+			{
+				id: MODEL_CONFIG_ID,
+				name: "Model",
+				description: "Model to use for new turns in this session.",
+				category: "model",
+				type: "select",
+				currentValue,
+				options: models.models.map((model) => ({
+					value: model.id,
+					name: model.id,
+					description: `${model.provider} via ${model.host}`,
+				})),
+			},
+		];
 	}
 
 	private async closeAndReleaseSession(threadId: string): Promise<void> {
