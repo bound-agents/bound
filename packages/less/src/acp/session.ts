@@ -180,6 +180,12 @@ export class AcpSession {
 		}
 	}
 
+	/** Cancels work and resolves any active prompt before the session is discarded. */
+	async close(): Promise<void> {
+		await this.cancel();
+		this.resolveTurn("cancelled");
+	}
+
 	/**
 	 * Translates a bound stream chunk into ACP notifications. Text and thinking
 	 * become message/thought chunks; daemon-side tool_use streams become
