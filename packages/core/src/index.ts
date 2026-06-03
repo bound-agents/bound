@@ -98,6 +98,7 @@ export {
 	hasPendingClientToolCalls,
 	getPendingClientToolCalls,
 	expireClientToolCalls,
+	expireClientToolCallsForConnection,
 	cancelClientToolCalls,
 	updateClaimedBy,
 	CLIENT_TOOL_CALL,

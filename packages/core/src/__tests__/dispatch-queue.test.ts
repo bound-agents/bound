@@ -16,6 +16,7 @@ import {
 	enqueueNotification,
 	enqueueToolResult,
 	expireClientToolCalls,
+	expireClientToolCallsForConnection,
 	getPendingClientToolCalls,
 	hasPending,
 	hasPendingClientToolCalls,
@@ -1110,5 +1111,61 @@ describe("Bootstrap recovery for client_tool_call entries (Task 4)", () => {
 
 		expect(row.status).toBe("processing");
 		expect(row.claimed_by).toBe(connectionId2);
+	});
+});
+
+describe("expireClientToolCallsForConnection", () => {
+	it("expires pending and processing calls claimed by the given connection", () => {
+		const thread1 = randomUUID();
+		const thread2 = randomUUID();
+		const dyingConn = "ws-conn-dying";
+		const liveConn = "ws-conn-live";
+		const payload = { call_id: "call-1", tool_name: "boundless_edit", arguments: {} };
+
+		// A pending call and a delivered ('processing') call, both on the dying connection.
+		const pendingId = enqueueClientToolCall(db, thread1, { ...payload, call_id: "p" }, dyingConn);
+		const processingId = enqueueClientToolCall(
+			db,
+			thread1,
+			{ ...payload, call_id: "q" },
+			dyingConn,
+		);
+		const now = new Date().toISOString();
+		db.prepare(
+			"UPDATE dispatch_queue SET status = 'processing', modified_at = ? WHERE message_id = ?",
+		).run(now, processingId);
+
+		// An unrelated call on a different (still-live) connection must be untouched.
+		const otherId = enqueueClientToolCall(db, thread2, { ...payload, call_id: "r" }, liveConn);
+
+		const expired = expireClientToolCallsForConnection(db, dyingConn);
+
+		// Both of the dying connection's calls are returned, the other is not.
+		expect(expired.map((e) => e.message_id).sort()).toEqual([pendingId, processingId].sort());
+
+		const statusOf = (id: string) =>
+			(
+				db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(id) as {
+					status: string;
+				}
+			).status;
+		expect(statusOf(pendingId)).toBe("expired");
+		expect(statusOf(processingId)).toBe("expired");
+		expect(statusOf(otherId)).toBe("pending");
+
+		// The barrier on the dying connection's thread is cleared; the other thread's stands.
+		expect(hasPendingClientToolCalls(db, thread1)).toBe(false);
+		expect(hasPendingClientToolCalls(db, thread2)).toBe(true);
+	});
+
+	it("returns an empty array when the connection has no in-flight calls", () => {
+		const threadId = randomUUID();
+		enqueueClientToolCall(
+			db,
+			threadId,
+			{ call_id: "x", tool_name: "read", arguments: {} },
+			"other",
+		);
+		expect(expireClientToolCallsForConnection(db, "ws-conn-empty")).toHaveLength(0);
 	});
 });

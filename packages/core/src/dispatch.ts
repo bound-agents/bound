@@ -296,6 +296,51 @@ export function expireClientToolCalls(
 }
 
 /**
+ * Expire all in-flight (pending|processing) client tool calls claimed by a
+ * specific connection, returning the affected entries.
+ *
+ * Used on WS close: a connection that just died can never deliver results for
+ * the calls it was handling, so they move to a terminal 'expired' state and the
+ * caller synthesizes paired error tool_results + clears the resume barrier. The
+ * connection scope is the right invariant here — unlike the TTL scan, which has
+ * to exclude live sessions (1c0027f6) because a held call may belong to a
+ * passenger still deliberating at a permission gate, a *closed* connection has
+ * no one left to complete its calls regardless of TTL. Atomic SELECT + UPDATE
+ * inside BEGIN IMMEDIATE to prevent TOCTOU races, matching expireClientToolCalls.
+ */
+export function expireClientToolCallsForConnection(
+	db: Database,
+	connectionId: string,
+): DispatchEntry[] {
+	const now = new Date().toISOString();
+	const whereClause = "event_type = ? AND status IN ('pending', 'processing') AND claimed_by = ?";
+	const params = [CLIENT_TOOL_CALL, connectionId];
+
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const expired = db
+			.prepare(`SELECT * FROM dispatch_queue WHERE ${whereClause}`)
+			.all(...params) as DispatchEntry[];
+
+		if (expired.length > 0) {
+			db.prepare(
+				`UPDATE dispatch_queue SET status = 'expired', modified_at = ? WHERE ${whereClause}`,
+			).run(now, ...params);
+		}
+
+		db.exec("COMMIT");
+		return expired;
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			// ROLLBACK may fail if transaction was already rolled back
+		}
+		throw error;
+	}
+}
+
+/**
  * Cancel all pending client tool calls for a specific thread.
  * Returns the count of cancelled entries.
  */
