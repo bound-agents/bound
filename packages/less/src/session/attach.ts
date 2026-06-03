@@ -94,7 +94,15 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	// Step 4: Build tool set
 	logger.info("attach_flow_build_tools", { threadId });
 	const mcpTools = mcpManager.getRunningTools();
-	const toolSet = buildToolSet(cwd, hostname, mcpTools, confirmFn, client.getBaseUrl(), shell);
+	const toolSet = buildToolSet(
+		cwd,
+		hostname,
+		mcpTools,
+		confirmFn,
+		client.getBaseUrl(),
+		shell,
+		mcpManager,
+	);
 
 	logger.info("attach_flow_tools_built", {
 		threadId,

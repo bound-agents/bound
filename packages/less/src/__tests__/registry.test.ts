@@ -488,6 +488,12 @@ describe("buildToolSet", () => {
 			return true; // User approves
 		};
 
+		const mockManager = {
+			getClient: () => ({
+				callTool: async () => ({ isError: false, content: [{ type: "text", text: "ok" }] }),
+			}),
+		} as unknown as import("../mcp/manager").McpServerManager;
+
 		const mcpTools = new Map<
 			string,
 			{
@@ -516,7 +522,15 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
+		const { handlers } = buildToolSet(
+			"/tmp",
+			"localhost",
+			mcpTools,
+			confirmFn,
+			undefined,
+			undefined,
+			mockManager,
+		);
 
 		const handler = handlers.get("boundless_mcp_admin_destroy_database");
 		expect(handler).toBeDefined();
@@ -526,13 +540,19 @@ describe("buildToolSet", () => {
 		// Call the handler
 		const result = await handler({}, new AbortController().signal, "/tmp");
 
-		// Verify result is NOT an error
+		// Verify result is NOT an error — the gate let the call through and it executed
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toBeDefined();
 	});
 
 	it("handles missing confirmFn gracefully for confirm-marked tools", async () => {
 		// When confirmFn is not provided, confirm-marked tools should still work
+		const mockManager = {
+			getClient: () => ({
+				callTool: async () => ({ isError: false, content: [{ type: "text", text: "ok" }] }),
+			}),
+		} as unknown as import("../mcp/manager").McpServerManager;
+
 		const mcpTools = new Map<
 			string,
 			{
@@ -561,7 +581,15 @@ describe("buildToolSet", () => {
 			],
 		]);
 
-		const { handlers } = buildToolSet("/tmp", "localhost", mcpTools);
+		const { handlers } = buildToolSet(
+			"/tmp",
+			"localhost",
+			mcpTools,
+			undefined,
+			undefined,
+			undefined,
+			mockManager,
+		);
 
 		const handler = handlers.get("boundless_mcp_admin_destroy_database");
 		expect(handler).toBeDefined();
@@ -571,7 +599,7 @@ describe("buildToolSet", () => {
 		// Call the handler - should not throw even without confirmFn
 		const result = await handler({}, new AbortController().signal, "/tmp");
 
-		// Verify result is NOT an error (base handler returned)
+		// Verify result is NOT an error (executed past the gate)
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toBeDefined();
 	});
