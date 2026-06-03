@@ -10,6 +10,7 @@ import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { buildSystemPromptAddition, buildToolSet } from "../tools/registry";
 import type { ResolvedShell } from "../tools/shell";
+import { collectToolCallPairing } from "./tool-call-pairing";
 
 export interface AttachParams {
 	client: BoundClient;
@@ -51,30 +52,11 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	logger.info("attach_flow_start", { threadId, step: "listMessages" });
 	const messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
 
-	// Scan for unpaired tool calls: role="tool_call" without matching tool_result
-	const pendingToolCallIds: string[] = [];
-	const toolCallsByName = new Map<string, boolean>(); // tool_name -> has_result
-
-	for (const msg of messages) {
-		if (msg.role === "tool_call") {
-			// tool_name field stores the call ID
-			if (msg.tool_name) {
-				toolCallsByName.set(msg.tool_name, false);
-			}
-		} else if (msg.role === "tool_result") {
-			// Mark this tool call as having a result
-			if (msg.tool_name) {
-				toolCallsByName.set(msg.tool_name, true);
-			}
-		}
-	}
-
-	// Collect unpaired tool calls
-	for (const [toolName, hasResult] of toolCallsByName) {
-		if (!hasResult) {
-			pendingToolCallIds.push(toolName);
-		}
-	}
+	// Scan for unpaired tool calls: a tool_use dispatched without a matching
+	// tool_result. The id lives in the tool_use block of a tool_call row's
+	// content (the row's tool_name column is empty); results carry it in their
+	// tool_name column. See collectToolCallPairing for the full pairing rules.
+	const { unpairedIds: pendingToolCallIds } = collectToolCallPairing(messages);
 
 	logger.info("attach_flow_messages_scanned", {
 		threadId,
