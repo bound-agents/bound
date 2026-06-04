@@ -37,6 +37,7 @@ import {
 	toolNameToKind,
 	toolResultToAcpContent,
 } from "./mapping";
+import { DEFAULT_MODE_ID, type SessionModeId, modePermissionDecision } from "./modes";
 
 /** Whether a remembered permission decision allows or rejects a tool. */
 type PermissionDecision = "allow" | "reject";
@@ -143,6 +144,7 @@ export class AcpSession {
 	private readonly deps: AcpSessionDeps;
 	private turn: TurnState | null = null;
 	private modelId: string | null;
+	private mode: SessionModeId = DEFAULT_MODE_ID;
 	private readonly permissionMemory = new Map<string, PermissionDecision>();
 	/** Accumulated argument JSON for in-flight daemon-side tool_use streams. */
 	private readonly daemonToolArgs = new Map<string, string>();
@@ -183,6 +185,10 @@ export class AcpSession {
 
 	setModelId(modelId: string | null): void {
 		this.modelId = modelId;
+	}
+
+	setMode(mode: SessionModeId): void {
+		this.mode = mode;
 	}
 
 	/** Marks the current turn cancelled and asks the daemon to abort it. */
@@ -457,6 +463,12 @@ export class AcpSession {
 		locations: ReturnType<typeof toolCallLocations>,
 		meta: ReturnType<typeof toolCallMeta>,
 	): Promise<PermissionDecision> {
+		// A non-default mode can auto-approve before we consult remembered
+		// decisions or prompt the editor. `default` always returns null here, so
+		// the ask flow below is byte-identical to pre-mode behavior.
+		const modeDecision = modePermissionDecision(this.mode, kind);
+		if (modeDecision) return modeDecision;
+
 		const remembered = this.permissionMemory.get(toolName);
 		if (remembered) return remembered;
 

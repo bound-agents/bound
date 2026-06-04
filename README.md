@@ -128,6 +128,13 @@ transports are skipped with a log
 warning. On a name collision the local `mcp.json` entry wins, so a session param can't
 silently shadow an operator-configured server (which may carry secrets in `env`).
 
+Two session-level selectors ride alongside the conversation as ACP `configOptions` (the
+editor renders them as dropdowns): the **model** for new turns, and the **mode** — the
+permission posture for tool calls. Modes are `Ask every time` (prompt before each call,
+the default), `Accept edits` (auto-approve file reads and edits, still prompt before
+running commands), and `Bypass permissions` (auto-approve everything). The default mode
+is byte-identical to per-call prompting; a non-default mode is opt-in per session.
+
 ## Project structure
 
 ```
