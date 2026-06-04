@@ -20,7 +20,8 @@ export function createPurgeTool(ctx: ToolContext): RegisteredTool {
 			type: "function",
 			function: {
 				name: "purge",
-				description: "Create a purge record targeting message IDs",
+				description:
+					"Clear your head by purging unnecessary thoughts. Use this when you've realized a message is useless or too distracting for you to be productive.",
 				parameters: jsonSchema,
 			},
 		},

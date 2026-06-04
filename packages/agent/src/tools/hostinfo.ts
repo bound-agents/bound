@@ -55,7 +55,8 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 			type: "function",
 			function: {
 				name: "hostinfo",
-				description: "Display registered host information and cluster topology",
+				description:
+					"Display registered host information, cluster topology, and per-host capabilities",
 				parameters: jsonSchema,
 			},
 		},

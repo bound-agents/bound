@@ -29,7 +29,7 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "introspect",
 				description:
-					"Introspect on a question by consulting another thread. Use for deeper reflection or insight from a different context. When composing messages to other threads, use 'we' and 'our' — all threads are the same agent.",
+					"Introspect about something. Use for deeper reflection or insight from a different context. When composing messages to other threads, use 'we' and 'our' — you are both the sender and the receiver. Be sure to check if the target thread has the right capabilities to address your needs before using this.",
 				parameters: jsonSchema,
 			},
 		},
