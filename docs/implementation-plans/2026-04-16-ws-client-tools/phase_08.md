@@ -2,7 +2,11 @@
 
 **Goal:** Ensure robustness across server restarts, client disconnects, and edge cases. TTL-based expiry, bootstrap recovery, cancel integration, and connection drop handling.
 
-**Architecture:** This phase builds on the dispatch_queue extensions (Phase 1), WS handler (Phase 3), and bootstrap (Phase 4) to handle the recovery scenarios. Pending `client_tool_call` entries survive in the dispatch_queue across server restarts. Reconnecting clients match by tool name. Stale entries are expired by periodic TTL scan. Cancel integration expires pending calls immediately. Connection drops leave entries for potential reconnect — TTL handles permanent disconnects.
+**Architecture:** This phase builds on the dispatch_queue extensions (Phase 1), WS handler (Phase 3), and bootstrap (Phase 4) to handle the recovery scenarios. Pending `client_tool_call` entries survive in the dispatch_queue across server restarts. Reconnecting clients match by tool name. Stale entries are expired by periodic TTL scan. Cancel integration expires pending calls immediately.
+
+> **Connection-close reap (superseded the original "leave for reconnect" model — 2026-06-03, commits `1c0027f6` + `e921a9cc`).** The original design left a dropped connection's in-flight calls in the queue so a reconnect could re-claim them, with TTL as the only reaper. That model wedges the thread: once `1c0027f6` taught the TTL scan to spare calls a *live* session may still complete, a re-claimed orphan looks live-owned forever and the TTL exclusion never reaps it, so `hasPendingClientToolCalls` stays true and the loop ends after one tool per turn. Current behavior splits by who owns the call when the connection closes:
+> - **Orphan from a *non-live* prior connection** (e.g. server restart resets `claimed_by = NULL` via bootstrap; or a call the closing connection never claimed): still re-delivered to a fresh reconnect matched by tool name. This is the legitimate resume path (AC4.3, AC7.1 first clause).
+> - **Call claimed by the connection that is closing**: reaped on `close()` via `expireClientToolCallsForConnection` — flipped to terminal `expired`, a paired `session_reset` error `tool_result` synthesized, and the resume barrier cleared so the next bump isn't wedged. A reconnect does NOT resurrect it (`getPendingClientToolCalls` skips `expired`). Connection-close is the only seam that reliably reaps a *delivered-but-unanswered* call; the TTL scan remains the backstop for calls a live session may still complete.
 
 **Tech Stack:** Bun, TypeScript, bun:sqlite
 
@@ -22,7 +26,7 @@ This phase implements and tests:
 - **ws-client-tools.AC4.5 Success:** Thread cancel expires pending client tool calls and unblocks the thread
 
 ### ws-client-tools.AC7: Cross-Cutting Recovery
-- **ws-client-tools.AC7.1 Success:** Client disconnect + reconnect re-delivers pending tool calls matched by tool name
+- **ws-client-tools.AC7.1 Success:** A pending call orphaned by a *non-live* prior connection is re-delivered to a fresh reconnect, matched by tool name. **A call claimed by the connection that is closing is reaped on `close()`, NOT left for reconnect** (superseded 2026-06-03 by `1c0027f6` + `e921a9cc` — see the Architecture note above).
 - **ws-client-tools.AC7.2 Success:** `claimed_by` updated to new connection_id on reconnect
 - **ws-client-tools.AC7.3 Failure:** `tool:result` for expired entry receives `error` with `code: "tool_call_expired"`
 - **ws-client-tools.AC7.4 Success:** Bootstrap recovery distinguishes `client_tool_call` entries from interrupted server tool calls
@@ -263,7 +267,7 @@ Expected: All tests pass
 **Testing:**
 
 Tests must verify:
-- ws-client-tools.AC7.1: After disconnect + reconnect, client receives pending `tool:call` messages matched by tool name on subscribed threads
+- ws-client-tools.AC7.1: A pending call orphaned by a non-live prior connection is re-delivered on reconnect, matched by tool name on subscribed threads. A call claimed by the connection that closes is reaped on `close()` (terminal `expired` + synthesized `session_reset` result), NOT re-delivered to a reconnect — see the Architecture supersession note (`1c0027f6` + `e921a9cc`).
 - ws-client-tools.AC7.2: `claimed_by` in dispatch_queue is updated to the new connection's `connectionId` after reconnect
 - ws-client-tools.AC7.3: `tool:result` for an expired entry receives `error` with `code: "tool_call_expired"` and the result is discarded
 - If a client reconnects but no longer has the matching tool, the pending call is NOT re-delivered (remains pending for another client or TTL expiry)
