@@ -8,6 +8,10 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	EMBEDDED_ASSETS_ENCODING,
+	encodeAssetContent,
+} from "../packages/web/src/server/embedded-assets-codec";
 
 // Resolve paths relative to this script, not cwd
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -64,11 +68,16 @@ const lines = [
 	"\tcontentType: string;",
 	"}",
 	"",
+	`export const embeddedAssetsEncoding = ${JSON.stringify(EMBEDDED_ASSETS_ENCODING)} as const;`,
+	"",
 	"export const embeddedAssets = new Map<string, EmbeddedAsset>([",
 ];
 
 for (const asset of assets) {
-	const escaped = JSON.stringify(asset.content);
+	// content is gzip-compressed + base64-encoded (see embedded-assets-codec.ts):
+	// shrinks the generated file and the compiled binary, and keeps a repo-wide
+	// grep from matching source tokens inside the blob and dumping it.
+	const escaped = JSON.stringify(encodeAssetContent(asset.content));
 	lines.push(
 		`\t[${JSON.stringify(asset.path)}, { content: ${escaped}, contentType: ${JSON.stringify(asset.contentType)} }],`,
 	);

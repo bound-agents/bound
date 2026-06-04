@@ -10,6 +10,7 @@ import type {
 import { Hono } from "hono";
 import { serveStatic } from "hono/bun";
 import type { MountableFs } from "just-bash";
+import { EMBEDDED_ASSETS_ENCODING, decodeAssetContent } from "./embedded-assets-codec";
 import {
 	type BackendPricing,
 	type ModelsConfig,
@@ -22,7 +23,20 @@ type AssetMap = Map<string, { content: string; contentType: string }>;
 async function loadEmbeddedAssets(): Promise<AssetMap> {
 	try {
 		const mod = await import("./embedded-assets");
-		return mod.embeddedAssets ?? new Map();
+		const raw = mod.embeddedAssets;
+		if (!raw) return new Map();
+		// Assets are stored gzip+base64 (see embedded-assets-codec.ts). Decode back
+		// to their original text here so the serve path stays byte-identical. Older
+		// generated modules without the marker hold raw content and pass through.
+		if (mod.embeddedAssetsEncoding !== EMBEDDED_ASSETS_ENCODING) return raw;
+		const decoded: AssetMap = new Map();
+		for (const [path, asset] of raw) {
+			decoded.set(path, {
+				content: decodeAssetContent(asset.content),
+				contentType: asset.contentType,
+			});
+		}
+		return decoded;
 	} catch {
 		return new Map();
 	}
