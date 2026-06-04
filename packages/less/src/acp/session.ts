@@ -14,6 +14,7 @@
  *   completes (`thread:status` active:false) or is cancelled.
  */
 
+import { randomUUID } from "node:crypto";
 import {
 	type AgentSideConnection,
 	type PermissionOptionId,
@@ -66,6 +67,16 @@ interface TurnState {
 	sawAgentText: boolean;
 	/** Daemon-side (native) tool calls surfaced this turn, keyed by tool_use id. */
 	openDaemonToolCalls: Set<string>;
+	/**
+	 * ACP message id for the in-progress agent_message_chunk run, or null when
+	 * no run is open. Generated lazily on the first text chunk of a run and
+	 * stable across every chunk of that message; cleared when a thought run or a
+	 * tool call breaks the run so the next text starts a fresh message. Required
+	 * on streamed chunks in ACP v2; optional (but forward-compatible) in v1.
+	 */
+	agentMessageId: string | null;
+	/** Same as {@link agentMessageId} for the agent_thought_chunk run. */
+	thoughtMessageId: string | null;
 }
 
 export interface AcpSessionDeps {
@@ -176,6 +187,8 @@ export class AcpSession {
 				alert: null,
 				sawAgentText: false,
 				openDaemonToolCalls: new Set(),
+				agentMessageId: null,
+				thoughtMessageId: null,
 			};
 			this.deps.client.sendMessage(this.deps.sessionId, text, {
 				modelId: this.modelId ?? undefined,
@@ -589,9 +602,44 @@ export class AcpSession {
 		turn.reject(err);
 	}
 
+	/**
+	 * Attaches the ACP message id to a streamed chunk and maintains the per-run
+	 * message boundary. A contiguous run of agent_message_chunk shares one id; a
+	 * run of agent_thought_chunk shares another; a tool_call (or a switch between
+	 * text and thought) ends the open run so the next chunk starts a fresh
+	 * message. Required on streamed chunks in ACP v2 and forward-compatible in v1
+	 * (the field is optional there). No-op when no turn is active (e.g. replay,
+	 * which stamps the persisted row id directly in messageToSessionUpdate).
+	 */
+	private stampMessageId(
+		update: Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"],
+	): void {
+		const turn = this.turn;
+		if (!turn) return;
+		switch (update.sessionUpdate) {
+			case "agent_message_chunk":
+				turn.thoughtMessageId = null;
+				turn.agentMessageId ??= randomUUID();
+				update.messageId = turn.agentMessageId;
+				break;
+			case "agent_thought_chunk":
+				turn.agentMessageId = null;
+				turn.thoughtMessageId ??= randomUUID();
+				update.messageId = turn.thoughtMessageId;
+				break;
+			case "tool_call":
+				// A tool call breaks any open text / thought run; the next chunk of
+				// either kind starts a new message.
+				turn.agentMessageId = null;
+				turn.thoughtMessageId = null;
+				break;
+		}
+	}
+
 	private async send(
 		update: Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"],
 	): Promise<void> {
+		this.stampMessageId(update);
 		try {
 			await this.deps.conn.sessionUpdate({ sessionId: this.deps.sessionId, update });
 		} catch (error) {

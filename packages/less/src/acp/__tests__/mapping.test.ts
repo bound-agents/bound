@@ -337,6 +337,7 @@ describe("messageToSessionUpdate", () => {
 			{
 				sessionUpdate: "user_message_chunk",
 				content: { type: "text", text: "hi" },
+				messageId: "m1",
 			},
 		]);
 		expect(
@@ -345,6 +346,7 @@ describe("messageToSessionUpdate", () => {
 			{
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: "yo" },
+				messageId: "m1",
 			},
 		]);
 	});
@@ -370,7 +372,11 @@ describe("messageToSessionUpdate", () => {
 		});
 		// Preceding visible text replays as an agent message chunk, then the call.
 		expect(updates).toEqual([
-			{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Running a probe:" } },
+			{
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "Running a probe:" },
+				messageId: "m1",
+			},
 			{
 				sessionUpdate: "tool_call",
 				toolCallId: "tooluse_gmYiTpAnEeOLaGRl7p2dZG",
