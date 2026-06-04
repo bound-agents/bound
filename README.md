@@ -199,6 +199,8 @@ After `bound init`, the `config/` directory contains:
 
 All config schemas are **strict** — unknown keys fail parse. Declare new fields in the Zod schema (`packages/shared/src/config-schemas.ts`) before using them.
 
+See [docs/config.md](docs/config.md) for the per-field reference for every config file.
+
 ### MCP Server Configuration
 
 MCP servers are configured in `mcp.json` with either `stdio` or `http` transport. Tools from connected servers are automatically registered as commands available to the agent during chat.
