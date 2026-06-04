@@ -61,6 +61,13 @@ describe("BoundAcpAgent.newSession", () => {
 				type: "select",
 				currentValue: "model-default",
 			},
+			{
+				id: "mode",
+				name: "Mode",
+				category: "mode",
+				type: "select",
+				currentValue: "default",
+			},
 		]);
 	});
 });
@@ -244,6 +251,45 @@ describe("BoundAcpAgent.setSessionConfigOption", () => {
 		mock.emitThreadStatus(sessionId, true);
 		mock.emitThreadStatus(sessionId, false);
 		await promptP;
+	});
+
+	it("switches the session mode and echoes it back as the current value", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, sessionId } = await newSession(mock);
+		if (!agentProxy.setSessionConfigOption) {
+			throw new Error("setSessionConfigOption not implemented");
+		}
+
+		const response = await agentProxy.setSessionConfigOption({
+			sessionId,
+			configId: "mode",
+			value: "bypassPermissions",
+		});
+
+		const modeOption = response.configOptions.find((option) => option.id === "mode");
+		expect(modeOption).toMatchObject({
+			id: "mode",
+			category: "mode",
+			currentValue: "bypassPermissions",
+		});
+		// The model option still rides alongside, unchanged.
+		expect(response.configOptions.find((option) => option.id === "model")).toBeDefined();
+	});
+
+	it("rejects an unknown mode value", async () => {
+		const mock = mockBoundClient();
+		const { agentProxy, sessionId } = await newSession(mock);
+		if (!agentProxy.setSessionConfigOption) {
+			throw new Error("setSessionConfigOption not implemented");
+		}
+
+		await expect(
+			agentProxy.setSessionConfigOption({
+				sessionId,
+				configId: "mode",
+				value: "nonsense-mode",
+			}),
+		).rejects.toThrow();
 	});
 });
 

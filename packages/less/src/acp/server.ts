@@ -51,6 +51,13 @@ import { buildToolSet } from "../tools/registry";
 import type { ResolvedShell } from "../tools/shell";
 import { messageToSessionUpdate, promptToText } from "./mapping";
 import { acpMcpServersToConfigs, mergeMcpConfigs } from "./mcp-config";
+import {
+	DEFAULT_MODE_ID,
+	MODE_CONFIG_ID,
+	type SessionModeId,
+	isSessionModeId,
+	modeConfigOption,
+} from "./modes";
 import { AcpSession } from "./session";
 import { listRememberedAcpSessions, rememberAcpSession } from "./session-registry";
 
@@ -76,6 +83,7 @@ interface SessionEntry {
 	session: AcpSession;
 	clientToolNames: Set<string>;
 	modelId: string | null;
+	modeId: SessionModeId;
 }
 
 const MODEL_CONFIG_ID = "model";
@@ -129,7 +137,7 @@ export class BoundAcpAgent implements Agent {
 		const entry = await this.attachAndRegister(threadId, params.cwd, params.mcpServers);
 		return {
 			sessionId: threadId,
-			configOptions: await this.modelConfigOptions(entry.modelId),
+			configOptions: await this.sessionConfigOptions(entry),
 		};
 	}
 
@@ -158,7 +166,7 @@ export class BoundAcpAgent implements Agent {
 				await this.opts.conn.sessionUpdate({ sessionId: threadId, update });
 			}
 		}
-		return { configOptions: await this.modelConfigOptions(entry.modelId) };
+		return { configOptions: await this.sessionConfigOptions(entry) };
 	}
 
 	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -223,19 +231,31 @@ export class BoundAcpAgent implements Agent {
 		if (!entry) {
 			throw RequestError.invalidParams(undefined, `Unknown session: ${params.sessionId}`);
 		}
-		if (params.configId !== MODEL_CONFIG_ID || typeof params.value !== "string") {
-			throw RequestError.invalidParams(undefined, `Unknown config option: ${params.configId}`);
+		if (typeof params.value !== "string") {
+			throw RequestError.invalidParams(undefined, `Unknown config value: ${params.configId}`);
 		}
 
-		const models = await this.opts.client.listModels();
-		const allowed = new Set(models.models.map((model) => model.id));
-		if (!allowed.has(params.value)) {
-			throw RequestError.invalidParams(undefined, `Unknown model: ${params.value}`);
+		if (params.configId === MODEL_CONFIG_ID) {
+			const models = await this.opts.client.listModels();
+			const allowed = new Set(models.models.map((model) => model.id));
+			if (!allowed.has(params.value)) {
+				throw RequestError.invalidParams(undefined, `Unknown model: ${params.value}`);
+			}
+			entry.modelId = params.value;
+			entry.session.setModelId(params.value);
+			return { configOptions: await this.sessionConfigOptionsWithModels(models, entry) };
 		}
 
-		entry.modelId = params.value;
-		entry.session.setModelId(params.value);
-		return { configOptions: this.modelConfigOptionsFromResponse(models, entry.modelId) };
+		if (params.configId === MODE_CONFIG_ID) {
+			if (!isSessionModeId(params.value)) {
+				throw RequestError.invalidParams(undefined, `Unknown mode: ${params.value}`);
+			}
+			entry.modeId = params.value;
+			entry.session.setMode(params.value);
+			return { configOptions: await this.sessionConfigOptions(entry) };
+		}
+
+		throw RequestError.invalidParams(undefined, `Unknown config option: ${params.configId}`);
 	}
 
 	/** Releases all session resources. Called on connection close. */
@@ -340,7 +360,12 @@ export class BoundAcpAgent implements Agent {
 			modelId: this.opts.modelId,
 			logger: this.opts.logger,
 		});
-		const entry: SessionEntry = { session, clientToolNames, modelId: this.opts.modelId };
+		const entry: SessionEntry = {
+			session,
+			clientToolNames,
+			modelId: this.opts.modelId,
+			modeId: DEFAULT_MODE_ID,
+		};
 		this.sessions.set(threadId, entry);
 		return entry;
 	}
@@ -382,6 +407,28 @@ export class BoundAcpAgent implements Agent {
 					description: `${model.provider} via ${model.host}`,
 				})),
 			},
+		];
+	}
+
+	/**
+	 * The full config-option set advertised for a session: the model selector
+	 * (sourced from the daemon) followed by the mode selector (a static set
+	 * defined in `./modes`). Model listing failures degrade to an empty model
+	 * block, but the mode option is always present.
+	 */
+	private async sessionConfigOptions(entry: SessionEntry): Promise<SessionConfigOption[]> {
+		const modelOptions = await this.modelConfigOptions(entry.modelId);
+		return [...modelOptions, modeConfigOption(entry.modeId)];
+	}
+
+	/** Like {@link sessionConfigOptions} but reuses an already-fetched model list. */
+	private sessionConfigOptionsWithModels(
+		models: Awaited<ReturnType<BoundClient["listModels"]>>,
+		entry: SessionEntry,
+	): SessionConfigOption[] {
+		return [
+			...this.modelConfigOptionsFromResponse(models, entry.modelId),
+			modeConfigOption(entry.modeId),
 		];
 	}
 
