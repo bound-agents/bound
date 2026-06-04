@@ -34,7 +34,7 @@ Maps each acceptance criterion to automated tests and/or human verification step
 | AC6.1 | -- | Manual | Web UI uses single `BoundClient` |
 | AC6.2 | -- | Manual + e2e | Message sending over WS; responses via events |
 | AC6.3 | -- | Manual | Event listeners use updated names |
-| AC7.1 | Integration | -- | Reconnect re-delivers pending tool calls |
+| AC7.1 | Unit | -- | Orphan from non-live conn re-delivered; live-conn close reaps (1c0027f6/e921a9cc) |
 | AC7.2 | Unit | -- | `claimed_by` updated to new `connectionId` |
 | AC7.3 | Unit | -- | Expired entry receives `tool_call_expired` error |
 | AC7.4 | Integration | -- | Bootstrap distinguishes `client_tool_call` from server tool crashes |
@@ -353,18 +353,21 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ## AC7: Cross-Cutting Recovery
 
-### AC7.1 -- Client disconnect + reconnect re-delivers pending tool calls matched by tool name
+### AC7.1 -- Orphan from non-live conn re-delivered; live-conn close reaps its own claimed calls
 
-**Automated: Integration test**
+> Behavior split superseded the original "client disconnect + reconnect re-delivers" model on 2026-06-03 (commits `1c0027f6` + `e921a9cc`). See phase_08.md Architecture note.
+
+**Automated: Unit test (MockWebSocket)**
 - Phase/Task: P8/T4
-- File: `packages/web/src/server/__tests__/websocket.test.ts`
-- Test:
-  1. Open WS connection. Send `session:configure` with tool `"browser_click"`. Subscribe to a thread.
-  2. Insert a pending `client_tool_call` entry for that thread with `tool_name = "browser_click"`.
-  3. Close the WS connection (simulate disconnect).
-  4. Open new WS connection. Send `session:configure` with same tool. Subscribe to the same thread.
-  5. Assert client receives `tool:call` message with the pending call details.
-  6. Assert the entry's `claimed_by` in dispatch_queue is updated to the new connection's `connectionId`.
+- File: `packages/web/src/server/__tests__/websocket-reconnect.test.ts`
+- Test (re-delivery — the legitimate resume path):
+  1. Insert a `pending` `client_tool_call` entry claimed by a *non-live* connection id (e.g. `"old-connection-id"`), `tool_name = "test_tool"`.
+  2. Open a fresh WS connection. Send `session:configure` with the matching tool. Subscribe to the thread.
+  3. Assert the client receives the `tool:call`, and `claimed_by` is updated to the new connection (AC7.2).
+- Test (close reap — supersedes the old "leave for reconnect"):
+  1. Same insert; a live connection (ws1) subscribes and re-claims it (`status → processing`).
+  2. `close(ws1)`. Assert the row goes terminal `expired` and a `session_reset` error `tool_result` is synthesized.
+  3. Reconnect ws2 + re-subscribe. Assert the reaped call is NOT re-delivered (`getPendingClientToolCalls` skips `expired`).
 - Additional case: Reconnect without the matching tool -- pending call is NOT re-delivered (remains pending for another client or TTL).
 
 ---
@@ -405,7 +408,8 @@ Maps each acceptance criterion to automated tests and/or human verification step
 |-----------|---------|-------------|
 | `packages/core/src/__tests__/dispatch-queue.test.ts` | core | AC4.1, AC4.2, AC4.3, AC4.4, AC4.5, AC7.2, AC7.4 |
 | `packages/agent/src/__tests__/client-tool-dispatch.test.ts` | agent | AC3.1, AC3.2, AC3.3, AC3.4 |
-| `packages/web/src/server/__tests__/websocket.test.ts` | web | AC1.1, AC1.3, AC1.4, AC1.5, AC3.2, AC3.5, AC3.6, AC7.1, AC7.3 |
+| `packages/web/src/server/__tests__/websocket.test.ts` | web | AC1.1, AC1.3, AC1.4, AC1.5, AC3.2, AC3.5, AC3.6 |
+| `packages/web/src/server/__tests__/websocket-reconnect.test.ts` | web | AC7.1, AC7.2, AC7.3 |
 | `packages/web/src/server/__tests__/messages.test.ts` | web | AC1.2 |
 | `packages/web/src/server/__tests__/status.test.ts` | web | AC4.5 |
 | `packages/client/src/__tests__/client.test.ts` | client | AC2.1, AC2.2, AC2.3, AC2.4, AC2.5 |
