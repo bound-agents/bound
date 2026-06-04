@@ -39,7 +39,7 @@ let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
 let uploadStatus = $state<string | null>(null);
-let pendingFileId = $state<string | null>(null);
+let pendingFile = $state<File | null>(null);
 let thread = $state<Thread | null>(null);
 let panelMode = $state<"context" | "debugger">("context");
 
@@ -177,16 +177,33 @@ onDestroy(() => {
 	client.off("stream:chunk", handleStreamChunk);
 });
 
-function handleSendMessage(): void {
-	if (!inputText.trim() && !pendingFileId) return;
+async function handleSendMessage(): Promise<void> {
+	if (!inputText.trim() && !pendingFile) return;
+	if (sending) return;
 	sending = true;
 	try {
+		// #158: the attachment is held client-side until now and uploaded as
+		// part of the send. If the upload fails, abort the whole send — keep the
+		// text and the held file so the user can retry — rather than dispatching
+		// a message that references a file that never landed.
+		let fileId: string | undefined;
+		if (pendingFile) {
+			uploadStatus = "Uploading…";
+			try {
+				const uploaded = await client.uploadFile(pendingFile, pendingFile.name);
+				fileId = uploaded.id ?? undefined;
+			} catch (error) {
+				console.error("Failed to upload attachment:", error);
+				uploadStatus = "Upload failed — message not sent";
+				return;
+			}
+		}
 		client.sendMessage(threadId, inputText.trim(), {
 			modelId: modelStore.getModel() || undefined,
-			fileId: pendingFileId ?? undefined,
+			fileId,
 		});
 		inputText = "";
-		pendingFileId = null;
+		pendingFile = null;
 		uploadStatus = null;
 		waitingSinceMessageCount = messages.length;
 		waiting = true;
@@ -207,20 +224,13 @@ async function handleCancel(): Promise<void> {
 
 let fileInputEl: HTMLInputElement | null = null;
 
-async function handleFileChange(e: Event): Promise<void> {
+function handleFileChange(e: Event): void {
 	const input = e.target as HTMLInputElement;
 	if (!input.files || input.files.length === 0) return;
 	const file = input.files[0];
-	uploadStatus = "Uploading…";
-	pendingFileId = null;
-	try {
-		const uploaded = await client.uploadFile(file, file.name);
-		pendingFileId = uploaded.id ?? null;
-		uploadStatus = `Attached · ${file.name}`;
-	} catch (error) {
-		console.error("Failed to upload file:", error);
-		uploadStatus = "Upload failed";
-	}
+	// #158: hold the file, don't upload yet — the upload happens on send.
+	pendingFile = file;
+	uploadStatus = `Attached · ${file.name}`;
 	input.value = "";
 }
 
@@ -342,7 +352,7 @@ function turnPreview(content: string): string {
 						class="dispatch"
 						class:active={inputText.trim().length > 0}
 						onclick={handleSendMessage}
-						disabled={sending || !inputText.trim()}
+						disabled={sending || (!inputText.trim() && !pendingFile)}
 					>
 						{sending ? "Sending" : "Dispatch"}
 					</button>
