@@ -19,7 +19,7 @@ import type {
 	ToolCallLocation,
 	ToolKind,
 } from "@agentclientprotocol/sdk";
-import type { ContentBlock as LlmContentBlock } from "@bound/llm";
+import type { ImageMediaType, ContentBlock as LlmContentBlock } from "@bound/llm";
 import type { Message, WsStreamChunk } from "@bound/shared";
 import { parseContentBlocks } from "../session/tool-call-pairing";
 import { findStringOccurrences } from "../tools/match";
@@ -260,47 +260,121 @@ export function toolCallMeta(
 }
 
 /**
+ * The four image IANA types bound can represent as an image content block
+ * (the AI-SDK-supported set; see ImageMediaType in @bound/llm). Image blocks
+ * with any other media type can't round-trip as images and are elided.
+ */
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set<string>([
+	"image/jpeg",
+	"image/png",
+	"image/gif",
+	"image/webp",
+]);
+
+function isSupportedImageMediaType(mime: string): mime is ImageMediaType {
+	return SUPPORTED_IMAGE_MEDIA_TYPES.has(mime);
+}
+
+/**
+ * Maps a single ACP block to its bound text representation, or null when the
+ * block contributes no text. Shared by promptToText and promptToContent so the
+ * text/resource handling can't drift between the two. Image/audio map to
+ * elision placeholders here; promptToContent overrides the image case to
+ * forward the actual bytes.
+ */
+function acpBlockToText(block: AcpContentBlock): string | null {
+	switch (block.type) {
+		case "text":
+			return block.text;
+		case "resource_link":
+			return `[resource: ${block.name} (${block.uri})]`;
+		case "resource": {
+			const res = block.resource;
+			if (res && "text" in res && typeof res.text === "string") {
+				const uri = "uri" in res ? res.uri : "embedded";
+				return `[resource ${uri}]\n${res.text}`;
+			}
+			if (res && "uri" in res) {
+				return `[resource: ${res.uri}]`;
+			}
+			return null;
+		}
+		case "image":
+			return "[image content omitted — boundless ACP mode does not forward images]";
+		case "audio":
+			return "[audio content omitted — boundless ACP mode does not forward audio]";
+		default:
+			// Unknown / future block type — skip rather than throw.
+			return null;
+	}
+}
+
+/**
  * Flattens an ACP prompt (ContentBlock[]) into the single string that bound's
  * message API accepts. Text blocks contribute their text; resource links and
  * embedded resources contribute a readable reference plus any inlined text so
- * the agent can act on @-mentioned files. Image/audio blocks are not forwarded
- * in v1 (the agent advertises image/audio prompt capabilities as false) and are
- * noted as a placeholder so the agent knows content was elided.
+ * the agent can act on @-mentioned files. Image/audio blocks are noted as a
+ * placeholder so the agent knows content was elided — see promptToContent for
+ * the image-forwarding path.
  *
  * Never throws: unknown block shapes are skipped.
  */
 export function promptToText(blocks: AcpContentBlock[]): string {
 	const parts: string[] = [];
 	for (const block of blocks) {
-		switch (block.type) {
-			case "text":
-				parts.push(block.text);
-				break;
-			case "resource_link":
-				parts.push(`[resource: ${block.name} (${block.uri})]`);
-				break;
-			case "resource": {
-				const res = block.resource;
-				if (res && "text" in res && typeof res.text === "string") {
-					const uri = "uri" in res ? res.uri : "embedded";
-					parts.push(`[resource ${uri}]\n${res.text}`);
-				} else if (res && "uri" in res) {
-					parts.push(`[resource: ${res.uri}]`);
-				}
-				break;
-			}
-			case "image":
-				parts.push("[image content omitted — boundless ACP mode does not forward images]");
-				break;
-			case "audio":
-				parts.push("[audio content omitted — boundless ACP mode does not forward audio]");
-				break;
-			default:
-				// Unknown / future block type — skip rather than throw.
-				break;
+		const text = acpBlockToText(block);
+		if (text !== null) {
+			parts.push(text);
 		}
 	}
 	return parts.join("\n\n");
+}
+
+/**
+ * Maps an ACP prompt into the content bound's message API accepts. When the
+ * prompt carries no image, returns the flat string form (identical to
+ * promptToText) so text-only turns stay on the cheap string path. When an
+ * image is present, returns a bound ContentBlock[]: text / resource blocks
+ * fold into text blocks and each image block carries its base64 inline as a
+ * bound image source.
+ *
+ * The bytes ride inline only as far as the web intake handler, which rewrites
+ * each base64 image source to a file_ref on persist (keeping messages.content
+ * light); the agent-loop readback seam (parseContentBlocks) resolves the
+ * file_ref back to bytes at driver time. Audio has no bound content path and
+ * stays elided as a text placeholder.
+ *
+ * Never throws: unknown block shapes are skipped.
+ */
+export function promptToContent(blocks: AcpContentBlock[]): string | LlmContentBlock[] {
+	if (!blocks.some((block) => block.type === "image")) {
+		return promptToText(blocks);
+	}
+	const out: LlmContentBlock[] = [];
+	for (const block of blocks) {
+		if (block.type === "image") {
+			if (isSupportedImageMediaType(block.mimeType)) {
+				out.push({
+					type: "image",
+					source: { type: "base64", media_type: block.mimeType, data: block.data },
+				});
+			} else {
+				// bound's image content path supports only the four AI-SDK image
+				// IANA types; anything else (e.g. image/svg+xml) can't be a real
+				// image block, so note it rather than coerce the source type.
+				out.push({
+					type: "text",
+					text: `[image content omitted — unsupported media type ${block.mimeType}]`,
+				});
+			}
+		} else {
+			const text = acpBlockToText(block);
+			if (text !== null && text.length > 0) {
+				out.push({ type: "text", text });
+			}
+		}
+	}
+	return out;
 }
 
 /**

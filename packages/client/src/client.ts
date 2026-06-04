@@ -1,3 +1,4 @@
+import type { ContentBlock } from "@bound/llm";
 import type {
 	Advisory,
 	AdvisoryStatus,
@@ -498,7 +499,11 @@ export class BoundClient {
 		return this.fetchJson(`/api/threads/${threadId}/messages${qs ? `?${qs}` : ""}`);
 	}
 
-	sendMessage(threadId: string, content: string, options?: SendMessageOptions): void {
+	sendMessage(
+		threadId: string,
+		content: string | ContentBlock[],
+		options?: SendMessageOptions,
+	): void {
 		// Open a span for the user-facing send so the server-side
 		// `web.handle-message` becomes a child of this client root. When OTEL
 		// is not initialized the API returns no-op spans and `injectTraceContext`

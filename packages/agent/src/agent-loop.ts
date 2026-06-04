@@ -39,7 +39,7 @@ import {
 	hasOrphanedToolCall,
 	insertThreadMessage,
 	isTransientLLMError,
-	parseToolResultContent,
+	parseContentBlocks,
 	shouldRetryRelayCall,
 } from "./agent-loop-utils";
 import {
@@ -2289,7 +2289,7 @@ export class AgentLoop {
 
 						llmMessages.push({
 							role: "tool_result",
-							content: parseToolResultContent(content),
+							content: parseContentBlocks(content),
 							tool_use_id: toolCall.id,
 						});
 					}

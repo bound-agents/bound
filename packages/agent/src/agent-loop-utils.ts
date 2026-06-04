@@ -16,19 +16,28 @@ import type { RegisteredTool } from "./types";
 const logger = createLogger("@bound/agent", "agent-loop-utils");
 
 /**
- * Parse tool result content for the in-memory LLM message path.
- * When content is a JSON-serialized ContentBlock[] containing image blocks,
- * returns the parsed array so drivers can include images in the API call.
- * Otherwise returns the original string unchanged.
+ * Parse persisted message content for the in-memory LLM message path.
+ * When content is a JSON-serialized ContentBlock[] carrying a non-text block
+ * (image or document), returns the parsed array so drivers can deliver the
+ * structured content in the API call. Otherwise returns the original string
+ * unchanged.
+ *
+ * This is the readback counterpart to the live tool-result branch in
+ * agent-loop.ts: any role whose row holds a serialized ContentBlock[] — a
+ * user prompt with an attached image, or a tool_result with a binary blob —
+ * must be parsed back to blocks here, or the driver receives the literal JSON
+ * text and the image/document never reaches the model. The image/document
+ * guard avoids false-positives on plain-text content that happens to be valid
+ * JSON: text-only content is delivered identically as a string.
  */
-export function parseToolResultContent(content: string): string | ContentBlock[] {
+export function parseContentBlocks(content: string): string | ContentBlock[] {
 	try {
 		const parsed = JSON.parse(content);
 		if (
 			Array.isArray(parsed) &&
 			parsed.length > 0 &&
 			parsed[0]?.type &&
-			parsed.some((b: Record<string, unknown>) => b.type === "image")
+			parsed.some((b: Record<string, unknown>) => b.type === "image" || b.type === "document")
 		) {
 			return parsed as ContentBlock[];
 		}
@@ -525,7 +534,13 @@ export function convertDbRowToLLMMessage(
 
 	const msg: LLMMessage = {
 		role: role as LLMMessage["role"],
-		content,
+		// Readback seam: any role whose row holds a serialized ContentBlock[]
+		// (a user prompt with an attached image, a tool_result with a binary
+		// blob) is parsed back to blocks here. Without this, the driver
+		// receives the literal JSON text and the image/document never reaches
+		// the model. The live tool-result branch in agent-loop.ts handles the
+		// just-executed case; this covers every DB-readback path.
+		content: parseContentBlocks(content),
 	};
 
 	if (tool_name) {

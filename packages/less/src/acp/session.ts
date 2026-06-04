@@ -23,6 +23,7 @@ import {
 	type ToolCallStatus,
 } from "@agentclientprotocol/sdk";
 import type { BoundClient, ToolCallRequest, ToolCallResult } from "@bound/client";
+import type { ContentBlock } from "@bound/llm";
 import type { WsStreamChunk } from "@bound/shared";
 import type { AppLogger } from "../logging";
 import type { ResolvedShell } from "../tools/shell";
@@ -176,7 +177,7 @@ export class AcpSession {
 	 * that resolves with the StopReason once the daemon goes idle (or the turn
 	 * is cancelled). The promise is resolved by `handleThreadStatus`.
 	 */
-	runPrompt(text: string): Promise<PromptResponse> {
+	runPrompt(content: string | ContentBlock[]): Promise<PromptResponse> {
 		return new Promise<PromptResponse>((resolve, reject) => {
 			this.turn = {
 				resolve,
@@ -190,7 +191,7 @@ export class AcpSession {
 				agentMessageId: null,
 				thoughtMessageId: null,
 			};
-			this.deps.client.sendMessage(this.deps.sessionId, text, {
+			this.deps.client.sendMessage(this.deps.sessionId, content, {
 				modelId: this.modelId ?? undefined,
 			});
 		});

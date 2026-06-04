@@ -3,6 +3,7 @@ export type {
 	ChatParams,
 	LLMMessage,
 	ContentBlock,
+	ImageMediaType,
 	StreamChunk,
 	BackendCapabilities,
 	CapabilityRequirements,
