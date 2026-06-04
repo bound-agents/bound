@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getSiteId, insertRow } from "@bound/core";
 import { type AgentFile, MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import { Hono } from "hono";
@@ -83,12 +83,26 @@ export async function storeFile(
 		hostOrigin: string;
 	},
 ): Promise<string> {
-	const fileId = randomUUID();
 	const now = new Date().toISOString();
 	// Sanitize filename: whitelist alphanumeric, dots, hyphens, underscores; strip leading dots/underscores
 	const safeName = opts.name.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/^[._]+/, "") || "unnamed";
-	const filePath = `/home/user/uploads/${safeName}`;
 
+	// #159: fold a short content hash into the filename before the extension.
+	// Distinct content under the same name no longer collides, and re-uploading
+	// identical content resolves to the same path — so it can no-op to the
+	// existing row instead of failing (a path match means the bytes are equal).
+	const hash = createHash("sha256").update(Buffer.from(opts.data)).digest("hex").slice(0, 12);
+	const dotIdx = safeName.lastIndexOf(".");
+	const stem = dotIdx > 0 ? safeName.slice(0, dotIdx) : safeName;
+	const ext = dotIdx > 0 ? safeName.slice(dotIdx) : "";
+	const filePath = `/home/user/uploads/${stem}.${hash}${ext}`;
+
+	const existing = db
+		.query("SELECT id FROM files WHERE path = ? AND deleted = 0")
+		.get(filePath) as { id: string } | null;
+	if (existing) return existing.id;
+
+	const fileId = randomUUID();
 	const binary = !isTextMime(opts.mimeType);
 	const sizeBytes = opts.data.byteLength;
 	const content = binary
