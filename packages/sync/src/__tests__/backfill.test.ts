@@ -253,7 +253,7 @@ describe("WsTransport.runBackfill", () => {
 		}
 	});
 
-	it("rejects when consistency check is already in progress", async () => {
+	it("no-ops (does not throw) when a backfill is already in progress", async () => {
 		const key = new Uint8Array(32).fill(1);
 		transport.addPeer("hub", () => true, key);
 
@@ -264,9 +264,12 @@ describe("WsTransport.runBackfill", () => {
 			});
 
 		const first = transport.runBackfill();
-		const second = transport.runBackfill();
-
-		await expect(second).rejects.toThrow("already in progress");
+		// A concurrent backfill is normal on slow/unstable connections (#160). The
+		// reentrancy guard must early-return a zero result, mirroring the cooldown
+		// path, rather than throwing — otherwise callers log warn-level noise for an
+		// expected condition.
+		const second = await transport.runBackfill();
+		expect(second).toEqual({ backfilled: 0, tables: 0, pulled: 0 });
 
 		resolveFirst?.(new Map());
 		await first;

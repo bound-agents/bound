@@ -1887,7 +1887,12 @@ export class WsTransport {
 		isFirstConnect?: boolean;
 	}): Promise<{ backfilled: number; tables: number; pulled: number }> {
 		if (this.backfillRunning) {
-			throw new Error("Backfill already in progress");
+			// A concurrent backfill is normal on slow or unstable connections (#160):
+			// a periodic timer fire can overlap an in-flight on-connect backfill. Treat
+			// it like the cooldown path — a benign no-op — rather than throwing, so the
+			// callers don't log warn-level noise for an expected condition.
+			this.config.logger?.debug("[backfill] Skipping — already in progress");
+			return { backfilled: 0, tables: 0, pulled: 0 };
 		}
 		const elapsed = Date.now() - this.lastBackfillAt;
 		if (this.lastBackfillAt > 0 && elapsed < WsTransport.BACKFILL_COOLDOWN_MS) {
