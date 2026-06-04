@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
 import { hydrateWorkspace } from "@bound/sandbox";
+import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { InMemoryFs, MountableFs } from "just-bash";
 import type { ToolContext } from "../../types";
 import { createSkillTool } from "../skill";
@@ -84,6 +85,91 @@ This is a test skill for unit testing.
 			expect(skill.name).toBe(skillName);
 			expect(skill.status).toBe("active");
 			expect(skill.description).toBe("A test skill");
+		});
+
+		it("should re-activate an existing skill whose files live in the files table at a non-/home/user skill_root (canonical store, not VFS)", async () => {
+			// Reproduces the production bug: skills imported with the documented
+			// default skill_root `skills/<name>` (not `/home/user/skills/<name>`)
+			// could not be re-activated, because handleActivate hardcoded the VFS
+			// prefix `/home/user/skills/<name>/` and found zero files.
+			const now = new Date().toISOString();
+			const skillName = "reactivate-from-files";
+			const skillRoot = `skills/${skillName}`; // NOT /home/user/skills/...
+			const skillMd = `---
+name: ${skillName}
+description: Reactivated from the canonical files table
+---
+
+# Reactivate From Files
+
+Body content.
+`;
+
+			insertRow(
+				db,
+				"skills",
+				{
+					// MUST be the deterministic UUID, because importSkillFromFiles
+					// looks up the existing skill by deterministicUUID(name), not by
+					// name — production rows are keyed this way.
+					id: deterministicUUID(BOUND_NAMESPACE, skillName),
+					name: skillName,
+					description: "stale description",
+					status: "retired",
+					skill_root: skillRoot,
+					content_hash: "stalehash",
+					allowed_tools: null,
+					compatibility: null,
+					metadata_json: "{}",
+					activated_at: now,
+					created_by_thread: null,
+					activation_count: 2,
+					last_activated_at: now,
+					retired_by: "test",
+					retired_reason: "manually retired",
+					modified_at: now,
+				},
+				siteId,
+			);
+
+			// SKILL.md lives in the files table at skill_root — the canonical store.
+			// Deliberately NOT written into the VFS (fs), to prove re-activation
+			// reads from the files table, not the VFS.
+			insertRow(
+				db,
+				"files",
+				{
+					id: `${skillRoot}/SKILL.md`,
+					path: `${skillRoot}/SKILL.md`,
+					content: skillMd,
+					is_binary: 0,
+					size_bytes: Buffer.byteLength(skillMd, "utf8"),
+					created_at: now,
+					modified_at: now,
+					created_by: null,
+					host_origin: null,
+				},
+				siteId,
+			);
+
+			const tool = createSkillTool(toolContext);
+			const result = await getExecute(tool)({
+				action: "activate",
+				name: skillName,
+			});
+
+			expect(result).toMatch(/activated successfully/i);
+
+			const skill = db
+				.prepare(
+					"SELECT status, skill_root, description FROM skills WHERE name = ? AND deleted = 0",
+				)
+				.get(skillName) as { status: string; skill_root: string; description: string };
+			expect(skill.status).toBe("active");
+			// skill_root must be preserved, not clobbered to /home/user/skills/<name>
+			expect(skill.skill_root).toBe(skillRoot);
+			// content was re-read from the files table and refreshed
+			expect(skill.description).toBe("Reactivated from the canonical files table");
 		});
 
 		it("should require 'name' parameter and return error when missing", async () => {

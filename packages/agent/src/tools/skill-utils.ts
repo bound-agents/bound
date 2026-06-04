@@ -129,7 +129,14 @@ export async function importSkillFromFiles(
 		// Step 10: Check existing skill
 		const now = new Date().toISOString();
 
-		const skillRoot = `/home/user/skills/${name}`;
+		// Preserve an existing skill's skill_root so re-activation / content updates
+		// don't migrate its files to a new location (orphaning the originals and
+		// breaking the next activation). Two conventions exist in the wild —
+		// `skills/<name>` (the documented default) and `/home/user/skills/<name>`
+		// (what fresh native-tool imports have historically written). New skills
+		// default to the latter, matching where handleActivate collects VFS files.
+		const skillRoot =
+			(existingSkill?.skill_root as string | null | undefined) ?? `/home/user/skills/${name}`;
 
 		if (existingSkill) {
 			const existingAsSkill = existingSkill as Record<string, unknown> & {
