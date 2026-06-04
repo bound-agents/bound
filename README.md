@@ -135,6 +135,13 @@ the default), `Accept edits` (auto-approve file reads and edits, still prompt be
 running commands), and `Bypass permissions` (auto-approve everything). The default mode
 is byte-identical to per-call prompting; a non-default mode is opt-in per session.
 
+Image prompts are forwarded: a prompt that includes an image content block (a pasted or
+attached `image/jpeg`, `image/png`, `image/gif`, or `image/webp`) rides through to the
+model as a real image rather than being flattened to a placeholder. The bytes are
+persisted as a `file_ref` into the `files` table so `messages.content` stays light, and
+resolved back to image data at inference time. Unsupported image media types and audio
+are still elided with a labeled text note.
+
 ## Project structure
 
 ```

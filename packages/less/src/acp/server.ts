@@ -49,7 +49,7 @@ import { performAttach } from "../session/attach";
 import { collectToolCallPairing } from "../session/tool-call-pairing";
 import { buildToolSet } from "../tools/registry";
 import type { ResolvedShell } from "../tools/shell";
-import { messageToSessionUpdate, promptToText } from "./mapping";
+import { messageToSessionUpdate, promptToContent } from "./mapping";
 import { acpMcpServersToConfigs, mergeMcpConfigs } from "./mcp-config";
 import {
 	DEFAULT_MODE_ID,
@@ -117,7 +117,7 @@ export class BoundAcpAgent implements Agent {
 					list: {},
 				},
 				promptCapabilities: {
-					image: false,
+					image: true,
 					audio: false,
 					embeddedContext: true,
 				},
@@ -208,8 +208,8 @@ export class BoundAcpAgent implements Agent {
 		if (!entry) {
 			throw RequestError.invalidParams(undefined, `Unknown session: ${params.sessionId}`);
 		}
-		const text = promptToText(params.prompt);
-		return entry.session.runPrompt(text);
+		const content = promptToContent(params.prompt);
+		return entry.session.runPrompt(content);
 	}
 
 	async cancel(params: CancelNotification): Promise<void> {

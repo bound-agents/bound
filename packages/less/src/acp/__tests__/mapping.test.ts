@@ -7,6 +7,7 @@ import type { Message, WsStreamChunk } from "@bound/shared";
 import fc from "fast-check";
 import {
 	messageToSessionUpdate,
+	promptToContent,
 	promptToText,
 	streamChunkToSessionUpdate,
 	toolCallContent,
@@ -314,6 +315,44 @@ describe("promptToText", () => {
 		const out = promptToText(blocks);
 		expect(out).toContain("image content omitted");
 		expect(out).toContain("audio content omitted");
+	});
+});
+
+describe("promptToContent", () => {
+	it("returns a plain string identical to promptToText when no image is present", () => {
+		const blocks: AcpContentBlock[] = [
+			{ type: "text", text: "first" },
+			{ type: "resource_link", name: "main.py", uri: "file:///main.py" },
+		];
+		const out = promptToContent(blocks);
+		expect(typeof out).toBe("string");
+		expect(out).toBe(promptToText(blocks));
+	});
+
+	it("returns a ContentBlock[] with an inline base64 image source when an image rides along", () => {
+		const blocks: AcpContentBlock[] = [
+			{ type: "text", text: "look at this" },
+			{ type: "image", data: "AAAA", mimeType: "image/png" },
+		];
+		const out = promptToContent(blocks);
+		expect(Array.isArray(out)).toBe(true);
+		expect(out).toEqual([
+			{ type: "text", text: "look at this" },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+		]);
+	});
+
+	it("elides an unsupported image media type to a labeled text block", () => {
+		const blocks: AcpContentBlock[] = [
+			{ type: "image", data: "AAAA", mimeType: "image/png" },
+			{ type: "image", data: "BBBB", mimeType: "image/svg+xml" },
+		];
+		const out = promptToContent(blocks);
+		expect(Array.isArray(out)).toBe(true);
+		expect(out).toEqual([
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+			{ type: "text", text: "[image content omitted — unsupported media type image/svg+xml]" },
+		]);
 	});
 });
 

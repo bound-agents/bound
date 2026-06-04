@@ -443,32 +443,32 @@ describe("isTransientLLMError", () => {
 	});
 });
 
-describe("parseToolResultContent", () => {
+describe("parseContentBlocks", () => {
 	// Lazy import since we're adding this function
-	let parseToolResultContent: typeof import("../agent-loop-utils").parseToolResultContent;
+	let parseContentBlocks: typeof import("../agent-loop-utils").parseContentBlocks;
 
 	beforeAll(async () => {
 		const mod = await import("../agent-loop-utils");
-		parseToolResultContent = mod.parseToolResultContent;
+		parseContentBlocks = mod.parseContentBlocks;
 	});
 
 	it("returns plain string as-is for regular text content", () => {
-		const result = parseToolResultContent("hello world");
+		const result = parseContentBlocks("hello world");
 		expect(result).toBe("hello world");
 	});
 
 	it("returns plain string for invalid JSON", () => {
-		const result = parseToolResultContent("not json at all");
+		const result = parseContentBlocks("not json at all");
 		expect(result).toBe("not json at all");
 	});
 
 	it("returns plain string for JSON that is not a ContentBlock array", () => {
-		const result = parseToolResultContent(JSON.stringify({ key: "value" }));
+		const result = parseContentBlocks(JSON.stringify({ key: "value" }));
 		expect(result).toBe(JSON.stringify({ key: "value" }));
 	});
 
 	it("returns plain string for JSON array without type fields", () => {
-		const result = parseToolResultContent(JSON.stringify([1, 2, 3]));
+		const result = parseContentBlocks(JSON.stringify([1, 2, 3]));
 		expect(result).toBe(JSON.stringify([1, 2, 3]));
 	});
 
@@ -480,7 +480,7 @@ describe("parseToolResultContent", () => {
 				source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
 			},
 		];
-		const result = parseToolResultContent(JSON.stringify(blocks));
+		const result = parseContentBlocks(JSON.stringify(blocks));
 		expect(Array.isArray(result)).toBe(true);
 		expect(result).toHaveLength(2);
 		expect((result as Array<Record<string, unknown>>)[0]).toEqual({
@@ -493,10 +493,39 @@ describe("parseToolResultContent", () => {
 		});
 	});
 
+	it("returns ContentBlock[] for a file_ref image source (persisted prompt image)", () => {
+		const blocks = [
+			{ type: "text", text: "what's in this image?" },
+			{
+				type: "image",
+				source: { type: "file_ref", media_type: "image/png", file_id: "abc-123" },
+			},
+		];
+		const result = parseContentBlocks(JSON.stringify(blocks));
+		expect(Array.isArray(result)).toBe(true);
+		expect((result as Array<Record<string, unknown>>)[1]).toEqual({
+			type: "image",
+			source: { type: "file_ref", media_type: "image/png", file_id: "abc-123" },
+		});
+	});
+
+	it("returns ContentBlock[] for document blocks", () => {
+		const blocks = [
+			{
+				type: "document",
+				source: { type: "file_ref", media_type: "application/pdf", file_id: "doc-1" },
+				text_representation: "fallback text",
+			},
+		];
+		const result = parseContentBlocks(JSON.stringify(blocks));
+		expect(Array.isArray(result)).toBe(true);
+		expect(result).toHaveLength(1);
+	});
+
 	it("returns plain string for text-only ContentBlock[] (no images)", () => {
 		// Text-only arrays should stay as plain string to avoid unnecessary overhead
 		const blocks = [{ type: "text", text: "just text" }];
-		const result = parseToolResultContent(JSON.stringify(blocks));
+		const result = parseContentBlocks(JSON.stringify(blocks));
 		expect(result).toBe(JSON.stringify(blocks));
 	});
 });

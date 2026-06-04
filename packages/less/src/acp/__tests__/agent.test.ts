@@ -36,7 +36,7 @@ describe("BoundAcpAgent.initialize", () => {
 		expect(res.agentCapabilities?.loadSession).toBe(true);
 		expect(res.agentCapabilities?.sessionCapabilities?.close).toEqual({});
 		expect(res.agentCapabilities?.sessionCapabilities?.list).toEqual({});
-		expect(res.agentCapabilities?.promptCapabilities?.image).toBe(false);
+		expect(res.agentCapabilities?.promptCapabilities?.image).toBe(true);
 		expect(res.agentCapabilities?.promptCapabilities?.embeddedContext).toBe(true);
 		expect(res.agentInfo?.name).toBe("boundless");
 	});

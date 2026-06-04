@@ -26,6 +26,7 @@ import type {
 } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
+import { storeFile } from "./routes/files";
 
 // Zod schemas for all client→server message types
 const sessionConfigureSchema = z.object({
@@ -43,27 +44,11 @@ const sessionConfigureSchema = z.object({
 	systemPromptAddition: z.string().optional(),
 });
 
-const messageSendSchema = z.object({
-	type: z.literal("message:send"),
-	thread_id: z.string(),
-	content: z.string(),
-	file_ids: z.array(z.string()).optional(),
-	model_id: z.string().optional(),
-	trace_context: z.string().optional(),
-});
-
-const threadSubscribeSchema = z.object({
-	type: z.literal("thread:subscribe"),
-	thread_id: z.string(),
-});
-
-const threadUnsubscribeSchema = z.object({
-	type: z.literal("thread:unsubscribe"),
-	thread_id: z.string(),
-});
-
-// ContentBlock variants allowed in tool:result (excludes tool_use and thinking)
-const toolResultContentBlockSchema = z.discriminatedUnion("type", [
+// ContentBlock variants accepted from clients on the prompt + tool:result
+// paths (excludes tool_use and thinking — those are agent-emitted, never
+// client-sent). Shared by message:send (image/document prompt attachments)
+// and tool:result (binary tool outputs).
+const contentBlockSchema = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("text"), text: z.string() }),
 	z.object({
 		type: z.literal("image"),
@@ -88,11 +73,30 @@ const toolResultContentBlockSchema = z.discriminatedUnion("type", [
 	}),
 ]);
 
+const messageSendSchema = z.object({
+	type: z.literal("message:send"),
+	thread_id: z.string(),
+	content: z.union([z.string(), z.array(contentBlockSchema)]),
+	file_ids: z.array(z.string()).optional(),
+	model_id: z.string().optional(),
+	trace_context: z.string().optional(),
+});
+
+const threadSubscribeSchema = z.object({
+	type: z.literal("thread:subscribe"),
+	thread_id: z.string(),
+});
+
+const threadUnsubscribeSchema = z.object({
+	type: z.literal("thread:unsubscribe"),
+	thread_id: z.string(),
+});
+
 const toolResultSchema = z.object({
 	type: z.literal("tool:result"),
 	call_id: z.string(),
 	thread_id: z.string(),
-	content: z.union([z.string(), z.array(toolResultContentBlockSchema)]),
+	content: z.union([z.string(), z.array(contentBlockSchema)]),
 	is_error: z.boolean().optional(),
 	trace_data: z.string().optional(), // serialized span array JSON (optional)
 });
@@ -459,7 +463,10 @@ export function createWebSocketHandler(
 		}
 	}
 
-	function handleMessageSend(conn: ClientConnection, msg: z.infer<typeof messageSendSchema>): void {
+	async function handleMessageSend(
+		conn: ClientConnection,
+		msg: z.infer<typeof messageSendSchema>,
+	): Promise<void> {
 		if (!db || !siteId || !defaultUserId) {
 			conn.ws.send(
 				JSON.stringify({
@@ -473,29 +480,46 @@ export function createWebSocketHandler(
 
 		try {
 			const MAX_CONTENT_LENGTH = 512 * 1024; // 512KB
+			// Per-attachment decoded byte cap for inline image/document prompts.
+			// Generous enough for editor screenshots; bounds a single malicious
+			// or accidental megablob before it hits the files table.
+			const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10MB
 
 			// Validate content is non-empty
-			if (!msg.content.trim()) {
-				conn.ws.send(
-					JSON.stringify({
-						type: "error",
-						code: "invalid_content",
-						message: "Content must not be empty",
-					}),
-				);
-				return;
-			}
+			if (typeof msg.content !== "string") {
+				if (msg.content.length === 0) {
+					conn.ws.send(
+						JSON.stringify({
+							type: "error",
+							code: "invalid_content",
+							message: "Content must not be empty",
+						}),
+					);
+					return;
+				}
+			} else {
+				if (!msg.content.trim()) {
+					conn.ws.send(
+						JSON.stringify({
+							type: "error",
+							code: "invalid_content",
+							message: "Content must not be empty",
+						}),
+					);
+					return;
+				}
 
-			// Validate content length
-			if (msg.content.length > MAX_CONTENT_LENGTH) {
-				conn.ws.send(
-					JSON.stringify({
-						type: "error",
-						code: "content_too_large",
-						message: `Maximum content length is ${MAX_CONTENT_LENGTH / 1024}KB`,
-					}),
-				);
-				return;
+				// Validate content length
+				if (msg.content.length > MAX_CONTENT_LENGTH) {
+					conn.ws.send(
+						JSON.stringify({
+							type: "error",
+							code: "content_too_large",
+							message: `Maximum content length is ${MAX_CONTENT_LENGTH / 1024}KB`,
+						}),
+					);
+					return;
+				}
 			}
 
 			// Verify thread exists
@@ -513,22 +537,94 @@ export function createWebSocketHandler(
 				return;
 			}
 
-			// Append file contents if provided
-			let content: string = msg.content;
+			// Resolve file_ids (text attachments) — shared by both content forms.
 			const MAX_FILE_IDS = 20;
 			const fileIds: string[] = (Array.isArray(msg.file_ids) ? msg.file_ids : [])
 				.filter((id): id is string => typeof id === "string")
 				.slice(0, MAX_FILE_IDS);
-			for (const fileId of fileIds) {
-				const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
-					path: string;
-					content: string | null;
-					is_binary: number;
-					size_bytes: number;
-				} | null;
-				if (!file) continue;
-				const name = file.path.split("/").pop() ?? file.path;
-				content += `\n\n${formatFileAttachment(name, file.path, file.size_bytes)}`;
+			const fileAttachmentText = (): string[] => {
+				const lines: string[] = [];
+				for (const fileId of fileIds) {
+					const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
+						path: string;
+						size_bytes: number;
+					} | null;
+					if (!file) continue;
+					const name = file.path.split("/").pop() ?? file.path;
+					lines.push(formatFileAttachment(name, file.path, file.size_bytes));
+				}
+				return lines;
+			};
+
+			let persistedContent: string;
+			if (typeof msg.content === "string") {
+				// Text prompt: append any file_ids as formatted text attachments.
+				let content = msg.content;
+				for (const line of fileAttachmentText()) {
+					content += `\n\n${line}`;
+				}
+				persistedContent = content;
+			} else {
+				// Block prompt (image/document attachments). Rewrite any inline
+				// base64 image/document source to a file_ref by writing the bytes
+				// to the files table via storeFile — keeps messages.content light
+				// and lets the blob sync + dedupe through the files table. The
+				// readback seam (parseContentBlocks in agent-loop-utils) resolves
+				// file_ref back to bytes at driver time via createFileRefResolver.
+				const blocks: Array<Record<string, unknown>> = [];
+				for (const block of msg.content) {
+					if (
+						(block.type === "image" || block.type === "document") &&
+						block.source.type === "base64" &&
+						block.source.data
+					) {
+						const bytes = Buffer.from(block.source.data, "base64");
+						if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+							conn.ws.send(
+								JSON.stringify({
+									type: "error",
+									code: "content_too_large",
+									message: `Maximum attachment size is ${MAX_ATTACHMENT_BYTES / (1024 * 1024)}MB`,
+								}),
+							);
+							return;
+						}
+						const mimeType = block.source.media_type ?? "application/octet-stream";
+						const subtype = mimeType.split("/")[1]?.replace(/[^a-zA-Z0-9]/g, "") || "bin";
+						const fileId = await storeFile(db, siteId, {
+							name: `prompt-attachment.${subtype}`,
+							mimeType,
+							data: bytes.buffer.slice(
+								bytes.byteOffset,
+								bytes.byteOffset + bytes.byteLength,
+							) as ArrayBuffer,
+							createdBy: defaultUserId,
+							hostOrigin,
+						});
+						blocks.push({
+							...block,
+							source: { type: "file_ref", media_type: mimeType, file_id: fileId },
+						});
+					} else {
+						blocks.push(block as Record<string, unknown>);
+					}
+				}
+				// file_ids ride along as trailing text blocks (parity with the
+				// text path — the agent loop renders text blocks identically).
+				for (const line of fileAttachmentText()) {
+					blocks.push({ type: "text", text: line });
+				}
+				// Only persist as a JSON ContentBlock[] when a non-text block is
+				// present — that is the exact condition parseContentBlocks parses
+				// back on readback. A text-only array flattens to a plain string
+				// (identical delivery) so the readback always round-trips.
+				const hasNonText = blocks.some((b) => b.type === "image" || b.type === "document");
+				persistedContent = hasNonText
+					? JSON.stringify(blocks)
+					: blocks
+							.map((b) => (b.type === "text" ? ((b.text as string) ?? "") : ""))
+							.filter((t) => t.length > 0)
+							.join("\n\n");
 			}
 
 			// Persist the message
@@ -542,7 +638,7 @@ export function createWebSocketHandler(
 					id: messageId,
 					thread_id: msg.thread_id,
 					role: "user",
-					content,
+					content: persistedContent,
 					model_id: null,
 					tool_name: null,
 					created_at: now,
