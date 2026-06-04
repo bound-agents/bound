@@ -462,6 +462,69 @@ describe("AcpSession streaming text", () => {
 	});
 });
 
+describe("AcpSession streamed message ids", () => {
+	const idOf = (u: SessionNotification["update"]): string | null | undefined =>
+		(u as { messageId?: string | null }).messageId;
+
+	it("shares one messageId across a contiguous agent_message_chunk run", async () => {
+		const { session, rec } = setup();
+		session.runPrompt("go");
+		session.handleThreadStatus(true);
+		await session.handleStreamChunk({ type: "text", content: "one " });
+		await session.handleStreamChunk({ type: "text", content: "two " });
+		await session.handleStreamChunk({ type: "text", content: "three" });
+		const ids = rec.updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map(idOf);
+		expect(ids.length).toBe(3);
+		expect(typeof ids[0]).toBe("string");
+		expect(new Set(ids).size).toBe(1);
+	});
+
+	it("starts a fresh messageId after a tool call breaks the run", async () => {
+		const { session, rec } = setup();
+		session.runPrompt("go");
+		session.handleThreadStatus(true);
+		await session.handleStreamChunk({ type: "text", content: "before" });
+		await session.handleStreamChunk({ type: "tool_use_start", id: "tu1", name: "memory" });
+		await session.handleStreamChunk({ type: "text", content: "after" });
+		const ids = rec.updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map(idOf);
+		expect(ids.length).toBe(2);
+		expect(ids[0]).not.toBe(ids[1]);
+	});
+
+	it("uses distinct messageIds for text vs thought, and a switch breaks each run", async () => {
+		const { session, rec } = setup();
+		session.runPrompt("go");
+		session.handleThreadStatus(true);
+		await session.handleStreamChunk({ type: "thinking", content: "ponder" });
+		await session.handleStreamChunk({ type: "text", content: "answer" });
+		await session.handleStreamChunk({ type: "thinking", content: "reconsider" });
+		const thoughtIds = rec.updates
+			.filter((u) => u.sessionUpdate === "agent_thought_chunk")
+			.map(idOf);
+		const textIds = rec.updates.filter((u) => u.sessionUpdate === "agent_message_chunk").map(idOf);
+		expect(textIds.length).toBe(1);
+		expect(thoughtIds.length).toBe(2);
+		// thought → text → thought: every id distinct (text break + thought break)
+		const all = [thoughtIds[0], textIds[0], thoughtIds[1]];
+		expect(new Set(all).size).toBe(3);
+	});
+
+	it("stamps a messageId on the alert agent_message_chunk surface", async () => {
+		const { session, rec } = setup();
+		const p = session.runPrompt("hi");
+		session.handleThreadStatus(true);
+		session.handleAlert("Error: boom");
+		session.handleThreadStatus(false);
+		await p.catch(() => {});
+		const alertChunk = rec.updates.find(
+			(u) =>
+				u.sessionUpdate === "agent_message_chunk" &&
+				(u as { content: { text: string } }).content.text.includes("boom"),
+		);
+		expect(typeof idOf(alertChunk as SessionNotification["update"])).toBe("string");
+	});
+});
+
 describe("AcpSession turn-fatal alert propagation", () => {
 	it("rejects the prompt with an error when a fatal alert arrives and no assistant text was produced", async () => {
 		const { session } = setup();

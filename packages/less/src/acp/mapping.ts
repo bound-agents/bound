@@ -374,6 +374,7 @@ export function messageToSessionUpdate(
 				{
 					sessionUpdate: "user_message_chunk",
 					content: { type: "text", text: message.content },
+					messageId: message.id,
 				},
 			];
 		case "assistant":
@@ -381,6 +382,7 @@ export function messageToSessionUpdate(
 				{
 					sessionUpdate: "agent_message_chunk",
 					content: { type: "text", text: message.content },
+					messageId: message.id,
 				},
 			];
 		case "tool_call": {
@@ -406,6 +408,7 @@ export function messageToSessionUpdate(
 						updates.push({
 							sessionUpdate: "agent_message_chunk",
 							content: { type: "text", text: block.text },
+							messageId: message.id,
 						});
 					}
 				} else if (block.type === "tool_use") {
