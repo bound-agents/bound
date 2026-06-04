@@ -23,6 +23,7 @@
 		"lucide-svelte": "^0.371.0",
 		"marked": "^17.0.5",
 		"marked-highlight": "^2.2.3",
+		"mermaid": "^11.4.1",
 		"shiki": "^4.0.2",
 		"zod": "^4.3.6"
 	},

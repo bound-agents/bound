@@ -10,6 +10,7 @@ import SkillEditModal from "../components/SkillEditModal.svelte";
 import StatusChip from "../components/StatusChip.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
+import { mermaid } from "../lib/mermaid";
 
 let skills: Skill[] = $state([]);
 let loading = $state(true);
@@ -257,7 +258,7 @@ $effect.pre(() => {
 		{/if}
 
 		{#if content}
-			<div class="skill-content md-content">{@html content}</div>
+			<div class="skill-content md-content" use:mermaid={content}>{@html content}</div>
 		{/if}
 
 		{#if detail?.files && detail.files.length > 0}

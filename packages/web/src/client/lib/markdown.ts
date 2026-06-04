@@ -1,6 +1,6 @@
 import { SYNTAX_THEME, getHighlighter, normalizeLang } from "@bound/shared";
 import DOMPurify from "dompurify";
-import { Marked } from "marked";
+import { Marked, type Tokens } from "marked";
 import { markedHighlight } from "marked-highlight";
 
 // ---------------------------------------------------------------------------
@@ -55,8 +55,17 @@ export async function highlightCode(
 // Marked instance
 // ---------------------------------------------------------------------------
 
+// Escape a raw string for safe embedding as the text content of an element.
+function escapeHtmlText(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // Marked instance configured with:
 //   markedHighlight — delegates fenced code blocks to the shared Shiki singleton.
+//   custom code renderer — carves `mermaid` fences out of the highlight path and
+//     emits a `<pre class="mermaid">` carrier holding the raw source. The diagram
+//     itself is rendered client-side from that carrier (see lib/mermaid.ts); the
+//     source is escaped so it survives DOMPurify and round-trips via textContent.
 const markedInstance = new Marked(
 	markedHighlight({
 		async: true,
@@ -67,6 +76,12 @@ const markedInstance = new Marked(
 			if (!lang) {
 				return code;
 			}
+			// Mermaid blocks are rendered as diagrams, not syntax-highlighted —
+			// pass the source through untouched (the code renderer below emits the
+			// carrier). Skips a pointless Shiki pass on every diagram.
+			if (lang === "mermaid") {
+				return code;
+			}
 			const highlighter = await getHighlighter();
 			return highlighter.codeToHtml(code, {
 				lang: normalizeLang(lang),
@@ -74,6 +89,17 @@ const markedInstance = new Marked(
 			});
 		},
 	}),
+	{
+		renderer: {
+			code({ text, lang }: Tokens.Code): string | false {
+				if ((lang ?? "").trim().toLowerCase() === "mermaid") {
+					return `<pre class="mermaid">${escapeHtmlText(text)}</pre>`;
+				}
+				// Fall through to marked-highlight's renderer for every other fence.
+				return false;
+			},
+		},
+	},
 );
 
 // ---------------------------------------------------------------------------

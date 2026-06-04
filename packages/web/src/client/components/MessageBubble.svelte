@@ -1,5 +1,6 @@
 <script lang="ts">
 import { renderMarkdown } from "../lib/markdown";
+import { mermaid } from "../lib/mermaid";
 import { getLineColor } from "../lib/metro-lines";
 
 interface Props {
@@ -154,7 +155,7 @@ $effect(() => {
 					{/if}
 				</div>
 			{:else if renderedMap[i]}
-				<div class="content md-content">{@html renderedMap[i]}</div>
+				<div class="content md-content" use:mermaid={renderedMap[i]}>{@html renderedMap[i]}</div>
 			{:else}
 				<div class="content">{block.text}</div>
 			{/if}

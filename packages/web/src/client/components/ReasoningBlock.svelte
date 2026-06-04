@@ -8,6 +8,7 @@
 // normal assistant turn.
 
 import { renderMarkdown } from "../lib/markdown";
+import { mermaid } from "../lib/mermaid";
 
 interface Props {
 	text: string;
@@ -76,7 +77,7 @@ function onKey(e: KeyboardEvent): void {
 					Reasoning was redacted by the provider's safety filters.
 				</em>
 			{:else if rendered}
-				<div class="reasoning-prose md-content">{@html rendered}</div>
+				<div class="reasoning-prose md-content" use:mermaid={rendered}>{@html rendered}</div>
 			{:else}
 				<div class="reasoning-prose">{text}</div>
 			{/if}

@@ -215,6 +215,24 @@ function screenLabel(r: string): string {
 		text-transform: uppercase;
 		color: var(--ink-3);
 	}
+
+	/* Mermaid diagrams (rendered client-side from ```mermaid fences) */
+	:global(pre.mermaid) {
+		text-align: center;
+	}
+	:global(pre.mermaid.mermaid-rendered) {
+		background: transparent;
+		padding: 8px 0;
+		overflow-x: auto;
+		white-space: normal;
+	}
+	:global(pre.mermaid.mermaid-rendered svg) {
+		max-width: 100%;
+		height: auto;
+	}
+	:global(pre.mermaid.mermaid-error) {
+		border-left: 3px solid var(--accent, #c0392b);
+	}
 	:global(.rule) {
 		height: 1px;
 		background: var(--ink);

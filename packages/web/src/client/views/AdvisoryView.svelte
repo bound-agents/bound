@@ -8,6 +8,7 @@ import StatusChip from "../components/StatusChip.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
+import { mermaid } from "../lib/mermaid";
 import { navigateTo } from "../lib/router";
 
 let advisories: Advisory[] = $state([]);

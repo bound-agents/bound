@@ -4,6 +4,7 @@ import { onDestroy, onMount } from "svelte";
 import { client } from "../lib/bound";
 import { extensionToLanguage, getFileCategory } from "../lib/file-categories";
 import type { FileMetadata } from "../lib/file-tree";
+import { mermaid } from "../lib/mermaid";
 
 interface Props {
 	file: FileMetadata;
@@ -186,7 +187,7 @@ function download(): void {
 			{:else if category === "code" && renderedHtml}
 				<div class="preview-code">{@html renderedHtml}</div>
 			{:else if category === "markdown" && renderedHtml}
-				<div class="preview-markdown">{@html renderedHtml}</div>
+				<div class="preview-markdown" use:mermaid={renderedHtml}>{@html renderedHtml}</div>
 			{:else if category === "image" && blobUrl}
 				<div class="preview-image">
 					<img src={blobUrl} alt={file.path.split("/").pop()} />
