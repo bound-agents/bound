@@ -542,7 +542,9 @@ function turnPreview(content: string): string {
 		font-size: 26px;
 		font-weight: 700;
 		letter-spacing: -0.018em;
-		line-height: 1.08;
+		/* 1.08 sheared descenders (g/y/p/j) at the bottom: overflow:hidden (needed
+		   for the ellipsis) clips a line box tighter than the glyph box. #162 */
+		line-height: 1.25;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
