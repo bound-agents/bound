@@ -304,7 +304,48 @@ describe("promptToText", () => {
 		const out = promptToText(blocks);
 		expect(out).toContain("see");
 		expect(out).toContain("[resource: main.py (file:///main.py)]");
-		expect(out).toContain("[resource file:///a.txt]\ncontents");
+		// Embedded text resource: consistent colon framing, mimeType carried.
+		expect(out).toContain("[resource: file:///a.txt text/plain]\ncontents");
+	});
+
+	it("carries resource_link title and description when the editor provides them", () => {
+		const blocks: AcpContentBlock[] = [
+			{
+				type: "resource_link",
+				name: "websocket.ts",
+				uri: "file:///src/websocket.ts",
+				title: "WebSocket handler",
+				description: "the web package's WS entry point",
+				mimeType: "text/x-typescript",
+			},
+		];
+		const out = promptToText(blocks);
+		expect(out).toContain("websocket.ts");
+		expect(out).toContain("file:///src/websocket.ts");
+		expect(out).toContain("WebSocket handler");
+		expect(out).toContain("the web package's WS entry point");
+		expect(out).toContain("text/x-typescript");
+	});
+
+	it("notes a binary (blob) embedded resource instead of dropping it silently", () => {
+		const blocks: AcpContentBlock[] = [
+			{
+				type: "resource",
+				resource: { uri: "file:///logo.png", blob: "AAAA", mimeType: "image/png" },
+			},
+		];
+		const out = promptToText(blocks);
+		expect(out).toContain("[resource: file:///logo.png image/png");
+		expect(out).toContain("binary content omitted");
+		expect(out).not.toContain("AAAA");
+	});
+
+	it("renders an embedded text resource with no mimeType cleanly (no trailing space)", () => {
+		const blocks: AcpContentBlock[] = [
+			{ type: "resource", resource: { uri: "file:///a.txt", text: "hello" } },
+		];
+		const out = promptToText(blocks);
+		expect(out).toBe("[resource: file:///a.txt]\nhello");
 	});
 
 	it("elides image and audio content with a placeholder", () => {

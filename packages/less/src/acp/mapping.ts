@@ -286,15 +286,34 @@ function acpBlockToText(block: AcpContentBlock): string | null {
 	switch (block.type) {
 		case "text":
 			return block.text;
-		case "resource_link":
-			return `[resource: ${block.name} (${block.uri})]`;
+		case "resource_link": {
+			// A resource_link is a pointer, not content — the agent reads the URI
+			// to act on it. Carry the editor-provided mimeType/title/description
+			// when present so the model sees the same framing the editor showed
+			// the user, instead of just name + URI.
+			const label =
+				block.title && block.title !== block.name ? `${block.name} — ${block.title}` : block.name;
+			const mime = block.mimeType ? ` ${block.mimeType}` : "";
+			const desc = block.description ? `: ${block.description}` : "";
+			return `[resource: ${label} (${block.uri})${mime}${desc}]`;
+		}
 		case "resource": {
 			const res = block.resource;
+			// TextResourceContents: uri + text are both required on the SDK type;
+			// mimeType is optional. Carry the mimeType as a language/type hint.
 			if (res && "text" in res && typeof res.text === "string") {
-				const uri = "uri" in res ? res.uri : "embedded";
-				return `[resource ${uri}]\n${res.text}`;
+				const mime = res.mimeType ? ` ${res.mimeType}` : "";
+				return `[resource: ${res.uri}${mime}]\n${res.text}`;
 			}
-			if (res && "uri" in res) {
+			// BlobResourceContents: binary; can't inline as text, but note it
+			// (with uri + mimeType) rather than dropping it silently.
+			if (res && "blob" in res) {
+				const mime = res.mimeType ? ` ${res.mimeType}` : "";
+				return `[resource: ${res.uri}${mime} — binary content omitted]`;
+			}
+			// Unknown resource shape: surface the uri if we have one rather than
+			// vanishing the block.
+			if (res && "uri" in res && typeof res.uri === "string") {
 				return `[resource: ${res.uri}]`;
 			}
 			return null;
