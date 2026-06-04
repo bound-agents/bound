@@ -2,6 +2,7 @@
 import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
 import { untrack } from "svelte";
 import { renderMarkdown } from "../lib/markdown";
+import { mermaid } from "../lib/mermaid";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 
 // Renders a run of consecutive tool_call messages as a single Agent turn.
@@ -216,7 +217,7 @@ function previewInput(input: unknown): string {
 
 	{#if firstParsed?.inlineText}
 		{#if renderedFirstText}
-			<div class="inline-text md-content">{@html renderedFirstText}</div>
+			<div class="inline-text md-content" use:mermaid={renderedFirstText}>{@html renderedFirstText}</div>
 		{:else}
 			<div class="inline-text">{firstParsed.inlineText}</div>
 		{/if}
@@ -256,7 +257,7 @@ function previewInput(input: unknown): string {
 						{#if idx > 0 && p.inlineText}
 							{@const inner = innerRendered[idx]}
 							{#if inner}
-								<div class="inline-text md-content inner-inline">{@html inner}</div>
+								<div class="inline-text md-content inner-inline" use:mermaid={inner}>{@html inner}</div>
 							{:else}
 								<div class="inline-text inner-inline">{p.inlineText}</div>
 							{/if}

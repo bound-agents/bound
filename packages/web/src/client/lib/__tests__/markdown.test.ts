@@ -146,6 +146,43 @@ describe("renderMarkdown — fenced code blocks", () => {
 });
 
 // ---------------------------------------------------------------------------
+// renderMarkdown — mermaid diagram fences (#92)
+// ---------------------------------------------------------------------------
+describe("renderMarkdown — mermaid fences", () => {
+	it('emits a <pre class="mermaid"> carrier instead of a highlighted code block', async () => {
+		const html = await renderMarkdown("```mermaid\ngraph TD; A-->B;\n```", passthroughSanitize);
+		expect(html).toContain('<pre class="mermaid">');
+		// Source is preserved as text content for the client renderer.
+		expect(html).toContain("graph TD; A--&gt;B;");
+		// Not routed through Shiki (no inline color token styles).
+		expect(html).not.toMatch(/style="[^"]*color:/);
+	});
+
+	it("escapes HTML metacharacters in the mermaid source", async () => {
+		const html = await renderMarkdown(
+			'```mermaid\ngraph LR; A["<script>"] --> B;\n```',
+			passthroughSanitize,
+		);
+		expect(html).toContain('<pre class="mermaid">');
+		// The raw "<script>" inside the diagram source must be escaped, not live markup.
+		expect(html).not.toContain("<script>");
+		expect(html).toContain("&lt;script&gt;");
+	});
+
+	it("survives DOMPurify with the mermaid class intact", async () => {
+		const html = await renderMarkdown("```mermaid\ngraph TD; A-->B;\n```", realSanitize);
+		expect(html).toContain("mermaid");
+		expect(html).toContain("<pre");
+	});
+
+	it("leaves a non-mermaid fence on the Shiki highlight path", async () => {
+		const html = await renderMarkdown("```javascript\nconst x = 1;\n```", passthroughSanitize);
+		expect(html).not.toContain('<pre class="mermaid">');
+		expect(html).toMatch(/style="[^"]*color:/);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // renderMarkdown — thinking blocks (AC3)
 // ---------------------------------------------------------------------------
 describe("renderMarkdown — thinking blocks", () => {
