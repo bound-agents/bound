@@ -71,10 +71,6 @@ async function handleActivate(
 	ctx: ToolContext,
 	input: z.infer<typeof skillSchema>,
 ): Promise<string> {
-	if (!ctx.fs) {
-		return "Error: Filesystem unavailable: ctx.fs is not set";
-	}
-
 	if (!input.name) {
 		return "Error: 'name' is required for activate action";
 	}
@@ -88,21 +84,48 @@ async function handleActivate(
 		return `Error: Skill name '${input.name}' exceeds maximum length of ${MAX_SKILL_NAME_LENGTH} characters`;
 	}
 
-	const skillRoot = `/home/user/skills/${input.name}`;
+	// Two activation modes, distinguished by whether the skill is already in the DB:
+	//   - Re-activation of an existing skill: its files are the canonical copy in the
+	//     `files` table at the stored `skill_root` (which may use either the
+	//     `skills/<name>` or `/home/user/skills/<name>` convention — both exist in the
+	//     wild). Read from there, NOT the VFS — re-activation must not depend on the
+	//     session's VFS being hydrated with the skill's source files.
+	//   - Fresh import of a newly-authored skill: collect from the VFS under the
+	//     conventional `/home/user/skills/<name>/` path.
+	const existing = ctx.db
+		.prepare("SELECT skill_root FROM skills WHERE name = ? AND deleted = 0")
+		.get(input.name) as { skill_root: string | null } | null;
 
-	// Collect all files from VFS under skillRoot
-	const allPaths = ctx.fs.getAllPaths().filter((p) => p.startsWith(`${skillRoot}/`));
-	const files: SkillFileEntry[] = [];
+	let files: SkillFileEntry[];
 
-	for (const filePath of allPaths) {
-		let content: string;
-		try {
-			content = await ctx.fs.readFile(filePath);
-		} catch {
-			continue; // skip unreadable entries (e.g., directories)
+	if (existing?.skill_root) {
+		const skillRoot = existing.skill_root;
+		const rows = ctx.db
+			.prepare("SELECT path, content FROM files WHERE path LIKE ? AND deleted = 0")
+			.all(`${skillRoot}/%`) as Array<{ path: string; content: string | null }>;
+		files = rows
+			.filter((r): r is { path: string; content: string } => r.content !== null)
+			.map((r) => ({ path: r.path.slice(skillRoot.length + 1), content: r.content }));
+	} else {
+		if (!ctx.fs) {
+			return "Error: Filesystem unavailable: ctx.fs is not set";
 		}
-		const relativePath = filePath.slice(skillRoot.length + 1); // strip "skills/name/" prefix
-		files.push({ path: relativePath, content });
+		const skillRoot = `/home/user/skills/${input.name}`;
+
+		// Collect all files from VFS under skillRoot
+		const allPaths = ctx.fs.getAllPaths().filter((p) => p.startsWith(`${skillRoot}/`));
+		files = [];
+
+		for (const filePath of allPaths) {
+			let content: string;
+			try {
+				content = await ctx.fs.readFile(filePath);
+			} catch {
+				continue; // skip unreadable entries (e.g., directories)
+			}
+			const relativePath = filePath.slice(skillRoot.length + 1); // strip "skills/name/" prefix
+			files.push({ path: relativePath, content });
+		}
 	}
 
 	// Call shared import service
