@@ -3,7 +3,9 @@ import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
 import { untrack } from "svelte";
 import { renderMarkdown } from "../lib/markdown";
 import { mermaid } from "../lib/mermaid";
+import { extractScheduledTaskRefs } from "../lib/scheduled-task-cards";
 import ReasoningBlock from "./ReasoningBlock.svelte";
+import TaskCard from "./TaskCard.svelte";
 
 // Renders a run of consecutive tool_call messages as a single Agent turn.
 // Each message's `content` is a JSON-stringified ContentBlock[] (see
@@ -115,6 +117,7 @@ const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null)
 
 const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
 const totalCount = $derived(allToolUses.length);
+const scheduledTaskRefs = $derived(extractScheduledTaskRefs(allToolUses, resultsByToolUseId));
 
 const summaryNames = $derived.by(() => {
 	const names = allToolUses.map((t) => t.name);
@@ -225,6 +228,14 @@ function previewInput(input: unknown): string {
 
 	{#if firstParsed?.raw}
 		<pre class="raw-fallback">{firstParsed.raw}</pre>
+	{/if}
+
+	{#if scheduledTaskRefs.length > 0}
+		<div class="scheduled-tasks">
+			{#each scheduledTaskRefs as ref (ref.toolUseId)}
+				<TaskCard taskId={ref.taskId} {lineColor} />
+			{/each}
+		</div>
 	{/if}
 
 	{#if totalCount > 0}
