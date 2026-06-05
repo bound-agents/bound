@@ -776,26 +776,34 @@ describe("API Routes", () => {
 			expect(body.servers).toEqual([]);
 		});
 
-		it("serves the configured servers through the mounted route", async () => {
+		it("serves the configured servers as same-origin proxy paths through the mounted route", async () => {
 			const configuredApp = await createWebApp(db, eventBus, {
 				operatorUserId: "test-operator",
 				mcpAppsConfig: {
 					servers: [
-						{ name: "excalidraw", url: "https://mcp.excalidraw.com/mcp", transport: "http" },
+						{
+							name: "excalidraw",
+							url: "https://mcp.excalidraw.com/mcp",
+							transport: "http",
+							headers: { Authorization: "Bearer secret" },
+						},
 					],
 				},
 			});
 			const response = await configuredApp.fetch(new Request("http://localhost:3000/api/mcp-apps"));
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as {
-				servers: Array<{ name: string; url: string; transport: string }>;
+				servers: Array<Record<string, unknown>>;
 			};
 			expect(body.servers).toHaveLength(1);
-			expect(body.servers[0]).toMatchObject({
+			expect(body.servers[0]).toEqual({
 				name: "excalidraw",
-				url: "https://mcp.excalidraw.com/mcp",
 				transport: "http",
+				proxyPath: "/api/mcp-apps/proxy/excalidraw",
 			});
+			// The real url and auth headers must not leak to the browser.
+			expect(body.servers[0].url).toBeUndefined();
+			expect(body.servers[0].headers).toBeUndefined();
 		});
 	});
 });

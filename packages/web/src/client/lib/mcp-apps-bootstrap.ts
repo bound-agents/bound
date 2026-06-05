@@ -14,12 +14,16 @@ import { client } from "./bound";
 import { McpAppHost, connectToMcpServer } from "./mcp-app-host";
 import { createToolCallHandler } from "./mcp-app-store";
 
-/** Shape of one server entry from GET /api/mcp-apps (mirrors mcpAppsSchema). */
+/**
+ * Shape of one server entry from GET /api/mcp-apps. The real upstream URL and
+ * any auth `headers` stay server-side; the browser connects to `proxyPath`, a
+ * same-origin reverse proxy in the web router that forwards to the real server
+ * (sidestepping CORS, which most MCP servers don't enable for browser origins).
+ */
 export interface McpAppServer {
 	name: string;
-	url: string;
 	transport: "http" | "sse";
-	headers?: Record<string, string>;
+	proxyPath: string;
 }
 
 /** Connector used to open an MCP session; injectable for tests. */
@@ -46,11 +50,14 @@ async function fetchMcpAppServers(): Promise<McpAppServer[]> {
 export async function connectMcpServers(
 	servers: McpAppServer[],
 	connect: ConnectFn = connectToMcpServer,
+	origin: string = typeof window !== "undefined" ? window.location.origin : "http://localhost",
 ): Promise<McpAppHost> {
 	const host = new McpAppHost();
 	for (const server of servers) {
 		try {
-			const mcpClient = await connect(new URL(server.url), server.headers);
+			// proxyPath is same-origin; resolve against the page origin. Auth
+			// headers are injected by the web-router proxy, not sent from here.
+			const mcpClient = await connect(new URL(server.proxyPath, origin));
 			const { tools } = await mcpClient.listTools();
 			// The SDK Client satisfies McpClientLike at runtime; its callTool union
 			// is broader at the type level (legacy toolResult variant), so cast.
@@ -61,7 +68,7 @@ export async function connectMcpServers(
 			);
 			console.info(`[mcp-apps] ${server.name}: registered ${defs.length} tool(s)`);
 		} catch (err) {
-			console.error(`[mcp-apps] failed to connect to "${server.name}" (${server.url}):`, err);
+			console.error(`[mcp-apps] failed to connect to "${server.name}" (${server.proxyPath}):`, err);
 		}
 	}
 	return host;
