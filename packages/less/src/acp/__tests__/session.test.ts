@@ -395,6 +395,43 @@ describe("AcpSession turn lifecycle", () => {
 		expect((await p).stopReason).toBe("end_turn");
 	});
 
+	it("does not resolve end_turn while a client tool dispatched this turn is in flight", async () => {
+		let release: (() => void) | undefined;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const handlers = new Map([
+			[
+				"boundless_read",
+				async () => {
+					await gate;
+					return { content: [{ type: "text" as const, text: "ok" }] };
+				},
+			],
+		]);
+		const { session } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
+		const p = session.runPrompt("go");
+		let resolved = false;
+		void p.then(() => {
+			resolved = true;
+		});
+		session.handleThreadStatus(true);
+		// Daemon dispatches a client tool, then EXITS its loop to await the
+		// result — reporting the thread idle in the meantime. That idle must NOT
+		// be mistaken for turn completion or the prompt resolves mid-turn and the
+		// tool result is stranded (user has to re-prompt to continue).
+		const toolPromise = session.handleToolCall(call());
+		session.handleThreadStatus(false);
+		await new Promise((r) => setTimeout(r, 10));
+		expect(resolved).toBe(false);
+		// Tool completes; daemon resumes (active) and then goes idle for real.
+		release?.();
+		await toolPromise;
+		session.handleThreadStatus(true);
+		session.handleThreadStatus(false);
+		expect((await p).stopReason).toBe("end_turn");
+	});
+
 	it("resolves cancelled after cancel()", async () => {
 		const { session, rec } = setup();
 		const p = session.runPrompt("long");
