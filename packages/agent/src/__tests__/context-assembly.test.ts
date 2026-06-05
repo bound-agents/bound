@@ -2422,12 +2422,12 @@ This skill reviews pull requests.`;
 			expect(userMsgs.length).toBe(2);
 
 			// First message should have absolute timestamp annotation (not relative)
-			expect(userMsgs[0].content).toMatch(/^\[.*\d{1,2}:\d{2}\]/);
+			expect(userMsgs[0].content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
 			expect(userMsgs[0].content).not.toContain("ago");
 			expect(userMsgs[0].content).toContain("Hello from the past");
 
 			// Second message should also have absolute timestamp annotation
-			expect(userMsgs[1].content).toMatch(/^\[.*\d{1,2}:\d{2}\]/);
+			expect(userMsgs[1].content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
 			expect(userMsgs[1].content).not.toContain("ago");
 			expect(userMsgs[1].content).toContain("Hello from recently");
 		});
@@ -2562,7 +2562,7 @@ This skill reviews pull requests.`;
 
 			// User message should be annotated
 			const userMsg = messages.find((m) => m.role === "user");
-			expect(userMsg?.content).toMatch(/^\[.*\d{1,2}:\d{2}\]/);
+			expect(userMsg?.content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
 
 			// Assistant message should NOT be annotated (avoids LLM echo pattern)
 			const assistantMsg = messages.find((m) => m.role === "assistant");
@@ -7407,15 +7407,15 @@ describe("formatTimestamp", () => {
 		expect(formatTimestamp(ts, 330)).toBe("[Jun 6, 04:08 UTC+05:30]");
 	});
 
-	it("falls back to plain UTC rendering when offset is undefined (back-compat)", () => {
+	it("marks the zone as UTC (never bare) when offset is undefined (back-compat)", () => {
 		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts)).toBe("[Jun 5, 22:38]");
-		expect(formatTimestamp(ts, undefined)).toBe("[Jun 5, 22:38]");
+		expect(formatTimestamp(ts)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(ts, undefined)).toBe("[Jun 5, 22:38 UTC]");
 	});
 
-	it("ignores a non-finite offset and renders plain UTC", () => {
+	it("ignores a non-finite offset and renders an explicitly-marked UTC time", () => {
 		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, Number.NaN)).toBe("[Jun 5, 22:38]");
+		expect(formatTimestamp(ts, Number.NaN)).toBe("[Jun 5, 22:38 UTC]");
 	});
 
 	it("is deterministic for a given (timestamp, offset) pair", () => {
