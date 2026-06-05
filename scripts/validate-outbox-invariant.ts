@@ -101,6 +101,10 @@ export function isExemptionDocumented(
 		return true;
 	}
 
+	// Glob uses OS-native separators; CONTRIBUTING.md always uses "/".
+	// Normalise before comparison so the check works on Windows too.
+	const normalizedPath = filePath.replace(/\\/g, "/");
+
 	// Parse audit table rows (very basic markdown table parsing)
 	const lines = auditSection.split("\n");
 	for (const line of lines) {
@@ -119,13 +123,13 @@ export function isExemptionDocumented(
 			const [matchFile, matchLineStr] = fileLoc.split(":");
 			const matchLine = cleanLineNumber(matchLineStr);
 			if (
-				filePath.endsWith(matchFile.trim()) &&
+				normalizedPath.endsWith(matchFile.trim()) &&
 				matchLine === lineNumber &&
 				tableMatch.includes(table)
 			) {
 				return true;
 			}
-		} else if (filePath.endsWith(fileLoc.trim()) && tableMatch.includes(table)) {
+		} else if (normalizedPath.endsWith(fileLoc.trim()) && tableMatch.includes(table)) {
 			// Match by file path only
 			return true;
 		}
