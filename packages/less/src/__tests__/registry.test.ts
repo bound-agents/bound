@@ -734,11 +734,17 @@ describe("buildSystemPromptAddition", () => {
 
 	it("renders the ACP/editor surface line when surface is acp", async () => {
 		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [], {
-			surface: "acp",
+			surface: {
+				type: "acp",
+				clientInfo: {
+					name: "test",
+					version: "0.0.0",
+				},
+			},
 		});
 
 		// Tells the agent it's editor-driven over ACP rather than a plain terminal.
-		expect(prompt).toContain("ACP-compatible editor");
+		expect(prompt).toContain("ACP-compatible editor (test 0.0.0)");
 		expect(prompt).not.toContain("boundless terminal client");
 		// The behavioral facts that differ from the terminal: inline diff rendering
 		// and permission-gated tool calls.

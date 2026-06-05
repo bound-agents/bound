@@ -3,6 +3,7 @@
  * Implements AC7.1 (ordered attach sequence) and AC7.2 (pending tool calls).
  */
 
+import type { Implementation } from "@agentclientprotocol/sdk";
 import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
 import type { McpServerConfig } from "../config";
@@ -29,7 +30,7 @@ export interface AttachParams {
 	 * system-prompt addition: `"terminal"` (default) for the boundless TUI,
 	 * `"acp"` when an ACP editor (Zed et al.) is the front-end.
 	 */
-	surface?: "terminal" | "acp";
+	surface?: { type: "terminal" } | { type: "acp"; clientInfo: Implementation };
 }
 
 export interface AttachResult {

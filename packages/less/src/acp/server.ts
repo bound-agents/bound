@@ -21,6 +21,7 @@ import {
 	type CancelNotification,
 	type CloseSessionRequest,
 	type CloseSessionResponse,
+	type Implementation,
 	type InitializeRequest,
 	type InitializeResponse,
 	type ListSessionsRequest,
@@ -88,6 +89,11 @@ interface SessionEntry {
 
 const MODEL_CONFIG_ID = "model";
 
+const DEFAULT_CLIENT_INFO: Implementation = {
+	name: "unknown",
+	version: "0.0.0",
+};
+
 /**
  * Implements the ACP {@link Agent} interface, bridging to a bound daemon. One
  * instance owns the shared {@link BoundClient} and a map of live sessions, and
@@ -98,6 +104,7 @@ export class BoundAcpAgent implements Agent {
 	private readonly sessions = new Map<string, SessionEntry>();
 	private readonly lockedThreads: Set<string>;
 	private routingInstalled = false;
+	private clientInfo?: Implementation | null = null;
 
 	constructor(opts: BoundAcpAgentOptions) {
 		this.opts = opts;
@@ -105,7 +112,8 @@ export class BoundAcpAgent implements Agent {
 		this.installEventRouting();
 	}
 
-	async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
+	async initialize(params: InitializeRequest): Promise<InitializeResponse> {
+		this.clientInfo = params.clientInfo;
 		const { commitHash } = getBuildInfo();
 		return {
 			protocolVersion: PROTOCOL_VERSION,
@@ -318,7 +326,7 @@ export class BoundAcpAgent implements Agent {
 			logger: this.opts.logger,
 			injectContextFiles: this.opts.contextFiles,
 			shell: this.opts.shell,
-			surface: "acp",
+			surface: { type: "acp", clientInfo: this.clientInfo ?? DEFAULT_CLIENT_INFO },
 		});
 
 		// Rebuild the tool set/handlers against THIS session's cwd. performAttach
