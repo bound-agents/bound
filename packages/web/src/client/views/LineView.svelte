@@ -4,6 +4,7 @@ import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
 import LineBadge from "../components/LineBadge.svelte";
+import McpAppPanel from "../components/McpAppPanel.svelte";
 import MessageList from "../components/MessageList.svelte";
 import ModelSelector from "../components/ModelSelector.svelte";
 import StatusChip from "../components/StatusChip.svelte";
@@ -15,6 +16,7 @@ import {
 	wsEvents,
 } from "../lib/bound";
 import { formatRelativeTime } from "../lib/format-time";
+import { type McpAppInstanceMap, instancesForThread, mcpAppInstances } from "../lib/mcp-app-store";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
@@ -52,6 +54,16 @@ let streamingText = $state("");
 let turnRange = $state<{ from: string; to: string | null } | null>(null);
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+// Live MCP App renders for UI-bearing tool calls in this thread. The store is
+// populated by the tool-call handler (createToolCallHandler) when the agent
+// invokes a UI-bearing MCP tool; we filter to this thread and render a panel
+// per instance below the conversation.
+let appInstanceMap = $state<McpAppInstanceMap>({});
+const unsubscribeApps = mcpAppInstances.subscribe((map) => {
+	appInstanceMap = map;
+});
+const threadAppInstances = $derived(instancesForThread(appInstanceMap, threadId));
 
 // Subscribe to WebSocket events and append new messages
 const unsubscribeWs = wsEvents.subscribe((events) => {
@@ -171,6 +183,7 @@ onMount(async () => {
 
 onDestroy(() => {
 	unsubscribeWs();
+	unsubscribeApps();
 	disconnectWebSocket();
 	if (pollInterval !== null) clearInterval(pollInterval);
 	client.off("thread:status", handleThreadStatus);
@@ -337,6 +350,14 @@ function turnPreview(content: string): string {
 				{lineColor}
 				isAgentActive={agentActive}
 			/>
+
+			{#if threadAppInstances.length > 0}
+				<div class="mcp-apps">
+					{#each threadAppInstances as instance (instance.callId)}
+						<McpAppPanel {instance} />
+					{/each}
+				</div>
+			{/if}
 
 			<!-- Input bar -->
 			<div class="input-wrap">
