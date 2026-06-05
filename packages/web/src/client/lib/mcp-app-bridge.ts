@@ -1,0 +1,254 @@
+// Commit 3 of the MCP-Apps-in-web-UI feature: see project memory
+// project:mcp-apps-web-ui:commit3-sandbox-decision.
+//
+// Host-side glue that renders an MCP App in the bound web UI and wires its
+// ext-apps AppBridge to the in-page MCP SDK client. Adapted from the ext-apps
+// reference (examples/basic-host/src/implementation.ts) with one structural
+// change for our single-origin (:3001) constraint: there is NO separate
+// sandbox-proxy document. The reference double-iframes because its proxy lives
+// on a second origin; under a single origin the proxy must be sandboxed to an
+// opaque origin, which forces the nested app frame opaque too (sandbox flags
+// are inherited + intersected) — so the proxy adds a relay hop and zero extra
+// isolation. We render the app directly in ONE iframe with
+// sandbox="allow-scripts allow-forms" (opaque origin, isolated from :3001) and
+// deliver the app HTML via srcdoc. The host<->app channel is the MCP-Apps
+// postMessage protocol (ext-apps PostMessageTransport validates window identity
+// via event.source, which works against an opaque-origin frame).
+//
+// The DOM/iframe wiring (newAppBridge, mountApp) is exercised by typecheck +
+// manual smoke; getUiResource is DOM-free and unit tested.
+import {
+	AppBridge,
+	type McpUiResourceCsp,
+	type McpUiResourcePermissions,
+	PostMessageTransport,
+	RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/app-bridge";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { APP_FRAME_SANDBOX, buildAppFrameSrcdoc, frameAllowAttribute } from "./mcp-app-frame";
+
+const IMPLEMENTATION = { name: "bound web MCP Apps host", version: "1.0.0" };
+
+/** The UI resource payload backing an MCP App, extracted from `resources/read`. */
+export interface UiResourceData {
+	html: string;
+	csp?: McpUiResourceCsp;
+	permissions?: McpUiResourcePermissions;
+}
+
+/** ext-apps `_meta.ui` shape we read CSP/permissions from. */
+interface UiMeta {
+	csp?: McpUiResourceCsp;
+	permissions?: McpUiResourcePermissions;
+}
+
+interface ResourceContent {
+	mimeType?: string;
+	text?: string;
+	blob?: string;
+	_meta?: { ui?: UiMeta };
+	/** Python SDK quirk: some servers emit `meta` instead of `_meta`. */
+	meta?: { ui?: UiMeta };
+}
+
+/**
+ * Minimal resource-reading surface getUiResource depends on. The real
+ * `@modelcontextprotocol/sdk` `Client` satisfies this; tests inject a fake.
+ */
+export interface UiResourceClient {
+	readResource(params: { uri: string }): Promise<{ contents: ResourceContent[] }>;
+}
+
+/**
+ * Read and validate an MCP App UI resource. Per the MCP Apps spec the resource
+ * must be a single `text/html;profile=mcp-app` content; CSP and permissions are
+ * read from `_meta.ui` (content-level takes precedence over the optional
+ * listing-level meta passed by the caller). Throws on a missing/multi/wrong-mime
+ * resource so the caller can surface the failure rather than render garbage.
+ */
+export async function getUiResource(
+	client: UiResourceClient,
+	uri: string,
+	listingUiMeta?: UiMeta,
+): Promise<UiResourceData> {
+	const resource = await client.readResource({ uri });
+	if (!resource) {
+		throw new Error(`Resource not found: ${uri}`);
+	}
+	if (resource.contents.length !== 1) {
+		throw new Error(`Expected exactly one resource content, got ${resource.contents.length}`);
+	}
+
+	const content = resource.contents[0];
+	if (content.mimeType !== RESOURCE_MIME_TYPE) {
+		throw new Error(`Unsupported MIME type for MCP App resource: ${content.mimeType}`);
+	}
+
+	const html = content.blob != null ? atob(content.blob) : (content.text ?? "");
+
+	// Content-level meta wins; fall back to listing-level. Accept the Python
+	// SDK's `meta` spelling alongside the spec `_meta`.
+	const contentMeta = content._meta ?? content.meta;
+	const uiMeta = contentMeta?.ui ?? listingUiMeta;
+
+	return { html, csp: uiMeta?.csp, permissions: uiMeta?.permissions };
+}
+
+export type ModelContext = Parameters<NonNullable<AppBridge["onupdatemodelcontext"]>>[0];
+export type AppMessage = Parameters<NonNullable<AppBridge["onmessage"]>>[0];
+
+export interface AppBridgeCallbacks {
+	onContextUpdate?: (context: ModelContext | null) => void;
+	onMessage?: (message: AppMessage) => void;
+	onDisplayModeChange?: (mode: "inline" | "fullscreen") => void;
+}
+
+export interface AppBridgeOptions {
+	theme?: "light" | "dark";
+	displayMode?: "inline" | "fullscreen";
+	containerDimensions?: { maxHeight?: number; width?: number };
+}
+
+/**
+ * Construct an AppBridge for an app iframe, wired to the in-page MCP client and
+ * with host-side handlers registered. Handlers are attached before connect() so
+ * the app can issue requests immediately after the init handshake. A
+ * ResizeObserver keeps the app informed of container width; it is disconnected
+ * on bridge close.
+ */
+export function newAppBridge(
+	client: Client,
+	iframe: HTMLIFrameElement,
+	callbacks?: AppBridgeCallbacks,
+	options?: AppBridgeOptions,
+): AppBridge {
+	const caps = client.getServerCapabilities();
+	const appBridge = new AppBridge(
+		client,
+		IMPLEMENTATION,
+		{
+			openLinks: {},
+			serverTools: caps?.tools,
+			serverResources: caps?.resources,
+			updateModelContext: { text: {} },
+		},
+		{
+			hostContext: {
+				theme: options?.theme ?? "light",
+				platform: "web",
+				containerDimensions: options?.containerDimensions ?? { maxHeight: 6000 },
+				displayMode: options?.displayMode ?? "inline",
+				availableDisplayModes: ["inline", "fullscreen"],
+			},
+		},
+	);
+
+	const resizeObserver = new ResizeObserver(([entry]) => {
+		const width = Math.round(entry.contentRect.width);
+		if (width > 0) {
+			appBridge.sendHostContextChange({ containerDimensions: { width, maxHeight: 6000 } });
+		}
+	});
+	resizeObserver.observe(iframe);
+	const prevOnclose = appBridge.onclose;
+	appBridge.onclose = () => {
+		resizeObserver.disconnect();
+		prevOnclose?.();
+	};
+
+	appBridge.onmessage = async (params) => {
+		callbacks?.onMessage?.(params);
+		return {};
+	};
+
+	appBridge.onopenlink = async (params) => {
+		window.open(params.url, "_blank", "noopener,noreferrer");
+		return {};
+	};
+
+	appBridge.onupdatemodelcontext = async (params) => {
+		const hasContent = !!params.content && params.content.length > 0;
+		const hasStructured =
+			!!params.structuredContent && Object.keys(params.structuredContent).length > 0;
+		callbacks?.onContextUpdate?.(hasContent || hasStructured ? params : null);
+		return {};
+	};
+
+	appBridge.onsizechange = async ({ width, height }) => {
+		if (width !== undefined) {
+			iframe.style.minWidth = `min(${width}px, 100%)`;
+		}
+		if (height !== undefined) {
+			iframe.style.height = `${height}px`;
+		}
+	};
+
+	appBridge.onrequestdisplaymode = async (params) => {
+		const newMode = params.mode === "fullscreen" ? "fullscreen" : "inline";
+		appBridge.sendHostContextChange({ displayMode: newMode });
+		callbacks?.onDisplayModeChange?.(newMode);
+		return { mode: newMode };
+	};
+
+	return appBridge;
+}
+
+/** Inputs needed to drive one tool call's app render. */
+export interface MountAppParams {
+	resource: UiResourceData;
+	input: Record<string, unknown>;
+	resultPromise: Promise<CallToolResult>;
+}
+
+/**
+ * Mount an MCP App into an iframe under the single-origin sandbox model and run
+ * the tool-call handshake. Order matters: sandbox/allow attributes are set
+ * before navigation so they apply to the loaded document; the AppBridge
+ * transport starts listening before srcdoc is assigned so the app's
+ * `ui/initialize` (sent on load) is not missed. The iframe's WindowProxy is
+ * stable across the srcdoc navigation, so the transport's source-identity check
+ * keeps matching. Once the app reports initialized, tool input is sent and the
+ * tool result (or cancellation) is forwarded when the call settles.
+ */
+export async function mountApp(
+	iframe: HTMLIFrameElement,
+	appBridge: AppBridge,
+	{ resource, input, resultPromise }: MountAppParams,
+): Promise<void> {
+	if (iframe.srcdoc) return; // already mounted
+
+	iframe.setAttribute("sandbox", APP_FRAME_SANDBOX);
+	const allow = frameAllowAttribute(resource.permissions);
+	if (allow) iframe.setAttribute("allow", allow);
+
+	const initialized = new Promise<void>((resolve) => {
+		const handler = () => {
+			appBridge.removeEventListener("initialized", handler);
+			resolve();
+		};
+		appBridge.addEventListener("initialized", handler);
+	});
+
+	const contentWindow = iframe.contentWindow;
+	if (!contentWindow) {
+		throw new Error("App iframe has no contentWindow; attach it to the DOM before mounting.");
+	}
+
+	// Start the transport listener BEFORE the app loads.
+	await appBridge.connect(new PostMessageTransport(contentWindow, contentWindow));
+
+	// Navigate the (already-sandboxed) frame to the app HTML.
+	iframe.srcdoc = buildAppFrameSrcdoc(resource.html, resource.csp);
+
+	await initialized;
+
+	appBridge.sendToolInput({ arguments: input });
+	resultPromise.then(
+		(result) => appBridge.sendToolResult(result),
+		(error) =>
+			appBridge.sendToolCancelled({
+				reason: error instanceof Error ? error.message : String(error),
+			}),
+	);
+}
