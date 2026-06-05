@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { resolve } from "node:path";
 import type {
 	RequestPermissionRequest,
 	RequestPermissionResponse,
@@ -108,7 +109,7 @@ describe("AcpSession permission gating", () => {
 			kind: "read",
 			status: "pending",
 			rawInput: { file_path: "a.txt" },
-			locations: [{ path: "/work/a.txt" }],
+			locations: [{ path: resolve("/work", "a.txt") }],
 		});
 		expect(ran).toEqual([{ args: { file_path: "a.txt" }, cwd: "/work" }]);
 		expect(result.is_error).toBeFalsy();
@@ -198,7 +199,7 @@ describe("AcpSession permission gating", () => {
 		expect(result.is_error).toBeFalsy();
 		const expectedMeta = {
 			tool_name: "boundless_write",
-			sandbox_authorization: { write_paths: ["/work/src/generated.ts"] },
+			sandbox_authorization: { write_paths: [resolve("/work", "src/generated.ts")] },
 		};
 		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
 		expect(created).toMatchObject({
@@ -207,7 +208,7 @@ describe("AcpSession permission gating", () => {
 			title: "Write src/generated.ts",
 			kind: "edit",
 			status: "pending",
-			locations: [{ path: "/work/src/generated.ts" }],
+			locations: [{ path: resolve("/work", "src/generated.ts") }],
 		});
 		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
 			toolCallId: "c-write",
@@ -215,7 +216,7 @@ describe("AcpSession permission gating", () => {
 			title: "Write src/generated.ts",
 			kind: "edit",
 			status: "pending",
-			locations: [{ path: "/work/src/generated.ts" }],
+			locations: [{ path: resolve("/work", "src/generated.ts") }],
 		});
 	});
 
