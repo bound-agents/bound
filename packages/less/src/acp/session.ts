@@ -162,6 +162,14 @@ export class AcpSession {
 	private readonly daemonToolArgs = new Map<string, string>();
 	/** AbortControllers for in-flight client tool executions (for cancel). */
 	private readonly inFlightTools = new Set<AbortController>();
+	/**
+	 * call_ids of client tool calls dispatched during the current turn whose
+	 * results have not yet been handed back to the daemon. Non-empty means the
+	 * daemon has exited its loop to await a boundless-host tool result and is
+	 * reporting the thread idle in the meantime — so a `thread:status` idle must
+	 * NOT be treated as turn completion (see `handleThreadStatus`).
+	 */
+	private readonly pendingClientToolCalls = new Set<string>();
 
 	constructor(deps: AcpSessionDeps) {
 		this.deps = deps;
@@ -324,6 +332,15 @@ export class AcpSession {
 			this.rejectTurn(RequestError.internalError(undefined, turn.alert));
 			return;
 		}
+		// A client tool (boundless_*) runs on the boundless host, so the daemon
+		// EXITS its loop to await the result and reports the thread idle in the
+		// meantime (it dispatches the call, then transitions to IDLE →
+		// `thread:status active:false`). That idle is NOT turn completion: the
+		// loop resumes — going active again — once `handleToolCall` hands the
+		// result back. Resolving here would end the prompt mid-turn and strand
+		// the tool result, forcing the user to re-prompt to continue. Wait for
+		// the genuine idle that follows the resumed turn instead.
+		if (this.pendingClientToolCalls.size > 0) return;
 		this.resolveTurn("end_turn");
 	}
 
@@ -350,6 +367,22 @@ export class AcpSession {
 	 * and returns the result for the daemon to feed back to the model.
 	 */
 	async handleToolCall(call: ToolCallRequest): Promise<ToolCallResult> {
+		// Mark this client tool call outstanding for the current turn from the
+		// moment of dispatch — crucially BEFORE the permission round-trip, because
+		// the daemon emits `thread:status` idle the instant it suspends the loop
+		// to await this result, and that frame races ahead of (and outlives) the
+		// permission prompt. `handleThreadStatus` consults this set so the idle is
+		// not mistaken for turn completion. Cleared once the result is returned to
+		// the daemon, which then resumes the loop.
+		this.pendingClientToolCalls.add(call.call_id);
+		try {
+			return await this.dispatchToolCall(call);
+		} finally {
+			this.pendingClientToolCalls.delete(call.call_id);
+		}
+	}
+
+	private async dispatchToolCall(call: ToolCallRequest): Promise<ToolCallResult> {
 		const { call_id: callId, tool_name: toolName, arguments: args } = call;
 		const kind = toolNameToKind(toolName);
 		const title = toolCallTitle(toolName, args);
