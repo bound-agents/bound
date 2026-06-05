@@ -20,21 +20,44 @@ import type { McpAppInstance } from "../lib/mcp-app-store";
 
 const { instance }: { instance: McpAppInstance } = $props();
 
+let panelEl = $state<HTMLDivElement | null>(null);
 let iframeEl = $state<HTMLIFrameElement | null>(null);
 let status = $state<"loading" | "ready" | "error">("loading");
 let errorMessage = $state<string | null>(null);
-// "fullscreen" no longer means a fixed overlay over the chat — the app renders
-// inline in the conversation permanently (no close/dismiss). A fullscreen
-// request from the app (or the Expand toggle) just grows the inline panel to a
-// tall mode that stays in the document flow.
-let displayMode = $state<"inline" | "fullscreen">("inline");
+// The panel renders INLINE in the conversation stream and scrolls away with the
+// chat (it lives inside MessageList's scroll container). "Fullscreen" is a real
+// fullscreen — the native Fullscreen API promotes panelEl to the browser's top
+// layer, which is immune to the transformed-ancestor containing-block trap that
+// made the old `position: fixed` overlay fill only the top half. Crucially the
+// API does NOT move the iframe in the DOM, so the app doesn't reload / lose
+// canvas state on enter or exit.
+let isFullscreen = $state(false);
 
 // The AppBridge holds the live transport; closed on teardown.
 let bridge: { close: () => void } | null = null;
 
+function syncFullscreen(): void {
+	isFullscreen = document.fullscreenElement === panelEl;
+}
+
+async function toggleFullscreen(): Promise<void> {
+	try {
+		if (document.fullscreenElement === panelEl) {
+			await document.exitFullscreen();
+		} else {
+			// requestFullscreen needs user activation — this runs from a click, so
+			// it's satisfied. Bridge-driven requests (no gesture) are caught below.
+			await panelEl?.requestFullscreen();
+		}
+	} catch {
+		// Browser refused (no activation, or feature blocked). Leave inline.
+	}
+}
+
 onMount(async () => {
 	const iframe = iframeEl;
 	if (!iframe) return;
+	document.addEventListener("fullscreenchange", syncFullscreen);
 	try {
 		// instance.client is the in-page SDK Client (registered as McpClientLike at
 		// the host; it also satisfies UiResourceClient and AppBridge's Client).
@@ -43,10 +66,17 @@ onMount(async () => {
 
 		const callbacks: AppBridgeCallbacks = {
 			onDisplayModeChange: (mode) => {
-				displayMode = mode;
+				// The app asked to change display mode. Drive native fullscreen to
+				// match; if there's no user activation the request is caught and the
+				// panel stays inline (the header button is the reliable path).
+				if (mode === "fullscreen" && document.fullscreenElement !== panelEl) {
+					void toggleFullscreen();
+				} else if (mode === "inline" && document.fullscreenElement === panelEl) {
+					void document.exitFullscreen().catch(() => {});
+				}
 			},
 		};
-		const appBridge = newAppBridge(sdkClient, iframe, callbacks, { displayMode });
+		const appBridge = newAppBridge(sdkClient, iframe, callbacks, { displayMode: "inline" });
 		bridge = appBridge;
 
 		await mountApp(iframe, appBridge, {
@@ -65,11 +95,12 @@ onMount(async () => {
 });
 
 onDestroy(() => {
+	document.removeEventListener("fullscreenchange", syncFullscreen);
 	bridge?.close();
 });
 </script>
 
-<div class="mcp-app" class:expanded={displayMode === "fullscreen"}>
+<div class="mcp-app" class:fullscreen={isFullscreen} bind:this={panelEl}>
 	<div class="app-head">
 		<span class="kicker">App · {instance.serverName}</span>
 		<div class="head-right">
@@ -78,12 +109,8 @@ onDestroy(() => {
 			{:else if status === "error"}
 				<span class="state state-error mono">Failed</span>
 			{/if}
-			<button
-				type="button"
-				class="head-btn"
-				onclick={() => (displayMode = displayMode === "fullscreen" ? "inline" : "fullscreen")}
-			>
-				{displayMode === "fullscreen" ? "Collapse" : "Expand"}
+			<button type="button" class="head-btn" onclick={toggleFullscreen}>
+				{isFullscreen ? "Exit fullscreen" : "Fullscreen"}
 			</button>
 		</div>
 	</div>
@@ -187,13 +214,25 @@ onDestroy(() => {
 		background: var(--paper);
 	}
 
-	/* Expanded ("fullscreen") mode stays inline in the chat flow — it just grows
-	   the panel to a tall viewport-relative height so a drawing app has room to
-	   work, without a fixed overlay (which broke under transformed ancestors and
-	   covered the conversation). The app's own onsizechange height still applies;
-	   this is the floor. */
-	.mcp-app.expanded .app-frame {
-		min-height: 85vh;
+	/* Real fullscreen via the native Fullscreen API. The :fullscreen element is
+	   promoted to the browser's top layer (immune to the transformed-ancestor
+	   containing-block trap that made the old position:fixed overlay fill only
+	   the top half), and the iframe is NOT moved in the DOM, so the app keeps its
+	   canvas state across enter/exit. Lay the panel out as a column so the frame
+	   fills all the space below the header. */
+	.mcp-app:fullscreen {
+		width: 100vw;
+		height: 100vh;
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		background: var(--paper);
+	}
+
+	.mcp-app:fullscreen .app-frame {
+		flex: 1;
+		min-height: 0;
+		height: 100%;
 	}
 
 	.app-frame.hidden {
