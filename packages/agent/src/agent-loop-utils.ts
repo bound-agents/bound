@@ -8,7 +8,7 @@ import {
 	type LLMMessage,
 	type StreamChunk,
 } from "@bound/llm";
-import { HALF_OUTPUT_BYTES, createLogger, truncateStreamOutput } from "@bound/shared";
+import { createLogger } from "@bound/shared";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
 import type { RegisteredTool } from "./types";
@@ -148,8 +148,8 @@ export function buildCommandOutput(
 	exitCode: number | undefined,
 ): string {
 	const parts: string[] = [];
-	if (stdout) parts.push(truncateStreamOutput(stdout, HALF_OUTPUT_BYTES));
-	if (stderr) parts.push(truncateStreamOutput(stderr, HALF_OUTPUT_BYTES));
+	if (stdout) parts.push(stdout);
+	if (stderr) parts.push(stderr);
 	if (parts.length === 0) {
 		parts.push(
 			(exitCode ?? 0) === 0 ? "Command completed successfully" : `Exit code: ${exitCode ?? 1}`,

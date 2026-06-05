@@ -24,6 +24,7 @@ export * from "./strings.js";
 
 // Content search core (shared by host + sandbox search tools)
 export * from "./search.js";
+export * from "./offload.js";
 
 // Hybrid Logical Clocks
 export * from "./hlc.js";

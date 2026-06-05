@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { bashTool } from "../tools/bash";
 
@@ -82,8 +82,8 @@ describe("boundless_bash", () => {
 		{ timeout: 15000 },
 	);
 
-	it("AC5.11: truncates output >100KB from the middle with marker", async () => {
-		// Generate a command that produces >100KB output
+	it("AC5.11: offloads output >50KB to a local file and returns a pointer", async () => {
+		// seq 1 50000 emits ~280KB, well over the 50KB offload threshold.
 		const result = await bashTool(
 			{ command: "seq 1 50000" },
 			new AbortController().signal,
@@ -93,13 +93,32 @@ describe("boundless_bash", () => {
 		const contentBlock = result.content[1];
 		const text = contentBlock.text;
 
-		// Should contain the marker for truncation
-		expect(text).toContain("truncated");
-		// Output should be less than 110KB (well under original 100KB*2)
-		expect(text.length).toBeLessThan(110000);
-		// Should still have beginning and ending parts
-		expect(text).toContain("1\n");
-		expect(text).toContain("50000\n");
+		// The in-context result is the short pointer, not the full output.
+		expect(text).toContain("Tool result offloaded");
+		expect(text).toContain("saved to:");
+		expect(text.length).toBeLessThan(2000);
+
+		// The pointer names a real file that holds the FULL output (nothing lost).
+		const match = text.match(/saved to: (\S+)/);
+		expect(match).not.toBeNull();
+		const filePath = match?.[1] as string;
+		const offloaded = readFileSync(filePath, "utf-8");
+		expect(offloaded).toContain("Exit code: 0");
+		expect(offloaded).toContain("\n1\n");
+		expect(offloaded).toContain("\n50000\n");
+		rmSync(filePath, { force: true });
+	});
+
+	it("does not offload sub-threshold output (returned inline)", async () => {
+		const result = await bashTool(
+			{ command: "echo small-output" },
+			new AbortController().signal,
+			tempDir,
+		);
+
+		const contentBlock = result.content[1];
+		expect(contentBlock.text).toContain("small-output");
+		expect(contentBlock.text).not.toContain("Tool result offloaded");
 	});
 
 	it("AC5.12: always includes provenance block first", async () => {
