@@ -944,7 +944,13 @@ export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): s
 	const day = d.getUTCDate();
 	const hours = String(d.getUTCHours()).padStart(2, "0");
 	const minutes = String(d.getUTCMinutes()).padStart(2, "0");
-	const suffix = hasOffset ? ` ${formatUtcOffset(offsetMinutes as number)}` : "";
+	// Every materialized timestamp carries its zone explicitly — never bare.
+	// With a captured offset: the sender's "UTC±HH:MM". Without one: a literal
+	// "UTC" marker (components are read in UTC), which states the stored zone
+	// honestly without fabricating a sender offset of +00:00. Bare timestamps
+	// are unreconcilable across hosts whose work mixes UTC, host-local, and
+	// sender-local time.
+	const suffix = hasOffset ? ` ${formatUtcOffset(offsetMinutes as number)}` : " UTC";
 
 	const currentYear = new Date().getUTCFullYear();
 	if (d.getUTCFullYear() !== currentYear) {
