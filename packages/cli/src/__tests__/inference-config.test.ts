@@ -100,4 +100,32 @@ describe("toRouterConfig", () => {
 		const router = createModelRouter(toRouterConfig(bedrockOpusWithThinking()));
 		expect(router.getMaxOutputTokens("opus")).toBeUndefined();
 	});
+
+	it("propagates `connect_timeout_ms` → BackendConfig.connectTimeoutMs", () => {
+		// connect_timeout_ms is consumed at driver construction (the logging
+		// fetch's connect/TTFB deadline), not via a router getter — so the
+		// hand-off seam to lock in is toRouterConfig's snake_case → camelCase
+		// copy itself. Without it the deadline silently never reaches the fetch.
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					model: "us.anthropic.claude-opus-4-7",
+					region: "us-west-2",
+					context_window: 200000,
+					tier: 1,
+					price_per_m_input: 15,
+					price_per_m_output: 75,
+					connect_timeout_ms: 240000,
+				},
+			],
+			default: "opus",
+		};
+		expect(toRouterConfig(cfg).backends[0].connectTimeoutMs).toBe(240000);
+	});
+
+	it("leaves connectTimeoutMs undefined when connect_timeout_ms is not configured", () => {
+		expect(toRouterConfig(bedrockOpusWithThinking()).backends[0].connectTimeoutMs).toBeUndefined();
+	});
 });

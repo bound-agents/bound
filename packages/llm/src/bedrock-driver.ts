@@ -189,6 +189,14 @@ export class BedrockDriver implements LLMBackend {
 		 * etc.).
 		 */
 		fetch?: typeof fetch;
+		/**
+		 * Per-backend connect / time-to-first-byte deadline (ms), forwarded to
+		 * the logging fetch. When set, response headers must arrive within this
+		 * window or the request is aborted with a self-identifying error. Only
+		 * applies to the logger-backed fetch; an explicit `fetch` override
+		 * (harness/test) is used verbatim. See `createLoggingFetch`.
+		 */
+		connectTimeoutMs?: number;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
@@ -212,7 +220,10 @@ export class BedrockDriver implements LLMBackend {
 		// Custom fetch takes precedence over logger-backed fetch. When both
 		// are absent the SDK uses its default fetch with zero overhead.
 		const customFetch =
-			config.fetch ?? (config.logger ? createLoggingFetch(config.logger, "bedrock") : undefined);
+			config.fetch ??
+			(config.logger
+				? createLoggingFetch(config.logger, "bedrock", config.connectTimeoutMs)
+				: undefined);
 		this.provider = createAmazonBedrock({
 			region: config.region,
 			...(credentialProvider && { credentialProvider }),

@@ -55,13 +55,23 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		 * single fetch override through whichever provider the config picks.
 		 */
 		fetch?: typeof fetch;
+		/**
+		 * Per-backend connect / time-to-first-byte deadline (ms), forwarded to
+		 * the logging fetch. When set, response headers must arrive within this
+		 * window or the request is aborted with a self-identifying error. Only
+		 * applies to the logger-backed fetch; an explicit `fetch` override
+		 * (harness/test) is used verbatim. See `createLoggingFetch`.
+		 */
+		connectTimeoutMs?: number;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
 		this.providerName = config.providerName ?? "openai-compatible";
 		const customFetch =
 			config.fetch ??
-			(config.logger ? createLoggingFetch(config.logger, this.providerName) : undefined);
+			(config.logger
+				? createLoggingFetch(config.logger, this.providerName, config.connectTimeoutMs)
+				: undefined);
 		this.provider = createOpenAICompatible({
 			name: this.providerName,
 			baseURL: config.baseUrl,

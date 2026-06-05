@@ -164,6 +164,17 @@ const modelBackendSchema = z
 		// the poke-count economics depend on this backend's cache pricing + TTL.
 		// Absent → this backend is never warmed. See `cacheWarmingConfigSchema`.
 		cache_warming: cacheWarmingConfigSchema.optional(),
+		// Per-backend connect / time-to-first-byte deadline (ms). When set, the
+		// logger-backed fetch owns an AbortController that aborts the request if
+		// response headers do not arrive within this window, surfacing a
+		// self-identifying error instead of the opaque transport `TimeoutError`
+		// ("The operation timed out."). Headers-scoped: cleared the instant
+		// `fetch()` resolves, so a slow-but-progressing stream is governed by the
+		// agent-loop silence timeout, not this deadline. A local concern applied
+		// on whichever host runs the fetch — NOT forwarded over the relay, so a
+		// spoke uses its own deadline rather than honoring a hub-set one. Absent /
+		// `<= 0` → no deadline (pure passthrough). See `createLoggingFetch`.
+		connect_timeout_ms: z.number().int().positive().optional(),
 	})
 	.strict();
 
