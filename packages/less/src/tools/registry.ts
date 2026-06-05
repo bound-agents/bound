@@ -456,7 +456,7 @@ export async function buildSystemPromptAddition(
 ): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
 	const shellToolName = options?.shellToolName ?? "boundless_bash";
-	const toolList = `boundless_read, boundless_write, boundless_edit, ${shellToolName}, boundless_copy${
+	const toolList = `boundless_read, boundless_write, boundless_edit, ${shellToolName}, boundless_copy, boundless_search${
 		mcpNamespaces ? `, ${mcpNamespaces}` : ""
 	}`;
 
