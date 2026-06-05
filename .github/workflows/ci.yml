@@ -74,10 +74,29 @@ jobs:
         run: |
           # bun test --recursive silently skips 5 packages on Linux due to a
           # workspace test-discovery bug. Run each package explicitly instead.
+          # --reporter=junit writes a machine-parseable result file per package
+          # (the console reporter still prints the assertion diff to stderr, so
+          # the per-package log group keeps the "why").
+          mkdir -p test-results
           exit_code=0
           for pkg in shared core sync sandbox llm agent platforms web client mcp-server cli less; do
             echo "::group::packages/$pkg"
-            bun test "packages/$pkg" || exit_code=$?
+            bun test "packages/$pkg" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || exit_code=$?
             echo "::endgroup::"
           done
           exit $exit_code
+
+      - name: Test summary
+        if: ${{ !cancelled() }}
+        # Renders the per-package JUnit into the job summary (queryable table +
+        # failing-test index with file:line) and emits one ::error annotation
+        # per failure so failures surface inline without scrolling the log.
+        run: bun run scripts/ci-test-summary.ts test-results
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-results
+          path: test-results/*.xml
+          if-no-files-found: ignore
