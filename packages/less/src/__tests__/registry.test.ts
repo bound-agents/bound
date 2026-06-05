@@ -720,6 +720,30 @@ describe("buildSystemPromptAddition", () => {
 		// /tmp is not a git repo — should show the warning
 		expect(prompt).toContain("Git context:");
 	});
+
+	it("defaults to the terminal surface line when no surface is given", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
+
+		expect(prompt).toContain("boundless terminal client");
+		expect(prompt).not.toContain("ACP");
+	});
+
+	it("renders the ACP/editor surface line when surface is acp", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [], {
+			surface: "acp",
+		});
+
+		// Tells the agent it's editor-driven over ACP rather than a plain terminal.
+		expect(prompt).toContain("ACP-compatible editor");
+		expect(prompt).not.toContain("boundless terminal client");
+		// The behavioral facts that differ from the terminal: inline diff rendering
+		// and permission-gated tool calls.
+		expect(prompt).toContain("inline");
+		expect(prompt).toContain("permission");
+		// Host/cwd/tools sections still render identically.
+		expect(prompt).toContain("Host: example.com");
+		expect(prompt).toContain("boundless_read");
+	});
 });
 
 describe("collectGitContext", () => {
