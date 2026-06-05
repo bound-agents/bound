@@ -53,8 +53,12 @@ jobs:
         run: bun run typecheck
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -71,6 +75,7 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Unit tests
+        shell: bash
         run: |
           # bun test --recursive silently skips 5 packages on Linux due to a
           # workspace test-discovery bug. Run each package explicitly instead.
@@ -97,6 +102,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: junit-test-results
+          name: junit-test-results-${{ matrix.os }}
           path: test-results/*.xml
           if-no-files-found: ignore
