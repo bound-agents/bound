@@ -67,32 +67,52 @@ export function buildCspString(csp?: McpUiResourceCsp): string {
 }
 
 /**
- * Build the srcdoc HTML for an MCP App iframe. When the resource declares a
- * CSP, a `<meta http-equiv="Content-Security-Policy">` tag is injected into the
- * document head (HTTP headers aren't available for srcdoc content). The CSP
- * string never contains a double quote (sanitizeCspDomains strips them and the
- * literal keywords use single quotes), so embedding it in a double-quoted
- * attribute is safe. With no CSP the app HTML is returned verbatim.
+ * In-memory `localStorage`/`sessionStorage` shim injected into every app frame.
+ *
+ * The app frame runs at an opaque (null) origin (no `allow-same-origin`), where
+ * accessing `window.localStorage` throws a SecurityError. Many app bundles
+ * (e.g. anything built on jotai/React state persistence) read storage at import
+ * time and crash or log loudly on that throw. We can't grant same-origin
+ * without dissolving the isolation boundary, so instead we shadow the throwing
+ * native accessors with an own-property in-memory store BEFORE any app code
+ * runs. Storage is per-render and non-persistent — which is the correct
+ * semantics for a sandboxed app frame anyway. The IIFE is self-contained and
+ * contains no characters that need escaping inside a srcdoc document.
+ */
+const STORAGE_SHIM = `<script>(function(){try{var s={},api={getItem:function(k){return Object.prototype.hasOwnProperty.call(s,String(k))?s[String(k)]:null;},setItem:function(k,v){s[String(k)]=String(v);},removeItem:function(k){delete s[String(k)];},clear:function(){s={};},key:function(i){var ks=Object.keys(s);return i<ks.length?ks[i]:null;},get length(){return Object.keys(s).length;}};Object.defineProperty(window,"localStorage",{value:api,configurable:true});Object.defineProperty(window,"sessionStorage",{value:api,configurable:true});}catch(e){}})();</script>`;
+
+/**
+ * Build the srcdoc HTML for an MCP App iframe. Two things are injected into the
+ * document head: (1) an in-memory storage shim (always — see STORAGE_SHIM) so
+ * the opaque-origin frame doesn't crash on `localStorage` access, and (2) when
+ * the resource declares a CSP, a `<meta http-equiv="Content-Security-Policy">`
+ * tag (HTTP headers aren't available for srcdoc content). The CSP string never
+ * contains a double quote (sanitizeCspDomains strips them and the literal
+ * keywords use single quotes), so embedding it in a double-quoted attribute is
+ * safe. The CSP allows `'unsafe-inline'` script, so the shim runs under it. The
+ * meta precedes the shim so the policy applies to the shim and everything after.
  */
 export function buildAppFrameSrcdoc(html: string, csp?: McpUiResourceCsp): string {
-	if (!csp) return html;
-
-	const meta = `<meta http-equiv="Content-Security-Policy" content="${buildCspString(csp)}">`;
+	const meta = csp
+		? `<meta http-equiv="Content-Security-Policy" content="${buildCspString(csp)}">`
+		: "";
+	const inject = meta + STORAGE_SHIM;
 
 	const headOpen = /<head[^>]*>/i.exec(html);
 	if (headOpen) {
 		const at = headOpen.index + headOpen[0].length;
-		return html.slice(0, at) + meta + html.slice(at);
+		return html.slice(0, at) + inject + html.slice(at);
 	}
 
 	const htmlOpen = /<html[^>]*>/i.exec(html);
 	if (htmlOpen) {
 		const at = htmlOpen.index + htmlOpen[0].length;
-		return `${html.slice(0, at)}<head>${meta}</head>${html.slice(at)}`;
+		return `${html.slice(0, at)}<head>${inject}</head>${html.slice(at)}`;
 	}
 
-	// No <html>/<head> scaffold: prepend the meta so the policy still applies.
-	return meta + html;
+	// No <html>/<head> scaffold: prepend the injected head content so both the
+	// shim and (if present) the policy still apply.
+	return inject + html;
 }
 
 /**
