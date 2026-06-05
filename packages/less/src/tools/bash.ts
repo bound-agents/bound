@@ -1,9 +1,9 @@
+import { HALF_OUTPUT_BYTES, truncateStreamOutput } from "@bound/shared";
 import { formatProvenance } from "./provenance";
 import type { ResolvedShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
-const HALF_OUTPUT_BYTES = 50000; // 50KB per half
 
 /** POSIX `sh` fallback for callers that don't supply a resolved shell. */
 const POSIX_DEFAULT_SHELL: ResolvedShell = {
@@ -15,50 +15,6 @@ const POSIX_DEFAULT_SHELL: ResolvedShell = {
 
 export interface BashToolWithStreamingOptions {
 	onStdoutChunk?: (chunk: string) => void;
-}
-
-function truncateOutput(output: string, maxBytes: number): string {
-	const bytes = Buffer.byteLength(output, "utf-8");
-
-	if (bytes <= maxBytes) {
-		return output;
-	}
-
-	// Truncate from the middle
-	const truncatedBytes = bytes - maxBytes;
-	const halfBytes = Math.floor(maxBytes / 2);
-
-	// Get first half
-	let first = output;
-	let charIdx = 0;
-	let byteCount = 0;
-
-	while (byteCount < halfBytes && charIdx < output.length) {
-		const charBytes = Buffer.byteLength(output[charIdx], "utf-8");
-		if (byteCount + charBytes > halfBytes) {
-			break;
-		}
-		byteCount += charBytes;
-		charIdx++;
-	}
-	first = output.substring(0, charIdx);
-
-	// Get last half
-	let last = output;
-	charIdx = output.length - 1;
-	byteCount = 0;
-
-	while (byteCount < halfBytes && charIdx >= 0) {
-		const charBytes = Buffer.byteLength(output[charIdx], "utf-8");
-		if (byteCount + charBytes > halfBytes) {
-			break;
-		}
-		byteCount += charBytes;
-		charIdx--;
-	}
-	last = output.substring(charIdx + 1);
-
-	return `${first}\n... [truncated ${truncatedBytes} bytes from middle] ...\n${last}`;
 }
 
 export function createBashTool(
@@ -228,14 +184,9 @@ export async function bashToolWithStreaming(
 			signal.removeEventListener("abort", onAbort);
 			internalController.signal.removeEventListener("abort", abortHandler);
 
-			// Truncate stdout and stderr independently, each with 50KB budget
-			const stdoutBytes = Buffer.byteLength(stdout, "utf-8");
-			const stderrBytes = Buffer.byteLength(stderr, "utf-8");
-
-			const truncatedStdout =
-				stdoutBytes > HALF_OUTPUT_BYTES ? truncateOutput(stdout, HALF_OUTPUT_BYTES) : stdout;
-			const truncatedStderr =
-				stderrBytes > HALF_OUTPUT_BYTES ? truncateOutput(stderr, HALF_OUTPUT_BYTES) : stderr;
+			// Truncate stdout and stderr independently, each with its own budget.
+			const truncatedStdout = truncateStreamOutput(stdout, HALF_OUTPUT_BYTES);
+			const truncatedStderr = truncateStreamOutput(stderr, HALF_OUTPUT_BYTES);
 
 			const formattedOutput = `Exit code: ${exitCode}\nstdout:\n${truncatedStdout}\nstderr:\n${truncatedStderr}`;
 

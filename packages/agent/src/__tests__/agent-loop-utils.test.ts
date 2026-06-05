@@ -73,6 +73,25 @@ describe("buildCommandOutput", () => {
 	it("treats empty strings as falsy", () => {
 		expect(buildCommandOutput("", "", 0)).toBe("Command completed successfully");
 	});
+
+	it("middle-truncates stdout exceeding the per-stream budget", () => {
+		const huge = "x".repeat(200_000);
+		const out = buildCommandOutput(huge, undefined, 0);
+		expect(out).toContain("truncated");
+		expect(out).toContain("from middle");
+		expect(Buffer.byteLength(out, "utf-8")).toBeLessThan(huge.length);
+	});
+
+	it("truncates stdout and stderr independently, each with its own budget", () => {
+		const huge = "y".repeat(200_000);
+		const out = buildCommandOutput(huge, huge, 1);
+		const markerCount = out.split("from middle").length - 1;
+		expect(markerCount).toBe(2);
+	});
+
+	it("leaves sub-budget output untouched", () => {
+		expect(buildCommandOutput("small", "tiny", 0)).toBe("small\ntiny");
+	});
 });
 
 // ---------------------------------------------------------------------------
