@@ -441,6 +441,39 @@ describe("isTransientLLMError", () => {
 		expect(isTransientLLMError(err)).toBe(true);
 	});
 
+	it("returns true for a Bedrock transport timeout (no status code)", () => {
+		// The AWS/runtime fetch transport imposes its own ~300s ceiling below
+		// the AI SDK; when it fires, the error wraps as a TimeoutError with the
+		// message "The operation timed out" and no HTTP status. A connection
+		// that times out with no response is the textbook transient case.
+		const { LLMError } = require("@bound/llm");
+		const err = new LLMError(
+			"bedrock request failed: The operation timed out",
+			"bedrock",
+			undefined,
+		);
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns true for a bare TimeoutError-shaped message", () => {
+		const err = new Error("The operation timed out");
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns true for ETIMEDOUT", () => {
+		const err = new Error("connect ETIMEDOUT 10.0.0.1:443");
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns false for the inactivity-abort message — a genuine stall, not a transport blip", () => {
+		// message-handler's 35-min inactivity timer aborts with this exact
+		// string. It must NOT be treated as a retryable transport error, or a
+		// stuck turn would retry instead of surfacing. Note it says "timeout"
+		// (one word), not "timed out", so the substring match below excludes it.
+		const err = new Error("LLM response timeout");
+		expect(isTransientLLMError(err)).toBe(false);
+	});
+
 	it("returns false for generic non-transport errors", () => {
 		const err = new Error("Something went wrong");
 		expect(isTransientLLMError(err)).toBe(false);

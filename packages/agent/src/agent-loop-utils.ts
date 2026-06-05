@@ -62,9 +62,19 @@ export function isTransientLLMError(error: unknown): boolean {
 		if (error.statusCode >= 400 && error.statusCode < 500) return false;
 	}
 
-	// Pattern-match on known transient transport error messages
+	// Pattern-match on known transient transport error messages.
+	// "timed out" (two words) catches the runtime fetch transport's own
+	// ~300s ceiling, which fires below the AI SDK and wraps as a TimeoutError
+	// ("The operation timed out") with no HTTP status — a connection that
+	// times out with no response is transient. Deliberately NOT "timeout"
+	// (one word): message-handler's 35-min inactivity abort uses "LLM
+	// response timeout" and must surface as a genuine stall, not retry.
 	return (
-		errMsg.includes("http2") || errMsg.includes("ECONNRESET") || errMsg.includes("socket hang up")
+		errMsg.includes("http2") ||
+		errMsg.includes("ECONNRESET") ||
+		errMsg.includes("socket hang up") ||
+		errMsg.includes("timed out") ||
+		errMsg.includes("ETIMEDOUT")
 	);
 }
 
