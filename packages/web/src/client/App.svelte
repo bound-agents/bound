@@ -1,6 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import TopBar from "./components/TopBar.svelte";
+import { initMcpApps } from "./lib/mcp-apps-bootstrap";
 import { parseLineRoute } from "./lib/route-utils";
 import AdvisoryView from "./views/AdvisoryView.svelte";
 import FilesView from "./views/FilesView.svelte";
@@ -18,6 +19,10 @@ onMount(() => {
 	window.addEventListener("hashchange", () => {
 		route = window.location.hash.slice(1) || "/";
 	});
+	// Connect to configured MCP App servers and register their tools on the
+	// shared BoundClient (the boundless client-tools pattern). Fire-and-forget:
+	// failures are logged and never block the UI.
+	void initMcpApps();
 });
 
 function screenLabel(r: string): string {
