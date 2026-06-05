@@ -316,3 +316,4 @@ See the git log for commit message style — concise, conventional-commits-ish (
 - [docs/design/sandbox-and-llm.md](docs/design/sandbox-and-llm.md) — VFS, driver shims, model routing
 - [docs/design/web-and-discord.md](docs/design/web-and-discord.md) — HTTP API, WS protocol, platform connectors
 - [docs/cli-operations.md](docs/cli-operations.md) — operator-facing CLI reference
+- [docs/config.md](docs/config.md) — per-field reference for every config file

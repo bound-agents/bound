@@ -34,7 +34,7 @@ bun run packages/cli/src/bound.ts init --ollama
 bun run packages/cli/src/bound.ts start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open [http://localhost:3001](http://localhost:3001) in your browser. (The web UI listens on `WEB_PORT`, default 3001; the sync protocol uses `PORT`, default 3000.)
 
 ### Other LLM backends
 
