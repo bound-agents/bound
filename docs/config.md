@@ -81,6 +81,7 @@ must be `""`.
 | `max_output_tokens` | int > 0 | absent | Per-backend cap on output tokens. Use when a model rejects the 16384 default (e.g. Nova Pro caps at 10000). Applied as `min(this, default)`, so lowering is always safe. |
 | `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. `1h` is extended TTL (Bedrock: Claude Opus/Sonnet/Haiku 4.5+ only); silently falls back to `5m` where unsupported. |
 | `cache_warming` | cache-warming block | absent | Per-backend cache-warming (see below). Absent means this backend is never warmed. |
+| `connect_timeout_ms` | int > 0 | absent (off) | Connect / time-to-first-byte deadline. If response headers don't arrive within this window the request aborts with a self-identifying error instead of the opaque transport `TimeoutError`. Headers-scoped only — a slow-but-progressing stream is governed by the agent-loop silence timeout, not this. Applied on whichever host runs the fetch (not forwarded over the relay). Absent → no deadline; set generously (TTFB on a 200k-token prompt can run tens of seconds) and lower it only to fail-fast-and-retry sooner. |
 
 **Capabilities override** (`capabilities`) — all fields optional booleans except
 `max_context`; set only to override the driver's autodetected defaults:

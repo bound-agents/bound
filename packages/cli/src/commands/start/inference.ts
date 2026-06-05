@@ -57,6 +57,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 							maxPokes: b.cache_warming.max_pokes,
 						}
 					: undefined,
+				connectTimeoutMs: b.connect_timeout_ms,
 			}),
 		),
 		default: rawBackends.default,

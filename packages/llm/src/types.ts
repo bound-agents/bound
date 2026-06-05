@@ -249,6 +249,18 @@ export interface BackendConfig {
 	 * (0 → never warm, a clean opt-out even with `enabled: true`).
 	 */
 	cacheWarming?: { enabled: boolean; maxPokes: number };
+	/**
+	 * Per-backend connect / time-to-first-byte deadline (ms). When set, the
+	 * logging fetch owns an `AbortController` that aborts the request if
+	 * response headers do not arrive within this window, carrying a
+	 * self-identifying error instead of the opaque transport `TimeoutError`
+	 * ("The operation timed out."). Headers-scoped only: cleared the moment
+	 * `fetch()` resolves, so a slow-but-progressing stream is governed by the
+	 * agent-loop silence timeout, not this deadline. A local concern applied on
+	 * whichever host runs the fetch — not forwarded over the relay. Absent /
+	 * `<= 0` → no deadline (pure passthrough). See `createLoggingFetch`.
+	 */
+	connectTimeoutMs?: number;
 	[key: string]: unknown;
 }
 

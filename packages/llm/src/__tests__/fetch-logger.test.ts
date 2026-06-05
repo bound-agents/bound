@@ -175,4 +175,87 @@ describe("createLoggingFetch", () => {
 
 		expect(captured[0].context?.url).toBe("https://url.example.com/invoke");
 	});
+
+	describe("connect / time-to-first-byte deadline (connectTimeoutMs)", () => {
+		// A fetch mock that never resolves on its own but rejects when the
+		// passed-in signal aborts — mimicking globalThis.fetch's behavior on a
+		// silently-hanging connection (the production Bedrock failure shape).
+		function hangingFetch(): typeof fetch {
+			return ((_input: RequestInfo | URL, init?: RequestInit) =>
+				new Promise<Response>((_resolve, reject) => {
+					const signal = init?.signal;
+					if (!signal) return;
+					if (signal.aborted) {
+						reject(signal.reason ?? new Error("aborted"));
+						return;
+					}
+					signal.addEventListener("abort", () => {
+						reject(signal.reason ?? new Error("aborted"));
+					});
+				})) as typeof fetch;
+		}
+
+		it("aborts with a self-identifying error when headers don't arrive in time", async () => {
+			const { logger } = makeLogger(new Set<LogLevel>(["info"]));
+			globalThis.fetch = hangingFetch();
+
+			const wrapped = createLoggingFetch(logger, "bedrock", 50);
+			await expect(
+				wrapped("https://bedrock.example.com/invoke", { method: "POST", body: "{}" }),
+			).rejects.toThrow(/no inference response headers from bedrock within 50ms/);
+		});
+
+		it("clears the deadline once headers arrive — a slow body is never aborted", async () => {
+			const { logger } = makeLogger(new Set<LogLevel>(["info"]));
+			// Capture the signal the SDK would use to read the streaming body.
+			let capturedSignal: AbortSignal | undefined;
+			globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+				capturedSignal = init?.signal ?? undefined;
+				return Promise.resolve(new Response("ok"));
+			}) as typeof fetch;
+
+			const wrapped = createLoggingFetch(logger, "bedrock", 30);
+			const res = await wrapped("https://x/", { method: "POST", body: "{}" });
+			expect(await res.text()).toBe("ok");
+
+			// Headers arrived → the deadline timer must have been cleared. Wait
+			// well past it and assert the body-governing signal never aborted.
+			await new Promise((r) => setTimeout(r, 60));
+			expect(capturedSignal?.aborted).toBe(false);
+		});
+
+		it("honors an inbound init.signal, composed via AbortSignal.any", async () => {
+			const { logger } = makeLogger(new Set<LogLevel>(["info"]));
+			globalThis.fetch = hangingFetch();
+
+			// Long connect deadline so the inbound (agent-loop) signal wins the race.
+			const wrapped = createLoggingFetch(logger, "bedrock", 10_000);
+			const agentLoop = new AbortController();
+			setTimeout(() => agentLoop.abort(new Error("agent-loop silence timeout")), 30);
+
+			await expect(
+				wrapped("https://x/", { method: "POST", body: "{}", signal: agentLoop.signal }),
+			).rejects.toThrow(/agent-loop silence timeout/);
+		});
+
+		it("is a pure passthrough when the deadline is unset or <= 0 (no signal injected)", async () => {
+			const { logger } = makeLogger(new Set<LogLevel>(["info"]));
+			let sawSignal: AbortSignal | null = null;
+			globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+				sawSignal = init?.signal ?? null;
+				return Promise.resolve(new Response("ok"));
+			}) as typeof fetch;
+
+			// Unset → no deadline controller, so no signal is added to a
+			// signal-less init.
+			let wrapped = createLoggingFetch(logger, "bedrock");
+			await wrapped("https://x/", { method: "POST", body: "{}" });
+			expect(sawSignal).toBeNull();
+
+			// <= 0 → treated as disabled, same passthrough.
+			wrapped = createLoggingFetch(logger, "bedrock", 0);
+			await wrapped("https://x/", { method: "POST", body: "{}" });
+			expect(sawSignal).toBeNull();
+		});
+	});
 });

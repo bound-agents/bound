@@ -454,6 +454,7 @@ function createBackendFromConfig(
 				profile,
 				logger,
 				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
 			});
 		}
 
@@ -472,6 +473,7 @@ function createBackendFromConfig(
 				providerName: "openai-compatible",
 				logger,
 				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
 			});
 		}
 
@@ -490,6 +492,7 @@ function createBackendFromConfig(
 				providerName: "cerebras",
 				logger,
 				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
 			});
 		}
 
@@ -508,6 +511,7 @@ function createBackendFromConfig(
 				providerName: "zai",
 				logger,
 				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
 			});
 		}
 
