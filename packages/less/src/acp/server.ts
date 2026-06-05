@@ -59,7 +59,7 @@ import {
 	modeConfigOption,
 } from "./modes";
 import { AcpSession } from "./session";
-import { listRememberedAcpSessions, rememberAcpSession } from "./session-registry";
+import { listRememberedLocalSessions, rememberLocalSession } from "./session-registry";
 
 export interface BoundAcpAgentOptions {
 	client: BoundClient;
@@ -170,7 +170,7 @@ export class BoundAcpAgent implements Agent {
 	}
 
 	async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
-		const remembered = listRememberedAcpSessions(this.opts.configDir);
+		const remembered = listRememberedLocalSessions(this.opts.configDir);
 		const rememberedById = new Map(
 			remembered
 				.filter((record) => !params.cwd || record.cwd === params.cwd)
@@ -347,7 +347,7 @@ export class BoundAcpAgent implements Agent {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
-		rememberAcpSession(this.opts.configDir, threadId, cwd);
+		rememberLocalSession(this.opts.configDir, threadId, cwd);
 
 		const session = new AcpSession({
 			sessionId: threadId,

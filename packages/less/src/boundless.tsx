@@ -16,6 +16,7 @@ import { render } from "ink";
 // biome-ignore lint/correctness/noUnusedImports: React is used implicitly in JSX
 import React from "react";
 import { runAcpServer } from "./acp/server";
+import { rememberLocalSession } from "./acp/session-registry";
 import { loadConfig, loadMcpConfig } from "./config";
 import { acquireLock, releaseLock } from "./lockfile";
 import { AppLogger } from "./logging";
@@ -217,6 +218,12 @@ async function main(): Promise<void> {
 			process.stderr.write(`Error: ${(error as Error).message}\n`);
 			process.exit(1);
 		}
+
+		// Record this thread + its local cwd in the session registry so the ACP
+		// import (listSessions) can offer it later. A TUI attach establishes a
+		// local working dir for the thread on this machine exactly as an ACP
+		// loadSession does, so it earns a registry entry the same way.
+		rememberLocalSession(configDir, threadId, process.cwd());
 
 		// Step 6: Initialize logger and MCP
 		const logger = new AppLogger(configDir);
