@@ -83,6 +83,55 @@ export function capToolResultContent(content: string): string {
 }
 
 /**
+ * Per-stream output budget for command stdout/stderr, in bytes. Each stream is
+ * middle-truncated to this size independently, BEFORE the universal
+ * `MAX_TOOL_RESULT_BYTES` backstop. Shared by `boundless_bash` (the WS client
+ * tool) and the sandbox `bash` tool (via `buildCommandOutput`) so the two
+ * command surfaces truncate identically and cannot drift.
+ */
+export const HALF_OUTPUT_BYTES = 50000; // 50KB per stream
+
+/**
+ * Middle-truncate a single output stream to `maxBytes`, keeping `maxBytes / 2`
+ * bytes of head and tail with a marker between. Returns the input unchanged
+ * when within budget. Operates on UTF-8 byte length and never splits a
+ * multi-byte character.
+ */
+export function truncateStreamOutput(output: string, maxBytes: number): string {
+	const bytes = Buffer.byteLength(output, "utf-8");
+	if (bytes <= maxBytes) {
+		return output;
+	}
+
+	const truncatedBytes = bytes - maxBytes;
+	const halfBytes = Math.floor(maxBytes / 2);
+
+	// Walk from the start until adding the next char would exceed halfBytes.
+	let headEnd = 0;
+	let headBytes = 0;
+	while (headEnd < output.length) {
+		const charBytes = Buffer.byteLength(output[headEnd] ?? "", "utf-8");
+		if (headBytes + charBytes > halfBytes) break;
+		headBytes += charBytes;
+		headEnd++;
+	}
+
+	// Walk from the end until adding the next char would exceed halfBytes.
+	let tailStart = output.length;
+	let tailBytes = 0;
+	while (tailStart > headEnd) {
+		const charBytes = Buffer.byteLength(output[tailStart - 1] ?? "", "utf-8");
+		if (tailBytes + charBytes > halfBytes) break;
+		tailBytes += charBytes;
+		tailStart--;
+	}
+
+	const first = output.slice(0, headEnd);
+	const last = output.slice(tailStart);
+	return `${first}\n... [truncated ${truncatedBytes} bytes from middle] ...\n${last}`;
+}
+
+/**
  * Append a `[duration: N.NNNs]` suffix to a tool result string. The shape
  * of the returned content matches the input shape:
  *

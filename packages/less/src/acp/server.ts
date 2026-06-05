@@ -318,6 +318,7 @@ export class BoundAcpAgent implements Agent {
 			logger: this.opts.logger,
 			injectContextFiles: this.opts.contextFiles,
 			shell: this.opts.shell,
+			surface: "acp",
 		});
 
 		// Rebuild the tool set/handlers against THIS session's cwd. performAttach

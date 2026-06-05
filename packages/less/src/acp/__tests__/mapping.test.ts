@@ -149,6 +149,41 @@ describe("toolCallLocations", () => {
 		}
 	});
 
+	it("anchors the edit follow-along line on the first divergence from old_string", () => {
+		const dir = join("/tmp", `boundless-acp-test-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		try {
+			writeFileSync(join(dir, "a.ts"), "alpha\nbeta\ngamma\ndelta\n");
+
+			// old_string leads with an unchanged context line; the real change is
+			// the inserted line, so the follow line advances past the shared prefix
+			// instead of landing on the (unchanged) match-start line.
+			expect(
+				toolCallLocations(
+					"boundless_edit",
+					{ file_path: "a.ts", old_string: "beta\ngamma", new_string: "beta\nINSERTED\ngamma" },
+					dir,
+				),
+			).toEqual([{ path: join(dir, "a.ts"), line: 3 }]);
+
+			// First line itself changes → no shared prefix → match start stands.
+			expect(
+				toolCallLocations(
+					"boundless_edit",
+					{ file_path: "a.ts", old_string: "beta\ngamma", new_string: "BETA\ngamma" },
+					dir,
+				),
+			).toEqual([{ path: join(dir, "a.ts"), line: 2 }]);
+
+			// new_string absent → falls back to match start (unchanged behavior).
+			expect(
+				toolCallLocations("boundless_edit", { file_path: "a.ts", old_string: "beta\ngamma" }, dir),
+			).toEqual([{ path: join(dir, "a.ts"), line: 2 }]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("degrades to path-only when the edit target does not exist", () => {
 		expect(
 			toolCallLocations(

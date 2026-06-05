@@ -413,7 +413,11 @@ export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
 	mcpServers: string[],
-	options?: { injectContextFiles?: string[]; shellToolName?: string },
+	options?: {
+		injectContextFiles?: string[];
+		shellToolName?: string;
+		surface?: "terminal" | "acp";
+	},
 ): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
 	const shellToolName = options?.shellToolName ?? "boundless_bash";
@@ -425,7 +429,16 @@ export async function buildSystemPromptAddition(
 	const contextFilesSection = await collectContextFiles(cwd, options?.injectContextFiles);
 	const contextFilesBlock = contextFilesSection ? `${contextFilesSection}\n` : "";
 
-	return `You are connected to a boundless terminal client.
+	// The opening line tells the agent which surface is driving it. Over ACP the
+	// editor renders reads/edits inline (diffs + a follow-along cursor) and gates
+	// tool calls through its own permission modes — behavior the agent should
+	// account for, e.g. it need not echo file contents back to describe an edit.
+	const surfaceLine =
+		options?.surface === "acp"
+			? "You are connected to a boundless session driving an ACP-compatible editor (e.g. Zed) over stdio. The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass)."
+			: "You are connected to a boundless terminal client.";
+
+	return `${surfaceLine}
 Host: ${hostname}
 Working directory: ${cwd}
 ${gitContext}

@@ -24,6 +24,12 @@ export interface AttachParams {
 	injectContextFiles?: string[];
 	/** Resolved shell for the bash-family tool (name + invocation). */
 	shell: ResolvedShell;
+	/**
+	 * Which surface is driving this session. Selects the opening line of the
+	 * system-prompt addition: `"terminal"` (default) for the boundless TUI,
+	 * `"acp"` when an ACP editor (Zed et al.) is the front-end.
+	 */
+	surface?: "terminal" | "acp";
 }
 
 export interface AttachResult {
@@ -115,6 +121,7 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	const systemPromptAddition = await buildSystemPromptAddition(cwd, hostname, mcpServerNames, {
 		injectContextFiles: params.injectContextFiles,
 		shellToolName: shell.toolName,
+		surface: params.surface,
 	});
 
 	client.configureTools(toolSet.tools, {
