@@ -22,6 +22,9 @@ export * from "./tokens.js";
 // String utilities
 export * from "./strings.js";
 
+// Content search core (shared by host + sandbox search tools)
+export * from "./search.js";
+
 // Hybrid Logical Clocks
 export * from "./hlc.js";
 

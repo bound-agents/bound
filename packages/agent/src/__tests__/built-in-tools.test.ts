@@ -18,11 +18,12 @@ describe("built-in-tools", () => {
 		return t;
 	}
 
-	it("creates exactly four tools: read, write, edit, retrieve_task", () => {
-		expect(tools.size).toBe(4);
+	it("creates exactly five tools: read, write, edit, search, retrieve_task", () => {
+		expect(tools.size).toBe(5);
 		expect(tools.has("read")).toBe(true);
 		expect(tools.has("write")).toBe(true);
 		expect(tools.has("edit")).toBe(true);
+		expect(tools.has("search")).toBe(true);
 		expect(tools.has("retrieve_task")).toBe(true);
 	});
 
@@ -398,6 +399,74 @@ describe("built-in-tools", () => {
 			const result = await tool("retrieve_task").execute({ task_id: "abc", extra: 42 });
 			expect(typeof result).toBe("string");
 			expect((result as string).length).toBeGreaterThan(0);
+		});
+	});
+
+	// ─── search ───────────────────────────────────────────────────────────
+
+	describe("search", () => {
+		beforeEach(async () => {
+			await fs.writeFile(
+				"/src/alpha.ts",
+				"const greeting = 'hello world';\nexport { greeting };\n",
+			);
+			await fs.writeFile("/src/beta.ts", "// HELLO from beta\nfunction f() { return 1; }\n");
+			await fs.writeFile("/docs/readme.md", "Say hello to the docs.\n");
+		});
+
+		it("returns grep-style path:line:preview matches across files", async () => {
+			const result = (await tool("search").execute({ pattern: "greeting" })) as string;
+			expect(result).toContain("/src/alpha.ts:1:");
+			expect(result).toContain("greeting");
+			// The match on line 2 should also surface.
+			expect(result).toContain("/src/alpha.ts:2:");
+		});
+
+		it("is case-sensitive by default and case-insensitive on request", async () => {
+			const sensitive = (await tool("search").execute({ pattern: "HELLO" })) as string;
+			// Only beta.ts has uppercase HELLO.
+			expect(sensitive).toContain("/src/beta.ts:1:");
+			expect(sensitive).not.toContain("/src/alpha.ts");
+
+			const insensitive = (await tool("search").execute({
+				pattern: "hello",
+				case_insensitive: true,
+			})) as string;
+			expect(insensitive).toContain("/src/alpha.ts:1:");
+			expect(insensitive).toContain("/src/beta.ts:1:");
+			expect(insensitive).toContain("/docs/readme.md:1:");
+		});
+
+		it("treats the pattern as a literal when fixed_strings is set", async () => {
+			await fs.writeFile("/src/regex.ts", "a.b matches here\naxb should not\n");
+			const result = (await tool("search").execute({
+				pattern: "a.b",
+				fixed_strings: true,
+			})) as string;
+			expect(result).toContain("/src/regex.ts:1:");
+			expect(result).not.toContain("/src/regex.ts:2:");
+		});
+
+		it("scopes to a path prefix when path is provided", async () => {
+			const result = (await tool("search").execute({
+				pattern: "hello",
+				case_insensitive: true,
+				path: "/src",
+			})) as string;
+			expect(result).toContain("/src/alpha.ts");
+			expect(result).not.toContain("/docs/readme.md");
+		});
+
+		it("skips excluded directories like node_modules", async () => {
+			await fs.writeFile("/node_modules/pkg/index.js", "const greeting = 'vendored';\n");
+			const result = (await tool("search").execute({ pattern: "greeting" })) as string;
+			expect(result).toContain("/src/alpha.ts");
+			expect(result).not.toContain("node_modules");
+		});
+
+		it("returns an error string for an invalid regex", async () => {
+			const result = (await tool("search").execute({ pattern: "(" })) as string;
+			expect(result.startsWith("Error:")).toBe(true);
 		});
 	});
 });

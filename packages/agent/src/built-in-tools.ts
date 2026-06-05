@@ -1,4 +1,11 @@
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
+import {
+	type SearchFileInput,
+	formatSearchResults,
+	isLikelyBinary,
+	searchFiles,
+	shouldSearchPath,
+} from "@bound/shared";
 import type { IFileSystem } from "just-bash";
 import { z } from "zod";
 import { parseToolInput, zodToToolParams } from "./tools/tool-schema";
@@ -46,6 +53,26 @@ const editSchema = z.object({
 		)
 		.describe("Ordered list of edits to apply."),
 });
+
+const searchSchema = z.object({
+	pattern: z
+		.string()
+		.describe(
+			"Pattern to search for. Interpreted as a JavaScript regular expression unless fixed_strings is set.",
+		),
+	path: z
+		.string()
+		.optional()
+		.describe("Optional VFS path prefix to scope the search to. Defaults to the whole filesystem."),
+	case_insensitive: z.boolean().optional().describe("Match case-insensitively (default false)."),
+	fixed_strings: z
+		.boolean()
+		.optional()
+		.describe("Treat the pattern as a literal string rather than a regex (default false)."),
+});
+
+/** Skip individual files larger than this to avoid pulling huge blobs into memory. */
+const MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024;
 
 // ─── Error classification ───────────────────────────────────────────
 
@@ -537,11 +564,70 @@ function createRetrieveTaskTool(): BuiltInTool {
 
 // ─── Public API ─────────────────────────────────────────────────────
 
+function createSearchTool(fs: IFileSystem): BuiltInTool {
+	const jsonSchema = zodToToolParams(searchSchema);
+
+	const toolDefinition: ToolDefinition = {
+		type: "function",
+		function: {
+			name: "search",
+			description:
+				"Search file contents in the sandbox filesystem for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through bash — it returns identical results to the host boundless_search.",
+			parameters: jsonSchema,
+		},
+	};
+
+	return {
+		toolDefinition,
+		async execute(inputRaw) {
+			const parsed = parseToolInput(searchSchema, inputRaw, "search");
+			if (!parsed.ok) return parsed.error;
+			const input = parsed.value;
+
+			const prefix = input.path && input.path.length > 0 ? input.path : undefined;
+
+			// Enumerate candidate paths (cheap), then read content for the ones that
+			// pass the path/exclude filters. The VFS is in-memory and size-bounded,
+			// so eager reads are acceptable here.
+			const candidates = fs
+				.getAllPaths()
+				.filter((p) => (prefix ? p === prefix || p.startsWith(prefix) : true))
+				.filter((p) => shouldSearchPath(p));
+
+			const files: SearchFileInput[] = [];
+			for (const path of candidates) {
+				let content: string;
+				try {
+					content = await fs.readFile(path);
+				} catch {
+					continue; // unreadable / directory / vanished — skip
+				}
+				if (content.length > MAX_SEARCH_FILE_BYTES) continue;
+				if (isLikelyBinary(content)) continue;
+				files.push({ path, content });
+			}
+
+			try {
+				const result = searchFiles(files, {
+					pattern: input.pattern,
+					flags: input.case_insensitive ? "i" : undefined,
+					fixedStrings: input.fixed_strings === true,
+				});
+				return formatSearchResults(result);
+			} catch (err) {
+				// compileSearchPattern throws on an invalid regex.
+				return `Error: ${(err as Error).message}`;
+			}
+		},
+	};
+}
+
 export function createBuiltInTools(fs: IFileSystem): Map<string, BuiltInTool> {
 	const map = new Map<string, BuiltInTool>();
 	map.set("read", createReadTool(fs));
 	map.set("write", createWriteTool(fs));
 	map.set("edit", createEditTool(fs));
+	map.set("search", createSearchTool(fs));
 	map.set("retrieve_task", createRetrieveTaskTool());
 	return map;
 }
