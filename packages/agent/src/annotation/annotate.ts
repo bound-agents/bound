@@ -9,6 +9,29 @@ import { formatTimestamp } from "../context-assembly";
 /** Hard cap on the number of injected `Model switched` developer messages. */
 export const MODEL_SWITCH_CAP = 3;
 
+/**
+ * Reads the sender's UTC offset (minutes, east-of-UTC positive) from a user
+ * message's metadata property bag, if the client stamped one at send time
+ * (`tz_offset`). Returns undefined when absent or malformed — callers then
+ * fall back to plain UTC rendering.
+ *
+ * This is the single, deliberate read of `messages.metadata` from context
+ * assembly (Invariant #19 otherwise keeps that bag invisible to the agent
+ * loop): one controlled field that drives the byte-stable timestamp prefix,
+ * not platform delivery state. `tz_offset` is written once at insert and never
+ * mutated, so the rendered prefix stays a pure function of immutable inputs.
+ */
+function readTzOffsetMinutes(metadata: string | null): number | undefined {
+	if (!metadata) return undefined;
+	try {
+		const parsed = JSON.parse(metadata) as Record<string, unknown>;
+		const v = parsed.tz_offset;
+		return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 const LLM_COMPATIBLE_ROLES = new Set([
 	"user",
 	"assistant",
@@ -116,7 +139,7 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 		// it to the user message is redundant-but-stable, which is
 		// strictly better than redundant-and-time-varying.
 		if (m.role === "user" && m.created_at && typeof annotatedContent === "string") {
-			const ts = formatTimestamp(m.created_at);
+			const ts = formatTimestamp(m.created_at, readTzOffsetMinutes(m.metadata));
 			annotatedContent = `${ts} ${annotatedContent}`;
 		}
 

@@ -568,6 +568,19 @@ export class BoundClient {
 				};
 				if (options?.modelId) msg.model_id = options.modelId;
 				if (options?.fileId) msg.file_ids = [options.fileId];
+				// Stamp the sender's UTC offset (minutes, east-of-UTC positive) so the
+				// server can render the user-message timestamp prefix in local wall-clock.
+				// getTimezoneOffset() returns minutes WEST of UTC (positive for west), so
+				// negate it. `null` suppresses; a number overrides; undefined auto-derives
+				// from the host's local tz (correct for browser + boundless, which run on
+				// the user's machine).
+				const tzOffset =
+					options?.tzOffsetMinutes === undefined
+						? -new Date().getTimezoneOffset()
+						: options.tzOffsetMinutes;
+				if (typeof tzOffset === "number" && Number.isFinite(tzOffset)) {
+					msg.tz_offset = tzOffset;
+				}
 				this.sendWsMessage(msg);
 			});
 			span.setStatus({ code: SpanStatusCode.OK });

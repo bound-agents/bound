@@ -80,6 +80,11 @@ const messageSendSchema = z.object({
 	file_ids: z.array(z.string()).optional(),
 	model_id: z.string().optional(),
 	trace_context: z.string().optional(),
+	// Sender's UTC offset in minutes (east-of-UTC positive: EDT=-240, JST=+540),
+	// captured client-side at send. Stored in messages.metadata.tz_offset and read
+	// by Stage-5 annotation to render the user-message timestamp prefix in local
+	// wall-clock. Optional: absent for autonomous/task-driven user messages.
+	tz_offset: z.number().int().min(-840).max(840).optional(),
 });
 
 const threadSubscribeSchema = z.object({
@@ -631,6 +636,13 @@ export function createWebSocketHandler(
 			const messageId = randomUUID();
 			const now = new Date().toISOString();
 
+			// Stamp the sender's UTC offset (minutes) onto the message metadata bag
+			// when the client supplied one, so Stage-5 annotation can render the
+			// timestamp prefix in the sender's local wall-clock. Written once at
+			// insert and never mutated — keeps the annotation byte-stable.
+			const tzMetadata =
+				typeof msg.tz_offset === "number" ? JSON.stringify({ tz_offset: msg.tz_offset }) : null;
+
 			insertRow(
 				db,
 				"messages",
@@ -646,7 +658,7 @@ export function createWebSocketHandler(
 					host_origin: hostOrigin,
 					deleted: 0,
 					exit_code: null,
-					metadata: null,
+					metadata: tzMetadata,
 				},
 				siteId,
 			);

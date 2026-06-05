@@ -37,6 +37,14 @@ export interface CreateThreadOptions {
 export interface SendMessageOptions {
 	modelId?: string;
 	fileId?: string;
+	/**
+	 * Sender's UTC offset in minutes, east-of-UTC positive (EDT=-240, JST=+540).
+	 * Defaults to the host's local offset (`-new Date().getTimezoneOffset()`),
+	 * which is correct for interactive clients running on the user's machine
+	 * (browser, boundless). Override for non-interactive / proxied senders.
+	 * Pass `null` to suppress stamping entirely.
+	 */
+	tzOffsetMinutes?: number | null;
 }
 
 export interface RedactMessageResult {
