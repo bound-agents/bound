@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { Implementation } from "@agentclientprotocol/sdk";
 import type { ToolDefinition } from "@bound/client";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerConfig } from "../config";
@@ -451,7 +452,7 @@ export async function buildSystemPromptAddition(
 	options?: {
 		injectContextFiles?: string[];
 		shellToolName?: string;
-		surface?: "terminal" | "acp";
+		surface?: { type: "terminal" } | { type: "acp"; clientInfo: Implementation };
 	},
 ): Promise<string> {
 	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
@@ -469,8 +470,8 @@ export async function buildSystemPromptAddition(
 	// tool calls through its own permission modes — behavior the agent should
 	// account for, e.g. it need not echo file contents back to describe an edit.
 	const surfaceLine =
-		options?.surface === "acp"
-			? "You are connected to a boundless session driving an ACP-compatible editor (e.g. Zed) over stdio. The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass)."
+		options?.surface?.type === "acp"
+			? `You are connected to a boundless session driving an ACP-compatible editor (${options.surface.clientInfo.title ?? options.surface.clientInfo.name} ${options.surface.clientInfo.version}). The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass).`
 			: "You are connected to a boundless terminal client.";
 
 	return `${surfaceLine}
