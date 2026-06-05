@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export interface AcpSessionRecord {
+export interface LocalSessionRecord {
 	sessionId: string;
 	cwd: string;
 	updatedAt: string;
@@ -9,11 +9,11 @@ export interface AcpSessionRecord {
 
 interface RegistryFile {
 	version: 1;
-	sessions: AcpSessionRecord[];
+	sessions: LocalSessionRecord[];
 }
 
 function registryPath(configDir: string): string {
-	return join(configDir, "acp-sessions.json");
+	return join(configDir, "local-sessions.json");
 }
 
 function readRegistry(configDir: string): RegistryFile {
@@ -46,9 +46,9 @@ function writeRegistry(configDir: string, registry: RegistryFile): void {
 	renameSync(tmpPath, path);
 }
 
-function isSessionRecord(value: unknown): value is AcpSessionRecord {
+function isSessionRecord(value: unknown): value is LocalSessionRecord {
 	if (!value || typeof value !== "object") return false;
-	const record = value as Partial<AcpSessionRecord>;
+	const record = value as Partial<LocalSessionRecord>;
 	return (
 		typeof record.sessionId === "string" &&
 		record.sessionId.length > 0 &&
@@ -59,9 +59,9 @@ function isSessionRecord(value: unknown): value is AcpSessionRecord {
 	);
 }
 
-export function rememberAcpSession(configDir: string, sessionId: string, cwd: string): void {
+export function rememberLocalSession(configDir: string, sessionId: string, cwd: string): void {
 	const registry = readRegistry(configDir);
-	const nextRecord: AcpSessionRecord = {
+	const nextRecord: LocalSessionRecord = {
 		sessionId,
 		cwd,
 		updatedAt: new Date().toISOString(),
@@ -71,6 +71,6 @@ export function rememberAcpSession(configDir: string, sessionId: string, cwd: st
 	writeRegistry(configDir, { version: 1, sessions });
 }
 
-export function listRememberedAcpSessions(configDir: string): AcpSessionRecord[] {
+export function listRememberedLocalSessions(configDir: string): LocalSessionRecord[] {
 	return readRegistry(configDir).sessions;
 }
