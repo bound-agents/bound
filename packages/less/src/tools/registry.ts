@@ -8,6 +8,7 @@ import { createBashTool } from "./bash";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
+import { createSearchTool } from "./search";
 import { type ResolvedShell, resolveShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 import { createWriteTool } from "./write";
@@ -165,12 +166,46 @@ export function buildToolSet(
 				},
 			},
 		},
+		{
+			type: "function",
+			function: {
+				name: "boundless_search",
+				description:
+					"Search file contents under the working directory for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through the shell — it returns identical results on host and sandbox.",
+				parameters: {
+					type: "object",
+					required: ["pattern"],
+					properties: {
+						pattern: {
+							type: "string",
+							description:
+								"Pattern to search for. Interpreted as a JavaScript regular expression unless fixed_strings is set.",
+						},
+						path: {
+							type: "string",
+							description:
+								"Optional subdirectory to scope the search to (relative to cwd if not absolute). Defaults to the whole working directory.",
+						},
+						case_insensitive: {
+							type: "boolean",
+							description: "Match case-insensitively (default false).",
+						},
+						fixed_strings: {
+							type: "boolean",
+							description:
+								"Treat the pattern as a literal string rather than a regex (default false).",
+						},
+					},
+				},
+			},
+		},
 	];
 
 	toolDefinitions.push(...coreToolDefs);
 	handlers.set("boundless_read", createReadTool(hostname));
 	handlers.set("boundless_write", createWriteTool(hostname));
 	handlers.set("boundless_edit", createEditTool(hostname));
+	handlers.set("boundless_search", createSearchTool(hostname));
 	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell));
 	handlers.set(
 		"boundless_copy",
