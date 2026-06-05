@@ -909,24 +909,50 @@ function loadPersona(configDir: string): string | null {
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /**
- * Formats a timestamp as an absolute short date for context annotations.
- * Cache-friendly: output is deterministic for a given input (never changes between turns).
- * Same-year: "[Apr 4, 14:30]". Different year: "[Jan 15 '25, 09:45]".
+ * Renders a standard UTC offset (east-of-UTC positive, in minutes) as
+ * `UTC±HH:MM`. E.g. -240 → "UTC-04:00", +540 → "UTC+09:00", +330 → "UTC+05:30".
  */
-export function formatTimestamp(isoTimestamp: string): string {
-	const d = new Date(isoTimestamp);
+function formatUtcOffset(offsetMinutes: number): string {
+	const sign = offsetMinutes < 0 ? "-" : "+";
+	const abs = Math.abs(offsetMinutes);
+	const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+	const mm = String(abs % 60).padStart(2, "0");
+	return `UTC${sign}${hh}:${mm}`;
+}
+
+/**
+ * Formats a timestamp as an absolute short date for context annotations.
+ * Cache-friendly: output is deterministic for a given (isoTimestamp, offsetMinutes)
+ * pair (never changes between turns), which preserves the byte-stable user-message
+ * annotation rule (see annotation/annotate.ts).
+ *
+ * Without an offset, components are read in UTC:
+ *   same-year "[Apr 4, 14:30]", different year "[Jan 15 '25, 09:45]".
+ *
+ * With `offsetMinutes` (the standard UTC offset, east-of-UTC positive — EDT=-240,
+ * JST=+540, IST=+330), the instant is shifted into the sender's local wall-clock
+ * and a `UTC±HH:MM` suffix is appended so the local time is unambiguous:
+ *   "[Jun 5, 18:38 UTC-04:00]". The year-variant check uses the shifted (local) year.
+ */
+export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): string {
+	const utc = new Date(isoTimestamp);
+	const hasOffset = typeof offsetMinutes === "number" && Number.isFinite(offsetMinutes);
+	// Shift to the sender's local wall-clock, then read UTC components off the
+	// shifted instant so the calendar fields reflect local time.
+	const d = hasOffset ? new Date(utc.getTime() + (offsetMinutes as number) * 60_000) : utc;
 	const month = MONTHS[d.getUTCMonth()];
 	const day = d.getUTCDate();
 	const hours = String(d.getUTCHours()).padStart(2, "0");
 	const minutes = String(d.getUTCMinutes()).padStart(2, "0");
+	const suffix = hasOffset ? ` ${formatUtcOffset(offsetMinutes as number)}` : "";
 
 	const currentYear = new Date().getUTCFullYear();
 	if (d.getUTCFullYear() !== currentYear) {
 		const yearShort = String(d.getUTCFullYear()).slice(-2);
-		return `[${month} ${day} '${yearShort}, ${hours}:${minutes}]`;
+		return `[${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}]`;
 	}
 
-	return `[${month} ${day}, ${hours}:${minutes}]`;
+	return `[${month} ${day}, ${hours}:${minutes}${suffix}]`;
 }
 
 /**

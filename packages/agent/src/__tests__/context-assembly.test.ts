@@ -7375,6 +7375,53 @@ describe("formatTimestamp", () => {
 		// Should include month/day info
 		expect(result).toMatch(/Jan 15/);
 	});
+
+	// --- Timezone-aware rendering. offsetMinutes is the standard UTC offset
+	//     (east-of-UTC positive): EDT = -240, JST = +540, IST = +330. ---
+
+	it("renders local wall-clock + UTC offset suffix when an offset is given", () => {
+		// 22:38 UTC at -240 (EDT) is 18:38 local, same calendar day.
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts, -240)).toBe("[Jun 5, 18:38 UTC-04:00]");
+	});
+
+	it("rolls the local date forward across midnight for east offsets", () => {
+		// 22:38 UTC at +540 (JST) is 07:38 the next calendar day.
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts, 540)).toBe("[Jun 6, 07:38 UTC+09:00]");
+	});
+
+	it("renders UTC+00:00 for a zero offset", () => {
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts, 0)).toBe("[Jun 5, 22:38 UTC+00:00]");
+	});
+
+	it("uses the local (shifted) year for the year-variant suffix", () => {
+		// 02:00 UTC Jan 1 2026 at -300 (EST) is 21:00 Dec 31 2025 local.
+		const ts = "2026-01-01T02:00:00.000Z";
+		expect(formatTimestamp(ts, -300)).toBe("[Dec 31 '25, 21:00 UTC-05:00]");
+	});
+
+	it("renders half-hour offsets (e.g. IST +330)", () => {
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts, 330)).toBe("[Jun 6, 04:08 UTC+05:30]");
+	});
+
+	it("falls back to plain UTC rendering when offset is undefined (back-compat)", () => {
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts)).toBe("[Jun 5, 22:38]");
+		expect(formatTimestamp(ts, undefined)).toBe("[Jun 5, 22:38]");
+	});
+
+	it("ignores a non-finite offset and renders plain UTC", () => {
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts, Number.NaN)).toBe("[Jun 5, 22:38]");
+	});
+
+	it("is deterministic for a given (timestamp, offset) pair", () => {
+		const ts = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(ts, -240)).toBe(formatTimestamp(ts, -240));
+	});
 });
 
 describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
