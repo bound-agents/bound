@@ -10,10 +10,12 @@
 // no DOM env in the web package.
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { onDestroy, onMount } from "svelte";
+import { client } from "../lib/bound";
 import {
 	type AppBridgeCallbacks,
 	type ContainerState,
 	applyViewportBudget,
+	formatAppContentToMessage,
 	getUiResource,
 	mountApp,
 	newAppBridge,
@@ -85,7 +87,30 @@ onMount(async () => {
 		const sdkClient = instance.client as unknown as Client;
 		const resource = await getUiResource(sdkClient, instance.uiResourceUri);
 
+		// An app pushing content back to the model — either an explicit `ui/message`
+		// (onMessage) or a `ui/update-model-context` (onContextUpdate) — becomes a
+		// real thread message via client.sendMessage. That's the only path that
+		// makes the model see it and drives the next turn (bound has no ambient
+		// context store; a developer-role inject without a following user turn is
+		// dropped per invariant #9). The source tag lets the model distinguish
+		// app-originated input from the user typing.
+		const sendToThread = (text: string): void => {
+			if (!text) return;
+			client.sendMessage(instance.threadId, `[${instance.serverName} app] ${text}`);
+		};
 		const callbacks: AppBridgeCallbacks = {
+			onMessage: (message) => {
+				sendToThread(formatAppContentToMessage({ content: message.content }));
+			},
+			onContextUpdate: (context) => {
+				if (!context) return;
+				sendToThread(
+					formatAppContentToMessage({
+						content: context.content,
+						structuredContent: context.structuredContent,
+					}),
+				);
+			},
 			onDisplayModeChange: (mode) => {
 				// The app asked to change display mode. Drive native fullscreen to
 				// match; if there's no user activation the request is caught and the

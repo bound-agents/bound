@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type UiResourceClient, getUiResource } from "../mcp-app-bridge";
+import { type UiResourceClient, formatAppContentToMessage, getUiResource } from "../mcp-app-bridge";
 
 const MIME = "text/html;profile=mcp-app";
 
@@ -74,5 +74,45 @@ describe("getUiResource", () => {
 			{ mimeType: MIME, text: "<p>b</p>" },
 		]);
 		await expect(getUiResource(client, "ui://x/app.html")).rejects.toThrow(/exactly one/);
+	});
+});
+
+describe("formatAppContentToMessage", () => {
+	it("joins text content blocks with blank lines", () => {
+		const text = formatAppContentToMessage({
+			content: [
+				{ type: "text", text: "first" },
+				{ type: "text", text: "second" },
+			],
+		});
+		expect(text).toBe("first\n\nsecond");
+	});
+
+	it("renders structuredContent as a fenced json block", () => {
+		const text = formatAppContentToMessage({ structuredContent: { selected: 3, label: "x" } });
+		expect(text).toBe('```json\n{\n  "selected": 3,\n  "label": "x"\n}\n```');
+	});
+
+	it("combines text content and structuredContent", () => {
+		const text = formatAppContentToMessage({
+			content: [{ type: "text", text: "the user picked:" }],
+			structuredContent: { id: 7 },
+		});
+		expect(text).toBe('the user picked:\n\n```json\n{\n  "id": 7\n}\n```');
+	});
+
+	it("labels non-text content blocks by type rather than dropping them", () => {
+		const text = formatAppContentToMessage({
+			content: [
+				{ type: "text", text: "see image" },
+				{ type: "image", data: "…", mimeType: "image/png" },
+			],
+		});
+		expect(text).toBe("see image\n\n[image content]");
+	});
+
+	it("returns an empty string when there is nothing to send", () => {
+		expect(formatAppContentToMessage({})).toBe("");
+		expect(formatAppContentToMessage({ content: [], structuredContent: {} })).toBe("");
 	});
 });

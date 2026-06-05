@@ -98,6 +98,37 @@ export async function getUiResource(
 export type ModelContext = Parameters<NonNullable<AppBridge["onupdatemodelcontext"]>>[0];
 export type AppMessage = Parameters<NonNullable<AppBridge["onmessage"]>>[0];
 
+/**
+ * Flatten an app's outbound content (a `ui/message` or `ui/update-model-context`
+ * payload) into a single text string suitable for `client.sendMessage`. The host
+ * injects this as a thread message so the model sees what the app sent — the only
+ * path that makes an app multi-turn, since bound has no ambient context store and
+ * a thread message is what drives the next turn.
+ *
+ * Text blocks pass through joined by blank lines; non-text blocks are labelled by
+ * type rather than silently dropped (so the model knows an image/resource was
+ * produced); `structuredContent` is appended as a fenced JSON block for the
+ * machine-readable case. Returns "" when there is nothing to send, so callers can
+ * skip the round-trip.
+ */
+export function formatAppContentToMessage(payload: {
+	content?: Array<{ type: string; text?: string }>;
+	structuredContent?: Record<string, unknown>;
+}): string {
+	const parts: string[] = [];
+	for (const block of payload.content ?? []) {
+		if (block.type === "text" && typeof block.text === "string") {
+			parts.push(block.text);
+		} else {
+			parts.push(`[${block.type} content]`);
+		}
+	}
+	if (payload.structuredContent && Object.keys(payload.structuredContent).length > 0) {
+		parts.push(`\`\`\`json\n${JSON.stringify(payload.structuredContent, null, 2)}\n\`\`\``);
+	}
+	return parts.join("\n\n");
+}
+
 export interface AppBridgeCallbacks {
 	onContextUpdate?: (context: ModelContext | null) => void;
 	onMessage?: (message: AppMessage) => void;
