@@ -18,6 +18,7 @@ this is where the per-field detail lives.
 | [`sync.json`](#syncjson) | No | Hub URL, relay, WebSocket sync tuning |
 | [`keyring.json`](#keyringjson) | No | Per-host identity keys (auto-populated) |
 | [`mcp.json`](#mcpjson) | No | MCP server connections |
+| [`mcp_apps.json`](#mcp_appsjson) | No | MCP App servers the web UI connects to from the browser |
 | [`overlay.json`](#overlayjson) | No | Codebase mount points |
 | [`cron_schedules.json`](#cron_schedulesjson) | No | Recurring + heartbeat task definitions |
 | [`memory.json`](#memoryjson) | No | Pinned-memory caps |
@@ -209,6 +210,29 @@ confirmation).
 
 Unknown keys on one transport do not slip through via the other — each variant is strict
 independently.
+
+---
+
+## `mcp_apps.json`
+
+MCP App servers the **web UI** connects to directly from the browser. The web UI is the
+MCP Apps *host*: it opens the MCP connection in-page, registers each server's tools as
+bound client tools (the same client-tool pattern `boundless` uses), and renders any
+UI-bearing tool result as an MCP App in a sandboxed iframe. Distinct from `mcp.json`,
+which the agent connects to server-side — `mcp_apps.json` is served to the browser via
+`GET /api/mcp-apps` and lives entirely in the web router (it never touches the sync
+router).
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `servers` | array<server> | Browser-reachable MCP App servers. |
+
+**Per server:** `name` (non-empty string), `url` (url), `transport` (`"http"` Streamable
+HTTP, default, or `"sse"` legacy), `headers` (optional string→string map).
+
+`stdio` is intentionally unavailable — a browser cannot spawn a subprocess. Because the
+config is served to the browser, treat any `headers` values as client-visible; do not put
+secrets there that you are unwilling to expose to the client.
 
 ---
 

@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import type { McpAppsConfig } from "@bound/shared";
 import { createLogger } from "@bound/shared";
 import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { MountableFs } from "just-bash";
@@ -55,6 +56,11 @@ export interface WebServerConfig {
 	 * without round-tripping bytes through the LLM context window.
 	 */
 	clusterFs?: MountableFs | null;
+	/**
+	 * Browser-reachable MCP App servers (`mcp_apps.json`), forwarded to the web
+	 * app and served via `GET /api/mcp-apps`. Web-router only.
+	 */
+	mcpApps?: McpAppsConfig | null;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -111,6 +117,7 @@ export async function createWebServer(
 		emitToolCancel: wsHandler.emitToolCancel,
 		requestConsistency: config.requestConsistency,
 		clusterFs: config.clusterFs,
+		mcpAppsConfig: config.mcpApps,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

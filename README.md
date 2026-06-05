@@ -192,6 +192,7 @@ After `bound init`, the `config/` directory contains:
 | `sync.json` | No | Hub URL, sync interval, relay and WS settings |
 | `keyring.json` | No | Per-host identity keys (auto-populated) |
 | `mcp.json` | No | MCP server connections (stdio or http transport) |
+| `mcp_apps.json` | No | MCP App servers the **web UI** connects to from the browser (http/sse) — tools are registered as client tools and UI-bearing results render as MCP Apps |
 | `overlay.json` | No | Codebase mount points |
 | `cron_schedules.json` | No | Recurring task definitions |
 | `memory.json` | No | Pinned-memory caps (`pinned_count_cap`, default 10; `pinned_size_cap`, default 2000 chars) |

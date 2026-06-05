@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import type { McpAppsConfig } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
 import type {
 	ChangelogAckPayload,
@@ -80,6 +81,11 @@ export interface WebAppConfig {
 	 * without round-tripping bytes through the LLM context window.
 	 */
 	clusterFs?: MountableFs | null;
+	/**
+	 * Browser-reachable MCP App servers (`mcp_apps.json`). Served to the web UI
+	 * via `GET /api/mcp-apps`. Web-router only; never touches the sync router.
+	 */
+	mcpAppsConfig?: McpAppsConfig | null;
 }
 
 export interface SyncAppConfig {
@@ -149,6 +155,7 @@ export async function createWebApp(
 		emitToolCancel: config.emitToolCancel,
 		requestConsistency: config.requestConsistency,
 		clusterFs: config.clusterFs,
+		mcpAppsConfig: config.mcpAppsConfig,
 	};
 
 	const app = new Hono();
