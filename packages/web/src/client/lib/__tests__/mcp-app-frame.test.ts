@@ -91,18 +91,32 @@ describe("buildCspString", () => {
 describe("buildAppFrameSrcdoc", () => {
 	const html = "<!doctype html><html><head><title>App</title></head><body>hi</body></html>";
 
-	it("returns the html unchanged when no csp is given", () => {
-		expect(buildAppFrameSrcdoc(html)).toBe(html);
+	it("injects the in-memory storage shim (always) even with no csp", () => {
+		const out = buildAppFrameSrcdoc(html);
+		// shim is injected so the opaque-origin frame doesn't crash on localStorage
+		expect(out).toContain('Object.defineProperty(window,"localStorage"');
+		expect(out).toContain('Object.defineProperty(window,"sessionStorage"');
+		// no csp → no meta tag
+		expect(out).not.toContain("Content-Security-Policy");
+		// shim lands inside the head, before the title
+		expect(out.indexOf("localStorage")).toBeLessThan(out.indexOf("<title>"));
+		expect(out.indexOf("<head>")).toBeLessThan(out.indexOf("localStorage"));
+		// original markup is preserved
+		expect(out).toContain("<title>App</title>");
+		expect(out).toContain("<body>hi</body>");
 	});
 
-	it("injects a CSP meta tag right after <head> when a csp is given", () => {
+	it("injects a CSP meta tag + shim right after <head> when a csp is given", () => {
 		const csp: McpUiResourceCsp = { connectDomains: ["https://api.example.com"] };
 		const out = buildAppFrameSrcdoc(html, csp);
 		expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
 		expect(out).toContain("connect-src 'self' https://api.example.com");
+		expect(out).toContain('Object.defineProperty(window,"localStorage"');
 		// meta lands inside the head, before the title
 		expect(out.indexOf("Content-Security-Policy")).toBeLessThan(out.indexOf("<title>"));
 		expect(out.indexOf("<head>")).toBeLessThan(out.indexOf("Content-Security-Policy"));
+		// meta precedes the shim so the policy applies to the shim and everything after
+		expect(out.indexOf("Content-Security-Policy")).toBeLessThan(out.indexOf("localStorage"));
 	});
 
 	it("synthesizes a <head> after <html> when the doc has html but no head", () => {
@@ -110,15 +124,25 @@ describe("buildAppFrameSrcdoc", () => {
 		const out = buildAppFrameSrcdoc(noHead, { connectDomains: ["https://api.example.com"] });
 		expect(out).toContain('<head><meta http-equiv="Content-Security-Policy"');
 		expect(out).toContain("connect-src 'self' https://api.example.com");
+		expect(out).toContain('Object.defineProperty(window,"localStorage"');
 		expect(out.indexOf("<head>")).toBeLessThan(out.indexOf("<body>"));
 	});
 
-	it("prepends the meta when the html has no html/head/scaffold", () => {
+	it("prepends the meta + shim when the html has no html/head/scaffold", () => {
 		const bare = "<body>just a fragment</body>";
 		const out = buildAppFrameSrcdoc(bare, { connectDomains: [] });
 		expect(out).toContain('<meta http-equiv="Content-Security-Policy"');
+		expect(out).toContain('Object.defineProperty(window,"localStorage"');
 		expect(out).toContain("just a fragment");
 		expect(out.indexOf("Content-Security-Policy")).toBeLessThan(out.indexOf("just a fragment"));
+	});
+
+	it("injects the shim before content even when no csp and no scaffold", () => {
+		const bare = "<body>just a fragment</body>";
+		const out = buildAppFrameSrcdoc(bare);
+		expect(out).not.toContain("Content-Security-Policy");
+		expect(out).toContain('Object.defineProperty(window,"localStorage"');
+		expect(out.indexOf("localStorage")).toBeLessThan(out.indexOf("just a fragment"));
 	});
 });
 

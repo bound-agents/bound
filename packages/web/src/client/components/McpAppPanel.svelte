@@ -16,13 +16,17 @@ import {
 	mountApp,
 	newAppBridge,
 } from "../lib/mcp-app-bridge";
-import { type McpAppInstance, mcpAppInstances } from "../lib/mcp-app-store";
+import type { McpAppInstance } from "../lib/mcp-app-store";
 
 const { instance }: { instance: McpAppInstance } = $props();
 
 let iframeEl = $state<HTMLIFrameElement | null>(null);
 let status = $state<"loading" | "ready" | "error">("loading");
 let errorMessage = $state<string | null>(null);
+// "fullscreen" no longer means a fixed overlay over the chat — the app renders
+// inline in the conversation permanently (no close/dismiss). A fullscreen
+// request from the app (or the Expand toggle) just grows the inline panel to a
+// tall mode that stays in the document flow.
 let displayMode = $state<"inline" | "fullscreen">("inline");
 
 // The AppBridge holds the live transport; closed on teardown.
@@ -63,16 +67,9 @@ onMount(async () => {
 onDestroy(() => {
 	bridge?.close();
 });
-
-/** Dismiss the panel: tear down the bridge and drop the instance from the store. */
-function close() {
-	bridge?.close();
-	bridge = null;
-	mcpAppInstances.remove(instance.callId);
-}
 </script>
 
-<div class="mcp-app" class:fullscreen={displayMode === "fullscreen"}>
+<div class="mcp-app" class:expanded={displayMode === "fullscreen"}>
 	<div class="app-head">
 		<span class="kicker">App · {instance.serverName}</span>
 		<div class="head-right">
@@ -81,12 +78,13 @@ function close() {
 			{:else if status === "error"}
 				<span class="state state-error mono">Failed</span>
 			{/if}
-			{#if displayMode === "fullscreen"}
-				<button type="button" class="head-btn" onclick={() => (displayMode = "inline")}>
-					Exit fullscreen
-				</button>
-			{/if}
-			<button type="button" class="head-btn close" onclick={close} aria-label="Close app">✕</button>
+			<button
+				type="button"
+				class="head-btn"
+				onclick={() => (displayMode = displayMode === "fullscreen" ? "inline" : "fullscreen")}
+			>
+				{displayMode === "fullscreen" ? "Collapse" : "Expand"}
+			</button>
 		</div>
 	</div>
 
@@ -116,14 +114,6 @@ function close() {
 		overflow: hidden;
 	}
 
-	.mcp-app.fullscreen {
-		position: fixed;
-		inset: 0;
-		z-index: 50;
-		margin: 0;
-		border: none;
-	}
-
 	.app-head {
 		display: flex;
 		align-items: center;
@@ -131,13 +121,6 @@ function close() {
 		padding: 6px 12px;
 		border-bottom: 1px solid var(--rule-faint);
 		background: var(--paper-2);
-	}
-
-	/* In fullscreen the head must sit above the iframe so its controls stay
-	   clickable (the frame would otherwise paint over them). */
-	.mcp-app.fullscreen .app-head {
-		position: relative;
-		z-index: 1;
 	}
 
 	.head-right {
@@ -161,10 +144,6 @@ function close() {
 	.head-btn:hover {
 		background: var(--paper-2);
 		color: var(--ink-1);
-	}
-
-	.head-btn.close {
-		padding: 4px 7px;
 	}
 
 	.kicker {
@@ -208,8 +187,13 @@ function close() {
 		background: var(--paper);
 	}
 
-	.mcp-app.fullscreen .app-frame {
-		height: 100%;
+	/* Expanded ("fullscreen") mode stays inline in the chat flow — it just grows
+	   the panel to a tall viewport-relative height so a drawing app has room to
+	   work, without a fixed overlay (which broke under transformed ancestors and
+	   covered the conversation). The app's own onsizechange height still applies;
+	   this is the floor. */
+	.mcp-app.expanded .app-frame {
+		min-height: 85vh;
 	}
 
 	.app-frame.hidden {
