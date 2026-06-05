@@ -1,9 +1,35 @@
-import { HALF_OUTPUT_BYTES, truncateStreamOutput } from "@bound/shared";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "@bound/shared";
 import { formatProvenance } from "./provenance";
 import type { ResolvedShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
+
+/**
+ * Offload oversized bash output to a local file and return a pointer message,
+ * mirroring the agent VFS path. The host surface has real filesystem access,
+ * so the full output is written to a temp file the agent can read back with a
+ * follow-up `cat`/`grep` rather than middle-cutting it inline. Returns the
+ * pointer text when offloaded, or `null` when the output fits in context (in
+ * which case the universal 256 KiB `capToolResultContent` backstop still
+ * applies downstream). A write failure falls back to inline output.
+ */
+function offloadIfOversized(output: string, toolName: string): string | null {
+	if (output.length <= TOOL_RESULT_OFFLOAD_THRESHOLD) return null;
+	try {
+		const dir = join(tmpdir(), "bound-tool-results");
+		mkdirSync(dir, { recursive: true });
+		const filePath = join(dir, `${randomUUID()}.txt`);
+		writeFileSync(filePath, output, "utf-8");
+		return buildOffloadMessage(filePath, output.length, toolName);
+	} catch {
+		return null;
+	}
+}
 
 /** POSIX `sh` fallback for callers that don't supply a resolved shell. */
 const POSIX_DEFAULT_SHELL: ResolvedShell = {
@@ -184,18 +210,17 @@ export async function bashToolWithStreaming(
 			signal.removeEventListener("abort", onAbort);
 			internalController.signal.removeEventListener("abort", abortHandler);
 
-			// Truncate stdout and stderr independently, each with its own budget.
-			const truncatedStdout = truncateStreamOutput(stdout, HALF_OUTPUT_BYTES);
-			const truncatedStderr = truncateStreamOutput(stderr, HALF_OUTPUT_BYTES);
-
-			const formattedOutput = `Exit code: ${exitCode}\nstdout:\n${truncatedStdout}\nstderr:\n${truncatedStderr}`;
+			// Assemble the full result, then offload to a local file if it's too
+			// large for the context window (mirrors the agent VFS offload path).
+			const formattedOutput = `Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+			const offloaded = offloadIfOversized(formattedOutput, shell.toolName);
 
 			const result: ToolResult = {
 				content: [
 					provenance,
 					{
 						type: "text",
-						text: formattedOutput,
+						text: offloaded ?? formattedOutput,
 					},
 				],
 			};
