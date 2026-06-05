@@ -201,7 +201,7 @@ describe("R-U23/25/26: View APIs", () => {
 			expect(response.status).toBe(201);
 			const file = await response.json();
 			expect(file.id).toBeDefined();
-			expect(file.path).toContain("test.txt");
+			expect(file.path).toMatch(/test\.[a-f0-9]{12}\.txt$/);
 			expect(file.content).toBe(fileContent);
 			expect(file.size_bytes).toBe(fileContent.length);
 		});

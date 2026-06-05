@@ -484,7 +484,7 @@ describe("API Routes", () => {
 			expect(response.status).toBe(200);
 			expect(response.headers.get("Content-Type")).toBe("text/plain");
 			expect(response.headers.get("Content-Disposition")).toContain("attachment");
-			expect(response.headers.get("Content-Disposition")).toContain("document.txt");
+			expect(response.headers.get("Content-Disposition")).toMatch(/document\.[a-f0-9]{12}\.txt/);
 
 			const responseText = await response.text();
 			expect(responseText).toBe(textContent);
@@ -508,7 +508,7 @@ describe("API Routes", () => {
 			expect(response.status).toBe(200);
 			expect(response.headers.get("Content-Type")).toBe("image/png");
 			expect(response.headers.get("Content-Disposition")).toContain("attachment");
-			expect(response.headers.get("Content-Disposition")).toContain("image.png");
+			expect(response.headers.get("Content-Disposition")).toMatch(/image\.[a-f0-9]{12}\.png/);
 
 			const arrayBuffer = await response.arrayBuffer();
 			const returnedBytes = new Uint8Array(arrayBuffer);

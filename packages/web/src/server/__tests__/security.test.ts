@@ -106,7 +106,8 @@ describe("API Security", () => {
 
 			// Path must NOT contain traversal sequences
 			expect(file.path).not.toContain("..");
-			expect(file.path).toBe("/home/user/uploads/etc_passwd");
+			// #159: a 12-char content hash is folded in before the extension.
+			expect(file.path).toMatch(/^\/home\/user\/uploads\/etc_passwd\.[a-f0-9]{12}$/);
 		});
 
 		it("strips slashes from uploaded filename", async () => {
@@ -121,7 +122,8 @@ describe("API Security", () => {
 
 			// Should flatten to just the sanitized form
 			expect(file.path).not.toContain("sub/dir");
-			expect(file.path).toContain("file.txt");
+			// #159: stem retains the flattened name; a content hash precedes the extension.
+			expect(file.path).toMatch(/sub_dir_file\.[a-f0-9]{12}\.txt$/);
 		});
 	});
 
