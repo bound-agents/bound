@@ -1,3 +1,5 @@
+// Commit 1 of the MCP-Apps-in-web-UI feature: see project memory
+// project:mcp-apps-web-ui:design-and-progress.
 import type { McpAppsConfig } from "@bound/shared";
 import { Hono } from "hono";
 
