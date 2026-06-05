@@ -429,6 +429,18 @@ The `Thread`, `Message`, `Task`, `ContextDebugTurn`, and `MemoryGraph*` types ar
 
 The module does not implement automatic reconnection. A connection dropped by the server (e.g. server restart) will not be re-established until the user navigates to a view that calls `connectWebSocket()` again.
 
+### MCP Apps
+
+The web UI can act as an [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) host. The browser opens MCP connections to the servers listed in `mcp_apps.json`, registers their tools on the shared `BoundClient` as **client tools** (the same deferral mechanism `boundless` uses for its filesystem/shell tools), and renders any UI-bearing tool result as an interactive app inline in the conversation. This is the browser-side analogue of `boundless`: the tool executes on the client, not server-side. It lives entirely in the web router (`:3001`) and never touches the sync router.
+
+**Config and discovery.** `mcp_apps.json` (`{ servers: [{ name, url, transport: "http" | "sse", headers? }] }`) is parsed by `mcpAppsSchema` and served to the browser by `GET /api/mcp-apps` (`routes/mcp-apps.ts`). Distinct from `mcp.json`, which the agent connects to server-side. `stdio` is unavailable — a browser cannot spawn a subprocess — and any `headers` are client-visible by construction.
+
+**Bootstrap** (`lib/mcp-apps-bootstrap.ts`, run once from `App.svelte`'s `onMount`): fetch the server list, `connectToMcpServer` to each (Streamable HTTP with SSE fallback), `listTools`, and `McpAppHost.registerServer`. Tool names are namespaced `mcp__<server>__<tool>` and de-duplicated. The populated host is wired onto the shared client via `client.onToolCall(...)` + `client.configureTools(...)`; `configureTools` is re-sent on every WS (re)connect, so bootstrap ordering against the socket does not matter. Per-server connect failures are logged and skipped so one unreachable server doesn't sink the rest.
+
+**Dispatch** (`lib/mcp-app-host.ts`, `lib/mcp-app-store.ts`): when the agent calls a registered tool, the deferred `tool:call` frame is handled by `createToolCallHandler`, which invokes the originating MCP server's `callTool` and returns the flattened text result. For UI-bearing tools (those carrying an ext-apps `_meta.ui.resourceUri`), the same in-flight call is also registered as an `McpAppInstance` (keyed by tool call id) in the `mcpAppInstances` store, and `LineView` renders an `McpAppPanel` for it.
+
+**Sandbox** (`lib/mcp-app-frame.ts`, `lib/mcp-app-bridge.ts`, `components/McpAppPanel.svelte`): each app renders in a single iframe sandboxed to an **opaque origin** (`sandbox="allow-scripts allow-forms"`, no `allow-same-origin`), with the app HTML delivered via `srcdoc`. Because everything is served from one origin, a separate sandbox-proxy document (as in the ext-apps reference) would itself have to be sandboxed, which forces the nested app frame opaque by sandbox-flag inheritance — so the proxy buys a postMessage relay hop and no extra isolation. One opaque-origin frame is equally isolated and simpler; the host↔app channel is the MCP Apps `postMessage` protocol (ext-apps `PostMessageTransport` validates window identity via `event.source`, not `event.origin`, so it works against an opaque origin). The resource's requested CSP is applied via an injected `<meta http-equiv>` tag (srcdoc carries no HTTP headers); sandbox isolation is the primary control and CSP is defense-in-depth. Trade-off: opaque-origin apps cannot use `localStorage`/`sessionStorage`.
+
 ---
 
 ## @bound/platforms

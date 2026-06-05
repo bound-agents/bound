@@ -200,16 +200,22 @@ export class McpAppHost {
 /**
  * Connect to an MCP server over Streamable HTTP, falling back to SSE for older
  * servers (the basic-host reference order). Returns the connected SDK client.
+ * Optional `headers` are attached to every transport request (e.g. an auth
+ * token from `mcp_apps.json`); note these are client-visible by construction.
  */
-export async function connectToMcpServer(serverUrl: URL): Promise<Client> {
+export async function connectToMcpServer(
+	serverUrl: URL,
+	headers?: Record<string, string>,
+): Promise<Client> {
+	const requestInit = headers ? { headers } : undefined;
 	try {
 		const client = new Client(IMPLEMENTATION);
-		await client.connect(new StreamableHTTPClientTransport(serverUrl));
+		await client.connect(new StreamableHTTPClientTransport(serverUrl, { requestInit }));
 		return client;
 	} catch (streamableError) {
 		try {
 			const client = new Client(IMPLEMENTATION);
-			await client.connect(new SSEClientTransport(serverUrl));
+			await client.connect(new SSEClientTransport(serverUrl, { requestInit }));
 			return client;
 		} catch (sseError) {
 			throw new Error(
