@@ -12,7 +12,7 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { client } from "./bound";
 import { McpAppHost, connectToMcpServer } from "./mcp-app-host";
-import { createToolCallHandler } from "./mcp-app-store";
+import { createToolCallHandler, mcpAppHost } from "./mcp-app-store";
 
 /**
  * Shape of one server entry from GET /api/mcp-apps. The real upstream URL and
@@ -117,5 +117,8 @@ export async function initMcpApps(
 
 	const host = await connectMcpServers(servers);
 	registerHostOnClient(host);
+	// Expose the connected host so per-thread views can resolve persisted tool
+	// names back to UI-bearing registrations and rebuild app panels on reload.
+	mcpAppHost.set(host);
 	return host;
 }

@@ -88,9 +88,105 @@ function createAppInstanceStore() {
 /** Shared singleton store; the panel layer subscribes, the handler registers. */
 export const mcpAppInstances = createAppInstanceStore();
 
+/**
+ * The connected MCP App host (set once bootstrap finishes), exposed so the
+ * per-thread view can resolve persisted tool names back to UI-bearing
+ * registrations and rebuild app panels on reload. `null` until init completes
+ * (or if no servers are configured).
+ */
+export const mcpAppHost = writable<McpAppHost | null>(null);
+
 /** Sink the handler reports UI-bearing renders to (the store, or a test fake). */
 export interface UiInstanceSink {
 	register(instance: McpAppInstance): void;
+}
+
+/** A persisted message as seen on reload, minimally typed for reconstruction. */
+export interface PersistedToolMessage {
+	role: string;
+	/** Raw `messages.content` — a JSON string from the API, or already-parsed. */
+	content: string | unknown[];
+	/** On a tool_result row this holds the originating tool_use id (the linkage). */
+	tool_name?: string | null;
+	exit_code?: number | null;
+}
+
+/** Parse a message's content into a content-block array, tolerating both forms. */
+function parseContentBlocks(content: string | unknown[]): Array<Record<string, unknown>> {
+	let blocks: unknown = content;
+	if (typeof content === "string") {
+		try {
+			blocks = JSON.parse(content);
+		} catch {
+			return [];
+		}
+	}
+	if (!Array.isArray(blocks)) return [];
+	return blocks.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null);
+}
+
+/**
+ * Rebuild the UI-bearing app instances for a thread from its persisted message
+ * history, so a page reload re-renders the panels that were live before. The
+ * agent's tool-call rows survive a refresh; the in-memory instance store does
+ * not — this bridges that gap.
+ *
+ * For each persisted `tool_use` block whose bound name still resolves to a
+ * UI-bearing registration on the (reconnected) host, we synthesize an instance
+ * whose `resultPromise` is already resolved from the matching persisted
+ * `tool_result` (paired by the result row's `tool_name` = the tool_use id).
+ *
+ * Fidelity note: the app re-renders at full fidelity from the tool INPUT (which
+ * is what drives the render — e.g. the whole diagram for an Excalidraw call).
+ * The tool RESULT is reconstructed as the persisted text ack, not the original
+ * rich `CallToolResult` — that raw object is not persisted, and capturing it
+ * would require a storage change outside the web-router scope. The result is a
+ * completion ack, so text fidelity is sufficient for the render.
+ */
+export function reconstructInstancesFromMessages(
+	messages: PersistedToolMessage[],
+	host: Pick<McpAppHost, "resolve">,
+	threadId: string,
+	now: () => number = Date.now,
+): McpAppInstance[] {
+	// First pass: tool_use id -> persisted result content blocks.
+	const resultsByToolUseId = new Map<string, { content: unknown[]; isError: boolean }>();
+	for (const msg of messages) {
+		if (msg.role !== "tool_result" || !msg.tool_name) continue;
+		resultsByToolUseId.set(msg.tool_name, {
+			content: parseContentBlocks(msg.content),
+			isError: msg.exit_code != null && msg.exit_code !== 0,
+		});
+	}
+
+	// Second pass: each UI-bearing tool_use becomes a reconstructed instance.
+	const instances: McpAppInstance[] = [];
+	for (const msg of messages) {
+		for (const block of parseContentBlocks(msg.content)) {
+			if (block.type !== "tool_use") continue;
+			const callId = typeof block.id === "string" ? block.id : undefined;
+			const boundName = typeof block.name === "string" ? block.name : undefined;
+			if (!callId || !boundName) continue;
+			const reg = host.resolve(boundName);
+			if (!reg?.uiResourceUri) continue;
+			const persisted = resultsByToolUseId.get(callId);
+			instances.push({
+				callId,
+				threadId,
+				boundName,
+				serverName: reg.serverName,
+				uiResourceUri: reg.uiResourceUri,
+				input: (block.input as Record<string, unknown>) ?? {},
+				client: reg.client as unknown as UiResourceClient,
+				resultPromise: Promise.resolve({
+					content: persisted?.content ?? [],
+					isError: persisted?.isError ?? false,
+				} as CallToolResult),
+				createdAt: now(),
+			});
+		}
+	}
+	return instances;
 }
 
 /**

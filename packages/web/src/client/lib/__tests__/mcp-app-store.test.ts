@@ -4,9 +4,11 @@ import { McpAppHost } from "../mcp-app-host";
 import {
 	type McpAppInstance,
 	type McpAppInstanceMap,
+	type PersistedToolMessage,
 	type UiInstanceSink,
 	createToolCallHandler,
 	instancesForThread,
+	reconstructInstancesFromMessages,
 	removeInstance,
 	upsertInstance,
 } from "../mcp-app-store";
@@ -170,5 +172,115 @@ describe("createToolCallHandler", () => {
 		expect(registered).toHaveLength(1);
 		// The shared in-flight promise rejects; the app side handles it as cancel.
 		await expect(registered[0].resultPromise).rejects.toThrow("boom");
+	});
+});
+
+describe("reconstructInstancesFromMessages", () => {
+	// A host with one UI-bearing tool ("do_thing") and one plain tool ("plain").
+	function host(): McpAppHost {
+		const h = new McpAppHost();
+		const client = { callTool: async () => ({ content: [] }) as CallToolResult };
+		h.registerServer("srv", client, [
+			{
+				name: "do_thing",
+				inputSchema: { type: "object", properties: {} },
+				_meta: { ui: { resourceUri: "ui://srv/app.html" } },
+			},
+			{ name: "plain", inputSchema: { type: "object", properties: {} } },
+		] as unknown as Parameters<McpAppHost["registerServer"]>[2]);
+		return h;
+	}
+
+	// The bound names the host assigns (namespaced + sanitized).
+	function names(h: McpAppHost): { ui: string; plain: string } {
+		const defs = h.getToolDefinitions();
+		return { ui: defs[0].function.name, plain: defs[1].function.name };
+	}
+
+	function toolCallMsg(
+		id: string,
+		name: string,
+		input: Record<string, unknown>,
+	): PersistedToolMessage {
+		return {
+			role: "tool_call",
+			content: JSON.stringify([{ type: "tool_use", id, name, input }]),
+		};
+	}
+
+	it("rebuilds a UI-bearing instance from a persisted tool_call, pairing its result", async () => {
+		const h = host();
+		const { ui } = names(h);
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_1", ui, { q: "hi" }),
+			{
+				role: "tool_result",
+				// the tool_result row keys back to its call via tool_name = tool_use id
+				tool_name: "tooluse_1",
+				content: JSON.stringify([{ type: "text", text: "rendered ok" }]),
+			},
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1", () => 7);
+		expect(instances).toHaveLength(1);
+		const inst = instances[0];
+		expect(inst.callId).toBe("tooluse_1");
+		expect(inst.threadId).toBe("t1");
+		expect(inst.boundName).toBe(ui);
+		expect(inst.serverName).toBe("srv");
+		expect(inst.uiResourceUri).toBe("ui://srv/app.html");
+		expect(inst.input).toEqual({ q: "hi" });
+		expect(inst.createdAt).toBe(7);
+		// The result is reconstructed from the persisted tool_result content blocks.
+		await expect(inst.resultPromise).resolves.toEqual({
+			content: [{ type: "text", text: "rendered ok" }],
+			isError: false,
+		});
+	});
+
+	it("resolves an empty result when no tool_result was persisted yet", async () => {
+		const h = host();
+		const { ui } = names(h);
+		const instances = reconstructInstancesFromMessages([toolCallMsg("tooluse_x", ui, {})], h, "t1");
+		expect(instances).toHaveLength(1);
+		await expect(instances[0].resultPromise).resolves.toEqual({ content: [], isError: false });
+	});
+
+	it("skips non-UI tool calls and unknown tools", () => {
+		const h = host();
+		const { plain } = names(h);
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_2", plain, {}),
+			toolCallMsg("tooluse_3", "mcp__gone__tool", {}),
+		];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
+	});
+
+	it("ignores messages with no tool_use block", () => {
+		const h = host();
+		const messages: PersistedToolMessage[] = [
+			{ role: "assistant", content: JSON.stringify([{ type: "text", text: "hello" }]) },
+			{ role: "user", content: "plain string content" },
+		];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
+	});
+
+	it("accepts already-parsed array content (not just JSON strings)", () => {
+		const h = host();
+		const { ui } = names(h);
+		const messages: PersistedToolMessage[] = [
+			{
+				role: "tool_call",
+				content: [{ type: "tool_use", id: "tooluse_4", name: ui, input: { a: 1 } }],
+			},
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1");
+		expect(instances).toHaveLength(1);
+		expect(instances[0].input).toEqual({ a: 1 });
+	});
+
+	it("tolerates malformed JSON content without throwing", () => {
+		const h = host();
+		const messages: PersistedToolMessage[] = [{ role: "tool_call", content: "{ not json" }];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toEqual([]);
 	});
 });

@@ -16,7 +16,14 @@ import {
 	wsEvents,
 } from "../lib/bound";
 import { formatRelativeTime } from "../lib/format-time";
-import { type McpAppInstanceMap, instancesForThread, mcpAppInstances } from "../lib/mcp-app-store";
+import type { McpAppHost } from "../lib/mcp-app-host";
+import {
+	type McpAppInstanceMap,
+	instancesForThread,
+	mcpAppHost,
+	mcpAppInstances,
+	reconstructInstancesFromMessages,
+} from "../lib/mcp-app-store";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
@@ -64,6 +71,28 @@ const unsubscribeApps = mcpAppInstances.subscribe((map) => {
 	appInstanceMap = map;
 });
 const threadAppInstances = $derived(instancesForThread(appInstanceMap, threadId));
+
+// Reload persistence: the in-memory instance store is empty on a fresh page
+// load, but the agent's UI-bearing tool_call rows survive in the message
+// history. Once the MCP host has reconnected (so we can resolve persisted tool
+// names back to UI-bearing registrations) and this thread's messages have
+// loaded, rebuild the panels from history. Guarded so it runs at most once per
+// thread and never clobbers a live instance already in the store.
+let appHost = $state<McpAppHost | null>(null);
+let reconstructedFor: string | null = null;
+const unsubscribeHost = mcpAppHost.subscribe((h) => {
+	appHost = h;
+	maybeReconstructPanels();
+});
+
+function maybeReconstructPanels(): void {
+	if (!appHost || messages.length === 0 || reconstructedFor === threadId) return;
+	reconstructedFor = threadId;
+	const live = appInstanceMap;
+	for (const inst of reconstructInstancesFromMessages(messages, appHost, threadId)) {
+		if (!(inst.callId in live)) mcpAppInstances.register(inst);
+	}
+}
 
 // Subscribe to WebSocket events and append new messages
 const unsubscribeWs = wsEvents.subscribe((events) => {
