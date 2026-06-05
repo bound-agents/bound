@@ -64,6 +64,44 @@ export function messageHasUserFacingText(content: string | null | undefined): bo
 }
 
 /**
+ * Extract the `id`s of `tool_use` ContentBlocks in a persisted `tool_call`
+ * message's content. The agent loop sets the dispatched
+ * `ToolCallRequest.call_id` from `tool_use.id` (agent-loop.ts: `call_id:
+ * toolCall.id`), and that same id persists in the message's ContentBlock JSON —
+ * so these ids are the join key between a persisted message row and a live
+ * `McpAppInstance` (keyed by `callId`). MessageList uses this to render each app
+ * panel inline beneath the tool call that spawned it.
+ *
+ * Cheap pre-check (`includes('"tool_use"')`) avoids JSON.parse on the common
+ * tool-result / plain-message rows; malformed JSON yields no ids.
+ */
+export function toolUseIdsInContent(content: string | null | undefined): string[] {
+	if (!content || !content.includes('"tool_use"')) return [];
+	let blocks: unknown;
+	try {
+		blocks = JSON.parse(content);
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(blocks)) return [];
+	const ids: string[] = [];
+	for (const block of blocks as Array<{ type?: string; id?: unknown }>) {
+		if (block && block.type === "tool_use" && typeof block.id === "string") {
+			ids.push(block.id);
+		}
+	}
+	return ids;
+}
+
+/** All `tool_use` ids carried by a display item (a message or a tool group). */
+export function toolUseIdsInItem<M extends GroupableMessage>(item: DisplayItem<M>): string[] {
+	if (item.kind === "toolGroup") {
+		return item.messages.flatMap((m) => toolUseIdsInContent(m.content));
+	}
+	return toolUseIdsInContent(item.msg.content);
+}
+
+/**
  * Partition a flat message list into display items, collapsing consecutive
  * tool_call/tool_result runs into toolGroups.
  *
