@@ -319,20 +319,8 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 				</div>
 			</div>
 		{/if}
-		{#each appInstances as instance (instance.callId)}
-			<div class="turn-row" data-message-role="tool_call">
-				<div class="time-gutter mono"></div>
-				<div class="rail">
-					<div class="rail-line" style="background: {lineColor}"></div>
-					<div
-						class="rail-dot rail-dot-assistant"
-						style="background: {lineColor}; border-color: {lineColor}"
-					></div>
-				</div>
-				<div class="row-content">
-					<McpAppPanel {instance} />
-				</div>
-			</div>
+		{#each anchoredInstances.trailing as instance (instance.callId)}
+			{@render panelRow(instance)}
 		{/each}
 	</div>
 </div>
