@@ -108,9 +108,13 @@ function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd:
  *
  * - `boundless_read`: the 1-based `offset` is the line, passed through verbatim
  *   (matching the Claude Code shim: Read "from line 200" -> `{ line: 200 }`).
- * - `boundless_edit`: the line where `old_string` first matches in the file's
- *   current (pre-edit) contents — this runs before the edit applies. Reads the
- *   file; any failure (missing file, unreadable, no match) degrades to no line.
+ * - `boundless_edit`: the line where the replacement first *diverges* from
+ *   `old_string`, computed against the file's current (pre-edit) contents — this
+ *   runs before the edit applies. Edits are routinely anchored with leading
+ *   unchanged context lines, so the raw match-start sits above the real change;
+ *   we advance past the shared `old_string`/`new_string` line-prefix to land on
+ *   it. With no `new_string` arg, falls back to the match start. Reads the file;
+ *   any failure (missing file, unreadable, no match) degrades to no line.
  * - `boundless_write`: a write carries no line in its args and the target may
  *   not exist yet, so there is nothing to follow.
  */
@@ -134,7 +138,27 @@ function followAlongLine(
 		}
 		try {
 			const content = readFileSync(absolutePath(cwd, filePath), "utf-8");
-			return findStringOccurrences(content, oldString).occurrences[0]?.line;
+			const matchLine = findStringOccurrences(content, oldString).occurrences[0]?.line;
+			if (matchLine === undefined) {
+				return undefined;
+			}
+			const newString = args.new_string;
+			if (typeof newString !== "string") {
+				return matchLine;
+			}
+			// Advance past the shared leading lines so the follow line lands on the
+			// first line the edit actually changes rather than on unchanged context.
+			const oldLines = oldString.split("\n");
+			const newLines = newString.split("\n");
+			let shared = 0;
+			while (
+				shared < oldLines.length &&
+				shared < newLines.length &&
+				oldLines[shared] === newLines[shared]
+			) {
+				shared++;
+			}
+			return matchLine + shared;
 		} catch {
 			return undefined;
 		}
