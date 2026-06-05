@@ -4,6 +4,7 @@ import { getPkColumn, insertRow, updateRow } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
+import { getClientSessions } from "./delegation";
 import { getLastThreadForFile } from "./file-thread-tracker";
 import { graphSeededRetrieval } from "./graph-queries";
 
@@ -424,6 +425,14 @@ export interface CrossThreadDigestEntry {
 	title: string;
 	messageCount: number;
 	lastUpdatedAt: string; // ISO-8601 from threads table
+	/**
+	 * Client (boundless / BoundClient) WS sessions holding this thread, one per
+	 * distinct holding host, tagged with the host's liveness verdict. Surfaces
+	 * the *executing host* of a sibling thread in Live State so a thread on
+	 * another machine is visibly distinct from one running here (issue:
+	 * thread-pointers-omit-host-origin). Absent when the thread has no session.
+	 */
+	sessions?: Array<{ hostName: string; live: boolean }>;
 }
 
 export interface CrossThreadDigestResult {
@@ -464,6 +473,16 @@ export function buildCrossThreadDigest(
 		const sources: CrossThreadSource[] = [];
 		const entries: CrossThreadDigestEntry[] = [];
 
+		// Group client (boundless / BoundClient) sessions by holding thread so each
+		// entry can surface its executing host(s). One getClientSessions() call
+		// covers every thread; cheap relative to the per-thread message count below.
+		const sessionsByThread = new Map<string, Array<{ hostName: string; live: boolean }>>();
+		for (const cs of getClientSessions(db)) {
+			const list = sessionsByThread.get(cs.threadId) ?? [];
+			list.push({ hostName: cs.hostName, live: cs.live });
+			sessionsByThread.set(cs.threadId, list);
+		}
+
 		for (const thread of threads) {
 			const title = thread.title || "(untitled)";
 			const messageCount = db
@@ -475,10 +494,12 @@ export function buildCrossThreadDigest(
 			);
 
 			// Populate structured entry for Live State
+			const sessions = sessionsByThread.get(thread.id);
 			entries.push({
 				title,
 				messageCount: messageCount.count,
 				lastUpdatedAt: thread.last_message_at,
+				...(sessions && sessions.length > 0 ? { sessions } : {}),
 			});
 
 			// Only mark threads with summaries as cross-thread sources —
@@ -2091,9 +2112,17 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 
 	// §5.3 step 1 — cross-thread entries (R-VC7).
 	for (const e of cap(input.crossThreadEntries) as CrossThreadDigestEntry[]) {
-		lines.push(
-			`- [thread] ${e.title}: ${e.messageCount} messages (last updated ${e.lastUpdatedAt})`,
-		);
+		let line = `- [thread] ${e.title}: ${e.messageCount} messages (last updated ${e.lastUpdatedAt})`;
+		// Surface the executing host(s) for any thread holding a client (boundless)
+		// session, so a sibling running on another machine is visibly distinct from
+		// one running here. Stale sessions are marked so they aren't read as live.
+		if (e.sessions && e.sessions.length > 0) {
+			const hosts = e.sessions
+				.map((s) => (s.live ? s.hostName : `${s.hostName} (stale)`))
+				.join(", ");
+			line += ` [client session${e.sessions.length > 1 ? "s" : ""}: ${hosts}]`;
+		}
+		lines.push(line);
 	}
 
 	// §5.3 step 2 — task digest entries (R-MV6/R-MV7/R-MV8/R-MV9).

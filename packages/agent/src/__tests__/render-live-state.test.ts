@@ -66,6 +66,54 @@ describe("renderLiveState", () => {
 		);
 	});
 
+	// Test 2b: cross-thread entry carrying a client session renders the executing host
+	it("appends the client-session host tag to a [thread] line when the thread has a session", () => {
+		const entries: CrossThreadDigestEntry[] = [
+			{
+				title: "On Mac",
+				messageCount: 7,
+				lastUpdatedAt: "2026-05-23T10:30:00Z",
+				sessions: [{ hostName: "mac-studio", live: true }],
+			},
+			{
+				title: "Stale Elsewhere",
+				messageCount: 3,
+				lastUpdatedAt: "2026-05-23T09:00:00Z",
+				sessions: [{ hostName: "old-laptop", live: false }],
+			},
+			{
+				title: "No Session",
+				messageCount: 1,
+				lastUpdatedAt: "2026-05-23T08:00:00Z",
+			},
+		];
+
+		const input: LiveStateInput = {
+			crossThreadEntries: entries,
+			taskEntries: [],
+			fileEntries: [],
+			advisories: [],
+			synthesisBacklogCount: null,
+			budgetPressure: false,
+			nowMs: 1000000,
+		};
+
+		const lines = renderLiveState(input).lines;
+
+		// Live session: host shown, no stale marker.
+		expect(lines).toContain(
+			"- [thread] On Mac: 7 messages (last updated 2026-05-23T10:30:00Z) [client session: mac-studio]",
+		);
+		// Stale session: host shown with a stale marker so it isn't mistaken for live.
+		expect(lines).toContain(
+			"- [thread] Stale Elsewhere: 3 messages (last updated 2026-05-23T09:00:00Z) [client session: old-laptop (stale)]",
+		);
+		// No session: line is byte-identical to the pre-feature format.
+		expect(lines).toContain(
+			"- [thread] No Session: 1 messages (last updated 2026-05-23T08:00:00Z)",
+		);
+	});
+
 	// Test 3: Task subsystem
 	it("renders task entries with [task] label and field names", () => {
 		const taskEntries: LiveStateTaskEntry[] = [

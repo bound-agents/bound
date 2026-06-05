@@ -194,6 +194,89 @@ describe("buildCrossThreadDigest", () => {
 		});
 	});
 
+	it("attaches client-session host(s) to the matching entry, tagged live/stale", () => {
+		const userId = randomBytes(8).toString("hex");
+		const liveThreadId = randomBytes(8).toString("hex");
+		const staleThreadId = randomBytes(8).toString("hex");
+		const noSessThreadId = randomBytes(8).toString("hex");
+
+		// Newest -> oldest so the DESC ordering is deterministic.
+		const tsLive = new Date(Date.now() + 9000).toISOString();
+		const tsStale = new Date(Date.now() + 6000).toISOString();
+		const tsNone = new Date(Date.now() + 3000).toISOString();
+		createThread(db, userId, liveThreadId, "Live Session Thread", 1);
+		createThread(db, userId, staleThreadId, "Stale Session Thread", 1);
+		createThread(db, userId, noSessThreadId, "No Session Thread", 1);
+		// Pin the last_message_at ordering (createThread randomizes it).
+		db.run("UPDATE threads SET last_message_at = ? WHERE id = ?", [tsLive, liveThreadId]);
+		db.run("UPDATE threads SET last_message_at = ? WHERE id = ?", [tsStale, staleThreadId]);
+		db.run("UPDATE threads SET last_message_at = ? WHERE id = ?", [tsNone, noSessThreadId]);
+
+		const liveSite = randomBytes(8).toString("hex");
+		const staleSite = randomBytes(8).toString("hex");
+		// A host with a fresh modified_at is "live"; one well past the staleness window is "stale".
+		const fresh = new Date().toISOString();
+		const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: liveSite,
+				host_name: "mac-studio",
+				online_at: fresh,
+				modified_at: fresh,
+				deleted: 0,
+			},
+			userId,
+		);
+		insertRow(
+			db,
+			"hosts",
+			{ site_id: staleSite, host_name: "old-laptop", online_at: old, modified_at: old, deleted: 0 },
+			userId,
+		);
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id: randomBytes(8).toString("hex"),
+				connection_id: randomBytes(8).toString("hex"),
+				thread_id: liveThreadId,
+				site_id: liveSite,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			userId,
+		);
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id: randomBytes(8).toString("hex"),
+				connection_id: randomBytes(8).toString("hex"),
+				thread_id: staleThreadId,
+				site_id: staleSite,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			userId,
+		);
+
+		const result = buildCrossThreadDigest(db, userId);
+		const byTitle = new Map(result.entries.map((e) => [e.title, e]));
+
+		expect(byTitle.get("Live Session Thread")?.sessions).toEqual([
+			{ hostName: "mac-studio", live: true },
+		]);
+		expect(byTitle.get("Stale Session Thread")?.sessions).toEqual([
+			{ hostName: "old-laptop", live: false },
+		]);
+		// A thread with no client session carries no sessions field at all.
+		expect(byTitle.get("No Session Thread")?.sessions).toBeUndefined();
+	});
+
 	it("excludeThreadId excludes that thread from entries", () => {
 		const userId = randomBytes(8).toString("hex");
 		const threadId1 = randomBytes(8).toString("hex");
