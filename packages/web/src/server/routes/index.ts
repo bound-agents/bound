@@ -1,9 +1,11 @@
 import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
+import type { McpAppsConfig } from "@bound/shared";
 import type { MountableFs } from "just-bash";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
+import { createMcpAppsRoutes } from "./mcp-apps";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
@@ -57,6 +59,13 @@ export interface RoutesConfig {
 	 * without round-tripping bytes through the LLM context window.
 	 */
 	clusterFs?: MountableFs | null;
+	/**
+	 * Browser-reachable MCP App servers (`mcp_apps.json`). Served to the web UI
+	 * via `GET /api/mcp-apps` so the browser can host the MCP connection and
+	 * register the server's tools as bound client tools (the boundless pattern).
+	 * Web-router only; never touches the sync router.
+	 */
+	mcpAppsConfig?: McpAppsConfig | null;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -75,6 +84,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		emitToolCancel,
 		requestConsistency,
 		clusterFs,
+		mcpAppsConfig,
 	} = config;
 
 	return {
@@ -102,6 +112,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 		mcp: createMcpRoutes(db),
+		mcpApps: createMcpAppsRoutes(mcpAppsConfig ?? null),
 		webhooks: createWebhooksRoutes(db, {
 			syncBindHost,
 			syncPort,
