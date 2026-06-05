@@ -108,6 +108,40 @@ export interface AppBridgeOptions {
 	theme?: "light" | "dark";
 	displayMode?: "inline" | "fullscreen";
 	containerDimensions?: { maxHeight?: number; width?: number };
+	/**
+	 * Live, host-owned viewport budget. `maxHeight` is the px ceiling the app is
+	 * told to lay out within (and the inline iframe height is clamped to); the
+	 * host mutates it — and `fullscreen` — in place when the panel toggles
+	 * fullscreen, so the ResizeObserver and `onsizechange` read the current
+	 * budget without rebuilding the bridge. Without a real ceiling the app reports
+	 * a height proportional to the (wide) container width and the inline iframe
+	 * runs away vertically — "the wider the chat, the worse it gets".
+	 */
+	containerState?: ContainerState;
+}
+
+/** Mutable viewport budget shared between the panel and its AppBridge. */
+export interface ContainerState {
+	/** Px ceiling for the inline iframe height + the app's layout budget. */
+	maxHeight: number;
+	/** When true, native fullscreen owns the frame height (CSS, not inline). */
+	fullscreen: boolean;
+}
+
+/** Default inline ceiling when the host supplies neither state nor dimensions. */
+const DEFAULT_MAX_HEIGHT = 6000;
+
+/**
+ * Push an updated viewport budget to a live app. Mutates `state` in place (the
+ * ResizeObserver and `onsizechange` closures read the same object) and re-sends
+ * host context so the app re-lays-out to the new ceiling — used when the panel
+ * enters/exits fullscreen.
+ */
+export function applyViewportBudget(appBridge: AppBridge, state: ContainerState): void {
+	appBridge.sendHostContextChange({
+		displayMode: state.fullscreen ? "fullscreen" : "inline",
+		containerDimensions: { maxHeight: state.maxHeight },
+	});
 }
 
 /**
@@ -124,6 +158,10 @@ export function newAppBridge(
 	options?: AppBridgeOptions,
 ): AppBridge {
 	const caps = client.getServerCapabilities();
+	const containerState: ContainerState = options?.containerState ?? {
+		maxHeight: options?.containerDimensions?.maxHeight ?? DEFAULT_MAX_HEIGHT,
+		fullscreen: options?.displayMode === "fullscreen",
+	};
 	const appBridge = new AppBridge(
 		client,
 		IMPLEMENTATION,
@@ -137,7 +175,7 @@ export function newAppBridge(
 			hostContext: {
 				theme: options?.theme ?? "light",
 				platform: "web",
-				containerDimensions: options?.containerDimensions ?? { maxHeight: 6000 },
+				containerDimensions: { maxHeight: containerState.maxHeight },
 				displayMode: options?.displayMode ?? "inline",
 				availableDisplayModes: ["inline", "fullscreen"],
 			},
@@ -147,7 +185,9 @@ export function newAppBridge(
 	const resizeObserver = new ResizeObserver(([entry]) => {
 		const width = Math.round(entry.contentRect.width);
 		if (width > 0) {
-			appBridge.sendHostContextChange({ containerDimensions: { width, maxHeight: 6000 } });
+			appBridge.sendHostContextChange({
+				containerDimensions: { width, maxHeight: containerState.maxHeight },
+			});
 		}
 	});
 	resizeObserver.observe(iframe);
@@ -179,8 +219,14 @@ export function newAppBridge(
 		if (width !== undefined) {
 			iframe.style.minWidth = `min(${width}px, 100%)`;
 		}
-		if (height !== undefined) {
-			iframe.style.height = `${height}px`;
+		if (containerState.fullscreen) {
+			// In fullscreen the CSS (`height: 100%` under a flex column) owns the
+			// frame height; an inline style would fight it.
+			iframe.style.height = "";
+		} else if (height !== undefined) {
+			// Inline: never honor a reported height past the host's viewport budget
+			// — that's the runaway where a wide container yields a tall iframe.
+			iframe.style.height = `${Math.min(height, containerState.maxHeight)}px`;
 		}
 	};
 

@@ -1,7 +1,11 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
 import type { McpAppInstance } from "../lib/mcp-app-store";
-import { type DisplayItem as GroupedDisplayItem, groupMessages } from "../lib/message-grouping";
+import {
+	type DisplayItem as GroupedDisplayItem,
+	groupMessages,
+	toolUseIdsInItem,
+} from "../lib/message-grouping";
 import McpAppPanel from "./McpAppPanel.svelte";
 import MessageBubble from "./MessageBubble.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
@@ -155,6 +159,36 @@ type DisplayItem = GroupedDisplayItem<Message>;
 
 const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
 
+// Anchor each live MCP App panel beneath the display item carrying the tool_use
+// that spawned it (instance.callId === the persisted tool_use.id). `perItem`
+// keys panels by display-item key for inline render; `trailing` holds instances
+// with no matching item yet — in-flight calls whose tool_call message hasn't
+// streamed in — which fall to the end of the stream until their row arrives.
+const anchoredInstances = $derived.by(
+	(): {
+		perItem: Map<string, McpAppInstance[]>;
+		trailing: McpAppInstance[];
+	} => {
+		const byCallId = new Map<string, McpAppInstance>();
+		for (const inst of appInstances) byCallId.set(inst.callId, inst);
+		const perItem = new Map<string, McpAppInstance[]>();
+		const placed = new Set<string>();
+		for (const item of displayItems) {
+			const matched: McpAppInstance[] = [];
+			for (const id of toolUseIdsInItem(item)) {
+				const inst = byCallId.get(id);
+				if (inst && !placed.has(id)) {
+					matched.push(inst);
+					placed.add(id);
+				}
+			}
+			if (matched.length) perItem.set(item.key, matched);
+		}
+		const trailing = appInstances.filter((inst) => !placed.has(inst.callId));
+		return { perItem, trailing };
+	},
+);
+
 function isItemInRange(item: DisplayItem): boolean {
 	if (!turnRange) return true;
 	if (item.kind === "toolGroup") {
@@ -188,6 +222,21 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 
 <div class="board">
 	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
+		{#snippet panelRow(instance: McpAppInstance)}
+			<div class="turn-row" data-message-role="tool_call">
+				<div class="time-gutter mono"></div>
+				<div class="rail">
+					<div class="rail-line" style="background: {lineColor}"></div>
+					<div
+						class="rail-dot rail-dot-assistant"
+						style="background: {lineColor}; border-color: {lineColor}"
+					></div>
+				</div>
+				<div class="row-content">
+					<McpAppPanel {instance} />
+				</div>
+			</div>
+		{/snippet}
 		{#if displayItems.length === 0 && emptyText}
 			<div class="empty-state">
 				<p>{emptyText}</p>
@@ -234,6 +283,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 						{/if}
 					</div>
 				</div>
+				{#each anchoredInstances.perItem.get(item.key) ?? [] as instance (instance.callId)}
+					{@render panelRow(instance)}
+				{/each}
 			{/each}
 		{/if}
 		{#if waiting || isAgentActive}

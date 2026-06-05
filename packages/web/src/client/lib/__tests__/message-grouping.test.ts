@@ -3,6 +3,8 @@ import {
 	type GroupableMessage,
 	groupMessages,
 	messageHasUserFacingText,
+	toolUseIdsInContent,
+	toolUseIdsInItem,
 } from "../message-grouping";
 
 // Helpers to build persisted-message fixtures. A tool_call message's content
@@ -145,5 +147,59 @@ describe("groupMessages — issue #66: break on user-facing text", () => {
 		expect(items.map((i) => i.kind)).toEqual(["toolGroup", "toolGroup", "toolGroup"]);
 		const ids = items.map((i) => (i.kind === "toolGroup" ? i.messages.map((m) => m.id) : []));
 		expect(ids).toEqual([["a"], ["b"], ["c"]]);
+	});
+});
+
+describe("toolUseIdsInContent", () => {
+	it("extracts tool_use ids from a persisted tool_call content", () => {
+		const content = JSON.stringify([
+			{ type: "thinking", thinking: "…" },
+			{ type: "text", text: "on it" },
+			{ type: "tool_use", id: "tooluse_abc", name: "query", input: {} },
+		]);
+		expect(toolUseIdsInContent(content)).toEqual(["tooluse_abc"]);
+	});
+
+	it("returns every tool_use id in a multi-call turn", () => {
+		const content = JSON.stringify([
+			{ type: "tool_use", id: "tu_1", name: "a", input: {} },
+			{ type: "tool_use", id: "tu_2", name: "b", input: {} },
+		]);
+		expect(toolUseIdsInContent(content)).toEqual(["tu_1", "tu_2"]);
+	});
+
+	it("returns [] for content with no tool_use block (cheap pre-check path)", () => {
+		expect(toolUseIdsInContent(JSON.stringify([{ type: "text", text: "hi" }]))).toEqual([]);
+		expect(toolUseIdsInContent("plain user text")).toEqual([]);
+		expect(toolUseIdsInContent(null)).toEqual([]);
+	});
+
+	it("returns [] on malformed JSON and skips non-string / typeless ids", () => {
+		expect(toolUseIdsInContent('{"type":"tool_use" truncated')).toEqual([]);
+		const content = JSON.stringify([
+			{ type: "tool_use", id: 42, name: "a", input: {} },
+			{ type: "tool_use", name: "b", input: {} },
+			{ type: "tool_use", id: "tu_ok", name: "c", input: {} },
+		]);
+		expect(toolUseIdsInContent(content)).toEqual(["tu_ok"]);
+	});
+});
+
+describe("toolUseIdsInItem", () => {
+	it("flattens tool_use ids across every member of a tool group", () => {
+		const items = groupMessages([toolCall("a"), toolResult("ar"), toolCall("b"), toolResult("br")]);
+		expect(items).toHaveLength(1);
+		expect(toolUseIdsInItem(items[0])).toEqual(["tu_a", "tu_b"]);
+	});
+
+	it("reads the lone tool_use id from a single-message item", () => {
+		const items = groupMessages([toolCall("a", { text: "leading text" })]);
+		expect(items).toHaveLength(1);
+		expect(toolUseIdsInItem(items[0])).toEqual(["tu_a"]);
+	});
+
+	it("returns [] for a plain message item", () => {
+		const items = groupMessages([userMsg("u1")]);
+		expect(toolUseIdsInItem(items[0])).toEqual([]);
 	});
 });

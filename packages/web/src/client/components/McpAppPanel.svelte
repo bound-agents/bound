@@ -12,6 +12,8 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { onDestroy, onMount } from "svelte";
 import {
 	type AppBridgeCallbacks,
+	type ContainerState,
+	applyViewportBudget,
 	getUiResource,
 	mountApp,
 	newAppBridge,
@@ -33,11 +35,30 @@ let errorMessage = $state<string | null>(null);
 // canvas state on enter or exit.
 let isFullscreen = $state(false);
 
-// The AppBridge holds the live transport; closed on teardown.
-let bridge: { close: () => void } | null = null;
+// Inline panels are capped to a fraction of the viewport so a wide chat column
+// can't make the app report (and the iframe grow to) a runaway height. The
+// budget is a plain mutable object the bridge reads on every resize/size-change;
+// fullscreen swaps the ceiling to the full viewport and hands height back to CSS.
+const INLINE_MAX_VH = 0.6;
+function viewportHeight(): number {
+	return globalThis.window?.innerHeight ?? 800;
+}
+function inlineMaxHeight(): number {
+	return Math.round(viewportHeight() * INLINE_MAX_VH);
+}
+const containerState: ContainerState = { maxHeight: inlineMaxHeight(), fullscreen: false };
+
+// The AppBridge holds the live transport; closed on teardown. Typed via
+// ReturnType so applyViewportBudget can re-send host context without importing
+// the AppBridge class into this component.
+let bridge: ReturnType<typeof newAppBridge> | null = null;
 
 function syncFullscreen(): void {
-	isFullscreen = document.fullscreenElement === panelEl;
+	const fs = document.fullscreenElement === panelEl;
+	isFullscreen = fs;
+	containerState.fullscreen = fs;
+	containerState.maxHeight = fs ? viewportHeight() : inlineMaxHeight();
+	if (bridge) applyViewportBudget(bridge, containerState);
 }
 
 async function toggleFullscreen(): Promise<void> {
@@ -76,7 +97,10 @@ onMount(async () => {
 				}
 			},
 		};
-		const appBridge = newAppBridge(sdkClient, iframe, callbacks, { displayMode: "inline" });
+		const appBridge = newAppBridge(sdkClient, iframe, callbacks, {
+			displayMode: "inline",
+			containerState,
+		});
 		bridge = appBridge;
 
 		await mountApp(iframe, appBridge, {
