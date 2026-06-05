@@ -176,10 +176,47 @@ export class BoundClient {
 
 	// ---- WebSocket ----
 
-	connect(): void {
-		if (this.ws) return;
+	/**
+	 * Open a WebSocket connection and resolve when the handshake completes.
+	 * Rejects on timeout (10 s) or if the socket errors before the first
+	 * `open` event.  Subsequent errors are handled by the internal reconnect
+	 * loop and do not reject the returned promise.
+	 */
+	connect(): Promise<void> {
+		if (this.ws) return Promise.resolve();
 		this.shouldReconnect = true;
 		this.createConnection();
+
+		return new Promise<void>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				cleanup();
+				reject(new Error("Connection timeout"));
+			}, 10_000);
+
+			const onOpen = () => {
+				cleanup();
+				resolve();
+			};
+
+			const onError = () => {
+				// Only reject on errors that happen before the connection is
+				// established.  After the socket opens, errors are non-fatal
+				// (the reconnect loop handles them).
+				if (this._connectionState !== "connected") {
+					cleanup();
+					reject(new Error("WebSocket connection failed"));
+				}
+			};
+
+			const cleanup = () => {
+				clearTimeout(timeout);
+				this.off("open", onOpen);
+				this.off("error", onError);
+			};
+
+			this.on("open", onOpen);
+			this.on("error", onError);
+		});
 	}
 
 	disconnect(): void {

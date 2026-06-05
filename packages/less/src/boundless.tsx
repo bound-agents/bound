@@ -194,17 +194,7 @@ async function main(): Promise<void> {
 		// Step 3: Connect BoundClient with timeout
 		const client = new BoundClient(config.url);
 		try {
-			let timeoutHandle: NodeJS.Timeout | null = null;
-			await Promise.race([
-				client.connect(),
-				new Promise<void>((_resolve, reject) => {
-					timeoutHandle = setTimeout(() => reject(new Error("Connection timeout")), 10000);
-				}),
-			]).finally(() => {
-				if (timeoutHandle) {
-					clearTimeout(timeoutHandle);
-				}
-			});
+			await client.connect();
 		} catch (error) {
 			process.stderr.write(`Error: Could not connect to bound server at ${config.url}\n`);
 			process.stderr.write(`${(error as Error).message}\n`);
@@ -303,11 +293,28 @@ async function main(): Promise<void> {
 	}
 }
 
+/**
+ * Detect whether this module is the program entry point.
+ *
+ * In source mode, {@link import.meta.main} is true when the file is run
+ * directly via `bun run`. In a `Bun.build({ compile: … })` binary, however,
+ * `import.meta.main` is always `false` (Bun v1.3.14).  The compiled binary
+ * is a single-module executable, so `Bun.main` matches `import.meta.path`
+ * (after normalising slashes).  Use that as a reliable fallback.
+ */
+function isEntryPoint(): boolean {
+	if (import.meta.main) return true;
+	if (typeof Bun === "undefined") return false;
+	// Bun.main always uses `/` regardless of platform, so normalise
+	// import.meta.path to match.
+	return Bun.main !== undefined && Bun.main === import.meta.path.replace(/\\/g, "/");
+}
+
 // Only run main() when this file is executed directly as the CLI entrypoint,
 // not when imported by tests or other modules. Without this guard, importing
 // anything from boundless.tsx (e.g. parseArgs in boundless-startup.test.ts)
 // would trigger a full Ink render against the non-TTY test stdin and abort
 // the whole test suite with "Raw mode is not supported".
-if (import.meta.main) {
+if (isEntryPoint()) {
 	main();
 }
