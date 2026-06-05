@@ -16,7 +16,7 @@ import {
 	mountApp,
 	newAppBridge,
 } from "../lib/mcp-app-bridge";
-import type { McpAppInstance } from "../lib/mcp-app-store";
+import { type McpAppInstance, mcpAppInstances } from "../lib/mcp-app-store";
 
 const { instance }: { instance: McpAppInstance } = $props();
 
@@ -47,7 +47,10 @@ onMount(async () => {
 
 		await mountApp(iframe, appBridge, {
 			resource,
-			input: instance.input,
+			// $state.snapshot strips the Svelte reactive Proxy off the props-derived
+			// input. postMessage uses structured clone, which throws DataCloneError
+			// on a Proxy — so without this the app never receives its arguments.
+			input: $state.snapshot(instance.input) as Record<string, unknown>,
 			resultPromise: instance.resultPromise,
 		});
 		status = "ready";
@@ -60,16 +63,31 @@ onMount(async () => {
 onDestroy(() => {
 	bridge?.close();
 });
+
+/** Dismiss the panel: tear down the bridge and drop the instance from the store. */
+function close() {
+	bridge?.close();
+	bridge = null;
+	mcpAppInstances.remove(instance.callId);
+}
 </script>
 
 <div class="mcp-app" class:fullscreen={displayMode === "fullscreen"}>
 	<div class="app-head">
 		<span class="kicker">App · {instance.serverName}</span>
-		{#if status === "loading"}
-			<span class="state mono">Loading…</span>
-		{:else if status === "error"}
-			<span class="state state-error mono">Failed</span>
-		{/if}
+		<div class="head-right">
+			{#if status === "loading"}
+				<span class="state mono">Loading…</span>
+			{:else if status === "error"}
+				<span class="state state-error mono">Failed</span>
+			{/if}
+			{#if displayMode === "fullscreen"}
+				<button type="button" class="head-btn" onclick={() => (displayMode = "inline")}>
+					Exit fullscreen
+				</button>
+			{/if}
+			<button type="button" class="head-btn close" onclick={close} aria-label="Close app">✕</button>
+		</div>
 	</div>
 
 	{#if status === "error"}
@@ -113,6 +131,40 @@ onDestroy(() => {
 		padding: 6px 12px;
 		border-bottom: 1px solid var(--rule-faint);
 		background: var(--paper-2);
+	}
+
+	/* In fullscreen the head must sit above the iframe so its controls stay
+	   clickable (the frame would otherwise paint over them). */
+	.mcp-app.fullscreen .app-head {
+		position: relative;
+		z-index: 1;
+	}
+
+	.head-right {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.head-btn {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		line-height: 1;
+		padding: 4px 8px;
+		border: 1px solid var(--rule-soft);
+		border-radius: 3px;
+		background: var(--paper);
+		color: var(--ink-2);
+		cursor: pointer;
+	}
+
+	.head-btn:hover {
+		background: var(--paper-2);
+		color: var(--ink-1);
+	}
+
+	.head-btn.close {
+		padding: 4px 7px;
 	}
 
 	.kicker {
