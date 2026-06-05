@@ -16,6 +16,8 @@
 		"@bound/core": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",
+		"@modelcontextprotocol/ext-apps": "^1.7.3",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"d3-scale": "^4.0.2",
 		"dompurify": "^3.3.3",
 		"fflate": "^0.8.3",
