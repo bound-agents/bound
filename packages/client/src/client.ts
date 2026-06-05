@@ -597,7 +597,7 @@ export class BoundClient {
 		return this.fetchJson(`/api/tasks${qs ? `?${qs}` : ""}`);
 	}
 
-	async getTask(id: string): Promise<Task> {
+	async getTask(id: string): Promise<TaskListEntry> {
 		return this.fetchJson(`/api/tasks/${id}`);
 	}
 
