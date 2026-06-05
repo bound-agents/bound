@@ -349,15 +349,8 @@ function turnPreview(content: string): string {
 				threadColor={thread?.color ?? 0}
 				{lineColor}
 				isAgentActive={agentActive}
+				appInstances={threadAppInstances}
 			/>
-
-			{#if threadAppInstances.length > 0}
-				<div class="mcp-apps">
-					{#each threadAppInstances as instance (instance.callId)}
-						<McpAppPanel {instance} />
-					{/each}
-				</div>
-			{/if}
 
 			<!-- Input bar -->
 			<div class="input-wrap">

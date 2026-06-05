@@ -1,6 +1,8 @@
 <script lang="ts">
 import { onMount, tick } from "svelte";
+import type { McpAppInstance } from "../lib/mcp-app-store";
 import { type DisplayItem as GroupedDisplayItem, groupMessages } from "../lib/message-grouping";
+import McpAppPanel from "./McpAppPanel.svelte";
 import MessageBubble from "./MessageBubble.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
 
@@ -28,6 +30,7 @@ interface Props {
 	threadColor?: number;
 	lineColor?: string;
 	isAgentActive?: boolean;
+	appInstances?: McpAppInstance[];
 }
 
 const {
@@ -39,6 +42,7 @@ const {
 	threadColor = 0,
 	lineColor = "#999",
 	isAgentActive = false,
+	appInstances = [],
 }: Props = $props();
 
 // --- Auto-scroll logic ---
@@ -261,6 +265,13 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 						</div>
 					{/if}
 				</div>
+			</div>
+		{/if}
+		{#if appInstances.length > 0}
+			<div class="mcp-apps">
+				{#each appInstances as instance (instance.callId)}
+					<McpAppPanel {instance} />
+				{/each}
 			</div>
 		{/if}
 	</div>
