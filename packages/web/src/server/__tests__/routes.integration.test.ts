@@ -762,4 +762,40 @@ describe("API Routes", () => {
 			expect(entry.c).toBeGreaterThan(0);
 		});
 	});
+
+	// Regression: the route factory was built and added to registerRoutes'
+	// return object, but the app.route("/api/mcp-apps", ...) mount line was
+	// dropped — so GET /api/mcp-apps 404'd in the browser while the unit test
+	// (which hit the factory directly) stayed green. These tests go through the
+	// real createWebApp wiring so a missing mount fails the suite.
+	describe("GET /api/mcp-apps (mounted wiring)", () => {
+		it("serves an empty server list when no mcpAppsConfig is provided", async () => {
+			const response = await app.fetch(new Request("http://localhost:3000/api/mcp-apps"));
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as { servers: unknown[] };
+			expect(body.servers).toEqual([]);
+		});
+
+		it("serves the configured servers through the mounted route", async () => {
+			const configuredApp = await createWebApp(db, eventBus, {
+				operatorUserId: "test-operator",
+				mcpAppsConfig: {
+					servers: [
+						{ name: "excalidraw", url: "https://mcp.excalidraw.com/mcp", transport: "http" },
+					],
+				},
+			});
+			const response = await configuredApp.fetch(new Request("http://localhost:3000/api/mcp-apps"));
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				servers: Array<{ name: string; url: string; transport: string }>;
+			};
+			expect(body.servers).toHaveLength(1);
+			expect(body.servers[0]).toMatchObject({
+				name: "excalidraw",
+				url: "https://mcp.excalidraw.com/mcp",
+				transport: "http",
+			});
+		});
+	});
 });
