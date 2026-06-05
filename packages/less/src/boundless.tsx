@@ -249,6 +249,16 @@ async function main(): Promise<void> {
 		const { commitHash } = getBuildInfo();
 
 		// Step 9: Render App
+		// Ink requires raw-mode stdin — without a TTY it throws "Raw mode is
+		// not supported", and the error path inside Ink has a race condition
+		// between waitUntilExit() and unmount() that causes a silent hang.
+		// Catch this early with a clear message.
+		if (!process.stdin.isTTY) {
+			process.stderr.write("Error: boundless requires a terminal (TTY).\n");
+			process.stderr.write("  stdin is not a TTY — are you piping or redirecting input?\n");
+			process.exit(1);
+		}
+
 		const { waitUntilExit } = render(
 			<App
 				client={client}

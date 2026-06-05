@@ -296,10 +296,14 @@ async function build() {
 
 	// Summary
 	console.log("\n--- Build summary ---");
+	// Bun.compile appends ".exe" on Windows, so the summary check must
+	// look for the platform-correct file name.
+	const binaryExt = process.platform === "win32" ? ".exe" : "";
 	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp", "dist/boundless"]) {
-		if (existsSync(binary)) {
-			const sizeMB = (statSync(binary).size / (1024 * 1024)).toFixed(2);
-			console.log(`  ${binary} (${sizeMB} MB)`);
+		const binaryPath = binary + binaryExt;
+		if (existsSync(binaryPath)) {
+			const sizeMB = (statSync(binaryPath).size / (1024 * 1024)).toFixed(2);
+			console.log(`  ${binaryPath} (${sizeMB} MB)`);
 		} else {
 			console.log(`  ${binary} (not built)`);
 		}
