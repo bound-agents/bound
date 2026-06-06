@@ -8,6 +8,7 @@ import FilesView from "./views/FilesView.svelte";
 import LineView from "./views/LineView.svelte";
 import MetricsView from "./views/MetricsView.svelte";
 import NetworkStatus from "./views/NetworkStatus.svelte";
+import PersonaView from "./views/PersonaView.svelte";
 import SkillsView from "./views/SkillsView.svelte";
 import SystemMap from "./views/SystemMap.svelte";
 import Timetable from "./views/Timetable.svelte";
@@ -35,6 +36,7 @@ function screenLabel(r: string): string {
 	if (r === "/webhooks") return "07 Webhooks";
 	if (r === "/skills") return "08 Skills";
 	if (r === "/metrics") return "09 Metrics";
+	if (r === "/persona") return "10 Persona";
 	return "00 Unknown";
 }
 </script>
@@ -62,6 +64,8 @@ function screenLabel(r: string): string {
 				<SkillsView />
 			{:else if route === "/metrics"}
 				<MetricsView />
+			{:else if route === "/persona"}
+				<PersonaView />
 			{:else}
 				<SystemMap />
 			{/if}

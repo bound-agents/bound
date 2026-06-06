@@ -1,6 +1,4 @@
 import type { Database } from "bun:sqlite";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type {
 	CommandRegistryEntry,
@@ -9,7 +7,7 @@ import type {
 	CrossThreadSource,
 	Message,
 } from "@bound/shared";
-import { countContentTokens, countTokens } from "@bound/shared";
+import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { annotateMessages } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
@@ -109,7 +107,6 @@ export interface ContextParams {
 	currentModel?: string;
 	contextWindow?: number;
 	noHistory?: boolean;
-	configDir?: string;
 	hostName?: string;
 	siteId?: string;
 	/** Cluster topology role ("hub" | "spoke"), rendered on the orientation Host line. See #68. */
@@ -876,34 +873,27 @@ export function estimateContentLength(content: string | ContentBlock[]): number 
 	}, 0);
 }
 
-let personaCache: string | null = null;
-let personaCachePath: string | null = null;
-
 /**
- * Load persona from config directory
- * Loads config/persona.md if it exists
+ * Load the operator persona from the synced `cluster_config` row.
+ *
+ * Historically this read `config/persona.md` off disk and memoized per
+ * configDir. That diverged silently across the cluster: a relayed turn
+ * assembled on a peer used the peer's file, not the editing host's. The
+ * persona now lives as a single synced LWW row (seeded once from the file at
+ * boot — see `initSandbox`), so an edit on any host — via `boundctl
+ * set-persona` or `POST /api/persona` — propagates everywhere.
+ *
+ * No cache by design: the source is a one-row primary-key lookup on the local
+ * SQLite, cheaper than the file `stat`+read it replaces, and memoizing a
+ * synced value would reintroduce exactly the staleness this move kills — a
+ * peer's edit lands via changelog replay with no local signal to invalidate a
+ * configDir-keyed cache.
  */
-function loadPersona(configDir: string): string | null {
-	if (personaCachePath === configDir && personaCache !== undefined) {
-		return personaCache;
-	}
-
-	const personaPath = join(configDir, "persona.md");
-	if (existsSync(personaPath)) {
-		try {
-			const content = readFileSync(personaPath, "utf-8");
-			personaCachePath = configDir;
-			personaCache = content;
-			return content;
-		} catch (_error) {
-			// persona.md exists but cannot be read
-			return null;
-		}
-	}
-
-	personaCachePath = configDir;
-	personaCache = null;
-	return null;
+function loadPersona(db: Database): string | null {
+	const row = db
+		.query("SELECT value FROM cluster_config WHERE key = ?")
+		.get(PERSONA_CLUSTER_CONFIG_KEY) as { value: string } | null;
+	return row?.value ?? null;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -978,7 +968,6 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		threadId,
 		userId,
 		noHistory = false,
-		configDir = "config",
 		currentModel,
 		contextWindow = 8000,
 		hostName,
@@ -1209,7 +1198,7 @@ Original output was too large for the context window. If you need the full conte
 	// tested for byte-stability — see `system-parts/__tests__/static-parts.property.test.ts`.
 	const systemParts: string[] = buildStaticSystemParts({
 		db,
-		persona: loadPersona(configDir),
+		persona: loadPersona(db),
 		commandRegistry: params.commandRegistry ?? [],
 		hostName,
 		siteId,

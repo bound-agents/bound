@@ -9,6 +9,7 @@ import { createMcpAppsRoutes } from "./mcp-apps";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
+import { createPersonaRoutes } from "./persona";
 import { createSandboxRoutes } from "./sandbox";
 import { createSkillsRoutes } from "./skills";
 import { type ModelsConfig, createStatusRoutes } from "./status";
@@ -123,5 +124,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		skills: createSkillsRoutes(db),
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),
+		persona: createPersonaRoutes(db),
 	};
 }

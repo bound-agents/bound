@@ -188,6 +188,7 @@ export async function createWebApp(
 	app.route("/api/skills", routes.skills);
 	app.route("/api/metrics", routes.metrics);
 	app.route("/api/sandbox", routes.sandbox);
+	app.route("/api/persona", routes.persona);
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

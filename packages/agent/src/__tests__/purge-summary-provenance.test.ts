@@ -124,7 +124,6 @@ describe("purge-summary provenance marker", () => {
 			db,
 			threadId,
 			userId,
-			configDir,
 		});
 
 		// Find the synthetic developer-role substitution message.

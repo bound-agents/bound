@@ -517,9 +517,9 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
    - Loads overlay mounts from `overlay.json` if present
 
 10. **Load persona**
-    - Reads `config/persona.md` if present
-    - Uses content as system prompt for agent
-    - Falls back to default system prompt if absent
+    - Reads the synced `cluster_config['persona']` row, seeding it once from `config/persona.md` if absent
+    - Uses the value as a system-prompt block for the agent
+    - Falls back to default system prompt if neither the row nor the file exists
 
 11. **Initialize LLM**
     - Creates model router from `model_backends.json`
@@ -1337,11 +1337,13 @@ Each key in the object is a task name. The value is a task configuration object.
 
 ### persona.md
 
-**Optional.** A Markdown file that defines the agent's identity, voice, role, and behavioral guidelines. The persona is injected into the stable orientation block at context assembly time and cached across turns.
+**Optional.** A Markdown file that seeds the agent's identity, voice, role, and behavioral guidelines.
 
-The agent cannot read the raw file content (it is held in orchestrator memory, outside the sandbox trust boundary). Without this file the agent uses the model's default behavior.
+The persona is a **cluster-wide synced value**, not a per-host file read. On the first start where the `cluster_config['persona']` row is absent, `persona.md` is loaded into that row; from then on the row is the source of truth and the file is inert. The value replicates to every host (so a turn relayed elsewhere renders the same voice) and is read live at context-assembly time — no cache. Edit it with `boundctl set-persona` or the web UI's Persona view; the change takes effect on the next turn cluster-wide. The value is capped at 64 KB.
 
-There is no fixed schema. The file is free-form Markdown. A typical persona might cover:
+The agent cannot read the raw persona (it lives outside the sandbox trust boundary). Without a persona the agent uses the model's default behavior.
+
+There is no fixed schema. The persona is free-form Markdown. A typical persona might cover:
 
 - The agent's name and role description
 - Communication style and tone guidelines

@@ -22,7 +22,7 @@ this is where the per-field detail lives.
 | [`overlay.json`](#overlayjson) | No | Codebase mount points |
 | [`cron_schedules.json`](#cron_schedulesjson) | No | Recurring + heartbeat task definitions |
 | [`memory.json`](#memoryjson) | No | Pinned-memory caps |
-| `persona.md` | No | Custom system-prompt personality (free-form Markdown, no schema) |
+| `persona.md` | No | Seed for the cluster-wide persona (free-form Markdown, no schema). Loaded into `cluster_config['persona']` on first start, then inert. |
 
 ---
 
@@ -289,3 +289,13 @@ Pinned-memory caps — a context-management control. Absent means the defaults b
 
 Free-form Markdown folded into the system prompt as personality. No schema, no fields —
 whatever you write is the voice.
+
+`persona.md` is a **seed**, not the live source of truth. On the first start where the
+synced `cluster_config['persona']` row is absent, the file's contents are loaded into that
+row; from then on the row is authoritative and the file is inert. The persona is a single
+global value that replicates to every host (so a turn relayed to another host renders the
+same voice) and is read live at context-assembly time — no cache, no reload signal.
+
+Edit the live persona with `boundctl set-persona` (from a file or stdin) or the web UI's
+Persona view. Editing `persona.md` after the first start has no effect. The value is capped
+at 64 KB.

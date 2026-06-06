@@ -11,6 +11,7 @@ import { runConsistencyCheck } from "./commands/consistency-check.js";
 import { runDrain } from "./commands/drain.js";
 import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
+import { runSetPersona } from "./commands/set-persona.js";
 import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
@@ -42,6 +43,7 @@ USAGE:
 
 COMMANDS:
   set-hub <host-name>       Set the cluster hub host
+  set-persona [--file <path>]  Set the cluster-wide operator persona (stdin if no --file)
   stop                       Emergency stop all hosts
   resume                     Resume operations after emergency stop
   restore                    Point-in-time recovery
@@ -64,6 +66,12 @@ COMMANDS:
 OPTIONS:
   boundctl set-hub <host-name> [--wait] [--timeout <seconds>]
     Set the cluster hub and optionally wait for all peers to confirm
+
+  boundctl set-persona [--file <path>]
+    Set the cluster-wide operator persona. Reads from <path> with --file, or
+    from stdin otherwise. Stored as a single synced cluster_config row, read
+    live at assembly time, so it propagates to every host and takes effect on
+    the next turn. Capped at 64 KB.
 
   boundctl stop
     Set emergency stop flag. All hosts halt autonomous operations on next sync.
@@ -92,6 +100,8 @@ OPTIONS:
 EXAMPLES:
   boundctl set-hub primary-host
   boundctl set-hub primary-host --wait
+  boundctl set-persona --file config/persona.md
+  cat persona.md | boundctl set-persona
   boundctl stop
   boundctl resume
   boundctl restore --before "2024-01-01T12:00:00Z" --preview
@@ -132,6 +142,21 @@ EXAMPLES:
 			await runSetHub(setHubArgs);
 		} catch (error) {
 			console.error("set-hub failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "set-persona") {
+		const setPersonaArgs = {
+			file: getArgValue(args, "--file"),
+			configDir: getArgValue(args, "--config-dir") || "config",
+		};
+
+		try {
+			await runSetPersona(setPersonaArgs);
+		} catch (error) {
+			console.error("set-persona failed:", error);
 			process.exit(1);
 		}
 		process.exit(0);

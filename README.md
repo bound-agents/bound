@@ -63,6 +63,10 @@ bun run build
 # Set a sync hub (multi-host)
 bun run packages/cli/src/boundctl.ts set-hub my-cloud-vm
 
+# Set the cluster-wide persona (propagates to every host on next sync)
+bun run packages/cli/src/boundctl.ts set-persona --file config/persona.md
+cat config/persona.md | bun run packages/cli/src/boundctl.ts set-persona
+
 # Emergency stop (all hosts halt on next sync)
 bun run packages/cli/src/boundctl.ts stop
 
@@ -196,7 +200,7 @@ After `bound init`, the `config/` directory contains:
 | `overlay.json` | No | Codebase mount points |
 | `cron_schedules.json` | No | Recurring task definitions |
 | `memory.json` | No | Pinned-memory caps (`pinned_count_cap`, default 10; `pinned_size_cap`, default 2000 chars) |
-| `persona.md` | No | Custom system prompt personality |
+| `persona.md` | No | Seed for the cluster-wide persona. On first start it is loaded into the synced `cluster_config['persona']` row; after that the row is source of truth and the file is inert. Edit the live persona with `boundctl set-persona` or the web UI. |
 
 All config schemas are **strict** — unknown keys fail parse. Declare new fields in the Zod schema (`packages/shared/src/config-schemas.ts`) before using them.
 
