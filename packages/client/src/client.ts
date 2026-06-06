@@ -595,6 +595,26 @@ export class BoundClient {
 		}
 	}
 
+	/**
+	 * Silently stage volatile context onto a thread WITHOUT firing a turn.
+	 *
+	 * This is the spec-correct counterpart to `sendMessage` for an MCP App's
+	 * `ui/update-model-context`: the text is persisted as a `developer`-role
+	 * message that context assembly merges into the NEXT user turn (wrapped in
+	 * `<system-context>`, per invariant #9). Because no `message:created` event
+	 * is emitted, no inference runs now — the staged context is seen the next
+	 * time the user (or anything else) drives a turn, and a stage with no
+	 * following user turn is naturally dropped. Use `sendMessage` instead when
+	 * the intent is `ui/message` (make the model respond now).
+	 */
+	stageContext(threadId: string, content: string | ContentBlock[]): void {
+		this.sendWsMessage({
+			type: "context:stage",
+			thread_id: threadId,
+			content,
+		});
+	}
+
 	async redactMessage(threadId: string, messageId: string): Promise<RedactMessageResult> {
 		return this.fetchJson(`/api/threads/${threadId}/messages/${messageId}/redact`, {
 			method: "POST",
