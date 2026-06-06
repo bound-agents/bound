@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+	findProcessAnomalies,
 	parseFailures,
 	parseSuiteTotals,
 	renderAnnotations,
@@ -147,5 +148,108 @@ describe("renderAnnotations", () => {
 		expect(
 			renderAnnotations([{ pkg: "less", totals: parseSuiteTotals(PASS_XML), failures: [] }]),
 		).toEqual([]);
+	});
+});
+
+describe("findProcessAnomalies", () => {
+	it("flags a package that exited nonzero with no recorded test failure", () => {
+		expect(
+			findProcessAnomalies([
+				{ pkg: "agent", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: 1 },
+			]),
+		).toEqual([{ pkg: "agent", exitCode: 1 }]);
+	});
+
+	it("does not flag a nonzero exit that a real test failure already explains", () => {
+		expect(
+			findProcessAnomalies([
+				{
+					pkg: "agent",
+					totals: parseSuiteTotals(FAIL_XML),
+					failures: parseFailures(FAIL_XML),
+					exitCode: 1,
+				},
+			]),
+		).toEqual([]);
+	});
+
+	it("does not flag a clean exit", () => {
+		expect(
+			findProcessAnomalies([
+				{ pkg: "less", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: 0 },
+			]),
+		).toEqual([]);
+	});
+
+	it("does not flag a package whose exit code is unknown (no sidecar)", () => {
+		expect(
+			findProcessAnomalies([
+				{ pkg: "less", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: null },
+			]),
+		).toEqual([]);
+		expect(
+			findProcessAnomalies([{ pkg: "less", totals: parseSuiteTotals(PASS_XML), failures: [] }]),
+		).toEqual([]);
+	});
+
+	it("flags a package that crashed before writing any JUnit (no totals, nonzero exit)", () => {
+		expect(
+			findProcessAnomalies([
+				{ pkg: "core", totals: parseSuiteTotals("<nothing/>"), failures: [], exitCode: 137 },
+			]),
+		).toEqual([{ pkg: "core", exitCode: 137 }]);
+	});
+});
+
+describe("renderSummaryMarkdown — process-level anomalies", () => {
+	it("calls out a nonzero exit with no test failure and suppresses the all-green note", () => {
+		const md = renderSummaryMarkdown([
+			{ pkg: "agent", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: 1 },
+		]);
+		expect(md).toContain("Process-level failures (1)");
+		expect(md).toContain("| agent | 1 |");
+		expect(md).not.toContain("tests passed across");
+	});
+
+	it("keeps the all-green note when every package exited cleanly", () => {
+		const md = renderSummaryMarkdown([
+			{ pkg: "less", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: 0 },
+		]);
+		expect(md).toContain("All 3 tests passed");
+		expect(md).not.toContain("Process-level failures");
+	});
+
+	it("marks the anomalous package's table row so it is not silently green", () => {
+		const md = renderSummaryMarkdown([
+			{ pkg: "agent", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: 1 },
+		]);
+		expect(md).toContain("| ⚠ agent |");
+	});
+});
+
+describe("renderAnnotations — process-level anomalies", () => {
+	it("emits an annotation for a nonzero exit with no test failure", () => {
+		const lines = renderAnnotations([
+			{ pkg: "agent", totals: parseSuiteTotals(PASS_XML), failures: [], exitCode: 1 },
+		]);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("::error ");
+		expect(lines[0]).toContain("agent");
+		expect(lines[0]).toContain("exited with code 1");
+	});
+
+	it("emits both a failure annotation and an anomaly annotation when a package has both", () => {
+		// A real test failure AND a nonzero exit that the failure explains:
+		// only the per-test failure annotation should fire, not an anomaly one.
+		const lines = renderAnnotations([
+			{
+				pkg: "agent",
+				totals: parseSuiteTotals(FAIL_XML),
+				failures: parseFailures(FAIL_XML),
+				exitCode: 1,
+			},
+		]);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("this one fails on purpose");
 	});
 });

@@ -15,7 +15,7 @@
  * Wired into: .github/workflows/ci.yml (Test job, after the unit-test step)
  */
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { Glob } from "bun";
 
@@ -39,6 +39,17 @@ export interface PackageResult {
 	pkg: string;
 	totals: SuiteTotals;
 	failures: FailedCase[];
+	/**
+	 * The package's process exit code, from the `<pkg>.exit` sidecar the CI step
+	 * writes. `null`/absent means "unknown" (no sidecar — e.g. a local run that
+	 * only produced XML), which is never treated as an anomaly.
+	 */
+	exitCode?: number | null;
+}
+
+export interface ProcessAnomaly {
+	pkg: string;
+	exitCode: number;
 }
 
 function decodeEntities(s: string): string {
@@ -109,11 +120,34 @@ function fwd(path: string): string {
 	return path.replace(/\\/g, "/");
 }
 
+/**
+ * Packages whose process exited nonzero but whose JUnit recorded NO test
+ * failure — i.e. the failure is upstream of the reporter (a crash, an
+ * unhandled rejection, or a teardown error such as Windows EBUSY on DB
+ * cleanup). A pure-JUnit summary calls these "all green", which is exactly
+ * the trap this reconciliation closes. A nonzero exit that a real test
+ * failure already explains is NOT an anomaly; an unknown (null) exit is not
+ * either (no sidecar means we can't make the claim).
+ */
+export function findProcessAnomalies(results: PackageResult[]): ProcessAnomaly[] {
+	const out: ProcessAnomaly[] = [];
+	for (const r of results) {
+		const ec = r.exitCode;
+		if (ec === undefined || ec === null || ec === 0) continue;
+		if (r.failures.length > 0 || r.totals.failures > 0) continue; // explained by a real failure
+		out.push({ pkg: r.pkg, exitCode: ec });
+	}
+	return out;
+}
+
 /** Markdown for the GitHub Actions job summary. */
 export function renderSummaryMarkdown(results: PackageResult[]): string {
 	if (results.length === 0) {
 		return "## Test results\n\nNo test result files were found.\n";
 	}
+
+	const anomalies = findProcessAnomalies(results);
+	const anomalousPkgs = new Set(anomalies.map((a) => a.pkg));
 
 	const rows: string[] = [];
 	let tTests = 0;
@@ -127,8 +161,11 @@ export function renderSummaryMarkdown(results: PackageResult[]): string {
 		tPass += pass;
 		tFail += failures;
 		tSkip += skipped;
+		// Mark an anomalous package so a reader scanning the table sees it isn't
+		// silently green despite a 0-fail row.
+		const pkgCell = anomalousPkgs.has(r.pkg) ? `⚠ ${r.pkg}` : r.pkg;
 		rows.push(
-			`| ${r.pkg} | ${tests} | ${pass} | ${failures} | ${skipped} | ${r.totals.time.toFixed(2)}s |`,
+			`| ${pkgCell} | ${tests} | ${pass} | ${failures} | ${skipped} | ${r.totals.time.toFixed(2)}s |`,
 		);
 	}
 
@@ -141,10 +178,27 @@ export function renderSummaryMarkdown(results: PackageResult[]): string {
 	lines.push(`| **Total** | ${tTests} | ${tPass} | ${tFail} | ${tSkip} | |`);
 	lines.push("");
 
+	if (anomalies.length > 0) {
+		lines.push(`### Process-level failures (${anomalies.length})`);
+		lines.push("");
+		lines.push(
+			"These packages exited nonzero with **no recorded test failure** — the JUnit reports clean, so the failure is upstream of the reporter (a crash, an unhandled rejection, or a teardown error such as Windows EBUSY on DB cleanup). Open the package's log group for the stack.",
+		);
+		lines.push("");
+		lines.push("| Package | Exit code |");
+		lines.push("|---|--:|");
+		for (const a of anomalies) {
+			lines.push(`| ${a.pkg} | ${a.exitCode} |`);
+		}
+		lines.push("");
+	}
+
 	const allFailures = results.flatMap((r) => r.failures.map((f) => ({ pkg: r.pkg, ...f })));
 	if (allFailures.length === 0) {
-		lines.push(`All ${tTests} tests passed across ${results.length} package(s).`);
-		lines.push("");
+		if (anomalies.length === 0) {
+			lines.push(`All ${tTests} tests passed across ${results.length} package(s).`);
+			lines.push("");
+		}
 		return lines.join("\n");
 	}
 
@@ -173,18 +227,43 @@ export function renderAnnotations(results: PackageResult[]): string[] {
 			out.push(`::error file=${fwd(f.file)},line=${f.line},title=${title}::${msg}`);
 		}
 	}
+	// Process-level anomalies have no file/line (the crash is upstream of the
+	// reporter), so they annotate the run rather than a source location.
+	for (const a of findProcessAnomalies(results)) {
+		out.push(
+			`::error title=process-level failure (${a.pkg})::Package "${a.pkg}" exited with code ${a.exitCode} but reported no test failures — the crash is upstream of the JUnit reporter; open the packages/${a.pkg} log group for the stack.`,
+		);
+	}
 	return out;
+}
+
+function readExitCode(dir: string, pkg: string): number | null {
+	const p = join(dir, `${pkg}.exit`);
+	if (!existsSync(p)) return null;
+	const raw = readFileSync(p, "utf8").trim();
+	if (raw === "") return null;
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) ? n : null;
 }
 
 function main(): void {
 	const dir = process.argv[2] ?? "test-results";
+	// Drive the loop from the union of *.xml and *.exit basenames so a package
+	// that crashed before writing any JUnit still appears (exit sidecar present,
+	// XML absent) rather than vanishing from the report.
+	const pkgs = new Set<string>();
+	for (const file of new Glob("*.xml").scanSync({ cwd: dir })) pkgs.add(basename(file, ".xml"));
+	for (const file of new Glob("*.exit").scanSync({ cwd: dir })) pkgs.add(basename(file, ".exit"));
+
 	const results: PackageResult[] = [];
-	for (const file of new Glob("*.xml").scanSync({ cwd: dir })) {
-		const xml = readFileSync(join(dir, file), "utf8");
+	for (const pkg of pkgs) {
+		const xmlPath = join(dir, `${pkg}.xml`);
+		const xml = existsSync(xmlPath) ? readFileSync(xmlPath, "utf8") : "";
 		results.push({
-			pkg: basename(file, ".xml"),
+			pkg,
 			totals: parseSuiteTotals(xml),
 			failures: parseFailures(xml),
+			exitCode: readExitCode(dir, pkg),
 		});
 	}
 	results.sort((a, b) => a.pkg.localeCompare(b.pkg));

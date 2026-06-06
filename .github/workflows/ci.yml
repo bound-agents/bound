@@ -82,11 +82,21 @@ jobs:
           # --reporter=junit writes a machine-parseable result file per package
           # (the console reporter still prints the assertion diff to stderr, so
           # the per-package log group keeps the "why").
+          #
+          # We also write a per-package "<pkg>.exit" sidecar with that package's
+          # process exit code. The summary step reconciles it against the JUnit
+          # failure count: a package that exits nonzero with zero recorded test
+          # failures is a process-level failure (crash / unhandled rejection /
+          # teardown error like Windows EBUSY) that a pure-JUnit summary would
+          # render as "all green". The sidecar is what makes that case visible.
           mkdir -p test-results
           exit_code=0
           for pkg in shared core sync sandbox llm agent platforms web client mcp-server cli less; do
             echo "::group::packages/$pkg"
-            bun test "packages/$pkg" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || exit_code=$?
+            pkg_code=0
+            bun test "packages/$pkg" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
+            echo "$pkg_code" > "test-results/$pkg.exit"
+            if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"
           done
           exit $exit_code
@@ -96,6 +106,9 @@ jobs:
         # Renders the per-package JUnit into the job summary (queryable table +
         # failing-test index with file:line) and emits one ::error annotation
         # per failure so failures surface inline without scrolling the log.
+        # Also reconciles each package's exit-code sidecar against its JUnit
+        # failure count and flags process-level failures (nonzero exit, no
+        # recorded test failure) that the raw JUnit reports as green.
         run: bun run scripts/ci-test-summary.ts test-results
 
       - name: Upload test results
@@ -103,5 +116,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: junit-test-results-${{ matrix.os }}
-          path: test-results/*.xml
+          # Whole dir: the *.xml JUnit plus the *.exit sidecars, so a
+          # process-level failure is reconstructable offline from the artifact.
+          path: test-results/
           if-no-files-found: ignore
