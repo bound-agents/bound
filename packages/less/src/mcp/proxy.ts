@@ -110,6 +110,46 @@ export async function proxyToolCall(
 							text: `[unsupported image media type: ${mcpItem.mimeType}]`,
 						});
 					}
+				} else if (
+					item.type === "resource" &&
+					mcpItem.resource &&
+					typeof mcpItem.resource === "object"
+				) {
+					// Embedded resource block: { type: "resource", resource: { uri,
+					// mimeType, text? | blob? } }. Several servers (e.g. github
+					// get_file_contents) return the actual payload this way. Surface
+					// the bytes instead of dropping them to an "[unsupported ...]" stub.
+					const resource = mcpItem.resource as Record<string, unknown>;
+					const uri = typeof resource.uri === "string" ? resource.uri : "";
+					const mimeType = typeof resource.mimeType === "string" ? resource.mimeType : "";
+					const provenanceSuffix = uri
+						? ` [resource: ${uri}${mimeType ? ` (${mimeType})` : ""}]`
+						: "";
+
+					if (typeof resource.text === "string") {
+						// Text resource — the common case (source files, docs, JSON).
+						blocks.push({
+							type: "text",
+							text: `${resource.text}${provenanceSuffix}`,
+						});
+					} else if (typeof resource.blob === "string" && SUPPORTED_IMAGE_TYPES.has(mimeType)) {
+						// Binary resource whose mime is a supported image — inline it.
+						blocks.push({
+							type: "image",
+							source: {
+								type: "base64",
+								media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+								data: resource.blob,
+							},
+						});
+					} else {
+						// Binary resource we can't inline — name it so provenance and
+						// mime survive rather than collapsing to a bare stub.
+						blocks.push({
+							type: "text",
+							text: `[embedded resource: ${uri || "(no uri)"}${mimeType ? ` (${mimeType})` : ""}, ${typeof resource.blob === "string" ? "binary" : "no"} content]`,
+						});
+					}
 				} else {
 					// Graceful degradation for unsupported types
 					blocks.push({

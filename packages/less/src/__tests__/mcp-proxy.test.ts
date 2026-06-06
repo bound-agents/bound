@@ -198,6 +198,130 @@ describe("proxyToolCall", () => {
 		});
 	});
 
+	it("surfaces text from an embedded resource content block", async () => {
+		const toolNameMapping = new Map([
+			["boundless_mcp_github_get_file", { serverName: "github", toolName: "get_file" }],
+		]);
+
+		const mockClient = {
+			callTool: async () => {
+				return {
+					isError: false,
+					content: [
+						{
+							type: "resource",
+							resource: {
+								uri: "https://github.com/o/r/blob/main/src/server.ts",
+								mimeType: "text/x-typescript",
+								text: "export const answer = 42;",
+							},
+						},
+					],
+				};
+			},
+		};
+
+		manager = createMockManager(() => mockClient);
+
+		const result = await proxyToolCall(
+			manager,
+			"boundless_mcp_github_get_file",
+			{},
+			signal,
+			hostname,
+			toolNameMapping,
+		);
+
+		// Provenance + the actual resource text, NOT an "[unsupported ...]" stub.
+		expect(result.length).toBe(2);
+		const text = (result[1] as { type: "text"; text: string }).text;
+		expect(text).toContain("export const answer = 42;");
+		expect(text).not.toContain("unsupported");
+		// Provenance for the embedded resource survives.
+		expect(text).toContain("https://github.com/o/r/blob/main/src/server.ts");
+	});
+
+	it("maps a binary embedded resource with a supported image mime to an image block", async () => {
+		const toolNameMapping = new Map([
+			["boundless_mcp_test_render", { serverName: "test", toolName: "render" }],
+		]);
+		const b64 =
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+		const mockClient = {
+			callTool: async () => {
+				return {
+					isError: false,
+					content: [
+						{
+							type: "resource",
+							resource: { uri: "ui://test/img.png", mimeType: "image/png", blob: b64 },
+						},
+					],
+				};
+			},
+		};
+
+		manager = createMockManager(() => mockClient);
+
+		const result = await proxyToolCall(
+			manager,
+			"boundless_mcp_test_render",
+			{},
+			signal,
+			hostname,
+			toolNameMapping,
+		);
+
+		expect(result.length).toBe(2);
+		expect(result[1]).toEqual({
+			type: "image",
+			source: { type: "base64", media_type: "image/png", data: b64 },
+		});
+	});
+
+	it("describes a non-image binary embedded resource with uri and mime", async () => {
+		const toolNameMapping = new Map([
+			["boundless_mcp_test_blob", { serverName: "test", toolName: "blob" }],
+		]);
+
+		const mockClient = {
+			callTool: async () => {
+				return {
+					isError: false,
+					content: [
+						{
+							type: "resource",
+							resource: {
+								uri: "ui://test/data.bin",
+								mimeType: "application/octet-stream",
+								blob: "AAAA",
+							},
+						},
+					],
+				};
+			},
+		};
+
+		manager = createMockManager(() => mockClient);
+
+		const result = await proxyToolCall(
+			manager,
+			"boundless_mcp_test_blob",
+			{},
+			signal,
+			hostname,
+			toolNameMapping,
+		);
+
+		expect(result.length).toBe(2);
+		const text = (result[1] as { type: "text"; text: string }).text;
+		// Not the bare "[unsupported MCP content type: resource]" stub — names the
+		// resource so provenance survives even when we can't inline the bytes.
+		expect(text).toContain("ui://test/data.bin");
+		expect(text).toContain("application/octet-stream");
+	});
+
 	it("marks result as error when MCP result has isError", async () => {
 		const toolNameMapping = new Map([
 			["boundless_mcp_test_tool", { serverName: "test", toolName: "tool" }],
