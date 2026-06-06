@@ -1,9 +1,5 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes } from "node:crypto";
-import { unlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import { connectorHandleId } from "../connector-handle-id.js";
 import {
@@ -18,26 +14,15 @@ import {
 
 describe("connector-handle CRUD", () => {
 	let db: Database;
-	let dbPath: string;
 	const siteId = "test-site-001";
 
 	beforeEach(() => {
-		dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
-		db = new Database(dbPath);
+		db = new Database(":memory:");
 		applySchema(db);
 	});
 
 	afterEach(() => {
-		try {
-			db.close();
-		} catch {
-			// ignore
-		}
-		try {
-			unlinkSync(dbPath);
-		} catch {
-			// ignore
-		}
+		db.close();
 	});
 
 	it("creates a handle with deterministic ID", () => {

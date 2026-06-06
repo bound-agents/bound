@@ -1,10 +1,6 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
-import { cleanupTmpDir } from "@bound/shared/test-utils";
 import {
 	type StageEntry,
 	buildParentSummaryMap,
@@ -15,17 +11,14 @@ const TEST_SITE_ID = "test-site-00000000-0000-0000-0000-000000000000";
 
 describe("buildParentSummaryMap", () => {
 	let db: Database;
-	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), "build-summary-helpers-"));
-		db = new Database(join(tmpDir, "test.db"));
+		db = new Database(":memory:");
 		applySchema(db);
 	});
 
 	afterEach(() => {
 		db.close();
-		cleanupTmpDir(tmpDir);
 	});
 
 	test("Empty input keys returns empty map", () => {
@@ -386,17 +379,14 @@ describe("buildParentSummaryMap", () => {
 
 describe("buildStaleChildrenMap", () => {
 	let db: Database;
-	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), "build-summary-helpers-"));
-		db = new Database(join(tmpDir, "test.db"));
+		db = new Database(":memory:");
 		applySchema(db);
 	});
 
 	afterEach(() => {
 		db.close();
-		cleanupTmpDir(tmpDir);
 	});
 
 	test("Empty input summaries returns empty map", () => {

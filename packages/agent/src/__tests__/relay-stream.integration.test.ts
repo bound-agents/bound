@@ -518,8 +518,18 @@ describe("relay-stream integration tests", () => {
 			],
 		);
 
-		// Wait for RelayProcessor to process it
-		await new Promise((r) => setTimeout(r, 80));
+		// Wait for RelayProcessor to write the error response to outbox.
+		// Poll rather than a fixed sleep — the processor's poll-process-write
+		// cycle can exceed a short fixed wait on a slow (e.g. Windows CI) runner.
+		const appeared = await waitFor(
+			() =>
+				(
+					targetDb
+						.query("SELECT 1 FROM relay_outbox WHERE kind = 'error' LIMIT 1")
+						.all() as unknown[]
+				).length > 0,
+		);
+		expect(appeared).toBe(true);
 
 		// Verify error response was written to outbox
 		const outboxEntries = targetDb
