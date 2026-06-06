@@ -446,7 +446,6 @@ export async function createWsTestCluster(config: {
 
 	const hubKeypair = keypairs[0];
 	const hubSiteId = hubKeypair.siteId;
-	const hubPort = basePort;
 
 	const hubDb = await createDb(join("/tmp", `bound-ws-cluster-${testRunId}-hub.db`));
 
@@ -473,8 +472,15 @@ export async function createWsTestCluster(config: {
 		wsTransport: hubTransport,
 	});
 
+	// Bind to an OS-assigned ephemeral port (port: 0) rather than the caller's
+	// basePort. A caller-chosen port races other clusters created in the same
+	// run and — especially on Windows, where a just-closed listener lingers in
+	// TIME_WAIT — intermittently throws EADDRINUSE in beforeEach. The OS only
+	// hands out a free port, so collisions are impossible. Spokes dial
+	// hubServer.port below; the keyring `url` field is never actually dialed in
+	// this WS topology (spokes connect via the explicit hubUrl).
 	const hubServer = Bun.serve({
-		port: hubPort,
+		port: 0,
 		fetch: async (req, server) => {
 			const url = new URL(req.url);
 			if (url.pathname === "/sync/ws") {
@@ -484,6 +490,10 @@ export async function createWsTestCluster(config: {
 		},
 		websocket: wsHandlers.websocket,
 	});
+
+	// The actual bound port (OS-assigned because we passed port: 0). Spokes must
+	// dial THIS, not the caller's basePort hint.
+	const actualHubPort = hubServer.port;
 
 	// ── Spokes ───────────────────────────────────────────────────────────────
 
@@ -509,7 +519,7 @@ export async function createWsTestCluster(config: {
 		spokeTransport.start();
 
 		const wsClient = new WsSyncClient({
-			hubUrl: `http://localhost:${hubPort}`,
+			hubUrl: `http://localhost:${actualHubPort}`,
 			privateKey: spokeKeypair.privateKey,
 			siteId: spokeSiteId,
 			keyManager: spokeKeyManager,
