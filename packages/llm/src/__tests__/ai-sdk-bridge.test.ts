@@ -403,6 +403,45 @@ describe("toModelMessages — conversation-end invariant (developer injection af
 			"<system-context>\ntail\n</system-context>",
 		);
 	});
+
+	it("ends with a user message when the window has NO user message and developer content brackets the loop (long autonomous/delegated thread)", () => {
+		// Production shape (thread 2d055bbe): a delegated thread that ran long
+		// enough that its single user message scrolled out of the truncation
+		// window. The window now STARTS with developer notifications (head), has
+		// tool/assistant turns in the middle, and ENDS with more developer
+		// notifications (tail) — with NO user message anywhere to flush pendingDev.
+		// The head-content latch (pendingDevStartedAtEmptyResult) must not capture
+		// the TAIL developers; if it does, the whole pendingDev batch is routed to
+		// the head and the conversation ends on the assistant turn, which
+		// Anthropic-strict / Bedrock reject with "assistant message prefill".
+		const out = toModelMessages([
+			{ role: "developer", content: "wakeup" },
+			{ role: "developer", content: "notif-1" },
+			{
+				role: "tool_call",
+				content: [{ type: "tool_use", id: "t1", name: "query", input: {} }],
+			},
+			{
+				role: "tool_result",
+				content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }],
+			},
+			{ role: "assistant", content: "did work" },
+			{ role: "developer", content: "notif-2" },
+			{ role: "developer", content: "notif-3" },
+		]);
+		expect(out[out.length - 1].role).toBe("user");
+		// Head developer content must still ride at the front, not be lost.
+		expect(out[0].role).toBe("user");
+		const head = typeof out[0].content === "string" ? out[0].content : "";
+		expect(head).toContain("wakeup");
+		// Tail notifications land on the trailing user, not the head.
+		const tail =
+			typeof out[out.length - 1].content === "string"
+				? (out[out.length - 1].content as string)
+				: "";
+		expect(tail).toContain("notif-2");
+		expect(tail).toContain("notif-3");
+	});
 });
 
 describe("toModelMessages — content blocks", () => {
