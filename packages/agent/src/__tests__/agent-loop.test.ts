@@ -2148,9 +2148,11 @@ describe("AgentLoop", () => {
 			expect(result.error).toBeUndefined();
 		});
 
-		it("should not crash on summary extraction when no local backend available", async () => {
-			// After the loop completes, extractSummaryAndMemories is called with getDefault()
-			// which throws on spoke nodes. It must gracefully skip or handle missing backends.
+		it("delegates summary extraction over the relay when no local backend but model resolves cluster-wide", async () => {
+			// On a backendless spoke, extraction acquires its backend through cluster-wide
+			// resolution. With a remote host advertising the model, resolution returns a relay
+			// backend and extraction delegates (fire-and-forget) rather than skipping. The loop
+			// must complete without throwing and must NOT log the skip.
 			const remoteSiteId = `remote-site-${randomUUID().slice(0, 8)}`;
 			insertRemoteHost(remoteSiteId);
 
@@ -2169,11 +2171,11 @@ describe("AgentLoop", () => {
 				abortSignal: controller.signal,
 			});
 
-			// Should complete without throwing — previously crashed at extractSummaryAndMemories
+			// Should complete without throwing — delegates extraction over the relay
 			const result = await agentLoop.run();
 			expect(result.error).toBeUndefined();
-			// Verify the skip was logged
-			expect(infos.some((m) => m.includes("Skipping summary extraction"))).toBe(true);
+			// The skip path is for unresolvable models only; it must NOT fire here.
+			expect(infos.some((m) => m.includes("Skipping summary extraction"))).toBe(false);
 		});
 	});
 
