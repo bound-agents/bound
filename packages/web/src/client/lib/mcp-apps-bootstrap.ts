@@ -1,3 +1,4 @@
+import { isToolVisibilityAppOnly } from "@modelcontextprotocol/ext-apps/app-bridge";
 // Commit 5 of the MCP-Apps-in-web-UI feature: see project memory
 // project:mcp-apps-web-ui:design-and-progress.
 //
@@ -59,12 +60,19 @@ export async function connectMcpServers(
 			// headers are injected by the web-router proxy, not sent from here.
 			const mcpClient = await connect(new URL(server.proxyPath, origin));
 			const { tools } = await mcpClient.listTools();
+			// Honor MCP Apps tool visibility (_meta.ui.visibility). App-only tools
+			// (e.g. ["app"]) are widget-only: the rendered app calls them back via
+			// AppBridge.callServerTool — which routes through the in-page SDK client
+			// directly, not this host — so dropping them here hides them from the
+			// model without breaking the app's ability to invoke them. Default
+			// (absent) and ["model"]/["model","app"] stay visible to the model.
+			const modelTools = tools.filter((t) => !isToolVisibilityAppOnly(t));
 			// The SDK Client satisfies McpClientLike at runtime; its callTool union
 			// is broader at the type level (legacy toolResult variant), so cast.
 			const defs = host.registerServer(
 				server.name,
 				mcpClient as unknown as Parameters<McpAppHost["registerServer"]>[1],
-				tools as Parameters<McpAppHost["registerServer"]>[2],
+				modelTools as Parameters<McpAppHost["registerServer"]>[2],
 			);
 			console.info(`[mcp-apps] ${server.name}: registered ${defs.length} tool(s)`);
 		} catch (err) {

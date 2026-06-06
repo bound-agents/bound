@@ -21,6 +21,15 @@ function tool(name: string, uiResourceUri?: string): Tool {
 	} as unknown as Tool;
 }
 
+/** A tool with explicit `_meta.ui.visibility` (MCP Apps spec). */
+function toolWithVisibility(name: string, visibility: Array<"model" | "app">): Tool {
+	return {
+		name,
+		inputSchema: { type: "object", properties: {} },
+		_meta: { ui: { visibility } },
+	} as unknown as Tool;
+}
+
 describe("connectMcpServers", () => {
 	it("connects to each server's same-origin proxy path and registers its tools", async () => {
 		const servers: McpAppServer[] = [
@@ -42,6 +51,35 @@ describe("connectMcpServers", () => {
 		expect(names).toEqual(["mcp__excalidraw__create_view", "mcp__excalidraw__plain"]);
 		expect(host.isUiBearing("mcp__excalidraw__create_view")).toBe(true);
 		expect(host.isUiBearing("mcp__excalidraw__plain")).toBe(false);
+	});
+
+	it("excludes app-only tools (_meta.ui.visibility=['app']) from the model-facing definitions", async () => {
+		const servers: McpAppServer[] = [
+			{ name: "excalidraw", transport: "http", proxyPath: "/api/mcp-apps/proxy/excalidraw" },
+		];
+		const host = await connectMcpServers(
+			servers,
+			async () =>
+				fakeClient([
+					tool("create_view", "ui://excalidraw/app.html"),
+					toolWithVisibility("save_checkpoint", ["app"]),
+					toolWithVisibility("read_checkpoint", ["app"]),
+					toolWithVisibility("export_to_excalidraw", ["app"]),
+					toolWithVisibility("explicit_model", ["model"]),
+					toolWithVisibility("both", ["model", "app"]),
+				]),
+			"http://localhost:3001",
+		);
+
+		const names = host.getToolDefinitions().map((d) => d.function.name);
+		// create_view has no visibility (default ["model","app"] → visible);
+		// explicit_model and both include "model" → visible; the three ["app"]
+		// tools are widget-only and must never be offered to the model.
+		expect(names).toEqual([
+			"mcp__excalidraw__create_view",
+			"mcp__excalidraw__explicit_model",
+			"mcp__excalidraw__both",
+		]);
 	});
 
 	it("does not pass auth headers from the browser (they are injected by the proxy)", async () => {
