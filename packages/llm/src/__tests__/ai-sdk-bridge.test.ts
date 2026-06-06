@@ -547,6 +547,92 @@ describe("toModelMessages — content blocks", () => {
 		expect(out[1].content).toEqual([{ type: "reasoning", text: "reasoning text" }]);
 	});
 
+	it("drops a signature-less thinking block when target is Bedrock-Anthropic", () => {
+		// Cross-provider portability: a thinking block produced by a
+		// non-Anthropic model (local / OpenAI-compatible / non-Anthropic
+		// Bedrock) is persisted with NO signature — legal for the model that
+		// made it. When the thread later routes to opus / Bedrock-Anthropic,
+		// replaying that block as a reasoning part triggers
+		// `messages.N.content.M.thinking.signature: Field required` and the
+		// whole turn fails. A signature-less block cannot be legally replayed,
+		// so the read boundary drops it (Anthropic permits omitting thinking
+		// blocks from prior turns; it only rejects malformed ones). The inline
+		// text/tool_use in the same assistant message survives.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "unsigned reasoning" },
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{ reasoningProviderOptions: "bedrock" },
+		);
+		expect(out[1].content).toEqual([{ type: "text", text: "answer" }]);
+	});
+
+	it("drops a signature-less thinking block when target is Anthropic direct", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "unsigned reasoning" },
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{ reasoningProviderOptions: "anthropic" },
+		);
+		expect(out[1].content).toEqual([{ type: "text", text: "answer" }]);
+	});
+
+	it("keeps a redacted-only thinking block (no signature) when target is Bedrock", () => {
+		// Bedrock redacted-reasoning blocks carry redacted_data and NO
+		// signature; they ARE legally replayable via
+		// providerOptions.bedrock.redactedData, so they must survive the
+		// signature-less drop.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "", redacted_data: "BLOB" }],
+				},
+			],
+			{ reasoningProviderOptions: "bedrock" },
+		);
+		expect(out[1].content).toEqual([
+			{
+				type: "reasoning",
+				text: "",
+				providerOptions: { bedrock: { redactedData: "BLOB" } },
+			},
+		]);
+	});
+
+	it("keeps a signature-less thinking block on non-signature targets (null / unset)", () => {
+		// Non-Anthropic Bedrock (reasoningProviderOptions: null) and
+		// openai-compatible (unset) accept bare reasoning text and never demand
+		// a signature, so a signature-less block replays as plain reasoning text
+		// rather than being dropped.
+		const outNull = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking: "unsigned reasoning" }],
+				},
+			],
+			{ reasoningProviderOptions: null },
+		);
+		expect(outNull[1].content).toEqual([{ type: "reasoning", text: "unsigned reasoning" }]);
+	});
+
 	it("omits providerOptions on reasoning when no signature", () => {
 		const out = toModelMessages([
 			{ role: "user", content: "ask" },
