@@ -95,8 +95,7 @@ function revert(): void {
 	<p class="blurb">
 		The persona is a single synced row, read live when context is assembled. A save
 		propagates to every host on the next sync and takes effect on the following turn —
-		including turns relayed to another host for inference. There is no per-host
-		<code>persona.md</code> to keep aligned anymore.
+		including turns relayed to another host for inference.
 	</p>
 
 	{#if loading}
