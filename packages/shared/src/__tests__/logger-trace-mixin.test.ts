@@ -26,9 +26,16 @@ describe("logger-trace-mixin", () => {
 
 	afterEach(async () => {
 		resetLogger();
-		process.env.LOG_LEVEL = undefined;
-		process.env.BOUND_LOG_STDERR = undefined;
-		process.env.TEMP_LOG_DIR = undefined;
+		// Use `delete`, not `= undefined`: assigning `undefined` to a process.env
+		// property coerces to the literal string "undefined" (truthy), which on
+		// the next test bleeds a bogus value into LOG_LEVEL and crashes pino with
+		// "default level:undefined must be included in custom levels".
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.LOG_LEVEL;
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.BOUND_LOG_STDERR;
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.TEMP_LOG_DIR;
 		// Reset the global tracer provider
 		trace.disable();
 	});

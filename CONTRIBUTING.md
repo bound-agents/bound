@@ -90,7 +90,7 @@ For design rationale per package, see `docs/design/` — six topic files coverin
 - **Integration tests**: `*.integration.test.ts`
 - **Runner**: `bun:test` (`describe` / `it` / `expect`)
 - **Coverage targets**: core/agent/sync/platforms 80%, web/cli 60%
-- **Test DBs**: use temp paths with `randomBytes(4).toString("hex")` to avoid collisions
+- **Test DBs**: prefer an in-memory DB (`new Database(":memory:")`) for unit tests that pass the `db` object directly and never reopen from a path — it sidesteps Windows `EBUSY` when a recursive `rmSync` races the still-closing SQLite WAL/SHM handle. When a file-backed DB is genuinely needed, build the path under `os.tmpdir()` (e.g. `join(tmpdir(), \`x-${randomBytes(4).toString("hex")}.db\`)`), never a hardcoded `/tmp/...` (which is not portable to Windows runners), and clean up with `rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })`.
 - **Multi-instance sync tests**: use random ports AND a unique `testRunId` per test. Without both, you'll hit `EADDRINUSE` or cross-test state bleed.
 - **Mock LLM**: implement the `LLMBackend` interface with `setTextResponse()` / `setToolThenTextResponse()` — see existing tests in `packages/agent`.
 - **Typecheck in tests**: the typecheck config excludes `__tests__/` directories, so missing fields on test-only fixtures can be silent. Mirror production shapes precisely when constructing `StreamChunk.done.usage` etc.

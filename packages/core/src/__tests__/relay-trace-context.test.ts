@@ -1,6 +1,8 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
 import { insertInbox, readUndelivered, readUnprocessed, writeOutbox } from "../relay";
 import { applySchema } from "../schema";
@@ -10,7 +12,7 @@ describe("relay trace_context column", () => {
 	let testDbPath: string;
 
 	beforeEach(() => {
-		testDbPath = `/tmp/relay-trace-${randomBytes(4).toString("hex")}.db`;
+		testDbPath = join(tmpdir(), `relay-trace-${randomBytes(4).toString("hex")}.db`);
 		db = new Database(testDbPath);
 		applySchema(db);
 	});
