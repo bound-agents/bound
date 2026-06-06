@@ -73,6 +73,7 @@ import {
 import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
+import { formatMcpHelp } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -647,6 +648,45 @@ export class RelayProcessor {
 
 		// Extract subcommand from args
 		const subcommand = payload.args.subcommand;
+		const hasHelp = payload.args.help !== undefined;
+
+		// Help request — answer it here, on the host where the server actually
+		// lives, from a live listTools. Renders via the shared formatMcpHelp so
+		// `<server> --help` and `<server> <sub> --help` look byte-identical to the
+		// local dispatch path regardless of which host executes (host-parity).
+		// Triggers: missing/empty subcommand, subcommand="help", or a --help flag.
+		const isHelpRequest =
+			typeof subcommand !== "string" ||
+			subcommand.trim().length === 0 ||
+			subcommand === "help" ||
+			hasHelp;
+		if (isHelpRequest) {
+			const helpTarget =
+				hasHelp &&
+				typeof subcommand === "string" &&
+				subcommand.trim().length > 0 &&
+				subcommand !== "help"
+					? subcommand
+					: undefined;
+			let tools: Tool[] = [];
+			try {
+				tools = await client.listTools();
+			} catch (error) {
+				this.logger.debug("[relay] listTools failed for help request", {
+					server: serverName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+			const help = formatMcpHelp(serverName, tools, helpTarget);
+			const helpResult: ResultPayload = {
+				stdout: help.stdout,
+				stderr: help.stderr,
+				exit_code: help.exitCode,
+				execution_ms: 0,
+			};
+			return JSON.stringify(helpResult);
+		}
+
 		if (typeof subcommand !== "string" || subcommand.trim().length === 0) {
 			throw new Error(`Missing or invalid subcommand in args for server: ${serverName}`);
 		}
