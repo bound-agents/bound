@@ -226,6 +226,53 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
+	describe("WS message schemas - context:stage", () => {
+		it("should accept valid context:stage with string content", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			const msg = JSON.stringify({
+				type: "context:stage",
+				thread_id: "thread-123",
+				content: "[task-board app] board updated: 5/8 done",
+			});
+
+			expect(() => {
+				handler.message(mockWs, msg);
+			}).not.toThrow();
+		});
+
+		it("should accept context:stage with block content", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			const msg = JSON.stringify({
+				type: "context:stage",
+				thread_id: "thread-123",
+				content: [{ type: "text", text: "staged context" }],
+			});
+
+			expect(() => {
+				handler.message(mockWs, msg);
+			}).not.toThrow();
+		});
+
+		it("should reject context:stage without required thread_id", () => {
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(mockWs);
+
+			const msg = JSON.stringify({
+				type: "context:stage",
+				content: "no thread",
+			});
+
+			handler.message(mockWs, msg);
+
+			const messages = (mockWs as unknown as MockWebSocket).messages as Array<{ type: string }>;
+			expect(messages.some((m) => m.type === "error")).toBe(true);
+		});
+	});
+
 	describe("Discriminated union schema validation", () => {
 		it("should accept any valid message type", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;

@@ -106,6 +106,19 @@ const toolResultSchema = z.object({
 	trace_data: z.string().optional(), // serialized span array JSON (optional)
 });
 
+// Silent context staging — an MCP App's `ui/update-model-context` persists a
+// `developer`-role message WITHOUT firing a turn. Per invariant #9 the staged
+// row merges into the next user turn (wrapped in <system-context>), and an
+// orphan stage with no following user turn is naturally dropped — which is
+// exactly "stage for the next interaction" semantics. This is the spec-correct
+// counterpart to `message:send` (which is `ui/message`: persist a user turn AND
+// fire inference now).
+const contextStageSchema = z.object({
+	type: z.literal("context:stage"),
+	thread_id: z.string(),
+	content: z.union([z.string(), z.array(contentBlockSchema)]),
+});
+
 // Discriminated union for all message types
 const wsClientMessageSchema = z.discriminatedUnion("type", [
 	sessionConfigureSchema,
@@ -113,6 +126,7 @@ const wsClientMessageSchema = z.discriminatedUnion("type", [
 	threadSubscribeSchema,
 	threadUnsubscribeSchema,
 	toolResultSchema,
+	contextStageSchema,
 ]);
 
 interface ClientConnection {
@@ -698,6 +712,99 @@ export function createWebSocketHandler(
 		}
 	}
 
+	// Silently stage a `developer`-role context message WITHOUT firing a turn.
+	// This is the spec-correct `ui/update-model-context` path: the row sits in
+	// the thread and is merged into the NEXT user turn by context assembly
+	// (invariant #9, wrapped in <system-context>). No `message:created` emit, so
+	// no inference is triggered now — the staged context is seen on the next
+	// interaction, and an orphan stage with no following user turn is naturally
+	// dropped, which is exactly the intended "stage for next time" semantics.
+	function handleContextStage(
+		conn: ClientConnection,
+		msg: z.infer<typeof contextStageSchema>,
+	): void {
+		if (!db || !siteId) {
+			conn.ws.send(
+				JSON.stringify({
+					type: "error",
+					code: "handler_not_configured",
+					message: "Context stage handler not configured with required dependencies",
+				}),
+			);
+			return;
+		}
+
+		try {
+			// Developer context is text-only — flatten any block form to its text
+			// blocks (update-model-context carries no attachments).
+			const text =
+				typeof msg.content === "string"
+					? msg.content
+					: msg.content
+							.map((b) => (b.type === "text" ? b.text : ""))
+							.filter((t) => t.length > 0)
+							.join("\n\n");
+
+			if (!text.trim()) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "invalid_content",
+						message: "Content must not be empty",
+					}),
+				);
+				return;
+			}
+
+			const thread = db
+				.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
+				.get(msg.thread_id);
+			if (!thread) {
+				conn.ws.send(
+					JSON.stringify({
+						type: "error",
+						code: "thread_not_found",
+						message: "Thread not found",
+					}),
+				);
+				return;
+			}
+
+			const messageId = randomUUID();
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: msg.thread_id,
+					role: "developer",
+					content: text,
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: hostOrigin,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
+				},
+				siteId,
+			);
+			// Deliberately NO eventBus.emit("message:created") — staging must not
+			// drive a turn.
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : "Unknown error";
+			conn.ws.send(
+				JSON.stringify({
+					type: "error",
+					code: "context_stage_failed",
+					message: errorMsg,
+				}),
+			);
+		}
+	}
+
 	function reExportClientTraceData(traceData: string): void {
 		try {
 			const spans = JSON.parse(traceData) as SerializedSpan[];
@@ -1173,6 +1280,10 @@ export function createWebSocketHandler(
 					}
 					case "thread:unsubscribe": {
 						handleThreadUnsubscribe(conn, message);
+						break;
+					}
+					case "context:stage": {
+						handleContextStage(conn, message);
 						break;
 					}
 					case "message:send": {
