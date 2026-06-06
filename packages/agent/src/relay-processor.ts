@@ -52,6 +52,7 @@ import {
 	parseJsonUntyped,
 	processPayloadSchema,
 } from "@bound/shared";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	EMPTY,
@@ -71,10 +72,10 @@ import {
 } from "./agent-loop-utils.js";
 import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
+import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
-
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -138,6 +139,10 @@ export class RelayProcessor {
 	private wsRegistry: ClientToolResolver | null = null;
 	private fileReader?: (path: string) => Promise<Uint8Array>;
 	private threadExecutor: ThreadExecutor | null = null;
+	// Lazy per-server cache of tool inputSchemas, keyed serverName → toolName →
+	// inputSchema. Populated on first relay tool_call for a server so arg
+	// coercion does not add a listTools round-trip on every call.
+	private toolSchemaCache = new Map<string, Map<string, Tool["inputSchema"]>>();
 
 	/**
 	 * Typed handler map — every HandledRequestKind MUST have an entry.
@@ -649,7 +654,15 @@ export class RelayProcessor {
 		// Strip subcommand from args before calling
 		const { subcommand: _, ...toolArgs } = payload.args;
 
-		const result = await client.callTool(subcommand, toolArgs);
+		// Coerce string args to their JSON-Schema types before dispatch, mirroring
+		// the local MCP path (mcp-bridge.ts generateMCPCommands). Relay payload args
+		// arrive as bash --key value strings; strict servers reject e.g. "160" where
+		// a number is expected ("not of type float64"). Best-effort: an unavailable
+		// schema (listTools failure, unknown tool) falls back to the raw args.
+		const inputSchema = await this.getToolInputSchema(serverName, client, subcommand);
+		const coercedArgs = inputSchema ? coerceArgsFromSchema(toolArgs, inputSchema) : toolArgs;
+
+		const result = await client.callTool(subcommand, coercedArgs);
 		const resultPayload: ResultPayload = {
 			stdout: result.content,
 			stderr: result.isError ? result.content : "",
@@ -657,6 +670,38 @@ export class RelayProcessor {
 			execution_ms: 0,
 		};
 		return JSON.stringify(resultPayload);
+	}
+
+	/**
+	 * Resolve a tool's inputSchema for arg coercion, caching the server's tool
+	 * list on first use. Returns undefined when the schema can't be resolved
+	 * (listTools failure, or the subcommand isn't an advertised tool) so the
+	 * caller falls back to forwarding raw args — coercion is best-effort and
+	 * must never block a dispatch.
+	 */
+	private async getToolInputSchema(
+		serverName: string,
+		client: MCPClient,
+		toolName: string,
+	): Promise<Tool["inputSchema"] | undefined> {
+		let serverSchemas = this.toolSchemaCache.get(serverName);
+		if (!serverSchemas) {
+			try {
+				const tools = await client.listTools();
+				serverSchemas = new Map<string, Tool["inputSchema"]>();
+				for (const tool of tools) {
+					serverSchemas.set(tool.name, tool.inputSchema);
+				}
+				this.toolSchemaCache.set(serverName, serverSchemas);
+			} catch (error) {
+				this.logger.debug("[relay] listTools failed; forwarding raw args", {
+					server: serverName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return undefined;
+			}
+		}
+		return serverSchemas.get(toolName);
 	}
 
 	private async executePlatformRequest(payload: PlatformRequestPayload): Promise<string> {
