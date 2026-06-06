@@ -10,7 +10,13 @@ import {
 	resolveRelayConfig,
 	updateRow,
 } from "@bound/core";
-import type { ContentBlock, ModelRouter, StreamChunk, ToolDefinition } from "@bound/llm";
+import type {
+	ContentBlock,
+	LLMBackend,
+	ModelRouter,
+	StreamChunk,
+	ToolDefinition,
+} from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, EventMap, SyncConfig } from "@bound/shared";
@@ -62,6 +68,7 @@ import { trackFilePath } from "./file-thread-tracker";
 import { resolveAdaptiveTruncation } from "./inflation-ratio";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
+import { createRelayBackend } from "./relay-backend";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { sharedStableSubsectionCache } from "./stable-prefix";
@@ -491,6 +498,34 @@ export class AgentLoop {
 			this._inferenceTimeoutMs = relayConfig.inference_timeout_ms;
 		}
 		return this._inferenceTimeoutMs;
+	}
+
+	// Acquires a backend for loop-end summary extraction through cluster-wide
+	// resolution rather than a local-only tryGetBackend lookup. A local
+	// resolution runs extraction in-process exactly as before; a remote
+	// resolution wraps the relay so extraction delegates over the inference
+	// relay (the case that makes extraction run on a backendless host). An
+	// unresolvable model returns null and extraction is skipped.
+	private acquireSummaryBackend(modelId: string): LLMBackend | null {
+		const resolution = resolveModel(modelId, this.modelRouter, this.ctx.db, this.ctx.siteId);
+		switch (resolution.kind) {
+			case "local":
+				return resolution.backend;
+			case "remote":
+				return createRelayBackend(
+					{
+						db: this.ctx.db,
+						eventBus: this.ctx.eventBus,
+						siteId: this.ctx.siteId,
+						logger: this.ctx.logger,
+					},
+					resolution.hosts,
+					resolution.modelId,
+					this.inferenceTimeoutMs,
+				);
+			case "error":
+				return null;
+		}
 	}
 
 	async run(): Promise<AgentLoopResult> {
@@ -2497,9 +2532,18 @@ export class AgentLoop {
 				aborted: this.aborted,
 			});
 
-			// Summary extraction requires a local LLM backend. On spoke nodes with no local
-			// backends, skip extraction — it will be handled by the hub or a node that has one.
-			const extractionBackend = this.modelRouter.tryGetBackend(this.modelRouter.getDefaultId());
+			// Summary extraction acquires its backend through cluster-wide resolution, so it
+			// runs even when this loop executes on a host with no local backend (it delegates
+			// over the relay). Prefer the router's configured default (the cheap summary model
+			// on hosts that have one); fall back to the model this loop used this turn when no
+			// default resolves — the backendless case, where getDefaultId() returns "".
+			const primarySummaryModelId = this.modelRouter.getDefaultId();
+			const fallbackSummaryModelId = getResolvedModelId(
+				this.lastModelResolution,
+				this.config.modelId ?? "",
+			);
+			const summaryModelId = primarySummaryModelId || fallbackSummaryModelId;
+			const extractionBackend = this.acquireSummaryBackend(summaryModelId);
 			if (extractionBackend) {
 				extractSummaryAndMemories(
 					this.ctx.db,
@@ -2513,8 +2557,9 @@ export class AgentLoop {
 					});
 				});
 			} else {
-				this.ctx.logger.info("Skipping summary extraction — no local backend available", {
+				this.ctx.logger.info("Skipping summary extraction — model unresolvable cluster-wide", {
 					threadId: this.config.threadId,
+					summaryModelId,
 				});
 			}
 
