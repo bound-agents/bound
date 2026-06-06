@@ -297,6 +297,31 @@ export function toModelMessages(
 			continue;
 		}
 
+		// Eager head-flush. If we accumulated developer content while `result`
+		// was still empty (genuine conversation-kickoff content, e.g. a scheduler
+		// wakeup) and we are now about to emit a non-developer, non-user message,
+		// that head content is settled — emit it as the head user message NOW and
+		// drop the head-content latch. Reason: pendingDev is only ever flushed by
+		// a following USER message, but a long autonomous/delegated loop can be
+		// truncated to a window containing NO user message at all (every user turn
+		// scrolled out). In that window the latch (pendingDevStartedAtEmptyResult)
+		// would otherwise stay true for the entire iteration, so TAIL developer
+		// notifications arriving after the assistant/tool turns get lumped into the
+		// same batch and the post-loop handler routes the whole thing to the HEAD —
+		// leaving the conversation ending on the assistant message, which
+		// Anthropic-strict / Bedrock reject with "This model does not support
+		// assistant message prefill. The conversation must end with a user message."
+		// Flushing here splits head-dev from tail-dev: tail notifications then start
+		// a fresh batch (latch false, result non-empty) and correctly become the
+		// trailing user. User messages are excluded — they merge pendingDev into
+		// themselves below, which is the correct head-merge and must not be preempted
+		// (preempting it would emit two consecutive user messages).
+		if (pendingDev.length > 0 && pendingDevStartedAtEmptyResult && msg.role !== "user") {
+			result.push({ role: "user", content: wrapDev(pendingDev) });
+			pendingDev.length = 0;
+			pendingDevStartedAtEmptyResult = false;
+		}
+
 		if (msg.role === "tool_call") {
 			const blocks = normalizeBlocks(msg.content);
 			const parts: Array<Record<string, unknown>> = [];
