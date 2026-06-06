@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ContentBlock as AcpContentBlock } from "@agentclientprotocol/sdk";
@@ -150,8 +150,11 @@ describe("toolCallLocations", () => {
 	});
 
 	it("anchors the edit follow-along line on the first divergence from old_string", () => {
-		const dir = join("/tmp", `boundless-acp-test-${randomBytes(4).toString("hex")}`);
-		mkdirSync(dir, { recursive: true });
+		// mkdtempSync(tmpdir()) yields a real absolute path (with a drive letter on
+		// Windows), so it matches what toolCallLocations resolves internally. A bare
+		// join("/tmp", …) produces a drive-less "\tmp\…" that never matches the
+		// resolved "D:\tmp\…" on Windows.
+		const dir = mkdtempSync(join(tmpdir(), "boundless-acp-test-"));
 		try {
 			writeFileSync(join(dir, "a.ts"), "alpha\nbeta\ngamma\ndelta\n");
 

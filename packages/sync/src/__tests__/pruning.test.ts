@@ -240,9 +240,17 @@ describe("pruning", () => {
 			fileDb.run("VACUUM");
 
 			fileDb.run("CREATE TABLE test_data (id INTEGER PRIMARY KEY, payload TEXT)");
-			for (let i = 0; i < 5000; i++) {
-				fileDb.run("INSERT INTO test_data (payload) VALUES (?)", ["x".repeat(1000)]);
-			}
+			// Batch the inserts in a single transaction: 5000 individual statements
+			// is 5000 WAL fsyncs, which on a slow Windows CI filesystem blew past the
+			// 30s timeout (observed 30909ms). One transaction is one fsync and keeps
+			// the same ~5MB churn, so the freelist still exceeds the 1000-page drain
+			// threshold and drainFreelistOnStartup's reclaim path is still exercised.
+			const insertMany = fileDb.transaction(() => {
+				for (let i = 0; i < 5000; i++) {
+					fileDb.run("INSERT INTO test_data (payload) VALUES (?)", ["x".repeat(1000)]);
+				}
+			});
+			insertMany();
 			fileDb.run("DELETE FROM test_data");
 
 			const logs: string[] = [];

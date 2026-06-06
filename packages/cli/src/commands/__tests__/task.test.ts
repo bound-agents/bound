@@ -1,23 +1,20 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
 import { taskUpdate } from "../task.js";
 
 const SITE_ID = "test-site";
 
 describe("task commands", () => {
-	let tempDir: string;
 	let db: Database;
 	let originalLog: typeof console.log;
 
 	function setup() {
 		originalLog = console.log;
-		tempDir = mkdtempSync(join(tmpdir(), "bound-task-test-"));
-		const dbPath = join(tempDir, "test.db");
-		db = new Database(dbPath);
+		// In-memory DB: these tests pass the `db` object directly to the command
+		// under test and never reopen from a path, so a file-backed temp DB only
+		// adds a Windows EBUSY hazard (rmSync racing the still-closing WAL handle).
+		db = new Database(":memory:");
 		applySchema(db);
 	}
 
@@ -70,9 +67,6 @@ describe("task commands", () => {
 	afterEach(() => {
 		console.log = originalLog;
 		if (db) db.close();
-		if (tempDir && existsSync(tempDir)) {
-			rmSync(tempDir, { recursive: true });
-		}
 	});
 
 	describe("taskUpdate", () => {

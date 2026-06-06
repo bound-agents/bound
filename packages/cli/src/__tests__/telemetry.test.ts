@@ -10,16 +10,24 @@ import {
 
 describe("telemetry", () => {
 	beforeEach(() => {
-		// Clean up any existing provider before each test
-		process.env.OTEL_ENABLED = undefined;
-		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = undefined;
+		// Clean up any existing provider before each test. Use `delete`, not
+		// `= undefined`: assigning `undefined` coerces to the literal string
+		// "undefined", which is truthy — so `if (!process.env.OTEL_ENABLED)` in
+		// initTelemetry would NOT short-circuit, building a real OTLPTraceExporter
+		// with url "undefined/v1/traces" and throwing in validateUserProvidedUrl.
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.OTEL_ENABLED;
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 	});
 
 	afterEach(async () => {
 		// Ensure telemetry is shut down after each test
 		await shutdownTelemetry();
-		process.env.OTEL_ENABLED = undefined;
-		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = undefined;
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.OTEL_ENABLED;
+		// biome-ignore lint/performance/noDelete: clearing process.env requires delete; see note above
+		delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 	});
 
 	it("otel-tracing.AC1.3: Without OTEL_ENABLED, initTelemetry is a no-op", () => {

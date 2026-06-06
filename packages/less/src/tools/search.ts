@@ -1,5 +1,5 @@
 import { type Dirent, readFileSync, readdirSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
 	type SearchFileInput,
 	formatSearchResults,
@@ -33,7 +33,10 @@ function collectPaths(root: string, cwd: string): string[] {
 		}
 		for (const entry of entries) {
 			const abs = join(dir, entry.name);
-			const rel = relative(cwd, abs);
+			// Normalize to forward slashes so the grep-style `path:line:` output is
+			// identical across platforms (Windows `relative()` yields backslashes).
+			// shouldSearchPath normalizes internally, so exclusion matching is unaffected.
+			const rel = relative(cwd, abs).split(sep).join("/");
 			if (entry.isDirectory()) {
 				// shouldSearchPath checks excluded dir segments; append "/" so a
 				// directory named e.g. "dist" is matched by the "dist/" exclude.

@@ -1,10 +1,12 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema, insertRow, softDelete, updateRow } from "../index";
 
 function createTestDb(): Database {
-	const dbPath = `/tmp/test-fts5-${randomBytes(4).toString("hex")}.db`;
+	const dbPath = join(tmpdir(), `test-fts5-${randomBytes(4).toString("hex")}.db`);
 	const db = new Database(dbPath);
 	applySchema(db);
 	return db;

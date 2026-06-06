@@ -6,15 +6,20 @@ import {
 	collectContextFiles,
 	collectGitContext,
 } from "../tools/registry";
+import { resolveShell } from "../tools/shell";
 
 // packages/less/src/__tests__ → packages/less/src → packages/less → packages → repo root
 const REPO_ROOT = join(import.meta.dir, "../../../..");
+
+// The shell-family tool name varies by host platform (boundless_bash on POSIX,
+// boundless_pwsh / boundless_cmd on Windows), so resolve it the same way buildToolSet does.
+const SHELL_TOOL_NAME = resolveShell(undefined).toolName;
 
 describe("buildToolSet", () => {
 	it("returns core tools with correct structure", () => {
 		const { tools, handlers } = buildToolSet("/tmp", "localhost");
 
-		// Should have exactly 6 core tools (read, write, edit, bash, copy, search)
+		// Should have exactly 6 core tools (read, write, edit, shell, copy, search)
 		expect(tools).toHaveLength(6);
 
 		// Check tool names
@@ -22,7 +27,7 @@ describe("buildToolSet", () => {
 		expect(toolNames).toContain("boundless_read");
 		expect(toolNames).toContain("boundless_write");
 		expect(toolNames).toContain("boundless_edit");
-		expect(toolNames).toContain("boundless_bash");
+		expect(toolNames).toContain(SHELL_TOOL_NAME);
 		expect(toolNames).toContain("boundless_copy");
 		expect(toolNames).toContain("boundless_search");
 
@@ -31,7 +36,7 @@ describe("buildToolSet", () => {
 		expect(handlers.has("boundless_read")).toBe(true);
 		expect(handlers.has("boundless_write")).toBe(true);
 		expect(handlers.has("boundless_edit")).toBe(true);
-		expect(handlers.has("boundless_bash")).toBe(true);
+		expect(handlers.has(SHELL_TOOL_NAME)).toBe(true);
 		expect(handlers.has("boundless_copy")).toBe(true);
 		expect(handlers.has("boundless_search")).toBe(true);
 	});
@@ -93,15 +98,15 @@ describe("buildToolSet", () => {
 		expect(params.required).toContain("new_string");
 	});
 
-	it("has correct boundless_bash parameters", () => {
+	it("has correct shell-tool parameters", () => {
 		const { tools } = buildToolSet("/tmp", "localhost");
 
-		const bashTool = tools.find((t) => t.function.name === "boundless_bash");
-		expect(bashTool).toBeDefined();
+		const shellTool = tools.find((t) => t.function.name === SHELL_TOOL_NAME);
+		expect(shellTool).toBeDefined();
 
-		if (!bashTool) return;
+		if (!shellTool) return;
 
-		const params = bashTool.function.parameters as Record<string, unknown>;
+		const params = shellTool.function.parameters as Record<string, unknown>;
 		expect(params.required).toContain("command");
 	});
 
@@ -143,7 +148,7 @@ describe("buildToolSet", () => {
 			"boundless_read",
 			"boundless_write",
 			"boundless_edit",
-			"boundless_bash",
+			SHELL_TOOL_NAME,
 			"boundless_copy",
 			"boundless_search",
 		];
