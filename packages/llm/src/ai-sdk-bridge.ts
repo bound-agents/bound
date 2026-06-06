@@ -329,7 +329,8 @@ export function toModelMessages(
 				if (b.type === "text" && b.text) {
 					parts.push({ type: "text", text: b.text });
 				} else if (b.type === "thinking") {
-					parts.push(buildReasoningPart(b, opts.reasoningProviderOptions));
+					const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
+					if (reasoningPart) parts.push(reasoningPart);
 				} else if (b.type === "tool_use") {
 					parts.push({
 						type: "tool-call",
@@ -410,7 +411,8 @@ export function toModelMessages(
 			if (b.type === "text") {
 				if (b.text) parts.push({ type: "text", text: b.text });
 			} else if (b.type === "thinking") {
-				parts.push(buildReasoningPart(b, opts.reasoningProviderOptions));
+				const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
+				if (reasoningPart) parts.push(reasoningPart);
 			} else if (b.type === "tool_use") {
 				parts.push({
 					type: "tool-call",
@@ -617,7 +619,29 @@ function extractText(blocks: ContentBlock[]): string {
 function buildReasoningPart(
 	b: Extract<ContentBlock, { type: "thinking" }>,
 	providerKey: "bedrock" | "anthropic" | null | undefined,
-) {
+): Record<string, unknown> | null {
+	// Cross-provider portability: a thinking block is only legal on the wire
+	// for a signature-requiring target (Bedrock-Anthropic, Anthropic direct) if
+	// it carries its cryptographic signature. A signature-less thinking block is
+	// perfectly legal for the model that produced it — local, OpenAI-compatible,
+	// and non-Anthropic Bedrock models (Kimi, MiniMax, GLM, Nova, …) emit
+	// reasoning text with no signature. But when such a thread later routes to
+	// opus / Bedrock-Anthropic, replaying that block triggers
+	// `messages.N.content.M.thinking.signature: Field required` and the entire
+	// turn fails. There is no signature to synthesize, so the only legal move is
+	// to drop the block: Anthropic permits omitting thinking blocks from prior
+	// assistant turns; it only rejects malformed ones. The inline text / tool_use
+	// in the same assistant message is unaffected (the caller skips only the null
+	// reasoning part). This mirrors the read-boundary `tool_use.id` sanitization
+	// that lets a thread self-heal across a provider switch without DB surgery.
+	//
+	// A Bedrock redacted-reasoning block (redacted_data, no signature) IS legally
+	// replayable via providerOptions.bedrock.redactedData, so it survives the drop.
+	const requiresSignature = providerKey === "bedrock" || providerKey === "anthropic";
+	if (requiresSignature && !b.signature) {
+		const replayableRedacted = providerKey === "bedrock" && !!b.redacted_data;
+		if (!replayableRedacted) return null;
+	}
 	const part: Record<string, unknown> = {
 		type: "reasoning" as const,
 		text: b.thinking,
