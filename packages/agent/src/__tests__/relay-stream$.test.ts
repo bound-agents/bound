@@ -82,6 +82,27 @@ const eligibleHostFixture = (siteId: string, hostName: string) => ({
 	modified_at: new Date().toISOString(),
 });
 
+/**
+ * Poll until `predicate` is true or the timeout elapses. Used in timing tests
+ * to wait for an asynchronous condition (e.g. a relay timeout's downstream
+ * outbox write) deterministically, rather than sleeping a fixed wall-clock
+ * interval. A fixed sleep assumes the condition completes within a fixed
+ * budget, which races on a loaded CI runner; polling proceeds the moment the
+ * condition holds and only fails if it never does.
+ */
+async function pollUntil(
+	predicate: () => boolean,
+	opts: { timeoutMs: number; intervalMs: number },
+): Promise<void> {
+	const start = Date.now();
+	while (!predicate()) {
+		if (Date.now() - start > opts.timeoutMs) {
+			throw new Error(`pollUntil timed out after ${opts.timeoutMs}ms`);
+		}
+		await new Promise((r) => setTimeout(r, opts.intervalMs));
+	}
+}
+
 const payloadFixture = {
 	model: "test-model",
 	messages: [{ role: "user" as const, content: "hello" }],
@@ -343,9 +364,21 @@ describe("createRelayStream$", () => {
 		// Get first outbox entry (spoke-1)
 		const firstStreamId = getStreamIdFromOutbox(db);
 
-		// First host timeout occurs after 200ms. Meanwhile, second host outbox entry gets created.
-		// Wait for timeout to occur and second host to be attempted
-		await new Promise<void>((resolve) => setTimeout(resolve, 300));
+		// First host times out after 200ms; the stream then switches to spoke-2
+		// and writes a second 'inference' outbox entry (plus a cancel for the
+		// first host). Poll for that second inference entry rather than sleeping a
+		// fixed 300ms: on a loaded CI runner (observed on macos-latest) the
+		// timeout's downstream cascade can land after a fixed wait, which raced
+		// the cnt===2 assertion below and made this test flaky.
+		await pollUntil(
+			() =>
+				(
+					db.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'").get() as {
+						cnt: number;
+					}
+				).cnt >= 2,
+			{ timeoutMs: 5000, intervalMs: 25 },
+		);
 
 		// Get second outbox entry (spoke-2) - query from after first entry
 		const secondEntry = db
