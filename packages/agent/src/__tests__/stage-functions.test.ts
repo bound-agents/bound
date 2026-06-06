@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { Database as BunDatabase } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes } from "node:crypto";
 import {
 	loadGraphEntries,
 	loadPinnedEntries,
@@ -11,13 +10,9 @@ import {
 
 describe("Stage Functions - L0 Pinned Entries", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		// Create temp database
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/stage-test-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		// Create minimal schema
 		db.exec(`
@@ -80,11 +75,6 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			Bun.file(dbPath).delete?.();
-		} catch {
-			// ignore
-		}
 	});
 
 	it("AC3.1: loads entries with tier='pinned'", () => {
@@ -159,13 +149,9 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 
 describe("Stage Functions - L1 Summary Entries", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		// Create temp database
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/stage-test-l1-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		// Create minimal schema
 		db.exec(`
@@ -209,11 +195,6 @@ describe("Stage Functions - L1 Summary Entries", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			Bun.file(dbPath).delete?.();
-		} catch {
-			// ignore
-		}
 	});
 
 	it("AC3.2: loads summary entry and adds children to exclusion set", () => {
@@ -462,12 +443,9 @@ describe("Stage Functions - L1 Summary Entries", () => {
 
 describe("loadPinnedEntries function", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/loadpinned-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		db.exec(`
 			CREATE TABLE semantic_memory (
@@ -498,11 +476,6 @@ describe("loadPinnedEntries function", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			Bun.file(dbPath).delete?.();
-		} catch {
-			// ignore
-		}
 	});
 
 	it("AC3.1: loadPinnedEntries returns pinned tier entries", () => {
@@ -559,12 +532,9 @@ describe("loadPinnedEntries function", () => {
 
 describe("loadSummaryEntries function", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/loadsummary-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		db.exec(`
 			CREATE TABLE semantic_memory (
@@ -607,11 +577,6 @@ describe("loadSummaryEntries function", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			Bun.file(dbPath).delete?.();
-		} catch {
-			// ignore
-		}
 	});
 
 	it("AC3.2: loadSummaryEntries loads summary and children", () => {
@@ -754,13 +719,9 @@ describe("loadSummaryEntries function", () => {
 
 describe("Stage Functions - L2 Graph Entries", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		// Create temp database
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/stage-test-l2-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		// Create minimal schema
 		db.exec(`
@@ -823,11 +784,6 @@ describe("Stage Functions - L2 Graph Entries", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			Bun.file(dbPath).delete?.();
-		} catch {
-			// ignore
-		}
 	});
 
 	it("AC3.5: L2 returns only default tier entries, excludes other tiers", () => {
@@ -1076,13 +1032,9 @@ describe("Stage Functions - L2 Graph Entries", () => {
 
 describe("Stage Functions - L3 Recency Entries", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		// Create temp database
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/stage-test-l3-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		// Create minimal schema
 		db.exec(`
@@ -1126,11 +1078,6 @@ describe("Stage Functions - L3 Recency Entries", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			Bun.file(dbPath).delete?.();
-		} catch {
-			// ignore
-		}
 	});
 
 	it("AC3.7: L3 returns only default tier entries (plus orphaned details), ordered by recency, respects maxSlots", () => {
@@ -1250,12 +1197,9 @@ describe("Stage Functions - L3 Recency Entries", () => {
 
 describe("Deterministic ordering for cross-thread cache reuse", () => {
 	let db: Database;
-	let dbPath: string;
 
 	beforeEach(() => {
-		const randId = randomBytes(4).toString("hex");
-		dbPath = `/tmp/stage-order-test-${randId}.db`;
-		db = new BunDatabase(dbPath);
+		db = new BunDatabase(":memory:");
 
 		db.exec(`
 			CREATE TABLE semantic_memory (
@@ -1298,11 +1242,6 @@ describe("Deterministic ordering for cross-thread cache reuse", () => {
 
 	afterEach(() => {
 		db.close();
-		try {
-			require("node:fs").unlinkSync(dbPath);
-		} catch (_e) {
-			/* ignore */
-		}
 	});
 
 	it("L0 pinned entries are sorted by key ASC", () => {
