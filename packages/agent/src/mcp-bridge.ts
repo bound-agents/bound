@@ -233,6 +233,75 @@ export function getRemoteMcpToolAnnotations(
 }
 
 /**
+ * Format MCP help text from a tool list, identically regardless of caller.
+ *
+ * Shared by the local dispatch path (generateMCPCommands handler) and the relay
+ * path (RelayProcessor answering a help request against a remote host's live
+ * listTools), so `<server> --help` and `<server> <subcommand> --help` look the
+ * same whether the server is local or reached over the relay. This is the
+ * single source of truth for help rendering — neither path formats inline.
+ *
+ * @param serverName  Server/command name shown in usage lines.
+ * @param tools       The server's advertised tools (from listTools or the dispatch table).
+ * @param subcommand  When provided (and not "help"), render parameter-level help
+ *                    for that one subcommand; otherwise render the server-level listing.
+ */
+export function formatMcpHelp(
+	serverName: string,
+	tools: Tool[],
+	subcommand?: string,
+): CommandResult {
+	// Subcommand-level help: parameter detail for one tool.
+	if (subcommand && subcommand !== "help") {
+		const tool = tools.find((t) => t.name === subcommand);
+		if (!tool) {
+			const available = tools.map((t) => t.name).join(", ");
+			return {
+				stdout: "",
+				stderr: `Unknown subcommand: ${subcommand}\nAvailable subcommands: ${available}\n`,
+				exitCode: 1,
+			};
+		}
+		const schema = tool.inputSchema as
+			| { properties?: Record<string, unknown>; required?: string[] }
+			| undefined;
+		const props = schema?.properties ?? {};
+		const required = new Set(schema?.required ?? []);
+		let out = `${subcommand}`;
+		if (tool.description) out += ` — ${tool.description}`;
+		out += "\n\nParameters:\n";
+		for (const [param, def] of Object.entries(props)) {
+			const propDef = def as { description?: string };
+			const req = required.has(param) ? "(required)" : "(optional)";
+			out += `  ${param} ${req}`;
+			if (propDef.description) out += ` — ${propDef.description}`;
+			out += "\n";
+		}
+		if (Object.keys(props).length === 0) {
+			out += "  (no parameters)\n";
+		}
+		return { stdout: out, stderr: "", exitCode: 0 };
+	}
+
+	// Server-level help: enumerate every subcommand.
+	let out = `${serverName} subcommands:\n\n`;
+	for (const tool of tools) {
+		const schema = tool.inputSchema as { required?: string[] } | undefined;
+		const reqParams = schema?.required ?? [];
+		out += `  ${tool.name}`;
+		if (tool.description) out += ` — ${tool.description}`;
+		if (reqParams.length > 0) out += ` (required: ${reqParams.join(", ")})`;
+		out += "\n";
+	}
+	if (tools.length === 0) {
+		out += "  (no subcommands available)\n";
+	}
+	out += `\nUsage: ${serverName} <subcommand> [--key value ...]\n`;
+	out += `Run '${serverName} <subcommand> --help' for parameter details.\n`;
+	return { stdout: out, stderr: "", exitCode: 0 };
+}
+
+/**
  * Return type for generateMCPCommands.
  * Carries both the command definitions and a registry of server names
  * for use by help.ts and start.ts.
@@ -337,58 +406,16 @@ export async function generateMCPCommands(
 				const subcommand = args.subcommand;
 				const hasHelp = args.help !== undefined;
 
-				// Subcommand-level help: subcommand provided + help flag
-				if (hasHelp && subcommand) {
-					const entry = dispatchTable.get(subcommand);
-					if (!entry) {
-						const available = Array.from(dispatchTable.keys()).join(", ");
-						return {
-							stdout: "",
-							stderr: `Unknown subcommand: ${subcommand}\nAvailable subcommands: ${available}\n`,
-							exitCode: 1,
-						};
-					}
-					const schema = entry.tool.inputSchema as
-						| { properties?: Record<string, unknown>; required?: string[] }
-						| undefined;
-					const props = schema?.properties ?? {};
-					const required = new Set(schema?.required ?? []);
-					let out = `${subcommand}`;
-					if (entry.tool.description) out += ` — ${entry.tool.description}`;
-					out += "\n\nParameters:\n";
-					for (const [param, def] of Object.entries(props)) {
-						const propDef = def as { description?: string };
-						const req = required.has(param) ? "(required)" : "(optional)";
-						out += `  ${param} ${req}`;
-						if (propDef.description) out += ` — ${propDef.description}`;
-						out += "\n";
-					}
-					if (Object.keys(props).length === 0) {
-						out += "  (no parameters)\n";
-					}
-					return { stdout: out, stderr: "", exitCode: 0 };
-				}
-
-				// Server-level help: no subcommand, --help only, or subcommand="help" (LLM convention).
-				// The LLM ToolDefinition instructs the model to send subcommand="help" for discovery.
-				// "help" is therefore a reserved keyword — not dispatched to the tool dispatch table.
-				// Covers: no-args (AC2.3), --help only (AC2.1), and subcommand="help" (LLM path).
-				if (!subcommand || subcommand === "help") {
-					let out = `${serverName} subcommands:\n\n`;
-					for (const [name, entry] of dispatchTable) {
-						const schema = entry.tool.inputSchema as { required?: string[] } | undefined;
-						const reqParams = schema?.required ?? [];
-						out += `  ${name}`;
-						if (entry.tool.description) out += ` — ${entry.tool.description}`;
-						if (reqParams.length > 0) out += ` (required: ${reqParams.join(", ")})`;
-						out += "\n";
-					}
-					if (dispatchTable.size === 0) {
-						out += "  (no subcommands available)\n";
-					}
-					out += `\nUsage: ${serverName} <subcommand> [--key value ...]\n`;
-					out += `Run '${serverName} <subcommand> --help' for parameter details.\n`;
-					return { stdout: out, stderr: "", exitCode: 0 };
+				// Help requests — both subcommand-level (subcommand + --help) and
+				// server-level (no subcommand, --help only, or subcommand="help").
+				// "help" is a reserved keyword (the LLM ToolDefinition instructs the
+				// model to send subcommand="help" for discovery), never dispatched to
+				// the tool table. Rendered via the shared formatMcpHelp so this output
+				// is byte-identical to the relay path's help (host-parity).
+				if ((hasHelp && subcommand) || !subcommand || subcommand === "help") {
+					const tools = Array.from(dispatchTable.values()).map((e) => e.tool);
+					const helpTarget = hasHelp && subcommand ? subcommand : undefined;
+					return formatMcpHelp(serverName, tools, helpTarget);
 				}
 
 				// Dispatch: subcommand provided, no help flag
@@ -792,23 +819,24 @@ export function generateRemoteMCPProxyCommands(
 			): Promise<CommandResult> => {
 				const subcommand = args.subcommand;
 
-				// Help: show that this is a remote server
-				if (!subcommand || subcommand === "help") {
-					// Dynamically check which host(s) have this server
-					const routing = findEligibleHosts(ctx.db, serverName, ctx.siteId);
-					const hostList = routing.ok
-						? routing.hosts.map((h) => `  ${h.host_name} (${h.site_id.slice(0, 8)}…)`).join("\n")
-						: "  (no reachable hosts)";
-					return {
-						stdout: `${serverName} — remote MCP server (via relay)\n\nAvailable on:\n${hostList}\n\nUsage: ${serverName} <subcommand> [--key value ...]\nCalls are forwarded to the remote host via relay.\n`,
-						stderr: "",
-						exitCode: 0,
-					};
-				}
-
-				// Route to eligible remote host
+				// Route to eligible remote host. Help requests (no subcommand,
+				// subcommand="help", or a --help flag) are relayed like any other
+				// call so the remote host — where the server actually lives —
+				// answers them from its live listTools via the shared formatMcpHelp.
+				// That makes `<server> --help` and `<server> <sub> --help` look
+				// byte-identical to the local dispatch path (host-parity). Only when
+				// no host is reachable do we fall back to a static blurb so help is
+				// still informative offline.
+				const isHelpRequest = !subcommand || subcommand === "help" || args.help !== undefined;
 				const routing = findEligibleHosts(ctx.db, serverName, ctx.siteId);
 				if (!routing.ok) {
+					if (isHelpRequest) {
+						return {
+							stdout: `${serverName} — remote MCP server (via relay)\n\nAvailable on:\n  (no reachable hosts)\n\nUsage: ${serverName} <subcommand> [--key value ...]\nCalls are forwarded to the remote host via relay.\n`,
+							stderr: "",
+							exitCode: 0,
+						};
+					}
 					return {
 						stdout: "",
 						stderr: `No remote host with server "${serverName}" is reachable: ${routing.error}\n`,
