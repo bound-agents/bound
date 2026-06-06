@@ -10,6 +10,7 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runConfigReload } from "../commands/config-reload.js";
 import { runDrain } from "../commands/drain.js";
 import { runSetHub } from "../commands/set-hub.js";
+import { runSetPersona } from "../commands/set-persona.js";
 import { runSyncStatus } from "../commands/sync-status.js";
 
 describe("boundctl commands", () => {
@@ -116,6 +117,77 @@ describe("boundctl commands", () => {
 
 			expect(entry).not.toBeNull();
 			db.close();
+		});
+	});
+
+	describe("set-persona", () => {
+		it("seeds the persona row and a change_log entry from a file", async () => {
+			const configDir = join(tempDir, "config");
+			mkdirSync(configDir);
+			const personaPath = join(configDir, "persona.md");
+			writeFileSync(personaPath, "You are a careful systems engineer.");
+
+			await runSetPersona({ file: personaPath, configDir });
+
+			const db = new Database(dbPath);
+			const row = db.query("SELECT value FROM cluster_config WHERE key = 'persona'").get() as {
+				value: string;
+			} | null;
+			expect(row?.value).toBe("You are a careful systems engineer.");
+
+			const changeLogCount = db
+				.query(
+					"SELECT COUNT(*) as count FROM change_log WHERE table_name = 'cluster_config' AND row_id = 'persona'",
+				)
+				.get() as { count: number };
+			expect(changeLogCount.count).toBeGreaterThan(0);
+			db.close();
+		});
+
+		it("overwrites an existing persona row (single global LWW value)", async () => {
+			const configDir = join(tempDir, "config");
+			mkdirSync(configDir);
+			const first = join(configDir, "first.md");
+			const second = join(configDir, "second.md");
+			writeFileSync(first, "Original voice.");
+			writeFileSync(second, "Replacement voice.");
+
+			await runSetPersona({ file: first, configDir });
+			await runSetPersona({ file: second, configDir });
+
+			const db = new Database(dbPath);
+			const row = db.query("SELECT value FROM cluster_config WHERE key = 'persona'").get() as {
+				value: string;
+			};
+			expect(row.value).toBe("Replacement voice.");
+			const count = db
+				.query("SELECT COUNT(*) as count FROM cluster_config WHERE key = 'persona'")
+				.get() as { count: number };
+			expect(count.count).toBe(1);
+			db.close();
+		});
+
+		it("rejects a persona over the 64 KB cap and writes nothing", async () => {
+			const configDir = join(tempDir, "config");
+			mkdirSync(configDir);
+			const personaPath = join(configDir, "big.md");
+			writeFileSync(personaPath, "x".repeat(64 * 1024 + 1));
+
+			await expect(runSetPersona({ file: personaPath, configDir })).rejects.toThrow(/cap/);
+
+			const db = new Database(dbPath);
+			const row = db.query("SELECT value FROM cluster_config WHERE key = 'persona'").get();
+			expect(row).toBeNull();
+			db.close();
+		});
+
+		it("rejects an empty persona file", async () => {
+			const configDir = join(tempDir, "config");
+			mkdirSync(configDir);
+			const personaPath = join(configDir, "empty.md");
+			writeFileSync(personaPath, "");
+
+			await expect(runSetPersona({ file: personaPath, configDir })).rejects.toThrow(/empty/);
 		});
 	});
 

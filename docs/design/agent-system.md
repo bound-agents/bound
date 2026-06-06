@@ -156,7 +156,6 @@ interface ContextParams {
   currentModel?:   string;
   contextWindow?:  number;                    // token budget (default: 8000)
   noHistory?:      boolean;                   // skip message retrieval (default: false)
-  configDir?:      string;                    // persona search root (default: "config")
   hostName?:       string;
   siteId?:         string;
   relayInfo?: {                               // injected for delegated loops
@@ -216,7 +215,7 @@ Each sanitized `Message` is mapped to an `LLMMessage`, dropping messages whose `
 The final message array is composed in this order:
 
 1. **Base system prompt** — a hardcoded instruction establishing the assistant identity and tool-use posture.
-2. **Persona** (optional) — the contents of `{configDir}/persona.md` injected as a second `system` message. The persona file is loaded once and cached in a module-level variable per `configDir` path. If the file does not exist, this message is omitted.
+2. **Persona** (optional) — the value of the synced `cluster_config['persona']` row, injected as a second `system` message. It is read live from the local SQLite on every cold assembly (no cache), so an edit on any host — via `boundctl set-persona` or `POST /api/persona` — propagates to every host and takes effect on the next turn. If the row is unset, this message is omitted.
 3. **Orientation** — a stable `system` message listing available commands, current model, and host identity.
 4. **Skill body** (optional) — if the task's `payload` JSON contains `"skill": "<name>"` and that skill is active in the `skills` table, its SKILL.md content is injected as an additional `system` message. This injection happens outside the `noHistory` guard so it applies even when history is suppressed. If the referenced skill is not active, a note is deferred to the volatile context instead.
 5. **Message history** — all annotated messages from stage 5b.
@@ -261,11 +260,11 @@ Reserved for token usage recording when the metrics subsystem is available. Curr
 
 ### Persona Injection
 
-Place a Markdown file at `config/persona.md` (relative to the working directory, or at the path passed via `configDir`) to inject a custom persona into every LLM call. The file is read once on first use per `configDir` value and cached for subsequent calls.
+The persona is a single cluster-wide value stored in the synced `cluster_config['persona']` row, injected as a `system` message after the base prompt. It is seeded once from `config/persona.md` at first start (if the row is absent), then the row is the source of truth and the file is inert. Edit it with `boundctl set-persona` (file or stdin) or `POST /api/persona`; the value is capped at 64 KB and read live at assembly time (no cache), so an edit propagates to every host and applies on the next turn cluster-wide.
 
 ```
-config/
-  persona.md   <- injected as a system message after the base prompt
+cluster_config['persona']   <- injected as a system message after the base prompt
+                               (seeded once from config/persona.md)
 ```
 
 ---

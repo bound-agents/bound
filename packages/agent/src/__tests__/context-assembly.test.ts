@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
@@ -139,15 +139,18 @@ describe("Context Assembly Pipeline", () => {
 			expect(result.systemPrompt).not.toContain("Available Commands");
 		});
 
-		it("systemPrompt includes persona when persona.md exists", () => {
-			// Write a persona file to the config dir
-			const configDir = join(tmpDir, "config");
-			mkdirSync(configDir, { recursive: true });
-			writeFileSync(join(configDir, "persona.md"), "I am a test persona.");
+		it("systemPrompt includes persona when the cluster_config row exists", () => {
+			// Persona now lives in the synced cluster_config table, not a file.
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am a test persona.", new Date().toISOString()],
+			);
 
-			const result = assembleContext({ db, threadId, userId, configDir });
+			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("test persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
 		});
 	});
 
@@ -189,35 +192,34 @@ describe("Context Assembly Pipeline", () => {
 		expect(Array.isArray(messages)).toBe(true);
 	});
 
-	it("should inject persona when config/persona.md exists", async () => {
-		const configDir = join(tmpDir, "config");
-		mkdirSync(configDir, { recursive: true });
-
+	it("should inject persona from the cluster_config row", async () => {
 		const personaContent =
 			"You are a specialized technical assistant focused on system architecture.";
-		writeFileSync(join(configDir, "persona.md"), personaContent);
+		db.run(
+			"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+			[personaContent, new Date().toISOString()],
+		);
 
 		const { systemPrompt } = assembleContext({
 			db,
 			threadId,
 			userId,
-			configDir,
 		});
 
 		// Should have system prompt with persona content
 		expect(systemPrompt).toContain("specialized technical assistant");
 		expect(systemPrompt).toContain(personaContent);
+
+		db.run("DELETE FROM cluster_config WHERE key = 'persona'");
 	});
 
-	it("should work without persona when config/persona.md does not exist", async () => {
-		const configDir = join(tmpDir, "no-persona");
-		mkdirSync(configDir, { recursive: true });
+	it("should work without persona when the cluster_config row is absent", async () => {
+		db.run("DELETE FROM cluster_config WHERE key = 'persona'");
 
 		const { messages } = assembleContext({
 			db,
 			threadId,
 			userId,
-			configDir,
 		});
 
 		// Should still have system messages but without persona
@@ -225,35 +227,38 @@ describe("Context Assembly Pipeline", () => {
 		expect(messages.length > 0).toBe(true);
 	});
 
-	it("should cache persona content for the same config directory", async () => {
-		const configDir = join(tmpDir, "cached-persona");
-		mkdirSync(configDir, { recursive: true });
+	it("reflects a persona row edit on the next assembly (no stale cache)", async () => {
+		// The persona is no longer memoized: a peer's edit arrives via changelog
+		// replay with no local signal to bust a cache, so the read must be live.
+		db.run(
+			"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+			["Original persona content", new Date().toISOString()],
+		);
 
-		const personaContent = "Cached persona content";
-		writeFileSync(join(configDir, "persona.md"), personaContent);
-
-		// First call - loads from file
 		const { systemPrompt: systemPrompt1 } = assembleContext({
 			db,
 			threadId,
 			userId,
-			configDir,
 		});
 
-		// Modify file
-		writeFileSync(join(configDir, "persona.md"), "Modified content");
+		// Simulate an edit landing (locally or via sync replay).
+		db.run(
+			"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+			["Updated persona content", new Date().toISOString()],
+		);
 
-		// Second call - should use cache
 		const { systemPrompt: systemPrompt2 } = assembleContext({
 			db,
 			threadId,
 			userId,
-			configDir,
 		});
 
-		// Both should have the original persona content due to caching
-		expect(systemPrompt1).toContain("Cached persona");
-		expect(systemPrompt2).toContain("Cached persona");
+		expect(systemPrompt1).toContain("Original persona content");
+		expect(systemPrompt1).not.toContain("Updated persona content");
+		expect(systemPrompt2).toContain("Updated persona content");
+		expect(systemPrompt2).not.toContain("Original persona content");
+
+		db.run("DELETE FROM cluster_config WHERE key = 'persona'");
 	});
 
 	describe("Purge Message Substitution", () => {
@@ -8416,16 +8421,16 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("Phase3.1: Only stable prompt components have system role", () => {
-			const configDir = mkdtempSync(join(tmpdir(), "config-test-"));
 			const personaContent = "You are a specialized technical assistant.";
-
-			writeFileSync(join(configDir, "persona.md"), personaContent);
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				[personaContent, new Date().toISOString()],
+			);
 
 			const result = assembleContext({
 				db,
 				threadId,
 				userId,
-				configDir,
 			});
 
 			// NOW: No system-role messages in array - all stable content is in systemPrompt
@@ -8597,15 +8602,16 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("Phase3.5: Agent loop extracts stable prompt from system-role messages only", () => {
-			const configDir = mkdtempSync(join(tmpdir(), "config-test-"));
 			const personaContent = "You are a specialized assistant.";
-			writeFileSync(join(configDir, "persona.md"), personaContent);
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				[personaContent, new Date().toISOString()],
+			);
 
 			const result = assembleContext({
 				db,
 				threadId,
 				userId,
-				configDir,
 			});
 
 			// NOW: systemPrompt is directly available as a field

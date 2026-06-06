@@ -369,6 +369,24 @@ export interface SyncedTableRowMap {
 /** Maximum file size (in bytes) for storage in the synced files table. */
 export const MAX_FILE_STORAGE_BYTES = 50 * 1024 * 1024; // 50 MB
 
+/**
+ * `cluster_config` key under which the synced operator persona lives. The
+ * persona was historically a per-host `config/persona.md` file read off disk
+ * at context-assembly time, which silently diverged across the cluster (a
+ * relayed turn assembled on a peer used that peer's file). It now lives as a
+ * single synced LWW row so an edit on any host propagates everywhere; the file
+ * survives only as a one-time seed (see the sandbox boot step).
+ */
+export const PERSONA_CLUSTER_CONFIG_KEY = "persona";
+
+/**
+ * Maximum persona size (in bytes) accepted by the set-persona write surfaces
+ * (`boundctl set-persona`, `POST /api/persona`). A backstop against pasting an
+ * unbounded blob into a row that ships in full on every changelog frame — a
+ * persona is realistically a few KB.
+ */
+export const MAX_PERSONA_BYTES = 64 * 1024; // 64 KB
+
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",
 	threads: "lww",
