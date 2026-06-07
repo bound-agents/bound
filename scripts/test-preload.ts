@@ -10,3 +10,12 @@ if (!process.env.LOG_LEVEL) {
 if (!process.env.BOUND_LEASE_VERIFY_SETTLE_MS) {
 	process.env.BOUND_LEASE_VERIFY_SETTLE_MS = "0";
 }
+
+// The introspect tool polls the target thread's messages on a 2s interval in
+// production. Tests exercise the full polling loop (dispatch -> poll -> detect
+// response / timeout / error) and pay one or more full 2s sleeps each, which
+// dominated the agent suite wall time (~14s in introspect.test.ts alone). The
+// polling LOGIC still runs unchanged; only the inter-poll sleep is collapsed.
+if (!process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS) {
+	process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS = "5";
+}

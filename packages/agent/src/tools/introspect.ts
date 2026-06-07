@@ -17,6 +17,14 @@ const introspectSchema = z.object({
 });
 
 const POLL_INTERVAL_MS = 2000;
+
+// The poll interval is read from the environment at call-time so tests can
+// collapse the 2s production sleep to a few ms without altering behavior.
+// Mirrors the BOUND_LEASE_VERIFY_SETTLE_MS convention in scripts/test-preload.ts.
+function pollIntervalMs(): number {
+	const override = Number(process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS);
+	return Number.isFinite(override) && override > 0 ? override : POLL_INTERVAL_MS;
+}
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
 
 export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
@@ -139,7 +147,7 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 					}
 
 					// Sleep before next poll
-					await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+					await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs()));
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
