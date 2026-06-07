@@ -50,6 +50,18 @@ const MANTLE_SIGV4_SERVICE = "bedrock";
 const PROVIDER_NAME = "bedrock-mantle";
 
 /**
+ * How many times to re-issue a turn that came back empty (output_tokens=0,
+ * no content). Mantle GPT-5.x intermittently returns such completions
+ * (~12% observed at the bare endpoint under store:false); store:true — the
+ * one lever that might reduce it — is forbidden by the zero-retention
+ * requirement, so the driver retries instead. At ~12% independent, 2 retries
+ * drives the user-visible empty rate to ~0.2%. An empty turn is a no-op
+ * (yields only a `done` chunk), so retrying before yielding anything
+ * substantive duplicates nothing.
+ */
+const EMPTY_COMPLETION_MAX_RETRIES = 2;
+
+/**
  * Derives the region-scoped mantle Responses base URL. The native OpenAI
  * provider appends `/responses` to this, so it stops at the `/openai/v1`
  * prefix. An explicit override wins verbatim — the one knob for adjusting
@@ -81,10 +93,97 @@ function toReasoningEffort(
 	}
 }
 
+/**
+ * Builds the `providerOptions.openai` payload for a mantle turn.
+ *
+ * `forceReasoning: true` is load-bearing, not cosmetic. The native
+ * `@ai-sdk/openai` provider detects reasoning models by `modelId.startsWith
+ * ("gpt-5")` — but mantle ids carry an `openai.` prefix (`openai.gpt-5.5`),
+ * so the SDK misclassifies them as non-reasoning and silently strips
+ * `reasoningEffort`: verified on the wire, the request body ends up with no
+ * `reasoning` field at all and the configured effort never reaches the model.
+ * Forcing the flag restores it (`reasoning: { effort }` on the wire) and
+ * flips the system prompt to the `developer` role reasoning models expect.
+ *
+ * `store: false` keeps the turn stateless — nothing persists on AWS's side
+ * (the zero-retention requirement). Caching is prefix-based and needs no
+ * stored response (#155).
+ */
+export function buildMantleOpenAIOptions(
+	effort: ChatParams["effort"],
+): Record<string, string | boolean> {
+	const reasoningEffort = toReasoningEffort(effort);
+	return {
+		store: false,
+		forceReasoning: true,
+		...(reasoningEffort && { reasoningEffort }),
+	};
+}
+
+/**
+ * Wraps a streaming attempt with a bounded retry for *empty* completions —
+ * a turn that finishes with `output_tokens === 0` and emitted no content.
+ * Mantle GPT-5.x returns these intermittently (~12% at the bare endpoint
+ * under the required `store: false`; see `EMPTY_COMPLETION_MAX_RETRIES`).
+ *
+ * The retry is safe because an empty turn yields ONLY a terminal `done`
+ * chunk (no `text` / `thinking` / `tool_use_*`), so discarding that `done`
+ * and re-issuing duplicates nothing the consumer has seen. The moment any
+ * substantive chunk is yielded, `sawContent` latches and the turn can no
+ * longer be retried — content already on the wire cannot be un-yielded, so
+ * a streamed turn whose usage happens to round to 0 is passed through as-is.
+ * Errors are not retried: `mapChunks` throws on error events, which
+ * propagates out to the driver's existing `mapError` path.
+ */
+export async function* withEmptyRetry(
+	runAttempt: () => AsyncIterable<StreamChunk>,
+	opts: {
+		maxRetries: number;
+		isAborted: () => boolean;
+		onRetry?: (attempt: number) => void;
+	},
+): AsyncIterable<StreamChunk> {
+	for (let attempt = 0; ; attempt++) {
+		const isLastAttempt = attempt >= opts.maxRetries;
+		let sawContent = false;
+		let retrying = false;
+
+		for await (const chunk of runAttempt()) {
+			if (chunk.type === "done") {
+				const isEmpty = !sawContent && chunk.usage.output_tokens === 0;
+				if (isEmpty && !isLastAttempt && !opts.isAborted()) {
+					// Swallow this empty `done` and re-issue. Nothing substantive
+					// was yielded, so the consumer never sees the discarded turn.
+					opts.onRetry?.(attempt + 1);
+					retrying = true;
+					break;
+				}
+				yield chunk;
+				return;
+			}
+			if (
+				chunk.type === "text" ||
+				chunk.type === "thinking" ||
+				chunk.type === "tool_use_start" ||
+				chunk.type === "tool_use_args" ||
+				chunk.type === "tool_use_end"
+			) {
+				sawContent = true;
+			}
+			yield chunk;
+		}
+
+		// Stream ended without a `done` and we are not retrying (e.g. aborted
+		// mid-flight): nothing more to emit.
+		if (!retrying) return;
+	}
+}
+
 export class BedrockMantleDriver implements LLMBackend {
 	private provider: ReturnType<typeof createOpenAI>;
 	private model: string;
 	private contextWindow: number;
+	private logger?: Logger;
 
 	constructor(config: {
 		region: string;
@@ -106,6 +205,7 @@ export class BedrockMantleDriver implements LLMBackend {
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
+		this.logger = config.logger;
 
 		// Lazy credential provider — resolved per request inside the SigV4 fetch,
 		// never at construction. fromIni honors SSO/AssumeRole for an explicit
@@ -158,32 +258,37 @@ export class BedrockMantleDriver implements LLMBackend {
 			targetEnvelope: PERMISSIVE_ENVELOPE,
 		});
 		const tools = toToolSet(params.tools);
-		const reasoningEffort = toReasoningEffort(params.effort);
 
 		yield { type: "heartbeat" };
 
-		const result = streamText({
-			model: this.provider.responses(modelId),
-			messages,
-			...(params.system && { system: params.system }),
-			...(tools && { tools }),
-			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-			...(params.temperature !== undefined && { temperature: params.temperature }),
-			abortSignal: params.signal,
-			providerOptions: {
-				openai: {
-					// Stateless: never persist prompt/response on AWS's side. Caching
-					// is prefix-based and needs no stored response (#155).
-					store: false,
-					...(reasoningEffort && { reasoningEffort }),
-				},
-			},
-		});
-
-		try {
-			yield* mapChunks(result.fullStream, {
+		// One streaming attempt — built fresh per retry so a re-issue is a clean
+		// new request (new SigV4 signature, new stream), not a replayed one.
+		const runAttempt = (): AsyncIterable<StreamChunk> => {
+			const result = streamText({
+				model: this.provider.responses(modelId),
+				messages,
+				...(params.system && { system: params.system }),
+				...(tools && { tools }),
+				...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+				...(params.temperature !== undefined && { temperature: params.temperature }),
+				abortSignal: params.signal,
+				providerOptions: { openai: buildMantleOpenAIOptions(params.effort) },
+			});
+			return mapChunks(result.fullStream, {
 				estimateInputFromMessages: params.messages,
 				providerName: PROVIDER_NAME,
+			});
+		};
+
+		try {
+			yield* withEmptyRetry(runAttempt, {
+				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+				isAborted: () => params.signal?.aborted ?? false,
+				onRetry: (attempt) =>
+					this.logger?.warn?.(
+						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+						{ model: modelId },
+					),
 			});
 		} catch (err) {
 			throw mapError(err, PROVIDER_NAME);
