@@ -146,8 +146,11 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 						);
 					}
 
-					// Sleep before next poll
-					await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs()));
+					// Sleep before next poll, but never past the remaining timeout
+					// budget: a short timeout must not block for a full poll interval.
+					const remaining = timeout - (Date.now() - startTime);
+					const sleepMs = Math.min(pollIntervalMs(), remaining);
+					await new Promise<void>((resolve) => setTimeout(resolve, sleepMs));
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);

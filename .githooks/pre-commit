@@ -3,3 +3,6 @@ set -e
 
 echo "Running bun check..."
 bun check
+
+echo "Running affected-package tests..."
+bun run scripts/test-affected.ts
