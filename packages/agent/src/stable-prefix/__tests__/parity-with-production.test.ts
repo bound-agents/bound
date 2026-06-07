@@ -29,6 +29,7 @@ import {
 	type DiscoverableArchiveInput,
 	type StageEntry,
 	WORKING_KNOWLEDGE_SUMMARY_CAP,
+	capWorkingKnowledgeSummaries,
 	renderDiscoverableArchive,
 	renderWorkingKnowledge,
 } from "../../summary-extraction";
@@ -207,6 +208,10 @@ function renderProductionStableConcat(inputs: StableVolatileInputs): string {
 		staleChildKeysInWorkingKnowledge: new Set(inputs.staleChildKeysInWorkingKnowledge),
 		budgetPressure: inputs.budgetPressure,
 		tunables: inputs.tunables,
+		// R-VC29: the demoted summary-overflow now renders in the Archive, derived
+		// from the SAME summaries + helper the mirror uses (compose.ts), so the
+		// production concat and the mirror stay byte-equivalent.
+		demotedSummaries: capWorkingKnowledgeSummaries(wkInput.summaries).demoted,
 	};
 	const da = renderDiscoverableArchive(daInput);
 

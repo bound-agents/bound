@@ -1,46 +1,12 @@
-/**
- * `composeVolatileVarying` — pure-modulo-`nowMs` renderer for the
- * R-VC24 varying-tail subsection of the volatile context.
- *
- * Unlike the stable side (which forbids wall-clock entirely), the
- * varying side is rebuilt every turn and is allowed to embed
- * relative-time fragments. The architectural promise here is the
- * dual of the stable side: instead of "byte-stable when nothing
- * relevant changed", the varying side promises:
- *
- *   - **Determinism** in `(inputs, nowMs)` — for a fixed input pair,
- *     output is byte-identical across calls and processes.
- *   - **Freshness** — when relevant state changes, the next render
- *     reflects it.
- *   - **Source-label totality** — every Live-State line carries
- *     exactly one `[…]` source label.
- *   - **Subsystem ordering** — R-VC5 fixed: thread → task → file →
- *     advisory → synthesis-backlog.
- *   - **Cap respect under pressure** — at most 3 entries per LS
- *     subsystem when `budgetPressure: true`.
- *   - **Time monotonicity** — given a later `nowMs` and otherwise
- *     identical inputs, no relative-time fragment goes backward.
- *
- * Property tests under `__tests__/compose.property.test.ts` exercise
- * V1-V6 against arbitrary inputs. Parity with the production
- * renderers (`renderWorkingKnowledge.varyingLines`, `formatMemoryEntry`,
- * `renderLiveState`) is pinned by `__tests__/parity-with-production.test.ts`
- * — the renderer here renders directly rather than delegating so the
- * input type can stay narrow.
- */
-
-import { safeSlice } from "@bound/shared";
 import {
 	BUDGET_PRESSURE_SUBSYSTEM_CAP,
 	DELTA_MARKER,
 	LIVE_STATE_FOOTER,
 	LIVE_STATE_HEADER,
-	RECENT_MEMORY_HEADER,
+	RELEVANT_MEMORY_HEADER,
 	STALE_CHILD_GLOSS_MAX,
 	WORKING_KNOWLEDGE_UPDATES_HEADER,
 	relativeTimeAt,
-	resolveSource,
-	stalenessTagAt,
 	truncateGloss,
 } from "../summary-extraction";
 import type {
@@ -117,9 +83,11 @@ function renderWorkingKnowledgeUpdates(updates: WorkingKnowledgeUpdatesView): st
 }
 
 /**
- * Render the `## Recent memory — graph + recency` block. Empty when
- * the input array is empty (the production code path elides the
- * header in that case).
+ * Render the R-VC27 `## Relevant memory — matched to this turn` block. Empty
+ * when the input array is empty (the production code path elides the header in
+ * that case). Entries arrive PRE-SELECTED (dedup against the full-body stable
+ * prefix + BOUND_VC27_K cap happen upstream in `selectRelevantMemory`); this
+ * renderer only title-only formats them.
  */
 function renderRecentMemoryBlock(
 	entries: ReadonlyArray<RecentMemoryEntryView>,
@@ -129,7 +97,7 @@ function renderRecentMemoryBlock(
 
 	const out: string[] = [];
 	out.push("");
-	out.push(RECENT_MEMORY_HEADER);
+	out.push(RELEVANT_MEMORY_HEADER);
 	out.push("");
 	for (const entry of entries) {
 		out.push(formatRecentMemoryLine(entry, nowMs));
@@ -138,41 +106,16 @@ function renderRecentMemoryBlock(
 }
 
 /**
- * Render a single `tier='default'` L2/L3 entry. Mirrors the body of
- * `formatMemoryEntry` in `summary-extraction.ts` — the renderer here
- * must stay byte-equivalent or the parity regression test fails.
+ * Title-only line mirroring `formatRelevantMemoryTitleLine` in
+ * `summary-extraction.ts`: `- {key} [{tier}] ({relTime})`. Renders the entry's
+ * actual tier (`forgotten` if soft-deleted), NOT its retrieval-stage tag. Must
+ * stay byte-equivalent or the parity regression test fails — uses the
+ * `nowMs`-injected relative-time variant; production uses wall-clock
+ * `relativeTime`, and the parity test mocks the clock so the two agree.
  */
 function formatRecentMemoryLine(entry: RecentMemoryEntryView, nowMs: number): string {
-	const valueDisplay =
-		entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
-
-	if (entry.deleted) {
-		const sourceLabel = resolveSource(
-			entry.taskName ?? null,
-			entry.threadId ?? null,
-			entry.threadTitle ?? null,
-			entry.source,
-		);
-		const relTime = relativeTimeAt(entry.modifiedAt, nowMs);
-		return `- ${entry.key}: [forgotten] (${relTime}, via ${sourceLabel})`;
-	}
-
-	if (entry.tag === "[pinned]") {
-		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-	}
-	if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
-		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-	}
-
-	const stale = stalenessTagAt(entry.modifiedAt, nowMs);
-	const sourceLabel = resolveSource(
-		entry.taskName ?? null,
-		entry.threadId ?? null,
-		entry.threadTitle ?? null,
-		entry.source,
-	);
-	const relTime = relativeTimeAt(entry.modifiedAt, nowMs);
-	return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
+	const tierTag = entry.deleted ? "forgotten" : entry.tier;
+	return `- ${entry.key} [${tierTag}] (${relativeTimeAt(entry.modifiedAt, nowMs)})`;
 }
 
 /**
@@ -224,7 +167,10 @@ function renderTaskLine(t: TaskEntryView): string {
 
 function renderFileLine(f: FileEntryView): string {
 	// em-dash separator U+2014 — must match production byte-for-byte.
-	return `- [file] ${f.path} — last modified by thread "${f.threadTitle}"`;
+	// Host attribution rides in a trailing bracket (R-VC28); local edits show
+	// the host plainly, remote edits append `, remote`.
+	const hostSuffix = f.host ? ` [host: ${f.host}${f.isLocal ? "" : ", remote"}]` : "";
+	return `- [file] ${f.path} — last modified by thread "${f.threadTitle}"${hostSuffix}`;
 }
 
 function renderAdvisoryLine(a: AdvisoryEntryView, nowMs: number): string {

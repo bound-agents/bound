@@ -160,10 +160,14 @@ describe("renderLiveState", () => {
 			{
 				path: "/home/user/docs/report.md",
 				threadTitle: "Documentation Review",
+				host: "7cf34dd659c0",
+				isLocal: true,
 			},
 			{
 				path: "/home/user/code/app.ts",
 				threadTitle: "Feature Development",
+				host: "MSI",
+				isLocal: false,
 			},
 		];
 
@@ -180,12 +184,40 @@ describe("renderLiveState", () => {
 		const result = renderLiveState(input);
 		const lines = result.lines;
 
-		// em-dash is U+2014
+		// em-dash is U+2014; host attribution rides in a bracket suffix (R-VC28).
+		// Local edits show the host plainly; remote edits are marked `, remote`.
 		expect(lines).toContain(
-			'- [file] /home/user/docs/report.md — last modified by thread "Documentation Review"',
+			'- [file] /home/user/docs/report.md — last modified by thread "Documentation Review" [host: 7cf34dd659c0]',
 		);
 		expect(lines).toContain(
-			'- [file] /home/user/code/app.ts — last modified by thread "Feature Development"',
+			'- [file] /home/user/code/app.ts — last modified by thread "Feature Development" [host: MSI, remote]',
+		);
+	});
+
+	// Test 4b: File subsystem — null host falls back to the pre-R-VC28 line shape
+	it("renders a file entry without host attribution when host is null", () => {
+		const fileEntries: LiveStateFileEntry[] = [
+			{
+				path: "/home/user/orphan.md",
+				threadTitle: "Orphaned Thread",
+				host: null,
+				isLocal: false,
+			},
+		];
+
+		const input: LiveStateInput = {
+			crossThreadEntries: [],
+			taskEntries: [],
+			fileEntries,
+			advisories: [],
+			synthesisBacklogCount: null,
+			budgetPressure: false,
+			nowMs: 1000000,
+		};
+
+		const result = renderLiveState(input);
+		expect(result.lines).toContain(
+			'- [file] /home/user/orphan.md — last modified by thread "Orphaned Thread"',
 		);
 	});
 

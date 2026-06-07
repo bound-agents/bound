@@ -88,6 +88,38 @@ describe("File-Thread Tracker (R-E20)", () => {
 			}
 		});
 
+		it("normalizes a Windows absolute path with a spurious leading slash (R-VC28)", () => {
+			// boundless/ACP on a Windows host can emit "/C:\Users\..." — a Windows
+			// absolute path that picked up a leading POSIX slash upstream. The tracker
+			// must key it canonically so reads agree regardless of which form arrives.
+			const threadId = randomUUID();
+			const mangled = "/C:\\Users\\user\\Documents\\GitHub\\bound\\file.ts";
+			const canonical = "C:\\Users\\user\\Documents\\GitHub\\bound\\file.ts";
+
+			trackFilePath(db, mangled, threadId, "test-site-id");
+
+			// keyed under the canonical (de-mangled) form
+			expect(getLastThreadForFile(db, canonical)).toBe(threadId);
+			// and a read with the mangled form resolves to the same entry
+			expect(getLastThreadForFile(db, mangled)).toBe(threadId);
+		});
+
+		it("normalizes forward-slash Windows drive paths and is idempotent (R-VC28)", () => {
+			const threadId = randomUUID();
+			trackFilePath(db, "/D:/projects/app/main.ts", threadId, "test-site-id");
+			expect(getLastThreadForFile(db, "D:/projects/app/main.ts")).toBe(threadId);
+			// idempotent: the already-canonical form is a no-op
+			expect(getLastThreadForFile(db, "/D:/projects/app/main.ts")).toBe(threadId);
+		});
+
+		it("leaves POSIX absolute paths untouched (R-VC28)", () => {
+			const threadId = randomUUID();
+			const posix = "/Users/user/Documents/GitHub/bound/posix.ts";
+			trackFilePath(db, posix, threadId, "test-site-id");
+			// no normalization applied; the leading slash is load-bearing on POSIX
+			expect(getLastThreadForFile(db, posix)).toBe(threadId);
+		});
+
 		it("still tracks durable repo and config paths", () => {
 			const threadId = randomUUID();
 

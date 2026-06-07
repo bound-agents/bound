@@ -363,17 +363,13 @@ export function graphSeededRetrieval(
 
 	// Step 1: Find seed memories via FTS5 full-text search.
 	// FTS5 handles tokenization, stemming (porter), and relevance ranking internally.
-	// When excludeKeys is provided (L2 stage), filter to default tier and orphaned details.
-	const tierFilter = excludeKeys
-		? `AND (
-		  m.tier NOT IN ('detail', 'pinned', 'summary')
-		  OR (m.tier = 'detail' AND NOT EXISTS (
-		    SELECT 1 FROM memory_edges e
-		    WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-		  ))
-		)`
-		: "";
-
+	// R-VC27: per-turn retrieval dedups against the stable prefix by EXACT KEY via
+	// `excludeKeys` (built from L0 pinned + L1 summaries), so no tier-based proxy is
+	// needed. The prior clamp ("default tier + orphaned details only") additionally
+	// dropped keyword-relevant NON-orphan detail entries — the most specific content
+	// in a cluster — even when the turn matched them directly. Removing the clamp lets
+	// any relevant entry surface per-turn; pinned/summary stay deduped because their
+	// keys ride in excludeKeys.
 	let seeds: Array<{
 		key: string;
 		value: string;
@@ -390,7 +386,6 @@ export function graphSeededRetrieval(
 				 JOIN semantic_memory m ON m.key = fts.key
 				 WHERE m.deleted = 0
 				   AND m.key NOT LIKE '_internal.%'
-				   ${tierFilter}
 				   AND semantic_memory_fts MATCH ?
 				 ORDER BY fts.rank
 				 LIMIT 10`,
@@ -436,26 +431,6 @@ export function graphSeededRetrieval(
 		for (const t of traversed) {
 			if (seen.has(t.key)) continue;
 			if (excludeKeys?.has(t.key)) continue;
-
-			// Apply tier filtering for L2 stage
-			if (excludeKeys) {
-				// Only include default tier or orphaned detail
-				if (
-					t.tier !== "default" &&
-					!(
-						t.tier === "detail" &&
-						!db
-							.prepare(
-								`SELECT 1 FROM memory_edges e
-							 WHERE e.target_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
-							 LIMIT 1`,
-							)
-							.get(t.key)
-					)
-				) {
-					continue;
-				}
-			}
 
 			seen.add(t.key);
 

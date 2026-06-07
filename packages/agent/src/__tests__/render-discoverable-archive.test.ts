@@ -34,7 +34,7 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			"## Discoverable Archive — title-only; bodies via memory search",
 			"",
 			"",
-			"Bodies are accessed via memory search or query against semantic_memory.",
+			"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.",
 		]);
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
@@ -218,7 +218,7 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 			"## Discoverable Archive — title-only; bodies via memory search",
 		);
 		expect(result.section.lines[result.section.lines.length - 1]).toBe(
-			"Bodies are accessed via memory search or query against semantic_memory.",
+			"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.",
 		);
 	});
 });
@@ -830,5 +830,66 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		expect(output).not.toContain("cooking-filler-0");
 		expect(output).not.toContain("transit-filler-0");
 		expect(output).not.toContain("other-filler-0");
+	});
+});
+
+describe("renderDiscoverableArchive — R-VC29 summary-overflow sub-block", () => {
+	it("renders demoted summaries under an `### Older summaries` sub-header after the detail tier, before the footer", () => {
+		const input: DiscoverableArchiveInput = {
+			entries: [
+				{ key: "adapter:foo", last_accessed_at: "2026-05-30T10:00:00Z" },
+				{ key: "adapter:bar", last_accessed_at: "2026-05-29T10:00:00Z" },
+			],
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			tunables: { n: 1000, m: 20 },
+			demotedSummaries: [{ key: "_summary:old-a" }, { key: "_summary:old-b" }],
+		};
+
+		const lines = renderDiscoverableArchive(input).section.lines;
+		const subHeaderIdx = lines.indexOf(
+			"### Older summaries (titles only — search the key for the body)",
+		);
+		const footerIdx = lines.findIndex((l) => l.includes("Bodies are accessed via"));
+
+		// Sub-header present, sits after the detail lines and before the footer.
+		expect(subHeaderIdx).toBeGreaterThan(-1);
+		expect(footerIdx).toBeGreaterThan(subHeaderIdx);
+		expect(lines.indexOf("- adapter:bar")).toBeLessThan(subHeaderIdx);
+
+		// Overflow titles render title-only, in order, between the sub-header and footer.
+		expect(lines.indexOf("- _summary:old-a")).toBeGreaterThan(subHeaderIdx);
+		expect(lines.indexOf("- _summary:old-a")).toBeLessThan(lines.indexOf("- _summary:old-b"));
+		expect(lines.indexOf("- _summary:old-b")).toBeLessThan(footerIdx);
+	});
+
+	it("renders the `### Older summaries` sub-block even when there are no detail entries", () => {
+		const input: DiscoverableArchiveInput = {
+			entries: [],
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			tunables: { n: 1000, m: 20 },
+			demotedSummaries: [{ key: "_summary:only-overflow" }],
+		};
+
+		const out = renderDiscoverableArchive(input).section.lines.join("\n");
+		expect(out).toContain("### Older summaries (titles only — search the key for the body)");
+		expect(out).toContain("- _summary:only-overflow");
+	});
+
+	it("omits the sub-block entirely when there are no demoted summaries (byte-identical to pre-R-VC29)", () => {
+		const input: DiscoverableArchiveInput = {
+			entries: [{ key: "adapter:foo", last_accessed_at: "2026-05-30T10:00:00Z" }],
+			parentSummaryByKey: new Map(),
+			staleChildKeysInWorkingKnowledge: new Set(),
+			budgetPressure: false,
+			tunables: { n: 1000, m: 20 },
+			demotedSummaries: [],
+		};
+
+		const out = renderDiscoverableArchive(input).section.lines.join("\n");
+		expect(out).not.toContain("Older summaries");
 	});
 });

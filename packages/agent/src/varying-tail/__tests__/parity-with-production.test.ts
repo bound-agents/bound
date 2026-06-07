@@ -18,9 +18,9 @@ import {
 	type LiveStateFileEntry,
 	type LiveStateInput,
 	type LiveStateTaskEntry,
-	RECENT_MEMORY_HEADER,
+	RELEVANT_MEMORY_HEADER,
 	type StageEntry,
-	formatMemoryEntry,
+	formatRelevantMemoryTitleLine,
 	renderLiveState,
 	renderWorkingKnowledge,
 } from "../../summary-extraction";
@@ -208,7 +208,9 @@ describe("composeVolatileVarying — parity with production renderers", () => {
 						status: "completed",
 					},
 				],
-				fileEntries: [{ path: "src/foo.ts", threadTitle: "Editor Thread" }],
+				fileEntries: [
+					{ path: "src/foo.ts", threadTitle: "Editor Thread", host: "MSI", isLocal: false },
+				],
 				advisories: [{ title: "Switch to opus", appliedAt: "2026-05-25T11:55:00Z" }],
 				synthesisBacklogCount: 75,
 			},
@@ -290,10 +292,13 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 	});
 	out.push(...wk.varyingLines);
 
-	// Recent memory block.
+	// Relevant memory block (R-VC27). Entries arrive PRE-SELECTED (dedup +
+	// cap happen upstream in selectRelevantMemory, outside the varying
+	// boundary), so the reconstruction only title-only formats them — the
+	// same thing the mirror does.
 	if (inputs.recentMemoryEntries.length > 0) {
 		out.push("");
-		out.push(RECENT_MEMORY_HEADER);
+		out.push(RELEVANT_MEMORY_HEADER);
 		out.push("");
 		for (const e of inputs.recentMemoryEntries) {
 			const stage: StageEntry = {
@@ -308,7 +313,7 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 				threadTitle: e.threadTitle ?? null,
 				deleted: e.deleted ? 1 : 0,
 			};
-			out.push(formatMemoryEntry(stage));
+			out.push(formatRelevantMemoryTitleLine(stage));
 		}
 	}
 
@@ -334,6 +339,8 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 			(f): LiveStateFileEntry => ({
 				path: f.path,
 				threadTitle: f.threadTitle,
+				host: f.host,
+				isLocal: f.isLocal,
 			}),
 		),
 		advisories: inputs.liveState.advisories.map(

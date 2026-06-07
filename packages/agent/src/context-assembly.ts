@@ -33,7 +33,7 @@ import {
 import type { StableSubsectionCache } from "./stable-prefix/cache";
 import {
 	type LiveStateTaskEntry,
-	RECENT_MEMORY_HEADER,
+	RELEVANT_MEMORY_HEADER,
 	type StageEntry,
 	type TieredEnrichment,
 	buildCrossThreadDigest,
@@ -43,7 +43,7 @@ import {
 	bumpRenderedDetailEntries,
 	computeBaseline,
 	flattenRecencyEntries,
-	formatMemoryEntry,
+	formatRelevantMemoryTitleLine,
 	loadAppliedAdvisoriesForLiveState,
 	loadDetailEntries,
 	loadFileModificationsForLiveState,
@@ -53,6 +53,8 @@ import {
 	renderLiveState,
 	renderWorkingKnowledge,
 	resolveVc15Tunables,
+	resolveVc27Cap,
+	selectRelevantMemory,
 } from "./summary-extraction.js";
 import { buildStaticSystemParts } from "./system-parts";
 import { sanitizeToolPairs } from "./tool-pair-sanitize";
@@ -298,8 +300,21 @@ function loadVolatileSectionInputs(args: {
 	maxMemory?: number;
 	maxTasks?: number;
 	maxPinned?: number;
+	siteId?: string;
+	hostName?: string;
 }): VolatileSectionInputs {
-	const { db, threadId, userId, baseline, nowMs, maxMemory, maxTasks, maxPinned } = args;
+	const {
+		db,
+		threadId,
+		userId,
+		baseline,
+		nowMs,
+		maxMemory,
+		maxTasks,
+		maxPinned,
+		siteId,
+		hostName,
+	} = args;
 
 	const pinned = loadPinnedEntries(db);
 	const summaries = loadSummaryEntries(db, pinned.exclusionSet);
@@ -311,7 +326,7 @@ function loadVolatileSectionInputs(args: {
 	);
 	const digest = buildCrossThreadDigest(db, userId, threadId);
 	const advisories = loadAppliedAdvisoriesForLiveState(db, nowMs);
-	const fileEntries = loadFileModificationsForLiveState(db, threadId);
+	const fileEntries = loadFileModificationsForLiveState(db, threadId, siteId, hostName);
 
 	const { taskDigestEntries, taskDigestLines, tiers } = buildVolatileEnrichment(
 		db,
@@ -519,18 +534,20 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	// DA owns detail, LS doesn't read semantic_memory. We filter to
 	// `tier='default'` rather than rendering everything in tiers.L2 +
 	// tiers.L3 because:
-	//   - pinned/summary entries from L2's graph traversal would
-	//     double-render against renderWorkingKnowledge
-	//   - detail entries (including orphaned) from L3's
-	//     `OR (tier='detail' AND NOT EXISTS summarizes-edge)` clause
-	//     would double-render against renderDiscoverableArchive
-	const recentDefaults = params.recencyEntries.filter((e) => e.tier === "default");
-	if (recentDefaults.length > 0) {
+	// R-VC27: turn-relevant cross-tier retrieval. `params.recencyEntries`
+	// arrives PRE-SELECTED at the call site (selectRelevantMemory: deduped
+	// against the full-body stable prefix, capped at BOUND_VC27_K). The dedup
+	// lives upstream because it needs the full pinned/summary key set, which
+	// the varying renderer (and its byte-equivalent mirror) does not carry —
+	// so here we only title-only format. Detail entries and demoted
+	// summary-overflow titles stay eligible by design: re-surfacing a
+	// relevance-ranked shortlist adjacent to the conversation is the value.
+	if (params.recencyEntries.length > 0) {
 		varyingLines.push("");
-		varyingLines.push(RECENT_MEMORY_HEADER);
+		varyingLines.push(RELEVANT_MEMORY_HEADER);
 		varyingLines.push("");
-		for (const entry of recentDefaults) {
-			varyingLines.push(formatMemoryEntry(entry));
+		for (const entry of params.recencyEntries) {
+			varyingLines.push(formatRelevantMemoryTitleLine(entry));
 		}
 	}
 
@@ -677,7 +694,12 @@ export function buildVolatileContext(params: {
 		params.userMessageText,
 		params.threadSummary,
 	);
-	const fileEntries = loadFileModificationsForLiveState(params.db, params.threadId);
+	const fileEntries = loadFileModificationsForLiveState(
+		params.db,
+		params.threadId,
+		params.siteId,
+		params.hostName,
+	);
 
 	// Query total memory count for VolatileContext return
 	const totalMemCount = (
@@ -706,7 +728,12 @@ export function buildVolatileContext(params: {
 			taskDigestEntries,
 			fileEntries,
 			advisories,
-			recencyEntries: flattenRecencyEntries(enrichmentTiers),
+			recencyEntries: selectRelevantMemory(
+				flattenRecencyEntries(enrichmentTiers),
+				pinned.entries,
+				summaries.entries,
+				resolveVc27Cap(),
+			),
 			budgetPressure: false,
 			nowMs,
 		});
@@ -1462,7 +1489,12 @@ Original output was too large for the context window. If you need the full conte
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
 			advisories: inputs.advisories,
-			recencyEntries: flattenRecencyEntries(inputs.tiers),
+			recencyEntries: selectRelevantMemory(
+				flattenRecencyEntries(inputs.tiers),
+				inputs.pinned.entries,
+				inputs.summaries.entries,
+				resolveVc27Cap(),
+			),
 			budgetPressure: false,
 			nowMs,
 		});
@@ -1593,7 +1625,13 @@ Original output was too large for the context window. If you need the full conte
 		// per-subsystem-cap-3 convention applied inside renderLiveState.
 		// Even under pressure the agent needs to see fresh memory
 		// activity, so don't drop the section entirely — just trim.
-		const recencyBP = flattenRecencyEntries(inputs.tiers).slice(0, 3);
+		// R-VC27: dedup against the full-body stable prefix first, then cap.
+		const recencyBP = selectRelevantMemory(
+			flattenRecencyEntries(inputs.tiers),
+			inputs.pinned.entries,
+			inputs.summaries.entries,
+			3,
+		);
 		const { stableLines: bpStable, varyingLines: bpVarying } = composeVolatileSections({
 			db,
 			pinned: inputs.pinned.entries,

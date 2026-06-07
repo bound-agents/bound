@@ -96,10 +96,14 @@ export interface TaskEntryView {
 	status: string;
 }
 
-/** File-modification notice (R-VC13). */
+/** File-modification notice (R-VC13, R-VC28). */
 export interface FileEntryView {
 	path: string;
 	threadTitle: string;
+	/** Resolved host_name of the modifying thread, or null when unresolvable. */
+	host: string | null;
+	/** True when the modifying thread ran on this host. */
+	isLocal: boolean;
 }
 
 /** Applied-advisory line (R-VC12). */

@@ -84,6 +84,8 @@ const taskEntry: fc.Arbitrary<TaskEntryView> = fc.record({
 const fileEntry: fc.Arbitrary<FileEntryView> = fc.record({
 	path: safeKey,
 	threadTitle: safeKey,
+	host: fc.option(safeKey, { nil: null }),
+	isLocal: fc.boolean(),
 });
 
 const advisoryEntry: fc.Arbitrary<AdvisoryEntryView> = fc.record({

@@ -158,6 +158,60 @@ describe("FTS5-based graph-seeded retrieval", () => {
 			expect(keys).toContain("default_networking");
 		});
 
+		it("surfaces a keyword-relevant non-orphan detail per-turn (R-VC27)", () => {
+			// A summary parent that is already rendered in the stable prefix
+			// (so its key rides in excludeKeys), and a detail child reachable
+			// from it via a `summarizes` edge. The detail directly matches the
+			// turn's keyword. Before R-VC27 the L2 tier clamp dropped this
+			// detail (non-orphan: it has a summarizes parent), so the most
+			// keyword-relevant entry in the cluster never surfaced per-turn.
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: randomBytes(8).toString("hex"),
+					key: "graphite_summary",
+					value: "Summary of graphite rendering pipeline work",
+					source: null,
+					created_at: "2026-02-01T00:00:00.000Z",
+					modified_at: "2026-03-15T12:00:00.000Z",
+					deleted: 0,
+					tier: "summary",
+				},
+				siteId,
+			);
+
+			insertRow(
+				db,
+				"semantic_memory",
+				{
+					id: randomBytes(8).toString("hex"),
+					key: "graphite_detail",
+					value: "Detailed graphite tessellation algorithm and edge cases",
+					source: null,
+					created_at: "2026-02-01T00:00:00.000Z",
+					modified_at: "2026-03-15T12:00:00.000Z",
+					deleted: 0,
+					tier: "detail",
+				},
+				siteId,
+			);
+
+			// summarizes: parent summary -> child detail (makes the detail non-orphan)
+			upsertEdge(db, "graphite_summary", "graphite_detail", "summarizes", 1.0, siteId);
+
+			// The summary is in the stable prefix already, so it rides in excludeKeys.
+			const excludeKeys = new Set(["graphite_summary"]);
+			const results = graphSeededRetrieval(db, ["tessellation"], 10, 2, excludeKeys);
+
+			const keys = results.map((r) => r.key);
+			// The detail must surface — it is the most keyword-relevant entry and
+			// is NOT itself in the stable prefix.
+			expect(keys).toContain("graphite_detail");
+			// The summary stays deduped against the stable prefix via excludeKeys.
+			expect(keys).not.toContain("graphite_summary");
+		});
+
 		it("excludes _internal. prefix entries from seeds", () => {
 			insertRow(
 				db,
