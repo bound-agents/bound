@@ -382,9 +382,22 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			host: webHost,
 			hostName: appContext.hostName,
 			operatorUserId,
-			models: {
-				models: uniqueModels,
-				default: modelBackends.default,
+			// Live getter (not a boot snapshot): the /models discovery endpoint
+			// must reflect SIGHUP reloads, which reassign appContext.config.modelBackends
+			// in place. A captured snapshot would leave models added via reload
+			// (e.g. gpt-5.x) invisible to the editor's model dropdown even though
+			// the router routes them fine. Dedup is recomputed per request.
+			models: () => {
+				const live = appContext.config.modelBackends;
+				const seen = new Set<string>();
+				const models: Array<{ id: string; provider: string }> = [];
+				for (const b of live.backends) {
+					if (!seen.has(b.id)) {
+						seen.add(b.id);
+						models.push({ id: b.id, provider: b.provider });
+					}
+				}
+				return { models, default: live.default };
 			},
 			backendPricing: modelBackends.backends.map((b) => ({
 				id: b.id,

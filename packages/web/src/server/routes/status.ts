@@ -42,7 +42,7 @@ export function createStatusRoutes(
 	eventBus: TypedEventEmitter,
 	hostName: string,
 	siteId: string,
-	modelsConfig?: ModelsConfig,
+	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined),
 	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>,
 	logger?: ReturnType<typeof createLogger>,
 	emitToolCancel?: (
@@ -129,7 +129,11 @@ export function createStatusRoutes(
 	app.get("/models", (c) => {
 		const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
-		const localModels: ClusterModelInfo[] = (modelsConfig?.models ?? []).map((m) => ({
+		// modelsConfig may be a live getter (so SIGHUP reloads propagate to the
+		// discovery endpoint) or a static snapshot — resolve per request.
+		const resolved = typeof modelsConfig === "function" ? modelsConfig() : modelsConfig;
+
+		const localModels: ClusterModelInfo[] = (resolved?.models ?? []).map((m) => ({
 			id: m.id,
 			provider: m.provider,
 			host: hostName,
@@ -186,7 +190,7 @@ export function createStatusRoutes(
 
 		return c.json({
 			models: [...localModels, ...remoteModels],
-			default: modelsConfig?.default ?? "",
+			default: resolved?.default ?? "",
 		});
 	});
 

@@ -19,7 +19,7 @@ export interface WebServerConfig {
 	host?: string;
 	hostName?: string;
 	operatorUserId: string;
-	models?: ModelsConfig;
+	models?: ModelsConfig | (() => ModelsConfig | undefined);
 	backendPricing?: BackendPricing[];
 	siteId?: string;
 	/**
