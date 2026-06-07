@@ -133,9 +133,6 @@ User ID: test-user, Thread ID: 8869d0e9-563b-5c63-af80-fa048b224bc8
 - _summary:topic-47 (modified 2026-05-21): Summary for topic 47: this is a brief overview.
 - _summary:topic-48 (modified 2026-05-21): Summary for topic 48: this is a brief overview.
 
-### Older summaries (titles only — search the key for the body)
-- _summary:topic-49
-
 Bodies of summary entries are accessed via memory search using terms from the entry key.
 ## Discoverable Archive — title-only; bodies via memory search
 
@@ -1239,7 +1236,7 @@ Bodies of summary entries are accessed via memory search using terms from the en
 - curiosity:item-909-det000909
 - curiosity:item-959-det000959
 
-Bodies are accessed via memory search or query against semantic_memory.
+Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
 
 - _pinned:0 [changed since last turn]

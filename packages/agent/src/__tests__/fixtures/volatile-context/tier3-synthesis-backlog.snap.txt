@@ -838,7 +838,7 @@ Bodies of summary entries are accessed via memory search using terms from the en
 - curiosity:item-509-det000509
 - curiosity:item-559-det000559
 
-Bodies are accessed via memory search or query against semantic_memory.
+Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
 
 - _pinned:0 [changed since last turn]
@@ -971,6 +971,24 @@ Bodies are accessed via memory search or query against semantic_memory.
 - _summary:topic-47 [changed since last turn]
 - _summary:topic-48 [changed since last turn]
 - _summary:topic-49 [changed since last turn]
+
+## Relevant memory — matched to this turn
+
+- curiosity:item-0-det000000 [detail] (16d ago)
+- curiosity:item-1-det000001 [detail] (16d ago)
+- curiosity:item-2-det000002 [detail] (16d ago)
+- curiosity:item-3-det000003 [detail] (16d ago)
+- curiosity:item-4-det000004 [detail] (16d ago)
+- curiosity:item-5-det000005 [detail] (16d ago)
+- curiosity:item-6-det000006 [detail] (16d ago)
+- curiosity:item-7-det000007 [detail] (16d ago)
+- curiosity:item-8-det000008 [detail] (16d ago)
+- curiosity:item-9-det000009 [detail] (16d ago)
+- curiosity:item-10-det000010 [detail] (16d ago)
+- curiosity:item-11-det000011 [detail] (16d ago)
+- curiosity:item-12-det000012 [detail] (16d ago)
+- curiosity:item-13-det000013 [detail] (16d ago)
+- curiosity:item-14-det000014 [detail] (16d ago)
 ## Live State — pointers to canonical sources
 
 

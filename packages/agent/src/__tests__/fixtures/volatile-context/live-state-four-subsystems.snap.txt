@@ -34,7 +34,7 @@ Bodies of summary entries are accessed via memory search using terms from the en
 - curiosity:item-8-det000008
 - curiosity:item-9-det000009
 
-Bodies are accessed via memory search or query against semantic_memory.
+Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
 
 - _pinned:0 [changed since last turn]
@@ -58,8 +58,8 @@ Bodies are accessed via memory search or query against semantic_memory.
 - [thread] Related Thread 1: 2 messages (last updated 2026-05-21T23:59:59.000Z)
 - [task] 389fde34-df5c-5a50-af31-20d0f694aa97 (webhook): run_count=1, last_run_at=2026-05-21T23:30:00.000Z, status=ran
 - [task] c4f866b0-c7c7-5bf4-be89-9bb833ff94ef (cron): run_count=1, last_run_at=2026-05-21T23:00:00.000Z, status=ran
-- [file] /src/main.ts — last modified by thread "Related Thread 1"
-- [file] /src/utils.ts — last modified by thread "Related Thread 2"
+- [file] /src/main.ts — last modified by thread "Related Thread 1" [host: fixture-host, remote]
+- [file] /src/utils.ts — last modified by thread "Related Thread 2" [host: fixture-host, remote]
 - [advisory] Advisory 1 — applied 1h ago
 - [advisory] Advisory 2 — applied 2h ago
 

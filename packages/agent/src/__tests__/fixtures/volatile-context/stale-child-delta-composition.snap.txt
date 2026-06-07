@@ -16,7 +16,7 @@ Bodies of summary entries are accessed via memory search using terms from the en
 
 - detail:stale-det000000
 
-Bodies are accessed via memory search or query against semantic_memory.
+Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
 
 - _pinned:0 [changed since last turn]

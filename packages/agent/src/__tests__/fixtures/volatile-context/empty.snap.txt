@@ -7,7 +7,7 @@ Bodies of summary entries are accessed via memory search using terms from the en
 ## Discoverable Archive — title-only; bodies via memory search
 
 
-Bodies are accessed via memory search or query against semantic_memory.
+Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 ## Live State — pointers to canonical sources
 
 
