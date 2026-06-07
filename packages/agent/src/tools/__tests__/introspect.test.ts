@@ -352,6 +352,39 @@ describe("introspect tool", () => {
 			});
 		});
 
+		describe("introspect-tool.AC3.1b: short timeout does not overshoot a full poll interval", () => {
+			it("returns within the timeout even when the poll interval is much larger", async () => {
+				const tool = createIntrospectTool(ctx);
+				setupTargetThread("target-thread");
+
+				// Force a large poll interval to expose full-interval overshoot: a
+				// 100ms-timeout call must NOT block for the full 2000ms interval. The
+				// loop must clamp its sleep to the remaining time, not the interval.
+				const prev = process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS;
+				process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS = "2000";
+				try {
+					const start = Date.now();
+					const result = await tool.execute({
+						thread_id: "target-thread",
+						message: "What do you think?",
+						timeout: 100,
+					});
+					const elapsed = Date.now() - start;
+
+					expect(result).toContain("timed out");
+					// Without clamping, elapsed is ~2000ms (one full interval).
+					// With min(interval, remaining), it returns near the timeout.
+					expect(elapsed).toBeLessThan(1000);
+				} finally {
+					if (prev === undefined) {
+						process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS = undefined;
+					} else {
+						process.env.BOUND_INTROSPECT_POLL_INTERVAL_MS = prev;
+					}
+				}
+			});
+		});
+
 		describe("introspect-tool.AC3.2: Error turn detection", () => {
 			it("detects target turn with status=error and returns early with error message", async () => {
 				const tool = createIntrospectTool(ctx);
