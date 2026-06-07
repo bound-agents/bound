@@ -37,9 +37,9 @@ import {
 	UNCATEGORIZED_CLUSTER_NAME,
 	VC15_TIER1_THRESHOLD,
 	VC15_UNCATEGORIZED_BACKLOG_THRESHOLD,
-	WORKING_KNOWLEDGE_DEMOTED_HEADER,
 	WORKING_KNOWLEDGE_FOOTER,
 	WORKING_KNOWLEDGE_HEADER,
+	appendOlderSummariesSubBlock,
 	capWorkingKnowledgeSummaries,
 	formatCalendarDate,
 	formatStableDetailLine,
@@ -82,21 +82,15 @@ function renderWorkingKnowledgeStable(
 	for (const entry of pinned) {
 		out.push(`- ${entry.key} (modified ${formatCalendarDate(entry.modifiedAt)}): ${entry.value}`);
 	}
-	// Identical cap+demote to renderWorkingKnowledge's stable channel — via the
-	// SAME shared helper so the two paths cannot drift (R-VC25 parity, pinned by
-	// parity-with-production.test.ts).
-	const { kept, demoted } = capWorkingKnowledgeSummaries(summaries);
+	// Identical cap to renderWorkingKnowledge's stable channel — via the SAME
+	// shared helper so the two paths cannot drift (R-VC25 parity, pinned by
+	// parity-with-production.test.ts). R-VC29: the `demoted` overflow no longer
+	// renders here; it moves to the Discoverable Archive (renderDiscoverableArchiveStable).
+	const { kept } = capWorkingKnowledgeSummaries(summaries);
 	for (const summary of kept) {
 		out.push(
 			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${truncateGlossForSummary(summary.value)}`,
 		);
-	}
-	if (demoted.length > 0) {
-		out.push("");
-		out.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
-		for (const summary of demoted) {
-			out.push(`- ${summary.key}`);
-		}
 	}
 	out.push("");
 	out.push(WORKING_KNOWLEDGE_FOOTER);
@@ -125,61 +119,59 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 	const total = visible.length;
 
 	if (total === 0) {
-		out.push("");
-		out.push(DISCOVERABLE_FOOTER);
-		return out;
-	}
-
-	if (total <= VC15_TIER1_THRESHOLD) {
+		// No detail body; the common tail (sub-block + footer) still renders below.
+	} else if (total <= VC15_TIER1_THRESHOLD) {
 		// Key-sorted render (mirrors production renderDiscoverableArchive).
 		for (const entry of sortDetailEntriesForRender(visible)) {
 			out.push(formatStableDetailLine(entry, inputs.budgetPressure));
 		}
-		out.push("");
-		out.push(DISCOVERABLE_FOOTER);
-		return out;
-	}
+	} else {
+		const clusters = groupByCluster(visible, inputs.parentSummaryByKey);
+		const sorted = sortClusters(clusters);
 
-	const clusters = groupByCluster(visible, inputs.parentSummaryByKey);
-	const sorted = sortClusters(clusters);
-
-	if (total <= inputs.tunables.n) {
-		// Tier 2: cluster compression. Within-cluster lines key-sorted.
-		for (const cluster of sorted) {
-			out.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
-			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
-				out.push(formatStableDetailLine(entry, inputs.budgetPressure));
+		if (total <= inputs.tunables.n) {
+			// Tier 2: cluster compression. Within-cluster lines key-sorted.
+			for (const cluster of sorted) {
+				out.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
+				for (const entry of sortDetailEntriesForRender(cluster.entries)) {
+					out.push(formatStableDetailLine(entry, inputs.budgetPressure));
+				}
+				out.push("");
 			}
-			out.push("");
+			if (out[out.length - 1] === "") out.pop();
+		} else {
+			// Tier 3: heading-only with M most-recent per cluster. Recency SELECTION
+			// (slice), key-sorted RENDER (mirrors production).
+			for (const cluster of sorted) {
+				const totalCount = cluster.entries.length;
+				const tail = cluster.entries.slice(0, inputs.tunables.m);
+				out.push(
+					`### ${cluster.name} (${totalCount} entries, showing ${inputs.tunables.m} most recent)`,
+				);
+				for (const entry of sortDetailEntriesForRender(tail)) {
+					out.push(formatStableDetailLine(entry, inputs.budgetPressure));
+				}
+				out.push("");
+				if (
+					cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
+					totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
+				) {
+					// Production renderer surfaces a synthesisBacklogCount here
+					// for the varying-side `[synthesis-backlog]` Live-State line;
+					// the count itself does not appear in the stable output.
+				}
+			}
+			if (out[out.length - 1] === "") out.pop();
 		}
-		if (out[out.length - 1] === "") out.pop();
-		out.push("");
-		out.push(DISCOVERABLE_FOOTER);
-		return out;
 	}
 
-	// Tier 3: heading-only with M most-recent per cluster. Recency SELECTION
-	// (slice), key-sorted RENDER (mirrors production).
-	for (const cluster of sorted) {
-		const totalCount = cluster.entries.length;
-		const tail = cluster.entries.slice(0, inputs.tunables.m);
-		out.push(
-			`### ${cluster.name} (${totalCount} entries, showing ${inputs.tunables.m} most recent)`,
-		);
-		for (const entry of sortDetailEntriesForRender(tail)) {
-			out.push(formatStableDetailLine(entry, inputs.budgetPressure));
-		}
-		out.push("");
-		if (
-			cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
-			totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
-		) {
-			// Production renderer surfaces a synthesisBacklogCount here
-			// for the varying-side `[synthesis-backlog]` Live-State line;
-			// the count itself does not appear in the stable output.
-		}
-	}
-	if (out[out.length - 1] === "") out.pop();
+	// R-VC29: demoted summary-overflow titles render inside the Archive. Derived
+	// from inputs.summaries through the SAME capWorkingKnowledgeSummaries +
+	// appendOlderSummariesSubBlock the production renderer uses, so the stable
+	// channel and its mirror cannot drift (pinned by parity-with-production.test.ts).
+	const { demoted } = capWorkingKnowledgeSummaries(inputs.summaries);
+	appendOlderSummariesSubBlock(out, demoted);
+
 	out.push("");
 	out.push(DISCOVERABLE_FOOTER);
 	return out;

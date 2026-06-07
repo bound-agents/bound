@@ -5,7 +5,7 @@ import type { LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
 import { getClientSessions } from "./delegation";
-import { getLastThreadForFile } from "./file-thread-tracker";
+import { normalizeFilePathForKey } from "./file-thread-tracker";
 import { graphSeededRetrieval } from "./graph-queries";
 
 /**
@@ -757,6 +757,16 @@ export interface DiscoverableArchiveInput {
 	budgetPressure: boolean;
 	/** Resolved at assembly time from BOUND_VC15_N / BOUND_VC15_M (see resolveVc15Tunables). */
 	tunables: Vc15Tunables;
+	/**
+	 * R-VC29: summary-tier entries beyond WORKING_KNOWLEDGE_SUMMARY_CAP, demoted
+	 * to title-only and consolidated here (under a `### Older summaries` sub-header)
+	 * instead of in a separate Working Knowledge block. The caller computes this via
+	 * `capWorkingKnowledgeSummaries(summaries).demoted`; the stable-prefix mirror
+	 * derives it from `inputs.summaries` through the SAME helper so the two paths
+	 * stay byte-equivalent (pinned by parity-with-production.test.ts). Optional so
+	 * test fixtures predating R-VC29 render byte-identically (absent ⇒ no sub-block).
+	 */
+	demotedSummaries?: ReadonlyArray<{ key: string }>;
 }
 
 export interface Vc15Tunables {
@@ -876,7 +886,7 @@ export function buildStaleChildrenMap(
 
 export const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
 export const DISCOVERABLE_FOOTER =
-	"Bodies are accessed via memory search or query against semantic_memory.";
+	"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.";
 
 /**
  * Render a Discoverable-Archive entry line. Pure in `(entry,
@@ -901,11 +911,23 @@ export function formatStableDetailLine(
 }
 
 /**
- * Section header for `tier='default'` L2 (graph-seeded) + L3 (recency)
- * entries that the three R-VC24 renderers (WK / DA / LS) don't surface.
- * Rendered into the varying tail by `composeVolatileSections`.
+ * R-VC27 section header for the turn-relevant cross-tier retrieval block.
+ * The keyword+graph pipeline runs WITHOUT the old `tier='default'` clamp, so
+ * pinned/summary/detail entries that match the conversation now surface here
+ * (title-only). Rendered into the varying tail by `composeVolatileSections`.
  */
-export const RECENT_MEMORY_HEADER = "## Recent memory — graph + recency";
+export const RELEVANT_MEMORY_HEADER = "## Relevant memory — matched to this turn";
+
+/** R-VC27 default cap on the relevant-memory block (`BOUND_VC27_K`). */
+export const RELEVANT_MEMORY_DEFAULT_K = 15;
+
+/**
+ * Resolve the R-VC27 cap from the environment (`BOUND_VC27_K`), defaulting to
+ * `RELEVANT_MEMORY_DEFAULT_K`. Mirrors the `resolveVc15Tunables` idiom.
+ */
+export function resolveVc27Cap(env: NodeJS.ProcessEnv = process.env): number {
+	return parsePositiveInt(env.BOUND_VC27_K, RELEVANT_MEMORY_DEFAULT_K);
+}
 
 /**
  * Flatten a `TieredEnrichment` into the L2 + L3 tail used by
@@ -916,6 +938,54 @@ export const RECENT_MEMORY_HEADER = "## Recent memory — graph + recency";
  */
 export function flattenRecencyEntries(tiers: TieredEnrichment): StageEntry[] {
 	return [...tiers.L2, ...tiers.L3];
+}
+
+/**
+ * R-VC27 selection: from the flattened L2 (graph, relevance-ordered) + L3
+ * (recency) entries, drop any whose FULL BODY is already rendered in the
+ * stable prefix this turn (L0 pinned ∪ the L1 summaries kept full-gloss under
+ * `WORKING_KNOWLEDGE_SUMMARY_CAP`), then cap at `k`. Relevance/recency order is
+ * preserved from the input (FTS rank then graph distance, then recency).
+ *
+ * NOT deduped against Discoverable Archive detail titles or demoted
+ * summary-overflow titles: re-surfacing a relevance-ranked shortlist adjacent
+ * to the conversation is the explicit value, and it is the only path by which
+ * an R-VC15 Tier-3 collapsed long-tail entry becomes visible. Pure function —
+ * the dedup set is computed from `pinned`/`summaries` here so the three call
+ * sites stay one-liners and the varying renderer (and its byte-equivalent
+ * mirror) only ever has to title-only format the already-selected list.
+ */
+export function selectRelevantMemory(
+	flattened: ReadonlyArray<StageEntry>,
+	pinned: ReadonlyArray<{ key: string }>,
+	summaries: ReadonlyArray<{ key: string }>,
+	k: number,
+): StageEntry[] {
+	const fullBodyStableKeys = new Set<string>();
+	for (const e of pinned) fullBodyStableKeys.add(e.key);
+	for (const e of capWorkingKnowledgeSummaries(summaries).kept) {
+		fullBodyStableKeys.add(e.key);
+	}
+	const selected: StageEntry[] = [];
+	for (const entry of flattened) {
+		if (fullBodyStableKeys.has(entry.key)) continue;
+		selected.push(entry);
+		if (selected.length >= k) break;
+	}
+	return selected;
+}
+
+/**
+ * R-VC27 title-only line: `- {key} [{tier}] ({relTime})`. Renders the entry's
+ * actual tier (pinned/summary/default/detail) — what tells the agent where the
+ * body lives — not its retrieval-stage tag. Soft-deleted entries render as
+ * `[forgotten]`. Uses wall-clock `relativeTime`; the varying-tail mirror uses
+ * the `nowMs`-injected variant, and the parity test mocks the clock so the two
+ * agree byte-for-byte.
+ */
+export function formatRelevantMemoryTitleLine(entry: StageEntry): string {
+	const tierTag = entry.deleted ? "forgotten" : entry.tier;
+	return `- ${entry.key} [${tierTag}] (${relativeTime(entry.modifiedAt)})`;
 }
 
 export function renderDiscoverableArchive(
@@ -929,25 +999,17 @@ export function renderDiscoverableArchive(
 	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
 
 	const total = visible.length;
+	let synthesisBacklogCount: number | null = null;
 
 	if (total === 0) {
-		lines.push("");
-		lines.push(DISCOVERABLE_FOOTER);
-		return { section: { lines }, synthesisBacklogCount: null };
-	}
-
-	if (total <= VC15_TIER1_THRESHOLD) {
+		// No detail body; the common tail (sub-block + footer) still renders below.
+	} else if (total <= VC15_TIER1_THRESHOLD) {
 		// Tier 1: flat list, rendered key-sorted (NOT last_accessed_at order) so
 		// the output is invariant to bump-driven access-time reordering.
 		for (const entry of sortDetailEntriesForRender(visible)) {
 			lines.push(formatDetailLine(entry, input.budgetPressure));
 		}
-		lines.push("");
-		lines.push(DISCOVERABLE_FOOTER);
-		return { section: { lines }, synthesisBacklogCount: null };
-	}
-
-	if (total <= input.tunables.n) {
+	} else if (total <= input.tunables.n) {
 		// Tier 2: cluster compression. Within-cluster lines rendered key-sorted.
 		const clusters = groupByCluster(visible, input.parentSummaryByKey);
 		const sorted = sortClusters(clusters);
@@ -960,39 +1022,60 @@ export function renderDiscoverableArchive(
 		}
 		// Drop trailing blank if any cluster was rendered.
 		if (lines[lines.length - 1] === "") lines.pop();
-		lines.push("");
-		lines.push(DISCOVERABLE_FOOTER);
-		return { section: { lines }, synthesisBacklogCount: null };
+	} else {
+		// Tier 3: heading-only compression with M most-recent per cluster.
+		// SELECTION stays by recency (cluster.entries arrive last_accessed_at DESC,
+		// so slice(0, m) keeps the M most-recently-accessed); RENDER order is then
+		// key-sorted so the kept set's bytes don't shift when bumps reorder it.
+		const clusters = groupByCluster(visible, input.parentSummaryByKey);
+		const sorted = sortClusters(clusters);
+		for (const cluster of sorted) {
+			const totalCount = cluster.entries.length;
+			const tail = cluster.entries.slice(0, input.tunables.m);
+			lines.push(
+				`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
+			);
+			for (const entry of sortDetailEntriesForRender(tail)) {
+				lines.push(formatDetailLine(entry, input.budgetPressure));
+			}
+			lines.push("");
+			if (
+				cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
+				totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
+			) {
+				synthesisBacklogCount = totalCount;
+			}
+		}
+		if (lines[lines.length - 1] === "") lines.pop();
 	}
 
-	// Tier 3: heading-only compression with M most-recent per cluster.
-	// SELECTION stays by recency (cluster.entries arrive last_accessed_at DESC,
-	// so slice(0, m) keeps the M most-recently-accessed); RENDER order is then
-	// key-sorted so the kept set's bytes don't shift when bumps reorder it.
-	const clusters = groupByCluster(visible, input.parentSummaryByKey);
-	const sorted = sortClusters(clusters);
-	let synthesisBacklogCount: number | null = null;
-	for (const cluster of sorted) {
-		const totalCount = cluster.entries.length;
-		const tail = cluster.entries.slice(0, input.tunables.m);
-		lines.push(
-			`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
-		);
-		for (const entry of sortDetailEntriesForRender(tail)) {
-			lines.push(formatDetailLine(entry, input.budgetPressure));
-		}
-		lines.push("");
-		if (
-			cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
-			totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
-		) {
-			synthesisBacklogCount = totalCount;
-		}
-	}
-	if (lines[lines.length - 1] === "") lines.pop();
+	// R-VC29: demoted summary-overflow titles render here, inside the Archive,
+	// under their own `### Older summaries` sub-header — NOT as a separate block in
+	// Working Knowledge. Absent/empty ⇒ no sub-block, byte-identical to pre-R-VC29.
+	appendOlderSummariesSubBlock(lines, input.demotedSummaries);
+
 	lines.push("");
 	lines.push(DISCOVERABLE_FOOTER);
 	return { section: { lines }, synthesisBacklogCount };
+}
+
+/**
+ * R-VC29: append the demoted summary-overflow titles as a title-only sub-block
+ * under `WORKING_KNOWLEDGE_DEMOTED_HEADER`, separated from the detail body by a
+ * blank line. Shared by both the production renderer and the stable-prefix
+ * mirror so the two paths cannot drift (parity-with-production.test.ts). No-op
+ * when there is nothing demoted, which preserves pre-R-VC29 bytes exactly.
+ */
+export function appendOlderSummariesSubBlock(
+	lines: string[],
+	demotedSummaries: ReadonlyArray<{ key: string }> | undefined,
+): void {
+	if (!demotedSummaries || demotedSummaries.length === 0) return;
+	lines.push("");
+	lines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
+	for (const summary of demotedSummaries) {
+		lines.push(`- ${summary.key}`);
+	}
 }
 
 interface Cluster {
@@ -1886,23 +1969,16 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 	// R-VC3: summary bodies with 200-char gloss, no inline markers. Capped at
 	// WORKING_KNOWLEDGE_SUMMARY_CAP most-recent (input.summaries arrives
 	// recency-ordered from loadSummaryEntries); the overflow is demoted to
-	// title-only lines so the cached prefix stays bounded without hiding any
-	// summary from the agent.
-	const { kept: keptSummaries, demoted: demotedSummaries } = capWorkingKnowledgeSummaries(
-		input.summaries,
-	);
+	// title-only lines. R-VC29: those demoted titles render in the Discoverable
+	// Archive (under `### Older summaries`), NOT here — Working Knowledge keeps
+	// only full-fidelity content (pinned + glossed summaries). The caller passes
+	// `capWorkingKnowledgeSummaries(summaries).demoted` to renderDiscoverableArchive.
+	const { kept: keptSummaries } = capWorkingKnowledgeSummaries(input.summaries);
 	for (const summary of keptSummaries) {
 		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
 		stableLines.push(
 			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${gloss}`,
 		);
-	}
-	if (demotedSummaries.length > 0) {
-		stableLines.push("");
-		stableLines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
-		for (const summary of demotedSummaries) {
-			stableLines.push(`- ${summary.key}`);
-		}
 	}
 
 	stableLines.push("");
@@ -2010,29 +2086,58 @@ export function loadAppliedAdvisoriesForLiveState(
 export function loadFileModificationsForLiveState(
 	db: Database,
 	currentThreadId: string,
+	localSiteId?: string,
+	localHostName?: string,
 ): LiveStateFileEntry[] {
 	try {
 		const FILE_NOTIF_CAP = 10;
-		const threadFiles = db
+		// One JOIN: the file_thread entry's VALUE is the modifying thread id, so
+		// resolve its title + host_origin and map host_origin → host_name via the
+		// same LEFT JOIN the [thread] line uses (R-VC28). Sort local-host edits
+		// ahead of remote ones so a remote modification doesn't crowd out a local
+		// one under the cap and doesn't read as equally local-relevant.
+		//
+		// host_origin is mixed across rows (a site_id, a host_name, or
+		// "localhost:port"), so "local" must match against BOTH this host's
+		// site_id AND its host_name. Bind "" when either is absent (a real
+		// host_origin never equals "") so the SQL CASE and the JS isLocal below
+		// agree and undefined never reaches the binder.
+		const localSite = localSiteId ?? "";
+		const localHost = localHostName ?? "";
+		const rows = db
 			.query(
-				"SELECT DISTINCT key FROM semantic_memory WHERE key LIKE '_internal.file_thread.%' AND deleted = 0",
+				`SELECT sm.key AS key, sm.value AS thread_id, t.title AS thread_title,
+				        t.host_origin AS host_origin, h.host_name AS host_name
+				 FROM semantic_memory sm
+				 LEFT JOIN threads t ON t.id = sm.value
+				 LEFT JOIN hosts h ON h.site_id = t.host_origin AND h.deleted = 0
+				 WHERE sm.key LIKE '_internal.file_thread.%' AND sm.deleted = 0
+				   AND sm.value != ?
+				 ORDER BY (CASE WHEN t.host_origin IN (?, ?) THEN 0 ELSE 1 END) ASC,
+				          sm.modified_at DESC
+				 LIMIT ?`,
 			)
-			.all() as Array<{ key: string }>;
+			.all(currentThreadId, localSite, localHost, FILE_NOTIF_CAP) as Array<{
+			key: string;
+			thread_id: string;
+			thread_title: string | null;
+			host_origin: string | null;
+			host_name: string | null;
+		}>;
 
-		const entries: LiveStateFileEntry[] = [];
-		for (const { key } of threadFiles) {
-			if (entries.length >= FILE_NOTIF_CAP) break;
-			const filePath = key.replace("_internal.file_thread.", "");
-			const lastThread = getLastThreadForFile(db, filePath);
-			if (lastThread && lastThread !== currentThreadId) {
-				const threadRow = db.query("SELECT title FROM threads WHERE id = ?").get(lastThread) as {
-					title: string | null;
-				} | null;
-				const threadTitle = threadRow?.title || lastThread;
-				entries.push({ path: filePath, threadTitle });
-			}
-		}
-		return entries;
+		return rows.map((r): LiveStateFileEntry => {
+			const rawPath = r.key.replace("_internal.file_thread.", "");
+			const isLocal =
+				r.host_origin != null && (r.host_origin === localSiteId || r.host_origin === localHostName);
+			return {
+				// Normalize the displayed path so legacy mangled keys (/C:\…) render
+				// canonically even though the stored key isn't rewritten.
+				path: normalizeFilePathForKey(rawPath),
+				threadTitle: r.thread_title || r.thread_id,
+				host: r.host_name ?? r.host_origin ?? null,
+				isLocal,
+			};
+		});
 	} catch (error) {
 		// Non-fatal: file thread notification query failed. Log for visibility.
 		console.warn("loadFileModificationsForLiveState query failed:", error);
@@ -2059,6 +2164,13 @@ export interface LiveStateTaskEntry {
 export interface LiveStateFileEntry {
 	path: string;
 	threadTitle: string;
+	/**
+	 * Resolved `host_name` of the thread that last modified the file (R-VC28),
+	 * or null when the modifying thread's `host_origin` can't be resolved.
+	 */
+	host: string | null;
+	/** True when the modifying thread ran on this host (local edit). */
+	isLocal: boolean;
 }
 
 /**
@@ -2132,10 +2244,13 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 		);
 	}
 
-	// §5.3 step 3 — file modification notices (R-VC13, R-E20).
+	// §5.3 step 3 — file modification notices (R-VC13, R-E20, R-VC28).
 	for (const f of cap(input.fileEntries) as LiveStateFileEntry[]) {
-		// em-dash separator U+2014
-		lines.push(`- [file] ${f.path} — last modified by thread "${f.threadTitle}"`);
+		// em-dash separator U+2014; host attribution rides in a trailing bracket.
+		// Format MUST match composeVolatileVarying's renderFileLine byte-for-byte
+		// (parity-with-production.test.ts).
+		const hostSuffix = f.host ? ` [host: ${f.host}${f.isLocal ? "" : ", remote"}]` : "";
+		lines.push(`- [file] ${f.path} — last modified by thread "${f.threadTitle}"${hostSuffix}`);
 	}
 
 	// §5.3 step 4 — applied advisories (R-VC12).

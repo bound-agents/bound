@@ -20,6 +20,17 @@ export function isEphemeralPath(filePath: string): boolean {
 	return EPHEMERAL_PATH_PATTERNS.some((re) => re.test(filePath));
 }
 
+// A Windows absolute path (`C:\...` or `C:/...`) can arrive with a spurious
+// leading POSIX `/` prepended by the boundless/ACP path-resolution layer
+// upstream (observed live: `/C:\Users\<user>\...`). Strip exactly that leading
+// slash so the path keys canonically. Idempotent, and a no-op for POSIX paths
+// (a leading `/` there is load-bearing and must survive).
+const WINDOWS_DRIVE_WITH_LEADING_SLASH = /^\/([A-Za-z]:[\\/])/;
+
+export function normalizeFilePathForKey(filePath: string): string {
+	return filePath.replace(WINDOWS_DRIVE_WITH_LEADING_SLASH, "$1");
+}
+
 export function trackFilePath(
 	db: Database,
 	filePath: string,
@@ -28,7 +39,7 @@ export function trackFilePath(
 ): void {
 	if (isEphemeralPath(filePath)) return;
 
-	const key = MEMORY_KEY_PREFIX + filePath;
+	const key = MEMORY_KEY_PREFIX + normalizeFilePathForKey(filePath);
 	const now = new Date().toISOString();
 
 	// Check if memory entry exists (including soft-deleted to avoid UNIQUE violations)
@@ -67,7 +78,7 @@ export function trackFilePath(
 }
 
 export function getLastThreadForFile(db: Database, filePath: string): string | null {
-	const key = MEMORY_KEY_PREFIX + filePath;
+	const key = MEMORY_KEY_PREFIX + normalizeFilePathForKey(filePath);
 	const result = db
 		.prepare("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0")
 		.get(key) as { value: string } | undefined;

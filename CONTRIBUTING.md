@@ -167,7 +167,7 @@ this table.
 
 | File:Line | Write target | Category | Disposition |
 |-----------|-------------|----------|-------------|
-| packages/agent/src/summary-extraction.ts:1728 | semantic_memory.last_accessed_at | (a) justified | Per-host relevance hint; see Section A above. |
+| packages/agent/src/summary-extraction.ts:1811 | semantic_memory.last_accessed_at | (a) justified | Per-host relevance hint; see Section A above. |
 | packages/agent/src/scheduler.ts:549 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed timer-driven heartbeat refresh through outbox. |
 | packages/agent/src/scheduler.ts:1226 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed activity-driven heartbeat refresh through outbox. |
 | packages/agent/src/scheduler.ts:311 (REMOVED) | tasks.next_run_at, tasks.status | (b) fixed | R-LR11 routed rescheduleHeartbeat through outbox. |

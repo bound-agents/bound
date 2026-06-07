@@ -507,7 +507,7 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(false);
 		});
 
-		it("demotes overflow beyond the cap to title-only lines under a sub-header", () => {
+		it("caps at the summary limit and does NOT render overflow in Working Knowledge (R-VC29: moved to Discoverable Archive)", () => {
 			const n = WORKING_KNOWLEDGE_SUMMARY_CAP + 16;
 			const summaries = Array.from({ length: n }, (_, i) =>
 				mkSummary(`_summary:k${String(i).padStart(3, "0")}`),
@@ -525,20 +525,20 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			);
 			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
 
-			// A demote sub-header is present.
-			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(true);
+			// R-VC29: NO demote sub-header in Working Knowledge — the overflow titles
+			// now render in the Discoverable Archive, not here.
+			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(false);
 
-			// Overflow renders as title-only (key, no gloss body) — exactly 16 of them.
+			// And NO title-only summary lines leak into Working Knowledge.
 			const titleOnly = result.stableLines.filter(
 				(l) => /^- _summary:k\d+$/.test(l), // no ": body" suffix
 			);
-			expect(titleOnly).toHaveLength(16);
+			expect(titleOnly).toHaveLength(0);
 
-			// Cap is positional: the FIRST CAP keys keep gloss, the REST are titles.
+			// The kept set is still positional: the FIRST CAP keys keep gloss.
 			expect(result.stableLines).toContain(
 				`- _summary:k000 (modified 2026-05-22): ${mkSummary("_summary:k000").value.slice(0, 200)}...`,
 			);
-			expect(titleOnly).toContain(`- _summary:k${String(n - 1).padStart(3, "0")}`);
 		});
 
 		it("capWorkingKnowledgeSummaries is a pure positional split (kept + demoted)", () => {
