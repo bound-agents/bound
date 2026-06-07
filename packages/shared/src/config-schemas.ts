@@ -129,7 +129,15 @@ export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
 const modelBackendSchema = z
 	.object({
 		id: z.string().min(1),
-		provider: z.enum(["ollama", "bedrock", "anthropic", "openai-compatible", "cerebras", "zai"]),
+		provider: z.enum([
+			"ollama",
+			"bedrock",
+			"bedrock-mantle",
+			"anthropic",
+			"openai-compatible",
+			"cerebras",
+			"zai",
+		]),
 		model: z.string().min(1),
 		base_url: z.string().url().optional(),
 		api_key: z.string().optional(),
