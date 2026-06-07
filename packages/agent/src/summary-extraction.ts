@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { getPkColumn, insertRow, updateRow } from "@bound/core";
-import type { LLMBackend } from "@bound/llm";
+import type { ContentBlock, LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
 import { safeSlice } from "@bound/shared";
 import { getClientSessions } from "./delegation";
@@ -1222,6 +1222,71 @@ export function formatMemoryEntry(entry: StageEntry): string {
 }
 
 /**
+ * Pull the text + reasoning out of a single message's content for keyword
+ * seeding. Handles both content shapes (invariant #10):
+ *   - string: either plain text (assistant output) or a JSON-encoded
+ *     ContentBlock[] (the form `tool_call`-role rows persist in the DB).
+ *   - ContentBlock[]: already-parsed blocks (the LLMMessage form).
+ * Extracts `text` blocks (regular output) and `thinking` blocks (reasoning).
+ */
+function extractTextAndReasoning(content: string | ContentBlock[]): string {
+	const blocksToText = (blocks: ContentBlock[]): string => {
+		const out: string[] = [];
+		for (const b of blocks) {
+			if (!b || typeof b !== "object") continue;
+			if (b.type === "text" && typeof b.text === "string") out.push(b.text);
+			else if (b.type === "thinking" && typeof b.thinking === "string") out.push(b.thinking);
+		}
+		return out.join(" ");
+	};
+	if (typeof content === "string") {
+		// tool_call rows persist as a JSON-encoded ContentBlock[] string.
+		if (content.trimStart().startsWith("[")) {
+			try {
+				const parsed = JSON.parse(content);
+				if (Array.isArray(parsed)) return blocksToText(parsed as ContentBlock[]);
+			} catch {
+				/* not JSON — fall through to raw string */
+			}
+		}
+		return content;
+	}
+	return blocksToText(content);
+}
+
+/**
+ * Build a keyword-seed string from the most recent assistant-side turn(s).
+ *
+ * On tool-loop / keyword-barren-user turns (the user said "continue" while the
+ * assistant has been working for many iterations), the assistant's recent
+ * output + reasoning carries the topic vocabulary the L2 graph retrieval should
+ * match on. Scans backward from the tail, collecting `assistant` and
+ * `tool_call` content (text + reasoning) up to a bounded message/char budget so
+ * the seed stays recent and the downstream 30-keyword cap isn't swamped.
+ */
+export function extractAssistantSeedText(
+	messages: Array<{ role: string; content: string | ContentBlock[] }>,
+	opts?: { maxMessages?: number; maxChars?: number },
+): string | undefined {
+	const maxMessages = opts?.maxMessages ?? 6;
+	const maxChars = opts?.maxChars ?? 4000;
+	const parts: string[] = [];
+	let scanned = 0;
+	let total = 0;
+	for (let i = messages.length - 1; i >= 0 && scanned < maxMessages && total < maxChars; i--) {
+		const m = messages[i];
+		if (m.role !== "assistant" && m.role !== "tool_call") continue;
+		scanned++;
+		const text = extractTextAndReasoning(m.content).trim();
+		if (text.length === 0) continue;
+		parts.push(text);
+		total += text.length + 1;
+	}
+	if (parts.length === 0) return undefined;
+	return parts.join(" ").slice(0, maxChars);
+}
+
+/**
  * Queries the database for memory entries and tasks that changed since
  * the given baseline timestamp. Returns formatted line arrays for
  * injection into the volatile context block.
@@ -1235,6 +1300,7 @@ export function buildVolatileEnrichment(
 	maxTasks = 5,
 	userMessage?: string,
 	threadSummary?: string,
+	assistantMessage?: string,
 	maxPinned?: number,
 ): VolatileEnrichment {
 	// Extract meaningful tokens from text for FTS5 seed matching.
@@ -1250,17 +1316,28 @@ export function buildVolatileEnrichment(
 			.split(/\s+/)
 			.filter((w) => w.length > 0 && !FTS5_STOP_WORDS.has(w));
 
-	// Merge keywords from user message (high priority) and thread summary (broader context).
-	// Message keywords come first; summary keywords are deduplicated against them.
+	// Merge keywords from three seeds in priority order:
+	//   1. user message (most direct signal of what's being asked)
+	//   2. assistant message (recent output + reasoning — carries the topic
+	//      vocabulary on tool-loop / keyword-barren-user turns, e.g. "continue")
+	//   3. thread summary (broadest context)
+	// Later seeds are deduplicated against earlier ones, and the 30-term cap
+	// favors the user ask first, then recent work, then the broad summary.
 	const messageKeywords = extractKeywords(userMessage ?? "");
-	const messageKeywordSet = new Set(messageKeywords);
-	const summaryKeywords = extractKeywords(threadSummary ?? "").filter(
-		(w) => !messageKeywordSet.has(w),
-	);
+	const seen = new Set(messageKeywords);
+	const assistantKeywords = extractKeywords(assistantMessage ?? "").filter((w) => {
+		if (seen.has(w)) return false;
+		seen.add(w);
+		return true;
+	});
+	const summaryKeywords = extractKeywords(threadSummary ?? "").filter((w) => !seen.has(w));
 	// Cap keywords to prevent overly broad FTS5 OR queries. 30 terms is more than
 	// sufficient for semantic memory matching. The cap in graphSeededRetrieval is
 	// a safety net; this is the primary cap at the source.
-	const mergedKeywords = [...messageKeywords, ...summaryKeywords].slice(0, 30);
+	const mergedKeywords = [...messageKeywords, ...assistantKeywords, ...summaryKeywords].slice(
+		0,
+		30,
+	);
 
 	// Run the L0→L1→L2→L3 pipeline
 	const l0Raw = loadPinnedEntries(db);

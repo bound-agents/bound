@@ -42,6 +42,7 @@ import {
 	buildVolatileEnrichment,
 	bumpRenderedDetailEntries,
 	computeBaseline,
+	extractAssistantSeedText,
 	flattenRecencyEntries,
 	formatRelevantMemoryTitleLine,
 	loadAppliedAdvisoriesForLiveState,
@@ -335,6 +336,7 @@ function loadVolatileSectionInputs(args: {
 		maxTasks,
 		undefined,
 		undefined,
+		undefined,
 		maxPinned,
 	);
 
@@ -585,6 +587,11 @@ export function buildVolatileContext(params: {
 	userMessageText?: string;
 	/** Thread summary for keyword seeding */
 	threadSummary?: string;
+	/**
+	 * Recent assistant-side text + reasoning, for keyword seeding on
+	 * tool-loop / keyword-barren-user turns. See `extractAssistantSeedText`.
+	 */
+	assistantMessageText?: string;
 	/** Referenced inactive skill name, if any */
 	inactiveSkillRef?: string;
 	/**
@@ -693,6 +700,7 @@ export function buildVolatileContext(params: {
 		undefined,
 		params.userMessageText,
 		params.threadSummary,
+		params.assistantMessageText,
 	);
 	const fileEntries = loadFileModificationsForLiveState(
 		params.db,
@@ -1369,6 +1377,9 @@ Original output was too large for the context window. If you need the full conte
 		// Extract latest user message for relevance-aware memory boosting
 		const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
 		const userMessageText = lastUserMsg?.content ?? undefined;
+		// Recent assistant-side text + reasoning, for keyword seeding on
+		// tool-loop / keyword-barren-user turns (R-VC30).
+		const assistantMessageText = extractAssistantSeedText(messages);
 		// Query thread summary for broader keyword seeding
 		const threadRow = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
 			summary: string | null;
@@ -1388,6 +1399,7 @@ Original output was too large for the context window. If you need the full conte
 			platformInstructions: params.platformInstructions,
 			userMessageText,
 			threadSummary,
+			assistantMessageText,
 			inactiveSkillRef,
 			taskType: params.taskType,
 		});

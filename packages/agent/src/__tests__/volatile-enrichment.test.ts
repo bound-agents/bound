@@ -562,6 +562,72 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 	});
 });
 
+describe("buildVolatileEnrichment — assistant message keyword seeding", () => {
+	const siteId = randomBytes(8).toString("hex");
+
+	it("surfaces entries matching assistant-message keywords when the user message is keyword-barren", () => {
+		// The tool-loop case: the user said "continue", but the assistant's prior
+		// turn (output + reasoning) is dense with the topic vocabulary. Seeding L2
+		// from the assistant turn should surface the matching entry.
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "kafka_rebalance_protocol",
+				value: "Kafka consumer rebalance uses a cooperative sticky assignor",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// User message is keyword-barren ("continue"); assistant message carries
+		// the topic vocabulary (kafka, rebalance).
+		const enrichment = buildVolatileEnrichment(
+			db,
+			"2026-03-28T00:00:00.000Z",
+			10,
+			5,
+			"continue",
+			undefined,
+			"I traced the kafka consumer rebalance path and the sticky assignor logic",
+		);
+
+		const hasKafka = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("kafka_rebalance_protocol"),
+		);
+		expect(hasKafka).toBe(true);
+	});
+
+	it("does not surface the entry when no assistant message is provided (control)", () => {
+		insertRow(
+			db,
+			"semantic_memory",
+			{
+				id: randomBytes(8).toString("hex"),
+				key: "kafka_rebalance_protocol",
+				value: "Kafka consumer rebalance uses a cooperative sticky assignor",
+				source: null,
+				created_at: "2026-01-01T00:00:00.000Z",
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		// Same keyword-barren user message, but no assistant seed — nothing matches.
+		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 10, 5, "continue");
+
+		const hasKafka = enrichment.memoryDeltaLines.some((l) =>
+			l.includes("kafka_rebalance_protocol"),
+		);
+		expect(hasKafka).toBe(false);
+	});
+});
+
 describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 	const siteId = randomBytes(8).toString("hex");
 
