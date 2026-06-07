@@ -1188,8 +1188,16 @@ describe("RelayProcessor", () => {
 			expect(results.length).toBeGreaterThan(0);
 		});
 
-		it("missing subcommand in args returns error response", async () => {
-			const mockClient = new MockMCPClient("github");
+		it("missing subcommand in args returns server-level help (host-parity with local dispatch)", async () => {
+			// A relay tool_call with no subcommand is a help request, identical to
+			// invoking a bare `<server>` on the local dispatch path (mcp-bridge.ts:
+			// `!subcommand` -> formatMcpHelp). It enumerates the server's subcommands
+			// from a live listTools rather than erroring, so the environment looks the
+			// same regardless of which host the MCP server lives on.
+			const tools = new Map([
+				["create_issue", { name: "create_issue", description: "Open an issue" }],
+			]);
+			const mockClient = new MockMCPClient("github", tools);
 			const mcpClients = new Map<string, MCPClient>();
 			mcpClients.set("github", mockClient as unknown as MCPClient);
 
@@ -1238,11 +1246,24 @@ describe("RelayProcessor", () => {
 			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 			handle.stop();
 
-			// Verify: error response was written to outbox
+			// Verify: a help result (not an error) was written to outbox, enumerating
+			// the server's subcommands.
 			const errors = db
 				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
 				.all("error", inboxEntry.id) as RelayOutboxEntry[];
-			expect(errors.length).toBeGreaterThan(0);
+			expect(errors.length).toBe(0);
+
+			const results = db
+				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
+				.all("result", inboxEntry.id) as RelayOutboxEntry[];
+			expect(results.length).toBeGreaterThan(0);
+			const resultPayload = JSON.parse(results[0].payload) as {
+				stdout: string;
+				exit_code: number;
+			};
+			expect(resultPayload.stdout).toContain("github subcommands");
+			expect(resultPayload.stdout).toContain("create_issue");
+			expect(resultPayload.exit_code).toBe(0);
 		});
 
 		it("unknown server name (client not in mcpClients map) returns error response", async () => {
