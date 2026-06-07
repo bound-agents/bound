@@ -46,7 +46,7 @@ async function loadEmbeddedAssets(): Promise<AssetMap> {
 export type { ModelsConfig, BackendPricing };
 
 export interface WebAppConfig {
-	modelsConfig?: ModelsConfig;
+	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined);
 	backendPricing?: BackendPricing[];
 	hostName?: string;
 	siteId?: string;

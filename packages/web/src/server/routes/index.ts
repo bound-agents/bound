@@ -21,7 +21,7 @@ export type { ModelsConfig };
 export type { BackendPricing };
 
 export interface RoutesConfig {
-	modelsConfig?: ModelsConfig;
+	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined);
 	/**
 	 * Per-backend pricing snapshot. Forwarded to the metrics route to
 	 * reconstruct per-component cost in the cost-by-model timeline.
@@ -88,11 +88,17 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		mcpAppsConfig,
 	} = config;
 
+	// The threads route only needs the default model id (a value); resolve a
+	// getter once at registration. The status route keeps the live getter so
+	// SIGHUP reloads reach the /models discovery endpoint.
+	const resolvedDefault = (typeof modelsConfig === "function" ? modelsConfig() : modelsConfig)
+		?.default;
+
 	return {
 		threads: createThreadsRoutes(
 			db,
 			operatorUserId,
-			modelsConfig?.default,
+			resolvedDefault,
 			statusForwardCache,
 			activeLoops,
 		),

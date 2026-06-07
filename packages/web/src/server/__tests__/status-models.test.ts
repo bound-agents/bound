@@ -208,6 +208,40 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 		});
 	});
 
+	describe("Live config (SIGHUP reload propagation)", () => {
+		it("reflects a model added after route construction when given a config getter", async () => {
+			// The /models endpoint historically captured a ModelsConfig snapshot at
+			// route-construction time, so a SIGHUP reload that added a backend (e.g.
+			// gpt-5.x) updated the router but never the discovery endpoint. Passing a
+			// getter lets the route read live config per request.
+			let live = {
+				models: [{ id: "boot-model", provider: "anthropic" }],
+				default: "boot-model",
+			};
+			const liveApp = createStatusRoutes(db, eventBus, localHostName, localSiteId, () => live);
+
+			const before = (await (
+				await liveApp.fetch(new Request("http://localhost/models"))
+			).json()) as { models: Array<{ id: string }>; default: string };
+			expect(before.models.map((m) => m.id)).toEqual(["boot-model"]);
+
+			// Simulate SIGHUP reload reassigning appContext.config.modelBackends.
+			live = {
+				models: [
+					{ id: "boot-model", provider: "anthropic" },
+					{ id: "gpt-5.5", provider: "bedrock-mantle" },
+				],
+				default: "boot-model",
+			};
+
+			const after = (await (
+				await liveApp.fetch(new Request("http://localhost/models"))
+			).json()) as { models: Array<{ id: string; via: string }>; default: string };
+			const localIds = after.models.filter((m) => m.via === "local").map((m) => m.id);
+			expect(localIds).toEqual(["boot-model", "gpt-5.5"]);
+		});
+	});
+
 	describe("Edge cases", () => {
 		it("ignores remote hosts with invalid JSON in models column", async () => {
 			const now = new Date().toISOString();
