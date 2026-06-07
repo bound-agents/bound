@@ -50,7 +50,7 @@ Bodies of summary entries are accessed via memory search using terms from the en
 - curiosity:item-8-det000008
 - curiosity:item-9-det000009
 
-Bodies are accessed via memory search or query against semantic_memory.
+Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 
 --- VARYING TAIL ---
 User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
@@ -74,9 +74,9 @@ User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
 - [task] a56f31a5-3fa2-5c84-8474-674377678c76 (deploy): run_count=1, last_run_at=2026-05-21T23:54:00.000Z, status=ran
 - [task] cf187721-8d56-5a24-9658-593c95ea62e0 (analyze): run_count=1, last_run_at=2026-05-21T23:30:00.000Z, status=ran
 - [task] 690e8dbc-5fc2-5494-a117-763231b71469 (debug): run_count=1, last_run_at=2026-05-21T23:00:00.000Z, status=ran
-- [file] build/output.js — last modified by thread "sibling-1"
-- [file] config/settings.json — last modified by thread "sibling-2"
-- [file] docs/README.md — last modified by thread "sibling-1"
+- [file] src/main.ts — last modified by thread "sibling-0" [host: fixture-host, remote]
+- [file] docs/README.md — last modified by thread "sibling-1" [host: fixture-host, remote]
+- [file] config/settings.json — last modified by thread "sibling-2" [host: fixture-host, remote]
 - [advisory] Advisory D — applied 30m ago
 - [advisory] Advisory B — applied 1h ago
 - [advisory] Advisory A — applied 2h ago

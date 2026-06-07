@@ -786,7 +786,7 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		db.close();
 	});
 
-	it("AC3.5: L2 returns only default tier entries, excludes other tiers", () => {
+	it("AC3.5 (R-VC27): L2 surfaces all tiers — pinned reached via graph edge, no default-tier clamp", () => {
 		const baseTime = new Date("2026-04-10T10:00:00Z").toISOString();
 
 		// Create entries of various tiers
@@ -852,7 +852,10 @@ describe("Stage Functions - L2 Graph Entries", () => {
 
 		const result = loadGraphEntries(db, new Set(), ["default"], 10);
 
-		// Should only include default tier entry, not detail/pinned/summary
+		// R-VC27: L2 runs WITHOUT the default-tier clamp — all tiers are eligible as seeds
+		// and traversal results. pinned_entry is reached from default_entry via the
+		// "relates" edge and now surfaces. detail/summary remain absent only because they
+		// are not reachable from the "default" seed's graph component.
 		const tierCounts = result.entries.reduce(
 			(acc, e) => {
 				acc[e.tier] = (acc[e.tier] || 0) + 1;
@@ -862,9 +865,9 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		);
 
 		expect(tierCounts.default).toBeGreaterThan(0);
-		expect(tierCounts.detail).toBeUndefined();
-		expect(tierCounts.pinned).toBeUndefined();
-		expect(tierCounts.summary).toBeUndefined();
+		expect(tierCounts.pinned).toBe(1); // R-VC27: pinned now surfaces via graph edge
+		expect(tierCounts.detail).toBeUndefined(); // not reachable from "default" seed
+		expect(tierCounts.summary).toBeUndefined(); // not reachable from "default" seed
 	});
 
 	it("AC3.5: L2 respects excludeKeys set from L0/L1", () => {
@@ -968,7 +971,7 @@ describe("Stage Functions - L2 Graph Entries", () => {
 		expect(keys).toContain("delta_node"); // depth 3 — the key assertion
 	});
 
-	it("AC3.7: L2 excludes non-orphaned detail entries (with incoming summarizes edge)", () => {
+	it("AC3.7 (R-VC27): L2 includes non-orphaned detail entries reached via graph (no default-tier clamp)", () => {
 		const baseTime = new Date("2026-04-10T10:00:00Z").toISOString();
 
 		// Create a summary
@@ -1024,9 +1027,11 @@ describe("Stage Functions - L2 Graph Entries", () => {
 
 		const result = loadGraphEntries(db, new Set(), ["summary", "detail"], 10);
 
-		// Non-orphaned detail should NOT be included
+		// R-VC27: the default-tier clamp is gone, so a non-orphaned detail entry reached
+		// via the summarizes edge (test_summary -> summarized_detail) now surfaces.
 		const detailEntry = result.entries.find((e) => e.key === "summarized_detail");
-		expect(detailEntry).toBeUndefined();
+		expect(detailEntry).toBeDefined();
+		expect(detailEntry?.tier).toBe("detail");
 	});
 });
 
