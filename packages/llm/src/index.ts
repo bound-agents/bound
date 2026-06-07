@@ -19,6 +19,8 @@ export { LLMError } from "./types";
 
 export { BedrockDriver } from "./bedrock-driver";
 
+export { BedrockMantleDriver } from "./bedrock-mantle-driver";
+
 export { OpenAICompatibleDriver } from "./openai-compatible-driver";
 
 export {

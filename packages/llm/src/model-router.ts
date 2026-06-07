@@ -1,5 +1,6 @@
 import type { Logger } from "@bound/shared";
 import { BedrockDriver } from "./bedrock-driver";
+import { BedrockMantleDriver } from "./bedrock-mantle-driver";
 import { OpenAICompatibleDriver } from "./openai-compatible-driver";
 import type {
 	BackendCapabilities,
@@ -509,6 +510,25 @@ function createBackendFromConfig(
 				model: config.model,
 				contextWindow,
 				providerName: "zai",
+				logger,
+				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
+			});
+		}
+
+		case "bedrock-mantle": {
+			const region = config.region as string | undefined;
+			if (!region) {
+				throw new Error("Bedrock Mantle driver requires region in config");
+			}
+			const profile = config.profile as string | undefined;
+			const contextWindow = config.contextWindow ?? 272000;
+			return new BedrockMantleDriver({
+				region,
+				model: config.model,
+				contextWindow,
+				profile,
+				baseUrl: config.baseUrl,
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,

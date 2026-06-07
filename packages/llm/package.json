@@ -7,11 +7,13 @@
 	"types": "src/index.ts",
 	"dependencies": {
 		"@ai-sdk/amazon-bedrock": "^4.0.96",
+		"@ai-sdk/openai": "^3.0.68",
 		"@ai-sdk/openai-compatible": "^2.0.41",
 		"@ai-sdk/provider": "^3.0.8",
 		"@aws-sdk/credential-providers": "^3.1037.0",
 		"@bound/shared": "workspace:*",
 		"ai": "^6.0.168",
+		"aws4fetch": "^1.0.20",
 		"zod": "^4.0.0"
 	},
 	"devDependencies": {
