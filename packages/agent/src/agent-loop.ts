@@ -72,7 +72,7 @@ import { createRelayBackend } from "./relay-backend";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { sharedStableSubsectionCache } from "./stable-prefix";
-import { extractSummaryAndMemories } from "./summary-extraction";
+import { extractAssistantSeedText, extractSummaryAndMemories } from "./summary-extraction";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
 	buildOffloadMessage,
@@ -358,6 +358,7 @@ export class AgentLoop {
 			relayInfo,
 			systemPromptAddition: this.config.systemPromptAddition,
 			platformInstructions: this.config.platformInstructions,
+			assistantMessageText: extractAssistantSeedText(llmMessages),
 		});
 
 		// Replace the LAST developer-role message — that's the
@@ -890,6 +891,7 @@ export class AgentLoop {
 							relayInfo,
 							systemPromptAddition: this.config.systemPromptAddition,
 							platformInstructions: this.config.platformInstructions,
+							assistantMessageText: extractAssistantSeedText(storedMessages),
 						});
 
 						storedMessages.push({
