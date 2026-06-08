@@ -103,8 +103,9 @@ describe("AcpSession permission gating", () => {
 		const result = await session.handleToolCall(call());
 
 		expect(rec.permissionRequests.length).toBe(1);
+		const permissionToolCallId = rec.permissionRequests[0]?.toolCall.toolCallId;
+		expect(permissionToolCallId?.startsWith("c1-t")).toBe(true);
 		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
-			toolCallId: "c1",
 			title: "Read a.txt",
 			kind: "read",
 			status: "pending",
@@ -140,35 +141,38 @@ describe("AcpSession permission gating", () => {
 
 		expect(result.is_error).toBeFalsy();
 		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
+		expect(created).toBeDefined();
+		const toolCallId = (created as { toolCallId: string }).toolCallId;
+		expect(toolCallId.startsWith("c-bash-t")).toBe(true);
 		expect(created).toMatchObject({
-			toolCallId: "c-bash",
-			_meta: { terminal_info: { terminal_id: "c-bash", cwd: "/work" } },
+			toolCallId,
+			_meta: { terminal_info: { terminal_id: toolCallId, cwd: "/work" } },
 			title: "sleep 10",
 			kind: "execute",
 			status: "pending",
 			rawInput: { command: "sleep 10" },
-			content: [{ type: "terminal", terminalId: "c-bash" }],
+			content: [{ type: "terminal", terminalId: toolCallId }],
 		});
 		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
-			toolCallId: "c-bash",
-			_meta: { terminal_info: { terminal_id: "c-bash", cwd: "/work" } },
+			toolCallId,
+			_meta: { terminal_info: { terminal_id: toolCallId, cwd: "/work" } },
 			title: "sleep 10",
 			kind: "execute",
 			status: "pending",
 			rawInput: { command: "sleep 10" },
-			content: [{ type: "terminal", terminalId: "c-bash" }],
+			content: [{ type: "terminal", terminalId: toolCallId }],
 		});
 		expect(
 			rec.updates.find(
 				(u) =>
 					u.sessionUpdate === "tool_call_update" &&
-					(u as { toolCallId?: string; status?: string }).toolCallId === "c-bash" &&
+					(u as { toolCallId?: string; status?: string }).toolCallId === toolCallId &&
 					(u as { status?: string }).status === "completed",
 			),
 		).toMatchObject({
 			_meta: {
-				terminal_output: { terminal_id: "c-bash", data: "done" },
-				terminal_exit: { terminal_id: "c-bash", exit_code: 0 },
+				terminal_output: { terminal_id: toolCallId, data: "done" },
+				terminal_exit: { terminal_id: toolCallId, exit_code: 0 },
 			},
 			rawOutput: {
 				output: "Exit code: 0\nstdout:\ndone\nstderr:\n",
@@ -202,8 +206,11 @@ describe("AcpSession permission gating", () => {
 			sandbox_authorization: { write_paths: [resolve("/work", "src/generated.ts")] },
 		};
 		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
+		expect(created).toBeDefined();
+		const toolCallId = (created as { toolCallId: string }).toolCallId;
+		expect(toolCallId.startsWith("c-write-t")).toBe(true);
 		expect(created).toMatchObject({
-			toolCallId: "c-write",
+			toolCallId,
 			_meta: expectedMeta,
 			title: "Write src/generated.ts",
 			kind: "edit",
@@ -211,7 +218,7 @@ describe("AcpSession permission gating", () => {
 			locations: [{ path: resolve("/work", "src/generated.ts") }],
 		});
 		expect(rec.permissionRequests[0]?.toolCall).toMatchObject({
-			toolCallId: "c-write",
+			toolCallId,
 			_meta: expectedMeta,
 			title: "Write src/generated.ts",
 			kind: "edit",
@@ -243,19 +250,21 @@ describe("AcpSession permission gating", () => {
 		// The pending frame carried a diff; ACP tool_call_update content replaces
 		// the collection, so the completion frame must NOT send content on success
 		// or the diff is clobbered. It should leave the diff in place (delta).
+		const pending = rec.updates.find((u) => u.sessionUpdate === "tool_call") as
+			| { toolCallId: string; content?: Array<{ type: string }> }
+			| undefined;
+		expect(pending).toBeDefined();
+		const toolCallId = pending?.toolCallId;
+		expect(toolCallId?.startsWith("c-edit-t")).toBe(true);
 		const completed = rec.updates.find(
 			(u) =>
 				u.sessionUpdate === "tool_call_update" &&
 				(u as { status?: string }).status === "completed" &&
-				(u as { toolCallId?: string }).toolCallId === "c-edit",
+				(u as { toolCallId?: string }).toolCallId === toolCallId,
 		) as Record<string, unknown> | undefined;
 		expect(completed).toBeDefined();
 		expect(completed).not.toHaveProperty("content");
 		// And the pending frame did carry the diff.
-		const pending = rec.updates.find(
-			(u) =>
-				u.sessionUpdate === "tool_call" && (u as { toolCallId?: string }).toolCallId === "c-edit",
-		) as { content?: Array<{ type: string }> } | undefined;
 		expect(pending?.content?.some((c) => c.type === "diff")).toBe(true);
 	});
 
@@ -280,11 +289,15 @@ describe("AcpSession permission gating", () => {
 		);
 
 		expect(result.is_error).toBe(true);
+		const pending = rec.updates.find((u) => u.sessionUpdate === "tool_call") as
+			| { toolCallId: string }
+			| undefined;
+		expect(pending?.toolCallId.startsWith("c-edit-fail-t")).toBe(true);
 		const failed = rec.updates.find(
 			(u) =>
 				u.sessionUpdate === "tool_call_update" &&
 				(u as { status?: string }).status === "failed" &&
-				(u as { toolCallId?: string }).toolCallId === "c-edit-fail",
+				(u as { toolCallId?: string }).toolCallId === pending?.toolCallId,
 		) as { content?: Array<{ type: string }> } | undefined;
 		expect(failed).toBeDefined();
 		expect(failed?.content?.length).toBeGreaterThan(0);
@@ -433,6 +446,28 @@ describe("AcpSession tool call id namespacing", () => {
 		// The daemon pairs the result to its dispatch by the raw id; namespacing
 		// is Zed-facing only and must not leak into the tool result.
 		expect(result.call_id).toBe("call_1");
+	});
+
+	it("namespaces client tool ids even when dispatch arrives after the turn state cleared", async () => {
+		// The daemon can ask the ACP client for a local tool after the prompt turn
+		// has already resolved/cleared in the ACP shim. GPT-5.x still supplies
+		// per-request ids like call_1, so falling back to the raw id outside a turn
+		// recreates the exact Zed collision: the second call_1 updates the old card.
+		const handlers = new Map([
+			["boundless_read", async () => ({ content: [{ type: "text" as const, text: "ok" }] })],
+		]);
+		const { session, rec } = setup({ defaultPermission: "allow_once", toolHandlers: handlers });
+
+		const r1 = await session.handleToolCall(call({ call_id: "call_1" }));
+		const r2 = await session.handleToolCall(call({ call_id: "call_1" }));
+
+		expect(r1.call_id).toBe("call_1");
+		expect(r2.call_id).toBe("call_1");
+		const pendingIds = rec.updates
+			.filter((u) => u.sessionUpdate === "tool_call")
+			.map((u) => (u as { toolCallId: string }).toolCallId);
+		expect(pendingIds.length).toBe(2);
+		expect(pendingIds[0]).not.toBe(pendingIds[1]);
 	});
 
 	it("namespaces daemon-side tool ids per turn (start/in_progress/completed share one id)", async () => {
