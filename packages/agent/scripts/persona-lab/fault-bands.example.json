@@ -1,0 +1,4 @@
+{
+	"_comment": "OPTIONAL. Copy to fault-bands.json (gitignored) to enable pre-run warnings when estimated input lands in a model's known server-fault window. Maps a backend id to [low, high] input-token bounds. Absent file = no warnings. Values are deployment-specific; fill in your own from observed behavior.",
+	"some-model-id": [7000, 18000]
+}
