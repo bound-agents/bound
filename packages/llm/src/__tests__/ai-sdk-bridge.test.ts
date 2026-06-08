@@ -2354,6 +2354,115 @@ describe("mapChunks — text and reasoning", () => {
 	});
 });
 
+describe("mapChunks — coalescePrefixItems (Mantle GPT-5.x multi-message-item replay)", () => {
+	// Bedrock Mantle's GPT-5.x reasoning path emits the answer as a SEQUENCE of
+	// separate `message` output items (each its own text-start/text-end with a
+	// distinct id), interleaved with reasoning rounds, where each item RE-STATES
+	// the whole answer one (often multibyte) codepoint longer than the previous.
+	// The final item is the complete answer; the earlier ones are progressive
+	// drafts. Verified live 2026-06-07 against openai.gpt-5.5 at effort=high:
+	// concatenating all items' deltas (the default `outputText += text`) produced
+	// a sixfold-duplicated assistant message. The invariant the data hands us:
+	// each item is a strict prefix-extension of the previous, monotonically
+	// growing. coalescePrefixItems emits only forward progress so the streamed
+	// text converges to exactly the last (longest) item.
+
+	it("coalesces prefix-extending message items down to the final item", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-start", id: "m1" },
+					{ type: "text-delta", id: "m1", text: "Hello" },
+					{ type: "text-delta", id: "m1", text: " world" },
+					{ type: "text-end", id: "m1" },
+					{ type: "reasoning-start", id: "r1" },
+					{ type: "reasoning-end", id: "r1" },
+					{ type: "text-start", id: "m2" },
+					{ type: "text-delta", id: "m2", text: "Hello world (" },
+					{ type: "text-end", id: "m2" },
+					{ type: "reasoning-start", id: "r2" },
+					{ type: "reasoning-end", id: "r2" },
+					{ type: "text-start", id: "m3" },
+					{ type: "text-delta", id: "m3", text: "Hello world (◕" },
+					{ type: "text-delta", id: "m3", text: "ᴥ◕)" },
+					{ type: "text-end", id: "m3" },
+					{ type: "finish", finishReason: "stop", totalUsage: {} },
+				),
+				{ coalescePrefixItems: true },
+			),
+		);
+		const text = out
+			.filter((c) => c.type === "text")
+			.map((c) => (c as { content: string }).content)
+			.join("");
+		expect(text).toBe("Hello world (◕ᴥ◕)");
+	});
+
+	it("without the flag, preserves the legacy (concatenate-all) behavior", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-start", id: "m1" },
+					{ type: "text-delta", id: "m1", text: "Hello" },
+					{ type: "text-end", id: "m1" },
+					{ type: "text-start", id: "m2" },
+					{ type: "text-delta", id: "m2", text: "Hello!" },
+					{ type: "text-end", id: "m2" },
+					{ type: "finish", finishReason: "stop", totalUsage: {} },
+				),
+			),
+		);
+		const text = out
+			.filter((c) => c.type === "text")
+			.map((c) => (c as { content: string }).content)
+			.join("");
+		expect(text).toBe("HelloHello!");
+	});
+
+	it("is a no-op for an ordinary single-item incremental stream (with the flag on)", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-start", id: "m1" },
+					{ type: "text-delta", id: "m1", text: "The " },
+					{ type: "text-delta", id: "m1", text: "quick " },
+					{ type: "text-delta", id: "m1", text: "fox" },
+					{ type: "text-end", id: "m1" },
+					{ type: "finish", finishReason: "stop", totalUsage: {} },
+				),
+				{ coalescePrefixItems: true },
+			),
+		);
+		expect(out.filter((c) => c.type === "text")).toEqual([
+			{ type: "text", content: "The " },
+			{ type: "text", content: "quick " },
+			{ type: "text", content: "fox" },
+		]);
+	});
+
+	it("degrades to append when a later item is NOT a prefix-extension (divergence safety)", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-start", id: "m1" },
+					{ type: "text-delta", id: "m1", text: "alpha" },
+					{ type: "text-end", id: "m1" },
+					{ type: "text-start", id: "m2" },
+					{ type: "text-delta", id: "m2", text: "beta" },
+					{ type: "text-end", id: "m2" },
+					{ type: "finish", finishReason: "stop", totalUsage: {} },
+				),
+				{ coalescePrefixItems: true },
+			),
+		);
+		const text = out
+			.filter((c) => c.type === "text")
+			.map((c) => (c as { content: string }).content)
+			.join("");
+		expect(text).toBe("alphabeta");
+	});
+});
+
 describe("mapChunks — tool calls", () => {
 	it("emits start/args/end sequence for tool-input events", async () => {
 		const out = await collect(
