@@ -268,4 +268,107 @@ describe("parseStreamChunks truncation handling", () => {
 		expect(result.toolCalls[0].truncated).toBe(true);
 		expect(result.toolCalls[0].input).toEqual({});
 	});
+
+	it("drops truncated tool-call prefixes superseded by a later complete call", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "call_2", name: "boundless_write" },
+			{
+				type: "tool_use_args",
+				id: "call_2",
+				partial_json: '{"content":"#!/usr/bin/env bun\\nimport',
+			},
+			{ type: "tool_use_end", id: "call_2" },
+			{ type: "tool_use_start", id: "call_4", name: "boundless_write" },
+			{
+				type: "tool_use_args",
+				id: "call_4",
+				partial_json:
+					'{"content":"#!/usr/bin/env bun\\nimport { test } from \\"bun:test\\";","file_path":"/tmp/probe.ts"}',
+			},
+			{ type: "tool_use_end", id: "call_4" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls.map((tc) => tc.id)).toEqual(["call_4"]);
+		expect(result.toolCalls[0].truncated).toBe(false);
+		expect(result.toolCalls[0].input).toEqual({
+			content: '#!/usr/bin/env bun\nimport { test } from "bun:test";',
+			file_path: "/tmp/probe.ts",
+		});
+	});
+
+	it("drops repeated empty same-tool drafts superseded by a later complete call", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "call_2", name: "boundless_write" },
+			{ type: "tool_use_args", id: "call_2", partial_json: "{}" },
+			{ type: "tool_use_end", id: "call_2" },
+			{ type: "tool_use_start", id: "call_4", name: "boundless_write" },
+			{ type: "tool_use_args", id: "call_4", partial_json: "{}" },
+			{ type: "tool_use_end", id: "call_4" },
+			{ type: "tool_use_start", id: "call_6", name: "boundless_write" },
+			{
+				type: "tool_use_args",
+				id: "call_6",
+				partial_json: '{"content":"real","file_path":"/tmp/probe.ts"}',
+			},
+			{ type: "tool_use_end", id: "call_6" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls.map((tc) => tc.id)).toEqual(["call_6"]);
+		expect(result.toolCalls[0].input).toEqual({
+			content: "real",
+			file_path: "/tmp/probe.ts",
+		});
+	});
+
+	it("keeps truncated tool calls that are not prefixes of a later complete call", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "bad", name: "boundless_write" },
+			{ type: "tool_use_args", id: "bad", partial_json: '{"content":"broken-a' },
+			{ type: "tool_use_end", id: "bad" },
+			{ type: "tool_use_start", id: "good", name: "boundless_write" },
+			{
+				type: "tool_use_args",
+				id: "good",
+				partial_json: '{"content":"different","file_path":"/tmp/other.ts"}',
+			},
+			{ type: "tool_use_end", id: "good" },
+			{
+				type: "done",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls.map((tc: any) => tc.id)).toEqual(["bad", "good"]);
+		expect(result.toolCalls[0].truncated).toBe(true);
+		expect(result.toolCalls[1].truncated).toBe(false);
+	});
 });

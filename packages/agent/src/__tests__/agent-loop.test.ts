@@ -368,6 +368,73 @@ describe("AgentLoop", () => {
 		expect(result.error).toBeUndefined();
 	});
 
+	it("drops superseded tool-call drafts before executing tools", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "call_2", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "call_2",
+				partial_json: '{"command":"echo',
+			};
+			yield { type: "tool_use_end" as const, id: "call_2" };
+			yield { type: "tool_use_start" as const, id: "call_4", name: "bash" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "call_4",
+				partial_json: JSON.stringify({ command: "echo final" }),
+			};
+			yield { type: "tool_use_end" as const, id: "call_4" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "Done." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const mockBash = createMockSandbox((_cmd) => ({
+			stdout: "final\n",
+			stderr: "",
+			exitCode: 0,
+		}));
+
+		const agentLoop = new AgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(result.toolCallsMade).toBe(1);
+		expect(mockBash.calls).toEqual(["echo final"]);
+
+		const toolCalls = db
+			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_call'")
+			.all(threadId) as Array<{ content: string }>;
+		expect(toolCalls.length).toBe(1);
+		expect(toolCalls[0].content).toContain("call_4");
+		expect(toolCalls[0].content).not.toContain("call_2");
+	});
+
 	it("should persist tool_call and tool_result messages in database", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setToolThenTextResponse(
