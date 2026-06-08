@@ -1,0 +1,10 @@
+[
+	{
+		"name": "colleague-debug",
+		"text": "Quick check after that change: in 2-3 paragraphs, explain what the bug was, why it only showed up under one condition and not the other, and what you'd watch on the next run."
+	},
+	{
+		"name": "passenger-explainer",
+		"text": "I'm not technical, but I'm curious about how this works. Keep it approachable but don't make it shallow."
+	}
+]

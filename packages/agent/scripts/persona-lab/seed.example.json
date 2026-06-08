@@ -1,0 +1,19 @@
+{
+	"_comment": "Seed transcript for persona-lab. Copy to seed.json (gitignored) and replace with your own context. 'summary' becomes the thread summary the persona sees; 'messages' is the prior conversation history the model reads before answering the prompt under test. Keep it short — long seeds inflate input tokens and can hit provider fault bands. This example is fictional and exists only to show the shape.",
+	"summary": "A short pairing session reviewing a small caching change. Colleague register: the user and the assistant both know the codebase well.",
+	"messages": [
+		{ "role": "user", "content": "Did the cache change land? Dashboard still shows misses." },
+		{
+			"role": "assistant",
+			"content": "It landed, but only half of it took. The read path checks the cache now; the write path still bypasses it on the error branch, so any request that retries repopulates nothing. That's why you see misses clustered right after failures rather than evenly."
+		},
+		{
+			"role": "user",
+			"content": "Makes sense. Want to fold the write-path fix into the same change or split it?"
+		},
+		{
+			"role": "assistant",
+			"content": "Same change — splitting it leaves a half-wired cache in main between merges, which is worse than either state alone. One commit, both paths, one review."
+		}
+	]
+}
