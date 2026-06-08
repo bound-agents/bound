@@ -408,7 +408,7 @@ export class AcpSession {
 		// Zed-facing id: session-unique even when the model reuses a per-request id
 		// across turns (Responses API call_1). The daemon-facing call_id below
 		// stays raw so the daemon pairs the result to its dispatch.
-		const acpId = this.acpToolCallId(callId);
+		const acpId = this.acpClientToolCallId(callId);
 		const kind = toolNameToKind(toolName);
 		const title = toolCallTitle(toolName, args);
 		const content = toolCallContent(toolName, args, this.deps.cwd, acpId);
@@ -599,7 +599,7 @@ export class AcpSession {
 
 	/**
 	 * Mints (or returns the already-minted) session-unique ACP toolCallId for a
-	 * model-supplied tool-call id, scoped to the current turn.
+	 * model-supplied daemon-stream tool-call id, scoped to the current turn.
 	 *
 	 * The Responses API (bedrock-mantle / GPT-5.x) numbers tool calls per request
 	 * (`call_1`, `call_2`, …) and resets the counter every turn, so the raw id
@@ -610,11 +610,10 @@ export class AcpSession {
 	 * (`toolu_<random>`) are globally unique and never collided, which is why this
 	 * only surfaced on GPT-5.x.
 	 *
-	 * The per-turn map keeps every lifecycle update for one call (pending →
-	 * in_progress → completed) sharing an id, while the session-monotonic suffix
-	 * makes the same raw id distinct across turns. The daemon-facing `call_id`
-	 * stays raw — this remap is Zed-facing only. Outside a turn (no collision
-	 * surface) the raw id passes through unchanged.
+	 * Daemon-stream lifecycle events arrive split across `tool_use_start` / args /
+	 * end chunks, so the per-turn map is required: it keeps one raw id mapped to
+	 * one ACP id across pending → in_progress → completed. Without a turn, there
+	 * is no daemon-stream lifecycle to join, so the raw id passes through.
 	 */
 	private acpToolCallId(rawId: string): string {
 		const turn = this.turn;
@@ -624,6 +623,22 @@ export class AcpSession {
 		const acpId = `${rawId}-t${this.toolCallIdSeq++}`;
 		turn.acpToolCallIds.set(rawId, acpId);
 		return acpId;
+	}
+
+	/**
+	 * Mints a fresh session-unique ACP toolCallId for a client-deferred tool
+	 * dispatch (`handleToolCall`). Unlike daemon-stream ids, client tool lifecycle
+	 * is handled inside one `dispatchToolCall` call, so the id can be minted once
+	 * and carried by local variable through permission, in_progress, and completion.
+	 *
+	 * This intentionally DOES NOT fall back to the raw id outside an active turn.
+	 * The daemon can deliver client tool dispatches after the ACP prompt turn has
+	 * already resolved/cleared; GPT-5.x still reuses raw ids like `call_1`, and
+	 * exposing that raw id re-collides in Zed. The daemon-facing `call_id` returned
+	 * by `dispatchToolCall` remains raw — this remap is Zed-facing only.
+	 */
+	private acpClientToolCallId(rawId: string): string {
+		return `${rawId}-t${this.toolCallIdSeq++}`;
 	}
 
 	private parseDaemonArgs(id: string): Record<string, unknown> | undefined {
