@@ -319,6 +319,64 @@ export interface ParsedToolCall {
 	truncated?: boolean;
 }
 
+/**
+ * Drop superseded tool-call drafts that some Responses-API providers surface as
+ * independent tool calls while the model is still converging on the final call.
+ *
+ * GPT-5.5 on Mantle has emitted `call_2`, `call_4`, …, `call_108` for one
+ * intended `boundless_write`: dozens of earlier same-tool entries had `{}` or a
+ * truncated prefix while the final later entry carried the real arguments. The
+ * agent loop executes only after the full stream is parsed, so at this boundary
+ * we can safely keep the final complete call and discard earlier drafts without
+ * disabling genuinely parallel tool calling across different tools.
+ */
+export function dropSupersededToolCallDrafts<T extends ParsedToolCall>(calls: T[]): T[] {
+	if (calls.length < 2) return calls;
+	const emptyCountsByTool = new Map<string, number>();
+	for (const call of calls) {
+		if (isEmptyObjectCall(call)) {
+			emptyCountsByTool.set(call.name, (emptyCountsByTool.get(call.name) ?? 0) + 1);
+		}
+	}
+
+	const keep = calls.map(() => true);
+	for (let i = 0; i < calls.length; i++) {
+		for (let j = i + 1; j < calls.length; j++) {
+			if (
+				isSupersededToolCallDraft(calls[i], calls[j], emptyCountsByTool.get(calls[i].name) ?? 0)
+			) {
+				keep[i] = false;
+				break;
+			}
+		}
+	}
+	return calls.filter((_, i) => keep[i]);
+}
+
+function isSupersededToolCallDraft(
+	earlier: ParsedToolCall,
+	later: ParsedToolCall,
+	emptySameToolCount: number,
+): boolean {
+	if (earlier.name !== later.name) return false;
+	if (later.truncated) return false;
+
+	const earlierArgs = earlier.argsJson.trim();
+	const laterArgs = later.argsJson.trim();
+	if (earlier.truncated && (earlierArgs === "" || laterArgs.startsWith(earlierArgs))) {
+		return true;
+	}
+
+	// A single zero-argument tool call can be legitimate; the production anomaly
+	// was a same-tool ladder of many `{}` drafts followed by the real payload.
+	// Require at least two empty same-tool calls before treating them as drafts.
+	return emptySameToolCount > 1 && isEmptyObjectCall(earlier) && !isEmptyObjectCall(later);
+}
+
+function isEmptyObjectCall(call: ParsedToolCall): boolean {
+	return !call.truncated && call.argsJson.trim() === "{}" && Object.keys(call.input).length === 0;
+}
+
 export interface ParsedResponse {
 	textContent: string;
 	thinking: string | null;
@@ -420,7 +478,7 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 		textContent,
 		thinking: thinkingContent || null,
 		thinkingSignature,
-		toolCalls,
+		toolCalls: dropSupersededToolCallDrafts(toolCalls),
 		usage: {
 			inputTokens,
 			outputTokens,

@@ -41,6 +41,7 @@ import {
 	convertDeltaMessages,
 	createFileRefResolver,
 	deriveCapabilityRequirements,
+	dropSupersededToolCallDrafts,
 	getResolvedModelId,
 	hasOrphanedToolCall,
 	insertThreadMessage,
@@ -2985,7 +2986,7 @@ export class AgentLoop {
 			thinkingSignature,
 			thinkingRedactedData,
 			thinkingEncryptedContent,
-			toolCalls,
+			toolCalls: dropSupersededToolCallDrafts(toolCalls),
 			usage: {
 				inputTokens,
 				outputTokens,
