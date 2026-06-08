@@ -1025,19 +1025,28 @@ function strictifyJsonSchema(schema: unknown, optional = false): unknown {
 	return out;
 }
 
-function projectToolParameters(parameters: Record<string, unknown>): {
+function projectToolParameters(
+	parameters: Record<string, unknown>,
+	opts: { emitStrictFlag?: boolean } = {},
+): {
 	schema: Record<string, unknown>;
 	strict?: true;
 } {
 	if (hasDeliberatelyOpenObject(parameters)) return { schema: parameters };
-	return { schema: strictifyJsonSchema(parameters) as Record<string, unknown>, strict: true };
+	return {
+		schema: strictifyJsonSchema(parameters) as Record<string, unknown>,
+		...(opts.emitStrictFlag !== false && { strict: true as const }),
+	};
 }
 
-export function toToolSet(tools?: ToolDefinition[]): ToolSet | undefined {
+export function toToolSet(
+	tools?: ToolDefinition[],
+	opts: { emitStrictFlag?: boolean } = {},
+): ToolSet | undefined {
 	if (!tools || tools.length === 0) return undefined;
 	const result: ToolSet = {};
 	for (const t of tools) {
-		const { schema, strict } = projectToolParameters(t.function.parameters);
+		const { schema, strict } = projectToolParameters(t.function.parameters, opts);
 		result[t.function.name] = aiTool({
 			description: t.function.description,
 			inputSchema: jsonSchema(schema),
