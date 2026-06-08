@@ -2284,6 +2284,85 @@ describe("toToolSet", () => {
 		expect(Object.keys(tools)).toEqual(["get_weather"]);
 		expect(tools.get_weather.description).toBe("Get weather for a city");
 	});
+
+	it("projects closed object schemas into provider-generic strict tool shape", async () => {
+		const tools = toToolSet([
+			{
+				type: "function",
+				function: {
+					name: "boundless_bash",
+					description: "Execute shell command",
+					parameters: {
+						type: "object",
+						properties: {
+							command: { type: "string" },
+							timeout: { type: "number" },
+							options: {
+								type: "object",
+								properties: { cwd: { type: "string" }, login: { type: "boolean" } },
+								required: ["cwd"],
+							},
+						},
+						required: ["command"],
+					},
+				},
+			},
+		]);
+		expect(tools).toBeDefined();
+		if (!tools) throw new Error("tools undefined");
+		expect((tools.boundless_bash as { strict?: boolean }).strict).toBe(true);
+		const schema = await Promise.resolve(
+			(tools.boundless_bash.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
+		);
+		expect(schema).toEqual({
+			type: "object",
+			properties: {
+				command: { type: "string" },
+				timeout: { type: ["number", "null"] },
+				options: {
+					type: ["object", "null"],
+					properties: {
+						cwd: { type: "string" },
+						login: { type: ["boolean", "null"] },
+					},
+					required: ["cwd", "login"],
+					additionalProperties: false,
+				},
+			},
+			required: ["command", "timeout", "options"],
+			additionalProperties: false,
+		});
+	});
+
+	it("leaves deliberately open schemas non-strict", async () => {
+		const tools = toToolSet([
+			{
+				type: "function",
+				function: {
+					name: "github",
+					description: "MCP server dispatch",
+					parameters: {
+						type: "object",
+						properties: { subcommand: { type: "string" } },
+						required: ["subcommand"],
+						additionalProperties: true,
+					},
+				},
+			},
+		]);
+		expect(tools).toBeDefined();
+		if (!tools) throw new Error("tools undefined");
+		expect((tools.github as { strict?: boolean }).strict).toBeUndefined();
+		const schema = await Promise.resolve(
+			(tools.github.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
+		);
+		expect(schema).toEqual({
+			type: "object",
+			properties: { subcommand: { type: "string" } },
+			required: ["subcommand"],
+			additionalProperties: true,
+		});
+	});
 });
 
 describe("mapChunks — text and reasoning", () => {
