@@ -644,12 +644,44 @@ describe("toModelMessages — content blocks", () => {
 		expect(out[1].content).toEqual([{ type: "reasoning", text: "bare" }]);
 	});
 
-	it("drops reasoning blocks when the target cannot replay non-native reasoning state", () => {
-		// OpenAI Responses only accepts replayed reasoning when it carries OpenAI's
-		// own encrypted reasoning content. Bound's persisted opus/Anthropic
-		// thinking blocks do not have that state; @ai-sdk/openai skips them and
-		// emits one warning per block. Dropping here is equivalent to the provider's
-		// behavior, but keeps long cross-provider threads from flooding logs.
+	it("replays native OpenAI reasoning via providerOptions.openai.reasoningEncryptedContent", () => {
+		// GPT-5.x on Mantle returns opaque encrypted reasoning state under
+		// store:false. Echoing it back on the next same-provider turn lets the
+		// model reconstruct its prior chain-of-thought (tool-call justification
+		// continuity). The reasoning text is typically empty on Mantle — the
+		// encrypted blob is the load-bearing carrier.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "", reasoning_encrypted_content: "ENC==" },
+						{ type: "text", text: "answer" },
+						{ type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } },
+					],
+				},
+			],
+			{ reasoningProviderOptions: "openai", targetEnvelope: PERMISSIVE_ENVELOPE },
+		);
+		expect(out[1].content).toEqual([
+			{
+				type: "reasoning",
+				text: "",
+				providerOptions: { openai: { reasoningEncryptedContent: "ENC==" } },
+			},
+			{ type: "text", text: "answer" },
+			{ type: "tool-call", toolCallId: "call_1", toolName: "lookup", input: { q: "x" } },
+		]);
+	});
+
+	it("drops non-native reasoning blocks lacking OpenAI encrypted content for an openai target", () => {
+		// Bound's persisted opus/Anthropic thinking blocks carry a signature, not
+		// OpenAI encrypted content. @ai-sdk/openai cannot replay them under
+		// store:false — it skips each with "Non-OpenAI reasoning parts are not
+		// supported" (one warning per block, a flood in long cross-provider
+		// threads). Dropping at the read boundary is equivalent to the provider's
+		// own behavior and silences the flood. The inline text/tool_use survives.
 		const out = toModelMessages(
 			[
 				{ role: "user", content: "ask" },
@@ -662,7 +694,7 @@ describe("toModelMessages — content blocks", () => {
 					],
 				},
 			],
-			{ dropReasoning: true, targetEnvelope: PERMISSIVE_ENVELOPE },
+			{ reasoningProviderOptions: "openai", targetEnvelope: PERMISSIVE_ENVELOPE },
 		);
 		expect(out[1].content).toEqual([
 			{ type: "text", text: "answer" },

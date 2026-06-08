@@ -137,6 +137,20 @@ export type ContentBlock =
 			 * optional so replay shapes stay flexible.
 			 */
 			redacted_data?: string;
+			/**
+			 * OpenAI Responses encrypted reasoning state. Returned (876+ char
+			 * opaque blob) on reasoning items when a GPT-5.x turn runs under
+			 * `store: false` with `include: ["reasoning.encrypted_content"]` —
+			 * which @ai-sdk/openai sets automatically for reasoning models under
+			 * store:false. Must be echoed back on the next same-provider turn via
+			 * providerOptions.openai.reasoningEncryptedContent so the model can
+			 * reconstruct its prior chain-of-thought; without it, @ai-sdk/openai
+			 * drops the reasoning part with "Non-OpenAI reasoning parts are not
+			 * supported" and the model loses tool-call-justification continuity.
+			 * Distinct from `signature`/`redacted_data` (Anthropic/Bedrock); a
+			 * given block carries at most one provider's replay metadata.
+			 */
+			reasoning_encrypted_content?: string;
 	  }
 	| { type: "image"; source: ImageSource; description?: string }
 	| {
@@ -176,6 +190,14 @@ export type StreamChunk =
 			 * this onto the assembled thinking ContentBlock.
 			 */
 			redacted_data?: string;
+			/**
+			 * See ContentBlock "thinking".reasoning_encrypted_content. Emitted on
+			 * a separate chunk with content:"" from the reasoning-end stream event
+			 * (where @ai-sdk/openai surfaces it under
+			 * providerMetadata.openai.reasoningEncryptedContent). Downstream
+			 * stitches this onto the assembled thinking ContentBlock.
+			 */
+			reasoning_encrypted_content?: string;
 	  }
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }
