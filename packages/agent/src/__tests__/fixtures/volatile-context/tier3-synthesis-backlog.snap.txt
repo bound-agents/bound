@@ -974,21 +974,21 @@ Title-only catalog (detail entries + older summary overflow). Bodies are accesse
 
 ## Relevant memory — matched to this turn
 
-- curiosity:item-0-det000000 [detail] (16d ago)
-- curiosity:item-1-det000001 [detail] (16d ago)
-- curiosity:item-2-det000002 [detail] (16d ago)
-- curiosity:item-3-det000003 [detail] (16d ago)
-- curiosity:item-4-det000004 [detail] (16d ago)
-- curiosity:item-5-det000005 [detail] (16d ago)
-- curiosity:item-6-det000006 [detail] (16d ago)
-- curiosity:item-7-det000007 [detail] (16d ago)
-- curiosity:item-8-det000008 [detail] (16d ago)
-- curiosity:item-9-det000009 [detail] (16d ago)
-- curiosity:item-10-det000010 [detail] (16d ago)
-- curiosity:item-11-det000011 [detail] (16d ago)
-- curiosity:item-12-det000012 [detail] (16d ago)
-- curiosity:item-13-det000013 [detail] (16d ago)
-- curiosity:item-14-det000014 [detail] (16d ago)
+- curiosity:item-0-det000000 [detail] (1m ago)
+- curiosity:item-1-det000001 [detail] (1m ago)
+- curiosity:item-2-det000002 [detail] (1m ago)
+- curiosity:item-3-det000003 [detail] (1m ago)
+- curiosity:item-4-det000004 [detail] (1m ago)
+- curiosity:item-5-det000005 [detail] (1m ago)
+- curiosity:item-6-det000006 [detail] (1m ago)
+- curiosity:item-7-det000007 [detail] (1m ago)
+- curiosity:item-8-det000008 [detail] (1m ago)
+- curiosity:item-9-det000009 [detail] (1m ago)
+- curiosity:item-10-det000010 [detail] (1m ago)
+- curiosity:item-11-det000011 [detail] (1m ago)
+- curiosity:item-12-det000012 [detail] (1m ago)
+- curiosity:item-13-det000013 [detail] (1m ago)
+- curiosity:item-14-det000014 [detail] (1m ago)
 ## Live State — pointers to canonical sources
 
 

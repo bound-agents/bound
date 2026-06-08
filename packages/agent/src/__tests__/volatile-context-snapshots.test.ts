@@ -401,18 +401,30 @@ describe("volatile-context snapshots", () => {
 			makeDetail(ctx, 1, summaryKeys[i % summaryKeys.length]);
 		}
 
-		const result = buildVolatileContext({
-			db,
-			threadId,
-			userId,
-			siteId,
-			nowMs,
-		});
+		// R-VC27's relevant-memory render uses wall-clock `relativeTime` by design
+		// (the varying side is regenerated every turn), so this is the only snapshot
+		// fixture carrying relative-time `(Nd ago)` lines. Pin Date.now to the
+		// fixture's own nowMs — the same clock-freeze pattern the parity test uses —
+		// so the rendered offsets are deterministic instead of drifting one calendar
+		// day at a time. Renderer is unchanged; only the test freezes the clock.
+		const realDateNow = Date.now;
+		Date.now = () => nowMs;
+		try {
+			const result = buildVolatileContext({
+				db,
+				threadId,
+				userId,
+				siteId,
+				nowMs,
+			});
 
-		await assertSnapshot(
-			result.content,
-			join(__dirname, "fixtures/volatile-context/tier3-synthesis-backlog.snap.txt"),
-		);
+			await assertSnapshot(
+				result.content,
+				join(__dirname, "fixtures/volatile-context/tier3-synthesis-backlog.snap.txt"),
+			);
+		} finally {
+			Date.now = realDateNow;
+		}
 
 		db.close();
 	});
