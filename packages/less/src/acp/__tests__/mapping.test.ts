@@ -589,6 +589,60 @@ describe("messageToSessionUpdate", () => {
 		]);
 	});
 
+	it("namespaces replayed tool-call ids per tool round so reused per-request ids don't collide", () => {
+		// GPT-5.x (Responses API) numbers tool calls per request (call_1, call_2),
+		// resetting every turn. On resume the whole transcript replays in one pass,
+		// so two tool_call rows both carrying "call_1" read as one call in the
+		// editor (the second is treated as an update to the first). A per-round
+		// salt namespaces them; the paired tool_result at the same round resolves
+		// to the same id so the pairing survives.
+		const toolUse = (id: string) =>
+			JSON.stringify([
+				{ type: "tool_use", id, name: "boundless_read", input: { file_path: "/a" } },
+			]);
+		const round1 = messageToSessionUpdate(
+			{ ...base, role: "tool_call", content: toolUse("call_1"), tool_name: null },
+			undefined,
+			1,
+		);
+		const round1Result = messageToSessionUpdate(
+			{
+				...base,
+				role: "tool_result",
+				content: JSON.stringify([{ type: "text", text: "a" }]),
+				tool_name: "call_1",
+			},
+			undefined,
+			1,
+		);
+		const round2 = messageToSessionUpdate(
+			{ ...base, role: "tool_call", content: toolUse("call_1"), tool_name: null },
+			undefined,
+			2,
+		);
+
+		const id1 = (round1[0] as { toolCallId: string }).toolCallId;
+		const id2 = (round2[0] as { toolCallId: string }).toolCallId;
+		const resultId = (round1Result[0] as { toolCallId: string }).toolCallId;
+		// Distinct calls in distinct rounds get distinct ids...
+		expect(id1).not.toBe(id2);
+		// ...but the tool_result pairs to its tool_call within the same round.
+		expect(resultId).toBe(id1);
+	});
+
+	it("leaves ids un-namespaced when no salt is supplied (default replay behavior)", () => {
+		const content = JSON.stringify([
+			{ type: "tool_use", id: "tooluse_X", name: "boundless_read", input: { file_path: "/a" } },
+		]);
+		const updates = messageToSessionUpdate({
+			...base,
+			role: "tool_call",
+			content,
+			tool_name: null,
+		});
+		expect((updates[0] as { toolCallId: string }).toolCallId).toBe("tooluse_X");
+	});
+
 	it("returns no updates for internal roles", () => {
 		for (const role of ["system", "developer", "alert", "purge"] as const) {
 			expect(messageToSessionUpdate({ ...base, role, content: "x", tool_name: null })).toEqual([]);

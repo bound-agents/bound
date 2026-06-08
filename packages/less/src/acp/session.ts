@@ -66,8 +66,19 @@ interface TurnState {
 	alert: string | null;
 	/** True once an `agent_message_chunk` (real response text) has been sent. */
 	sawAgentText: boolean;
-	/** Daemon-side (native) tool calls surfaced this turn, keyed by tool_use id. */
+	/**
+	 * Daemon-side (native) tool calls surfaced this turn, holding the
+	 * session-unique ACP toolCallId (see {@link AcpSession.acpToolCallId}) so the
+	 * turn-end completion cleanup addresses the same id the lifecycle used.
+	 */
 	openDaemonToolCalls: Set<string>;
+	/**
+	 * Maps a model-supplied tool-call id to the session-unique ACP toolCallId
+	 * minted for it this turn. Reset per turn (fresh map) so a per-request id the
+	 * Responses API reuses across turns (call_1, call_2, …) gets a distinct ACP
+	 * id each turn, while pending/in_progress/completed for one call share an id.
+	 */
+	acpToolCallIds: Map<string, string>;
 	/**
 	 * ACP message id for the in-progress agent_message_chunk run, or null when
 	 * no run is open. Generated lazily on the first text chunk of a run and
@@ -155,6 +166,12 @@ function shellTerminalOutput(
 export class AcpSession {
 	private readonly deps: AcpSessionDeps;
 	private turn: TurnState | null = null;
+	/**
+	 * Session-monotonic counter feeding {@link acpToolCallId}. Never reset, so a
+	 * raw id reused across turns (Responses-API call_1) maps to a distinct ACP id
+	 * each turn. Suffix only — the raw id stays the human-readable prefix.
+	 */
+	private toolCallIdSeq = 0;
 	private modelId: string | null;
 	private mode: SessionModeId = DEFAULT_MODE_ID;
 	private readonly permissionMemory = new Map<string, PermissionDecision>();
@@ -196,6 +213,7 @@ export class AcpSession {
 				alert: null,
 				sawAgentText: false,
 				openDaemonToolCalls: new Set(),
+				acpToolCallIds: new Map(),
 				agentMessageId: null,
 				thoughtMessageId: null,
 			};
@@ -257,14 +275,17 @@ export class AcpSession {
 				// (handleToolCall); skip them here to avoid double-reporting.
 				if (this.deps.clientToolNames.has(chunk.name)) return;
 				this.daemonToolArgs.set(chunk.id, "");
-				this.turn?.openDaemonToolCalls.add(chunk.id);
-				await this.send({
-					sessionUpdate: "tool_call",
-					toolCallId: chunk.id,
-					title: chunk.name,
-					kind: toolNameToKind(chunk.name),
-					status: "pending",
-				});
+				{
+					const acpId = this.acpToolCallId(chunk.id);
+					this.turn?.openDaemonToolCalls.add(acpId);
+					await this.send({
+						sessionUpdate: "tool_call",
+						toolCallId: acpId,
+						title: chunk.name,
+						kind: toolNameToKind(chunk.name),
+						status: "pending",
+					});
+				}
 				break;
 			case "tool_use_args": {
 				const prev = this.daemonToolArgs.get(chunk.id);
@@ -279,7 +300,7 @@ export class AcpSession {
 				this.daemonToolArgs.delete(chunk.id);
 				await this.send({
 					sessionUpdate: "tool_call_update",
-					toolCallId: chunk.id,
+					toolCallId: this.acpToolCallId(chunk.id),
 					status: "in_progress",
 					...(rawInput !== undefined ? { rawInput } : {}),
 				});
@@ -384,15 +405,19 @@ export class AcpSession {
 
 	private async dispatchToolCall(call: ToolCallRequest): Promise<ToolCallResult> {
 		const { call_id: callId, tool_name: toolName, arguments: args } = call;
+		// Zed-facing id: session-unique even when the model reuses a per-request id
+		// across turns (Responses API call_1). The daemon-facing call_id below
+		// stays raw so the daemon pairs the result to its dispatch.
+		const acpId = this.acpToolCallId(callId);
 		const kind = toolNameToKind(toolName);
 		const title = toolCallTitle(toolName, args);
-		const content = toolCallContent(toolName, args, this.deps.cwd, callId);
+		const content = toolCallContent(toolName, args, this.deps.cwd, acpId);
 		const locations = toolCallLocations(toolName, args, this.deps.cwd);
-		const meta = toolCallMeta(toolName, this.deps.cwd, callId, args);
+		const meta = toolCallMeta(toolName, this.deps.cwd, acpId, args);
 
 		await this.send({
 			sessionUpdate: "tool_call",
-			toolCallId: callId,
+			toolCallId: acpId,
 			...(meta ? { _meta: meta } : {}),
 			title,
 			kind,
@@ -403,7 +428,7 @@ export class AcpSession {
 		});
 
 		const decision = await this.resolvePermission(
-			callId,
+			acpId,
 			toolName,
 			title,
 			kind,
@@ -415,7 +440,7 @@ export class AcpSession {
 		if (decision === "reject") {
 			await this.send({
 				sessionUpdate: "tool_call_update",
-				toolCallId: callId,
+				toolCallId: acpId,
 				status: "failed",
 				content: [
 					{ type: "content", content: { type: "text", text: "Tool call rejected by user" } },
@@ -431,7 +456,7 @@ export class AcpSession {
 
 		const handler = this.deps.toolHandlers.get(toolName);
 		if (!handler) {
-			await this.updateToolCall(callId, "failed", `Error: Tool '${toolName}' not found`);
+			await this.updateToolCall(acpId, "failed", `Error: Tool '${toolName}' not found`);
 			return {
 				call_id: callId,
 				thread_id: call.thread_id,
@@ -442,7 +467,7 @@ export class AcpSession {
 
 		await this.send({
 			sessionUpdate: "tool_call_update",
-			toolCallId: callId,
+			toolCallId: acpId,
 			status: "in_progress",
 		});
 
@@ -452,7 +477,7 @@ export class AcpSession {
 			const result = await handler(args, controller.signal, this.deps.cwd);
 			const status: ToolCallStatus = result.isError ? "failed" : "completed";
 			const shellOutput = isShellToolName(toolName)
-				? shellTerminalOutput(toolName, callId, result.content)
+				? shellTerminalOutput(toolName, acpId, result.content)
 				: null;
 			// A diff sent in the pending frame is the editor's rendered
 			// representation of the change. ACP tool_call_update content
@@ -465,7 +490,7 @@ export class AcpSession {
 			const preservesDiff = !result.isError && content.some((c) => c.type === "diff");
 			await this.send({
 				sessionUpdate: "tool_call_update",
-				toolCallId: callId,
+				toolCallId: acpId,
 				status,
 				...(shellOutput
 					? { _meta: shellOutput.meta, rawOutput: shellOutput.rawOutput }
@@ -481,7 +506,7 @@ export class AcpSession {
 			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			await this.updateToolCall(callId, "failed", `Error: ${message}`);
+			await this.updateToolCall(acpId, "failed", `Error: ${message}`);
 			return {
 				call_id: callId,
 				thread_id: call.thread_id,
@@ -570,6 +595,35 @@ export class AcpSession {
 				// Unknown option id — fail closed.
 				return "reject";
 		}
+	}
+
+	/**
+	 * Mints (or returns the already-minted) session-unique ACP toolCallId for a
+	 * model-supplied tool-call id, scoped to the current turn.
+	 *
+	 * The Responses API (bedrock-mantle / GPT-5.x) numbers tool calls per request
+	 * (`call_1`, `call_2`, …) and resets the counter every turn, so the raw id
+	 * collides across turns within one ACP session. The editor keys tool calls by
+	 * `toolCallId` for the session lifetime, so an un-namespaced `call_1` in turn
+	 * N reads as an update to turn N-1's completed `call_1` — the new call never
+	 * renders, and (for shell tools) its terminal id collides too. Anthropic ids
+	 * (`toolu_<random>`) are globally unique and never collided, which is why this
+	 * only surfaced on GPT-5.x.
+	 *
+	 * The per-turn map keeps every lifecycle update for one call (pending →
+	 * in_progress → completed) sharing an id, while the session-monotonic suffix
+	 * makes the same raw id distinct across turns. The daemon-facing `call_id`
+	 * stays raw — this remap is Zed-facing only. Outside a turn (no collision
+	 * surface) the raw id passes through unchanged.
+	 */
+	private acpToolCallId(rawId: string): string {
+		const turn = this.turn;
+		if (!turn) return rawId;
+		const existing = turn.acpToolCallIds.get(rawId);
+		if (existing) return existing;
+		const acpId = `${rawId}-t${this.toolCallIdSeq++}`;
+		turn.acpToolCallIds.set(rawId, acpId);
+		return acpId;
 	}
 
 	private parseDaemonArgs(id: string): Record<string, unknown> | undefined {

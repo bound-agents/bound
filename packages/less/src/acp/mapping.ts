@@ -491,11 +491,27 @@ export function streamChunkToSessionUpdate(chunk: WsStreamChunk): SessionUpdate 
  * from the set was dispatched but never completed (an interrupted turn), so it
  * replays as `failed` rather than falsely as `completed`. Omitting the set
  * preserves the optimistic `completed` default.
+ *
+ * `toolRoundSalt`, when provided, namespaces every emitted `toolCallId` as
+ * `${rawId}-r${salt}`. The Responses API (GPT-5.x) numbers tool calls per
+ * request (`call_1`, `call_2`, …) and resets per turn, so on resume the whole
+ * transcript replays in one pass and two `call_1` rows from different turns read
+ * as one call in the editor (the second is treated as an update to the first).
+ * The caller passes a salt that increments per tool round so distinct calls get
+ * distinct ids; the paired `tool_result` row must be replayed with the SAME salt
+ * as its `tool_call` so the pairing survives. The `-r` marker is disjoint from
+ * the live path's `-t` suffix (see {@link AcpSession.acpToolCallId}) so a resume
+ * followed by live turns cannot collide. Globally-unique ids (Anthropic
+ * `toolu_<random>`) don't need it, but salting them is harmless. Omitting the
+ * salt leaves ids raw — the default replay behavior.
  */
 export function messageToSessionUpdate(
 	message: Message,
 	resolvedToolCallIds?: ReadonlySet<string>,
+	toolRoundSalt?: number,
 ): SessionUpdate[] {
+	const acpId = (rawId: string): string =>
+		toolRoundSalt === undefined ? rawId : `${rawId}-r${toolRoundSalt}`;
 	switch (message.role) {
 		case "user":
 			return [
@@ -522,7 +538,7 @@ export function messageToSessionUpdate(
 				return [
 					{
 						sessionUpdate: "tool_call",
-						toolCallId: message.tool_name ?? message.id,
+						toolCallId: acpId(message.tool_name ?? message.id),
 						title: message.tool_name ?? "tool call",
 						kind: message.tool_name ? toolNameToKind(message.tool_name) : "other",
 						status: "completed",
@@ -543,7 +559,7 @@ export function messageToSessionUpdate(
 					const completed = resolvedToolCallIds ? resolvedToolCallIds.has(block.id) : true;
 					updates.push({
 						sessionUpdate: "tool_call",
-						toolCallId: block.id,
+						toolCallId: acpId(block.id),
 						title: toolCallTitle(block.name, block.input),
 						kind: toolNameToKind(block.name),
 						status: completed ? "completed" : "failed",
@@ -557,7 +573,7 @@ export function messageToSessionUpdate(
 			return [
 				{
 					sessionUpdate: "tool_call_update",
-					toolCallId: message.tool_name ?? message.id,
+					toolCallId: acpId(message.tool_name ?? message.id),
 					status: "completed",
 					content: toolResultToAcpContent(parseContentBlocks(message.content) ?? message.content),
 				},

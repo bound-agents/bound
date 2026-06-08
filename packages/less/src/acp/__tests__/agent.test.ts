@@ -345,14 +345,17 @@ describe("BoundAcpAgent daemon-side tool calls", () => {
 		);
 		const created = toolCallUpdates.find((n) => n.update.sessionUpdate === "tool_call");
 		expect(created).toBeDefined();
-		expect((created?.update as { toolCallId: string }).toolCallId).toBe("tu-1");
+		// The ACP id is namespaced per turn (Responses-API ids reset per request);
+		// resolve the minted id rather than asserting the raw stream id "tu-1".
+		const toolCallId = (created?.update as { toolCallId: string }).toolCallId;
+		expect(toolCallId.startsWith("tu-1")).toBe(true);
 		// No permission prompt for daemon-side tools.
 		expect(recording.permissionRequests.length).toBe(0);
 		// Closed completed by turn end.
 		const completed = toolCallUpdates.some(
 			(n) =>
 				n.update.sessionUpdate === "tool_call_update" &&
-				(n.update as { toolCallId: string; status?: string }).toolCallId === "tu-1" &&
+				(n.update as { toolCallId: string; status?: string }).toolCallId === toolCallId &&
 				(n.update as { status?: string }).status === "completed",
 		);
 		expect(completed).toBe(true);

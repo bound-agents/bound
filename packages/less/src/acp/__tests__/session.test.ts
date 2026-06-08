@@ -371,6 +371,104 @@ describe("AcpSession permission gating", () => {
 	});
 });
 
+describe("AcpSession tool call id namespacing", () => {
+	it("namespaces client tool ids per turn so per-request ids (call_1) don't collide across turns", async () => {
+		// The Responses API (bedrock-mantle / GPT-5.x) numbers tool calls per
+		// request (call_1, call_2, ...), resetting every turn. ACP keys tool
+		// calls by toolCallId for the whole session, so an un-namespaced call_1
+		// in turn 2 reads as an update to turn 1's completed call_1 and never
+		// renders as a new call. The session must hand the editor a distinct id.
+		const handlers = new Map([
+			["boundless_read", async () => ({ content: [{ type: "text" as const, text: "ok" }] })],
+		]);
+		const { session, rec } = setup({ defaultPermission: "allow_once", toolHandlers: handlers });
+
+		const p1 = session.runPrompt("one");
+		session.handleThreadStatus(true);
+		await session.handleToolCall(call({ call_id: "call_1" }));
+		session.handleThreadStatus(false);
+		await p1;
+
+		const p2 = session.runPrompt("two");
+		session.handleThreadStatus(true);
+		await session.handleToolCall(call({ call_id: "call_1" }));
+		session.handleThreadStatus(false);
+		await p2;
+
+		const pendingIds = rec.updates
+			.filter((u) => u.sessionUpdate === "tool_call")
+			.map((u) => (u as { toolCallId: string }).toolCallId);
+		expect(pendingIds.length).toBe(2);
+		expect(pendingIds[0]).not.toBe(pendingIds[1]);
+	});
+
+	it("keeps one call's lifecycle updates sharing a single namespaced id within a turn", async () => {
+		const handlers = new Map([
+			["boundless_read", async () => ({ content: [{ type: "text" as const, text: "ok" }] })],
+		]);
+		const { session, rec } = setup({ defaultPermission: "allow_once", toolHandlers: handlers });
+
+		const p = session.runPrompt("go");
+		session.handleThreadStatus(true);
+		await session.handleToolCall(call({ call_id: "call_1" }));
+		session.handleThreadStatus(false);
+		await p;
+
+		const ids = rec.updates
+			.filter((u) => u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update")
+			.map((u) => (u as { toolCallId: string }).toolCallId);
+		expect(ids.length).toBeGreaterThanOrEqual(2);
+		expect(new Set(ids).size).toBe(1);
+	});
+
+	it("returns the raw call_id to the daemon even when the ACP id is namespaced", async () => {
+		const handlers = new Map([
+			["boundless_read", async () => ({ content: [{ type: "text" as const, text: "ok" }] })],
+		]);
+		const { session } = setup({ defaultPermission: "allow_once", toolHandlers: handlers });
+
+		session.runPrompt("go");
+		session.handleThreadStatus(true);
+		const result = await session.handleToolCall(call({ call_id: "call_1" }));
+		// The daemon pairs the result to its dispatch by the raw id; namespacing
+		// is Zed-facing only and must not leak into the tool result.
+		expect(result.call_id).toBe("call_1");
+	});
+
+	it("namespaces daemon-side tool ids per turn (start/in_progress/completed share one id)", async () => {
+		const { session, rec } = setup();
+
+		const p1 = session.runPrompt("one");
+		session.handleThreadStatus(true);
+		await session.handleStreamChunk({ type: "tool_use_start", id: "call_1", name: "memory" });
+		await session.handleStreamChunk({ type: "tool_use_end", id: "call_1" });
+		session.handleThreadStatus(false);
+		await p1;
+
+		const p2 = session.runPrompt("two");
+		session.handleThreadStatus(true);
+		await session.handleStreamChunk({ type: "tool_use_start", id: "call_1", name: "memory" });
+		await session.handleStreamChunk({ type: "tool_use_end", id: "call_1" });
+		session.handleThreadStatus(false);
+		await p2;
+
+		const pendingIds = rec.updates
+			.filter((u) => u.sessionUpdate === "tool_call")
+			.map((u) => (u as { toolCallId: string }).toolCallId);
+		expect(pendingIds.length).toBe(2);
+		expect(pendingIds[0]).not.toBe(pendingIds[1]);
+		// And every update for turn 1's call shares the turn-1 id (start +
+		// in_progress + the completed cleanup at turn end).
+		const turn1Id = pendingIds[0];
+		const turn1Updates = rec.updates.filter(
+			(u) =>
+				(u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") &&
+				(u as { toolCallId: string }).toolCallId === turn1Id,
+		);
+		expect(turn1Updates.length).toBeGreaterThanOrEqual(2);
+	});
+});
+
 describe("AcpSession turn lifecycle", () => {
 	it("resolves end_turn after active→idle", async () => {
 		const { session, rec } = setup();
@@ -455,14 +553,18 @@ describe("AcpSession daemon-side tool stream", () => {
 		session.handleThreadStatus(false);
 		await p;
 
+		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call");
+		expect(created).toBeDefined();
+		expect((created as { kind: string }).kind).toBe("other");
+		// The ACP id is namespaced per turn (see "id namespacing" suite); the raw
+		// stream id "tu1" is the prefix. Resolve the minted id and assert the
+		// lifecycle updates all share it.
+		const toolCallId = (created as { toolCallId: string }).toolCallId;
 		const forTu1 = rec.updates.filter(
 			(u) =>
 				(u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") &&
-				(u as { toolCallId: string }).toolCallId === "tu1",
+				(u as { toolCallId: string }).toolCallId === toolCallId,
 		);
-		const created = forTu1.find((u) => u.sessionUpdate === "tool_call");
-		expect(created).toBeDefined();
-		expect((created as { kind: string }).kind).toBe("other");
 		const inProgress = forTu1.find(
 			(u) =>
 				u.sessionUpdate === "tool_call_update" &&

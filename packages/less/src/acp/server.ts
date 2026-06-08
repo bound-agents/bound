@@ -169,8 +169,18 @@ export class BoundAcpAgent implements Agent {
 		// completed (interrupted turn); pass the resolved set so replay marks those
 		// calls failed rather than falsely completed.
 		const { resolvedIds } = collectToolCallPairing(messages);
+		// GPT-5.x (Responses API) numbers tool calls per request (call_1, call_2)
+		// and resets per turn, so replaying the whole transcript in one pass would
+		// collide reused ids — the editor keys tool calls by toolCallId for the
+		// session, so a second `call_1` reads as an update to the first and never
+		// renders. Namespace each tool round with an incrementing salt; tool_result
+		// rows inherit the salt of the tool_call they follow (invariant #7: a
+		// tool_result row immediately follows its originating tool_call row), so the
+		// pairing survives. Anthropic ids are already unique; salting them is inert.
+		let toolRoundSalt = 0;
 		for (const message of messages) {
-			for (const update of messageToSessionUpdate(message, resolvedIds)) {
+			if (message.role === "tool_call") toolRoundSalt += 1;
+			for (const update of messageToSessionUpdate(message, resolvedIds, toolRoundSalt)) {
 				await this.opts.conn.sessionUpdate({ sessionId: threadId, update });
 			}
 		}
