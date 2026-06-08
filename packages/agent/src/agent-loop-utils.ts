@@ -60,6 +60,13 @@ export function isTransientLLMError(error: unknown): boolean {
 	if (error instanceof LLMError && error.statusCode !== undefined) {
 		if (error.statusCode === 429) return false; // handled separately by rate-limit logic
 		if (error.statusCode >= 400 && error.statusCode < 500) return false;
+		// 5xx is a server fault, not a client error — the textbook transient case.
+		// bedrock-mantle intermittently 500s mid-stream (server_error); the bridge
+		// throws it as a 5xx LLMError (commit eda6ce6b). Retry (with backoff at the
+		// call site) clears the intermittent blip — verified via probe (4/6 cold
+		// attempts succeeded). withEmptyRetry already proved instant no-backoff
+		// retry of this same fault does NOT clear it, so the retry path must wait.
+		if (error.statusCode >= 500) return true;
 	}
 
 	// Pattern-match on known transient transport error messages.

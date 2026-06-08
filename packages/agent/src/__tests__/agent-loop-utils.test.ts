@@ -435,6 +435,29 @@ describe("isTransientLLMError", () => {
 		expect(isTransientLLMError(err)).toBe(false);
 	});
 
+	it("returns true for a 500 server fault (bedrock-mantle mid-stream server_error)", () => {
+		// The Mantle endpoint intermittently 500s mid-response. The AI SDK
+		// surfaces this as a finish with finishReason=error; the bridge now
+		// throws it as a 5xx LLMError (commit eda6ce6b). A server fault is the
+		// textbook transient case — retry (with backoff) clears the intermittent
+		// blip. Verified via probe: 4 of 6 cold attempts succeeded.
+		const { LLMError } = require("@bound/llm");
+		const err = new LLMError(
+			"bedrock-mantle response failed (finishReason=error): server fault mid-stream",
+			"bedrock-mantle",
+			500,
+		);
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns true for 502/503/504 gateway/upstream faults", () => {
+		const { LLMError } = require("@bound/llm");
+		for (const code of [502, 503, 504]) {
+			const err = new LLMError("upstream unavailable", "bedrock-mantle", code);
+			expect(isTransientLLMError(err)).toBe(true);
+		}
+	});
+
 	it("returns true for LLMError without status code and transport message", () => {
 		const { LLMError } = require("@bound/llm");
 		const err = new LLMError("http2 connection dropped", "bedrock", undefined);
