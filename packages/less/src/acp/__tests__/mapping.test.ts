@@ -300,6 +300,19 @@ describe("streamChunkToSessionUpdate", () => {
 		});
 	});
 
+	it("returns null for empty-content thinking chunks (replay-only, no display value)", () => {
+		// bedrock-mantle emits a content:"" thinking chunk per reasoning-end to
+		// ferry reasoning_encrypted_content for replay. It carries no visible
+		// text, but mapping it to an agent_thought_chunk breaks the open
+		// agent_message run in stampMessageId, fragmenting GPT-5.x prose
+		// (kaomoji split across lines). Suppress it at the source.
+		expect(streamChunkToSessionUpdate({ type: "thinking", content: "" })).toBeNull();
+	});
+
+	it("returns null for empty-content text chunks", () => {
+		expect(streamChunkToSessionUpdate({ type: "text", content: "" })).toBeNull();
+	});
+
 	it("returns null for tool_use and lifecycle chunks (handled statefully)", () => {
 		expect(streamChunkToSessionUpdate({ type: "tool_use_start", id: "a", name: "x" })).toBeNull();
 		expect(
