@@ -1613,11 +1613,26 @@ export class AgentLoop {
 					const errMsg = error instanceof Error ? error.message : String(error);
 					if (isTransientLLMError(error) && transportRetries < MAX_SILENCE_RETRIES) {
 						transportRetries++;
-						this.ctx.logger.warn("[agent-loop] Transport error, retrying", {
+						// 5xx server faults need a wait before retry: withEmptyRetry
+						// already proved instant no-backoff retry of this same Mantle
+						// mid-stream server_error does NOT clear it. Transport drops
+						// (http2/ECONNRESET, no status) keep their historical instant
+						// retry — they reconnect, they don't need the server to recover.
+						const isServerFault =
+							error instanceof LLMError &&
+							error.statusCode !== undefined &&
+							error.statusCode >= 500;
+						const backoffMs = isServerFault ? 1000 * 2 ** (transportRetries - 1) : 0;
+						this.ctx.logger.warn("[agent-loop] Transient LLM error, retrying", {
 							attempt: transportRetries,
 							max: MAX_SILENCE_RETRIES,
+							backoffMs,
+							statusCode: error instanceof LLMError ? error.statusCode : null,
 							error: errMsg,
 						});
+						if (backoffMs > 0) {
+							await new Promise((resolve) => setTimeout(resolve, backoffMs));
+						}
 						turnSpan.end();
 						continue; // Re-enter the while loop → LLM_CALL
 					}
