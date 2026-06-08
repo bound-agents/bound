@@ -231,6 +231,14 @@ interface ParsedResponse {
 	 * thinking ContentBlock carries redacted_data.
 	 */
 	thinkingRedactedData: string | null;
+	/**
+	 * OpenAI Responses encrypted reasoning state (GPT-5.x on Mantle, store:false).
+	 * Echoed back on the next same-provider turn via
+	 * providerOptions.openai.reasoningEncryptedContent so the model reconstructs
+	 * its prior chain-of-thought. On Mantle a turn can carry this with empty
+	 * thinking text, so it independently gates thinking-block emission below.
+	 */
+	thinkingEncryptedContent: string | null;
 	toolCalls: ParsedToolCall[];
 	usage: {
 		inputTokens: number;
@@ -2246,10 +2254,14 @@ export class AgentLoop {
 					// Preserve thinking block for multi-turn reasoning continuity.
 					// Anthropic requires the signed thinking block to come FIRST in the
 					// assistant message's content blocks during extended thinking.
-					// Emit a thinking block when EITHER visible thinking text OR
-					// redacted-reasoning data is present — redacted-only turns still
-					// need to round-trip the blob back on the next request.
-					if (parsed.thinking || parsed.thinkingRedactedData) {
+					// Emit a thinking block when visible thinking text, redacted-
+					// reasoning data, OR OpenAI encrypted reasoning state is present —
+					// redacted-only and encrypted-only turns still need to round-trip
+					// their blob back on the next request. GPT-5.x on Mantle in
+					// particular often emits zero reasoning text but carries the
+					// encrypted blob, so the encrypted field independently gates
+					// emission here.
+					if (parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent) {
 						const thinkingBlock: ContentBlock = {
 							type: "thinking",
 							thinking: parsed.thinking ?? "",
@@ -2259,6 +2271,9 @@ export class AgentLoop {
 						}
 						if (parsed.thinkingRedactedData) {
 							thinkingBlock.redacted_data = parsed.thinkingRedactedData;
+						}
+						if (parsed.thinkingEncryptedContent) {
+							thinkingBlock.reasoning_encrypted_content = parsed.thinkingEncryptedContent;
 						}
 						toolCallBlocks.push(thinkingBlock);
 					}
@@ -2883,6 +2898,7 @@ export class AgentLoop {
 		let thinkingContent = "";
 		let thinkingSignature: string | null = null;
 		let thinkingRedactedData: string | null = null;
+		let thinkingEncryptedContent: string | null = null;
 		const toolCalls: ParsedToolCall[] = [];
 		const argsAccumulator = new Map<string, string>();
 		const nameMap = new Map<string, string>();
@@ -2902,6 +2918,8 @@ export class AgentLoop {
 					thinkingContent += chunk.content;
 					if (chunk.signature) thinkingSignature = chunk.signature;
 					if (chunk.redacted_data) thinkingRedactedData = chunk.redacted_data;
+					if (chunk.reasoning_encrypted_content)
+						thinkingEncryptedContent = chunk.reasoning_encrypted_content;
 					break;
 				case "tool_use_start":
 					argsAccumulator.set(chunk.id, "");
@@ -2966,6 +2984,7 @@ export class AgentLoop {
 			thinking: thinkingContent || null,
 			thinkingSignature,
 			thinkingRedactedData,
+			thinkingEncryptedContent,
 			toolCalls,
 			usage: {
 				inputTokens,

@@ -256,13 +256,14 @@ export class BedrockMantleDriver implements LLMBackend {
 			cacheProvider: null,
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: PERMISSIVE_ENVELOPE,
-			// OpenAI Responses only replays reasoning that carries OpenAI's own
-			// encrypted reasoning content. Bound's persisted thinking blocks (from
-			// opus/Anthropic and other non-OpenAI models) lack that state, so
-			// @ai-sdk/openai skips each one and logs a warning per block — a flood
-			// in long cross-provider threads. Drop them at the boundary instead;
-			// the provider would discard them anyway.
-			dropReasoning: true,
+			// Replay native OpenAI reasoning state (store:false encrypted content)
+			// so GPT-5.x reconstructs its prior chain-of-thought across turns —
+			// tool-call-justification continuity. buildReasoningPart keeps thinking
+			// blocks that carry reasoning_encrypted_content and drops those that
+			// don't (prior opus/Anthropic blocks, signature-only): @ai-sdk/openai
+			// would skip the latter under store:false with a per-block warning, so
+			// dropping at the boundary is equivalent and silences the flood.
+			reasoningProviderOptions: "openai",
 		});
 		const tools = toToolSet(params.tools);
 

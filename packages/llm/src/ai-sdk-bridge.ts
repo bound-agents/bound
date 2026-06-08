@@ -51,32 +51,22 @@ export interface ToModelMessagesOptions {
 	 */
 	resolveFileRef?: (fileId: string) => string | null;
 	/**
-	 * Provider key used to attach reasoning-block `signature` and
-	 * `redacted_data` via `providerOptions.{key}` on AI SDK ReasoningParts.
+	 * Provider key gating how reasoning/thinking blocks replay on the wire.
 	 *
-	 * Only Anthropic models (direct or on Bedrock) accept these fields. On
-	 * Bedrock, non-Anthropic models (Moonshot Kimi, MiniMax, GLM, Nova, …)
-	 * reject `reasoningContent.reasoningText.signature` outright with
-	 * "This model doesn't support the reasoningContent.reasoningText.signature
-	 * field. Remove reasoningContent.reasoningText.signature and try again."
-	 *
-	 * Set to null (or omit) for non-Anthropic targets; the reasoning text
-	 * itself is still emitted on the part — only the signature/redactedData
-	 * passthrough is suppressed.
+	 * - "bedrock" / "anthropic": attach `signature` and `redacted_data` via
+	 *   providerOptions.{key}. Only Anthropic models (direct or on Bedrock)
+	 *   accept these; non-Anthropic Bedrock models (Kimi, MiniMax, GLM, Nova, …)
+	 *   reject `reasoningContent.reasoningText.signature` outright.
+	 * - "openai": attach OpenAI encrypted reasoning state via
+	 *   providerOptions.openai.reasoningEncryptedContent so GPT-5.x on Mantle can
+	 *   reconstruct its prior chain-of-thought (store:false continuity). A
+	 *   thinking block WITHOUT that encrypted state is non-replayable for an
+	 *   OpenAI target and is dropped at the read boundary — equivalent to
+	 *   @ai-sdk/openai's own skip-with-warning behavior, minus the log flood.
+	 * - null (or omit): non-Anthropic Bedrock / local targets; reasoning text
+	 *   replays without provider-specific replay metadata.
 	 */
-	reasoningProviderOptions?: "bedrock" | "anthropic" | null;
-	/**
-	 * Drop prior reasoning/thinking blocks entirely at the read boundary.
-	 *
-	 * OpenAI Responses only accepts replayed reasoning when it carries OpenAI's
-	 * own encrypted reasoning content. Bound's persisted thinking blocks from
-	 * opus/Anthropic (and local/non-OpenAI models) do not have that encrypted
-	 * state, so @ai-sdk/openai skips them and emits one warning per block:
-	 * "Non-OpenAI reasoning parts are not supported. Skipping reasoning part".
-	 * For targets that would skip these parts anyway, dropping here is equivalent
-	 * semantically and avoids warning floods in long cross-provider threads.
-	 */
-	dropReasoning?: boolean;
+	reasoningProviderOptions?: "bedrock" | "anthropic" | "openai" | null;
 	/**
 	 * Wire-format envelope for the (provider, model) pair this assembly is
 	 * targeting. Drives rewrite-only-on-violation sanitization of tool_use.id
@@ -341,7 +331,6 @@ export function toModelMessages(
 				if (b.type === "text" && b.text) {
 					parts.push({ type: "text", text: b.text });
 				} else if (b.type === "thinking") {
-					if (opts.dropReasoning) continue;
 					const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
 					if (reasoningPart) parts.push(reasoningPart);
 				} else if (b.type === "tool_use") {
@@ -424,7 +413,6 @@ export function toModelMessages(
 			if (b.type === "text") {
 				if (b.text) parts.push({ type: "text", text: b.text });
 			} else if (b.type === "thinking") {
-				if (opts.dropReasoning) continue;
 				const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
 				if (reasoningPart) parts.push(reasoningPart);
 			} else if (b.type === "tool_use") {
@@ -632,8 +620,28 @@ function extractText(blocks: ContentBlock[]): string {
  */
 function buildReasoningPart(
 	b: Extract<ContentBlock, { type: "thinking" }>,
-	providerKey: "bedrock" | "anthropic" | null | undefined,
+	providerKey: "bedrock" | "anthropic" | "openai" | null | undefined,
 ): Record<string, unknown> | null {
+	// OpenAI Responses replays reasoning ONLY when it carries the provider's own
+	// encrypted reasoning state (returned under store:false). A block with it
+	// (native GPT-5.x on Mantle) replays the prior chain-of-thought, preserving
+	// tool-call-justification continuity. A block without it — e.g. a prior
+	// opus/Anthropic thinking block carrying only a signature, or a local model's
+	// signature-less reasoning — is non-replayable: @ai-sdk/openai drops it under
+	// store:false with "Non-OpenAI reasoning parts are not supported", one warning
+	// per block (a flood in long cross-provider threads). Dropping it here is
+	// equivalent to the provider's own behavior and silences the flood. The
+	// inline text/tool_use in the same assistant message is unaffected.
+	if (providerKey === "openai") {
+		if (!b.reasoning_encrypted_content) return null;
+		return {
+			type: "reasoning" as const,
+			text: b.thinking,
+			providerOptions: {
+				openai: { reasoningEncryptedContent: b.reasoning_encrypted_content },
+			},
+		};
+	}
 	// Cross-provider portability: a thinking block is only legal on the wire
 	// for a signature-requiring target (Bedrock-Anthropic, Anthropic direct) if
 	// it carries its cryptographic signature. A signature-less thinking block is
@@ -1265,7 +1273,24 @@ export async function* mapChunks(
 					? err
 					: new LLMError(message, "ai-sdk", undefined, err instanceof Error ? err : undefined);
 			}
-			// start, text-start, text-end, reasoning-start, reasoning-end,
+			case "reasoning-end": {
+				// OpenAI Responses (GPT-5.x on Mantle) surfaces encrypted reasoning
+				// state here, NOT on reasoning-delta — and under high effort a turn
+				// can stream zero reasoning-deltas (no visible summary text) while
+				// still carrying the encrypted blob. Capturing it here, on the
+				// terminal marker for the reasoning item, is the only place it
+				// appears. Emitted as a dedicated empty-text thinking chunk so
+				// downstream stitches it onto the assembled block (same pattern as
+				// signature/redacted). Last reasoning item wins, matching the
+				// single-merged-block assembly in agent-loop.
+				const meta = part.providerMetadata as ProviderMetadata | undefined;
+				const enc = meta?.openai?.reasoningEncryptedContent as string | undefined;
+				if (enc) {
+					yield { type: "thinking", content: "", reasoning_encrypted_content: enc };
+				}
+				break;
+			}
+			// start, text-start, text-end, reasoning-start, tool-call,
 			// tool-call, tool-result, response-metadata, start-step, raw,
 			// source, file, abort — intentionally ignored. Our downstream
 			// StreamChunk doesn't model them. text-start/end and
