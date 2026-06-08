@@ -956,6 +956,31 @@ export interface MapChunksOptions {
 	 * includes this tag so operators can identify which provider is leaking.
 	 */
 	providerName?: string;
+	/**
+	 * Coalesce prefix-extending message items down to the final item.
+	 *
+	 * Bedrock Mantle's GPT-5.x reasoning path (Responses API) streams the
+	 * answer as a SEQUENCE of separate `message` output items — each its own
+	 * text-start/text-end with a distinct id, interleaved with reasoning
+	 * rounds — where each item RE-STATES the whole answer one (often multibyte)
+	 * codepoint longer than the previous. The default `outputText += text`
+	 * concatenates every draft, so a single reply lands in the DB duplicated
+	 * N times (verified live 2026-06-07 against openai.gpt-5.5 at effort=high:
+	 * a reply came back sixfold). The invariant the wire hands us: each item is
+	 * a strict prefix-extension of the previous, monotonically growing, and the
+	 * last item is the complete answer.
+	 *
+	 * With this flag, text-delta accumulates per item (reset on text-start) and
+	 * yields only forward progress relative to what has already been emitted, so
+	 * the streamed text converges to exactly the last (longest) item with no
+	 * duplication — while STILL streaming incrementally for live display. A
+	 * later item that is NOT a prefix-extension (divergence — not observed on
+	 * Mantle, but defended against) degrades to append rather than dropping
+	 * text. Other providers (single item, clean deltas) are a no-op: each delta
+	 * extends the emitted text, so the suffix equals the delta. Scoped to the
+	 * Mantle driver, which is the only caller that sets it.
+	 */
+	coalescePrefixItems?: boolean;
 }
 
 type ProviderMetadata = Record<string, Record<string, unknown>>;
@@ -1049,6 +1074,15 @@ export async function* mapChunks(
 	let toolInputText = "";
 	// Track tool-input-start names since tool-input-delta only carries the id.
 	const toolNameById = new Map<string, string>();
+	// coalescePrefixItems state (Mantle GPT-5.x multi-message-item replay; see
+	// MapChunksOptions.coalescePrefixItems). `currentItemText` accumulates the
+	// active text item's bytes (reset on text-start); `emittedText` is the
+	// cumulative text already yielded downstream. The invariant the Mantle wire
+	// hands us is that each new item is a prefix-extension of the prior, so the
+	// authoritative text is whichever item is longest — i.e. the last one.
+	const coalescePrefixItems = opts.coalescePrefixItems === true;
+	let currentItemText = "";
+	let emittedText = "";
 	// Sum cache-write tokens across all finish-step events. Multi-step turns
 	// (tool-use rounds) emit one finish-step per step, each with that step's
 	// cacheWriteInputTokens. The cache write typically lands on the FIRST
@@ -1062,12 +1096,45 @@ export async function* mapChunks(
 	for await (const raw of stream) {
 		const part = raw as { type: string } & Record<string, unknown>;
 		switch (part.type) {
+			case "text-start": {
+				// Mantle multi-message-item replay: a new item supersedes the
+				// previous (each is a prefix-extension). Reset the per-item
+				// accumulator so the prefix-diff below measures THIS item against
+				// what's already been emitted. No-op for the default path.
+				if (coalescePrefixItems) currentItemText = "";
+				break;
+			}
 			case "text-delta": {
 				const text = (part.text as string | undefined) ?? "";
-				if (text) {
-					outputText += text;
-					yield { type: "text", content: text };
+				if (!text) break;
+				if (coalescePrefixItems) {
+					currentItemText += text;
+					if (
+						currentItemText.length <= emittedText.length &&
+						emittedText.startsWith(currentItemText)
+					) {
+						// This item re-states a prefix of what we've already
+						// emitted; nothing new to yield yet.
+						break;
+					}
+					if (currentItemText.startsWith(emittedText)) {
+						// Prefix-extension (the Mantle invariant): emit only the
+						// forward progress beyond what's already gone out.
+						const suffix = currentItemText.slice(emittedText.length);
+						emittedText = currentItemText;
+						outputText = emittedText;
+						yield { type: "text", content: suffix };
+					} else {
+						// Divergence — not observed on Mantle, but defended
+						// against: degrade to append rather than drop text.
+						emittedText += text;
+						outputText = emittedText;
+						yield { type: "text", content: text };
+					}
+					break;
 				}
+				outputText += text;
+				yield { type: "text", content: text };
 				break;
 			}
 			case "reasoning-delta": {

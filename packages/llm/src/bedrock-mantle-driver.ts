@@ -277,6 +277,14 @@ export class BedrockMantleDriver implements LLMBackend {
 			return mapChunks(result.fullStream, {
 				estimateInputFromMessages: params.messages,
 				providerName: PROVIDER_NAME,
+				// Mantle GPT-5.x streams the answer as a sequence of progressively
+				// re-stated `message` items (each a prefix-extension of the prior,
+				// interleaved with reasoning rounds). Without coalescing, the
+				// default `outputText += text` concatenates every draft and a
+				// single reply lands N-fold duplicated — verified live 2026-06-07
+				// against gpt-5.5 (sixfold). Emit only forward progress so the
+				// stream converges to exactly the final item.
+				coalescePrefixItems: true,
 			});
 		};
 
