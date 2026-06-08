@@ -2363,6 +2363,44 @@ describe("toToolSet", () => {
 			additionalProperties: true,
 		});
 	});
+
+	it("can strictify schemas without emitting a provider strict flag", async () => {
+		const tools = toToolSet(
+			[
+				{
+					type: "function",
+					function: {
+						name: "query",
+						description: "Run a read-only query",
+						parameters: {
+							type: "object",
+							properties: {
+								sql: { type: "string" },
+								limit: { type: "number" },
+							},
+							required: ["sql"],
+						},
+					},
+				},
+			],
+			{ emitStrictFlag: false },
+		);
+		expect(tools).toBeDefined();
+		if (!tools) throw new Error("tools undefined");
+		expect((tools.query as { strict?: boolean }).strict).toBeUndefined();
+		const schema = await Promise.resolve(
+			(tools.query.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
+		);
+		expect(schema).toEqual({
+			type: "object",
+			properties: {
+				sql: { type: "string" },
+				limit: { type: ["number", "null"] },
+			},
+			required: ["sql", "limit"],
+			additionalProperties: false,
+		});
+	});
 });
 
 describe("mapChunks — text and reasoning", () => {
