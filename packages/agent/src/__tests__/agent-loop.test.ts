@@ -12,6 +12,7 @@ import type { EventMap } from "@bound/shared";
 import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { AgentLoop } from "../agent-loop";
+import { VALID_TRANSITIONS } from "../types";
 
 // Mock LLM Backend that returns configurable responses
 class MockLLMBackend implements LLMBackend {
@@ -168,6 +169,19 @@ describe("AgentLoop", () => {
 
 	beforeEach(() => {
 		threadId = randomUUID();
+	});
+
+	describe("VALID_TRANSITIONS", () => {
+		it("permits LLM_CALL → LLM_CALL for transient-retry re-entry", () => {
+			// The agent loop re-enters at LLM_CALL (agent-loop.ts:1296) on a
+			// transient 5xx retry `continue`, while the prior state is still
+			// LLM_CALL. Without the self-loop the transition validator logs an
+			// "Invalid state transition" warning on every retry attempt — three
+			// times per exhausted server fault (observed live 2026-06-08,
+			// bedrock-mantle response.failed). The retry is legitimate; the
+			// table must model it.
+			expect(VALID_TRANSITIONS.LLM_CALL).toContain("LLM_CALL");
+		});
 	});
 
 	afterAll(async () => {
