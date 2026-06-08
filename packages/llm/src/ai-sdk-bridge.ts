@@ -66,6 +66,18 @@ export interface ToModelMessagesOptions {
 	 */
 	reasoningProviderOptions?: "bedrock" | "anthropic" | null;
 	/**
+	 * Drop prior reasoning/thinking blocks entirely at the read boundary.
+	 *
+	 * OpenAI Responses only accepts replayed reasoning when it carries OpenAI's
+	 * own encrypted reasoning content. Bound's persisted thinking blocks from
+	 * opus/Anthropic (and local/non-OpenAI models) do not have that encrypted
+	 * state, so @ai-sdk/openai skips them and emits one warning per block:
+	 * "Non-OpenAI reasoning parts are not supported. Skipping reasoning part".
+	 * For targets that would skip these parts anyway, dropping here is equivalent
+	 * semantically and avoids warning floods in long cross-provider threads.
+	 */
+	dropReasoning?: boolean;
+	/**
 	 * Wire-format envelope for the (provider, model) pair this assembly is
 	 * targeting. Drives rewrite-only-on-violation sanitization of tool_use.id
 	 * and tool_use.name. See WireEnvelope above.
@@ -329,6 +341,7 @@ export function toModelMessages(
 				if (b.type === "text" && b.text) {
 					parts.push({ type: "text", text: b.text });
 				} else if (b.type === "thinking") {
+					if (opts.dropReasoning) continue;
 					const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
 					if (reasoningPart) parts.push(reasoningPart);
 				} else if (b.type === "tool_use") {
@@ -411,6 +424,7 @@ export function toModelMessages(
 			if (b.type === "text") {
 				if (b.text) parts.push({ type: "text", text: b.text });
 			} else if (b.type === "thinking") {
+				if (opts.dropReasoning) continue;
 				const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
 				if (reasoningPart) parts.push(reasoningPart);
 			} else if (b.type === "tool_use") {
