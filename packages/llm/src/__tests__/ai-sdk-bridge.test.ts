@@ -1885,6 +1885,44 @@ describe("mapChunks — tool_use streaming-boundary semantics", () => {
 		expect(ids[0]).toBe("functions.memory:5");
 	});
 
+	it("throws a retryable 5xx LLMError when finish carries finishReason 'error' (Mantle response.failed)", async () => {
+		// Mantle/OpenAI Responses surfaces a mid-stream server fault as
+		// `response.failed`. The @ai-sdk/openai adapter does NOT enqueue an
+		// `error` part for it — it sets finishReason='error' and ends the stream
+		// as a normal `finish` (index.mjs:6396, vs the error-chunk enqueue at
+		// :6466). A `finish` with finishReason 'error' is therefore a swallowed
+		// server error, not a clean completion: it must throw a 5xx so mapError
+		// → ModelRouter 5xx backoff/failover handles it, instead of degrading
+		// into an estimated-usage `done` that withEmptyRetry then mis-handles.
+		const stream = events(
+			{ type: "text-delta", id: "t0", text: "partial answer before the fault" },
+			{ type: "finish", finishReason: "error", totalUsage: {} },
+		);
+		let thrown: unknown;
+		try {
+			for await (const _ of mapChunks(stream)) {
+				// drain
+			}
+		} catch (e) {
+			thrown = e;
+		}
+		expect(thrown).toBeInstanceOf(LLMError);
+		expect((thrown as LLMError).statusCode).toBe(500);
+	});
+
+	it("does not throw on a normal finishReason ('stop' / 'tool-calls' / 'length')", async () => {
+		for (const finishReason of ["stop", "tool-calls", "length", "content-filter"]) {
+			const stream = events({
+				type: "finish",
+				finishReason,
+				totalUsage: { inputTokens: 1, outputTokens: 1 },
+			});
+			const chunks: StreamChunk[] = [];
+			for await (const c of mapChunks(stream)) chunks.push(c);
+			expect(chunks.some((c) => c.type === "done")).toBe(true);
+		}
+	});
+
 	it("does not log when an illegal-charset id passes through within the length cap", async () => {
 		// Pathology signal == length-anomaly only. A 16-char `functions.memory:5`
 		// id is well under the 64-char cap, so no warn fires; that's normal AI

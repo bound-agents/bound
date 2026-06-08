@@ -1350,6 +1350,26 @@ export async function* mapChunks(
 				break;
 			}
 			case "finish": {
+				// A `finish` with finishReason "error" is a swallowed server
+				// fault, not a clean completion. Mantle/OpenAI Responses emits a
+				// mid-stream `response.failed` (e.g. 500 server_error) which the
+				// @ai-sdk/openai adapter does NOT enqueue as an `error` part — it
+				// sets finishReason="error" and ends the stream as a normal
+				// `finish` with null usage. Without this guard mapChunks would
+				// estimate usage and emit a clean `done`, hiding the crash: a
+				// late fault looks like a short answer, and an early fault (large
+				// context) estimates output_tokens=0, which withEmptyRetry then
+				// mistakes for the store:false empty-completion case and hammers
+				// the identical request with no backoff. Throw a 5xx so mapError
+				// → ModelRouter 5xx backoff/failover handles it instead. Verified
+				// live 2026-06-08 against gpt-5.5 (response.failed server_error).
+				if (part.finishReason === "error") {
+					throw new LLMError(
+						`${opts.providerName ?? "ai-sdk"} response failed (finishReason=error): server fault mid-stream`,
+						opts.providerName ?? "ai-sdk",
+						500,
+					);
+				}
 				const totalUsage = part.totalUsage as FinishState["totalUsage"];
 				yield {
 					type: "done",
