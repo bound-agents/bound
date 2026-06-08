@@ -644,6 +644,32 @@ describe("toModelMessages — content blocks", () => {
 		expect(out[1].content).toEqual([{ type: "reasoning", text: "bare" }]);
 	});
 
+	it("drops reasoning blocks when the target cannot replay non-native reasoning state", () => {
+		// OpenAI Responses only accepts replayed reasoning when it carries OpenAI's
+		// own encrypted reasoning content. Bound's persisted opus/Anthropic
+		// thinking blocks do not have that state; @ai-sdk/openai skips them and
+		// emits one warning per block. Dropping here is equivalent to the provider's
+		// behavior, but keeps long cross-provider threads from flooding logs.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "prior opus reasoning", signature: "sig-1" },
+						{ type: "text", text: "answer" },
+						{ type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } },
+					],
+				},
+			],
+			{ dropReasoning: true, targetEnvelope: PERMISSIVE_ENVELOPE },
+		);
+		expect(out[1].content).toEqual([
+			{ type: "text", text: "answer" },
+			{ type: "tool-call", toolCallId: "call_1", toolName: "lookup", input: { q: "x" } },
+		]);
+	});
+
 	it("converts base64 image blocks on user messages", () => {
 		const data = Buffer.from("hello").toString("base64");
 		const out = toModelMessages([

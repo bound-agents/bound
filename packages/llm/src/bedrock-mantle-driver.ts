@@ -256,6 +256,13 @@ export class BedrockMantleDriver implements LLMBackend {
 			cacheProvider: null,
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: PERMISSIVE_ENVELOPE,
+			// OpenAI Responses only replays reasoning that carries OpenAI's own
+			// encrypted reasoning content. Bound's persisted thinking blocks (from
+			// opus/Anthropic and other non-OpenAI models) lack that state, so
+			// @ai-sdk/openai skips each one and logs a warning per block — a flood
+			// in long cross-provider threads. Drop them at the boundary instead;
+			// the provider would discard them anyway.
+			dropReasoning: true,
 		});
 		const tools = toToolSet(params.tools);
 
