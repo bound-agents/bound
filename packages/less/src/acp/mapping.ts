@@ -436,11 +436,22 @@ export function promptToContent(blocks: AcpContentBlock[]): string | LlmContentB
 export function streamChunkToSessionUpdate(chunk: WsStreamChunk): SessionUpdate | null {
 	switch (chunk.type) {
 		case "text":
+			// An empty text chunk has no display value and would break the open
+			// agent_message run in stampMessageId for nothing. Suppress it.
+			if (!chunk.content) return null;
 			return {
 				sessionUpdate: "agent_message_chunk",
 				content: { type: "text", text: chunk.content },
 			};
 		case "thinking":
+			// bedrock-mantle emits a content:"" thinking chunk per reasoning-end
+			// solely to ferry reasoning_encrypted_content for replay (persisted
+			// daemon-side, independent of this display mapping). Mapping it to an
+			// agent_thought_chunk breaks the open agent_message run — GPT-5.x
+			// interleaves reasoning between text items, so the empty thought chunk
+			// fragments visible prose mid-line (kaomoji split across lines).
+			// Suppress empty thought chunks; they carry no display content.
+			if (!chunk.content) return null;
 			return {
 				sessionUpdate: "agent_thought_chunk",
 				content: { type: "text", text: chunk.content },
