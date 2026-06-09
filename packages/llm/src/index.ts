@@ -33,7 +33,11 @@ export {
 } from "./model-router";
 
 export { withRetry, type RetryConfig } from "./retry";
-
+export {
+	markAwsCredentialCacheStale,
+	consumeAwsCredentialCacheBust,
+	resolveAwsCredentials,
+} from "./aws-credential-cache";
 export {
 	parseStreamLines,
 	extractTextFromBlocks,
