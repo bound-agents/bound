@@ -13,6 +13,7 @@ import {
 import type {
 	ContentBlock,
 	LLMBackend,
+	LLMFinishReason,
 	ModelRouter,
 	StreamChunk,
 	ToolDefinition,
@@ -241,6 +242,15 @@ interface ParsedResponse {
 	 */
 	thinkingEncryptedContent: string | null;
 	toolCalls: ParsedToolCall[];
+	/**
+	 * Terminal finish reason from the `done` StreamChunk, when the backend
+	 * surfaced one. `"content-filter"` means the model's safety system stopped
+	 * generation (Bedrock `content_filtered` / Anthropic refusal) — the loop
+	 * persists whatever partial content arrived and emits an operator alert
+	 * rather than retrying. `null` when the backend/path carried no finish
+	 * reason (legacy / non-AI-SDK drivers, relay paths that predate the field).
+	 */
+	finishReason: LLMFinishReason | null;
 	usage: {
 		inputTokens: number;
 		outputTokens: number;
@@ -2497,6 +2507,20 @@ export class AgentLoop {
 					this.broadcastMessage(assistantMsgId);
 					this.messagesCreated++;
 				}
+
+				// Persist-and-alert on a safety stop. Bedrock has no `refusal`
+				// stopReason: a content-filtered turn completes cleanly at the
+				// protocol level (no thrown error), so the partial above is
+				// persisted like any other turn. Surface an operator-visible
+				// alert so the refusal is not silently mistaken for a short
+				// answer. The turn is NOT retried — a retry would re-hit the
+				// same filter.
+				if (parsed.finishReason === "content-filter") {
+					this.emitAlert(
+						"Model safety filter stopped generation (finishReason=content-filter). " +
+							"Any partial output above was persisted; the turn was not retried.",
+					);
+				}
 				responsePersistSpan.end();
 
 				continueLoop = false;
@@ -2924,6 +2948,7 @@ export class AgentLoop {
 		let cacheReadTokens: number | null = null;
 		let usageEstimated = false;
 		let costUsdFromHub: number | null = null;
+		let finishReason: LLMFinishReason | null = null;
 
 		for (const chunk of remappedChunks) {
 			switch (chunk.type) {
@@ -2980,6 +3005,7 @@ export class AgentLoop {
 					cacheReadTokens = chunk.usage.cache_read_tokens;
 					usageEstimated = chunk.usage.estimated;
 					costUsdFromHub = chunk.cost_usd ?? null;
+					finishReason = chunk.finish_reason ?? null;
 					break;
 				case "error":
 					this.ctx.logger.warn("[agent-loop] Stream error chunk in response", {
@@ -3002,6 +3028,7 @@ export class AgentLoop {
 			thinkingRedactedData,
 			thinkingEncryptedContent,
 			toolCalls: dropSupersededToolCallDrafts(toolCalls),
+			finishReason,
 			usage: {
 				inputTokens,
 				outputTokens,

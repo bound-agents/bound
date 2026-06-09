@@ -176,6 +176,22 @@ export interface CapabilityRequirements {
 	prompt_caching?: boolean;
 }
 
+/**
+ * Terminal finish reason for a completed stream, mapped from the provider's
+ * stopReason by the AI SDK (`LanguageModelV2FinishReason`). `"content-filter"`
+ * is the safety-stop case the agent loop treats specially (persist-and-alert);
+ * the others are clean completions. `"error"` never reaches a `done` chunk —
+ * the bridge throws on it so the 5xx failover path runs instead.
+ */
+export type LLMFinishReason =
+	| "stop"
+	| "length"
+	| "content-filter"
+	| "tool-calls"
+	| "error"
+	| "other"
+	| "unknown";
+
 export type StreamChunk =
 	| { type: "text"; content: string }
 	| {
@@ -219,6 +235,18 @@ export type StreamChunk =
 			 * `undefined` should fall back to a local pricing lookup.
 			 */
 			cost_usd?: number;
+			/**
+			 * Terminal finish reason mapped from the provider stopReason by the
+			 * AI SDK. `"content-filter"` means the model's safety system stopped
+			 * generation (Bedrock `content_filtered`, Anthropic refusal): the
+			 * turn completed cleanly at the protocol level but the content is a
+			 * refusal or a partial cut short by the filter — distinct from a
+			 * server fault (`finishReason: "error"`, which the bridge throws
+			 * before reaching `done`). Absent on backends / paths that don't
+			 * surface it. The agent loop persists the partial and emits an
+			 * operator alert on `"content-filter"` rather than retrying.
+			 */
+			finish_reason?: LLMFinishReason;
 	  }
 	| { type: "error"; error: string }
 	| { type: "heartbeat" };

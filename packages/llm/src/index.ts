@@ -5,6 +5,7 @@ export type {
 	ContentBlock,
 	ImageMediaType,
 	StreamChunk,
+	LLMFinishReason,
 	BackendCapabilities,
 	CapabilityRequirements,
 	ToolDefinition,

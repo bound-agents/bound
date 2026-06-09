@@ -291,6 +291,69 @@ describe("AgentLoop", () => {
 		expect(msgs[0].content).toBe("The answer is 42.");
 	});
 
+	it("persists the partial and emits an alert on a content-filter (refusal) stop", async () => {
+		// Bedrock has no `refusal` stopReason: a safety stop arrives as a clean
+		// `done` carrying finish_reason "content-filter". The loop should treat
+		// it as a completed turn — persist whatever partial text streamed — AND
+		// surface an operator-visible alert so the refusal isn't mistaken for a
+		// short answer. The turn is NOT retried.
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "I can't help with that." };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 6,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+				finish_reason: "content-filter" as const,
+			};
+		});
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const msgs = db
+			.query("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+			.all(threadId) as Array<{ role: string; content: string }>;
+
+		// The partial assistant text is persisted...
+		const assistant = msgs.find((m) => m.role === "assistant");
+		expect(assistant?.content).toBe("I can't help with that.");
+
+		// ...and an operator alert is emitted alongside it.
+		const alert = msgs.find((m) => m.role === "alert");
+		expect(alert).toBeDefined();
+		expect(alert?.content).toContain("content-filter");
+	});
+
+	it("does not emit a content-filter alert on a normal stop", async () => {
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("All good.");
+
+		const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const alerts = db
+			.query("SELECT id FROM messages WHERE thread_id = ? AND role = 'alert'")
+			.all(threadId) as Array<{ id: string }>;
+		expect(alerts.length).toBe(0);
+	});
+
 	it("should fire onActivity for heartbeat chunks (regression: Bedrock stall)", async () => {
 		// Regression: thread b6a3ddba (2026-04-20/21) — Bedrock extended-thinking
 		// warmup emitted heartbeat chunks with no text for >5min. The outer
