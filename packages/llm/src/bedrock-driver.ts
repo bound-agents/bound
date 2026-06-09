@@ -18,7 +18,6 @@
 
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
-import { fromIni } from "@aws-sdk/credential-providers";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import type { ModelMessage } from "ai";
@@ -30,6 +29,7 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "./ai-sdk-bridge";
+import { resolveAwsCredentials } from "./aws-credential-cache";
 import { createLoggingFetch } from "./fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
@@ -208,14 +208,7 @@ export class BedrockDriver implements LLMBackend {
 		// present, so wiring fromIni here is safe even when a user has a
 		// bearer token configured.
 		const credentialProvider = config.profile
-			? async () => {
-					const creds = await fromIni({ profile: config.profile })();
-					return {
-						accessKeyId: creds.accessKeyId,
-						secretAccessKey: creds.secretAccessKey,
-						sessionToken: creds.sessionToken,
-					};
-				}
+			? () => resolveAwsCredentials(config.profile)
 			: undefined;
 		// Custom fetch takes precedence over logger-backed fetch. When both
 		// are absent the SDK uses its default fetch with zero overhead.

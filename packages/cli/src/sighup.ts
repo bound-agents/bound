@@ -46,6 +46,15 @@ interface SighupHandlerConfig {
 	 * that was baked in at construction time.
 	 */
 	onKeyringChanged?: (newKeyring: KeyringConfig) => void;
+	/**
+	 * Called once at the start of every reload, before any config file is read,
+	 * regardless of what (if anything) changed. The composition root uses this
+	 * to invalidate process-global caches that a reload should refresh — today,
+	 * the AWS shared-config credential cache (a new/edited `~/.aws` profile is
+	 * invisible to a running process until the smithy ini cache is busted). Kept
+	 * generic here so the reload mechanism stays free of provider specifics.
+	 */
+	onReloadStart?: () => void;
 	// For testing: inject a delay into the reload work to allow true concurrency testing
 	delayMs?: number;
 }
@@ -67,6 +76,7 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 		onWsConfigChanged,
 		onModelBackendsChanged,
 		onKeyringChanged,
+		onReloadStart,
 		logger,
 		delayMs,
 	} = config;
@@ -82,6 +92,17 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 
 	reloadInProgress = true;
 	logger.info("Reloading optional configs...");
+
+	// Fire before any config file is read so process-global caches are
+	// invalidated regardless of what changed (e.g. the AWS shared-config
+	// credential cache — a SIGHUP should pick up an edited ~/.aws profile).
+	try {
+		onReloadStart?.();
+	} catch (err) {
+		logger.warn("onReloadStart hook threw; continuing reload", {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
 
 	try {
 		// Yield to allow concurrent calls a chance to check reloadInProgress before we finish

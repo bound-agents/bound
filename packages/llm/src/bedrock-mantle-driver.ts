@@ -30,7 +30,6 @@
  */
 
 import { createOpenAI } from "@ai-sdk/openai";
-import { fromIni, fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import {
@@ -40,6 +39,7 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "./ai-sdk-bridge";
+import { resolveAwsCredentials } from "./aws-credential-cache";
 import { createLoggingFetch } from "./fetch-logger";
 import { createSigV4Fetch } from "./sigv4-fetch";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
@@ -209,18 +209,10 @@ export class BedrockMantleDriver implements LLMBackend {
 
 		// Lazy credential provider — resolved per request inside the SigV4 fetch,
 		// never at construction. fromIni honors SSO/AssumeRole for an explicit
-		// profile; the node chain covers env / SSO cache / instance roles.
-		const credentialProvider = config.profile
-			? fromIni({ profile: config.profile })
-			: fromNodeProviderChain();
-		const credentials = async () => {
-			const c = await credentialProvider();
-			return {
-				accessKeyId: c.accessKeyId,
-				secretAccessKey: c.secretAccessKey,
-				sessionToken: c.sessionToken,
-			};
-		};
+		// profile; the node chain covers env / SSO cache / instance roles. The
+		// shared resolver also honors a pending one-shot config-cache bust (SIGHUP),
+		// re-reading ~/.aws/config once after a reload instead of per request.
+		const credentials = () => resolveAwsCredentials(config.profile);
 
 		// Transport the signed request is handed to: explicit override (tests) →
 		// logger-backed fetch → global fetch (inside createSigV4Fetch's default).

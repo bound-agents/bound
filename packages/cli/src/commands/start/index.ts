@@ -8,6 +8,7 @@ export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { HandleMessageTracker } from "@bound/agent";
 import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
+import { markAwsCredentialCacheStale } from "@bound/llm";
 import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
@@ -114,6 +115,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 		configDir,
 		keyManager,
 		logger: appContext.logger,
+		// Bust the AWS shared-config credential cache once per reload so an
+		// edited ~/.aws profile (or a newly-added one) is picked up on SIGHUP
+		// instead of staying invisible until a full process restart.
+		onReloadStart: () => markAwsCredentialCacheStale(),
 		onMcpConfigChanged: async (oldConfig, newConfig) => {
 			await reloadMcpServers({
 				appContext,
