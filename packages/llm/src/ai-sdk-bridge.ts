@@ -20,7 +20,13 @@
 import { createLogger, formatError } from "@bound/shared";
 import { tool as aiTool, jsonSchema } from "ai";
 import type { ModelMessage, ToolSet } from "ai";
-import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "./types";
+import type {
+	ContentBlock,
+	LLMFinishReason,
+	LLMMessage,
+	StreamChunk,
+	ToolDefinition,
+} from "./types";
 import { LLMError } from "./types";
 
 const logger = createLogger("llm", "ai-sdk-bridge");
@@ -1381,6 +1387,12 @@ export async function* mapChunks(
 						{ text: outputText, reasoning: reasoningText, toolInput: toolInputText },
 						opts,
 					),
+					// Surface the terminal stopReason so the agent loop can
+					// distinguish a clean stop from a safety stop. Bedrock has no
+					// `refusal` stopReason: safety stops arrive as `content_filtered`,
+					// which the AI SDK maps to `content-filter`. The "error" case is
+					// already thrown above, so it never reaches here.
+					finish_reason: part.finishReason as LLMFinishReason,
 				};
 				break;
 			}

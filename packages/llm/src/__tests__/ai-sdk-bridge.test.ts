@@ -1923,6 +1923,27 @@ describe("mapChunks — tool_use streaming-boundary semantics", () => {
 		}
 	});
 
+	it("propagates finishReason onto the done chunk as finish_reason", async () => {
+		// The agent loop reads done.finish_reason to distinguish a clean stop
+		// from a safety stop (Bedrock content_filtered → AI SDK content-filter).
+		// Without this propagation a refusal looks identical to a normal stop and
+		// the persist-and-alert path can never fire.
+		for (const finishReason of ["stop", "content-filter", "length"] as const) {
+			const stream = events({
+				type: "finish",
+				finishReason,
+				totalUsage: { inputTokens: 1, outputTokens: 1 },
+			});
+			const chunks: StreamChunk[] = [];
+			for await (const c of mapChunks(stream)) chunks.push(c);
+			const done = chunks.find((c) => c.type === "done");
+			expect(done).toBeDefined();
+			if (done && done.type === "done") {
+				expect(done.finish_reason).toBe(finishReason);
+			}
+		}
+	});
+
 	it("does not log when an illegal-charset id passes through within the length cap", async () => {
 		// Pathology signal == length-anomaly only. A 16-char `functions.memory:5`
 		// id is well under the 64-char cap, so no warn fires; that's normal AI
