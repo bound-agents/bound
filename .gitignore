@@ -175,3 +175,20 @@ pnpm-workspace.yaml
 
 # Letta local agent state (unrelated to bound, machine-local)
 .letta/
+
+# persona-lab working files (local-only; *.example.* templates stay tracked).
+# Path-scoped so biome's root-only useIgnoreFile honors them too (1.x ignores nested .gitignore).
+/packages/agent/scripts/persona-lab/persona.md
+/packages/agent/scripts/persona-lab/persona.*.md
+!/packages/agent/scripts/persona-lab/persona.example.md
+/packages/agent/scripts/persona-lab/prompts.json
+/packages/agent/scripts/persona-lab/prompts.*.json
+!/packages/agent/scripts/persona-lab/prompts.example.json
+/packages/agent/scripts/persona-lab/seed.json
+/packages/agent/scripts/persona-lab/seed.*.json
+!/packages/agent/scripts/persona-lab/seed.example.json
+/packages/agent/scripts/persona-lab/fault-bands.json
+/packages/agent/scripts/persona-lab/fault-bands.*.json
+!/packages/agent/scripts/persona-lab/fault-bands.example.json
+/packages/agent/scripts/persona-lab/*.out.md
+/packages/agent/scripts/persona-lab/logs/
