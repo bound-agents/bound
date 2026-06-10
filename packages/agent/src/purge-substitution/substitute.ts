@@ -4,6 +4,7 @@
  */
 
 import type { Message } from "@bound/shared";
+import { extractToolUseIds } from "../tool-pair-sanitize/helpers";
 
 export interface SubstitutePurgedMessagesParams {
 	messages: ReadonlyArray<Message>;
@@ -47,35 +48,69 @@ export function substitutePurgedMessages(params: SubstitutePurgedMessagesParams)
 	}
 
 	// 2. Build tool_call ↔ tool_result pairing index for symmetric
-	//    expansion. The wire-protocol contract requires both halves
-	//    of a pair purge together.
-	const toolCallToPair = new Map<string, string>();
-	const toolResultToPair = new Map<string, string>();
-	for (let i = 0; i < messages.length; i++) {
-		const m = messages[i];
-		if (m.role === "tool_call") {
-			for (let j = i + 1; j < messages.length; j++) {
-				if (messages[j].role === "tool_result") {
-					toolCallToPair.set(m.id, messages[j].id);
-					toolResultToPair.set(messages[j].id, m.id);
-					break;
-				}
-			}
+	//    expansion. The wire-protocol contract requires ALL halves
+	//    of a pair purge together: a tool_call can carry N tool_use
+	//    blocks and therefore own N tool_results.
+	//
+	//    Pairing is id-based: a tool_result's `tool_name` column carries
+	//    its `tool_use_id`, and the tool_call whose content contains
+	//    that tool_use block is its partner — the same association
+	//    Stage 3 (tool-pair-sanitize) enforces, via the same
+	//    `extractToolUseIds` helper. The previous positional scheme
+	//    mapped each tool_call to only the FIRST following tool_result,
+	//    so a multi-tool call's 2nd+ results escaped symmetric expansion
+	//    and survived their call's purge as orphans.
+	//
+	//    Resolution is result-centric, one rule per tool_result:
+	//      (a) id-based — its `tool_name` column carries a `tool_use_id`
+	//          found in some tool_call's content (the same association
+	//          Stage 3 / tool-pair-sanitize enforces, via the same
+	//          `extractToolUseIds` helper); or
+	//      (b) positional — no usable id (legacy rows where either side
+	//          predates ContentBlock[] persistence): pair with the
+	//          nearest PRECEDING tool_call.
+	const toolCallToResults = new Map<string, string[]>();
+	const toolResultToCall = new Map<string, string>();
+	const callMsgIdByToolUseId = new Map<string, string>();
+	for (const m of messages) {
+		if (m.role !== "tool_call") continue;
+		for (const tuId of extractToolUseIds(m.content)) {
+			callMsgIdByToolUseId.set(tuId, m.id);
 		}
 	}
+	let nearestPrecedingCallId: string | undefined;
+	for (const m of messages) {
+		if (m.role === "tool_call") {
+			nearestPrecedingCallId = m.id;
+			continue;
+		}
+		if (m.role !== "tool_result") continue;
+		const idMatchedCall = m.tool_name ? callMsgIdByToolUseId.get(m.tool_name) : undefined;
+		const callId = idMatchedCall ?? nearestPrecedingCallId;
+		if (callId === undefined) continue; // orphan result — Stage 3 stubs it
+		toolResultToCall.set(m.id, callId);
+		const siblings = toolCallToResults.get(callId);
+		if (siblings) siblings.push(m.id);
+		else toolCallToResults.set(callId, [m.id]);
+	}
 
-	// 3. Symmetric expansion — purging either side of a pair drops
-	//    the other side too.
+	// 3. Symmetric expansion — purging any member of a pair group drops
+	//    the rest too: a purged tool_call takes ALL its results, and a
+	//    purged tool_result takes its call (which takes the sibling
+	//    results, completing the closure in this same pass).
 	for (const group of purgeGroups) {
 		const additionalIds = new Set<string>();
 		for (const id of Array.from(group.ids)) {
-			const pairedResult = toolCallToPair.get(id);
-			if (pairedResult && !group.ids.has(pairedResult)) {
-				additionalIds.add(pairedResult);
+			const pairedResults = toolCallToResults.get(id);
+			const pairedCall = toolResultToCall.get(id);
+			for (const resultId of pairedResults ?? []) {
+				if (!group.ids.has(resultId)) additionalIds.add(resultId);
 			}
-			const pairedCall = toolResultToPair.get(id);
-			if (pairedCall && !group.ids.has(pairedCall)) {
+			if (pairedCall !== undefined && !group.ids.has(pairedCall)) {
 				additionalIds.add(pairedCall);
+				for (const siblingId of toolCallToResults.get(pairedCall) ?? []) {
+					if (!group.ids.has(siblingId)) additionalIds.add(siblingId);
+				}
 			}
 		}
 		for (const id of Array.from(additionalIds)) {
