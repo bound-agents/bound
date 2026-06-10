@@ -41,6 +41,7 @@ import {
 	buildStaleChildrenMap,
 	buildVolatileEnrichment,
 	bumpRenderedDetailEntries,
+	capWorkingKnowledgeSummaries,
 	computeBaseline,
 	extractAssistantSeedText,
 	flattenRecencyEntries,
@@ -522,6 +523,12 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		staleChildKeysInWorkingKnowledge,
 		budgetPressure: params.budgetPressure,
 		tunables: resolveVc15Tunables(),
+		// R-VC29: summary-tier overflow past WORKING_KNOWLEDGE_SUMMARY_CAP renders
+		// title-only here (under `### Older summaries`), not in Working Knowledge.
+		// Derived through the SAME helper the stable-prefix mirror uses
+		// (stable-prefix/compose.ts renderDiscoverableArchiveStable) so the two
+		// channels stay byte-equivalent.
+		demotedSummaries: capWorkingKnowledgeSummaries(params.summaries).demoted,
 	});
 	stableLines.push(...da.section.lines);
 

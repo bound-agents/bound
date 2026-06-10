@@ -1236,6 +1236,9 @@ Bodies of summary entries are accessed via memory search using terms from the en
 - curiosity:item-909-det000909
 - curiosity:item-959-det000959
 
+### Older summaries (titles only — search the key for the body)
+- _summary:topic-49
+
 Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
 ## Working Knowledge — updates
 
