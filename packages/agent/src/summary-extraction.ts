@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getPkColumn, insertRow, updateRow } from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
-import { safeSlice } from "@bound/shared";
+import { compareBytewise, safeSlice } from "@bound/shared";
 import { getClientSessions } from "./delegation";
 import { normalizeFilePathForKey } from "./file-thread-tracker";
 import { graphSeededRetrieval } from "./graph-queries";
@@ -1114,8 +1114,11 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 		if (a.entries.length !== b.entries.length) {
 			return b.entries.length - a.entries.length;
 		}
-		// Tiebreak: cluster name ascending.
-		return a.name.localeCompare(b.name);
+		// Tiebreak: cluster name ascending. Bytewise, NOT localeCompare —
+		// this order lands in R-VC25 stable-prefix bytes, and locale-dependent
+		// sorting would let two hosts with different ICU configs render
+		// different prefixes for identical synced state.
+		return compareBytewise(a.name, b.name);
 	});
 }
 
@@ -1146,7 +1149,7 @@ function formatDetailLine(entry: DetailEntry, _budgetPressure: boolean): string 
 export function sortDetailEntriesForRender<T extends { key: string }>(
 	entries: ReadonlyArray<T>,
 ): T[] {
-	return entries.slice().sort((a, b) => a.key.localeCompare(b.key));
+	return entries.slice().sort((a, b) => compareBytewise(a.key, b.key));
 }
 
 /**
