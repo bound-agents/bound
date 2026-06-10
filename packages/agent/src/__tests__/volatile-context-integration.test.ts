@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { applySchema } from "@bound/core";
 import { randomUUID } from "@bound/shared";
 import { buildVolatileContext } from "../context-assembly";
+import {
+	WORKING_KNOWLEDGE_DEMOTED_HEADER,
+	WORKING_KNOWLEDGE_FOOTER,
+	WORKING_KNOWLEDGE_SUMMARY_CAP,
+} from "../summary-extraction";
 
 /**
  * Test-only fixture helper. Bypasses insertRow because these tests exercise rendering,
@@ -566,5 +571,64 @@ describe("volatile-context-integration", () => {
 		expect(result.content).toContain("[Advisory notification]");
 		expect(result.content).toContain("Test Advisory");
 		expect(result.content).toContain("approved");
+	});
+
+	test("R-VC29: summary overflow past cap renders as Older-summaries titles inside the Discoverable Archive (call-site regression)", () => {
+		// Regression for the 8f32e127 incomplete wiring: renderDiscoverableArchive
+		// gained an optional `demotedSummaries` param and renderWorkingKnowledge
+		// stopped rendering the overflow, but the production call site in
+		// composeVolatileSections never passed the demoted set — so overflow
+		// summaries rendered NOWHERE. The renderer-level parity test stayed green
+		// because it hand-fed the param. This test drives the real call site.
+		const total = WORKING_KNOWLEDGE_SUMMARY_CAP + 5;
+		const base = Date.now();
+		for (let i = 0; i < total; i++) {
+			// Strictly decreasing modified_at so recency order (and therefore the
+			// kept/demoted split) is deterministic: k000..k049 kept, k050.. demoted.
+			const ts = new Date(base - i * 60_000).toISOString();
+			dbInsert(db, "semantic_memory", {
+				id: randomUUID(),
+				key: `_summary:k${String(i).padStart(3, "0")}`,
+				value: `summary body number ${i}`,
+				tier: "summary",
+				created_at: ts,
+				modified_at: ts,
+				deleted: 0,
+			});
+		}
+
+		const result = buildVolatileContext({
+			db,
+			threadId,
+			userId,
+			siteId,
+		});
+
+		// The demoted sub-block must render on the STABLE channel (it is part of
+		// the Discoverable Archive, which is stable-side per R-VC25/R-VC29).
+		expect(result.stableContent).toContain(WORKING_KNOWLEDGE_DEMOTED_HEADER);
+
+		// Demoted entries (beyond the cap) appear as title-only lines after the
+		// sub-header; kept entries render with their gloss in Working Knowledge.
+		const demotedIdx = result.stableContent.indexOf(WORKING_KNOWLEDGE_DEMOTED_HEADER);
+		const demotedBlock = result.stableContent.slice(demotedIdx);
+		const overflowKey = `_summary:k${String(WORKING_KNOWLEDGE_SUMMARY_CAP).padStart(3, "0")}`;
+		expect(demotedBlock).toContain(`- ${overflowKey}`);
+		// Title-only: the overflow entry's body must not render anywhere.
+		expect(result.stableContent).not.toContain(
+			`summary body number ${WORKING_KNOWLEDGE_SUMMARY_CAP}`,
+		);
+		// Kept entry still renders full-gloss in Working Knowledge.
+		expect(result.stableContent).toContain("summary body number 0");
+
+		// Structural placement: the sub-block lives INSIDE the Discoverable
+		// Archive section — after the DA header, before the DA footer, and after
+		// the Working Knowledge footer (i.e., NOT in Working Knowledge).
+		const daHeaderIdx = result.stableContent.indexOf("## Discoverable Archive");
+		const wkFooterIdx = result.stableContent.indexOf(WORKING_KNOWLEDGE_FOOTER);
+		expect(daHeaderIdx).toBeGreaterThan(-1);
+		expect(wkFooterIdx).toBeGreaterThan(-1);
+		expect(demotedIdx).toBeGreaterThan(daHeaderIdx);
+		expect(demotedIdx).toBeGreaterThan(wkFooterIdx);
 	});
 });
