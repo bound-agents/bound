@@ -71,14 +71,27 @@ describe("runStablePrefixDriftValidation (integration)", () => {
 		expect(report.composeDriftCount).toBe(1);
 		expect(report.collectDriftCount).toBe(0);
 
-		// Verify a finding was persisted with the right key prefix.
+		// The finding is returned in the report (the caller logs it) and
+		// is NOT persisted to semantic_memory.
+		expect(report.leaks).toHaveLength(1);
+		expect(report.leaks[0]).toMatchObject({
+			flavor: "compose",
+			thread_id: "thread-A",
+			prev_turn_id: "turn-1",
+			curr_turn_id: "turn-2",
+			prev_hash: "hash-old",
+			curr_hash: "hash-new",
+			prev_input_fp: "fp-A",
+			curr_input_fp: "fp-A",
+		});
+
+		// No drift findings are written to semantic_memory anymore.
 		const finding = db
 			.prepare(
-				"SELECT key FROM semantic_memory WHERE key LIKE '_validation:stable-prefix-drift:compose:%' AND deleted = 0",
+				"SELECT key FROM semantic_memory WHERE key LIKE '_validation:stable-prefix-drift:%' AND key != '_validation:stable-prefix-drift-last-run' AND deleted = 0",
 			)
 			.get() as { key: string } | null;
-		expect(finding).not.toBeNull();
-		expect(finding?.key).toContain("thread-A");
+		expect(finding).toBeNull();
 	});
 
 	it("flags collect drift when input fingerprint differs without a covering change_log row", () => {

@@ -190,7 +190,7 @@ this table.
 | packages/agent/src/task-resolution.ts:428 | tasks.no_history | (d) known-deferred | Active legacy migration that runs on startup. TODO: follow-up RFC to route through outbox or formalize as a Section A exception. |
 | packages/agent/scripts/agent-harness/driver.ts:51 | (none — comment-only) | (e) comment-only | Reference / educational note. |
 | packages/agent/scripts/agent-harness/driver.ts:233 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/src/validation/run-stable-prefix-drift-validation.ts:219 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
+| packages/agent/src/validation/run-stable-prefix-drift-validation.ts:244 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
 
 ### Consistency and events
 

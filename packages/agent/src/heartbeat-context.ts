@@ -84,6 +84,24 @@ export function buildHeartbeatContext(
 				options.logger?.info(
 					`[heartbeat] Stable-prefix drift: ${report.composeDriftCount} compose, ${report.collectDriftCount} collect leaks detected over ${report.pairsExamined} pairs`,
 				);
+				// One structured record per leak. This is the durable home
+				// for drift findings (they used to be written to
+				// semantic_memory, which grew unbounded with no consumer) —
+				// rare bug-signals you query from logs when they fire.
+				for (const leak of report.leaks) {
+					options.logger?.warn("[heartbeat] Stable-prefix drift leak", {
+						flavor: leak.flavor,
+						thread_id: leak.thread_id,
+						prev_turn_id: leak.prev_turn_id,
+						curr_turn_id: leak.curr_turn_id,
+						prev_created_at: leak.prev_created_at,
+						curr_created_at: leak.curr_created_at,
+						prev_hash: leak.prev_hash,
+						curr_hash: leak.curr_hash,
+						prev_input_fp: leak.prev_input_fp,
+						curr_input_fp: leak.curr_input_fp,
+					});
+				}
 			}
 		} catch (validationError) {
 			options.logger?.warn(
