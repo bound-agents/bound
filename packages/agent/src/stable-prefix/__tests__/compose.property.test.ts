@@ -296,4 +296,32 @@ describe("composeStableVolatileSubsection — property tests", () => {
 			{ numRuns: 100 },
 		);
 	});
+
+	it("P8: locale-independence — a hostile localeCompare does not affect output", () => {
+		// The host ICU locale is an environmental signal, not a declared
+		// input. Sorting on the stable path must therefore never go through
+		// localeCompare: two hosts with different locales (or one host after
+		// an ICU upgrade) would otherwise render different bytes for
+		// identical synced state, breaking cross-host cache reuse and
+		// confusing the drift detector. Simulate the worst case by mocking
+		// String.prototype.localeCompare to a REVERSED ordering — if any
+		// stable-path sort still consults it, output flips and this fails.
+		const realLocaleCompare = String.prototype.localeCompare;
+		try {
+			fc.assert(
+				fc.property(stableInputs, (inputs) => {
+					String.prototype.localeCompare = realLocaleCompare;
+					const baseline = composeStableVolatileSubsection(inputs).join("\n");
+					String.prototype.localeCompare = function (this: string, that: string): number {
+						return -realLocaleCompare.call(this, that);
+					} as typeof String.prototype.localeCompare;
+					const hostile = composeStableVolatileSubsection(inputs).join("\n");
+					return baseline === hostile;
+				}),
+				{ numRuns: 100 },
+			);
+		} finally {
+			String.prototype.localeCompare = realLocaleCompare;
+		}
+	});
 });

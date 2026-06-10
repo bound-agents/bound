@@ -31,6 +31,7 @@
  * `validation/run-stable-prefix-drift-validation.ts`.
  */
 
+import { compareBytewise } from "@bound/shared";
 import {
 	DISCOVERABLE_FOOTER,
 	DISCOVERABLE_HEADER,
@@ -204,7 +205,10 @@ function sortClusters(clusters: Cluster[]): Cluster[] {
 		if (a.entries.length !== b.entries.length) {
 			return b.entries.length - a.entries.length;
 		}
-		return a.name.localeCompare(b.name);
+		// Bytewise tiebreak, mirroring the production sorter in
+		// summary-extraction.ts — locale-dependent ordering would leak the
+		// host ICU config into R-VC25-pure bytes.
+		return compareBytewise(a.name, b.name);
 	});
 }
 

@@ -1,5 +1,6 @@
 import type { LLMMessage, ToolDefinition } from "@bound/llm";
 import type { ContextSection } from "@bound/shared";
+import { compareBytewise } from "@bound/shared";
 
 export interface CachedTurnState {
 	/** The stored messages array from the previous turn */
@@ -33,7 +34,10 @@ export function computeToolFingerprint(tools: ToolDefinition[] | undefined): str
 	if (!tools || tools.length === 0) return "empty";
 
 	// Sort by tool name for determinism, then stringify
-	const sorted = [...tools].sort((a, b) => a.function.name.localeCompare(b.function.name));
+	// Bytewise, not localeCompare: the fingerprint must be identical across
+	// hosts regardless of ICU locale, or warm-path tool-set comparison and
+	// cross-host delegation would see phantom tool changes.
+	const sorted = [...tools].sort((a, b) => compareBytewise(a.function.name, b.function.name));
 
 	const key = sorted
 		.map((t) => `${t.function.name}:${JSON.stringify(t.function.parameters)}`)

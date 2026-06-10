@@ -6,6 +6,7 @@
 import type { Database } from "bun:sqlite";
 import { getSyncedTableSchemas } from "@bound/core";
 import type { CommandRegistryEntry } from "@bound/shared";
+import { compareBytewise } from "@bound/shared";
 
 export const ENVIRONMENT_PARAGRAPH =
 	"**Environment.** You run inside **bound**, a persistent, model-agnostic personal agent " +
@@ -91,8 +92,10 @@ function buildOrientationBlock(
 	// MCP bridge commands are the only commands still in the registry.
 	// Native agent tools are self-describing through their ToolDefinition schemas.
 	if (registry.length > 0) {
+		// Bytewise: the orientation section rides the stable system prompt, so
+		// sort order lands in cached prefix bytes shared across hosts.
 		const commandList = [...registry]
-			.sort((a, b) => a.name.localeCompare(b.name))
+			.sort((a, b) => compareBytewise(a.name, b.name))
 			.map((c) => `  ${c.name} — ${c.description}`)
 			.join("\n");
 		lines.push(

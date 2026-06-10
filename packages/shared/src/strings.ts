@@ -194,3 +194,20 @@ export function safeSlice(str: string, start: number, end: number): string {
 
 	return str.slice(start, clampedEnd);
 }
+
+/**
+ * Locale-independent string comparator (UTF-16 code-unit order).
+ *
+ * `localeCompare` consults the host ICU locale — an environmental input.
+ * Anywhere sort order influences cached or fingerprinted bytes (the R-VC25
+ * stable prefix, input fingerprints, tool fingerprints), two hosts with
+ * different locales could produce different output for identical data,
+ * breaking cross-host cache reuse and misclassifying drift. Use this for
+ * any sort feeding deterministic output; reserve `localeCompare` for
+ * human-facing display ordering.
+ */
+export function compareBytewise(a: string, b: string): number {
+	if (a < b) return -1;
+	if (a > b) return 1;
+	return 0;
+}

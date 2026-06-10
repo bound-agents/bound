@@ -27,6 +27,7 @@
  * keeps `context_debug` row growth negligible.
  */
 
+import { compareBytewise } from "@bound/shared";
 import type { StableVolatileInputs } from "./types";
 
 /**
@@ -112,9 +113,9 @@ function canonicalizeInputs(inputs: StableVolatileInputs): CanonicalInputs {
 }
 
 function sortMapEntries(map: ReadonlyMap<string, string>): ReadonlyArray<[string, string]> {
-	return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+	return [...map.entries()].sort((a, b) => compareBytewise(a[0], b[0]));
 }
 
 function sortSet(set: ReadonlySet<string>): ReadonlyArray<string> {
-	return [...set].sort();
+	return [...set].sort(compareBytewise);
 }
