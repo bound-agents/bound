@@ -11,7 +11,7 @@ import { ModelRouter } from "@bound/llm";
 import type { EventMap } from "@bound/shared";
 import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { AgentLoop, MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS } from "../agent-loop";
 import { VALID_TRANSITIONS } from "../types";
 
 // Mock LLM Backend that returns configurable responses
@@ -2472,6 +2472,125 @@ describe("AgentLoop", () => {
 				expect(msg.host_origin).toBe("test-site-id");
 				expect(msg.host_origin).not.toBe("test-host");
 			}
+		});
+	});
+
+	describe("duplicate tool-call circuit breaker", () => {
+		it("aborts when the same tool call repeats MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS times", async () => {
+			const mockBackend = new MockLLMBackend();
+			// Push more identical, well-formed (non-truncated) tool_use turns than
+			// the threshold. Each turn issues the byte-identical bash call; the loop
+			// executes it, re-prompts, and pulls the next identical response. This is
+			// the 2026-04-24 synthesis spin reproduced: 20+ identical delta-check
+			// queries that all PARSED CLEANLY — the truncation breaker cannot see
+			// them. Without the duplicate breaker the loop runs every pushed turn.
+			const overshoot = MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS + 3;
+			for (let i = 0; i < overshoot; i++) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "tool_use_start" as const, id: `dup-${i}`, name: "bash" };
+					yield {
+						type: "tool_use_args" as const,
+						id: `dup-${i}`,
+						partial_json: JSON.stringify({ command: "echo spin" }),
+					};
+					yield { type: "tool_use_end" as const, id: `dup-${i}` };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
+				});
+			}
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			const result = await agentLoop.run();
+
+			// The loop must short-circuit at the threshold, not consume every
+			// pushed response. The breaker fires before executing the Nth call.
+			expect(mockBackend.getCallCount()).toBe(MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS);
+
+			// An abort notice must have been persisted explaining the duplicate loop.
+			const notices = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%identical tool call%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(notices.length).toBe(1);
+			expect(notices[0].content).toContain("Agent loop aborted");
+			expect(result).toHaveProperty("messagesCreated");
+		});
+
+		it("does NOT abort when consecutive tool calls differ (real progress)", async () => {
+			const mockBackend = new MockLLMBackend();
+			// Distinct args every turn — healthy work that makes progress. Each call
+			// is a different bash command, so the signature changes turn-over-turn
+			// and the duplicate counter never accumulates.
+			const turns = MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS + 3;
+			for (let i = 0; i < turns; i++) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "tool_use_start" as const, id: `prog-${i}`, name: "bash" };
+					yield {
+						type: "tool_use_args" as const,
+						id: `prog-${i}`,
+						partial_json: JSON.stringify({ command: `echo step-${i}` }),
+					};
+					yield { type: "tool_use_end" as const, id: `prog-${i}` };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
+				});
+			}
+			// Final turn: plain text so the loop ends naturally.
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "All distinct, done." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// No abort notice — distinct calls are healthy progress.
+			const notices = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%identical tool call%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(notices.length).toBe(0);
 		});
 	});
 });

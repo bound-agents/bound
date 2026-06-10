@@ -164,6 +164,20 @@ function getTracer() {
 export const MAX_CONSECUTIVE_TRUNCATED_TURNS = 5;
 
 /**
+ * Circuit breaker for consecutive identical (non-truncated) tool calls. Unlike
+ * the truncation breaker above — which fires on malformed/parser-flagged calls —
+ * this fires on well-formed calls that repeat byte-for-byte turn after turn: the
+ * signature of a model stuck re-issuing the same call and re-deciding without
+ * acting on the result (the 2026-04-24 synthesis spin — 20+ identical
+ * delta-check queries over ~6 min that all PARSED CLEANLY, so the truncation
+ * breaker never saw them). Keyed on tool name + raw args, so a sequence of
+ * *distinct* calls (real progress) never trips it. The threshold is higher than
+ * the truncation breaker's because legitimate polling (re-querying until
+ * external state flips) is byte-identical-repeated and benign in short runs.
+ */
+export const MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS = 12;
+
+/**
  * Scale silence timeout based on estimated context size.
  * With a 10-minute base timeout, only very large contexts (100k+) need
  * additional time for cold-cache processing.
@@ -555,6 +569,9 @@ export class AgentLoop {
 		// Circuit breaker state for MAX_CONSECUTIVE_TRUNCATED_TURNS guardrail.
 		let consecutiveTruncatedTurns = 0;
 		let lastTruncatedToolName: string | null = null;
+		// Circuit breaker state for MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS guardrail.
+		let consecutiveDuplicateToolCalls = 0;
+		let lastToolCallSignature: string | null = null;
 
 		this.ctx.logger.info("[agent-loop] Starting", {
 			threadId: this.config.threadId,
@@ -2013,6 +2030,49 @@ export class AgentLoop {
 					} else {
 						consecutiveTruncatedTurns = 0;
 						lastTruncatedToolName = null;
+					}
+
+					// Circuit breaker: if the model re-issues the byte-identical set of
+					// tool calls turn after turn, it's spinning — re-running the same
+					// call and re-deciding without acting on the result (the 2026-04-24
+					// synthesis spin: 20+ identical delta-check queries that all parsed
+					// cleanly, so the truncation breaker above never saw them). Keyed on
+					// tool name + raw args, so a sequence of *distinct* calls (real
+					// progress) resets the counter and never trips.
+					const turnSignature = parsed.toolCalls
+						.map((tc) => `${tc.name}:${tc.argsJson ?? JSON.stringify(tc.input)}`)
+						.join("\u0000");
+					if (lastToolCallSignature === turnSignature) {
+						consecutiveDuplicateToolCalls++;
+					} else {
+						consecutiveDuplicateToolCalls = 1;
+						lastToolCallSignature = turnSignature;
+					}
+
+					if (consecutiveDuplicateToolCalls >= MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS) {
+						const dupToolNames = [...new Set(parsed.toolCalls.map((tc) => tc.name))].join(", ");
+						this.ctx.logger.error("[agent-loop] Aborting: consecutive identical tool-call loop", {
+							threadId: this.config.threadId,
+							taskId: this.config.taskId ?? null,
+							toolNames: dupToolNames,
+							consecutiveTurns: consecutiveDuplicateToolCalls,
+							threshold: MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
+							turn: turnCount,
+						});
+						const noticeId = insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "developer",
+								content: `[Agent loop aborted] Detected ${consecutiveDuplicateToolCalls} consecutive turns issuing the identical tool call(s) ("${dupToolNames}"). This indicates a spin loop — the model is re-issuing the same call without acting on the result. Aborting to prevent runaway token usage.`,
+								hostOrigin: this.ctx.siteId,
+							},
+							this.ctx.siteId,
+						);
+						this.broadcastMessage(noticeId);
+						this.messagesCreated++;
+						continueLoop = false;
+						break;
 					}
 
 					// Cooperative cancellation: check before executing tools
