@@ -102,6 +102,82 @@ describe("substitutePurgedMessages — property tests", () => {
 		if (out.some((m) => m.id === "tr1")) throw new Error("tool_result survived purge");
 	});
 
+	it("P2c: multi-tool_result expansion — purging the call drops ALL its results", () => {
+		// A tool_call carrying two tool_use blocks owns two tool_results.
+		// The pre-fix positional index paired the call with only the FIRST
+		// result, so tr2 survived its call's purge as an orphan.
+		const tc = (id: string, tuIds: string[]) =>
+			msg(
+				"tool_call",
+				id,
+				JSON.stringify(tuIds.map((t) => ({ type: "tool_use", id: t, name: "x", input: {} }))),
+			);
+		const tr = (id: string, tuId: string) => ({
+			...msg("tool_result", id, `result for ${tuId}`),
+			tool_name: tuId,
+		});
+		const msgs: Message[] = [
+			msg("user", "u1", "hi"),
+			tc("tc1", ["a", "b"]),
+			tr("tr1", "a"),
+			tr("tr2", "b"),
+			msg("user", "u2", "next"),
+			purgeMsg("p1", ["tc1"], "purged the call"),
+		];
+		const out = substitutePurgedMessages({ messages: msgs, threadId: THREAD_ID });
+		if (out.some((m) => m.id === "tc1")) throw new Error("tool_call survived purge");
+		if (out.some((m) => m.id === "tr1")) throw new Error("first tool_result not purged");
+		if (out.some((m) => m.id === "tr2")) throw new Error("second tool_result not purged");
+	});
+
+	it("P2d: multi-tool_result expansion — purging ONE result drops the call and sibling results", () => {
+		const tc = (id: string, tuIds: string[]) =>
+			msg(
+				"tool_call",
+				id,
+				JSON.stringify(tuIds.map((t) => ({ type: "tool_use", id: t, name: "x", input: {} }))),
+			);
+		const tr = (id: string, tuId: string) => ({
+			...msg("tool_result", id, `result for ${tuId}`),
+			tool_name: tuId,
+		});
+		const msgs: Message[] = [
+			msg("user", "u1", "hi"),
+			tc("tc1", ["a", "b"]),
+			tr("tr1", "a"),
+			tr("tr2", "b"),
+			msg("user", "u2", "next"),
+			purgeMsg("p1", ["tr2"], "purged one result"),
+		];
+		const out = substitutePurgedMessages({ messages: msgs, threadId: THREAD_ID });
+		// Dropping only tr2 would leave tc1's tool_use "b" unanswered —
+		// the call and ALL its results must purge as a closure.
+		if (out.some((m) => m.id === "tc1")) throw new Error("tool_call not symmetrically purged");
+		if (out.some((m) => m.id === "tr1")) throw new Error("sibling tool_result not purged");
+		if (out.some((m) => m.id === "tr2")) throw new Error("tool_result survived purge");
+	});
+
+	it("P2e: id-based pairing — interleaved id-less legacy pair is not stolen by an id-bearing call", () => {
+		// Legacy call (non-JSON content, no ids) followed by its id-less
+		// result, then an id-bearing pair. Purging the legacy call must
+		// drop its positional partner only.
+		const msgs: Message[] = [
+			msg("user", "u1", "hi"),
+			msg("tool_call", "tc-legacy", "bash: ls -la"),
+			msg("tool_result", "tr-legacy", "file listing"),
+			msg("tool_call", "tc1", '[{"type":"tool_use","id":"a","name":"x","input":{}}]'),
+			{ ...msg("tool_result", "tr1", "result for a"), tool_name: "a" },
+			msg("user", "u2", "next"),
+			purgeMsg("p1", ["tc-legacy"], "purged legacy call"),
+		];
+		const out = substitutePurgedMessages({ messages: msgs, threadId: THREAD_ID });
+		if (out.some((m) => m.id === "tc-legacy")) throw new Error("legacy tool_call survived");
+		if (out.some((m) => m.id === "tr-legacy"))
+			throw new Error("legacy tool_result not positionally purged");
+		if (!out.some((m) => m.id === "tc1")) throw new Error("unrelated tool_call was purged");
+		if (!out.some((m) => m.id === "tr1")) throw new Error("unrelated tool_result was purged");
+	});
+
 	it("P3: each purge group emits exactly one summary message", () => {
 		fc.assert(
 			fc.property(
