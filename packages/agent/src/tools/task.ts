@@ -8,16 +8,21 @@ import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 function parseTimeOffset(offset: string): Date {
 	const now = new Date();
-	const match = offset.match(/^(\d+)([mhd])$/);
+	const match = offset.match(/^(\d+)([smhd])$/);
 
 	if (!match) {
-		throw new Error(`Invalid time offset format: ${offset}`);
+		throw new Error(
+			`Invalid time offset format: ${offset}. Expected a positive integer followed by a unit — s, m, h, or d (e.g. '5s', '5m', '2h', '1d').`,
+		);
 	}
 
 	const [, num, unit] = match;
 	const n = Number.parseInt(num, 10);
 
 	switch (unit) {
+		case "s":
+			now.setSeconds(now.getSeconds() + n);
+			break;
 		case "m":
 			now.setMinutes(now.getMinutes() + n);
 			break;
@@ -136,9 +141,14 @@ function handleSchedule(input: TaskInput, ctx: ToolContext): string {
 	// routinely populate it with full instructions and leave `payload` empty,
 	// producing a task that wakes with a null payload and exits without doing
 	// the work. Fold `task_description` into `payload` when `payload` is omitted
-	// so the field does what its label promises. Backward-compatible: an explicit
-	// `payload` still wins.
-	const payload = input.payload ?? input.task_description ?? null;
+	// so the field does what its label promises. An explicit non-empty `payload`
+	// still wins. Treat empty/whitespace-only strings as absent: models that hit
+	// a null-rejecting optional param work around it by passing payload:"" (or
+	// pass a blank string outright), and `??` alone would let that empty string
+	// defeat the fold and reproduce the empty-payload wakeup.
+	const nonBlank = (s: string | undefined): string | undefined =>
+		s !== undefined && s.trim() !== "" ? s : undefined;
+	const payload = nonBlank(input.payload) ?? nonBlank(input.task_description) ?? null;
 	const modelHint = input.model_hint ?? null;
 
 	// Validate model-hint against the cluster-wide pool when modelRouter is available

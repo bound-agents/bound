@@ -253,6 +253,74 @@ describe("Native Task Tool", () => {
 			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
 			expect(task.payload).toBe('{"instructions":"actual instructions"}');
 		});
+
+		it("should fold task_description into payload when payload is an empty string (#64)", async () => {
+			// Regression: models passing payload:"" (e.g. as a workaround for a
+			// null-rejecting optional param) defeated the `??` fold, since "" is not
+			// nullish. The task then woke with an empty payload and exited.
+			const tool = createTaskTool(toolContext);
+			const result = await getExecute(tool)({
+				action: "schedule",
+				task_description: "Answer the passenger's bread question in full",
+				payload: "",
+				delay: "5m",
+			});
+
+			expect(result).not.toMatch(/Error/);
+			const taskId = result.trim();
+			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+			expect(task.payload).toBe("Answer the passenger's bread question in full");
+		});
+
+		it("should treat a whitespace-only payload as absent and store null when no task_description (#64)", async () => {
+			const tool = createTaskTool(toolContext);
+			const result = await getExecute(tool)({
+				action: "schedule",
+				payload: "   ",
+				delay: "5m",
+			});
+
+			expect(result).not.toMatch(/Error/);
+			const taskId = result.trim();
+			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+			expect(task.payload).toBeNull();
+		});
+
+		it("should accept a sub-minute delay in seconds and compute next_run_at", async () => {
+			const tool = createTaskTool(toolContext);
+			const result = await getExecute(tool)({
+				action: "schedule",
+				task_description: "Test seconds delay",
+				delay: "5s",
+			});
+
+			expect(typeof result).toBe("string");
+			expect(result).not.toMatch(/Error/);
+
+			const taskId = result.trim();
+			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+			expect(task).not.toBeNull();
+
+			const triggerSpec = JSON.parse(task.trigger_spec);
+			expect(triggerSpec.type).toBe("deferred");
+
+			const nextRun = new Date(triggerSpec.at);
+			const expectedTime = new Date(new Date().getTime() + 5 * 1000);
+			const diff = Math.abs(nextRun.getTime() - expectedTime.getTime());
+			expect(diff).toBeLessThan(2000); // within 2 seconds
+		});
+
+		it("should list valid units when the delay format is unparseable", async () => {
+			const tool = createTaskTool(toolContext);
+			const result = await getExecute(tool)({
+				action: "schedule",
+				task_description: "Test bad delay",
+				delay: "soon",
+			});
+
+			expect(result).toMatch(/Error/);
+			expect(result).toMatch(/s, m, h, or d/);
+		});
 	});
 
 	describe("action=update", () => {
