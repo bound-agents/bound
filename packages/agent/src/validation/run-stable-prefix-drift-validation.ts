@@ -27,9 +27,14 @@
  *     leaked into the fingerprint, OR the collector is reading
  *     undeclared signals.
  *
- * Outcomes are written as `_validation:stable-prefix-drift:<flavor>`
- * keys (tier `default`, `source: "validation:stable-prefix-drift"`)
- * idempotently with the standard `updateRow → insertRow` fallback.
+ * Drift findings are returned in the report's `leaks` array; the
+ * caller (`heartbeat-context.ts`) emits one structured `logger.warn`
+ * per leak. Findings are NOT persisted to `semantic_memory` — they
+ * are rare bug-signals you query from logs when they fire, not
+ * telemetry to trend, so a log line is the right home and the memory
+ * namespace stays bounded. Only the
+ * `_validation:stable-prefix-drift-last-run` cadence marker is
+ * persisted (a single overwriting key).
  *
  * Pattern lifted from `run-r-vc9-validation.ts`. Cadence: hourly,
  * one heartbeat cycle, aligned with the `1h` cache TTL so any
@@ -60,10 +65,28 @@ const PAIR_WINDOW_MS = 60 * 60 * 1000;
 /** Lookback for the scan. */
 const LOOKBACK_HOURS = 24;
 
+export interface StablePrefixDriftLeak {
+	flavor: "compose" | "collect";
+	thread_id: string;
+	prev_turn_id: string;
+	curr_turn_id: string;
+	prev_created_at: string;
+	curr_created_at: string;
+	prev_hash: string | null;
+	curr_hash: string | null;
+	prev_input_fp: string | null;
+	curr_input_fp: string | null;
+}
+
 export interface StablePrefixDriftReport {
 	pairsExamined: number;
 	composeDriftCount: number;
 	collectDriftCount: number;
+	/**
+	 * One record per detected leak, in scan order. The caller logs
+	 * these; they are NOT persisted to `semantic_memory`.
+	 */
+	leaks: StablePrefixDriftLeak[];
 }
 
 interface ColdTurnRow {
@@ -107,6 +130,7 @@ export function runStablePrefixDriftValidation(
 	let pairsExamined = 0;
 	let composeDriftCount = 0;
 	let collectDriftCount = 0;
+	const leaks: StablePrefixDriftLeak[] = [];
 
 	for (let i = 1; i < rows.length; i++) {
 		const prev = rows[i - 1];
@@ -128,7 +152,7 @@ export function runStablePrefixDriftValidation(
 		// Same input fingerprint, different output hash → compose leak.
 		if (curr.input_fp !== null && prev.input_fp !== null && curr.input_fp === prev.input_fp) {
 			composeDriftCount++;
-			recordDrift(db, siteId, nowMs, "compose", curr, prev);
+			leaks.push(buildLeak("compose", curr, prev));
 			continue;
 		}
 
@@ -142,7 +166,7 @@ export function runStablePrefixDriftValidation(
 			const hasCoveringChange = changeLogTouchedStableSources(db, prev.created_at, curr.created_at);
 			if (!hasCoveringChange) {
 				collectDriftCount++;
-				recordDrift(db, siteId, nowMs, "collect", curr, prev);
+				leaks.push(buildLeak("collect", curr, prev));
 			}
 		}
 	}
@@ -151,6 +175,7 @@ export function runStablePrefixDriftValidation(
 		pairsExamined,
 		composeDriftCount,
 		collectDriftCount,
+		leaks,
 	};
 }
 
@@ -253,16 +278,12 @@ function changeLogTouchedStableSources(db: Database, fromIso: string, toIso: str
 	return row !== null;
 }
 
-function recordDrift(
-	db: Database,
-	siteId: string,
-	nowMs: number,
+function buildLeak(
 	flavor: "compose" | "collect",
 	curr: ColdTurnRow,
 	prev: ColdTurnRow,
-): void {
-	const outcomeKey = `_validation:stable-prefix-drift:${flavor}:${curr.thread_id}:${curr.id}`;
-	const outcomeBody = JSON.stringify({
+): StablePrefixDriftLeak {
+	return {
 		flavor,
 		thread_id: curr.thread_id,
 		prev_turn_id: prev.id,
@@ -273,43 +294,5 @@ function recordDrift(
 		curr_hash: curr.hash,
 		prev_input_fp: prev.input_fp,
 		curr_input_fp: curr.input_fp,
-		detected_at: new Date(nowMs).toISOString(),
-	});
-	const outcomeId = deterministicUUID(BOUND_NAMESPACE, outcomeKey);
-	const now = new Date(nowMs).toISOString();
-
-	try {
-		updateRow(
-			db,
-			"semantic_memory",
-			outcomeId,
-			{
-				value: outcomeBody,
-				modified_at: now,
-				last_accessed_at: now,
-			},
-			siteId,
-		);
-	} catch (_updateErr) {
-		try {
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: outcomeId,
-					key: outcomeKey,
-					value: outcomeBody,
-					tier: "default",
-					source: "validation:stable-prefix-drift",
-					modified_at: now,
-					last_accessed_at: now,
-					created_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-		} catch (insertErr) {
-			console.warn(`[stable-prefix-drift] outcome entry (${flavor}) write failed:`, insertErr);
-		}
-	}
+	};
 }
