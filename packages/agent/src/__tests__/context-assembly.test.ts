@@ -4855,6 +4855,73 @@ This skill reviews pull requests.`;
 			}
 		});
 
+		it("AC2.5d: volatile developer tail survives truncation as the last message", () => {
+			const testThreadId = randomUUID();
+			debugTestDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					debugTestUserId,
+					"web",
+					"local",
+					0,
+					"Tail Survival Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// Heavy history so truncation cuts aggressively.
+			for (let i = 0; i < 50; i++) {
+				const role = i % 2 === 0 ? "user" : "assistant";
+				debugTestDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						testThreadId,
+						role,
+						`Message ${i} ${"x".repeat(500)}`,
+						role === "assistant" ? "model-1" : null,
+						null,
+						new Date(Date.now() + i * 1000).toISOString(),
+						new Date(Date.now() + i * 1000).toISOString(),
+						"local",
+					],
+				);
+			}
+
+			const sentinel = "TAIL_SURVIVAL_SENTINEL_dc2c";
+			const result = assembleContext({
+				db: debugTestDb,
+				threadId: testThreadId,
+				userId: debugTestUserId,
+				contextWindow: 4000,
+				// Rides the varying developer tail; must survive truncation.
+				systemPromptAddition: sentinel,
+			});
+
+			expect(result.debug.truncated).toBeGreaterThan(0);
+
+			// The varying tail must be the LAST message and still carry the
+			// per-turn injectables. Before the fix, the tail was part of the
+			// truncation set and could be folded away with old history.
+			const last = result.messages[result.messages.length - 1];
+			expect(last.role).toBe("developer");
+			expect(last.content).toContain(sentinel);
+			// Exactly one developer tail — no duplicates from the re-append.
+			const tailCount = result.messages.filter(
+				(m) =>
+					m.role === "developer" && typeof m.content === "string" && m.content.includes(sentinel),
+			).length;
+			expect(tailCount).toBe(1);
+		});
+
 		it("AC2.5c: Truncation applies 15% headroom for cache-friendly prefix stability", () => {
 			const testThreadId = randomUUID();
 			debugTestDb.run(

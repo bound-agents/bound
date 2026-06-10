@@ -1746,12 +1746,17 @@ Original output was too large for the context window. If you need the full conte
 
 	// Token count estimate via tiktoken cl100k_base encoding.
 	// IMPORTANT: include every component the server will bill against the
-	// context window — messages, system suffix, AND tool schemas. Omitting
+	// context window — messages, system prompt, AND tool schemas. Omitting
 	// tools here was the root cause of multi-K overshoots on small-context
 	// backends: the gate saw ~content-only~ tokens, decided "fits", and
 	// shipped a payload that exceeded the real limit by exactly the tool
 	// schema size.
-	const suffixTokensForBudget = suffixContent ? countTokens(suffixContent) : 0;
+	//
+	// The volatile varying tail is NOT added separately: it rides inside
+	// `assembled` as the trailing developer message (pushed in Stage 6 /
+	// Stage 5.5), so the reduce below already counts it. Adding
+	// `suffixContent` tokens on top double-counted the tail and fired
+	// truncation early by exactly the tail size.
 	const toolTokensForBudget = params.toolTokenEstimate ?? 0;
 	// The stable system prompt is sent to the LLM separately from
 	// `assembled` but still counts against the context window on the
@@ -1763,7 +1768,6 @@ Original output was too large for the context window. If you need the full conte
 			return sum + countContentTokens(msg.content);
 		}, 0) +
 		stablePrefixTokensForBudget +
-		suffixTokensForBudget +
 		toolTokensForBudget;
 
 	// Compute the safety-margined gate. The estimator (tiktoken cl100k_base) is an
@@ -1799,8 +1803,26 @@ Original output was too large for the context window. If you need the full conte
 			effectiveBudget,
 		);
 
-		const systemMessages = assembled.filter((m) => m.role === "system");
-		const historyMessages = assembled.filter((m) => m.role !== "system");
+		// The volatile varying tail (trailing developer message pushed by
+		// Stage 6 / Stage 5.5) must SURVIVE truncation: it carries Live State,
+		// WK update markers, platform instructions, and systemPromptAddition
+		// for this turn. Detach it before tiering and re-append it after
+		// `remaining` — the same treatment system messages get. Identification
+		// is positional: both push sites append it last and nothing pushes
+		// after; `suffixContent` / `enrichmentMessageIndex` track which path
+		// produced it. Its tokens still count against the window (see
+		// volatileTailTokens below) — it is exempt from truncation, not from
+		// budget.
+		const hasVolatileTail =
+			(suffixContent !== undefined || enrichmentMessageIndex >= 0) &&
+			assembled.length > 0 &&
+			assembled[assembled.length - 1].role === "developer";
+		const volatileTail = hasVolatileTail ? assembled[assembled.length - 1] : undefined;
+		const volatileTailTokens = volatileTail ? countContentTokens(volatileTail.content) : 0;
+		const bodyMessages = hasVolatileTail ? assembled.slice(0, -1) : assembled;
+
+		const systemMessages = bodyMessages.filter((m) => m.role === "system");
+		const historyMessages = bodyMessages.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
 			const systemMsgTokens = systemMessages.reduce(
@@ -1814,9 +1836,12 @@ Original output was too large for the context window. If you need the full conte
 			// headroom invariant holds regardless of stable-prefix size.
 			const stablePrefixTokens = countTokens(systemPrompt);
 			const toolTokens = params.toolTokenEstimate ?? 0;
+			// The volatile tail is detached above (re-appended post-truncation), so
+			// it no longer competes inside `historyMessages` — subtract its fixed
+			// cost here so the tiers are sized against true history-only budget.
 			const historyBudget = Math.max(
 				0,
-				truncationTarget - systemMsgTokens - stablePrefixTokens - toolTokens,
+				truncationTarget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTailTokens,
 			);
 
 			// Physical-window headroom for the recent tier — the HARD ceiling,
@@ -1829,9 +1854,9 @@ Original output was too large for the context window. If you need the full conte
 			// stability) when an inner-loop run modestly overshoots the soft
 			// target, while still folding the tail into the middle tier when a
 			// single user turn genuinely overflows the window. The volatile tail
-			// also consumes window on the wire, so subtract it here (it is part of
-			// the physical fixed cost) even though the soft `historyBudget` above
-			// does not — the ceiling must reflect true history-only headroom.
+			// also consumes window on the wire, so it is part of the physical
+			// fixed cost subtracted from both budgets (it is detached from the
+			// truncation set above and re-appended after).
 			//
 			// INFLATION CONSISTENCY. The tier function bounds the recent tier using
 			// `countContentTokens` (tiktoken cl100k_base) estimates, but the real
@@ -1847,10 +1872,9 @@ Original output was too large for the context window. If you need the full conte
 			// against, so "recent fits the ceiling (estimated)" implies "recent
 			// fits the window (real)". The factor is clamped to ≤ 1 so an
 			// estimator that over-counts (inflation < 1) never loosens the ceiling.
-			const volatileTokens = suffixContent ? countTokens(suffixContent) : 0;
 			const inflationDeflator = Math.min(1, effectiveTruncationRatio / TRUNCATION_TARGET_RATIO);
 			const physicalHistoryHeadroom =
-				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTokens;
+				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTailTokens;
 			const recentHardCeiling = Math.max(
 				0,
 				Math.floor(physicalHistoryHeadroom * inflationDeflator),
@@ -1887,7 +1911,14 @@ Original output was too large for the context window. If you need the full conte
 			if (tieredResult.ancientMarker) truncationMarker.push(tieredResult.ancientMarker);
 			if (tieredResult.middleDigestMsg) truncationMarker.push(tieredResult.middleDigestMsg);
 
-			const truncatedMessages = [...systemMessages, ...truncationMarker, ...remaining];
+			// Re-append the detached volatile tail so it ALWAYS survives
+			// truncation, regardless of how aggressively the tiers cut history.
+			const truncatedMessages = [
+				...systemMessages,
+				...truncationMarker,
+				...remaining,
+				...(volatileTail ? [volatileTail] : []),
+			];
 
 			// Recalculate history section tokens from the KEPT messages, not the
 			// pre-truncation total. Without this, context_debug reports wildly inflated
