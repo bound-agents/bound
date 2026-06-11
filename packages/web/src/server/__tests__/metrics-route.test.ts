@@ -129,8 +129,6 @@ describe("metrics routes", () => {
 			const tokens = json.tokens as Record<string, unknown>;
 			expect(tokens).toHaveProperty("byModel");
 			expect(Array.isArray(tokens.byModel)).toBe(true);
-			expect(tokens).toHaveProperty("timeline");
-			expect(Array.isArray(tokens.timeline)).toBe(true);
 			expect(tokens).toHaveProperty("costByModelTimeline");
 			expect(Array.isArray(tokens.costByModelTimeline)).toBe(true);
 			expect(tokens).toHaveProperty("totals");
@@ -175,10 +173,7 @@ describe("metrics routes", () => {
 
 			// When there's no data, timeline will be empty, but structure should be valid
 			const tokens = json.tokens as Record<string, unknown>;
-			expect(Array.isArray(tokens.timeline)).toBe(true);
-
-			// If there were data points, hourly format would be YYYY-MM-DDTHH:00
-			// For now we just check the structure is valid
+			expect(Array.isArray(tokens.costByModelTimeline)).toBe(true);
 		});
 
 		it("uses daily buckets for ranges > 48 hours", async () => {
@@ -196,7 +191,7 @@ describe("metrics routes", () => {
 
 			// Structure should be valid for daily bucketing
 			const tokens = json.tokens as Record<string, unknown>;
-			expect(Array.isArray(tokens.timeline)).toBe(true);
+			expect(Array.isArray(tokens.costByModelTimeline)).toBe(true);
 		});
 	});
 
@@ -482,14 +477,15 @@ describe("metrics routes", () => {
 			expect(response.status).toBe(200);
 			const json = (await response.json()) as Record<string, unknown>;
 			const tokens = json.tokens as Record<string, unknown>;
-			const timeline = tokens.timeline as Array<Record<string, unknown>>;
+			const timeline = tokens.costByModelTimeline as Array<Record<string, unknown>>;
 
 			// For hourly bucketing, should have entries
-			if (timeline.length > 0) {
-				// Verify format looks like YYYY-MM-DDTHH:00
-				const firstDate = timeline[0]?.date as string;
-				expect(firstDate).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:00/);
-			}
+			expect(timeline.length).toBeGreaterThan(0);
+			// Hourly buckets must carry an explicit Z suffix: created_at is
+			// stored as UTC, and a zoneless string is parsed as LOCAL time by
+			// the browser, shifting every chart point by the viewer's tz offset.
+			const firstDate = timeline[0]?.date as string;
+			expect(firstDate).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:00:00Z$/);
 		});
 	});
 
@@ -997,8 +993,8 @@ describe("metrics routes", () => {
 				expect((tokens.totals as Record<string, unknown>).turn_count).toBe(0);
 				expect(Array.isArray(tokens.byModel)).toBe(true);
 				expect((tokens.byModel as unknown[]).length).toBe(0);
-				expect(Array.isArray(tokens.timeline)).toBe(true);
-				expect((tokens.timeline as unknown[]).length).toBe(0);
+				expect(Array.isArray(tokens.costByModelTimeline)).toBe(true);
+				expect((tokens.costByModelTimeline as unknown[]).length).toBe(0);
 
 				// Check relay section
 				const relay = json.relay as Record<string, unknown>;
@@ -1237,7 +1233,7 @@ describe("metrics routes", () => {
 				expect(response.status).toBe(200);
 				const json = (await response.json()) as Record<string, unknown>;
 				const tokens = json.tokens as Record<string, unknown>;
-				const timeline = tokens.timeline as Array<Record<string, unknown>>;
+				const timeline = tokens.costByModelTimeline as Array<Record<string, unknown>>;
 
 				// Should have entries for each day
 				expect(timeline.length).toBeGreaterThan(0);

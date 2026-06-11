@@ -29,6 +29,14 @@ export class MetricsStore {
 
 	private fetchFn: FetchFn;
 
+	/**
+	 * Monotonic id of the most recently STARTED load. A resolving fetch only
+	 * writes state when its id still matches — otherwise a slow earlier
+	 * request (e.g. the 30s poll) racing a user-triggered range change would
+	 * resolve last and overwrite the newer data with stale results.
+	 */
+	private loadSeq = 0;
+
 	constructor(fetchFn: FetchFn = (url) => fetch(url)) {
 		this.fetchFn = fetchFn;
 	}
@@ -44,6 +52,7 @@ export class MetricsStore {
 	 * preserves existing data and sets error.
 	 */
 	async load(from: string, to: string): Promise<void> {
+		const seq = ++this.loadSeq;
 		const hasExistingData = this._state.data !== null;
 
 		if (hasExistingData) {
@@ -58,8 +67,10 @@ export class MetricsStore {
 			params.append("to", to);
 
 			const response = await this.fetchFn(`/api/metrics?${params}`);
+			if (seq !== this.loadSeq) return; // superseded by a newer load
 			if (!response.ok) {
 				const body = await response.json().catch(() => ({}));
+				if (seq !== this.loadSeq) return;
 				const errorMsg =
 					(body as Record<string, string>).error || `Request failed (${response.status})`;
 				this._state = {
@@ -74,6 +85,7 @@ export class MetricsStore {
 			}
 
 			const data = (await response.json()) as MetricsResponse;
+			if (seq !== this.loadSeq) return;
 			this._state = {
 				data,
 				initialLoading: false,
@@ -81,6 +93,7 @@ export class MetricsStore {
 				error: null,
 			};
 		} catch (err) {
+			if (seq !== this.loadSeq) return;
 			const errorMsg = err instanceof Error ? err.message : "Failed to load metrics";
 			this._state = {
 				...this._state,

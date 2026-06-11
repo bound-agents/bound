@@ -1,4 +1,6 @@
 <script lang="ts">
+import { onDestroy } from "svelte";
+
 interface Props {
 	from: string;
 	to: string;
@@ -11,8 +13,12 @@ let { from, to, onRangeChange, disabled = false }: Props = $props();
 let activePreset = $state<"24h" | "7d" | "30d" | "all" | "custom">("24h");
 let customFrom = $state("");
 let customTo = $state("");
-let debounceTimer: ReturnType<typeof setTimeout> | null = $state(null);
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let validationError = $state(false);
+// True while either datetime input has focus. Blocks the prop→input sync so
+// the parent's periodic range refresh (MetricsView bumps `to` every 30s)
+// can't clobber a custom range the user is mid-typing.
+let editing = $state(false);
 
 // Convert ISO timestamp to datetime-local format
 function isoToDatetimeLocal(iso: string): string {
@@ -99,10 +105,21 @@ function validateAndApplyCustomRange(): void {
 	onRangeChange(fromIso, finalTo);
 }
 
-// Initialize custom inputs when component mounts or props change
+// Initialize custom inputs when component mounts or props change — but never
+// while the user is editing them (see `editing`).
 $effect(() => {
-	customFrom = isoToDatetimeLocal(from);
-	customTo = isoToDatetimeLocal(to);
+	const f = isoToDatetimeLocal(from);
+	const t = isoToDatetimeLocal(to);
+	if (!editing) {
+		customFrom = f;
+		customTo = t;
+	}
+});
+
+onDestroy(() => {
+	// A pending debounce firing after unmount would call onRangeChange into a
+	// destroyed parent.
+	if (debounceTimer !== null) clearTimeout(debounceTimer);
 });
 </script>
 
@@ -148,6 +165,8 @@ $effect(() => {
 			bind:value={customFrom}
 			onchange={handleCustomInput}
 			oninput={handleCustomInput}
+			onfocus={() => (editing = true)}
+			onblur={() => (editing = false)}
 			{disabled}
 			class="date-input"
 		/>
@@ -157,6 +176,8 @@ $effect(() => {
 			bind:value={customTo}
 			onchange={handleCustomInput}
 			oninput={handleCustomInput}
+			onfocus={() => (editing = true)}
+			onblur={() => (editing = false)}
 			{disabled}
 			class="date-input"
 		/>

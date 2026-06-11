@@ -26,7 +26,6 @@ export interface MetricsResponse {
 			cost_usd: number;
 			turn_count: number;
 		}>;
-		timeline: Array<{ date: string; tokens_in: number; tokens_out: number; cost_usd: number }>;
 		/**
 		 * Per (date, model_id) cost broken down across the four token classes.
 		 * `cost_usd` comes straight from `SUM(turns.cost_usd)` (the persisted,
@@ -98,7 +97,12 @@ export interface MetricsResponse {
 			 */
 			last_cache_hit_rate: number;
 			budget_pressure_count: number;
-			avg_truncated_tokens: number;
+			/**
+			 * Average of `context_debug.$.truncated` — a MESSAGE count
+			 * (ancientDropped + middleFolded in context assembly Stage 7),
+			 * not tokens.
+			 */
+			avg_truncated_messages: number;
 			total_turns_with_debug: number;
 		};
 		timeline: Array<{
@@ -217,28 +221,15 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				turn_count: number;
 			}>;
 
+			// Hourly buckets carry an explicit Z suffix: `created_at` is stored as
+			// UTC ISO-8601, so the bucket label is a UTC instant. Without the Z,
+			// `new Date("2026-06-10T14:00")` on the client parses as LOCAL time
+			// and every hourly point shifts by the viewer's tz offset. Daily
+			// buckets stay date-only (`2026-06-10`) — a calendar date, not an
+			// instant; the client labels it from the string without tz conversion.
 			const timelineBucketFormat = useHourly
-				? "strftime('%Y-%m-%dT%H:00', created_at)"
+				? "strftime('%Y-%m-%dT%H:00:00Z', created_at)"
 				: "date(created_at)";
-			const timelineRows = _db
-				.prepare(
-					`SELECT
-					${timelineBucketFormat} as date,
-					SUM(tokens_in) as tokens_in,
-					SUM(tokens_out) as tokens_out,
-					SUM(COALESCE(cost_usd, 0)) as cost_usd
-				FROM turns
-				WHERE created_at BETWEEN ? AND ? AND deleted = 0
-				GROUP BY date
-				ORDER BY date ASC`,
-				)
-				.all(fromISO, toISO) as Array<{
-				date: string;
-				tokens_in: number;
-				tokens_out: number;
-				cost_usd: number;
-			}>;
-
 			const costByModelTimelineRows = _db
 				.prepare(
 					`SELECT
@@ -403,14 +394,14 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 					`SELECT
 					COUNT(*) as total_turns_with_debug,
 					SUM(CASE WHEN json_extract(context_debug, '$.budgetPressure') = 1 THEN 1 ELSE 0 END) as budget_pressure_count,
-					AVG(COALESCE(CAST(json_extract(context_debug, '$.truncated') AS INTEGER), 0)) as avg_truncated_tokens
+					AVG(COALESCE(CAST(json_extract(context_debug, '$.truncated') AS INTEGER), 0)) as avg_truncated_messages
 				FROM turns
 				WHERE created_at BETWEEN ? AND ? AND context_debug IS NOT NULL AND deleted = 0`,
 				)
 				.get(fromISO, toISO) as {
 				total_turns_with_debug: number | null;
 				budget_pressure_count: number | null;
-				avg_truncated_tokens: number | null;
+				avg_truncated_messages: number | null;
 			};
 
 			// Most recent turn whose cache_hit_rate has a defined denominator
@@ -507,7 +498,6 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 			const response: MetricsResponse = {
 				tokens: {
 					byModel: byModelRows || [],
-					timeline: timelineRows || [],
 					costByModelTimeline: costByModelTimelineWithComponents,
 					totals: {
 						tokens_in: totalsRow?.tokens_in ?? 0,
@@ -536,7 +526,7 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 					totals: {
 						last_cache_hit_rate: lastCacheHitRow?.cache_hit_rate ?? 0,
 						budget_pressure_count: contextTotalsRow?.budget_pressure_count ?? 0,
-						avg_truncated_tokens: contextTotalsRow?.avg_truncated_tokens ?? 0,
+						avg_truncated_messages: contextTotalsRow?.avg_truncated_messages ?? 0,
 						total_turns_with_debug: contextTotalsRow?.total_turns_with_debug ?? 0,
 					},
 					timeline: contextTimelineRows.map((row) => ({

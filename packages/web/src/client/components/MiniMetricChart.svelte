@@ -1,5 +1,11 @@
 <script lang="ts">
 import { scaleLinear, scaleTime } from "d3-scale";
+import {
+	type BucketPoint,
+	formatBucketAxisLabel,
+	formatBucketTooltipLabel,
+	parseBucket,
+} from "../lib/chart-time";
 import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
@@ -25,7 +31,10 @@ let measuredWidth = $state(360);
 
 const parsedData = $derived.by(() => {
 	return data
-		.map((d) => ({ value: d.value, dateObj: new Date(d.date) }))
+		.map((d) => {
+			const bucket = parseBucket(d.date);
+			return { value: d.value, bucket, dateObj: bucket.dateObj };
+		})
 		.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
 });
 
@@ -91,28 +100,12 @@ const xTicks = $derived.by(() => {
 	return parsedData.filter((_, i) => i % step === 0);
 });
 
-const formatTime = (d: Date): string => {
-	const hour = d.getHours().toString().padStart(2, "0");
-	const month = (d.getMonth() + 1).toString().padStart(2, "0");
-	const day = d.getDate();
-	if (hour === "00") return `${month}/${day}`;
-	return `${hour}:00`;
-};
-
-const formatTimeFull = (d: Date): string => {
-	const month = (d.getMonth() + 1).toString().padStart(2, "0");
-	const day = d.getDate().toString().padStart(2, "0");
-	const hour = d.getHours().toString().padStart(2, "0");
-	const minute = d.getMinutes().toString().padStart(2, "0");
-	return `${d.getFullYear()}-${month}-${day} ${hour}:${minute}`;
-};
-
-function showTooltip(event: MouseEvent, p: { dateObj: Date; value: number }): void {
+function showTooltip(event: MouseEvent, p: { bucket: BucketPoint; value: number }): void {
 	if (!containerEl) return;
 	const rect = containerEl.getBoundingClientRect();
 	tooltipX = event.clientX - rect.left;
 	tooltipY = event.clientY - rect.top;
-	tooltipLines = [formatTimeFull(p.dateObj), `${title}: ${formatValue(p.value)}`];
+	tooltipLines = [formatBucketTooltipLabel(p.bucket), `${title}: ${formatValue(p.value)}`];
 	tooltipVisible = true;
 }
 
@@ -188,7 +181,7 @@ function hideTooltip(): void {
 					text-anchor="middle"
 					class="axis-label"
 				>
-					{formatTime(p.dateObj)}
+					{formatBucketAxisLabel(p.bucket)}
 				</text>
 			{/each}
 		{:else}
