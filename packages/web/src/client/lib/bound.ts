@@ -15,11 +15,17 @@ export interface WebSocketMessage {
 
 export const wsEvents = writable<WebSocketMessage[]>([]);
 
+// Every subscriber reads only the most recent event (`events[events.length -
+// 1]`), so the array exists purely to make each push a fresh reference for
+// Svelte reactivity. Cap it so a long-lived tab on a busy thread doesn't grow
+// the buffer (and re-copy it per event) without bound.
+const WS_EVENT_BUFFER_CAP = 100;
+
 // Wire BoundClient events into the Svelte store for backward compatibility.
 // Components can incrementally migrate to client.on() later.
 function bridgeEvent(type: string) {
 	return (data: unknown) => {
-		wsEvents.update((events) => [...events, { type, data }]);
+		wsEvents.update((events) => [...events.slice(-(WS_EVENT_BUFFER_CAP - 1)), { type, data }]);
 	};
 }
 
@@ -38,7 +44,6 @@ export function subscribeToThread(threadId: string): void {
 	client.subscribe(threadId);
 }
 
-/** Disconnect the WebSocket. */
-export function disconnectWebSocket(): void {
-	client.disconnect();
-}
+// There is deliberately no disconnect helper: the WebSocket is shared by every
+// view (status chips, file updates, MCP App tool dispatch). A view leaving a
+// thread should call `client.unsubscribe(threadId)`, never close the socket.

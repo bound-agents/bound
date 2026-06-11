@@ -3,13 +3,7 @@ import { ChevronLeft, Settings, X } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import DebugPanelWrapper from "../components/DebugPanelWrapper.svelte";
 import MessageList from "../components/MessageList.svelte";
-import {
-	client,
-	connectWebSocket,
-	disconnectWebSocket,
-	subscribeToThread,
-	wsEvents,
-} from "../lib/bound";
+import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
 import { navigateTo } from "../lib/router";
 
 interface TaskDetail {
@@ -154,7 +148,9 @@ $effect(() => {
 
 onDestroy(() => {
 	if (pollInterval) clearInterval(pollInterval);
-	disconnectWebSocket();
+	// Drop only this task's thread subscription — the WebSocket is shared
+	// app-wide; closing it here would kill live updates everywhere else.
+	if (task?.thread_id) client.unsubscribe(task.thread_id);
 });
 </script>
 

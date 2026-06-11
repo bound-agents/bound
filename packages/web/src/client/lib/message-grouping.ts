@@ -64,6 +64,39 @@ export function messageHasUserFacingText(content: string | null | undefined): bo
 }
 
 /**
+ * Plain-text projection of a persisted message's content for one-line
+ * previews. User messages with attachments (and any future block-bearing
+ * roles) persist as a JSON-stringified ContentBlock[]; rendering that string
+ * raw shows JSON to the user. Concatenates the `text` blocks; non-text blocks
+ * are summarized as a bracketed tag (e.g. `[image]`) so an attachment-only
+ * message still previews as something human-readable.
+ */
+export function contentPreviewText(content: string | null | undefined): string {
+	if (!content) return "";
+	if (!content.startsWith("[")) return content;
+	let blocks: unknown;
+	try {
+		blocks = JSON.parse(content);
+	} catch {
+		return content;
+	}
+	if (!Array.isArray(blocks) || blocks.length === 0) return content;
+	const parts: string[] = [];
+	for (const block of blocks as Array<{ type?: unknown; text?: unknown }>) {
+		if (!block || typeof block !== "object") continue;
+		if (block.type === "text" && typeof block.text === "string") {
+			if (block.text.trim()) parts.push(block.text);
+		} else if (typeof block.type === "string") {
+			parts.push(`[${block.type}]`);
+		}
+	}
+	// A parseable array that yields no recognizable blocks (e.g. the user
+	// literally typed `[1,2,3]`) is plain text, not a ContentBlock[] payload.
+	if (parts.length === 0) return content;
+	return parts.join(" ");
+}
+
+/**
  * Extract the `id`s of `tool_use` ContentBlocks in a persisted `tool_call`
  * message's content. The agent loop sets the dispatched
  * `ToolCallRequest.call_id` from `tool_use.id` (agent-loop.ts: `call_id:
