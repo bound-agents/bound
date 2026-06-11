@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
 	type GroupableMessage,
+	contentPreviewText,
 	groupMessages,
 	messageHasUserFacingText,
 	toolUseIdsInContent,
@@ -201,5 +202,61 @@ describe("toolUseIdsInItem", () => {
 	it("returns [] for a plain message item", () => {
 		const items = groupMessages([userMsg("u1")]);
 		expect(toolUseIdsInItem(items[0])).toEqual([]);
+	});
+});
+
+describe("contentPreviewText", () => {
+	it("passes plain text through unchanged", () => {
+		expect(contentPreviewText("hello world")).toBe("hello world");
+	});
+
+	it("returns empty string for null/undefined/empty content", () => {
+		expect(contentPreviewText(null)).toBe("");
+		expect(contentPreviewText(undefined)).toBe("");
+		expect(contentPreviewText("")).toBe("");
+	});
+
+	it("extracts text blocks from a ContentBlock[] payload", () => {
+		const content = JSON.stringify([
+			{ type: "text", text: "look at this" },
+			{ type: "text", text: "and this" },
+		]);
+		expect(contentPreviewText(content)).toBe("look at this and this");
+	});
+
+	it("summarizes non-text blocks as bracketed tags", () => {
+		const content = JSON.stringify([
+			{ type: "text", text: "see attached" },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+		]);
+		expect(contentPreviewText(content)).toBe("see attached [image]");
+	});
+
+	it("previews an attachment-only message as its block tag", () => {
+		const content = JSON.stringify([
+			{ type: "image", source: { type: "file_ref", file_id: "f1" } },
+		]);
+		expect(contentPreviewText(content)).toBe("[image]");
+	});
+
+	it("returns raw content when the bracket-leading string is not JSON", () => {
+		expect(contentPreviewText("[not json")).toBe("[not json");
+		expect(contentPreviewText("[1,2,3] is an array literal")).toBe("[1,2,3] is an array literal");
+	});
+
+	it("treats a parseable array with no content blocks as plain text", () => {
+		expect(contentPreviewText("[1,2,3]")).toBe("[1,2,3]");
+		expect(contentPreviewText('["a","b"]')).toBe('["a","b"]');
+	});
+
+	it("skips whitespace-only text blocks and tolerates junk entries", () => {
+		const content = JSON.stringify([
+			{ type: "text", text: "   " },
+			null,
+			"junk",
+			{ type: "document", source: {} },
+			{ type: "text", text: "real" },
+		]);
+		expect(contentPreviewText(content)).toBe("[document] real");
 	});
 });

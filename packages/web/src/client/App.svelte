@@ -49,7 +49,13 @@ function screenLabel(r: string): string {
 				<SystemMap />
 			{:else if route.startsWith("/line/")}
 				{@const lineRoute = parseLineRoute(route)}
-				<LineView threadId={lineRoute.threadId} from={lineRoute.from} />
+				<!-- Keyed so /line/A → /line/B (debugger source-thread nav, memory
+				     graph) tears down and remounts: onMount-driven state (thread
+				     fetch, WS subscription, panel reconstruction guard) is all
+				     keyed to one threadId. -->
+				{#key lineRoute.threadId}
+					<LineView threadId={lineRoute.threadId} from={lineRoute.from} />
+				{/key}
 			{:else if route === "/timetable"}
 				<Timetable />
 			{:else if route === "/network"}

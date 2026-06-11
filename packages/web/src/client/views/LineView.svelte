@@ -8,13 +8,7 @@ import McpAppPanel from "../components/McpAppPanel.svelte";
 import MessageList from "../components/MessageList.svelte";
 import ModelSelector from "../components/ModelSelector.svelte";
 import StatusChip from "../components/StatusChip.svelte";
-import {
-	client,
-	connectWebSocket,
-	disconnectWebSocket,
-	subscribeToThread,
-	wsEvents,
-} from "../lib/bound";
+import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
 import { formatRelativeTime } from "../lib/format-time";
 import type { McpAppHost } from "../lib/mcp-app-host";
 import {
@@ -24,6 +18,7 @@ import {
 	mcpAppInstances,
 	reconstructInstancesFromMessages,
 } from "../lib/mcp-app-store";
+import { contentPreviewText } from "../lib/message-grouping";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
@@ -76,8 +71,11 @@ const threadAppInstances = $derived(instancesForThread(appInstanceMap, threadId)
 // load, but the agent's UI-bearing tool_call rows survive in the message
 // history. Once the MCP host has reconnected (so we can resolve persisted tool
 // names back to UI-bearing registrations) and this thread's messages have
-// loaded, rebuild the panels from history. Guarded so it runs at most once per
-// thread and never clobbers a live instance already in the store.
+// loaded, rebuild the panels from history. Host-ready and messages-loaded can
+// land in either order (cold load: messages first, host later via the store;
+// SPA navigation: host already set, messages arrive from onMount/poll), so
+// BOTH paths call maybeReconstructPanels(). Guarded so it runs at most once
+// per mount and never clobbers a live instance already in the store.
 let appHost = $state<McpAppHost | null>(null);
 let reconstructedFor: string | null = null;
 const unsubscribeHost = mcpAppHost.subscribe((h) => {
@@ -135,6 +133,7 @@ async function pollMessages(): Promise<void> {
 			}
 		}
 		messages = latest;
+		maybeReconstructPanels();
 		if (
 			waiting &&
 			latest.length > waitingSinceMessageCount &&
@@ -189,6 +188,7 @@ onMount(async () => {
 	try {
 		thread = await client.getThread(threadId);
 		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+		maybeReconstructPanels();
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {
@@ -213,7 +213,13 @@ onMount(async () => {
 onDestroy(() => {
 	unsubscribeWs();
 	unsubscribeApps();
-	disconnectWebSocket();
+	unsubscribeHost();
+	// Drop only this thread's subscription. The WebSocket itself is shared
+	// app-wide (SystemMap status chips, FilesView updates, MCP App tool
+	// dispatch) — closing it here would silently kill those for the rest of
+	// the tab's life. The unsubscribe also soft-deletes this connection's
+	// client_sessions row server-side.
+	client.unsubscribe(threadId);
 	if (pollInterval !== null) clearInterval(pollInterval);
 	client.off("thread:status", handleThreadStatus);
 	client.off("stream:chunk", handleStreamChunk);
@@ -281,7 +287,9 @@ function handleBackClick(): void {
 }
 
 function handleKeydown(e: KeyboardEvent): void {
-	if (e.key === "Enter" && !e.shiftKey) {
+	// isComposing: the Enter that commits an IME composition (CJK input) must
+	// not dispatch the half-composed message.
+	if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
 		e.preventDefault();
 		handleSendMessage();
 	}
@@ -327,7 +335,7 @@ function fmtHhmm(iso: string | undefined | null): string {
 }
 
 function turnPreview(content: string): string {
-	const compact = (content ?? "").replace(/\s+/g, " ").trim();
+	const compact = contentPreviewText(content).replace(/\s+/g, " ").trim();
 	if (compact.length <= 56) return compact;
 	return `${compact.slice(0, 55)}…`;
 }
