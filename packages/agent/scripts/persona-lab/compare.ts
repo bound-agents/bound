@@ -64,6 +64,7 @@ type CaseResult = {
 	threw: string;
 	turns: TurnMetrics | null;
 	text: string;
+	reasoning: string;
 };
 
 type Inputs = {
@@ -341,6 +342,7 @@ async function runCase(
 			threw: `model id not in config: ${modelId}`,
 			turns: null,
 			text: "(skipped)",
+			reasoning: "",
 		};
 	}
 
@@ -373,11 +375,19 @@ async function runCase(
 		fs: new InMemoryFs(),
 	} as unknown as AppContext;
 	const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) };
+	// Reasoning/thinking is never persisted to the DB on a no-tool turn (it is
+	// only folded into tool_call messages, which a persona-lab run never produces
+	// — empty tool registry). So capture it live off the stream: thinking arrives
+	// as `type: "thinking"` chunks, each carrying a `content` delta.
+	let reasoning = "";
 	const loop = new AgentLoop(ctx, sandbox, router as ModelRouter, {
 		threadId,
 		userId,
 		modelId,
 		toolRegistry: new Map(),
+		onStreamChunk: (chunk) => {
+			if (chunk.type === "thinking") reasoning += chunk.content;
+		},
 	});
 
 	let threw = "";
@@ -395,7 +405,7 @@ async function runCase(
 	const turns = latestTurnMetrics(db);
 	db.close();
 
-	return { modelId, prompt: prompt.name, wroteNew, threw, turns, text };
+	return { modelId, prompt: prompt.name, wroteNew, threw, turns, text, reasoning };
 }
 
 // --- reporting --------------------------------------------------------------
@@ -421,7 +431,10 @@ function buildReportHeader(inputs: Inputs): string[] {
 
 function formatCase(r: CaseResult): string {
 	const status = `\`wroteNew=${r.wroteNew}\`${r.threw ? ` threw=${r.threw}` : ""} | turns=${JSON.stringify(r.turns)}`;
-	return `\n## ${r.modelId} / ${r.prompt}\n${status}\n\n${r.text}`;
+	const reasoningBlock = r.reasoning.trim()
+		? `\n\n<details><summary>reasoning (${r.reasoning.length} chars)</summary>\n\n${r.reasoning}\n\n</details>`
+		: "";
+	return `\n## ${r.modelId} / ${r.prompt}\n${status}${reasoningBlock}\n\n${r.text}`;
 }
 
 // --- main -------------------------------------------------------------------
