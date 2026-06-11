@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { InMemoryFs } from "just-bash";
+import { InMemoryFs, MountableFs } from "just-bash";
 import { type BuiltInTool, createBuiltInTools } from "../built-in-tools";
 
 describe("built-in-tools", () => {
@@ -190,6 +190,114 @@ describe("built-in-tools", () => {
 			});
 			const bytes = Buffer.byteLength(content, "utf8");
 			expect(result).toContain(`${bytes} bytes`);
+		});
+	});
+
+	// ─── host path guard ────────────────────────────────────────────────
+
+	describe("host path guard", () => {
+		it("rejects a Windows drive-letter path on write", async () => {
+			const path = "C:\\Users\\user\\Documents\\GitHub\\bound\\scripts\\x.ts";
+			const result = await tool("write").execute({ path, content: "hi" });
+			expect(result).toStartWith("Error:");
+			expect(result).toContain("sandbox");
+			// Nothing landed in the VFS root as a junk filename
+			expect(await fs.readdir("/")).not.toContain(path);
+		});
+
+		it("rejects a slash-prefixed Windows path on write", async () => {
+			const result = await tool("write").execute({
+				path: "/C:\\Users\\user\\x.ts",
+				content: "hi",
+			});
+			expect(result).toStartWith("Error:");
+			expect(result).toContain("sandbox");
+		});
+
+		it("rejects a forward-slash drive-letter path on write", async () => {
+			const result = await tool("write").execute({
+				path: "C:/Users/user/x.ts",
+				content: "hi",
+			});
+			expect(result).toStartWith("Error:");
+			expect(result).toContain("sandbox");
+		});
+
+		it("rejects a host-absolute POSIX path on write and names the writable roots", async () => {
+			const result = await tool("write").execute({
+				path: "/Users/user/Documents/notes.md",
+				content: "hi",
+			});
+			expect(result).toStartWith("Error:");
+			expect(result).toContain("/home/user");
+			expect(result).toContain("/tmp");
+		});
+
+		it("rejects dot-dot traversal escaping a writable root", async () => {
+			const result = await tool("write").execute({
+				path: "/tmp/../Users/user/escape.txt",
+				content: "hi",
+			});
+			expect(result).toStartWith("Error:");
+		});
+
+		it("rejects a relative path on write", async () => {
+			const result = await tool("write").execute({ path: "notes.md", content: "hi" });
+			expect(result).toStartWith("Error:");
+		});
+
+		it("allows writes under /tmp", async () => {
+			const result = await tool("write").execute({
+				path: "/tmp/scratch.txt",
+				content: "hi",
+			});
+			expect(result).toContain("Wrote");
+		});
+
+		it("derives writable roots from mount points, covering overlay mounts", async () => {
+			const base = new InMemoryFs();
+			const mounted = new MountableFs({ base });
+			mounted.mount("/home/user", new InMemoryFs());
+			mounted.mount("/mnt/repo", new InMemoryFs());
+			const mountedTools = createBuiltInTools(mounted);
+			const writeTool = mountedTools.get("write");
+			if (!writeTool) throw new Error("write tool not found");
+
+			const allowed = await writeTool.execute({
+				path: "/mnt/repo/src/file.ts",
+				content: "ok",
+			});
+			expect(allowed).toContain("Wrote");
+
+			const denied = await writeTool.execute({
+				path: "/etc/passwd",
+				content: "nope",
+			});
+			expect(denied).toStartWith("Error:");
+			expect(denied).toContain("/mnt/repo");
+		});
+
+		it("rejects a Windows path on edit with the guard message, not ENOENT", async () => {
+			const result = await tool("edit").execute({
+				path: "C:\\Users\\user\\code.ts",
+				edits: [{ old_text: "a", new_text: "b" }],
+			});
+			expect(result).toStartWith("Error:");
+			expect(result).toContain("sandbox");
+		});
+
+		it("rejects a Windows path on read with the guard message", async () => {
+			const result = await tool("read").execute({
+				path: "C:\\Users\\user\\code.ts",
+			});
+			expect(result).toStartWith("Error:");
+			expect(result).toContain("sandbox");
+		});
+
+		it("still reads POSIX paths outside writable roots (shape guard only)", async () => {
+			fs.writeFileSync("/var/data.txt", "readable\n");
+			const result = await tool("read").execute({ path: "/var/data.txt" });
+			expect(result).toContain("readable");
 		});
 	});
 

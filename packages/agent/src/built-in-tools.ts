@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import {
 	type SearchFileInput,
@@ -24,7 +25,7 @@ const BINARY_CHECK_BYTES = 8192;
 // ─── Zod schemas ────────────────────────────────────────────────────
 
 const readSchema = z.object({
-	path: z.string().describe("Absolute VFS path to read."),
+	path: z.string().describe("Absolute sandbox VFS path to read (POSIX-style; not a host path)."),
 	offset: z
 		.number()
 		.int()
@@ -38,12 +39,16 @@ const readSchema = z.object({
 });
 
 const writeSchema = z.object({
-	path: z.string().describe("Absolute VFS path to write."),
+	path: z
+		.string()
+		.describe(
+			"Absolute sandbox VFS path to write (POSIX-style, e.g. /home/user/notes.md; not a host path).",
+		),
 	content: z.string().describe("File content, UTF-8 text."),
 });
 
 const editSchema = z.object({
-	path: z.string().describe("Absolute VFS path to edit."),
+	path: z.string().describe("Absolute sandbox VFS path to edit (POSIX-style; not a host path)."),
 	edits: z
 		.array(
 			z.object({
@@ -229,6 +234,68 @@ function detectImageMagicBytes(raw: string): string | undefined {
 
 // ─── Tool implementations ───────────────────────────────────────────
 
+// ─── Host-path guard ────────────────────────────────────────────────
+
+/** Matches Windows drive-letter paths: "C:\...", "C:/...", and slash-prefixed "/C:\...". */
+const DRIVE_LETTER_PATH_RE = /^\/?[A-Za-z]:([\\/]|$)/;
+
+/**
+ * Reject paths shaped like host filesystem paths rather than sandbox VFS
+ * paths. just-bash treats backslashes as ordinary filename characters, so a
+ * Windows-style path "writes successfully" as a single junk filename in the
+ * VFS root while the caller believes it wrote to the host — the failure then
+ * surfaces turns later as a host-side ENOENT (observed 2026-06-05).
+ */
+function hostShapedPathError(path: string): string | null {
+	if (path.includes("\\") || DRIVE_LETTER_PATH_RE.test(path)) {
+		return [
+			`Error: not a sandbox VFS path: ${path}`,
+			"(this is the in-memory sandbox filesystem, not the host filesystem;",
+			"VFS paths are POSIX-style, e.g. /home/user/notes.md)",
+		].join(" ");
+	}
+	return null;
+}
+
+interface MountPointLister {
+	getMounts?: () => ReadonlyArray<{ mountPoint: string }>;
+}
+
+/**
+ * Writable roots: the static defaults plus every mount point, which covers
+ * /home/user and any overlay mounts on a MountableFs. A bare InMemoryFs
+ * (unit tests) has no mount table and keeps the defaults.
+ */
+function writableRoots(fs: IFileSystem): string[] {
+	const roots = new Set<string>(["/home/user", "/tmp"]);
+	const mounts = (fs as MountPointLister).getMounts?.();
+	if (mounts) {
+		for (const mount of mounts) roots.add(mount.mountPoint);
+	}
+	return [...roots];
+}
+
+/**
+ * Full write-path guard: host-shape rejection plus a writable-root
+ * allowlist. Normalizes dot-dot segments first so traversal can't escape
+ * a root after the prefix check.
+ */
+function writePathError(fs: IFileSystem, path: string): string | null {
+	const shapeError = hostShapedPathError(path);
+	if (shapeError) return shapeError;
+	const normalized = posix.normalize(path.startsWith("/") ? path : `/${path}`);
+	const roots = writableRoots(fs);
+	const allowed = roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
+	if (!allowed) {
+		return [
+			`Error: not a writable sandbox VFS path: ${path}`,
+			"(this is the in-memory sandbox filesystem, not the host filesystem;",
+			`writable roots: ${roots.join(", ")})`,
+		].join(" ");
+	}
+	return null;
+}
+
 function createReadTool(fs: IFileSystem): BuiltInTool {
 	const jsonSchema = zodToToolParams(readSchema);
 
@@ -237,7 +304,7 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "read",
 			description:
-				"Read a file from the sandbox filesystem. Returns the file's text content. " +
+				"Read a file from the in-memory sandbox VFS (not the host filesystem). Returns the file's text content. " +
 				"Output is head-truncated to 2000 lines or 50,000 bytes (whichever is smaller); " +
 				"use offset and limit to page through larger files.",
 			parameters: jsonSchema,
@@ -258,6 +325,9 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 			if (offset < 1 || limit < 1 || limit > MAX_LINES) {
 				return "Error: invalid offset/limit";
 			}
+
+			const shapeError = hostShapedPathError(path);
+			if (shapeError) return shapeError;
 
 			let raw: string;
 			try {
@@ -338,8 +408,9 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "write",
 			description:
-				"Write (or overwrite) a file in the sandbox filesystem. Parent directories are created " +
-				"automatically. Content is stored as UTF-8 text.",
+				"Write (or overwrite) a file in the in-memory sandbox VFS (not the host filesystem). " +
+				"Parent directories are created automatically. Content is stored as UTF-8 text. " +
+				"Writable roots: /home/user and /tmp, plus any mounted paths.",
 			parameters: jsonSchema,
 		},
 	};
@@ -353,6 +424,9 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 
 			const path = input.path;
 			const content = input.content;
+
+			const pathError = writePathError(fs, path);
+			if (pathError) return pathError;
 
 			try {
 				await fs.writeFile(path, content);
@@ -377,7 +451,8 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "edit",
 			description:
-				"Apply one or more search-and-replace edits to an existing file. Each edit's old_text " +
+				"Apply one or more search-and-replace edits to an existing file in the in-memory sandbox " +
+				"VFS (not the host filesystem). Each edit's old_text " +
 				"must match the ORIGINAL file content exactly once. All edits are validated against the " +
 				"pre-edit content; if any edit's match is missing or ambiguous, no changes are written. " +
 				"Returns a unified diff on success.",
@@ -394,6 +469,9 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 
 			const path = input.path;
 			const edits = input.edits;
+
+			const shapeError = hostShapedPathError(path);
+			if (shapeError) return shapeError;
 
 			// Read file
 			let raw: string;
