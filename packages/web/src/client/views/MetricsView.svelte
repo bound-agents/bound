@@ -83,29 +83,44 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-// Column definitions for relay cycles table
+// Column definitions for relay cycles table. Rows stay RAW (numbers,
+// booleans, ISO timestamps) so sortable columns sort on real values; the
+// per-column `format` projects them for display only.
 const relayCycleColumns = [
 	{ key: "peer_site_id", label: "Peer", width: "1fr", mono: true, sortable: true },
 	{ key: "direction", label: "Direction", width: "100px", sortable: true },
 	{ key: "kind", label: "Kind", width: "100px", sortable: true },
-	{ key: "latency_ms", label: "Latency", width: "100px", mono: true, sortable: true },
-	{ key: "success", label: "Status", width: "80px", sortable: true },
-	{ key: "created_at", label: "Time", width: "140px", sortable: true },
+	{
+		key: "latency_ms",
+		label: "Latency",
+		width: "100px",
+		mono: true,
+		sortable: true,
+		format: (v: unknown) => (v !== null && v !== undefined ? `${v}ms` : "—"),
+	},
+	{
+		key: "success",
+		label: "Status",
+		width: "80px",
+		sortable: true,
+		format: (v: unknown) => (v ? "OK" : "FAIL"),
+	},
+	{
+		key: "created_at",
+		label: "Time",
+		width: "140px",
+		sortable: true,
+		format: (v: unknown) => formatRelativeTime(String(v)),
+	},
 ];
 
-// Transform recent cycles for display
 const relayCycleRows = $derived(
-	data?.relay.recentCycles.map((cycle) => ({
-		...cycle,
-		latency_ms: cycle.latency_ms !== null ? `${cycle.latency_ms}ms` : "—",
-		success: cycle.success ? "OK" : "FAIL",
-		created_at: formatRelativeTime(cycle.created_at),
-	})) ?? [],
+	(data?.relay.recentCycles ?? []) as unknown as Record<string, unknown>[],
 );
 
 // Row accent function for relay cycles
 function relayRowAccent(row: Record<string, unknown>): string | null {
-	if (row.success === "FAIL") return "var(--err)";
+	if (row.success === false) return "var(--err)";
 	if (row.expired === true) return "var(--warn)";
 	return null;
 }
@@ -229,6 +244,15 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 
 					<LatencyBarChart data={data.relay.byHost} />
 
+					<!-- The server returns at most the latest 50 cycles; label the
+					     window so the table isn't mistaken for the full range. -->
+					<div class="relay-table-caption">
+						{#if data.relay.totals.total_cycles > relayCycleRows.length}
+							Latest {relayCycleRows.length} of {data.relay.totals.total_cycles.toLocaleString()} cycles in range
+						{:else}
+							{relayCycleRows.length} cycle{relayCycleRows.length === 1 ? "" : "s"} in range
+						{/if}
+					</div>
 					<div class="relay-table-scroll">
 						<DataTable
 							columns={relayCycleColumns}
@@ -272,7 +296,7 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 						<MetroCard accentColor="var(--line-3)">
 							{#snippet children()}
 								<span class="metric-label">Avg Truncation</span>
-								<span class="metric-value">{data.context.totals.avg_truncated_tokens.toFixed(1)}</span>
+								<span class="metric-value">{data.context.totals.avg_truncated_messages.toFixed(1)}</span>
 								<span class="metric-unit">msgs</span>
 							{/snippet}
 						</MetroCard>
@@ -433,6 +457,14 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 		display: flex;
 		flex-direction: column;
 		min-width: 0; /* allow shrink within grid track */
+	}
+
+	.relay-table-caption {
+		font-size: 11px;
+		color: var(--ink-3);
+		font-family: var(--font-mono);
+		font-variant-numeric: tabular-nums;
+		margin: 12px 0 6px;
 	}
 
 	.relay-table-scroll {

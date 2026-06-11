@@ -8,6 +8,13 @@ interface ColumnDef {
 	width?: string;
 	mono?: boolean;
 	sortable?: boolean;
+	/**
+	 * Display-only projection of the raw cell value. Sorting always runs on
+	 * the RAW row value — pre-formatting values into strings ("123ms",
+	 * "3m ago") before passing rows in makes sortable columns sort
+	 * lexicographically ("100ms" < "20ms" < "3ms"). Keep rows raw; format here.
+	 */
+	format?: (value: unknown, row: Record<string, unknown>) => string;
 }
 
 interface Props {
@@ -106,7 +113,7 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 				>
 					{#each columns as col (col.key)}
 						<div class="data-cell" class:mono={col.mono}>
-							{row[col.key] ?? ""}
+							{col.format ? col.format(row[col.key], row) : (row[col.key] ?? "")}
 						</div>
 					{/each}
 				</div>

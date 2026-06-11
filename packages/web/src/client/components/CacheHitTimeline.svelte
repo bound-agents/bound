@@ -1,5 +1,11 @@
 <script lang="ts">
 import { scaleLinear, scaleTime } from "d3-scale";
+import {
+	type BucketPoint,
+	formatBucketAxisLabel,
+	formatBucketTooltipLabel,
+	parseBucket,
+} from "../lib/chart-time";
 import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
@@ -23,13 +29,13 @@ let containerEl: HTMLDivElement | undefined = $state(undefined);
 // container width (see responsive-svg.ts for rationale).
 let measuredWidth = $state(600);
 
-// Parse dates and sort by time
+// Parse bucket strings (UTC-aware — see chart-time.ts) and sort by time
 const parsedData = $derived.by(() => {
 	return data
-		.map((d) => ({
-			...d,
-			dateObj: new Date(d.date),
-		}))
+		.map((d) => {
+			const bucket = parseBucket(d.date);
+			return { ...d, bucket, dateObj: bucket.dateObj };
+		})
 		.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
 });
 
@@ -61,28 +67,6 @@ const formatPercentage = (value: number): string => {
 // Format percentage for axis (no decimal)
 const formatPercentageAxis = (value: number): string => {
 	return `${(value * 100).toFixed(0)}%`;
-};
-
-// Format date/time for labels (depends on data granularity)
-const formatDate = (date: Date): string => {
-	const hour = date.getHours().toString().padStart(2, "0");
-	const month = (date.getMonth() + 1).toString().padStart(2, "0");
-	const day = date.getDate();
-	if (hour === "00") {
-		return `${month}/${day}`;
-	}
-	return `${hour}:00`;
-};
-
-const formatDateFull = (date: Date): string => {
-	const month = (date.getMonth() + 1).toString().padStart(2, "0");
-	const day = date.getDate().toString().padStart(2, "0");
-	const hour = date.getHours().toString().padStart(2, "0");
-	const minute = date.getMinutes().toString().padStart(2, "0");
-	if (hour === "00" && minute === "00") {
-		return `${date.getFullYear()}-${month}-${day}`;
-	}
-	return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
 };
 
 const pathData = $derived.by(() => {
@@ -122,14 +106,20 @@ const xTicks = $derived.by(() => {
 	return parsedData.filter((_, i) => i % step === 0);
 });
 
-const hasData = $derived(parsedData.length > 0 && parsedData.some((d) => d.cache_hit_rate > 0));
+// A timeline of all-zero hit rates is still data — an operator whose caching
+// just broke needs to SEE the flat 0% line, not a "No cache data" placeholder.
+// Only an empty timeline is genuinely no data.
+const hasData = $derived(parsedData.length > 0);
 
-function showTooltip(event: MouseEvent, d: { dateObj: Date; cache_hit_rate: number }): void {
+function showTooltip(event: MouseEvent, d: { bucket: BucketPoint; cache_hit_rate: number }): void {
 	if (!containerEl) return;
 	const rect = containerEl.getBoundingClientRect();
 	tooltipX = event.clientX - rect.left;
 	tooltipY = event.clientY - rect.top;
-	tooltipLines = [formatDateFull(d.dateObj), `Cache hit: ${formatPercentage(d.cache_hit_rate)}`];
+	tooltipLines = [
+		formatBucketTooltipLabel(d.bucket),
+		`Cache hit: ${formatPercentage(d.cache_hit_rate)}`,
+	];
 	tooltipVisible = true;
 }
 
@@ -207,7 +197,7 @@ function hideTooltip(): void {
 					text-anchor="middle"
 					class="x-label"
 				>
-					{formatDate(d.dateObj)}
+					{formatBucketAxisLabel(d.bucket)}
 				</text>
 			{/each}
 		{:else}

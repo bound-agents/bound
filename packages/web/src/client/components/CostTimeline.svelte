@@ -1,5 +1,11 @@
 <script lang="ts">
 import { scaleLinear, scaleTime } from "d3-scale";
+import {
+	type BucketPoint,
+	formatBucketAxisLabel,
+	formatBucketTooltipLabel,
+	parseBucket,
+} from "../lib/chart-time";
 import { observeWidth } from "../lib/responsive-svg";
 import ChartTooltip from "./ChartTooltip.svelte";
 
@@ -49,6 +55,7 @@ const MODEL_PALETTE: string[] = [
 
 // Group rows by model_id, parse dates, sort each series by time.
 interface SeriesPoint {
+	bucket: BucketPoint;
 	dateObj: Date;
 	cost_usd: number;
 	cost_input_usd: number;
@@ -71,8 +78,10 @@ const seriesList = $derived.by<ModelSeries[]>(() => {
 	const byModel = new Map<string, Array<SeriesPoint>>();
 	for (const row of data) {
 		const existing = byModel.get(row.model_id) ?? [];
+		const bucket = parseBucket(row.date);
 		existing.push({
-			dateObj: new Date(row.date),
+			bucket,
+			dateObj: bucket.dateObj,
 			cost_usd: row.cost_usd,
 			cost_input_usd: row.cost_input_usd,
 			cost_output_usd: row.cost_output_usd,
@@ -128,27 +137,6 @@ const yScale = $derived.by(() => {
 
 const formatUSD = (value: number): string => `$${value.toFixed(4)}`;
 
-const formatDate = (date: Date): string => {
-	const hour = date.getHours().toString().padStart(2, "0");
-	const month = (date.getMonth() + 1).toString().padStart(2, "0");
-	const day = date.getDate();
-	if (hour === "00") {
-		return `${month}/${day}`;
-	}
-	return `${hour}:00`;
-};
-
-const formatDateFull = (date: Date): string => {
-	const month = (date.getMonth() + 1).toString().padStart(2, "0");
-	const day = date.getDate().toString().padStart(2, "0");
-	const hour = date.getHours().toString().padStart(2, "0");
-	const minute = date.getMinutes().toString().padStart(2, "0");
-	if (hour === "00" && minute === "00") {
-		return `${date.getFullYear()}-${month}-${day}`;
-	}
-	return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`;
-};
-
 function pathDataFor(points: ModelSeries["points"]): string {
 	return points
 		.map((p, i) => {
@@ -169,13 +157,13 @@ const yTicks = $derived.by(() => {
 	return ticks;
 });
 
-// X tick selection — use the union of all unique dates, evenly sampled.
+// X tick selection — use the union of all unique buckets, evenly sampled.
 const xTickDates = $derived.by(() => {
-	const seen = new Map<number, Date>();
+	const seen = new Map<number, BucketPoint>();
 	for (const p of allPoints) {
-		seen.set(p.dateObj.getTime(), p.dateObj);
+		seen.set(p.dateObj.getTime(), p.bucket);
 	}
-	const unique = [...seen.values()].sort((a, b) => a.getTime() - b.getTime());
+	const unique = [...seen.values()].sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
 	if (unique.length <= 6) return unique;
 	const step = Math.ceil(unique.length / 6);
 	return unique.filter((_, i) => i % step === 0);
@@ -195,7 +183,7 @@ function showTooltip(event: MouseEvent, series: ModelSeries, point: SeriesPoint)
 
 	const lines: string[] = [
 		series.model_id,
-		formatDateFull(point.dateObj),
+		formatBucketTooltipLabel(point.bucket),
 		`Cost: ${formatUSD(point.cost_usd)}`,
 	];
 
@@ -294,14 +282,14 @@ function hideTooltip(): void {
 			{/each}
 
 			<!-- X-axis labels (one set, drawn from union of dates) -->
-			{#each xTickDates as d}
+			{#each xTickDates as b}
 				<text
-					x={padding.left + xScale(d)}
+					x={padding.left + xScale(b.dateObj)}
 					y={height - padding.bottom + 16}
 					text-anchor="middle"
 					class="x-label"
 				>
-					{formatDate(d)}
+					{formatBucketAxisLabel(b)}
 				</text>
 			{/each}
 		{:else}

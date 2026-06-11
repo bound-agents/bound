@@ -17,7 +17,6 @@ function makeMetricsResponse(overrides?: Partial<MetricsResponse>): MetricsRespo
 					turn_count: 3,
 				},
 			],
-			timeline: [{ date: "2026-05-19", tokens_in: 1000, tokens_out: 500, cost_usd: 0.05 }],
 			costByModelTimeline: [
 				{
 					date: "2026-05-19",
@@ -52,7 +51,7 @@ function makeMetricsResponse(overrides?: Partial<MetricsResponse>): MetricsRespo
 			totals: {
 				last_cache_hit_rate: 0.85,
 				budget_pressure_count: 1,
-				avg_truncated_tokens: 2.5,
+				avg_truncated_messages: 2.5,
 				total_turns_with_debug: 10,
 			},
 			timeline: [
@@ -318,5 +317,81 @@ describe("MetricsStore", () => {
 			expect(capturedUrl).toContain("from=2026-05-18T00%3A00%3A00.000Z");
 			expect(capturedUrl).toContain("to=2026-05-19T00%3A00%3A00.000Z");
 		});
+	});
+});
+
+describe("out-of-order response handling", () => {
+	it("ignores a slow earlier response that resolves after a newer load", async () => {
+		const oldData = makeMetricsResponse();
+		const newData = makeMetricsResponse({
+			tokens: {
+				...makeMetricsResponse().tokens,
+				totals: { ...makeMetricsResponse().tokens.totals, turn_count: 999 },
+			},
+		});
+
+		let resolveSlow: ((r: Response) => void) | undefined;
+		let call = 0;
+		const fetchFn: FetchFn = (_url: string) => {
+			call++;
+			if (call === 1) {
+				// First request hangs until we release it AFTER the second completes.
+				return new Promise<Response>((resolve) => {
+					resolveSlow = resolve;
+				});
+			}
+			return Promise.resolve(
+				new Response(JSON.stringify(newData), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
+
+		const store = new MetricsStore(fetchFn);
+		const slowLoad = store.load("2026-05-01", "2026-05-02");
+		await store.load("2026-05-03", "2026-05-04");
+		expect(store.state.data?.tokens.totals.turn_count).toBe(999);
+
+		// Now the stale response lands — it must NOT overwrite the newer data.
+		resolveSlow?.(
+			new Response(JSON.stringify(oldData), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		await slowLoad;
+		expect(store.state.data?.tokens.totals.turn_count).toBe(999);
+	});
+
+	it("ignores a stale error that resolves after a newer successful load", async () => {
+		const newData = makeMetricsResponse();
+		let rejectSlow: ((e: Error) => void) | undefined;
+		let call = 0;
+		const fetchFn: FetchFn = (_url: string) => {
+			call++;
+			if (call === 1) {
+				return new Promise<Response>((_resolve, reject) => {
+					rejectSlow = reject;
+				});
+			}
+			return Promise.resolve(
+				new Response(JSON.stringify(newData), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+		};
+
+		const store = new MetricsStore(fetchFn);
+		const slowLoad = store.load("2026-05-01", "2026-05-02");
+		await store.load("2026-05-03", "2026-05-04");
+		expect(store.state.error).toBeNull();
+
+		rejectSlow?.(new Error("stale network error"));
+		await slowLoad;
+		// The stale failure must not surface an error over the fresh success.
+		expect(store.state.error).toBeNull();
+		expect(store.state.data).not.toBeNull();
 	});
 });
