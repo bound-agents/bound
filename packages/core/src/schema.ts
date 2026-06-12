@@ -290,6 +290,7 @@ export function applySchema(db: Database): void {
 			mcp_servers  TEXT,
 			mcp_tools    TEXT,
 			mcp_tool_annotations TEXT,
+			mcp_capabilities TEXT,
 			models       TEXT,
 			overlay_root TEXT,
 			online_at    TEXT,
@@ -667,6 +668,17 @@ export function applySchema(db: Database): void {
 	// Shape: {[serverName]: {[toolName]: {idempotentHint?, readOnlyHint?}}}
 	try {
 		db.run("ALTER TABLE hosts ADD COLUMN mcp_tool_annotations TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// Full per-server MCP capability inventory (serverInfo from the initialize
+	// handshake, tools with descriptions, prompts, resources) — the complete
+	// surface a server exposes to agents. Rendered by the web UI's
+	// Connections → MCP view.
+	// Shape: {[serverName]: {serverInfo?, tools?, prompts?, resources?}}
+	try {
+		db.run("ALTER TABLE hosts ADD COLUMN mcp_capabilities TEXT");
 	} catch {
 		/* already exists */
 	}

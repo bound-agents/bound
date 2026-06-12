@@ -167,6 +167,7 @@ export interface Host {
 	mcp_servers: string | null;
 	mcp_tools: string | null;
 	mcp_tool_annotations: string | null;
+	mcp_capabilities: string | null;
 	models: string | null;
 	overlay_root: string | null;
 	online_at: string | null;
