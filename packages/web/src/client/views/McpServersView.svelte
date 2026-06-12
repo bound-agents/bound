@@ -29,32 +29,39 @@ interface McpResource {
 	mimeType?: string;
 }
 
+interface McpServerHost {
+	site_id: string;
+	host_name: string;
+	online_at: string | null;
+	has_capability_data: boolean;
+}
+
+interface McpDivergence {
+	field: string;
+	message: string;
+}
+
 interface McpServer {
 	name: string;
+	hosts: McpServerHost[];
 	serverInfo?: McpServerInfo;
 	tools: McpTool[];
 	prompts?: McpPrompt[];
 	resources?: McpResource[];
+	divergence: McpDivergence[];
 }
 
-interface McpHost {
-	site_id: string;
-	host_name: string;
-	online_at: string | null;
-	servers: McpServer[];
-}
-
-let hosts: McpHost[] = $state([]);
+let servers: McpServer[] = $state([]);
 let loading = $state(true);
-let expandedKey = $state<string | null>(null);
+let expandedName = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
 async function loadServers(): Promise<void> {
 	try {
 		const res = await fetch("/api/mcp/servers");
 		if (res.ok) {
-			const body = (await res.json()) as { hosts: McpHost[] };
-			hosts = body.hosts;
+			const body = (await res.json()) as { servers: McpServer[] };
+			servers = body.servers;
 		}
 	} catch {
 		// Transient fetch failure — keep the last good snapshot.
@@ -71,12 +78,8 @@ onDestroy(() => {
 	if (pollInterval !== null) clearInterval(pollInterval);
 });
 
-function serverKey(host: McpHost, server: McpServer): string {
-	return `${host.site_id}:${server.name}`;
-}
-
-function toggleExpanded(key: string): void {
-	expandedKey = expandedKey === key ? null : key;
+function toggleExpanded(name: string): void {
+	expandedName = expandedName === name ? null : name;
 }
 
 function formatLastSeen(onlineAt: string | null): string {
@@ -111,6 +114,7 @@ function serverSummary(server: McpServer): string {
 	} else {
 		parts.push("no capability data");
 	}
+	parts.push(plural(server.hosts.length, "host"));
 	return parts.join(" · ");
 }
 
@@ -157,151 +161,171 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 			<div class="state">
 				<p>Loading MCP servers…</p>
 			</div>
-		{:else if hosts.length === 0}
+		{:else if servers.length === 0}
 			<div class="state">
-				<p>No hosts registered.</p>
+				<p>No MCP servers connected anywhere in the cluster.</p>
 			</div>
 		{:else}
-			{#each hosts as host (host.site_id)}
-				<section class="host">
-					<header class="host-header">
-						<h2 class="host-name">{host.host_name}</h2>
-						<span class="host-meta">
-							{host.servers.length}
-							{host.servers.length === 1 ? "server" : "servers"} · {formatLastSeen(
-								host.online_at,
-							)}
-						</span>
-					</header>
+			<div class="server-list">
+				{#each servers as server (server.name)}
+					{@const expanded = expandedName === server.name}
+					<div class="server" class:expanded>
+						<button class="server-row" onclick={() => toggleExpanded(server.name)}>
+							<span class="server-title">
+								<span class="server-name">{server.name}</span>
+								{#if server.serverInfo?.version}
+									<span class="server-version">v{server.serverInfo.version}</span>
+								{/if}
+								{#if server.divergence.length > 0}
+									<span class="divergence-badge" title="Hosts disagree about this server's capabilities">
+										⚠ divergent
+									</span>
+								{/if}
+							</span>
+							<span class="server-meta">
+								{serverSummary(server)}
+								<span class="chevron">{expanded ? "▾" : "▸"}</span>
+							</span>
+						</button>
 
-					{#if host.servers.length === 0}
-						<p class="host-empty">No MCP servers connected on this host.</p>
-					{:else}
-						<div class="server-list">
-							{#each host.servers as server (server.name)}
-								{@const key = serverKey(host, server)}
-								{@const expanded = expandedKey === key}
-								<div class="server" class:expanded>
-									<button class="server-row" onclick={() => toggleExpanded(key)}>
-										<span class="server-title">
-											<span class="server-name">{server.name}</span>
-											{#if server.serverInfo?.version}
-												<span class="server-version">v{server.serverInfo.version}</span>
+						{#if expanded}
+							<div class="server-detail">
+								<h3 class="subsection">Available on</h3>
+								<div class="host-chips">
+									{#each server.hosts as host (host.site_id)}
+										<span
+											class="host-chip"
+											class:partial={!host.has_capability_data}
+											title={formatLastSeen(host.online_at)}
+										>
+											{host.host_name}
+											{#if !host.has_capability_data}
+												<span class="partial-tag">partial inventory</span>
 											{/if}
 										</span>
-										<span class="server-meta">
-											{serverSummary(server)}
-											<span class="chevron">{expanded ? "▾" : "▸"}</span>
-										</span>
-									</button>
+									{/each}
+								</div>
+								{#if server.hosts.some((h) => !h.has_capability_data)}
+									<p class="detail-note">
+										Hosts marked “partial inventory” are running an older build that
+										only records annotation hints; they're excluded from divergence
+										comparison.
+									</p>
+								{/if}
 
-									{#if expanded}
-										<div class="server-detail">
-											{#if server.serverInfo}
-												{@const info = server.serverInfo}
-												<div class="server-info">
-													{#if info.title || info.name}
-														<div class="info-identity">
-															<span class="info-title">{info.title ?? info.name}</span>
-															{#if info.title && info.name && info.title !== info.name}
-																<span class="info-impl">{info.name}</span>
-															{/if}
-															{#if info.version}
-																<span class="info-impl">v{info.version}</span>
-															{/if}
-														</div>
-													{/if}
-													{#if info.description}
-														<p class="info-desc">{info.description}</p>
-													{/if}
-													{#if info.instructions}
-														<details class="info-instructions">
-															<summary>Instructions to agents</summary>
-															<p>{info.instructions}</p>
-														</details>
+								{#if server.divergence.length > 0}
+									<h3 class="subsection">Divergence warnings</h3>
+									{#each server.divergence as warning (warning.field)}
+										<div class="warning">
+											<span class="warning-field">{warning.field}</span>
+											<span class="warning-message">{warning.message}</span>
+										</div>
+									{/each}
+								{/if}
+
+								{#if server.serverInfo}
+									{@const info = server.serverInfo}
+									<div class="server-info">
+										{#if info.title || info.name}
+											<div class="info-identity">
+												<span class="info-title">{info.title ?? info.name}</span>
+												{#if info.title && info.name && info.title !== info.name}
+													<span class="info-impl">{info.name}</span>
+												{/if}
+												{#if info.version}
+													<span class="info-impl">v{info.version}</span>
+												{/if}
+											</div>
+										{/if}
+										{#if info.description}
+											<p class="info-desc">{info.description}</p>
+										{/if}
+										{#if info.instructions}
+											<details class="info-instructions">
+												<summary>Instructions to agents</summary>
+												<p>{info.instructions}</p>
+											</details>
+										{/if}
+									</div>
+								{/if}
+
+								<h3 class="subsection">Tools</h3>
+								{#if server.tools.length === 0}
+									{#if hasCapabilityData(server)}
+										<p class="detail-empty">This server exposes no tools.</p>
+									{:else}
+										<p class="detail-empty">
+											No capability data captured for this server — every host carrying
+											it may be running an older build that only records annotation
+											hints.
+										</p>
+									{/if}
+								{:else}
+									{#each server.tools as tool (tool.name)}
+										<div class="tool">
+											<div class="tool-main">
+												<span class="tool-name">{tool.name}</span>
+												{#if tool.description}
+													<span class="item-desc">{tool.description}</span>
+												{/if}
+											</div>
+											<span class="chips">
+												{#each annotationChips(tool.annotations) as chip}
+													<span class="chip {chip.tone}">{chip.text}</span>
+												{/each}
+											</span>
+										</div>
+									{/each}
+								{/if}
+
+								{#if server.prompts !== undefined}
+									<h3 class="subsection">Prompts</h3>
+									{#if server.prompts.length === 0}
+										<p class="detail-empty">This server exposes no prompts.</p>
+									{:else}
+										{#each server.prompts as prompt (prompt.name)}
+											<div class="tool">
+												<div class="tool-main">
+													<span class="tool-name">{prompt.name}</span>
+													{#if prompt.description}
+														<span class="item-desc">{prompt.description}</span>
 													{/if}
 												</div>
-											{/if}
-
-											<h3 class="subsection">Tools</h3>
-											{#if server.tools.length === 0}
-												{#if hasCapabilityData(server)}
-													<p class="detail-empty">This server exposes no tools.</p>
-												{:else}
-													<p class="detail-empty">
-														No capability data captured for this server — the host may be
-														running an older build that only records annotation hints.
-													</p>
-												{/if}
-											{:else}
-												{#each server.tools as tool (tool.name)}
-													<div class="tool">
-														<div class="tool-main">
-															<span class="tool-name">{tool.name}</span>
-															{#if tool.description}
-																<span class="item-desc">{tool.description}</span>
-															{/if}
-														</div>
-														<span class="chips">
-															{#each annotationChips(tool.annotations) as chip}
-																<span class="chip {chip.tone}">{chip.text}</span>
-															{/each}
-														</span>
-													</div>
-												{/each}
-											{/if}
-
-											{#if server.prompts !== undefined}
-												<h3 class="subsection">Prompts</h3>
-												{#if server.prompts.length === 0}
-													<p class="detail-empty">This server exposes no prompts.</p>
-												{:else}
-													{#each server.prompts as prompt (prompt.name)}
-														<div class="tool">
-															<div class="tool-main">
-																<span class="tool-name">{prompt.name}</span>
-																{#if prompt.description}
-																	<span class="item-desc">{prompt.description}</span>
-																{/if}
-															</div>
-														</div>
-													{/each}
-												{/if}
-											{/if}
-
-											{#if server.resources !== undefined}
-												<h3 class="subsection">Resources</h3>
-												{#if server.resources.length === 0}
-													<p class="detail-empty">This server exposes no resources.</p>
-												{:else}
-													{#each server.resources as resource (resource.uri)}
-														<div class="tool">
-															<div class="tool-main">
-																<span class="tool-name">{resource.name ?? resource.uri}</span>
-																{#if resource.name}
-																	<span class="resource-uri">{resource.uri}</span>
-																{/if}
-																{#if resource.description}
-																	<span class="item-desc">{resource.description}</span>
-																{/if}
-															</div>
-															{#if resource.mimeType}
-																<span class="chips">
-																	<span class="chip neutral">{resource.mimeType}</span>
-																</span>
-															{/if}
-														</div>
-													{/each}
-												{/if}
-											{/if}
-										</div>
+											</div>
+										{/each}
 									{/if}
-								</div>
-							{/each}
-						</div>
-					{/if}
-				</section>
-			{/each}
+								{/if}
+
+								{#if server.resources !== undefined}
+									<h3 class="subsection">Resources</h3>
+									{#if server.resources.length === 0}
+										<p class="detail-empty">This server exposes no resources.</p>
+									{:else}
+										{#each server.resources as resource (resource.uri)}
+											<div class="tool">
+												<div class="tool-main">
+													<span class="tool-name">{resource.name ?? resource.uri}</span>
+													{#if resource.name}
+														<span class="resource-uri">{resource.uri}</span>
+													{/if}
+													{#if resource.description}
+														<span class="item-desc">{resource.description}</span>
+													{/if}
+												</div>
+												{#if resource.mimeType}
+													<span class="chips">
+														<span class="chip neutral">{resource.mimeType}</span>
+													</span>
+												{/if}
+											</div>
+										{/each}
+									{/if}
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
 		{/if}
 	{/snippet}
 </Page>
@@ -311,38 +335,6 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 		padding: 48px 0;
 		text-align: center;
 		color: var(--ink-3);
-	}
-
-	.host {
-		margin-bottom: 32px;
-	}
-
-	.host-header {
-		display: flex;
-		align-items: baseline;
-		gap: 12px;
-		padding-bottom: 8px;
-		border-bottom: 1px solid var(--rule-soft);
-		margin-bottom: 12px;
-	}
-
-	.host-name {
-		font-family: var(--font-display);
-		font-size: 18px;
-		font-weight: 600;
-		margin: 0;
-		color: var(--ink);
-	}
-
-	.host-meta {
-		font-size: 12px;
-		color: var(--ink-3);
-	}
-
-	.host-empty {
-		font-size: 13px;
-		color: var(--ink-3);
-		margin: 0;
 	}
 
 	.server-list {
@@ -391,6 +383,15 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 		color: var(--ink-3);
 	}
 
+	.divergence-badge {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 2px 6px;
+		border: 1px solid color-mix(in srgb, #b3261e 40%, transparent);
+		color: #b3261e;
+	}
+
 	.server-meta {
 		font-size: 12px;
 		color: var(--ink-3);
@@ -409,6 +410,62 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
+	}
+
+	.host-chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+
+	.host-chip {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 6px;
+		font-size: 12px;
+		color: var(--ink-2);
+		padding: 2px 8px;
+		border: 1px solid var(--rule-soft);
+	}
+
+	.host-chip.partial {
+		border-style: dashed;
+	}
+
+	.partial-tag {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--ink-3);
+	}
+
+	.detail-note {
+		font-size: 11px;
+		color: var(--ink-3);
+		margin: 2px 0 0;
+	}
+
+	.warning {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 6px 10px;
+		border: 1px solid color-mix(in srgb, #b3261e 40%, transparent);
+		background: color-mix(in srgb, #b3261e 6%, transparent);
+	}
+
+	.warning-field {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: #b3261e;
+		flex-shrink: 0;
+	}
+
+	.warning-message {
+		font-size: 12px;
+		color: var(--ink-2);
+		overflow-wrap: anywhere;
 	}
 
 	.server-info {
