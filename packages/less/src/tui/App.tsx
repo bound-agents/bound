@@ -7,6 +7,7 @@ import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { transitionThread } from "../session/transition";
+import type { ResolvedSandboxConfig } from "../tools/sandbox";
 import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import { useCancelHandler } from "./hooks/useCancelHandler";
@@ -78,6 +79,8 @@ export interface AppProps {
 	toolHandlers: Map<string, ToolHandler>;
 	/** Resolved shell for the bash-family tool (streaming + spawn invocation). */
 	shell: ResolvedShell;
+	/** Resolved filesystem sandbox policy for the bash-family tool. */
+	sandbox: ResolvedSandboxConfig;
 }
 
 /**
@@ -100,6 +103,7 @@ export function App({
 	model: initialModel,
 	toolHandlers,
 	shell,
+	sandbox,
 }: AppProps): React.ReactElement {
 	const [state, dispatch] = useReducer(appReducer, {
 		view: "chat",
@@ -118,7 +122,14 @@ export function App({
 		appendPendingUserMessage,
 		clearPendingUserMessage,
 	} = useMessages(client, initialMessages);
-	const { inFlightTools, abortAll } = useToolCalls(client, toolHandlers, hostname, cwd, shell);
+	const { inFlightTools, abortAll } = useToolCalls(
+		client,
+		toolHandlers,
+		hostname,
+		cwd,
+		shell,
+		sandbox,
+	);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 	const connectionState = useConnectionState(client);
 
@@ -192,6 +203,7 @@ export function App({
 				inFlightTools: abortMap,
 				model: state.model,
 				shell,
+				sandbox,
 			});
 
 			if (!result.ok) {
@@ -230,6 +242,7 @@ export function App({
 			inFlightTools,
 			replaceMessages,
 			shell,
+			sandbox,
 		],
 	);
 
@@ -263,6 +276,7 @@ export function App({
 			inFlightTools: abortMap,
 			model: state.model,
 			shell,
+			sandbox,
 		});
 
 		if (!result.ok) {
@@ -297,6 +311,7 @@ export function App({
 		inFlightTools,
 		clearMessages,
 		shell,
+		sandbox,
 	]);
 
 	const handleSendMessage = async (message: string) => {

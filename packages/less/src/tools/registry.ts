@@ -5,10 +5,11 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServerConfig } from "../config";
 import type { McpServerManager } from "../mcp/manager";
 import { proxyToolCall } from "../mcp/proxy";
-import { createBashTool } from "./bash";
+import { type BashEventLogger, createBashTool } from "./bash";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
+import type { ResolvedSandboxConfig } from "./sandbox";
 import { createSearchTool } from "./search";
 import { type ResolvedShell, resolveShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
@@ -33,6 +34,8 @@ export function buildToolSet(
 	boundUrl?: string,
 	shell?: ResolvedShell,
 	mcpManager?: McpServerManager,
+	sandbox?: ResolvedSandboxConfig,
+	logger?: BashEventLogger,
 ): BuildToolSetResult {
 	const resolvedShell = shell ?? resolveShell(undefined);
 	const toolDefinitions: ToolDefinition[] = [];
@@ -207,7 +210,7 @@ export function buildToolSet(
 	handlers.set("boundless_write", createWriteTool(hostname));
 	handlers.set("boundless_edit", createEditTool(hostname));
 	handlers.set("boundless_search", createSearchTool(hostname));
-	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell));
+	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell, sandbox, logger));
 	handlers.set(
 		"boundless_copy",
 		createCopyTool({

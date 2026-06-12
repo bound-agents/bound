@@ -10,6 +10,7 @@ import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { buildSystemPromptAddition, buildToolSet } from "../tools/registry";
+import type { ResolvedSandboxConfig } from "../tools/sandbox";
 import type { ResolvedShell } from "../tools/shell";
 import { collectToolCallPairing } from "./tool-call-pairing";
 
@@ -25,6 +26,8 @@ export interface AttachParams {
 	injectContextFiles?: string[];
 	/** Resolved shell for the bash-family tool (name + invocation). */
 	shell: ResolvedShell;
+	/** Resolved filesystem sandbox policy for the bash-family tool. */
+	sandbox: ResolvedSandboxConfig;
 	/**
 	 * Which surface is driving this session. Selects the opening line of the
 	 * system-prompt addition: `"terminal"` (default) for the boundless TUI,
@@ -50,8 +53,18 @@ export interface AttachResult {
  * Returns messages, pending tool call IDs, and MCP failures (non-fatal).
  */
 export async function performAttach(params: AttachParams): Promise<AttachResult> {
-	const { client, threadId, mcpManager, mcpConfigs, cwd, hostname, logger, confirmFn, shell } =
-		params;
+	const {
+		client,
+		threadId,
+		mcpManager,
+		mcpConfigs,
+		cwd,
+		hostname,
+		logger,
+		confirmFn,
+		shell,
+		sandbox,
+	} = params;
 
 	// Step 1: List recent messages and scan for pending tool calls (AC7.2)
 	// Cap to 200 messages to avoid OOM on large threads (17k+ messages)
@@ -109,6 +122,8 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 		client.getBaseUrl(),
 		shell,
 		mcpManager,
+		sandbox,
+		logger,
 	);
 
 	logger.info("attach_flow_tools_built", {

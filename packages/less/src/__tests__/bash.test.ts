@@ -3,7 +3,9 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { bashTool } from "../tools/bash";
+import { bashTool, createBashTool } from "../tools/bash";
+import { DISABLED_SANDBOX } from "../tools/sandbox";
+import type { ResolvedShell } from "../tools/shell";
 
 // CI runners can be slow; ensure per-test timeout is respected
 setDefaultTimeout(15000);
@@ -176,5 +178,64 @@ describe("boundless_bash", () => {
 		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 0");
 		expect(contentBlock.text).toContain("line");
+	});
+
+	describe("sandbox observability", () => {
+		// POSIX sh, matching the module-private default in bash.ts — built here so
+		// the test doesn't widen bash.ts's public surface just to read a constant.
+		const testShell: ResolvedShell = {
+			command: "sh",
+			execFlag: "-c",
+			toolName: "boundless_bash",
+			label: "POSIX shell (sh)",
+		};
+
+		// A spy matching the BashEventLogger seam. We assert the spawn path emits
+		// a structured event for the policy decision, so "was the write guard on
+		// for this command" is answerable from the log rather than from a note
+		// that scrolls off the agent's context.
+		function makeSpyLogger() {
+			const events: Array<{ level: "info" | "warn"; event: string; fields?: Record<string, unknown> }> =
+				[];
+			return {
+				events,
+				info: (event: string, fields?: Record<string, unknown>) =>
+					events.push({ level: "info", event, fields }),
+				warn: (event: string, fields?: Record<string, unknown>) =>
+					events.push({ level: "warn", event, fields }),
+			};
+		}
+
+		it("emits sandbox_disabled when the sandbox is opted out (DISABLED_SANDBOX)", async () => {
+			const spy = makeSpyLogger();
+			// DISABLED_SANDBOX is the default; pass it explicitly with the logger.
+			const tool = createBashTool("test-host", testShell, DISABLED_SANDBOX, spy);
+			const result = await tool(
+				{ command: "echo guarded?" },
+				new AbortController().signal,
+				tempDir,
+			);
+
+			expect(result.isError).toBeUndefined();
+			const disabled = spy.events.find((e) => e.event === "sandbox_disabled");
+			expect(disabled).toBeDefined();
+			expect(disabled?.level).toBe("info");
+			expect(disabled?.fields?.cwd).toBe(tempDir);
+			// The happy/enforcement and passthrough events must NOT fire here.
+			expect(spy.events.some((e) => e.event === "sandbox_spawn")).toBe(false);
+			expect(spy.events.some((e) => e.event === "sandbox_passthrough")).toBe(false);
+		});
+
+		it("emits nothing when no logger is supplied (logging is opt-in)", async () => {
+			// Smoke: the spawn path must not throw when logger is undefined.
+			const tool = createBashTool("test-host", testShell, DISABLED_SANDBOX);
+			const result = await tool(
+				{ command: "echo nolog" },
+				new AbortController().signal,
+				tempDir,
+			);
+			expect(result.isError).toBeUndefined();
+			expect(result.content[1].text).toContain("Exit code: 0");
+		});
 	});
 });

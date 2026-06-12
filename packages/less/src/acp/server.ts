@@ -49,6 +49,7 @@ import { McpServerManager } from "../mcp/manager";
 import { performAttach } from "../session/attach";
 import { collectToolCallPairing } from "../session/tool-call-pairing";
 import { buildToolSet } from "../tools/registry";
+import type { ResolvedSandboxConfig } from "../tools/sandbox";
 import type { ResolvedShell } from "../tools/shell";
 import { messageToSessionUpdate, promptToContent } from "./mapping";
 import { acpMcpServersToConfigs, mergeMcpConfigs } from "./mcp-config";
@@ -70,6 +71,7 @@ export interface BoundAcpAgentOptions {
 	configDir: string;
 	hostname: string;
 	shell: ResolvedShell;
+	sandbox: ResolvedSandboxConfig;
 	logger: AppLogger;
 	/** Model alias to send with prompts, or null for the cluster default. */
 	modelId: string | null;
@@ -336,6 +338,7 @@ export class BoundAcpAgent implements Agent {
 			logger: this.opts.logger,
 			injectContextFiles: this.opts.contextFiles,
 			shell: this.opts.shell,
+			sandbox: this.opts.sandbox,
 			surface: { type: "acp", clientInfo: this.clientInfo ?? DEFAULT_CLIENT_INFO },
 		});
 
@@ -351,6 +354,8 @@ export class BoundAcpAgent implements Agent {
 			this.opts.client.getBaseUrl(),
 			this.opts.shell,
 			this.opts.mcpManager,
+			this.opts.sandbox,
+			this.opts.logger,
 		);
 		const clientToolNames = new Set(toolSet.tools.map((t) => t.function.name));
 
@@ -516,6 +521,7 @@ export interface RunAcpServerOptions {
 	mcpConfigs: McpServerConfig[];
 	hostname: string;
 	shell: ResolvedShell;
+	sandbox: ResolvedSandboxConfig;
 	logger: AppLogger;
 	modelId: string | null;
 	contextFiles?: string[];
@@ -550,6 +556,7 @@ export async function runAcpServer(opts: RunAcpServerOptions): Promise<void> {
 			configDir: opts.configDir,
 			hostname: opts.hostname,
 			shell: opts.shell,
+			sandbox: opts.sandbox,
 			logger: opts.logger,
 			modelId: opts.modelId,
 			contextFiles: opts.contextFiles,
