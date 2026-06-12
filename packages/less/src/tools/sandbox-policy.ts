@@ -202,7 +202,6 @@ export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 		// NetworkConfig contract). Without the latter, `listen()` is EPERM'd —
 		// which silently breaks running tests and dev servers (anything that
 		// opens a localhost port) under the shell, contradicting "network open".
-		network:
-			cfg.network === "open" ? { allowOutbound: true, allowLocalNetwork: true } : {},
+		network: cfg.network === "open" ? { allowOutbound: true, allowLocalNetwork: true } : {},
 	};
 }
