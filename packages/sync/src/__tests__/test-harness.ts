@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
@@ -410,7 +411,7 @@ export async function createWsTestCluster(config: {
 	// Generate keypairs for all nodes: index 0 = hub, 1..N = spokes
 	const keypairs = await Promise.all(
 		Array.from({ length: totalNodes }, (_, i) =>
-			ensureKeypair(join("/tmp", `bound-ws-cluster-${testRunId}-${i}`)),
+			ensureKeypair(join(tmpdir(), `bound-ws-cluster-${testRunId}-${i}`)),
 		),
 	);
 
@@ -447,7 +448,7 @@ export async function createWsTestCluster(config: {
 	const hubKeypair = keypairs[0];
 	const hubSiteId = hubKeypair.siteId;
 
-	const hubDb = await createDb(join("/tmp", `bound-ws-cluster-${testRunId}-hub.db`));
+	const hubDb = await createDb(join(tmpdir(), `bound-ws-cluster-${testRunId}-hub.db`));
 
 	const hubKeyManager = new KeyManager(
 		{ publicKey: hubKeypair.publicKey, privateKey: hubKeypair.privateKey },
@@ -502,7 +503,7 @@ export async function createWsTestCluster(config: {
 	for (let i = 0; i < spokeCount; i++) {
 		const spokeKeypair = keypairs[1 + i];
 		const spokeSiteId = spokeKeypair.siteId;
-		const spokeDb = await createDb(join("/tmp", `bound-ws-cluster-${testRunId}-spoke-${i}.db`));
+		const spokeDb = await createDb(join(tmpdir(), `bound-ws-cluster-${testRunId}-spoke-${i}.db`));
 
 		const spokeKeyManager = new KeyManager(
 			{ publicKey: spokeKeypair.publicKey, privateKey: spokeKeypair.privateKey },
@@ -570,19 +571,19 @@ export async function createWsTestCluster(config: {
 
 		// Clean up keypair files
 		for (let i = 0; i < totalNodes; i++) {
-			const dir = join("/tmp", `bound-ws-cluster-${testRunId}-${i}`);
+			const dir = join(tmpdir(), `bound-ws-cluster-${testRunId}-${i}`);
 			if (existsSync(dir)) {
 				await cleanupTmpDir(dir);
 			}
 		}
 
 		// Clean up DB files
-		const hubDbPath = join("/tmp", `bound-ws-cluster-${testRunId}-hub.db`);
+		const hubDbPath = join(tmpdir(), `bound-ws-cluster-${testRunId}-hub.db`);
 		if (existsSync(hubDbPath)) {
 			await cleanupTmpDir(hubDbPath).catch(() => {});
 		}
 		for (let i = 0; i < spokeCount; i++) {
-			const spokeDbPath = join("/tmp", `bound-ws-cluster-${testRunId}-spoke-${i}.db`);
+			const spokeDbPath = join(tmpdir(), `bound-ws-cluster-${testRunId}-spoke-${i}.db`);
 			if (existsSync(spokeDbPath)) {
 				await cleanupTmpDir(spokeDbPath).catch(() => {});
 			}

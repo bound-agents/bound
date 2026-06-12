@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Writable } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -21,7 +23,7 @@ describe("logger-trace-mixin", () => {
 		// Disable stderr output to avoid polluting test output
 		process.env.BOUND_LOG_STDERR = "0";
 		// Create a minimal logs directory for the test
-		process.env.TEMP_LOG_DIR = `/tmp/bound-test-logs-${Date.now()}`;
+		process.env.TEMP_LOG_DIR = join(tmpdir(), `bound-test-logs-${Date.now()}`);
 	});
 
 	afterEach(async () => {

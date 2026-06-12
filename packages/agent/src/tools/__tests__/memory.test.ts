@@ -1,6 +1,8 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { TypedEventEmitter } from "@bound/shared";
@@ -8,7 +10,7 @@ import type { ToolContext } from "../../types";
 import { createMemoryTool } from "../memory";
 
 function createTestDb(): Database {
-	const dbPath = `/tmp/test-memory-${randomBytes(4).toString("hex")}.db`;
+	const dbPath = join(tmpdir(), `test-memory-${randomBytes(4).toString("hex")}.db`);
 	const db = new Database(dbPath);
 	applySchema(db);
 	return db;

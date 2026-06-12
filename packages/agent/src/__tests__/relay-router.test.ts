@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import {
 	buildIdempotencyKey,
@@ -16,7 +18,7 @@ let testDbPath: string;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-relay-router-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-relay-router-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCopyTool } from "../tools/copy";
 
@@ -35,7 +36,7 @@ describe("boundless_copy", () => {
 	let originalFetch: typeof fetch;
 
 	beforeEach(() => {
-		tempDir = join("/tmp", `boundless-copy-test-${randomBytes(4).toString("hex")}`);
+		tempDir = join(tmpdir(), `boundless-copy-test-${randomBytes(4).toString("hex")}`);
 		mkdirSync(tempDir, { recursive: true });
 		originalFetch = globalThis.fetch;
 	});

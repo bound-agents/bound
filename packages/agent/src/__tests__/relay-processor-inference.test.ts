@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -100,7 +102,7 @@ let testDbPath: string;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-relay-processor-inference-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-relay-processor-inference-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);

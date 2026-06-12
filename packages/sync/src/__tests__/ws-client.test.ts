@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { KeyringConfig } from "@bound/shared";
 import { deriveSiteId, ensureKeypair, exportPublicKey, generateKeypair } from "../crypto.js";
 import { KeyManager } from "../key-manager.js";
@@ -118,8 +120,10 @@ describe("WsSyncClient", () => {
 			// Test that the client properly signs auth headers for the upgrade request
 			const testRunId = randomBytes(4).toString("hex");
 
-			const hubKeypair2 = await ensureKeypair(`/tmp/bound-ws-client-hub-${testRunId}`);
-			const spokeKeypair2 = await ensureKeypair(`/tmp/bound-ws-client-spoke-${testRunId}`);
+			const hubKeypair2 = await ensureKeypair(join(tmpdir(), `bound-ws-client-hub-${testRunId}`));
+			const spokeKeypair2 = await ensureKeypair(
+				join(tmpdir(), `bound-ws-client-spoke-${testRunId}`),
+			);
 
 			const hubSiteId2 = hubKeypair2.siteId;
 			const spokeSiteId2 = spokeKeypair2.siteId;
@@ -601,10 +605,10 @@ describe("WsSyncClient", () => {
 
 			// Create hub and spoke keypairs for integration test
 			const hubKeypairIntegration = await ensureKeypair(
-				`/tmp/bound-ws-hub-integration-${testRunId}`,
+				join(tmpdir(), `bound-ws-hub-integration-${testRunId}`),
 			);
 			const spokeKeypairIntegration = await ensureKeypair(
-				`/tmp/bound-ws-spoke-integration-${testRunId}`,
+				join(tmpdir(), `bound-ws-spoke-integration-${testRunId}`),
 			);
 
 			const hubSiteIdIntegration = hubKeypairIntegration.siteId;

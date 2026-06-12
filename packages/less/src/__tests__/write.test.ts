@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeTool } from "../tools/write";
 
@@ -8,7 +9,7 @@ describe("boundless_write", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join("/tmp", `boundless-test-${randomBytes(4).toString("hex")}`);
+		tempDir = join(tmpdir(), `boundless-test-${randomBytes(4).toString("hex")}`);
 		mkdirSync(tempDir, { recursive: true });
 	});
 
