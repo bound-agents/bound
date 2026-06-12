@@ -11,8 +11,7 @@
  * node-pty is only touched when a command is actually sandboxed.
  *
  * The policy shape mirrors an empirically-verified probe: reads anywhere
- * succeed, writes outside the writable set are denied, network is open. See
- * `curiosity:mxc-boundless-impl-design` for the proving rig.
+ * succeed, writes outside the writable set are denied, network is open.
  */
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
