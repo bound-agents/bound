@@ -940,9 +940,46 @@ export async function updateHostMCPInfo(
 			>
 		> = {};
 
+		// Full per-server capability inventory — the complete surface a server
+		// exposes to agents (serverInfo from the initialize handshake, tools,
+		// prompts, resources). Rendered by the web UI's Connections → MCP view.
+		// Bounded so a single chatty server can't bloat the hosts row.
+		const MAX_CAPABILITY_LIST = 200;
+		const MAX_DESCRIPTION_CHARS = 500;
+		const MAX_INSTRUCTIONS_CHARS = 2000;
+		const truncate = (s: string, max: number): string => (s.length > max ? s.slice(0, max) : s);
+		const mcp_capabilities: Record<
+			string,
+			{
+				serverInfo?: {
+					name?: string;
+					title?: string;
+					version?: string;
+					description?: string;
+					instructions?: string;
+				};
+				tools?: Array<{ name: string; description?: string }>;
+				prompts?: Array<{ name: string; description?: string }>;
+				resources?: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>;
+			}
+		> = {};
+
 		for (const [serverName, client] of clients) {
 			if (!client.isConnected()) continue;
 			mcp_tools.push(serverName);
+
+			const capability: (typeof mcp_capabilities)[string] = {};
+
+			const info = client.getServerInfo?.();
+			const description = client.getServerDescription?.();
+			const instructions = client.getServerInstructions?.();
+			const serverInfo: NonNullable<(typeof capability)["serverInfo"]> = {};
+			if (info?.name) serverInfo.name = info.name;
+			if (info?.title) serverInfo.title = info.title;
+			if (info?.version) serverInfo.version = info.version;
+			if (description) serverInfo.description = truncate(description, MAX_DESCRIPTION_CHARS);
+			if (instructions) serverInfo.instructions = truncate(instructions, MAX_INSTRUCTIONS_CHARS);
+			if (Object.keys(serverInfo).length > 0) capability.serverInfo = serverInfo;
 
 			// Best-effort listTools — never fail the metadata update on a
 			// transient MCP error. A server with no captured annotations just
@@ -950,6 +987,12 @@ export async function updateHostMCPInfo(
 			// strict no-info posture.
 			try {
 				const tools = await client.listTools();
+				capability.tools = tools.slice(0, MAX_CAPABILITY_LIST).map((tool) => ({
+					name: tool.name,
+					...(tool.description
+						? { description: truncate(tool.description, MAX_DESCRIPTION_CHARS) }
+						: {}),
+				}));
 				const serverAnnotations: Record<string, Record<string, boolean | undefined>> = {};
 				for (const tool of tools) {
 					const ann = tool.annotations as
@@ -974,6 +1017,32 @@ export async function updateHostMCPInfo(
 			} catch {
 				// listTools failed for this server — leave annotations empty.
 			}
+
+			// Prompts and resources are optional MCP capabilities — listing
+			// throws when unsupported. Listing failed ≠ listed-and-empty: omit
+			// the field on error so the UI can say "unavailable" vs "none".
+			try {
+				const prompts = await client.listPrompts();
+				capability.prompts = prompts.slice(0, MAX_CAPABILITY_LIST).map((p) => ({
+					name: p.name,
+					...(p.description ? { description: truncate(p.description, MAX_DESCRIPTION_CHARS) } : {}),
+				}));
+			} catch {
+				// prompts capability unsupported or listing failed
+			}
+			try {
+				const resources = await client.listResources();
+				capability.resources = resources.slice(0, MAX_CAPABILITY_LIST).map((r) => ({
+					uri: r.uri,
+					...(r.name ? { name: r.name } : {}),
+					...(r.description ? { description: truncate(r.description, MAX_DESCRIPTION_CHARS) } : {}),
+					...(r.mimeType ? { mimeType: r.mimeType } : {}),
+				}));
+			} catch {
+				// resources capability unsupported or listing failed
+			}
+
+			mcp_capabilities[serverName] = capability;
 		}
 
 		updateRow(
@@ -987,6 +1056,8 @@ export async function updateHostMCPInfo(
 					Object.keys(mcp_tool_annotations).length > 0
 						? JSON.stringify(mcp_tool_annotations)
 						: null,
+				mcp_capabilities:
+					Object.keys(mcp_capabilities).length > 0 ? JSON.stringify(mcp_capabilities) : null,
 			},
 			siteId,
 		);

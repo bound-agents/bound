@@ -360,4 +360,18 @@ export class MCPClient {
 	getServerInstructions(): string | undefined {
 		return this.client.getInstructions();
 	}
+
+	/**
+	 * Get the server's implementation info (name/title/version) from its
+	 * InitializeResult, if available. Only available after connect().
+	 */
+	getServerInfo(): { name?: string; title?: string; version?: string } | undefined {
+		const info = this.client.getServerVersion();
+		if (!info) return undefined;
+		return {
+			name: info.name,
+			title: (info as { title?: string }).title,
+			version: info.version,
+		};
+	}
 }

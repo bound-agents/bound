@@ -58,6 +58,7 @@ function makeMockClient(
 		disconnect: async () => {},
 		getServerDescription: () => undefined,
 		getServerInstructions: () => undefined,
+		getServerInfo: () => undefined,
 	} as unknown as MCPClient;
 }
 
@@ -878,6 +879,95 @@ describe("MCP Bridge", () => {
 			expect(result.exitCode).toBe(1);
 			expect(result.stderr).toContain("not connected");
 		}
+	});
+
+	// mcp_capabilities: full per-server inventory (serverInfo, tools, prompts, resources)
+	it("updateHostMCPInfo persists full server capabilities into mcp_capabilities", async () => {
+		const { applySchema, createDatabase } = await import("@bound/core");
+
+		const db = createDatabase(":memory:");
+		applySchema(db);
+
+		const siteId = "test-site";
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+			VALUES (?, ?, ?, ?)`,
+			[siteId, "test-host", new Date().toISOString(), 0],
+		);
+
+		const client = makeMockClient(
+			{ name: "server-a", transport: "stdio", command: "test" },
+			[{ name: "tool1", description: "Tool 1", inputSchema: {} }],
+			[{ uri: "doc://a", name: "Doc A", description: "A doc", mimeType: "text/plain" }],
+			[{ name: "prompt1", description: "Prompt 1" }],
+		);
+		const c = client as unknown as Record<string, unknown>;
+		c.getServerInfo = () => ({ name: "server-a-impl", title: "Server A", version: "1.2.3" });
+		c.getServerDescription = () => "Does A things";
+		c.getServerInstructions = () => "Use wisely.";
+
+		await updateHostMCPInfo(db, siteId, new Map([["server-a", client]]));
+
+		const host = db.query("SELECT mcp_capabilities FROM hosts WHERE site_id = ?").get(siteId) as {
+			mcp_capabilities: string;
+		} | null;
+		expect(host?.mcp_capabilities).toBeTruthy();
+		const caps = JSON.parse(host?.mcp_capabilities ?? "{}");
+		expect(caps["server-a"].serverInfo).toEqual({
+			name: "server-a-impl",
+			title: "Server A",
+			version: "1.2.3",
+			description: "Does A things",
+			instructions: "Use wisely.",
+		});
+		expect(caps["server-a"].tools).toEqual([{ name: "tool1", description: "Tool 1" }]);
+		expect(caps["server-a"].prompts).toEqual([{ name: "prompt1", description: "Prompt 1" }]);
+		expect(caps["server-a"].resources).toEqual([
+			{ uri: "doc://a", name: "Doc A", description: "A doc", mimeType: "text/plain" },
+		]);
+
+		db.close();
+	});
+
+	it("updateHostMCPInfo omits prompts/resources when the server lacks those capabilities", async () => {
+		const { applySchema, createDatabase } = await import("@bound/core");
+
+		const db = createDatabase(":memory:");
+		applySchema(db);
+
+		const siteId = "test-site";
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+			VALUES (?, ?, ?, ?)`,
+			[siteId, "test-host", new Date().toISOString(), 0],
+		);
+
+		const client = makeMockClient(
+			{ name: "server-b", transport: "stdio", command: "test" },
+			[{ name: "tool1", description: "Tool 1", inputSchema: {} }],
+			[],
+			[],
+		);
+		const c = client as unknown as Record<string, unknown>;
+		c.listPrompts = async () => {
+			throw new Error("Server does not support prompts");
+		};
+		c.listResources = async () => {
+			throw new Error("Server does not support resources");
+		};
+
+		await updateHostMCPInfo(db, siteId, new Map([["server-b", client]]));
+
+		const host = db.query("SELECT mcp_capabilities FROM hosts WHERE site_id = ?").get(siteId) as {
+			mcp_capabilities: string;
+		} | null;
+		const caps = JSON.parse(host?.mcp_capabilities ?? "{}");
+		expect(caps["server-b"].tools).toEqual([{ name: "tool1", description: "Tool 1" }]);
+		// Listing failed ≠ listed-and-empty: omit the field so the UI can say "unavailable".
+		expect(caps["server-b"].prompts).toBeUndefined();
+		expect(caps["server-b"].resources).toBeUndefined();
+
+		db.close();
 	});
 
 	// Outbox bypass fix: updateHostMCPInfo must use change-log outbox
