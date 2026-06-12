@@ -4,23 +4,25 @@ import { applySchema, insertRow } from "@bound/core";
 import { createMcpRoutes } from "../mcp";
 
 interface ServersResponse {
-	hosts: Array<{
-		site_id: string;
-		host_name: string;
-		online_at: string | null;
-		servers: Array<{
-			name: string;
-			serverInfo?: {
-				name?: string;
-				title?: string;
-				version?: string;
-				description?: string;
-				instructions?: string;
-			};
-			tools: Array<{ name: string; description?: string; annotations: Record<string, boolean> }>;
-			prompts?: Array<{ name: string; description?: string }>;
-			resources?: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>;
+	servers: Array<{
+		name: string;
+		hosts: Array<{
+			site_id: string;
+			host_name: string;
+			online_at: string | null;
+			has_capability_data: boolean;
 		}>;
+		serverInfo?: {
+			name?: string;
+			title?: string;
+			version?: string;
+			description?: string;
+			instructions?: string;
+		};
+		tools: Array<{ name: string; description?: string; annotations: Record<string, boolean> }>;
+		prompts?: Array<{ name: string; description?: string }>;
+		resources?: Array<{ uri: string; name?: string; description?: string; mimeType?: string }>;
+		divergence: Array<{ field: string; message: string }>;
 	}>;
 }
 
@@ -68,16 +70,32 @@ describe("createMcpRoutes GET /servers", () => {
 		);
 	}
 
-	it("returns servers per host with tools derived from captured annotations", async () => {
+	function capability(
+		overrides: Partial<{
+			serverInfo: Record<string, string>;
+			tools: Array<{ name: string; description?: string }>;
+			prompts: Array<{ name: string; description?: string }>;
+			resources: Array<{ uri: string; name?: string; mimeType?: string }>;
+		}> = {},
+	): Record<string, unknown> {
+		return {
+			serverInfo: overrides.serverInfo ?? { name: "github-mcp", version: "2.1.0" },
+			tools: overrides.tools ?? [{ name: "actions_get" }, { name: "issue_write" }],
+			prompts: overrides.prompts ?? [{ name: "review_pr" }],
+			resources: overrides.resources ?? [{ uri: "repo://readme" }],
+		};
+	}
+
+	it("groups a server available on multiple hosts into one entry with no divergence when identical", async () => {
 		seedHost("site-a", "alpha", {
-			mcp_servers: JSON.stringify(["github", "pdf"]),
-			mcp_tool_annotations: JSON.stringify({
-				github: {
-					actions_get: { readOnlyHint: true },
-					issue_write: { destructiveHint: true, idempotentHint: false },
-				},
-			}),
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({ github: capability() }),
 			online_at: "2026-06-12T00:00:00.000Z",
+		});
+		seedHost("site-b", "bravo", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({ github: capability() }),
+			online_at: "2026-06-11T00:00:00.000Z",
 		});
 
 		const app = createMcpRoutes(db);
@@ -85,127 +103,191 @@ describe("createMcpRoutes GET /servers", () => {
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as ServersResponse;
 
-		expect(body.hosts).toHaveLength(1);
-		const host = body.hosts[0];
-		expect(host.host_name).toBe("alpha");
-		expect(host.online_at).toBe("2026-06-12T00:00:00.000Z");
-		expect(host.servers.map((s) => s.name)).toEqual(["github", "pdf"]);
-
-		const github = host.servers[0];
-		expect(github.tools).toEqual([
-			{ name: "actions_get", annotations: { readOnlyHint: true } },
-			{ name: "issue_write", annotations: { destructiveHint: true, idempotentHint: false } },
-		]);
-
-		// pdf has no captured annotations — empty tool list, not an error.
-		expect(host.servers[1].tools).toEqual([]);
+		expect(body.servers).toHaveLength(1);
+		const github = body.servers[0];
+		expect(github.name).toBe("github");
+		expect(github.hosts.map((h) => h.host_name)).toEqual(["alpha", "bravo"]);
+		expect(github.hosts.every((h) => h.has_capability_data)).toBe(true);
+		expect(github.divergence).toEqual([]);
+		expect(github.serverInfo?.version).toBe("2.1.0");
 	});
 
-	it("returns an empty server list for a host with no MCP servers", async () => {
-		seedHost("site-b", "bravo", { mcp_servers: JSON.stringify([]) });
+	it("warns when serverInfo versions differ across hosts", async () => {
+		seedHost("site-a", "alpha", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({ serverInfo: { name: "github-mcp", version: "2.1.0" } }),
+			}),
+		});
+		seedHost("site-b", "bravo", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({ serverInfo: { name: "github-mcp", version: "2.0.0" } }),
+			}),
+		});
 
 		const app = createMcpRoutes(db);
 		const body = (await (await app.request("/servers")).json()) as ServersResponse;
-		expect(body.hosts).toHaveLength(1);
-		expect(body.hosts[0].servers).toEqual([]);
+		const divergence = body.servers[0].divergence;
+		expect(divergence).toHaveLength(1);
+		expect(divergence[0].field).toBe("version");
+		expect(divergence[0].message).toContain("alpha");
+		expect(divergence[0].message).toContain("2.1.0");
+		expect(divergence[0].message).toContain("bravo");
+		expect(divergence[0].message).toContain("2.0.0");
+	});
+
+	it("warns when tool inventories differ across hosts, naming what each host lacks", async () => {
+		seedHost("site-a", "alpha", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({ tools: [{ name: "actions_get" }, { name: "issue_write" }] }),
+			}),
+		});
+		seedHost("site-b", "bravo", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({ tools: [{ name: "actions_get" }] }),
+			}),
+		});
+
+		const app = createMcpRoutes(db);
+		const body = (await (await app.request("/servers")).json()) as ServersResponse;
+		const divergence = body.servers[0].divergence;
+		expect(divergence).toHaveLength(1);
+		expect(divergence[0].field).toBe("tools");
+		expect(divergence[0].message).toContain("bravo");
+		expect(divergence[0].message).toContain("issue_write");
+	});
+
+	it("warns on prompt and resource set divergence independently", async () => {
+		seedHost("site-a", "alpha", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({
+					prompts: [{ name: "review_pr" }, { name: "summarize" }],
+					resources: [{ uri: "repo://readme" }, { uri: "repo://changelog" }],
+				}),
+			}),
+		});
+		seedHost("site-b", "bravo", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({
+					prompts: [{ name: "review_pr" }],
+					resources: [{ uri: "repo://readme" }],
+				}),
+			}),
+		});
+
+		const app = createMcpRoutes(db);
+		const body = (await (await app.request("/servers")).json()) as ServersResponse;
+		const fields = body.servers[0].divergence.map((d) => d.field).sort();
+		expect(fields).toEqual(["prompts", "resources"]);
+	});
+
+	it("excludes annotation-only hosts from divergence comparison and marks them partial", async () => {
+		// alpha has full capability data; charlie pre-dates the capabilities
+		// column and only has annotation-derived tools (a partial inventory).
+		// charlie's smaller tool set must NOT manufacture a divergence warning.
+		seedHost("site-a", "alpha", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({ github: capability() }),
+			online_at: "2026-06-12T00:00:00.000Z",
+		});
+		seedHost("site-c", "charlie", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_tool_annotations: JSON.stringify({
+				github: { actions_get: { readOnlyHint: true } },
+			}),
+			online_at: "2026-06-12T01:00:00.000Z",
+		});
+
+		const app = createMcpRoutes(db);
+		const body = (await (await app.request("/servers")).json()) as ServersResponse;
+		const github = body.servers[0];
+
+		expect(github.divergence).toEqual([]);
+		const alpha = github.hosts.find((h) => h.host_name === "alpha");
+		const charlie = github.hosts.find((h) => h.host_name === "charlie");
+		expect(alpha?.has_capability_data).toBe(true);
+		expect(charlie?.has_capability_data).toBe(false);
+		// Display inventory comes from the capability-bearing host even though
+		// charlie was online more recently.
+		expect(github.tools.map((t) => t.name)).toEqual(["actions_get", "issue_write"]);
+	});
+
+	it("prefers the most recently online capability-bearing host as the display source", async () => {
+		seedHost("site-a", "alpha", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_capabilities: JSON.stringify({
+				github: capability({ serverInfo: { name: "github-mcp", version: "2.0.0" } }),
+			}),
+			online_at: "2026-06-10T00:00:00.000Z",
+		});
+		seedHost("site-b", "bravo", {
+			mcp_servers: JSON.stringify(["github"]),
+			mcp_tool_annotations: JSON.stringify({
+				github: { actions_get: { readOnlyHint: true } },
+			}),
+			mcp_capabilities: JSON.stringify({
+				github: capability({ serverInfo: { name: "github-mcp", version: "2.1.0" } }),
+			}),
+			online_at: "2026-06-12T00:00:00.000Z",
+		});
+
+		const app = createMcpRoutes(db);
+		const body = (await (await app.request("/servers")).json()) as ServersResponse;
+		const github = body.servers[0];
+
+		expect(github.serverInfo?.version).toBe("2.1.0");
+		// Annotations merge from the same host the inventory came from.
+		const actionsGet = github.tools.find((t) => t.name === "actions_get");
+		expect(actionsGet?.annotations).toEqual({ readOnlyHint: true });
+		// The version difference itself still warns.
+		expect(github.divergence.map((d) => d.field)).toEqual(["version"]);
+	});
+
+	it("falls back to annotation-derived tools when no host has capability data", async () => {
+		seedHost("site-c", "charlie", {
+			mcp_servers: JSON.stringify(["pdf"]),
+			mcp_tool_annotations: JSON.stringify({
+				pdf: { extract: { readOnlyHint: true } },
+			}),
+		});
+
+		const app = createMcpRoutes(db);
+		const body = (await (await app.request("/servers")).json()) as ServersResponse;
+		const pdf = body.servers[0];
+		expect(pdf.serverInfo).toBeUndefined();
+		expect(pdf.prompts).toBeUndefined();
+		expect(pdf.resources).toBeUndefined();
+		expect(pdf.tools).toEqual([{ name: "extract", annotations: { readOnlyHint: true } }]);
+		expect(pdf.divergence).toEqual([]);
 	});
 
 	it("tolerates null and malformed JSON columns", async () => {
 		seedHost("site-c", "charlie", {
 			mcp_servers: "not json",
 			mcp_tool_annotations: "{broken",
+			mcp_capabilities: "{broken",
 		});
-		seedHost("site-d", "delta", { mcp_servers: null, mcp_tool_annotations: null });
+		seedHost("site-d", "delta", { mcp_servers: null });
 
 		const app = createMcpRoutes(db);
 		const res = await app.request("/servers");
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as ServersResponse;
-		expect(body.hosts).toHaveLength(2);
-		for (const host of body.hosts) {
-			expect(host.servers).toEqual([]);
-		}
+		expect(body.servers).toEqual([]);
 	});
 
-	it("excludes deleted hosts and sorts by host name", async () => {
-		seedHost("site-z", "zulu", { mcp_servers: JSON.stringify(["metacog"]) });
-		seedHost("site-a", "alpha", { mcp_servers: JSON.stringify(["pdf"]) });
+	it("excludes deleted hosts and sorts servers by name", async () => {
+		seedHost("site-z", "zulu", { mcp_servers: JSON.stringify(["metacog", "atproto"]) });
 		seedHost("site-x", "xray", { mcp_servers: JSON.stringify(["tavily"]), deleted: 1 });
 
 		const app = createMcpRoutes(db);
 		const body = (await (await app.request("/servers")).json()) as ServersResponse;
-		expect(body.hosts.map((h) => h.host_name)).toEqual(["alpha", "zulu"]);
-	});
-
-	it("merges full capabilities (serverInfo, tools, prompts, resources) when captured", async () => {
-		seedHost("site-e", "echo", {
-			mcp_servers: JSON.stringify(["github"]),
-			mcp_tool_annotations: JSON.stringify({
-				github: { actions_get: { readOnlyHint: true } },
-			}),
-			mcp_capabilities: JSON.stringify({
-				github: {
-					serverInfo: {
-						name: "github-mcp",
-						title: "GitHub",
-						version: "2.1.0",
-						description: "GitHub API access",
-						instructions: "Use for repo ops.",
-					},
-					tools: [
-						{ name: "plain_tool", description: "No annotations on this one" },
-						{ name: "actions_get", description: "Get a workflow run" },
-					],
-					prompts: [{ name: "review_pr", description: "Review a pull request" }],
-					resources: [{ uri: "repo://readme", name: "README", mimeType: "text/markdown" }],
-				},
-			}),
-		});
-
-		const app = createMcpRoutes(db);
-		const body = (await (await app.request("/servers")).json()) as ServersResponse;
-		const github = body.hosts[0].servers[0];
-
-		expect(github.serverInfo).toEqual({
-			name: "github-mcp",
-			title: "GitHub",
-			version: "2.1.0",
-			description: "GitHub API access",
-			instructions: "Use for repo ops.",
-		});
-		// Capability tools are the full inventory (not annotation-gated), sorted,
-		// with annotations merged in where captured.
-		expect(github.tools).toEqual([
-			{
-				name: "actions_get",
-				description: "Get a workflow run",
-				annotations: { readOnlyHint: true },
-			},
-			{ name: "plain_tool", description: "No annotations on this one", annotations: {} },
-		]);
-		expect(github.prompts).toEqual([{ name: "review_pr", description: "Review a pull request" }]);
-		expect(github.resources).toEqual([
-			{ uri: "repo://readme", name: "README", mimeType: "text/markdown" },
-		]);
-	});
-
-	it("falls back to annotation-derived tools and tolerates malformed mcp_capabilities", async () => {
-		seedHost("site-f", "foxtrot", {
-			mcp_servers: JSON.stringify(["pdf"]),
-			mcp_tool_annotations: JSON.stringify({
-				pdf: { extract: { readOnlyHint: true } },
-			}),
-			mcp_capabilities: "{broken",
-		});
-
-		const app = createMcpRoutes(db);
-		const res = await app.request("/servers");
-		expect(res.status).toBe(200);
-		const body = (await res.json()) as ServersResponse;
-		const pdf = body.hosts[0].servers[0];
-		expect(pdf.serverInfo).toBeUndefined();
-		expect(pdf.prompts).toBeUndefined();
-		expect(pdf.resources).toBeUndefined();
-		expect(pdf.tools).toEqual([{ name: "extract", annotations: { readOnlyHint: true } }]);
+		expect(body.servers.map((s) => s.name)).toEqual(["atproto", "metacog"]);
+		// xray is deleted — tavily must not appear.
 	});
 });
