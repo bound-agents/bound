@@ -16,10 +16,9 @@ const NAV = [
 	{ hash: "#/network", route: "03", label: "Network" },
 	{ hash: "#/advisories", route: "04", label: "Advisories" },
 	{ hash: "#/files", route: "05", label: "Files" },
-	{ hash: "#/webhooks", route: "06", label: "Webhooks" },
-	{ hash: "#/skills", route: "07", label: "Skills" },
-	{ hash: "#/metrics", route: "08", label: "Metrics" },
-	{ hash: "#/persona", route: "09", label: "Persona" },
+	{ hash: "#/connections", route: "06", label: "Connections" },
+	{ hash: "#/metrics", route: "07", label: "Metrics" },
+	{ hash: "#/persona", route: "08", label: "Persona" },
 ];
 
 let advisoryCount = $state(0);
