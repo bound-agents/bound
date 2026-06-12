@@ -15,6 +15,7 @@
  */
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 
 /**
  * mxc SandboxPolicy schema version. The SDK validates this against its own
@@ -174,22 +175,10 @@ export function decideSandboxSpawn(
  * of the feature and must hold regardless of whether the binary can run here.
  */
 export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
-	const writable = new Set<string>();
-	const addPath = (p: string) => {
-		try {
-			writable.add(realpathSync(p));
-		} catch {
-			writable.add(p);
-		}
-	};
-	addPath(cwd);
-	addPath(tmpdir());
-	for (const extra of cfg.writablePaths) addPath(extra);
-
 	return {
 		version: POLICY_VERSION,
 		filesystem: {
-			readwritePaths: [...writable],
+			readwritePaths: computeWritableRoots(cwd, cfg),
 			// Deny-writes-only: the entire filesystem is readable; only the
 			// writable set above can be written. Anything not under a
 			// readwritePath inherits read-only from this root grant.
@@ -204,4 +193,106 @@ export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 		// opens a localhost port) under the shell, contradicting "network open".
 		network: cfg.network === "open" ? { allowOutbound: true, allowLocalNetwork: true } : {},
 	};
+}
+
+/**
+ * The realpath-resolved set of directories writable under the deny-writes-only
+ * policy: cwd + tmpdir + any explicit extras. Shared by {@link buildPolicy}
+ * (the mxc kernel guard) and {@link checkWritePath} (the in-process guard for
+ * the TS file tools) so both enforce the identical writable set. Symlinks are
+ * resolved so two names for the same directory compare equal.
+ */
+export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): string[] {
+	const writable = new Set<string>();
+	const addPath = (p: string) => {
+		try {
+			writable.add(realpathSync(p));
+		} catch {
+			writable.add(p);
+		}
+	};
+	addPath(cwd);
+	addPath(tmpdir());
+	for (const extra of cfg.writablePaths) addPath(extra);
+	return [...writable];
+}
+
+/**
+ * Resolve symlinks along the deepest *existing* ancestor of a path that may not
+ * exist yet (a write creates it). Walks up until a component resolves, realpaths
+ * that, then re-appends the not-yet-existing tail — so a symlinked directory in
+ * the chain (e.g. `repo/escape -> /etc`) can't smuggle a write outside the set.
+ */
+function resolveThroughExisting(absPath: string): string {
+	let existing = absPath;
+	const tail: string[] = [];
+	for (;;) {
+		try {
+			let out = realpathSync(existing);
+			for (let i = tail.length - 1; i >= 0; i--) out = resolve(out, tail[i]);
+			return out;
+		} catch {
+			const parent = dirname(existing);
+			if (parent === existing) return absPath; // hit filesystem root, nothing resolvable
+			tail.push(basename(existing));
+			existing = parent;
+		}
+	}
+}
+
+/** True when `target` is `root` itself or nested beneath it. */
+function isWithin(target: string, root: string): boolean {
+	if (target === root) return true;
+	const rel = relative(root, target);
+	return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/** Result of a {@link checkWritePath} validation against the writable set. */
+export interface WritePathCheck {
+	allowed: boolean;
+	/** The target after cwd-resolution and symlink-through-existing-ancestor. */
+	resolvedTarget: string;
+	/** The writable roots the target was checked against. */
+	writableRoots: string[];
+}
+
+/**
+ * In-process mirror of the sandbox's deny-writes-only filesystem policy, for the
+ * TS file tools (write/edit/copy) that call `fs` directly and never pass through
+ * mxc's kernel guard. Pure path math — no mxc, no native binary, no platform
+ * dependency — so it holds even where the sandbox can't run (the `passthrough`
+ * case), and it only ever gates *write targets*: reads stay unrestricted, exactly
+ * like the kernel policy. Callers enforce only when `cfg.enabled`.
+ */
+export function checkWritePath(
+	targetPath: string,
+	cwd: string,
+	cfg: ResolvedSandboxConfig,
+): WritePathCheck {
+	const writableRoots = computeWritableRoots(cwd, cfg);
+	const absTarget = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+	const resolvedTarget = resolveThroughExisting(absTarget);
+	const allowed = writableRoots.some((root) => isWithin(resolvedTarget, root));
+	return { allowed, resolvedTarget, writableRoots };
+}
+
+/**
+ * Rich, actionable denial message for a write blocked by {@link checkWritePath}.
+ * Names the resolved target, lists the writable roots, and points at both
+ * escape hatches (widen `sandbox.writablePaths`, or disable the sandbox).
+ */
+export function formatWriteDenied(
+	toolName: string,
+	targetPath: string,
+	check: WritePathCheck,
+): string {
+	const roots = check.writableRoots.map((r) => `  - ${r}`).join("\n");
+	return [
+		`Error: ${toolName} refused — "${targetPath}" resolves to ${check.resolvedTarget}, which is outside the sandbox writable set.`,
+		"",
+		"The filesystem sandbox is enabled (deny-writes-only); writes are confined to:",
+		roots,
+		"",
+		'To allow this write, add the path to "sandbox.writablePaths" in your boundless config, or set "sandbox": false to disable the guard entirely.',
+	].join("\n");
 }

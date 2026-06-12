@@ -207,8 +207,8 @@ export function buildToolSet(
 
 	toolDefinitions.push(...coreToolDefs);
 	handlers.set("boundless_read", createReadTool(hostname));
-	handlers.set("boundless_write", createWriteTool(hostname));
-	handlers.set("boundless_edit", createEditTool(hostname));
+	handlers.set("boundless_write", createWriteTool(hostname, sandbox));
+	handlers.set("boundless_edit", createEditTool(hostname, sandbox));
 	handlers.set("boundless_search", createSearchTool(hostname));
 	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell, sandbox, logger));
 	handlers.set(
@@ -216,6 +216,7 @@ export function buildToolSet(
 		createCopyTool({
 			hostname: hostname,
 			boundUrl: boundUrl ?? "http://localhost:3001",
+			sandbox: sandbox,
 		}),
 	);
 
