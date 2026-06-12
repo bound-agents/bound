@@ -249,7 +249,11 @@ describe("checkWritePath (in-process write guard)", () => {
 		expect(checkWritePath(target, repo, cfg).allowed).toBe(false);
 	});
 
-	it("resists a symlinked-directory escape inside cwd", () => {
+	// POSIX-only: creating a directory symlink on Windows needs reparse-point
+	// privilege (developer mode or admin), and the resolveThroughExisting logic
+	// being exercised here is platform-agnostic path math already covered on the
+	// Windows lane by the integration suite. Skip the fixture, not the property.
+	it.skipIf(process.platform === "win32")("resists a symlinked-directory escape inside cwd", () => {
 		// repo/escape -> /etc ; a write to repo/escape/x must resolve THROUGH the
 		// symlink (out of cwd) and be denied, not allowed by its cwd-prefixed name.
 		const link = join(repo, "escape");
