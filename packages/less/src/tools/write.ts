@@ -2,11 +2,20 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { formatProvenance } from "./provenance";
+import {
+	DISABLED_SANDBOX,
+	type ResolvedSandboxConfig,
+	checkWritePath,
+	formatWriteDenied,
+} from "./sandbox-policy";
 import type { ToolHandler, ToolResult } from "./types";
 
-export function createWriteTool(hostname: string): ToolHandler {
+export function createWriteTool(
+	hostname: string,
+	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
+): ToolHandler {
 	return async (args, _signal, cwd) => {
-		return writeToolImpl(hostname, args, cwd);
+		return writeToolImpl(hostname, args, cwd, sandbox);
 	};
 }
 
@@ -14,6 +23,7 @@ async function writeToolImpl(
 	hostname: string,
 	args: Record<string, unknown>,
 	cwd: string,
+	sandbox: ResolvedSandboxConfig,
 ): Promise<ToolResult> {
 	const { file_path, content } = args as {
 		file_path?: string;
@@ -51,6 +61,23 @@ async function writeToolImpl(
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
+
+	// In-process write guard: when the sandbox is enabled, confine writes to the
+	// same writable set the kernel guard enforces for the shell. This tool calls
+	// fs directly and never passes through mxc, so without this check it would
+	// silently punch through an enabled sandbox.
+	if (sandbox.enabled) {
+		const check = checkWritePath(file_path, cwd, sandbox);
+		if (!check.allowed) {
+			return {
+				content: [
+					provenance,
+					{ type: "text", text: formatWriteDenied("boundless_write", file_path, check) },
+				],
+				isError: true,
+			};
+		}
+	}
 
 	try {
 		// Create parent directories

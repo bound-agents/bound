@@ -1,6 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { formatProvenance } from "./provenance";
+import {
+	DISABLED_SANDBOX,
+	type ResolvedSandboxConfig,
+	checkWritePath,
+	formatWriteDenied,
+} from "./sandbox-policy";
 import type { ToolHandler, ToolResult } from "./types";
 
 type Filesystem = "host" | "sandbox";
@@ -155,6 +161,13 @@ export interface CopyToolDeps {
 	hostname: string;
 	/** Bound daemon base URL, used for sandbox-side reads/writes. */
 	boundUrl: string;
+	/**
+	 * Sandbox config. When enabled, host-side write targets are confined to the
+	 * deny-writes-only writable set (same guard as boundless_write/edit). The
+	 * sandbox-VFS target is out of scope — it round-trips through bound's HTTP
+	 * API, which owns its own containment. Defaults to disabled (no guard).
+	 */
+	sandbox?: ResolvedSandboxConfig;
 }
 
 export function createCopyTool(deps: CopyToolDeps): ToolHandler {
@@ -188,6 +201,18 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 	const readResult = await readSource(source, sourcePath, cwd, deps.boundUrl);
 	if ("error" in readResult) {
 		return errorResult(provenance, `Error: ${readResult.error}`);
+	}
+
+	// In-process write guard: a host target write calls fs directly and never
+	// passes through mxc, so when the sandbox is enabled, confine it to the same
+	// writable set. The sandbox target is out of scope — it round-trips through
+	// bound's HTTP API, which owns its own containment.
+	const sandbox = deps.sandbox ?? DISABLED_SANDBOX;
+	if (target === "host" && sandbox.enabled) {
+		const check = checkWritePath(targetPath, cwd, sandbox);
+		if (!check.allowed) {
+			return errorResult(provenance, formatWriteDenied("boundless_copy", targetPath, check));
+		}
 	}
 
 	const writeResult = await writeTarget(target, targetPath, cwd, deps.boundUrl, readResult.bytes);

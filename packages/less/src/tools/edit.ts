@@ -2,11 +2,20 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { findStringOccurrences } from "./match";
 import { formatProvenance } from "./provenance";
+import {
+	DISABLED_SANDBOX,
+	type ResolvedSandboxConfig,
+	checkWritePath,
+	formatWriteDenied,
+} from "./sandbox-policy";
 import type { ToolHandler, ToolResult } from "./types";
 
-export function createEditTool(hostname: string): ToolHandler {
+export function createEditTool(
+	hostname: string,
+	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
+): ToolHandler {
 	return async (args, _signal, cwd) => {
-		return editToolImpl(hostname, args, cwd);
+		return editToolImpl(hostname, args, cwd, sandbox);
 	};
 }
 
@@ -14,6 +23,7 @@ async function editToolImpl(
 	hostname: string,
 	args: Record<string, unknown>,
 	cwd: string,
+	sandbox: ResolvedSandboxConfig,
 ): Promise<ToolResult> {
 	const { file_path, old_string, new_string } = args as {
 		file_path?: string;
@@ -66,6 +76,23 @@ async function editToolImpl(
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
+
+	// In-process write guard: an edit reads then writes back to the same path, so
+	// when the sandbox is enabled, confine the target to the writable set up front
+	// (before the read) for a clean, rich error. This tool calls fs directly and
+	// never passes through mxc's kernel guard.
+	if (sandbox.enabled) {
+		const check = checkWritePath(file_path, cwd, sandbox);
+		if (!check.allowed) {
+			return {
+				content: [
+					provenance,
+					{ type: "text", text: formatWriteDenied("boundless_edit", file_path, check) },
+				],
+				isError: true,
+			};
+		}
+	}
 
 	try {
 		const content = readFileSync(resolvedPath, "utf-8");
