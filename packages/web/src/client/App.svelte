@@ -81,7 +81,13 @@ function screenLabel(r: string): string {
 			{:else if route === "/files"}
 				<FilesView />
 			{:else if route.startsWith("/connections")}
-				<ConnectionsView section={route === "/connections/skills" ? "skills" : "webhooks"} />
+				<ConnectionsView
+					section={route === "/connections/skills"
+						? "skills"
+						: route === "/connections/mcp"
+							? "mcp"
+							: "webhooks"}
+				/>
 			{:else if route === "/metrics"}
 				<MetricsView />
 			{:else if route === "/persona"}
