@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema, insertInbox, readUnprocessed } from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
@@ -108,7 +110,7 @@ let testDbPath: string;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-relay-processor-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-relay-processor-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);
@@ -536,7 +538,7 @@ describe("RelayProcessor", () => {
 
 			// Create temporary test files
 			const fs = require("node:fs");
-			const testDir = `/tmp/relay-cache-warm-test-${randomBytes(4).toString("hex")}`;
+			const testDir = join(tmpdir(), `relay-cache-warm-test-${randomBytes(4).toString("hex")}`);
 			require("node:fs").mkdirSync(testDir, { recursive: true });
 			const testFile1 = `${testDir}/file1.txt`;
 			const testFile2 = `${testDir}/file2.txt`;

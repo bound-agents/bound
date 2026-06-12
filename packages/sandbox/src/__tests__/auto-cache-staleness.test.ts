@@ -2,6 +2,7 @@ import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -17,7 +18,7 @@ describe("ClusterFs auto-cache on overlay read", () => {
 
 		// Create a temporary directory for overlay mounts
 		const hex = Buffer.from(crypto.getRandomValues(new Uint8Array(4))).toString("hex");
-		tmpDir = join("/tmp", `bound-test-overlay-${hex}`);
+		tmpDir = join(tmpdir(), `bound-test-overlay-${hex}`);
 		mkdirSync(tmpDir, { recursive: true });
 	});
 
@@ -191,7 +192,7 @@ describe("ClusterFs staleness detection", () => {
 		applySchema(db);
 
 		const hex = Buffer.from(crypto.getRandomValues(new Uint8Array(4))).toString("hex");
-		tmpDir = join("/tmp", `bound-test-staleness-${hex}`);
+		tmpDir = join(tmpdir(), `bound-test-staleness-${hex}`);
 		mkdirSync(tmpDir, { recursive: true });
 	});
 

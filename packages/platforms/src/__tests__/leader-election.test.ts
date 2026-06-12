@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { PlatformConnectorConfig } from "@bound/shared";
 import { PlatformLeaderElection } from "../leader-election.js";
@@ -35,7 +37,7 @@ let mockConnector: MockConnector;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-leader-election-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-leader-election-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);

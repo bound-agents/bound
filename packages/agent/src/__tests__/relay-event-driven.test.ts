@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema, readInboxByRefId, readInboxByStreamId } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { waitForRelayInbox } from "../agent-loop-utils";
@@ -11,7 +13,7 @@ let eventBus: TypedEventEmitter;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-relay-event-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-relay-event-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);

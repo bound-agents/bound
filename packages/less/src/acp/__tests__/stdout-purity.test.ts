@@ -10,6 +10,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	type Agent,
 	AgentSideConnection,
@@ -67,7 +70,7 @@ describe("ACP stdout purity", () => {
 					conn,
 					mcpManager: fakeMcpManager(),
 					mcpConfigs: [],
-					configDir: "/tmp/acp-purity-test",
+					configDir: join(tmpdir(), `acp-purity-test-${randomBytes(4).toString("hex")}`),
 					hostname: "h",
 					shell: fakeShell(),
 					logger: fakeLogger(),

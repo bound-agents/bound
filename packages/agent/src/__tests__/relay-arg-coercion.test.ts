@@ -14,6 +14,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { Logger, ToolCallPayload, TypedEventEmitter } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -78,7 +80,7 @@ let testDbPath: string;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-relay-arg-coercion-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-relay-arg-coercion-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);

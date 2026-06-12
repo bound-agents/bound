@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { bashTool } from "../tools/bash";
 
@@ -11,7 +12,7 @@ describe("boundless_bash", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		tempDir = join("/tmp", `boundless-test-${randomBytes(4).toString("hex")}`);
+		tempDir = join(tmpdir(), `boundless-test-${randomBytes(4).toString("hex")}`);
 		mkdirSync(tempDir, { recursive: true });
 	});
 

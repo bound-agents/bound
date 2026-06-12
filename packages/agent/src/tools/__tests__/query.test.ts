@@ -1,6 +1,8 @@
 import type Database from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { ToolContext } from "../../types.js";
 import { createQueryTool } from "../query.js";
@@ -9,7 +11,7 @@ let db: Database;
 let ctx: ToolContext;
 
 beforeAll(() => {
-	const dbPath = `/tmp/query-test-${randomBytes(4).toString("hex")}.db`;
+	const dbPath = join(tmpdir(), `query-test-${randomBytes(4).toString("hex")}.db`);
 	const sqlite = require("bun:sqlite");
 	db = new sqlite.Database(dbPath);
 	applySchema(db);

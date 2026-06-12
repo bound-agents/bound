@@ -1,6 +1,8 @@
 import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import type { Logger } from "@bound/shared";
@@ -85,14 +87,14 @@ describe("Platform MCP Registry — Relay Integration (AC6 + AC7)", () => {
 		const testId = randomBytes(4).toString("hex");
 
 		// Leader DB (has MCP servers)
-		testDbPathLead = `/tmp/test-relay-lead-${testId}.db`;
+		testDbPathLead = join(tmpdir(), `test-relay-lead-${testId}.db`);
 		const sqlite3 = require("bun:sqlite");
 		dbLead = new sqlite3.Database(testDbPathLead);
 		applySchema(dbLead);
 		siteIdLeader = `leader-${randomBytes(4).toString("hex")}`;
 
 		// Standby DB (no MCP servers)
-		testDbPathStandby = `/tmp/test-relay-standby-${testId}.db`;
+		testDbPathStandby = join(tmpdir(), `test-relay-standby-${testId}.db`);
 		dbStandby = new sqlite3.Database(testDbPathStandby);
 		applySchema(dbStandby);
 		siteIdStandby = `standby-${randomBytes(4).toString("hex")}`;

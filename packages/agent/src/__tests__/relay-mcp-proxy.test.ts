@@ -11,6 +11,8 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { applySchema, readUndelivered } from "@bound/core";
 import { createDefineCommands, loopContextStorage } from "@bound/sandbox";
 import type { CommandContext } from "@bound/sandbox";
@@ -28,7 +30,7 @@ let testDbPath: string;
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
-	testDbPath = `/tmp/test-relay-mcp-proxy-${testId}.db`;
+	testDbPath = join(tmpdir(), `test-relay-mcp-proxy-${testId}.db`);
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);
