@@ -4,21 +4,38 @@ import TopBar from "./components/TopBar.svelte";
 import { initMcpApps } from "./lib/mcp-apps-bootstrap";
 import { parseLineRoute } from "./lib/route-utils";
 import AdvisoryView from "./views/AdvisoryView.svelte";
+import ConnectionsView from "./views/ConnectionsView.svelte";
 import FilesView from "./views/FilesView.svelte";
 import LineView from "./views/LineView.svelte";
 import MetricsView from "./views/MetricsView.svelte";
 import NetworkStatus from "./views/NetworkStatus.svelte";
 import PersonaView from "./views/PersonaView.svelte";
-import SkillsView from "./views/SkillsView.svelte";
 import SystemMap from "./views/SystemMap.svelte";
 import Timetable from "./views/Timetable.svelte";
-import WebhookView from "./views/WebhookView.svelte";
 
-let route = $state(window.location.hash.slice(1) || "/");
+// Legacy routes that moved under the consolidated Connections tab. Normalized
+// via location.replace so the address bar, TopBar highlight, and history all
+// land on the canonical hash.
+const ROUTE_REDIRECTS: Record<string, string> = {
+	"/webhooks": "/connections/webhooks",
+	"/skills": "/connections/skills",
+};
+
+function currentRoute(): string {
+	const r = window.location.hash.slice(1) || "/";
+	const target = ROUTE_REDIRECTS[r];
+	if (target) {
+		window.location.replace(`#${target}`);
+		return target;
+	}
+	return r;
+}
+
+let route = $state(currentRoute());
 
 onMount(() => {
 	window.addEventListener("hashchange", () => {
-		route = window.location.hash.slice(1) || "/";
+		route = currentRoute();
 	});
 	// Connect to configured MCP App servers and register their tools on the
 	// shared BoundClient (the boundless client-tools pattern). Fire-and-forget:
@@ -33,10 +50,9 @@ function screenLabel(r: string): string {
 	if (r === "/network") return "04 Network";
 	if (r === "/advisories") return "05 Advisories";
 	if (r === "/files") return "06 Files";
-	if (r === "/webhooks") return "07 Webhooks";
-	if (r === "/skills") return "08 Skills";
-	if (r === "/metrics") return "09 Metrics";
-	if (r === "/persona") return "10 Persona";
+	if (r.startsWith("/connections")) return "07 Connections";
+	if (r === "/metrics") return "08 Metrics";
+	if (r === "/persona") return "09 Persona";
 	return "00 Unknown";
 }
 </script>
@@ -64,10 +80,8 @@ function screenLabel(r: string): string {
 				<AdvisoryView />
 			{:else if route === "/files"}
 				<FilesView />
-			{:else if route === "/webhooks"}
-				<WebhookView />
-			{:else if route === "/skills"}
-				<SkillsView />
+			{:else if route.startsWith("/connections")}
+				<ConnectionsView section={route === "/connections/skills" ? "skills" : "webhooks"} />
 			{:else if route === "/metrics"}
 				<MetricsView />
 			{:else if route === "/persona"}
