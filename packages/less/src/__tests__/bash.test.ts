@@ -195,8 +195,11 @@ describe("boundless_bash", () => {
 		// for this command" is answerable from the log rather than from a note
 		// that scrolls off the agent's context.
 		function makeSpyLogger() {
-			const events: Array<{ level: "info" | "warn"; event: string; fields?: Record<string, unknown> }> =
-				[];
+			const events: Array<{
+				level: "info" | "warn";
+				event: string;
+				fields?: Record<string, unknown>;
+			}> = [];
 			return {
 				events,
 				info: (event: string, fields?: Record<string, unknown>) =>
@@ -229,11 +232,7 @@ describe("boundless_bash", () => {
 		it("emits nothing when no logger is supplied (logging is opt-in)", async () => {
 			// Smoke: the spawn path must not throw when logger is undefined.
 			const tool = createBashTool("test-host", testShell, DISABLED_SANDBOX);
-			const result = await tool(
-				{ command: "echo nolog" },
-				new AbortController().signal,
-				tempDir,
-			);
+			const result = await tool({ command: "echo nolog" }, new AbortController().signal, tempDir);
 			expect(result.isError).toBeUndefined();
 			expect(result.content[1].text).toContain("Exit code: 0");
 		});

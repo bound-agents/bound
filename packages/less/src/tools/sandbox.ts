@@ -28,7 +28,7 @@
 import type { ChildProcess } from "node:child_process";
 import { Readable } from "node:stream";
 import { ensureMxcRuntime } from "./mxc-runtime";
-import { buildPolicy, IDENTITY_MACH_LOOKUPS, nonInteractiveEnv } from "./sandbox-policy";
+import { IDENTITY_MACH_LOOKUPS, buildPolicy, nonInteractiveEnv } from "./sandbox-policy";
 import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy";
 
 // Re-export the SDK-free surface so existing import sites (`./sandbox`) keep
