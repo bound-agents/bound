@@ -1,8 +1,9 @@
 <script lang="ts">
+import McpServersView from "./McpServersView.svelte";
 import SkillsView from "./SkillsView.svelte";
 import WebhookView from "./WebhookView.svelte";
 
-export type ConnectionsSection = "webhooks" | "skills";
+export type ConnectionsSection = "webhooks" | "skills" | "mcp";
 
 interface Props {
 	section: ConnectionsSection;
@@ -22,6 +23,12 @@ const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: str
 		label: "Skills",
 		desc: "Reusable instruction sets",
 		hash: "#/connections/skills",
+	},
+	{
+		id: "mcp",
+		label: "MCP Servers",
+		desc: "Cluster tool inventory",
+		hash: "#/connections/mcp",
 	},
 ];
 </script>
@@ -48,6 +55,8 @@ const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: str
 	<div class="content">
 		{#if section === "skills"}
 			<SkillsView />
+		{:else if section === "mcp"}
+			<McpServersView />
 		{:else}
 			<WebhookView />
 		{/if}
