@@ -143,6 +143,7 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -166,6 +167,7 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -193,6 +195,7 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -216,6 +219,7 @@ describe("performAttach", () => {
 			cwd: "/home/test",
 			hostname: "test-host",
 			logger: mockLogger,
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",

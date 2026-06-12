@@ -23,6 +23,7 @@ import { AppLogger } from "./logging";
 import { McpServerManager } from "./mcp/manager";
 import { performAttach } from "./session/attach";
 import { buildToolSet } from "./tools/registry";
+import { resolveSandboxConfig } from "./tools/sandbox";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
 
@@ -118,6 +119,7 @@ async function runAcpMode(args: {
 			mcpConfigs: mcpConfig.servers,
 			hostname,
 			shell,
+			sandbox: resolveSandboxConfig(config.sandbox),
 			logger,
 			modelId: config.model,
 			contextFiles: config.contextFiles,
@@ -192,6 +194,10 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
+		// Resolve the filesystem sandbox policy (opt-out: enabled unless the
+		// config disables it). Threaded into the bash tool alongside the shell.
+		const sandbox = resolveSandboxConfig(config.sandbox);
+
 		// Step 3: Connect BoundClient with timeout
 		const client = new BoundClient(config.url);
 		try {
@@ -241,11 +247,21 @@ async function main(): Promise<void> {
 			logger,
 			injectContextFiles: config.contextFiles,
 			shell,
+			sandbox,
 		});
 
 		// Step 8: Build tool set for App
 		const mcpTools = mcpManager.getRunningTools();
-		const toolSet = buildToolSet(process.cwd(), hostname, mcpTools, undefined, config.url, shell);
+		const toolSet = buildToolSet(
+			process.cwd(),
+			hostname,
+			mcpTools,
+			undefined,
+			config.url,
+			shell,
+			undefined,
+			sandbox,
+		);
 
 		// Block on the shiki highlighter before render so initial message
 		// history (committed to Ink's <Static>) is fully syntax-highlighted.
@@ -281,6 +297,7 @@ async function main(): Promise<void> {
 				model={config.model}
 				toolHandlers={toolSet.handlers}
 				shell={shell}
+				sandbox={sandbox}
 			/>,
 			{ exitOnCtrlC: false },
 		);

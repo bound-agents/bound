@@ -17,6 +17,9 @@
  * wire to the BoundAcpAgent and returns its responses.
  */
 
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	type Agent,
 	AgentSideConnection,
@@ -264,9 +267,15 @@ export function makeAcpHarness(
 				conn,
 				mcpManager: fakeMcpManager(),
 				mcpConfigs: [],
-				configDir: "/tmp/acp-test-config",
+				configDir: join(tmpdir(), `acp-test-config-${randomBytes(4).toString("hex")}`),
 				hostname: "testhost",
 				shell: fakeShell(),
+				sandbox: {
+					enabled: false,
+					writablePaths: [],
+					network: "open",
+					onUnavailable: "passthrough",
+				},
 				logger: fakeLogger(),
 				modelId: null,
 				...overrides,

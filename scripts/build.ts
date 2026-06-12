@@ -147,12 +147,65 @@ function justBashWorkerRewritePlugin(): BunPlugin {
 	};
 }
 
+/**
+ * Stub out `node-pty` so the bare `import pty from 'node-pty'` in
+ * `@microsoft/mxc-sdk` resolves to a no-op module instead of the real one.
+ *
+ * Why this is necessary: the mxc SDK imports node-pty at module top level
+ * (sandbox.js:3, state-aware.js:3). node-pty's index.js, at module-eval,
+ * loads its native addon via `loadNativeModule('pty')` (lib/utils.js), which
+ * does a DYNAMIC, string-concatenated `require("prebuilds/<plat>-<arch>/pty.node")`.
+ * `bun build --compile` only embeds `.node` files it can resolve statically,
+ * so that concatenated path is invisible to it and `pty.node` never rides into
+ * the binary. At runtime the require resolves against `/$bunfs/root/` and
+ * throws `Failed to load native module: pty.node` — crashing boundless at
+ * startup, before any `usePty:false` runtime decision can route around it.
+ *
+ * Why a stub is correct (not a workaround): boundless ALWAYS spawns sandboxed
+ * commands via child_process (`spawnSandboxFromConfig(config, { usePty: false })`
+ * in packages/less/src/tools/sandbox.ts), so the PTY path is never taken — the
+ * SDK only dereferences `pty.spawn` inside the PTY function, never at
+ * module-eval. node-pty is pure dead weight in the binary; it only needs to not
+ * crash on import. node-pty is reachable solely via mxc-sdk (`bun pm why`
+ * confirms the single chain), so nothing else in boundless is affected. The
+ * stub's `spawn` throws loudly if the PTY path is ever taken.
+ */
+function stubNodePtyPlugin(): BunPlugin {
+	return {
+		name: "stub-node-pty",
+		setup(build) {
+			build.onResolve({ filter: /^node-pty$/ }, () => ({
+				path: "node-pty",
+				namespace: "stub-node-pty",
+			}));
+			build.onLoad({ filter: /.*/, namespace: "stub-node-pty" }, () => ({
+				contents: `
+const unavailable = () => {
+	throw new Error(
+		"node-pty is stubbed in the boundless binary; PTY-mode sandbox spawning is unavailable. The mxc filesystem sandbox spawns via child_process (usePty:false).",
+	);
+};
+export const spawn = unavailable;
+export default { spawn: unavailable };
+`,
+				loader: "js",
+			}));
+		},
+	};
+}
+
 interface CompileBinaryOptions {
 	/**
 	 * Apply the just-bash / sqlite3 worker rewrite plugin. Only `bound`
 	 * spawns these workers; other binaries don't import the sandbox.
 	 */
 	rewriteJustBashWorkers?: boolean;
+	/**
+	 * Stub out `node-pty`. Only `boundless` imports it (transitively via
+	 * `@microsoft/mxc-sdk`), and its native addon can't ride into a
+	 * `bun build --compile` binary — see `stubNodePtyPlugin`.
+	 */
+	stubNodePty?: boolean;
 }
 
 async function compileBinary(
@@ -169,6 +222,9 @@ async function compileBinary(
 			);
 		}
 		plugins.push(justBashWorkerRewritePlugin());
+	}
+	if (options.stubNodePty) {
+		plugins.push(stubNodePtyPlugin());
 	}
 
 	const result = await Bun.build({
@@ -255,6 +311,16 @@ async function build() {
 		process.exit(1);
 	}
 
+	// Step 2b: Stage mxc sandbox binary for embedding into the boundless binary.
+	// Non-fatal: a missing/unsupported binary degrades to passthrough at runtime
+	// rather than breaking the build.
+	console.log("\n2b. Preparing mxc sandbox runtime...");
+	try {
+		execSync("bun run scripts/build-mxc-runtime.ts", { stdio: "inherit" });
+	} catch {
+		console.warn("mxc runtime staging failed; boundless filesystem sandbox will be unavailable.");
+	}
+
 	// Step 3: Compile bound (main agent binary) — needs both OTel esnext
 	// resolution and the just-bash worker rewrite.
 	console.log("\n3. Compiling bound binary...");
@@ -288,7 +354,9 @@ async function build() {
 	// Step 6: Compile boundless (terminal client)
 	console.log("\n6. Compiling boundless binary...");
 	try {
-		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless");
+		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
+			stubNodePty: true,
+		});
 	} catch (e) {
 		console.error("boundless compilation failed:", e instanceof Error ? e.message : e);
 		console.log("Use 'bun packages/less/src/boundless.tsx' to run directly");

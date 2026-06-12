@@ -72,6 +72,7 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -107,6 +108,7 @@ describe("transitionThread", () => {
 			logger: mockLogger,
 			inFlightTools: new Map(),
 			model: "claude-opus", // preserved
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -146,6 +148,7 @@ describe("transitionThread", () => {
 				["tool1", controller1],
 				["tool2", controller2],
 			]),
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -188,6 +191,7 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -223,6 +227,7 @@ describe("transitionThread", () => {
 			mcpConfigs: [],
 			logger: mockLogger,
 			inFlightTools: new Map(),
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
 			shell: {
 				command: "sh",
 				execFlag: "-c",

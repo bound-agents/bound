@@ -4,6 +4,25 @@ import { z } from "zod";
 
 // Zod schemas for configuration files
 
+// Object form of the `sandbox` field — finer-grained control over the
+// mxc-backed filesystem sandbox for the boundless bash-family tool.
+const sandboxConfigSchema = z
+	.object({
+		// Master switch. `false` here is equivalent to `sandbox: false`.
+		enabled: z.boolean().default(true),
+		// Extra absolute paths granted WRITE access beyond the working directory
+		// and the system temp dir (which are always writable when enabled).
+		writablePaths: z.array(z.string()).default([]),
+		// Outbound network from sandboxed commands. "open" (default) leaves it
+		// reachable; "blocked" denies all network access.
+		network: z.enum(["open", "blocked"]).default("open"),
+		// Behavior when mxc can't sandbox on this platform: "passthrough"
+		// (default) runs the command unsandboxed with a warning; "error" fails
+		// the command rather than running it without containment.
+		onUnavailable: z.enum(["passthrough", "error"]).default("passthrough"),
+	})
+	.strict();
+
 const configSchema = z
 	.object({
 		url: z.string().default("http://localhost:3001"),
@@ -19,6 +38,14 @@ const configSchema = z
 		// shell is auto-detected: POSIX `sh` on non-Windows, PowerShell (else
 		// cmd.exe) on Windows. An invalid override is a fatal error at attach.
 		shell: z.string().optional(),
+		// Filesystem sandboxing for the boundless bash-family tool, backed by
+		// @microsoft/mxc-sdk. Defaults ON (opt-out). When enabled, shell commands
+		// run inside a containment (seatbelt on macOS, bubblewrap on Linux) that
+		// keeps the whole filesystem READABLE but confines WRITES to the working
+		// directory + tmpdir (plus any `writablePaths`). The goal is to guard the
+		// filesystem OUTSIDE the working directory — the repo itself stays
+		// read-write. `true` = defaults, `false` = disabled, object = finer control.
+		sandbox: z.union([z.boolean(), sandboxConfigSchema]).default(true),
 	})
 	.passthrough();
 
@@ -81,6 +108,7 @@ export function loadConfig(configDir: string): Config & { _raw: Record<string, u
 				url: "http://localhost:3001",
 				model: null,
 				contextFiles: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"],
+				sandbox: true,
 				_raw: {},
 			};
 		}

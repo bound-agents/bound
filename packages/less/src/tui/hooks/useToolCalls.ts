@@ -1,6 +1,7 @@
 import type { BoundClient, ToolCallRequest, ToolCallResult, ToolCancelEvent } from "@bound/client";
 import { useEffect, useState } from "react";
 import { bashToolWithStreaming } from "../../tools/bash";
+import type { ResolvedSandboxConfig } from "../../tools/sandbox";
 import type { ResolvedShell } from "../../tools/shell";
 import type { ToolHandler } from "../../tools/types";
 
@@ -29,6 +30,7 @@ export function useToolCalls(
 	hostname: string,
 	cwd: string,
 	shell: ResolvedShell,
+	sandbox: ResolvedSandboxConfig,
 ): UseToolCallsResult {
 	const [inFlightTools, setInFlightTools] = useState<Map<string, InFlightTool>>(new Map());
 
@@ -95,6 +97,7 @@ export function useToolCalls(
 								},
 								hostname,
 								shell,
+								sandbox,
 							)
 						: await handler(args, controller.signal, cwd);
 
@@ -152,7 +155,7 @@ export function useToolCalls(
 		return () => {
 			client.off("tool:cancel", handleToolCancel);
 		};
-	}, [client, handlers, hostname, cwd, shell]);
+	}, [client, handlers, hostname, cwd, shell, sandbox]);
 
 	const abortAll = () => {
 		setInFlightTools((prev) => {

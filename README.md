@@ -96,7 +96,29 @@ boundless --attach <thread-id>
 ```
 
 Config lives at `~/.bound/less/config.json` (server URL, default model, injected
-context files, shell override) and `~/.bound/less/mcp.json` (MCP servers).
+context files, shell override, filesystem sandbox) and `~/.bound/less/mcp.json` (MCP servers).
+
+By default, shell commands run inside a filesystem sandbox (Microsoft's
+[mxc](https://github.com/microsoft/mxc), cross-platform via seatbelt on macOS and
+bubblewrap on Linux): the whole filesystem stays readable, but writes are confined to
+the working directory and the system temp dir — so the agent can edit your project but
+can't clobber `~/.ssh`, a sibling checkout, or `/etc`. Network is unrestricted. It's
+opt-out — set `"sandbox": false` to disable, or use the object form for finer control:
+
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "writablePaths": ["/extra/path/to/allow/writes"],
+    "network": "open",
+    "onUnavailable": "passthrough"
+  }
+}
+```
+
+On a platform where mxc can't sandbox, `onUnavailable` decides the posture:
+`"passthrough"` (default) runs the command unsandboxed with a warning rather than break
+the shell; `"error"` refuses to run it.
 
 ### Editor integration (ACP)
 
