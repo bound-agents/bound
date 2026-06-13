@@ -119,7 +119,7 @@ export async function initMcp(appContext: AppContext): Promise<McpResult> {
 
 	// Update hosts.mcp_tools with the connected server names so relay routing
 	// and delegation affinity work correctly for this host.
-	await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap);
+	await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap, appContext.logger);
 
 	// Build LLM ToolDefinitions — one per server, using subcommand dispatch schema.
 	const mcpToolDefinitions = buildMcpToolDefinitions(mcpServerNames);
@@ -323,7 +323,7 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 	}
 
 	// Phase 4: Update hosts table
-	await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap);
+	await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap, appContext.logger);
 
 	logger.info("[mcp-reload] MCP reload complete", {
 		added: result.added,

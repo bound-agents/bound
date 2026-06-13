@@ -927,6 +927,7 @@ export async function updateHostMCPInfo(
 	db: Database,
 	siteId: string,
 	clients: Map<string, MCPClient>,
+	logger?: { warn: (msg: string) => void },
 ): Promise<void> {
 	try {
 		const mcp_servers = Array.from(clients.keys());
@@ -970,16 +971,24 @@ export async function updateHostMCPInfo(
 
 			const capability: (typeof mcp_capabilities)[string] = {};
 
-			const info = client.getServerInfo?.();
-			const description = client.getServerDescription?.();
-			const instructions = client.getServerInstructions?.();
-			const serverInfo: NonNullable<(typeof capability)["serverInfo"]> = {};
-			if (info?.name) serverInfo.name = info.name;
-			if (info?.title) serverInfo.title = info.title;
-			if (info?.version) serverInfo.version = info.version;
-			if (description) serverInfo.description = truncate(description, MAX_DESCRIPTION_CHARS);
-			if (instructions) serverInfo.instructions = truncate(instructions, MAX_INSTRUCTIONS_CHARS);
-			if (Object.keys(serverInfo).length > 0) capability.serverInfo = serverInfo;
+			// serverInfo getters can throw if a server's initialize state is
+			// malformed — never let one server's bad handshake abort the whole
+			// metadata update (which would leave every server's capabilities
+			// stale and unwritten). Same best-effort posture as the list* calls.
+			try {
+				const info = client.getServerInfo?.();
+				const description = client.getServerDescription?.();
+				const instructions = client.getServerInstructions?.();
+				const serverInfo: NonNullable<(typeof capability)["serverInfo"]> = {};
+				if (info?.name) serverInfo.name = info.name;
+				if (info?.title) serverInfo.title = info.title;
+				if (info?.version) serverInfo.version = info.version;
+				if (description) serverInfo.description = truncate(description, MAX_DESCRIPTION_CHARS);
+				if (instructions) serverInfo.instructions = truncate(instructions, MAX_INSTRUCTIONS_CHARS);
+				if (Object.keys(serverInfo).length > 0) capability.serverInfo = serverInfo;
+			} catch {
+				// serverInfo capture failed — leave it unset for this server.
+			}
 
 			// Best-effort listTools — never fail the metadata update on a
 			// transient MCP error. A server with no captured annotations just
@@ -1061,7 +1070,15 @@ export async function updateHostMCPInfo(
 			},
 			siteId,
 		);
-	} catch {
-		// Silently ignore DB errors — this is a best-effort metadata update
+	} catch (err) {
+		// Best-effort metadata update — don't let a failure here break startup.
+		// But DON'T swallow silently: a thrown error here means no row was
+		// written at all, leaving stale mcp_tools/annotations and null
+		// mcp_capabilities, which is invisible without this log.
+		logger?.warn(
+			`updateHostMCPInfo failed; host MCP capability inventory not updated: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
 	}
 }
