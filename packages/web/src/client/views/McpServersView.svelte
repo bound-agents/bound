@@ -175,7 +175,7 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 							<span class="server-title">
 								<span class="server-name">{server.name}</span>
 								{#if server.serverInfo?.version}
-									<span class="server-version">v{server.serverInfo.version}</span>
+									<span class="server-version">{server.serverInfo.version}</span>
 								{/if}
 								{#if server.divergence.length > 0}
 									<span class="divergence-badge" title="Hosts disagree about this server's capabilities">
