@@ -233,7 +233,7 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 													<span class="info-impl">{info.name}</span>
 												{/if}
 												{#if info.version}
-													<span class="info-impl">v{info.version}</span>
+													<span class="info-impl">{info.version}</span>
 												{/if}
 											</div>
 										{/if}
