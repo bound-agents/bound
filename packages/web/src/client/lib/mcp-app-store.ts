@@ -145,7 +145,7 @@ function parseContentBlocks(content: string | unknown[]): Array<Record<string, u
  */
 export function reconstructInstancesFromMessages(
 	messages: PersistedToolMessage[],
-	host: Pick<McpAppHost, "resolve">,
+	host: Pick<McpAppHost, "resolveCall">,
 	threadId: string,
 	now: () => number = Date.now,
 ): McpAppInstance[] {
@@ -159,24 +159,31 @@ export function reconstructInstancesFromMessages(
 		});
 	}
 
-	// Second pass: each UI-bearing tool_use becomes a reconstructed instance.
+	// Second pass: each UI-bearing tool_use becomes a reconstructed instance. The
+	// tool_use name can be either a direct namespaced bound name OR the agent's
+	// omnibus MCP command (server name + input.subcommand); resolveCall handles
+	// both and hands back the per-tool registration plus the args to forward to
+	// the app (with the `subcommand` wrapper stripped).
 	const instances: McpAppInstance[] = [];
 	for (const msg of messages) {
 		for (const block of parseContentBlocks(msg.content)) {
 			if (block.type !== "tool_use") continue;
 			const callId = typeof block.id === "string" ? block.id : undefined;
-			const boundName = typeof block.name === "string" ? block.name : undefined;
-			if (!callId || !boundName) continue;
-			const reg = host.resolve(boundName);
-			if (!reg?.uiResourceUri) continue;
+			const toolName = typeof block.name === "string" ? block.name : undefined;
+			if (!callId || !toolName) continue;
+			const input = (block.input as Record<string, unknown>) ?? {};
+			const resolved = host.resolveCall(toolName, input);
+			const uiResourceUri = resolved?.reg.uiResourceUri;
+			if (!resolved || !uiResourceUri) continue;
+			const { reg, toolArgs } = resolved;
 			const persisted = resultsByToolUseId.get(callId);
 			instances.push({
 				callId,
 				threadId,
-				boundName,
+				boundName: reg.boundName,
 				serverName: reg.serverName,
-				uiResourceUri: reg.uiResourceUri,
-				input: (block.input as Record<string, unknown>) ?? {},
+				uiResourceUri,
+				input: toolArgs,
 				client: reg.client as unknown as UiResourceClient,
 				resultPromise: Promise.resolve({
 					content: persisted?.content ?? [],
