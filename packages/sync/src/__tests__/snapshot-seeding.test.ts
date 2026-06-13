@@ -190,6 +190,104 @@ describe("applySnapshotRows", () => {
 		expect(result.host_origin).toBe("host-b");
 	});
 
+	it("preserves locally-present columns that are absent from the incoming row (schema skew)", () => {
+		// Local row written by a newer node — title + summary populated.
+		applySnapshotRows(db, "threads", [
+			{
+				id: "thread-skew",
+				user_id: "user-1",
+				interface: "web",
+				host_origin: "host-a",
+				color: 0,
+				title: "Keep Me",
+				summary: "local summary",
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: "2025-01-01T00:00:00.000Z",
+				last_message_at: "2025-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+		]);
+
+		// An older peer that doesn't know about `title`/`summary` echoes the same
+		// row stripped of those columns. INSERT OR REPLACE would reset them to
+		// DEFAULT (NULL); the column-preserving upsert must leave them intact.
+		const applied = applySnapshotRows(db, "threads", [
+			{
+				id: "thread-skew",
+				user_id: "user-1",
+				interface: "web",
+				host_origin: "host-b",
+				color: 0,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: "2025-01-01T00:00:00.000Z",
+				last_message_at: "2025-01-02T00:00:00.000Z",
+				deleted: 0,
+			},
+		]);
+		expect(applied).toBe(1);
+
+		const row = db
+			.query("SELECT title, summary, host_origin, last_message_at FROM threads WHERE id = ?")
+			.get("thread-skew") as {
+			title: string | null;
+			summary: string | null;
+			host_origin: string;
+			last_message_at: string;
+		};
+		expect(row.title).toBe("Keep Me"); // preserved, not nulled by the stripped echo
+		expect(row.summary).toBe("local summary"); // preserved
+		expect(row.host_origin).toBe("host-b"); // present column still applied
+		expect(row.last_message_at).toBe("2025-01-02T00:00:00.000Z"); // present column still applied
+	});
+
+	it("still applies an explicit null when the column is present in the incoming row", () => {
+		applySnapshotRows(db, "threads", [
+			{
+				id: "thread-null",
+				user_id: "user-1",
+				interface: "web",
+				host_origin: "host-a",
+				color: 0,
+				title: "Has Title",
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: "2025-01-01T00:00:00.000Z",
+				last_message_at: "2025-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+		]);
+
+		// Peer explicitly nulls the title (present-as-null) — must apply, not preserve.
+		applySnapshotRows(db, "threads", [
+			{
+				id: "thread-null",
+				user_id: "user-1",
+				interface: "web",
+				host_origin: "host-a",
+				color: 0,
+				title: null,
+				summary: null,
+				summary_through: null,
+				summary_model_id: null,
+				extracted_through: null,
+				created_at: "2025-01-01T00:00:00.000Z",
+				last_message_at: "2025-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+		]);
+
+		const row = db.query("SELECT title FROM threads WHERE id = ?").get("thread-null") as {
+			title: string | null;
+		};
+		expect(row.title).toBeNull();
+	});
+
 	it("does NOT create changelog entries", () => {
 		const before = (db.query("SELECT COUNT(*) as cnt FROM change_log").get() as { cnt: number })
 			.cnt;
