@@ -996,12 +996,21 @@ export async function updateHostMCPInfo(
 			// strict no-info posture.
 			try {
 				const tools = await client.listTools();
-				capability.tools = tools.slice(0, MAX_CAPABILITY_LIST).map((tool) => ({
-					name: tool.name,
-					...(tool.description
-						? { description: truncate(tool.description, MAX_DESCRIPTION_CHARS) }
-						: {}),
-				}));
+				capability.tools = tools.slice(0, MAX_CAPABILITY_LIST).map((tool) => {
+					// MCP Apps binding: a UI-bearing tool carries `_meta.ui.resourceUri`
+					// pointing at a `ui://…;profile=mcp-app` resource. Preserve it so the
+					// Connections page can show which tools render MCP Apps — name +
+					// description alone would silently drop the binding.
+					const uiResourceUri = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta?.ui
+						?.resourceUri;
+					return {
+						name: tool.name,
+						...(tool.description
+							? { description: truncate(tool.description, MAX_DESCRIPTION_CHARS) }
+							: {}),
+						...(typeof uiResourceUri === "string" ? { uiResourceUri } : {}),
+					};
+				});
 				const serverAnnotations: Record<string, Record<string, boolean | undefined>> = {};
 				for (const tool of tools) {
 					const ann = tool.annotations as
