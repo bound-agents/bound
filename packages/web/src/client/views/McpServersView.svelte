@@ -15,6 +15,7 @@ interface McpTool {
 	name: string;
 	description?: string;
 	annotations: Record<string, boolean>;
+	uiResourceUri?: string;
 }
 
 interface McpPrompt {
@@ -270,6 +271,9 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 												{/if}
 											</div>
 											<span class="chips">
+												{#if tool.uiResourceUri}
+													<span class="chip app" title={tool.uiResourceUri}>MCP App</span>
+												{/if}
 												{#each annotationChips(tool.annotations) as chip}
 													<span class="chip {chip.tone}">{chip.text}</span>
 												{/each}

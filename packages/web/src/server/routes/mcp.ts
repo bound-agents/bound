@@ -40,7 +40,7 @@ export function createMcpRoutes(db: Database): Hono {
 
 			interface ServerCapability {
 				serverInfo?: Record<string, string>;
-				tools?: Array<{ name: string; description?: string }>;
+				tools?: Array<{ name: string; description?: string; uiResourceUri?: string }>;
 				prompts?: Array<{ name: string; description?: string }>;
 				resources?: Array<{
 					uri: string;
@@ -162,13 +162,18 @@ export function createMcpRoutes(db: Database): Hono {
 
 					const tools = Array.isArray(capability?.tools)
 						? capability.tools
-								.filter((t): t is { name: string; description?: string } => {
-									return t !== null && typeof t === "object" && typeof t.name === "string";
-								})
+								.filter(
+									(t): t is { name: string; description?: string; uiResourceUri?: string } => {
+										return t !== null && typeof t === "object" && typeof t.name === "string";
+									},
+								)
 								.map((tool) => ({
 									name: tool.name,
 									...(typeof tool.description === "string"
 										? { description: tool.description }
+										: {}),
+									...(typeof tool.uiResourceUri === "string"
+										? { uiResourceUri: tool.uiResourceUri }
 										: {}),
 									annotations: referenceAnnotations[tool.name] ?? {},
 								}))

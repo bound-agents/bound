@@ -929,6 +929,57 @@ describe("MCP Bridge", () => {
 		db.close();
 	});
 
+	// MCP Apps binding: a UI-bearing tool carries `_meta.ui.resourceUri` pointing at
+	// a `ui://` resource. The capture must preserve that binding so the Connections
+	// page can show which tools render MCP Apps — name+description alone drops it.
+	it("updateHostMCPInfo captures the _meta.ui.resourceUri binding on UI-bearing tools", async () => {
+		const { applySchema, createDatabase } = await import("@bound/core");
+
+		const db = createDatabase(":memory:");
+		applySchema(db);
+
+		const siteId = "test-site";
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+			VALUES (?, ?, ?, ?)`,
+			[siteId, "test-host", new Date().toISOString(), 0],
+		);
+
+		const client = makeMockClient(
+			{ name: "github", transport: "http", url: "https://example.invalid/mcp" },
+			[
+				{
+					name: "get_me",
+					description: "Get the authenticated user",
+					inputSchema: {},
+					_meta: {
+						ui: { resourceUri: "ui://github-mcp-server/get-me", visibility: ["model", "app"] },
+					},
+				} as unknown as Tool,
+				{ name: "list_issues", description: "List issues", inputSchema: {} },
+			],
+			[],
+			[],
+		);
+
+		await updateHostMCPInfo(db, siteId, new Map([["github", client]]));
+
+		const host = db.query("SELECT mcp_capabilities FROM hosts WHERE site_id = ?").get(siteId) as {
+			mcp_capabilities: string;
+		} | null;
+		const caps = JSON.parse(host?.mcp_capabilities ?? "{}");
+		expect(caps.github.tools).toEqual([
+			{
+				name: "get_me",
+				description: "Get the authenticated user",
+				uiResourceUri: "ui://github-mcp-server/get-me",
+			},
+			{ name: "list_issues", description: "List issues" },
+		]);
+
+		db.close();
+	});
+
 	it("updateHostMCPInfo omits prompts/resources when the server lacks those capabilities", async () => {
 		const { applySchema, createDatabase } = await import("@bound/core");
 
