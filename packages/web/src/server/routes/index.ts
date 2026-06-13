@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
-import type { McpAppsConfig } from "@bound/shared";
+import type { McpConfig } from "@bound/shared";
 import type { MountableFs } from "just-bash";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createFilesRoutes } from "./files";
@@ -61,12 +61,12 @@ export interface RoutesConfig {
 	 */
 	clusterFs?: MountableFs | null;
 	/**
-	 * Browser-reachable MCP App servers (`mcp_apps.json`). Served to the web UI
-	 * via `GET /api/mcp-apps` so the browser can host the MCP connection and
-	 * register the server's tools as bound client tools (the boundless pattern).
+	 * The agent-side MCP server config (`mcp.json`). The MCP-Apps route reads it
+	 * to source app-bearing http servers (joined against the synced capability
+	 * inventory) and to back the same-origin `GET /api/mcp-apps/proxy/:name`.
 	 * Web-router only; never touches the sync router.
 	 */
-	mcpAppsConfig?: McpAppsConfig | null;
+	mcpConfig?: McpConfig | null;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -85,7 +85,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		emitToolCancel,
 		requestConsistency,
 		clusterFs,
-		mcpAppsConfig,
+		mcpConfig,
 	} = config;
 
 	// The threads route only needs the default model id (a value); resolve a
@@ -119,7 +119,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db),
 		mcp: createMcpRoutes(db),
-		mcpApps: createMcpAppsRoutes(mcpAppsConfig ?? null),
+		mcpApps: createMcpAppsRoutes(db, mcpConfig ?? null),
 		webhooks: createWebhooksRoutes(db, {
 			syncBindHost,
 			syncPort,

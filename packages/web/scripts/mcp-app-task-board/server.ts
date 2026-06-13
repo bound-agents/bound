@@ -176,7 +176,7 @@ const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse
 
 httpServer.listen(PORT, () => {
 	console.log(`task-board MCP App server listening on http://localhost:${PORT}/mcp`);
-	console.log("Register it in ~/bound/config/mcp_apps.json, then reload the web UI.");
+	console.log("Add it to ~/bound/config/mcp.json as an http server, then reload the web UI.");
 });
 
 for (const sig of ["SIGINT", "SIGTERM"] as const) {

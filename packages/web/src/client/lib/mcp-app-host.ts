@@ -231,8 +231,9 @@ export class McpAppHost {
 /**
  * Connect to an MCP server over Streamable HTTP, falling back to SSE for older
  * servers (the basic-host reference order). Returns the connected SDK client.
- * Optional `headers` are attached to every transport request (e.g. an auth
- * token from `mcp_apps.json`); note these are client-visible by construction.
+ * Optional `headers` are attached to every transport request. In the web UI's
+ * renderer path these are injected server-side by the same-origin proxy, so the
+ * browser never sees upstream auth tokens.
  */
 export async function connectToMcpServer(
 	serverUrl: URL,
