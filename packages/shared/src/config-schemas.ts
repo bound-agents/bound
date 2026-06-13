@@ -370,32 +370,6 @@ export const mcpSchema = z
 
 export type McpConfig = z.infer<typeof mcpSchema>;
 
-// MCP Apps Config — servers whose tools the *web UI* connects to directly from
-// the browser (the boundless "client tools" pattern: the browser hosts the MCP
-// connection, registers the server's tools as bound client tools, and renders
-// any UI-bearing tool results as MCP Apps). Distinct from `mcp.json`, which the
-// agent connects to server-side. Only browser-reachable transports are allowed:
-// `http` (Streamable HTTP) and `sse` (legacy). `stdio` is intentionally absent —
-// a browser cannot spawn a subprocess. `headers` are served to the browser, so
-// only put values you are willing to expose to the client there.
-const mcpAppServerSchema = z
-	.object({
-		name: z.string().min(1),
-		url: z.string().url(),
-		transport: z.enum(["http", "sse"]).default("http"),
-		headers: z.record(z.string(), z.string()).optional(),
-	})
-	.strict();
-
-export const mcpAppsSchema = z
-	.object({
-		servers: z.array(mcpAppServerSchema),
-	})
-	.strict();
-
-export type McpAppsConfig = z.infer<typeof mcpAppsSchema>;
-export type McpAppServerConfig = z.infer<typeof mcpAppServerSchema>;
-
 export const overlaySchema = z
 	.object({
 		mounts: z.record(z.string(), z.string()),
@@ -472,7 +446,6 @@ export type ConfigType =
 	| SyncConfig
 	| KeyringConfig
 	| McpConfig
-	| McpAppsConfig
 	| OverlayConfig
 	| CronSchedulesConfig
 	| MemoryConfig
@@ -487,7 +460,6 @@ export const configSchemaMap = {
 	"sync.json": syncSchema,
 	"keyring.json": keyringSchema,
 	"mcp.json": mcpSchema,
-	"mcp_apps.json": mcpAppsSchema,
 	"overlay.json": overlaySchema,
 	"cron_schedules.json": cronSchedulesSchema,
 } as const;

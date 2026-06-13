@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Hono } from "hono";
 import { createWebApp } from "../index";
@@ -769,22 +769,55 @@ describe("API Routes", () => {
 	// (which hit the factory directly) stayed green. These tests go through the
 	// real createWebApp wiring so a missing mount fails the suite.
 	describe("GET /api/mcp-apps (mounted wiring)", () => {
-		it("serves an empty server list when no mcpAppsConfig is provided", async () => {
+		it("serves an empty server list when no mcpConfig is provided", async () => {
 			const response = await app.fetch(new Request("http://localhost:3000/api/mcp-apps"));
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { servers: unknown[] };
 			expect(body.servers).toEqual([]);
 		});
 
-		it("serves the configured servers as same-origin proxy paths through the mounted route", async () => {
+		it("serves app-bearing http servers from mcp.json through the mounted route", async () => {
+			// The route flags a server as app-bearing by joining mcp.json against the
+			// synced capability inventory, so seed a host that captured a UI binding.
+			insertRow(
+				db,
+				"hosts",
+				{
+					site_id: "site-a",
+					host_name: "alpha",
+					version: null,
+					sync_url: null,
+					mcp_servers: JSON.stringify(["github"]),
+					mcp_tools: null,
+					models: null,
+					overlay_root: null,
+					online_at: "2026-06-13T00:00:00.000Z",
+					modified_at: new Date().toISOString(),
+					deleted: 0,
+					platforms: null,
+					mcp_tool_annotations: null,
+					mcp_capabilities: JSON.stringify({
+						github: {
+							serverInfo: { name: "github-mcp-server" },
+							tools: [
+								{ name: "get_me", uiResourceUri: "ui://github-mcp-server/get-me" },
+								{ name: "list_issues" },
+							],
+						},
+					}),
+					commit_hash: null,
+				},
+				"site-a",
+			);
+
 			const configuredApp = await createWebApp(db, eventBus, {
 				operatorUserId: "test-operator",
-				mcpAppsConfig: {
+				mcpConfig: {
 					servers: [
 						{
-							name: "excalidraw",
-							url: "https://mcp.excalidraw.com/mcp",
+							name: "github",
 							transport: "http",
+							url: "https://api.githubcopilot.com/mcp",
 							headers: { Authorization: "Bearer secret" },
 						},
 					],
@@ -797,9 +830,10 @@ describe("API Routes", () => {
 			};
 			expect(body.servers).toHaveLength(1);
 			expect(body.servers[0]).toEqual({
-				name: "excalidraw",
+				name: "github",
 				transport: "http",
-				proxyPath: "/api/mcp-apps/proxy/excalidraw",
+				proxyPath: "/api/mcp-apps/proxy/github",
+				tools: [{ name: "get_me", uiResourceUri: "ui://github-mcp-server/get-me" }],
 			});
 			// The real url and auth headers must not leak to the browser.
 			expect(body.servers[0].url).toBeUndefined();

@@ -7,7 +7,6 @@ import {
 	cronSchedulesSchema,
 	err,
 	keyringSchema,
-	mcpAppsSchema,
 	mcpSchema,
 	memoryConfigSchema,
 	networkSchema,
@@ -210,7 +209,6 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 		{ filename: "sync.json", schema: syncSchema as ZodSchema<unknown>, key: "sync" },
 		{ filename: "keyring.json", schema: keyringSchema as ZodSchema<unknown>, key: "keyring" },
 		{ filename: "mcp.json", schema: mcpSchema as ZodSchema<unknown>, key: "mcp" },
-		{ filename: "mcp_apps.json", schema: mcpAppsSchema as ZodSchema<unknown>, key: "mcpApps" },
 		{ filename: "overlay.json", schema: overlaySchema as ZodSchema<unknown>, key: "overlay" },
 		{
 			filename: "cron_schedules.json",

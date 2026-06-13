@@ -52,7 +52,7 @@ import type { ClusterFsResult } from "@bound/sandbox";
 import type {
 	KeyringConfig,
 	Logger,
-	McpAppsConfig,
+	McpConfig,
 	ProcessPayload,
 	StatusForwardPayload,
 } from "@bound/shared";
@@ -418,11 +418,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				const hub = (cfg.value as { hub?: unknown }).hub;
 				return typeof hub === "string" && hub.length > 0 ? hub : undefined;
 			})(),
-			// Browser-reachable MCP App servers (mcp_apps.json) — served to the
-			// web UI via GET /api/mcp-apps. Web-router only; never the sync router.
-			mcpApps: ((): McpAppsConfig | null => {
-				const cfg = appContext.optionalConfig.mcpApps;
-				return cfg?.ok ? (cfg.value as McpAppsConfig) : null;
+			// Agent-side MCP servers (mcp.json) — forwarded to the web app so the
+			// MCP-Apps route can source app-bearing http servers and proxy the
+			// browser to them. Web-router only; never the sync router.
+			mcpConfig: ((): McpConfig | null => {
+				const cfg = appContext.optionalConfig.mcp;
+				return cfg?.ok ? (cfg.value as McpConfig) : null;
 			})(),
 			statusForwardCache,
 			activeDelegations,
