@@ -488,7 +488,25 @@ export function applySnapshotRows(
 
 	let applied = 0;
 	const placeholders = columns.map(() => "?").join(", ");
-	const sql = `INSERT OR REPLACE INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders})`;
+	// Column-preserving upsert. INSERT OR REPLACE rebuilds the whole row, so any
+	// column NOT present in the incoming row_data reverts to its DEFAULT — which
+	// silently nulls a column a newer node knows about but the sending (older)
+	// peer's schema omits. During a rolling deploy that round-trips a synced row
+	// through a lagging peer, the upgraded node loses the new column. Instead,
+	// INSERT ... ON CONFLICT DO UPDATE sets only the columns the incoming row
+	// actually carries, leaving locally-present-but-absent columns intact. A
+	// present-but-null value still applies, so a peer can still null a field on
+	// purpose. On a fresh insert (no conflict) absent columns take DEFAULT, the
+	// same as before — correct for first-time seeding.
+	const pkColumn = getPkColumn(tableName);
+	const updateColumns = columns.filter((col) => col !== pkColumn);
+	const conflictClause =
+		updateColumns.length > 0
+			? `ON CONFLICT(${pkColumn}) DO UPDATE SET ${updateColumns
+					.map((col) => `${col} = excluded.${col}`)
+					.join(", ")}`
+			: `ON CONFLICT(${pkColumn}) DO NOTHING`;
+	const sql = `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders}) ${conflictClause}`;
 
 	db.exec("BEGIN IMMEDIATE");
 	try {
