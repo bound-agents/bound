@@ -13,13 +13,44 @@ import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ClientCapabilities, Tool } from "@modelcontextprotocol/sdk/types.js";
 
 /** Bedrock caps tool names at 64 chars; keep generated names within that. */
 const TOOL_NAME_MAX = 64;
 const TOOL_NAME_PREFIX = "mcp";
 
 const IMPLEMENTATION = { name: "bound web MCP Apps host", version: "1.0.0" };
+
+/**
+ * The MCP Apps UI capability extension id. Kept as a browser-safe literal so
+ * importing it doesn't drag the ext-apps *server* entry into the web bundle;
+ * `mcp-app-host.test.ts` pins it against the package's own `EXTENSION_ID`
+ * (from `@modelcontextprotocol/ext-apps/server`) so a rename breaks loudly.
+ */
+export const MCP_UI_EXTENSION_ID = "io.modelcontextprotocol/ui";
+
+/**
+ * Client capabilities the browser MCP-Apps host advertises at `initialize`.
+ * Declaring the `io.modelcontextprotocol/ui` extension is how a UI-capable
+ * client negotiates MCP Apps support: a server that gates its tool→UI resource
+ * bindings on this extension (e.g. github-mcp-server's `clientSupportsUI`, which
+ * reads `capabilities.extensions["io.modelcontextprotocol/ui"]`) only emits them
+ * when the connecting client declares it here.
+ *
+ * Only the *browser* advertises this — it's the surface that can host an iframe.
+ * The agent-side MCP bridge (`packages/agent`) deliberately does NOT, because it
+ * can't render UI; advertising there would only coax a server into emitting a
+ * `ui://` resource the agent would flatten to placeholder text.
+ *
+ * `extensions` is not in the SDK 1.28 `ClientCapabilities` type, but the Client
+ * sends `_capabilities` verbatim into the initialize request (no schema strip),
+ * so the field reaches the wire as-is; the cast at the call site is for typing.
+ */
+export const MCP_APPS_HOST_CAPABILITIES = {
+	extensions: {
+		[MCP_UI_EXTENSION_ID]: {},
+	},
+};
 
 /**
  * Minimal MCP client surface the host manager depends on. The real
@@ -208,13 +239,14 @@ export async function connectToMcpServer(
 	headers?: Record<string, string>,
 ): Promise<Client> {
 	const requestInit = headers ? { headers } : undefined;
+	const clientOptions = { capabilities: MCP_APPS_HOST_CAPABILITIES as ClientCapabilities };
 	try {
-		const client = new Client(IMPLEMENTATION);
+		const client = new Client(IMPLEMENTATION, clientOptions);
 		await client.connect(new StreamableHTTPClientTransport(serverUrl, { requestInit }));
 		return client;
 	} catch (streamableError) {
 		try {
-			const client = new Client(IMPLEMENTATION);
+			const client = new Client(IMPLEMENTATION, clientOptions);
 			await client.connect(new SSEClientTransport(serverUrl, { requestInit }));
 			return client;
 		} catch (sseError) {
