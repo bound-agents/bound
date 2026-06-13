@@ -231,3 +231,53 @@ describe("McpAppHost", () => {
 		expect(reg?.client).toBe(client);
 	});
 });
+
+describe("McpAppHost.resolveCall", () => {
+	// A host with one server "github" exposing a UI-bearing "get_me" and a plain
+	// "list_issues" — mirrors how an MCP-App-bearing server is registered.
+	function githubHost(): McpAppHost {
+		const host = new McpAppHost();
+		host.registerServer("github", new FakeMcpClient(textResult("ok")), [
+			uiTool("get_me", "ui://github-mcp-server/get_me.html"),
+			textTool("list_issues"),
+		]);
+		return host;
+	}
+
+	it("resolves a direct namespaced bound name, forwarding input unchanged", () => {
+		const host = githubHost();
+		const resolved = host.resolveCall("mcp__github__get_me", { detail: "full" });
+		expect(resolved?.reg.serverName).toBe("github");
+		expect(resolved?.reg.originalName).toBe("get_me");
+		expect(resolved?.reg.uiResourceUri).toBe("ui://github-mcp-server/get_me.html");
+		expect(resolved?.toolArgs).toEqual({ detail: "full" });
+	});
+
+	it("resolves the agent's omnibus shape: server name + input.subcommand", () => {
+		const host = githubHost();
+		// The agent calls the per-server command `github` with the real tool in
+		// `subcommand` (generateMCPCommands). The render trigger must unwrap it.
+		const resolved = host.resolveCall("github", { subcommand: "get_me", detail: "full" });
+		expect(resolved?.reg.serverName).toBe("github");
+		expect(resolved?.reg.originalName).toBe("get_me");
+		expect(resolved?.reg.uiResourceUri).toBe("ui://github-mcp-server/get_me.html");
+	});
+
+	it("strips the subcommand wrapper from the args forwarded to the app", () => {
+		const host = githubHost();
+		const resolved = host.resolveCall("github", { subcommand: "get_me", detail: "full" });
+		expect(resolved?.toolArgs).toEqual({ detail: "full" });
+		expect("subcommand" in (resolved?.toolArgs ?? {})).toBe(false);
+	});
+
+	it("returns undefined for an omnibus call whose subcommand isn't a registered tool", () => {
+		const host = githubHost();
+		expect(host.resolveCall("github", { subcommand: "no_such_tool" })).toBeUndefined();
+	});
+
+	it("returns undefined for an unknown tool name with no subcommand", () => {
+		const host = githubHost();
+		expect(host.resolveCall("totally_unknown", { x: 1 })).toBeUndefined();
+		expect(host.resolveCall("github", {})).toBeUndefined();
+	});
+});

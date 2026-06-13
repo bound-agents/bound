@@ -283,4 +283,63 @@ describe("reconstructInstancesFromMessages", () => {
 		const messages: PersistedToolMessage[] = [{ role: "tool_call", content: "{ not json" }];
 		expect(reconstructInstancesFromMessages(messages, h, "t1")).toEqual([]);
 	});
+
+	it("resolves the agent's omnibus tool_use (server name + subcommand) to its UI binding", async () => {
+		const h = host();
+		// The agent calls UI-bearing MCP tools through the per-server omnibus
+		// command — the persisted tool_use name is the SERVER ("srv"), the real
+		// tool rides in input.subcommand ("do_thing"). The render trigger must
+		// unwrap that to find the ui:// binding (generateMCPCommands).
+		const messages: PersistedToolMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "tooluse_omni",
+						name: "srv",
+						input: { subcommand: "do_thing", q: "hi" },
+					},
+				]),
+			},
+			{
+				role: "tool_result",
+				tool_name: "tooluse_omni",
+				content: JSON.stringify([{ type: "text", text: "rendered ok" }]),
+			},
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1", () => 9);
+		expect(instances).toHaveLength(1);
+		const inst = instances[0];
+		expect(inst.callId).toBe("tooluse_omni");
+		expect(inst.serverName).toBe("srv");
+		expect(inst.uiResourceUri).toBe("ui://srv/app.html");
+		// The boundName is the canonical per-tool name, not the omnibus "srv".
+		expect(inst.boundName).toBe(names(h).ui);
+		// The subcommand wrapper is stripped from the args forwarded to the app.
+		expect(inst.input).toEqual({ q: "hi" });
+		await expect(inst.resultPromise).resolves.toEqual({
+			content: [{ type: "text", text: "rendered ok" }],
+			isError: false,
+		});
+	});
+
+	it("skips an omnibus tool_use whose subcommand is not a UI-bearing tool", () => {
+		const h = host();
+		const messages: PersistedToolMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "t_p", name: "srv", input: { subcommand: "plain" } },
+				]),
+			},
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "t_x", name: "srv", input: { subcommand: "nope" } },
+				]),
+			},
+		];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
+	});
 });

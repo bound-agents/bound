@@ -67,25 +67,26 @@ const unsubscribeApps = mcpAppInstances.subscribe((map) => {
 });
 const threadAppInstances = $derived(instancesForThread(appInstanceMap, threadId));
 
-// Reload persistence: the in-memory instance store is empty on a fresh page
-// load, but the agent's UI-bearing tool_call rows survive in the message
-// history. Once the MCP host has reconnected (so we can resolve persisted tool
-// names back to UI-bearing registrations) and this thread's messages have
-// loaded, rebuild the panels from history. Host-ready and messages-loaded can
-// land in either order (cold load: messages first, host later via the store;
-// SPA navigation: host already set, messages arrive from onMount/poll), so
-// BOTH paths call maybeReconstructPanels(). Guarded so it runs at most once
-// per mount and never clobbers a live instance already in the store.
+// Reload + live render trigger: the in-memory instance store is empty on a
+// fresh page load, but the agent's UI-bearing tool_call rows survive in the
+// message history AND new ones stream in live over the WS. Whenever the MCP
+// host is connected (so we can resolve tool names — including the agent's
+// omnibus `<server>`-command shape, where the real tool is in
+// `input.subcommand` — back to UI-bearing registrations) and this thread has
+// messages, (re)scan them and register any UI-bearing instance not already
+// live. Host-ready and messages-loaded can land in either order, and live
+// messages arrive incrementally, so the scan runs from all of: the host
+// subscription, onMount, the poll, and each live message:created. It's
+// idempotent — the callId guard never clobbers or re-mounts an instance already
+// in the store — so re-running it per message is cheap.
 let appHost = $state<McpAppHost | null>(null);
-let reconstructedFor: string | null = null;
 const unsubscribeHost = mcpAppHost.subscribe((h) => {
 	appHost = h;
-	maybeReconstructPanels();
+	scanForAppPanels();
 });
 
-function maybeReconstructPanels(): void {
-	if (!appHost || messages.length === 0 || reconstructedFor === threadId) return;
-	reconstructedFor = threadId;
+function scanForAppPanels(): void {
+	if (!appHost || messages.length === 0) return;
 	const live = appInstanceMap;
 	for (const inst of reconstructInstancesFromMessages(messages, appHost, threadId)) {
 		if (!(inst.callId in live)) mcpAppInstances.register(inst);
@@ -107,6 +108,9 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			const exists = messages.some((m) => m.id === msg.id);
 			if (!exists) {
 				messages = [...messages, last.data as LocalMessage];
+				// A UI-bearing tool_call/result just streamed in — (re)scan so its
+				// app panel mounts live, not only on the next reload.
+				scanForAppPanels();
 			}
 			if (shouldClearWaiting(msg.role ?? "")) {
 				waiting = false;
@@ -133,7 +137,7 @@ async function pollMessages(): Promise<void> {
 			}
 		}
 		messages = latest;
-		maybeReconstructPanels();
+		scanForAppPanels();
 		if (
 			waiting &&
 			latest.length > waitingSinceMessageCount &&
@@ -188,7 +192,7 @@ onMount(async () => {
 	try {
 		thread = await client.getThread(threadId);
 		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
-		maybeReconstructPanels();
+		scanForAppPanels();
 		connectWebSocket();
 		subscribeToThread(threadId);
 	} catch (error) {

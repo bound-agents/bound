@@ -74,6 +74,13 @@ export interface RegisteredTool {
 	uiResourceUri?: string;
 }
 
+/** A persisted tool_use resolved to its registration plus the args to forward. */
+export interface ResolvedCall {
+	reg: RegisteredTool;
+	/** Tool arguments for the app — the omnibus `subcommand` wrapper stripped. */
+	toolArgs: Record<string, unknown>;
+}
+
 /** Replace wire-illegal characters so a name part is safe in a tool id. */
 export function sanitizeNamePart(s: string): string {
 	return s.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -169,6 +176,37 @@ export class McpAppHost {
 	/** Resolve a bound tool name back to its server + original tool. */
 	resolve(boundName: string): RegisteredTool | undefined {
 		return this.byBoundName.get(boundName);
+	}
+
+	/**
+	 * Resolve a persisted tool_use (its `name` and `input`) to a registration,
+	 * handling both shapes the message stream can carry:
+	 *
+	 *  - **Direct**: `toolName` is itself a registered bound name
+	 *    (`mcp__server__tool`) — forward the input unchanged.
+	 *  - **Omnibus**: `toolName` is a registered server name and `input.subcommand`
+	 *    names one of its tools. This is how the agent actually invokes MCP tools:
+	 *    `generateMCPCommands` emits one command per server (named for the server)
+	 *    with the real tool in a `subcommand` arg. The browser binds `ui://`
+	 *    resources per-tool, so the render trigger must unwrap the subcommand
+	 *    before it can match — and strip the `subcommand` wrapper from the args
+	 *    forwarded to the app, leaving only the tool's own arguments.
+	 *
+	 * Returns `undefined` when neither shape resolves to a known tool.
+	 */
+	resolveCall(toolName: string, input: Record<string, unknown>): ResolvedCall | undefined {
+		const direct = this.byBoundName.get(toolName);
+		if (direct) return { reg: direct, toolArgs: input };
+
+		const subcommand = typeof input.subcommand === "string" ? input.subcommand : undefined;
+		if (!subcommand) return undefined;
+		for (const reg of this.byBoundName.values()) {
+			if (reg.serverName === toolName && reg.originalName === subcommand) {
+				const { subcommand: _omit, ...toolArgs } = input;
+				return { reg, toolArgs };
+			}
+		}
+		return undefined;
 	}
 
 	/** True if the bound tool carries an MCP App UI (ext-apps resource binding). */
