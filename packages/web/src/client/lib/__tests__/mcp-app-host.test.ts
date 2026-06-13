@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { EXTENSION_ID } from "@modelcontextprotocol/ext-apps/server";
 import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
+	MCP_APPS_HOST_CAPABILITIES,
+	MCP_UI_EXTENSION_ID,
 	McpAppHost,
 	callToolResultToContent,
 	mcpToolName,
@@ -54,6 +57,24 @@ describe("sanitizeNamePart", () => {
 	});
 	it("leaves already-legal names untouched", () => {
 		expect(sanitizeNamePart("create_view-2")).toBe("create_view-2");
+	});
+});
+
+describe("MCP Apps host capability negotiation", () => {
+	it("uses the package's canonical UI extension id", () => {
+		// Pin our browser-safe literal to ext-apps' own constant so a package
+		// rename breaks this test instead of silently breaking negotiation.
+		expect(MCP_UI_EXTENSION_ID).toBe(EXTENSION_ID);
+		expect(MCP_UI_EXTENSION_ID).toBe("io.modelcontextprotocol/ui");
+	});
+
+	it("advertises the UI host capability under the extensions field", () => {
+		// A server that gates UI bindings on capability negotiation (e.g.
+		// github-mcp-server's clientSupportsUI) only emits them when the client
+		// declares io.modelcontextprotocol/ui here at initialize.
+		const ext = (MCP_APPS_HOST_CAPABILITIES as { extensions?: Record<string, unknown> }).extensions;
+		expect(ext).toBeDefined();
+		expect(ext?.[MCP_UI_EXTENSION_ID]).toBeDefined();
 	});
 });
 
