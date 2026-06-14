@@ -24,6 +24,8 @@ export { BedrockMantleDriver } from "./bedrock-mantle-driver";
 
 export { OpenAICompatibleDriver } from "./openai-compatible-driver";
 
+export { OpenCodeGoDriver } from "./opencode-go-driver";
+
 export {
 	createModelRouter,
 	ModelRouter,

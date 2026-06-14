@@ -34,6 +34,7 @@ OPTIONS:
   bound init --bedrock --region <region>  Initialize with AWS Bedrock
   bound init --cerebras            Initialize with Cerebras Cloud preset
   bound init --zai                 Initialize with z.AI (GLM) preset
+  bound init --opencode-go         Initialize with OpenCode Go preset
   bound init --hub                 Initialize as relay hub (no local inference; proxies to spokes)
   bound init --name <name>         Set operator name
   bound init --with-sync           Also create sync.json template
@@ -48,6 +49,7 @@ EXAMPLES:
   bound init --ollama
   bound start
   bound init --anthropic --with-sync --with-mcp
+  bound init --opencode-go
   bound init --hub --name hub-node  # Initialize relay hub
 `);
 		process.exit(0);
@@ -65,6 +67,7 @@ EXAMPLES:
 			bedrock: args.includes("--bedrock"),
 			cerebras: args.includes("--cerebras"),
 			zai: args.includes("--zai"),
+			opencodeGo: args.includes("--opencode-go"),
 			region: regionIdx !== -1 ? args[regionIdx + 1] : undefined,
 			name: nameIdx !== -1 ? args[nameIdx + 1] : undefined,
 			withSync: args.includes("--with-sync"),

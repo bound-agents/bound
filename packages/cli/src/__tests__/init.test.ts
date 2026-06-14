@@ -168,4 +168,21 @@ describe("bound init", () => {
 		expect(modelBackends.backends[0].provider).toBe("anthropic");
 		expect(modelBackends.backends[0].model).toBe("claude-3-5-sonnet-20241022");
 	});
+
+	it("creates OpenCode Go preset with --opencode-go", async () => {
+		process.env.OPENCODE_API_KEY = "test-key";
+
+		await runInit({
+			opencodeGo: true,
+			configDir: tempDir,
+		});
+
+		const modelBackendsPath = join(tempDir, "model_backends.json");
+		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
+
+		expect(modelBackends.backends[0].provider).toBe("opencode-go");
+		expect(modelBackends.backends[0].model).toBe("glm-5.1");
+		expect(modelBackends.backends[0].base_url).toBe("https://opencode.ai/zen/go/v1");
+		expect(modelBackends.backends[0].api_key).toBe("test-key");
+	});
 });

@@ -157,6 +157,41 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
+		it("accepts opencode-go provider with api_key and no base_url", () => {
+			const config = {
+				backends: [
+					{
+						id: "opencode-go",
+						provider: "opencode-go",
+						model: "glm-5.1",
+						api_key: "test-key",
+						context_window: 128000,
+						tier: 3,
+					},
+				],
+				default: "opencode-go",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires api_key for opencode-go provider", () => {
+			const config = {
+				backends: [
+					{
+						id: "opencode-go",
+						provider: "opencode-go",
+						model: "glm-5.1",
+						context_window: 128000,
+						tier: 3,
+					},
+				],
+				default: "opencode-go",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
 		it("rejects negative context_window", () => {
 			const config = {
 				backends: [

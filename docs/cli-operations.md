@@ -983,10 +983,10 @@ This file is never exposed to the agent sandbox. The agent cannot read, modify, 
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Unique identifier used throughout the system. Convention: `provider/model-short-name`. |
-| `provider` | string | Driver. Built-in values: `ollama`, `anthropic`, `bedrock`, `openai-compatible`, `cerebras`, `zai`. |
+| `provider` | string | Driver. Built-in values: `ollama`, `anthropic`, `bedrock`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`. |
 | `model` | string | Provider-specific model identifier string. |
 | `base_url` | string | API endpoint. Required for `ollama` and `openai-compatible`. |
-| `api_key` | string | Auth token. Env vars are expanded at load time (`${VAR}`). Required for `anthropic`, `cerebras`, and `zai`; usable by `openai-compatible`. |
+| `api_key` | string | Auth token. Env vars are expanded at load time (`${VAR}`). Required for `anthropic`, `cerebras`, `zai`, and `opencode-go`; usable by `openai-compatible`. |
 | `region` | string | AWS region. Required for `bedrock`. |
 | `context_window` | number | Token count. Used for summarization triggers, context budgeting, and await result buffering. |
 | `tier` | number | Integer capability ranking 1 (smallest) to 5 (most capable). Used for summary reliability assessment and `--requires model:` task routing. |

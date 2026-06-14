@@ -137,6 +137,7 @@ const modelBackendSchema = z
 			"openai-compatible",
 			"cerebras",
 			"zai",
+			"opencode-go",
 		]),
 		model: z.string().min(1),
 		base_url: z.string().url().optional(),
@@ -224,13 +225,18 @@ export const modelBackendsSchema = z
 	.refine(
 		(data) => {
 			return data.backends.every((b) => {
-				if (b.provider === "cerebras" || b.provider === "anthropic" || b.provider === "zai") {
+				if (
+					b.provider === "cerebras" ||
+					b.provider === "anthropic" ||
+					b.provider === "zai" ||
+					b.provider === "opencode-go"
+				) {
 					return b.api_key !== undefined;
 				}
 				return true;
 			});
 		},
-		{ message: "cerebras, anthropic, and zai providers require api_key" },
+		{ message: "cerebras, anthropic, zai, and opencode-go providers require api_key" },
 	);
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;
