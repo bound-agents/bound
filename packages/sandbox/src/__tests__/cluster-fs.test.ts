@@ -8,6 +8,7 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { InMemoryFs, MountableFs } from "just-bash";
 import {
 	createClusterFs,
+	createVfsRehydrator,
 	diffWorkspaceAsync,
 	hydrateWorkspace,
 	rehydrateWorkspaceIncremental,
@@ -449,5 +450,64 @@ describe("rehydrateWorkspaceIncremental", () => {
 		await rehydrateWorkspaceIncremental(fs, db, nextCursor);
 
 		expect(await fs.readFile("/home/user/uploads/once.txt")).toBe("edited-in-vfs");
+	});
+});
+
+describe("createVfsRehydrator", () => {
+	let db: Database;
+	let fs: MountableFs;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		applySchema(db);
+		fs = new MountableFs({ base: new InMemoryFs() });
+	});
+
+	function insertFileAt(path: string, content: string, modifiedAt: string) {
+		insertRow(
+			db,
+			"files",
+			{
+				id: path,
+				path,
+				content,
+				deleted: 0,
+				is_binary: 0,
+				size_bytes: Buffer.byteLength(content),
+				created_at: modifiedAt,
+				modified_at: modifiedAt,
+			},
+			"test-site",
+		);
+	}
+
+	test("pulls a row written after the seed cursor, then advances so it is not re-pulled", async () => {
+		// Seed cursor in the past so the post-boot upload is past it.
+		const rehydrate = createVfsRehydrator(fs, db, "2026-06-14T00:00:00.000Z");
+		insertFileAt("/home/user/uploads/upload.txt", "post-boot content", "2026-06-14T01:00:00.000Z");
+
+		await rehydrate();
+		expect(await fs.readFile("/home/user/uploads/upload.txt")).toBe("post-boot content");
+
+		// The closure must have advanced its own cursor past the row's modified_at:
+		// a local VFS edit survives the next pass instead of being clobbered by a re-pull.
+		await fs.writeFile("/home/user/uploads/upload.txt", "edited-in-vfs");
+		await rehydrate();
+		expect(await fs.readFile("/home/user/uploads/upload.txt")).toBe("edited-in-vfs");
+	});
+
+	test("pulls a row that arrives between calls", async () => {
+		const rehydrate = createVfsRehydrator(fs, db, "2026-06-14T00:00:00.000Z");
+
+		// First pass: nothing newer than the seed.
+		await rehydrate();
+
+		// A row arrives after the first pass advanced the cursor to wall-clock now.
+		// A far-future modified_at is unambiguously past that cursor under the
+		// strict-`>` semantics, so it must reach the VFS on the next pass without
+		// depending on sub-millisecond timing between the call and the insert.
+		insertFileAt("/home/user/uploads/late.txt", "arrived later", "2099-01-01T00:00:00.000Z");
+		await rehydrate();
+		expect(await fs.readFile("/home/user/uploads/late.txt")).toBe("arrived later");
 	});
 });
