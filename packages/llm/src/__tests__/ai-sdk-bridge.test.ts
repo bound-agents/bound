@@ -1137,7 +1137,12 @@ describe("toModelMessages — tool call / result wrapping", () => {
 		});
 	});
 
-	it("falls back to empty toolName when no matching call", () => {
+	it("drops an orphan tool_result with no matching call (superseded: was 'falls back to empty toolName')", () => {
+		// Pre-backstop this projected the orphan with toolName: "" — but an
+		// orphan toolResult is wire-illegal on Bedrock/Anthropic regardless of
+		// its name, so the tool-pair-completeness backstop now drops it. The
+		// empty-toolName fallback at the projection site survives as defensive
+		// belt-and-suspenders but is no longer wire-observable.
 		const out = toModelMessages([
 			{ role: "user", content: "hi" },
 			{
@@ -1146,17 +1151,8 @@ describe("toModelMessages — tool call / result wrapping", () => {
 				content: [{ type: "text", text: "?" }],
 			},
 		]);
-		expect(out[1]).toEqual({
-			role: "tool",
-			content: [
-				{
-					type: "tool-result",
-					toolCallId: "orphan",
-					toolName: "",
-					output: { type: "text", value: "?" },
-				},
-			],
-		});
+		// Orphan dropped → only the user message remains.
+		expect(out).toEqual([{ role: "user", content: "hi" }]);
 	});
 
 	it("parses JSON string content on tool_call (DB serialization path)", () => {
@@ -1172,21 +1168,25 @@ describe("toModelMessages — tool call / result wrapping", () => {
 	});
 
 	it("treats unparseable string on tool_result as text", () => {
+		// A matching tool_call keeps the result on the wire (an orphan would be
+		// dropped by the completeness backstop), so this stays a test of the
+		// string→text projection mechanic, not of orphan handling.
 		const out = toModelMessages([
 			{ role: "user", content: "do it" },
+			{ role: "tool_call", content: [{ type: "tool_use", id: "z", name: "run", input: {} }] },
 			{
 				role: "tool_result",
 				tool_use_id: "z",
 				content: "plain string result",
 			},
 		]);
-		expect(out[1]).toEqual({
+		expect(out[2]).toEqual({
 			role: "tool",
 			content: [
 				{
 					type: "tool-result",
 					toolCallId: "z",
-					toolName: "",
+					toolName: "run",
 					output: { type: "text", value: "plain string result" },
 				},
 			],
@@ -1368,7 +1368,14 @@ describe("toModelMessages — tool_use id sanitization (cross-provider id portab
 		expect(toolMsg.content[0].toolCallId).toBe("tooluse_af647139ca7a41dabdcac6");
 	});
 
-	it("sanitizes orphan tool_result tool_use_id (no matching call) so the wire form stays legal", () => {
+	it("drops an orphan tool_result with no matching call (supersedes id-sanitization for wire legality)", () => {
+		// Pre-backstop this asserted that sanitizing the orphan's id to
+		// `functions_query_99` kept "the wire form legal" — but a charset-legal
+		// id does NOT make an orphan toolResult legal: Bedrock/Anthropic reject
+		// a toolResult with no preceding toolUse on the pairing, independent of
+		// the id. The completeness backstop now drops the orphan outright, the
+		// only move that actually keeps the wire legal. (Fresh-call id
+		// sanitization is still covered by the streaming-boundary tests above.)
 		const out = toModelMessages([
 			{ role: "user", content: "hi" },
 			{
@@ -1377,13 +1384,7 @@ describe("toModelMessages — tool_use id sanitization (cross-provider id portab
 				content: [{ type: "text", text: "?" }],
 			},
 		]);
-		const toolMsg = out[1] as {
-			role: string;
-			content: Array<{ toolCallId: string; toolName: string }>;
-		};
-		expect(toolMsg.role).toBe("tool");
-		expect(toolMsg.content[0].toolCallId).toBe("functions_query_99");
-		expect(toolMsg.content[0].toolCallId).toMatch(/^[a-zA-Z0-9_-]+$/);
+		expect(out).toEqual([{ role: "user", content: "hi" }]);
 	});
 });
 
@@ -1817,6 +1818,100 @@ describe("toModelMessages — full recovery on the corrupted shape from thread 8
 		// Bedrock toolUse.name: [a-zA-Z0-9_-]+, length <= 64
 		expect(assistantMsg.content[0].toolName).toMatch(/^[a-zA-Z0-9_-]+$/);
 		expect(assistantMsg.content[0].toolName.length).toBeLessThanOrEqual(64);
+	});
+});
+
+describe("toModelMessages — tool-pair completeness backstop (orphan recovery)", () => {
+	// Collect every tool-call id (assistant messages) and every tool-result id
+	// (tool messages) on the projected wire, so a test can assert the two id
+	// sets match — the exact legality contract Bedrock/Anthropic enforce.
+	function wireToolIds(out: ReturnType<typeof toModelMessages>): {
+		callIds: string[];
+		resultIds: string[];
+	} {
+		const callIds: string[] = [];
+		const resultIds: string[] = [];
+		for (const m of out) {
+			if (!Array.isArray(m.content)) continue;
+			for (const p of m.content as Array<Record<string, unknown>>) {
+				if (p.type === "tool-call") callIds.push(p.toolCallId as string);
+				else if (p.type === "tool-result") resultIds.push(p.toolCallId as string);
+			}
+		}
+		return { callIds, resultIds };
+	}
+
+	it("synthesizes a stub tool-result for an unmatched tool_use (call with no result)", () => {
+		// Reconstructed shape from thread 53c7635e 2026-06-14: a parallel batch
+		// where one of two tool_use ids lost its tool_result before assembly,
+		// so the wire carried tool-call(CJSyxw) with no matching tool-result —
+		// Bedrock 400 "Expected toolResult blocks ... for the following Ids".
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_call",
+					content: [
+						{ type: "tool_use", id: "tooluse_keep", name: "read", input: {} },
+						{ type: "tool_use", id: "tooluse_orphancall", name: "bash", input: {} },
+					],
+				},
+				{
+					role: "tool_result",
+					tool_use_id: "tooluse_keep",
+					content: [{ type: "text", text: "ok" }],
+				},
+				{ role: "assistant", content: "done" },
+			],
+			{ targetEnvelope: BEDROCK_PERMISSIVE_ENVELOPE },
+		);
+		const { callIds, resultIds } = wireToolIds(out);
+		// Every declared call id must have a matching result on the wire.
+		expect(callIds.sort()).toEqual(["tooluse_keep", "tooluse_orphancall"]);
+		expect(resultIds.sort()).toEqual(["tooluse_keep", "tooluse_orphancall"]);
+	});
+
+	it("drops an orphan tool_result whose tool_call is absent (result with no call)", () => {
+		// The inverse orphan: truncation sliced the tool_call off the front,
+		// leaving a leading tool_result. Bedrock rejects a toolResult with no
+		// preceding toolUse just as hard.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_result",
+					tool_use_id: "tooluse_orphanresult",
+					content: [{ type: "text", text: "stranded" }],
+				},
+				{ role: "assistant", content: "done" },
+			],
+			{ targetEnvelope: BEDROCK_PERMISSIVE_ENVELOPE },
+		);
+		const { callIds, resultIds } = wireToolIds(out);
+		expect(callIds).toEqual([]);
+		// The orphan result must not survive onto the wire.
+		expect(resultIds).toEqual([]);
+	});
+
+	it("leaves a well-formed parallel batch untouched", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_call",
+					content: [
+						{ type: "tool_use", id: "tooluse_a", name: "read", input: {} },
+						{ type: "tool_use", id: "tooluse_b", name: "bash", input: {} },
+					],
+				},
+				{ role: "tool_result", tool_use_id: "tooluse_a", content: [{ type: "text", text: "1" }] },
+				{ role: "tool_result", tool_use_id: "tooluse_b", content: [{ type: "text", text: "2" }] },
+			],
+			{ targetEnvelope: BEDROCK_PERMISSIVE_ENVELOPE },
+		);
+		const { callIds, resultIds } = wireToolIds(out);
+		expect(callIds.sort()).toEqual(["tooluse_a", "tooluse_b"]);
+		expect(resultIds.sort()).toEqual(["tooluse_a", "tooluse_b"]);
 	});
 });
 
