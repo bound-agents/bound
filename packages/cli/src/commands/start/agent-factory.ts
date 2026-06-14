@@ -12,6 +12,7 @@ import type { ModelRouter, ToolDefinition } from "@bound/llm";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import {
 	type ClusterFsResult,
+	createVfsRehydrator,
 	diffWorkspace,
 	loopContextStorage,
 	persistWorkspaceChanges,
@@ -130,6 +131,16 @@ export function createAgentLoopFactory(
 	sandbox: any,
 	clusterFsObj: ClusterFsResult | null,
 ): AgentLoopFactory {
+	// Process-lifetime VFS re-hydration closure, shared by every agent loop this
+	// factory produces. The VFS (clusterFsObj.fs) is a per-host singleton, so the
+	// re-hydration cursor — "what has already been pulled from the files table" —
+	// is host-global, NOT per-invocation. Built once here, called from each loop's
+	// HYDRATE_FS stage. Without this, post-boot uploads (web Files tab, synced peer
+	// changes) never reach the live sandbox until a restart re-runs hydrateWorkspace.
+	const rehydrateFs = clusterFsObj
+		? createVfsRehydrator(clusterFsObj.fs, appContext.db)
+		: undefined;
+
 	return (config: AgentLoopConfig): AgentLoop => {
 		// Per-invocation snapshot state. Each call gets its own
 		// closure so concurrent agent loops do not share preSnapshot.
@@ -173,6 +184,11 @@ export function createAgentLoopFactory(
 					}
 				: undefined,
 			checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
+
+			// Called at HYDRATE_FS, before capturePreSnapshot: pull files-table rows
+			// written since the last turn into the live VFS (Invariant #5 ordering —
+			// the re-pull becomes the OCC baseline, never mistaken for an agent edit).
+			rehydrateFs,
 
 			// Write a file to the VFS (used for tool result offloading).
 			writeFile: clusterFsObj

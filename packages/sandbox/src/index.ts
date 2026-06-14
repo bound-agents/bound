@@ -1,5 +1,6 @@
 export {
 	createClusterFs,
+	createVfsRehydrator,
 	snapshotWorkspace,
 	diffWorkspace,
 	hydrateWorkspace,

@@ -429,6 +429,30 @@ export async function rehydrateWorkspaceIncremental(
 	return cursor;
 }
 
+/**
+ * Build a cursor-managing re-hydration closure for the agent loop's HYDRATE_FS
+ * stage. The returned function pulls `files` rows written since the previous
+ * call into the live VFS and advances its own cursor, so each turn picks up
+ * only what arrived since the last one.
+ *
+ * The cursor lives in this closure for the lifetime of the process, NOT per
+ * agent-loop invocation: the VFS (`fs`) is a per-host singleton shared by every
+ * thread, so "what has already been pulled" is host-global state. A per-loop
+ * cursor would re-scan from scratch on every new conversation. It seeds to
+ * `sinceIso` (defaulting to construction time, ~boot, just after the one-shot
+ * `hydrateWorkspace`); the first turn then pulls anything written post-boot.
+ */
+export function createVfsRehydrator(
+	fs: MountableFs,
+	db: Database,
+	sinceIso: string = new Date().toISOString(),
+): () => Promise<void> {
+	let cursor = sinceIso;
+	return async (): Promise<void> => {
+		cursor = await rehydrateWorkspaceIncremental(fs, db, cursor);
+	};
+}
+
 export async function hydrateRemoteCache(
 	fs: MountableFs,
 	db: Database,
