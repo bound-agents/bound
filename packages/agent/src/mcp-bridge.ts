@@ -9,9 +9,8 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
 
-import { insertRow, updateRow, writeOutbox } from "@bound/core";
+import { updateRow, writeOutbox } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { loopContextStorage } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
@@ -20,6 +19,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion";
 import type { MCPClient } from "./mcp-client";
 import { type EligibleHost, createRelayOutboxEntry, findEligibleHosts } from "./relay-router";
+import { persistBinaryResource } from "./tool-result-images";
 
 /**
  * Cap a description string to maxLen characters, truncating with "…" if needed.
@@ -60,44 +60,10 @@ function formatResourceLink(link: {
  * Used for MCP `resource` content with non-text payloads (PDFs, structured
  * binary blobs, etc.). The id flows back into a `file_ref` ContentBlock so
  * downstream context-assembly + the AI SDK bridge can resolve the bytes
- * lazily, mirroring the path used for user-uploaded files.
- *
- * Storage shape mirrors the existing inference-payload offload site
- * (agent-loop.ts): base64 in `content`, `is_binary=1`, host_origin = current
- * site, no `created_by` because MCP tool output isn't user-authored.
+ * lazily, mirroring the path used for user-uploaded files. Moved to
+ * `tool-result-images.ts` so the agent-loop dispatch return can share the
+ * same mint for inline-base64 tool-output images (no second write path).
  */
-function persistBinaryResource(
-	db: Database,
-	siteId: string,
-	base64Data: string,
-	uri?: string,
-): string {
-	const id = randomUUID();
-	const now = new Date().toISOString();
-	// Path is informational — we use a stable mcp-resource/ prefix plus the
-	// id so the row is easy to identify in the files table without colliding
-	// with user paths. URI hint goes in a comment-style suffix when present.
-	const path = uri ? `mcp-resource/${id}#${uri.slice(0, 200)}` : `mcp-resource/${id}`;
-	insertRow(
-		db,
-		"files",
-		{
-			id,
-			path,
-			content: base64Data,
-			is_binary: 1,
-			size_bytes: base64Data.length,
-			created_at: now,
-			modified_at: now,
-			deleted: 0,
-			// MCP tool output isn't user-authored, leave creator unset.
-			created_by: null,
-			host_origin: siteId,
-		},
-		siteId,
-	);
-	return id;
-}
 
 /**
  * Build the JSON ContentBlock[] payload for a tool that returned a mix of

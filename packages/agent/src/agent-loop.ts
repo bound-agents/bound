@@ -77,6 +77,7 @@ import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 import { extractAssistantSeedText, extractSummaryAndMemories } from "./summary-extraction";
+import { persistImageBlocksAsFileRefs } from "./tool-result-images";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
 	buildOffloadMessage,
@@ -2835,7 +2836,14 @@ export class AgentLoop {
 							const hasError = platformResult.some(
 								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
 							);
-							result = { content: JSON.stringify(platformResult), exitCode: hasError ? 1 : 0 };
+							// Rewrite inline-base64 image blocks to file_ref before persist so
+							// a screenshot-sized payload never hits the cap. See tool-result-images.ts.
+							const lightened = persistImageBlocksAsFileRefs(
+								platformResult,
+								this.ctx.db,
+								this.ctx.siteId,
+							);
+							result = { content: JSON.stringify(lightened), exitCode: hasError ? 1 : 0 };
 						} else {
 							const exitCode = platformResult.startsWith("Error:") ? 1 : 0;
 							result = { content: platformResult, exitCode };
@@ -2894,7 +2902,14 @@ export class AgentLoop {
 							const hasError = builtinResult.some(
 								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
 							);
-							result = { content: JSON.stringify(builtinResult), exitCode: hasError ? 1 : 0 };
+							// Rewrite inline-base64 image blocks to file_ref before persist so
+							// a screenshot-sized payload never hits the cap. See tool-result-images.ts.
+							const lightened = persistImageBlocksAsFileRefs(
+								builtinResult,
+								this.ctx.db,
+								this.ctx.siteId,
+							);
+							result = { content: JSON.stringify(lightened), exitCode: hasError ? 1 : 0 };
 						} else {
 							const exitCode = builtinResult.startsWith("Error:") ? 1 : 0;
 							result = { content: builtinResult, exitCode };
@@ -2968,8 +2983,11 @@ export class AgentLoop {
 				const hasError = result.some(
 					(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
 				);
+				// Rewrite inline-base64 image blocks to file_ref before persist so
+				// a screenshot-sized payload never hits the cap. See tool-result-images.ts.
+				const lightened = persistImageBlocksAsFileRefs(result, this.ctx.db, this.ctx.siteId);
 				return {
-					content: capToolResultContent(JSON.stringify(result)),
+					content: capToolResultContent(JSON.stringify(lightened)),
 					exitCode: hasError ? 1 : 0,
 				};
 			}
