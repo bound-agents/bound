@@ -7,7 +7,7 @@ A persistent, model-agnostic personal agent that runs on your own infrastructure
 - **Autonomous task execution** with full conversational context -- schedule checks, post updates, file issues, send reminders
 - **Cross-session memory** that persists across conversations, devices, and interfaces (web, Discord)
 - **Multi-host sync** -- run on a laptop and a cloud VM, with state replicating via Ed25519-signed HTTP
-- **Model-agnostic** -- switch between Ollama, Anthropic Claude, AWS Bedrock, and OpenAI-compatible endpoints per session
+- **Model-agnostic** -- switch between Ollama, Anthropic Claude, AWS Bedrock, OpenCode Go, and OpenAI-compatible endpoints per session
 - **Your infrastructure, your data** -- runs locally, no external dependencies beyond the LLM backend you choose
 
 ## Prerequisites
@@ -17,6 +17,7 @@ A persistent, model-agnostic personal agent that runs on your own infrastructure
   - [Ollama](https://ollama.com) running locally (easiest to start)
   - Anthropic API key
   - AWS Bedrock access
+  - [OpenCode Go](https://opencode.ai/docs/go) API key
   - Any OpenAI-compatible endpoint
 
 ## Quick start
@@ -44,6 +45,9 @@ ANTHROPIC_API_KEY=sk-ant-... bun run packages/cli/src/bound.ts init --anthropic
 
 # AWS Bedrock
 bun run packages/cli/src/bound.ts init --bedrock --region us-east-1
+
+# OpenCode Go
+OPENCODE_API_KEY=... bun run packages/cli/src/bound.ts init --opencode-go
 
 # With optional features
 bun run packages/cli/src/bound.ts init --ollama --with-sync --with-mcp --with-overlay

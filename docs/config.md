@@ -63,10 +63,10 @@ must be `""`.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `id` | string (non-empty) | — | Logical alias you route to (e.g. `"opus"`). Distinct from `model`. |
-| `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`. |
+| `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`. |
 | `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the mantle model id (e.g. `openai.gpt-5.4`). |
 | `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region`). |
-| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
+| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
 | `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
 | `context_window` | int > 0 | — | Token budget bound for context assembly. |

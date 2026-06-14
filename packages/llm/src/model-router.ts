@@ -2,6 +2,7 @@ import type { Logger } from "@bound/shared";
 import { BedrockDriver } from "./bedrock-driver";
 import { BedrockMantleDriver } from "./bedrock-mantle-driver";
 import { OpenAICompatibleDriver } from "./openai-compatible-driver";
+import { OpenCodeGoDriver } from "./opencode-go-driver";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -510,6 +511,23 @@ function createBackendFromConfig(
 				model: config.model,
 				contextWindow,
 				providerName: "zai",
+				logger,
+				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
+			});
+		}
+
+		case "opencode-go": {
+			const apiKey = config.apiKey as string | undefined;
+			if (!apiKey) {
+				throw new Error("OpenCode Go driver requires apiKey in config");
+			}
+			const contextWindow = config.contextWindow ?? 128000;
+			return new OpenCodeGoDriver({
+				apiKey,
+				model: config.model,
+				contextWindow,
+				baseUrl: config.baseUrl,
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,

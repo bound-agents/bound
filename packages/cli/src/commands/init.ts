@@ -11,6 +11,7 @@ export interface InitArgs {
 	bedrock?: boolean;
 	cerebras?: boolean;
 	zai?: boolean;
+	opencodeGo?: boolean;
 	/** Hub-only mode: no local inference backends; the node relays inference to spokes. */
 	hub?: boolean;
 	region?: string;
@@ -41,7 +42,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 	mkdirSync(configDir, { recursive: true });
 
 	const operatorName = args.name || process.env.USER || "operator";
-	let provider: "ollama" | "anthropic" | "bedrock" | "cerebras" | "zai" = "ollama";
+	let provider: "ollama" | "anthropic" | "bedrock" | "cerebras" | "zai" | "opencode-go" = "ollama";
 	let baseUrl = "http://localhost:11434";
 	let apiKey: string | undefined;
 	let region: string | undefined;
@@ -90,6 +91,16 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 		if (!apiKey) {
 			console.log("ZAI_API_KEY not found in environment.");
+		}
+	} else if (args.opencodeGo) {
+		// OpenCode Go preset
+		provider = "opencode-go";
+		baseUrl = "https://opencode.ai/zen/go/v1";
+		model = "glm-5.1";
+		apiKey = process.env.OPENCODE_API_KEY;
+
+		if (!apiKey) {
+			console.log("OPENCODE_API_KEY not found in environment.");
 		}
 	}
 

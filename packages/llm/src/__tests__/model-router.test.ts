@@ -278,6 +278,29 @@ describe("ModelRouter", () => {
 		expect(caps.max_context).toBe(8192);
 	});
 
+	it("should create router from config with OpenCode Go backend", () => {
+		const config: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "opencode-go",
+					provider: "opencode-go",
+					apiKey: "test",
+					model: "glm-5.1",
+					baseUrl: "https://opencode.ai/zen/go/v1",
+					contextWindow: 128000,
+				},
+			],
+			default: "opencode-go",
+		};
+
+		const router = createModelRouter(config);
+		const backend = router.getBackend();
+		const caps = backend.capabilities();
+		expect(caps.streaming).toBe(true);
+		expect(caps.tool_use).toBe(true);
+		expect(caps.max_context).toBe(128000);
+	});
+
 	it("should support case-insensitive provider names", () => {
 		const config: ModelBackendsConfig = {
 			backends: [
