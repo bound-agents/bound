@@ -170,6 +170,49 @@ export function appendToolDuration(content: string, elapsedMs: number): string {
 }
 
 /**
+ * Inverse of `appendToolDuration`: strip the `[duration: N.NNNs]` marker the
+ * dispatch layer appends to every tool result, recovering the original content.
+ * Mirrors both shapes the append produces:
+ *
+ * - Plain string → removes a trailing `\n\n[duration: N.NNNs]`.
+ * - JSON-serialized `ContentBlock[]` → pops a trailing `text` block whose text
+ *   is exactly the marker, re-serializing the remaining array.
+ *
+ * Idempotent, and a no-op on content that carries no marker. The web MCP-App
+ * reconstruct path uses this so an app that `JSON.parse`s its tool result (e.g.
+ * github's get-me, which reads `content[].text`) sees the original payload
+ * rather than the payload plus a trailing footer that breaks the parse.
+ *
+ * See bound-agents/bound#77.
+ */
+const DURATION_SUFFIX_RE = /\n\n\[duration: \d+\.\d{3}s\]$/;
+const DURATION_MARKER_RE = /^\[duration: \d+\.\d{3}s\]$/;
+
+export function stripToolDuration(content: string): string {
+	if (content.length > 0 && content[0] === "[") {
+		try {
+			const parsed = JSON.parse(content);
+			if (Array.isArray(parsed) && parsed.length > 0) {
+				const last = parsed[parsed.length - 1] as { type?: unknown; text?: unknown };
+				if (
+					last &&
+					typeof last === "object" &&
+					last.type === "text" &&
+					typeof last.text === "string" &&
+					DURATION_MARKER_RE.test(last.text)
+				) {
+					return JSON.stringify(parsed.slice(0, -1));
+				}
+			}
+			return content;
+		} catch {
+			// Fall through — plain string starting with '[' but not valid JSON.
+		}
+	}
+	return content.replace(DURATION_SUFFIX_RE, "");
+}
+
+/**
  * Slice a string at a code-unit boundary without splitting surrogate pairs.
  * JavaScript strings are UTF-16; characters outside the BMP (emoji, CJK
  * Extension B, etc.) are stored as two code units (a surrogate pair).

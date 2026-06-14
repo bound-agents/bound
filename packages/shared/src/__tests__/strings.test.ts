@@ -5,6 +5,7 @@ import {
 	capToolResultContent,
 	formatFileAttachment,
 	safeSlice,
+	stripToolDuration,
 } from "../strings";
 
 describe("formatFileAttachment", () => {
@@ -182,5 +183,58 @@ describe("appendToolDuration", () => {
 		expect(Buffer.byteLength(capped, "utf8")).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
 		// Duration suffix lives in the tail half — survives middle-cut.
 		expect(capped).toContain("[duration: 1.500s]");
+	});
+});
+
+describe("stripToolDuration", () => {
+	test("strips a trailing [duration: N.NNNs] suffix from plain string content", () => {
+		expect(stripToolDuration("hello world\n\n[duration: 1.234s]")).toBe("hello world");
+	});
+
+	test("recovers the original JSON payload an app JSON.parses (github get-me case)", () => {
+		const json = '{"login":"polaris-is-online","id":280102667}';
+		expect(stripToolDuration(`${json}\n\n[duration: 0.457s]`)).toBe(json);
+	});
+
+	test("strips large-duration and sub-second markers", () => {
+		expect(stripToolDuration("x\n\n[duration: 60.500s]")).toBe("x");
+		expect(stripToolDuration("x\n\n[duration: 0.000s]")).toBe("x");
+	});
+
+	test("pops a trailing duration ContentBlock from a JSON-serialized array", () => {
+		const withMarker = JSON.stringify([
+			{ type: "text", text: "first" },
+			{ type: "text", text: "[duration: 0.250s]" },
+		]);
+		expect(stripToolDuration(withMarker)).toBe(JSON.stringify([{ type: "text", text: "first" }]));
+	});
+
+	test("leaves a JSON array without a trailing duration block unchanged", () => {
+		const noMarker = JSON.stringify([{ type: "text", text: "only" }]);
+		expect(stripToolDuration(noMarker)).toBe(noMarker);
+	});
+
+	test("leaves content with no marker unchanged", () => {
+		expect(stripToolDuration("plain result")).toBe("plain result");
+		expect(stripToolDuration("")).toBe("");
+		expect(stripToolDuration('{"login":"x"}')).toBe('{"login":"x"}');
+	});
+
+	test("does not strip a duration-shaped line that is not the appended suffix", () => {
+		// Only the exact `\n\n[duration: N.NNNs]` tail is removed, not an inline mention.
+		expect(stripToolDuration("see [duration: 1.000s] above\n\nmore")).toBe(
+			"see [duration: 1.000s] above\n\nmore",
+		);
+	});
+
+	test("round-trips appendToolDuration for both shapes", () => {
+		expect(stripToolDuration(appendToolDuration("plain", 1234))).toBe("plain");
+		const blocks = JSON.stringify([{ type: "text", text: "b" }]);
+		expect(stripToolDuration(appendToolDuration(blocks, 250))).toBe(blocks);
+	});
+
+	test("is idempotent", () => {
+		const once = stripToolDuration("x\n\n[duration: 1.234s]");
+		expect(stripToolDuration(once)).toBe(once);
 	});
 });
