@@ -16,6 +16,7 @@
 //    instance for UI-bearing tools (sharing the same in-flight promise the app
 //    consumes), and returns the flattened textual result the agent loop needs.
 import type { ToolCallRequest, ToolCallResult } from "@bound/client";
+import { stripToolDuration } from "@bound/shared";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { writable } from "svelte/store";
 import type { UiResourceClient } from "./mcp-app-bridge";
@@ -175,21 +176,30 @@ function parseContentBlocks(content: string | unknown[]): Array<Record<string, u
  * value that isn't an array, or non-JSON) is wrapped as a single text block.
  */
 function resultContentBlocks(content: string | unknown[]): Array<Record<string, unknown>> {
-	let parsed: unknown = content;
-	if (typeof content === "string") {
-		try {
-			parsed = JSON.parse(content);
-		} catch {
-			// Not JSON at all — a plain-text result. Wrap it (or drop an empty one).
-			return content.length > 0 ? [{ type: "text", text: content }] : [];
-		}
+	if (typeof content !== "string") {
+		// Already a parsed value (a content-block array, normally).
+		return Array.isArray(content)
+			? content.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null)
+			: [];
+	}
+	// Persisted tool-result text. The dispatch layer appends a `[duration: N.NNNs]`
+	// footer (appendToolDuration) to every result before persistence — strip it so
+	// an app that JSON.parses its content (github get-me reads `content[].text`)
+	// sees the original payload rather than payload-plus-footer, which would throw.
+	const text = stripToolDuration(content);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		// Not JSON at all — a plain-text result. Wrap it (or drop an empty one).
+		return text.length > 0 ? [{ type: "text", text }] : [];
 	}
 	if (Array.isArray(parsed)) {
 		return parsed.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null);
 	}
 	// Parsed to a non-array JSON value (the flattened structured result) — hand the
-	// original text back inside a text block so a content-reading app can parse it.
-	return typeof content === "string" && content.length > 0 ? [{ type: "text", text: content }] : [];
+	// text back inside a text block so a content-reading app can parse it.
+	return text.length > 0 ? [{ type: "text", text }] : [];
 }
 
 /**

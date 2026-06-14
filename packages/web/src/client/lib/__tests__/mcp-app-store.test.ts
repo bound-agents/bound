@@ -309,6 +309,32 @@ describe("reconstructInstancesFromMessages", () => {
 		});
 	});
 
+	it("strips the dispatch-layer [duration: N.NNNs] footer so an app can JSON.parse the content", async () => {
+		// The agent loop appends `\n\n[duration: N.NNNs]` (appendToolDuration) to every
+		// plain-string tool result before persistence. The live render path shares the
+		// raw CallToolResult (no footer); the reconstruct path reads the persisted text.
+		// Without stripping, github get-me's `JSON.parse(content[].text)` chokes on the
+		// trailing footer and renders "Failed to parse user data".
+		const h = host();
+		const userJson = '{"login":"polaris-is-online","id":280102667}';
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_d", "srv", { subcommand: "do_thing" }),
+			{
+				role: "tool_result",
+				tool_name: "tooluse_d",
+				content: `${userJson}\n\n[duration: 0.457s]`,
+				metadata: JSON.stringify({ mcp_app: SRV_BINDING }),
+			},
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1");
+		expect(instances).toHaveLength(1);
+		const result = await instances[0].resultPromise;
+		expect(result).toEqual({ content: [{ type: "text", text: userJson }], isError: false });
+		// The recovered text is exactly what the app JSON.parses.
+		const block = result.content[0] as { text: string };
+		expect(() => JSON.parse(block.text)).not.toThrow();
+	});
+
 	it("does not mount until a bound result lands — an unpaired tool_call yields nothing", () => {
 		// The binding lives on the tool_result, so a call whose result hasn't been
 		// persisted yet produces no instance. It mounts on the result's arrival.
