@@ -425,11 +425,13 @@ export class BoundAcpAgent implements Agent {
 				category: "model",
 				type: "select",
 				currentValue,
-				options: models.models.map((model) => ({
-					value: model.id,
-					name: model.id,
-					description: `${model.provider} via ${model.host}`,
-				})),
+				options: models.models
+					.map((model) => ({
+						value: model.id,
+						name: model.id,
+						description: `${model.provider} via ${model.host}`,
+					}))
+					.sort((a, b) => b.name.localeCompare(a.name)),
 			},
 		];
 	}
