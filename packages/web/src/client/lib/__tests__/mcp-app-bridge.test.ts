@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { type UiResourceClient, formatAppContentToMessage, getUiResource } from "../mcp-app-bridge";
+import {
+	type UiResourceClient,
+	buildDeviceContext,
+	buildHostStyles,
+	formatAppContentToMessage,
+	getUiResource,
+} from "../mcp-app-bridge";
 
 const MIME = "text/html;profile=mcp-app";
 
@@ -100,6 +106,50 @@ describe("getUiResource", () => {
 			{ mimeType: MIME, text: "<p>b</p>" },
 		]);
 		await expect(getUiResource(client, "ui://x/app.html")).rejects.toThrow(/exactly one/);
+	});
+});
+
+describe("buildHostStyles", () => {
+	it("maps bound palette vars into ext-apps host-style keys", () => {
+		const palette: Record<string, string> = {
+			"--paper": "#EFEAE0",
+			"--paper-2": "#E8E2D5",
+			"--ink": "#1A1814",
+			"--rule-soft": "rgba(26,24,20,0.18)",
+			"--font-mono": "JetBrains Mono, monospace",
+		};
+		const styles = buildHostStyles((v) => palette[v] ?? "");
+		expect(styles.variables?.["--color-background-primary"]).toBe("#EFEAE0");
+		expect(styles.variables?.["--color-background-secondary"]).toBe("#E8E2D5");
+		expect(styles.variables?.["--color-text-primary"]).toBe("#1A1814");
+		expect(styles.variables?.["--color-border-primary"]).toBe("rgba(26,24,20,0.18)");
+		expect(styles.variables?.["--font-mono"]).toBe("JetBrains Mono, monospace");
+	});
+
+	it("trims values and omits keys whose bound var resolves blank", () => {
+		const styles = buildHostStyles((v) => (v === "--paper" ? "  #EFEAE0  " : "   "));
+		expect(styles.variables?.["--color-background-primary"]).toBe("#EFEAE0");
+		expect("--color-text-primary" in (styles.variables ?? {})).toBe(false);
+	});
+});
+
+describe("buildDeviceContext", () => {
+	it("reports mobile for a touch-only (coarse pointer, no hover) device", () => {
+		const ctx = buildDeviceContext({ coarsePointer: true, hover: false });
+		expect(ctx.platform).toBe("mobile");
+		expect(ctx.deviceCapabilities).toEqual({ touch: true, hover: false });
+	});
+
+	it("reports web for a hover-capable pointer device", () => {
+		const ctx = buildDeviceContext({ coarsePointer: false, hover: true });
+		expect(ctx.platform).toBe("web");
+		expect(ctx.deviceCapabilities).toEqual({ touch: false, hover: true });
+	});
+
+	it("keeps web for a hybrid coarse+hover device (touch laptop)", () => {
+		const ctx = buildDeviceContext({ coarsePointer: true, hover: true });
+		expect(ctx.platform).toBe("web");
+		expect(ctx.deviceCapabilities).toEqual({ touch: true, hover: true });
 	});
 });
 

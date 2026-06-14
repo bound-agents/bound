@@ -19,8 +19,11 @@
 // manual smoke; getUiResource is DOM-free and unit tested.
 import {
 	AppBridge,
+	type McpUiHostStyles,
 	type McpUiResourceCsp,
 	type McpUiResourcePermissions,
+	type McpUiStyleVariableKey,
+	type McpUiStyles,
 	PostMessageTransport,
 	RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -190,6 +193,89 @@ export function applyViewportBudget(appBridge: AppBridge, state: ContainerState)
 }
 
 /**
+ * Map of ext-apps host-style variable → the bound CSS custom property whose
+ * resolved value fills it. The `McpUiStyleVariableKey` vocabulary is a fixed set
+ * an app's CSS reads (`var(--color-background-primary)` etc.); we publish bound's
+ * signage palette into it so a well-behaved app themes itself to host chrome
+ * instead of falling back to its own (usually stark white) defaults. Only the
+ * subset bound has a faithful token for is mapped — unmapped keys are omitted, so
+ * the app keeps its own default for those rather than receiving a wrong colour.
+ */
+const HOST_STYLE_VAR_MAP: ReadonlyArray<readonly [McpUiStyleVariableKey, string]> = [
+	["--color-background-primary", "--paper"],
+	["--color-background-secondary", "--paper-2"],
+	["--color-background-tertiary", "--paper-3"],
+	["--color-text-primary", "--ink"],
+	["--color-text-secondary", "--ink-2"],
+	["--color-text-tertiary", "--ink-3"],
+	["--color-text-disabled", "--ink-4"],
+	["--color-border-primary", "--rule-soft"],
+	["--color-border-secondary", "--rule-faint"],
+	["--color-text-danger", "--err"],
+	["--color-text-success", "--ok"],
+	["--color-text-warning", "--warn"],
+	["--font-sans", "--font-body"],
+	["--font-mono", "--font-mono"],
+];
+
+/**
+ * Build the host `styles.variables` payload from a CSS-var reader. Pure: the
+ * caller supplies `read` (a `getComputedStyle` wrapper in the browser, a fake in
+ * tests). Blank/missing values are trimmed and dropped so the app only receives
+ * tokens the host actually defines.
+ */
+export function buildHostStyles(read: (cssVar: string) => string): McpUiHostStyles {
+	const variables: Record<string, string> = {};
+	for (const [hostKey, boundVar] of HOST_STYLE_VAR_MAP) {
+		const value = read(boundVar).trim();
+		if (value) variables[hostKey] = value;
+	}
+	return { variables: variables as McpUiStyles };
+}
+
+/** Host platform + device-capability signals for an app's responsive layout. */
+export interface DeviceContext {
+	platform: "web" | "mobile";
+	deviceCapabilities: { touch: boolean; hover: boolean };
+}
+
+/**
+ * Derive platform + device capabilities from media-query results. Pure: the
+ * caller evaluates the queries (`matchMedia` in the browser, fakes in tests). A
+ * coarse primary pointer that cannot hover is the touch-first signal we report as
+ * `platform: "mobile"` so apps choose their compact layout; everything else stays
+ * `"web"` (a touch laptop reports both, and is not "mobile"). `"desktop"` is
+ * reserved for native desktop hosts, which the browser UI is not.
+ */
+export function buildDeviceContext(mq: { coarsePointer: boolean; hover: boolean }): DeviceContext {
+	const { coarsePointer: touch, hover } = mq;
+	return {
+		platform: touch && !hover ? "mobile" : "web",
+		deviceCapabilities: { touch, hover },
+	};
+}
+
+/** Read bound's live palette off the document root into a host-styles payload. */
+function readHostStylesFromDom(): McpUiHostStyles {
+	if (typeof document === "undefined" || typeof getComputedStyle !== "function") {
+		return { variables: {} as McpUiStyles };
+	}
+	const cs = getComputedStyle(document.documentElement);
+	return buildHostStyles((cssVar) => cs.getPropertyValue(cssVar));
+}
+
+/** Probe the browser's pointer/hover media queries into a device context. */
+function readDeviceContextFromDom(): DeviceContext {
+	const mm = typeof matchMedia === "function" ? matchMedia : null;
+	return buildDeviceContext({
+		coarsePointer: mm ? mm("(pointer: coarse)").matches : false,
+		// Default to hover-capable when matchMedia is unavailable so we don't
+		// misreport a headless/SSR context as a touch device.
+		hover: mm ? mm("(hover: hover)").matches : true,
+	});
+}
+
+/**
  * Construct an AppBridge for an app iframe, wired to the in-page MCP client and
  * with host-side handlers registered. Handlers are attached before connect() so
  * the app can issue requests immediately after the init handshake. A
@@ -207,6 +293,7 @@ export function newAppBridge(
 		maxHeight: options?.containerDimensions?.maxHeight ?? DEFAULT_MAX_HEIGHT,
 		fullscreen: options?.displayMode === "fullscreen",
 	};
+	const device = readDeviceContextFromDom();
 	const appBridge = new AppBridge(
 		client,
 		IMPLEMENTATION,
@@ -219,7 +306,9 @@ export function newAppBridge(
 		{
 			hostContext: {
 				theme: options?.theme ?? "light",
-				platform: "web",
+				platform: device.platform,
+				deviceCapabilities: device.deviceCapabilities,
+				styles: readHostStylesFromDom(),
 				containerDimensions: { maxHeight: containerState.maxHeight },
 				displayMode: options?.displayMode ?? "inline",
 				availableDisplayModes: ["inline", "fullscreen"],
