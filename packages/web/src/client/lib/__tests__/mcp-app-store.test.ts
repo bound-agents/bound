@@ -284,6 +284,31 @@ describe("reconstructInstancesFromMessages", () => {
 		await expect(instances[0].resultPromise).resolves.toEqual({ content: [], isError: false });
 	});
 
+	it("wraps a flattened-text result (bare JSON, not a content-block array) back into a text block", async () => {
+		// A sandbox/MCP-bridge dispatch persists the tool RESULT as the flattened
+		// text the agent loop consumes — github `get_me` lands as the bare JSON object
+		// `{"login":...}`, NOT a `[{type,text}]` content-block array. An app that reads
+		// `result.content[].text` (github's get-me app JSON.parses it) needs that text
+		// back inside a text block, or it sees no content and renders "No user data".
+		const h = host();
+		const userJson = '{"login":"polaris-is-online","id":280102667}';
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_j", "srv", { subcommand: "do_thing" }),
+			{
+				role: "tool_result",
+				tool_name: "tooluse_j",
+				content: userJson,
+				metadata: JSON.stringify({ mcp_app: SRV_BINDING }),
+			},
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1");
+		expect(instances).toHaveLength(1);
+		await expect(instances[0].resultPromise).resolves.toEqual({
+			content: [{ type: "text", text: userJson }],
+			isError: false,
+		});
+	});
+
 	it("does not mount until a bound result lands — an unpaired tool_call yields nothing", () => {
 		// The binding lives on the tool_result, so a call whose result hasn't been
 		// persisted yet produces no instance. It mounts on the result's arrival.
