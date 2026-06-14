@@ -13,6 +13,20 @@ import type { Logger, TypedEventEmitter } from "@bound/shared";
  * Usage in start.ts loopSandbox.exec:
  *   loopContextStorage.run({ threadId, taskId }, () => sandbox.bash.exec(cmd, opts))
  */
+/**
+ * MCP Apps binding for a UI-bearing tool call. When an MCP tool carries
+ * `_meta.ui.resourceUri` (the `io.modelcontextprotocol/ui` capability), the
+ * command handler records this triple so the agent loop can stamp it onto the
+ * persisted tool_result row's metadata — letting a UI-capable surface render
+ * the tool result as an interactive app, independent of where the call came
+ * from.
+ */
+export interface McpAppBinding {
+	server: string;
+	tool: string;
+	uiResourceUri: string;
+}
+
 export const loopContextStorage = new AsyncLocalStorage<{
 	threadId?: string;
 	taskId?: string;
@@ -23,6 +37,13 @@ export const loopContextStorage = new AsyncLocalStorage<{
 	 * request set this field; the agent loop checks it after sandbox.exec returns.
 	 */
 	relayRequest?: unknown;
+	/**
+	 * Side-channel for MCP Apps bindings, set by MCP bridge command handlers
+	 * when the dispatched tool carries a `_meta.ui.resourceUri`. Same rationale
+	 * as `relayRequest`: just-bash strips extra fields off the return value, so
+	 * the exec wrapper lifts this off the store after `.run()` returns.
+	 */
+	mcpApp?: McpAppBinding;
 }>();
 
 import type { CustomCommand, IFileSystem } from "just-bash";

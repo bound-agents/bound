@@ -21,6 +21,7 @@ export {
 	type CommandDefinition,
 	type CommandResult,
 	type CommandContext,
+	type McpAppBinding,
 } from "./commands";
 
 export {

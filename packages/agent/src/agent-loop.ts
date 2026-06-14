@@ -9,6 +9,7 @@ import {
 	recordTurnRelayMetrics,
 	resolveRelayConfig,
 	updateRow,
+	writeMessageMetadata,
 } from "@bound/core";
 import type {
 	ContentBlock,
@@ -20,6 +21,7 @@ import type {
 } from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import { LLMError } from "@bound/llm";
+import type { McpAppBinding } from "@bound/sandbox";
 import type { ContextDebugInfo, ContextSection, EventMap, SyncConfig } from "@bound/shared";
 import {
 	appendToolDuration,
@@ -2092,6 +2094,7 @@ export class AgentLoop {
 						content: string;
 						exitCode: number;
 						durationMs: number;
+						mcpApp?: McpAppBinding;
 					}> = [];
 					const pendingClientCalls: Array<{
 						toolCall: ParsedToolCall;
@@ -2103,6 +2106,7 @@ export class AgentLoop {
 						let resultContent = "";
 						let exitCode = 0;
 						let deferredToClient = false;
+						let mcpAppBinding: McpAppBinding | undefined;
 						const toolStartTime = Date.now();
 
 						this.ctx.logger.debug("[agent-loop] Tool executing", {
@@ -2256,6 +2260,7 @@ export class AgentLoop {
 									} else {
 										resultContent = dispatchResult.content;
 										exitCode = dispatchResult.exitCode;
+										mcpAppBinding = dispatchResult.mcpApp;
 										dispatchHandled = true;
 									}
 								}
@@ -2286,6 +2291,7 @@ export class AgentLoop {
 							content: resultContent,
 							exitCode,
 							durationMs: toolDurationMs,
+							mcpApp: mcpAppBinding,
 						});
 						this.config.onActivity?.();
 					}
@@ -2408,7 +2414,7 @@ export class AgentLoop {
 					// In-memory context uses ContentBlock array (not JSON string)
 					llmMessages.push({ role: "tool_call", content: toolCallBlocks });
 
-					for (const { toolCall, content, exitCode } of toolResults) {
+					for (const { toolCall, content, exitCode, mcpApp } of toolResults) {
 						const toolResultMsgId = insertThreadMessage(
 							this.ctx.db,
 							{
@@ -2422,6 +2428,19 @@ export class AgentLoop {
 							},
 							this.ctx.siteId,
 						);
+						// MCP Apps binding rides the opaque messages.metadata channel
+						// (Invariant #19), so a UI-capable surface can render this result
+						// as an interactive app. Invisible to the agent loop / context
+						// assembly; written here so the row is self-describing regardless
+						// of which surface dispatched the call.
+						if (mcpApp) {
+							writeMessageMetadata(
+								this.ctx.db,
+								toolResultMsgId,
+								{ mcp_app: mcpApp },
+								this.ctx.siteId,
+							);
+						}
 						this.broadcastMessage(toolResultMsgId);
 						this.messagesCreated++;
 
@@ -2748,7 +2767,11 @@ export class AgentLoop {
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
 		parentCtx?: Context,
-	): Promise<{ content: string; exitCode: number } | RelayToolCallRequest | ClientToolCallRequest> {
+	): Promise<
+		| { content: string; exitCode: number; mcpApp?: McpAppBinding }
+		| RelayToolCallRequest
+		| ClientToolCallRequest
+	> {
 		// Registry-based dispatch (new path)
 		if (this.config.toolRegistry) {
 			const tool = this.config.toolRegistry.get(toolCall.name);
@@ -2783,7 +2806,7 @@ export class AgentLoop {
 			);
 
 			try {
-				let result: { content: string; exitCode: number };
+				let result: { content: string; exitCode: number; mcpApp?: McpAppBinding };
 
 				switch (tool.kind) {
 					case "platform": {
@@ -2837,6 +2860,14 @@ export class AgentLoop {
 							),
 							exitCode: sandboxResult.exitCode,
 						};
+						// MCP Apps binding: the exec wrapper lifts a UI-bearing tool's
+						// {server, tool, uiResourceUri} off the loop-context side-channel
+						// onto the result. Carry it through so it lands on the persisted
+						// tool_result row's metadata.
+						{
+							const mcpApp = (sandboxResult as { mcpApp?: McpAppBinding }).mcpApp;
+							if (mcpApp) result.mcpApp = mcpApp;
+						}
 						break;
 					}
 

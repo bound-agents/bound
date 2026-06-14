@@ -438,6 +438,22 @@ export async function generateMCPCommands(
 					};
 				}
 
+				// MCP Apps binding: if the dispatched tool carries `_meta.ui.resourceUri`
+				// (the `io.modelcontextprotocol/ui` capability), stash it on the loop
+				// context store so the agent loop can stamp it onto the persisted
+				// tool_result row's metadata. just-bash strips extra fields off the
+				// return value, so — like relayRequest — this rides the side-channel.
+				// The binding describes the tool, so it is recorded regardless of call
+				// outcome; a UI-capable surface renders the result, error or not.
+				const uiResourceUri = (entry.tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta
+					?.ui?.resourceUri;
+				if (typeof uiResourceUri === "string") {
+					const store = loopContextStorage.getStore();
+					if (store) {
+						store.mcpApp = { server: serverName, tool: subcommand, uiResourceUri };
+					}
+				}
+
 				try {
 					// Pass all args except 'subcommand' to callTool, with type coercion.
 					// Args arrive as strings from the bash --key value parser. MCP servers
