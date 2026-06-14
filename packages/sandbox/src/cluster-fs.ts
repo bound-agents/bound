@@ -365,6 +365,51 @@ export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<v
 	}
 }
 
+/**
+ * Incrementally re-hydrate the live VFS from `files` rows modified since a
+ * cursor. `hydrateWorkspace` runs exactly once at startup, so files written to
+ * the `files` table *after* boot (e.g. an upload through the web Files tab, or a
+ * peer's change syncing in) never reach the live sandbox until this runs.
+ *
+ * Called from the agent loop's HYDRATE_FS stage, BEFORE `capturePreSnapshot`,
+ * so the OCC baseline includes the re-hydrated content and FS_PERSIST does not
+ * mistake a re-pull for an agent edit (Invariant #5).
+ *
+ * `is_binary = 1` rows store base64 in `files.content` (the web upload path
+ * does `Buffer.from(data).toString("base64")`); the VFS holds binary as a
+ * latin1 "binary string" (1 char = 1 byte), which the read tool re-encodes via
+ * `Buffer.from(raw, "binary").toString("base64")`. So binary rows are decoded
+ * base64 -> binary string here, the symmetric inverse. Text rows write as-is.
+ *
+ * Returns the new cursor: the wall-clock time captured BEFORE the SELECT. Any
+ * row written during the scan is therefore re-pulled on the next pass rather
+ * than skipped — re-pulls are idempotent (same bytes, before the OCC snapshot),
+ * so the only cost of the overlap is a redundant write, never a lost update.
+ */
+export async function rehydrateWorkspaceIncremental(
+	fs: MountableFs,
+	db: Database,
+	sinceIso: string,
+): Promise<string> {
+	const cursor = new Date().toISOString();
+	const query = db.prepare(`
+		SELECT path, content, is_binary FROM files
+		WHERE deleted = 0 AND path NOT LIKE '/mnt/%' AND modified_at > ?
+	`);
+
+	for (const row of query.all(sinceIso) as Array<{
+		path: string;
+		content: string | null;
+		is_binary: number;
+	}>) {
+		const raw = row.content ?? "";
+		const content = row.is_binary === 1 ? Buffer.from(raw, "base64").toString("binary") : raw;
+		await fs.writeFile(row.path, content);
+	}
+
+	return cursor;
+}
+
 export async function hydrateRemoteCache(
 	fs: MountableFs,
 	db: Database,

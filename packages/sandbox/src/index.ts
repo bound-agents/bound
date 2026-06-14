@@ -3,6 +3,7 @@ export {
 	snapshotWorkspace,
 	diffWorkspace,
 	hydrateWorkspace,
+	rehydrateWorkspaceIncremental,
 	type ClusterFsConfig,
 	type ClusterFsResult,
 	type FileChange,

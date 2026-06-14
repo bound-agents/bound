@@ -213,6 +213,7 @@ interface BashLike {
 		usageBytes: number;
 		thresholdBytes: number;
 	};
+	rehydrateFs?: () => Promise<void>;
 	capturePreSnapshot?: () => Promise<void>;
 	builtInTools?: Map<
 		string,
@@ -587,6 +588,14 @@ export class AgentLoop {
 		try {
 			this.transition("HYDRATE_FS");
 			const hydrateSpan = getTracer().startSpan("agent-loop.hydrate-fs");
+			// Pull files written to the `files` table since the last hydration
+			// into the live VFS (post-boot uploads, peer changes that synced in).
+			// MUST run before capturePreSnapshot so the OCC baseline includes the
+			// re-hydrated content and FS_PERSIST does not mistake a re-pull for an
+			// agent edit (Invariant #5).
+			if (this.sandbox.rehydrateFs) {
+				await this.sandbox.rehydrateFs();
+			}
 			if (this.sandbox.capturePreSnapshot) {
 				await this.sandbox.capturePreSnapshot();
 			}
