@@ -30,6 +30,32 @@ describe("getUiResource", () => {
 		expect(data.permissions).toEqual({ camera: {} });
 	});
 
+	it("returns prefersBorder from content-level _meta.ui", async () => {
+		const client = fakeClient([
+			{
+				mimeType: MIME,
+				text: "<html><body>app</body></html>",
+				_meta: { ui: { prefersBorder: false } },
+			},
+		]);
+		const data = await getUiResource(client, "ui://x/app.html");
+		expect(data.prefersBorder).toBe(false);
+	});
+
+	it("returns prefersBorder true when the view requests a frame", async () => {
+		const client = fakeClient([
+			{ mimeType: MIME, text: "<p>x</p>", _meta: { ui: { prefersBorder: true } } },
+		]);
+		const data = await getUiResource(client, "ui://x/app.html");
+		expect(data.prefersBorder).toBe(true);
+	});
+
+	it("leaves prefersBorder undefined when the view omits it (host decides)", async () => {
+		const client = fakeClient([{ mimeType: MIME, text: "<p>x</p>", _meta: { ui: {} } }]);
+		const data = await getUiResource(client, "ui://x/app.html");
+		expect(data.prefersBorder).toBeUndefined();
+	});
+
 	it("decodes base64 blob content", async () => {
 		const html = "<html><body>blobbed</body></html>";
 		const client = fakeClient([{ mimeType: MIME, blob: btoa(html) }]);

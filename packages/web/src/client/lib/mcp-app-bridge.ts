@@ -35,12 +35,21 @@ export interface UiResourceData {
 	html: string;
 	csp?: McpUiResourceCsp;
 	permissions?: McpUiResourcePermissions;
+	/**
+	 * The view's visual-boundary preference (ext-apps `McpUiResourceMeta.prefersBorder`).
+	 * `true` → the view wants the host to paint a visible border + background; `false`
+	 * → the view paints its own chrome and wants the host to paint neither; `undefined`
+	 * → host decides. GitHub's apps stamp `false`, which is why an unmodified host that
+	 * still paints a frame + full-width backdrop leaves the narrow card on a wide canvas.
+	 */
+	prefersBorder?: boolean;
 }
 
-/** ext-apps `_meta.ui` shape we read CSP/permissions from. */
+/** ext-apps `_meta.ui` shape we read CSP/permissions/prefersBorder from. */
 interface UiMeta {
 	csp?: McpUiResourceCsp;
 	permissions?: McpUiResourcePermissions;
+	prefersBorder?: boolean;
 }
 
 interface ResourceContent {
@@ -92,7 +101,12 @@ export async function getUiResource(
 	const contentMeta = content._meta ?? content.meta;
 	const uiMeta = contentMeta?.ui ?? listingUiMeta;
 
-	return { html, csp: uiMeta?.csp, permissions: uiMeta?.permissions };
+	return {
+		html,
+		csp: uiMeta?.csp,
+		permissions: uiMeta?.permissions,
+		prefersBorder: uiMeta?.prefersBorder,
+	};
 }
 
 export type ModelContext = Parameters<NonNullable<AppBridge["onupdatemodelcontext"]>>[0];

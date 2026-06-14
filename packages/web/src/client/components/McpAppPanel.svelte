@@ -36,6 +36,13 @@ let errorMessage = $state<string | null>(null);
 // API does NOT move the iframe in the DOM, so the app doesn't reload / lose
 // canvas state on enter or exit.
 let isFullscreen = $state(false);
+// The view's visual-boundary preference (ext-apps `McpUiResourceMeta.prefersBorder`,
+// read off the UI resource in onMount). `false` → the view paints its own chrome and
+// asks the host to paint NO border and NO background; we honor that by going chromeless
+// so the app's card sits directly on the chat flow instead of on a host-painted panel
+// (the "narrow card on a wide backdrop" the GitHub apps showed). `true`/undefined keep
+// the default bordered card.
+let prefersBorder = $state<boolean | undefined>(undefined);
 
 // Inline panels are capped to a fraction of the viewport so a wide chat column
 // can't make the app report (and the iframe grow to) a runaway height. The
@@ -86,6 +93,7 @@ onMount(async () => {
 		// the host; it also satisfies UiResourceClient and AppBridge's Client).
 		const sdkClient = instance.client as unknown as Client;
 		const resource = await getUiResource(sdkClient, instance.uiResourceUri);
+		prefersBorder = resource.prefersBorder;
 
 		// An app pushing content back to the model splits by intent. An explicit
 		// `ui/message` (onMessage) is `ui/message` semantics: persist a real user
@@ -155,7 +163,12 @@ onDestroy(() => {
 });
 </script>
 
-<div class="mcp-app" class:fullscreen={isFullscreen} bind:this={panelEl}>
+<div
+	class="mcp-app"
+	class:fullscreen={isFullscreen}
+	class:chromeless={prefersBorder === false}
+	bind:this={panelEl}
+>
 	<div class="app-head">
 		<span class="kicker">App · {instance.serverName}</span>
 		<div class="head-right">
@@ -194,6 +207,28 @@ onDestroy(() => {
 		background: var(--paper);
 		margin: 10px 0;
 		overflow: hidden;
+	}
+
+	/* The view declared `prefersBorder: false` (ext-apps McpUiResourceMeta): it
+	   paints its own chrome and asks the host to paint NO border + NO background.
+	   We honor that by stripping the container frame, the frame backdrop, and the
+	   header's card styling, so the app's own card sits directly on the chat flow
+	   instead of on a host-painted panel (which is what left a narrow card on a
+	   wide --paper backdrop). Fullscreen still gets its background from the
+	   :fullscreen rule below, which wins by specificity. */
+	.mcp-app.chromeless {
+		border: none;
+		background: transparent;
+		overflow: visible;
+	}
+
+	.mcp-app.chromeless .app-frame {
+		background: transparent;
+	}
+
+	.mcp-app.chromeless .app-head {
+		border-bottom: none;
+		background: transparent;
 	}
 
 	.app-head {
