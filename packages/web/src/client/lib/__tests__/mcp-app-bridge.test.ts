@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
 	type UiResourceClient,
+	appSupportsFullscreen,
 	buildDeviceContext,
 	buildHostStyles,
 	formatAppContentToMessage,
@@ -106,6 +107,24 @@ describe("getUiResource", () => {
 			{ mimeType: MIME, text: "<p>b</p>" },
 		]);
 		await expect(getUiResource(client, "ui://x/app.html")).rejects.toThrow(/exactly one/);
+	});
+});
+
+describe("appSupportsFullscreen", () => {
+	it("is true when the app declares fullscreen among its display modes", () => {
+		expect(appSupportsFullscreen({ availableDisplayModes: ["inline", "fullscreen"] })).toBe(true);
+	});
+
+	it("is false when the app declares only inline (the SDK default get_me uses)", () => {
+		expect(appSupportsFullscreen({ availableDisplayModes: ["inline"] })).toBe(false);
+	});
+
+	it("is false when the app omits availableDisplayModes entirely", () => {
+		expect(appSupportsFullscreen({})).toBe(false);
+	});
+
+	it("is false before capabilities have landed (undefined)", () => {
+		expect(appSupportsFullscreen(undefined)).toBe(false);
 	});
 });
 
