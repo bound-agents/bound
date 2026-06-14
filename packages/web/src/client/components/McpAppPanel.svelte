@@ -14,6 +14,7 @@ import { client } from "../lib/bound";
 import {
 	type AppBridgeCallbacks,
 	type ContainerState,
+	appSupportsFullscreen,
 	applyViewportBudget,
 	formatAppContentToMessage,
 	getUiResource,
@@ -43,6 +44,12 @@ let isFullscreen = $state(false);
 // (the "narrow card on a wide backdrop" the GitHub apps showed). `true`/undefined keep
 // the default bordered card.
 let prefersBorder = $state<boolean | undefined>(undefined);
+// Whether to offer the Fullscreen control, gated on the app's declared
+// `availableDisplayModes` (read from getAppCapabilities() after the ui/initialize
+// handshake). Default-deny: an app that declares only "inline" — like GitHub's
+// get_me — never gets the button, and the button stays hidden until the handshake
+// lands. See appSupportsFullscreen in mcp-app-bridge.
+let canFullscreen = $state(false);
 
 // Inline panels are capped to a fraction of the viewport so a wide chat column
 // can't make the app report (and the iframe grow to) a runaway height. The
@@ -150,6 +157,10 @@ onMount(async () => {
 			input: $state.snapshot(instance.input) as Record<string, unknown>,
 			resultPromise: instance.resultPromise,
 		});
+		// mountApp resolves only after the ui/initialize handshake, so the app's
+		// declared capabilities are populated now. Gate the Fullscreen control on
+		// what the app actually supports rather than offering it unconditionally.
+		canFullscreen = appSupportsFullscreen(appBridge.getAppCapabilities());
 		status = "ready";
 	} catch (err) {
 		status = "error";
@@ -207,6 +218,13 @@ onDestroy(() => {
 		background: var(--paper);
 		margin: 10px 0;
 		overflow: hidden;
+		/* Inline width is host policy, not an app signal: the ext-apps auto-resize
+		   reports `width: window.innerWidth` (the width we already handed the frame),
+		   never the card's intrinsic width, so a full-column iframe leaves a narrow
+		   app stranded in dead space. Cap to a readable column — a narrow app refits
+		   inside it (the next size-change echoes the smaller innerWidth), and a wide
+		   app is bounded the same as message text. Fullscreen overrides below. */
+		max-width: 640px;
 	}
 
 	/* The view declared `prefersBorder: false` (ext-apps McpUiResourceMeta): it
@@ -313,6 +331,7 @@ onDestroy(() => {
 	.mcp-app:fullscreen {
 		width: 100vw;
 		height: 100vh;
+		max-width: none;
 		margin: 0;
 		display: flex;
 		flex-direction: column;

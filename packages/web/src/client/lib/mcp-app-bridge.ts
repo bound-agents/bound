@@ -19,6 +19,7 @@
 // manual smoke; getUiResource is DOM-free and unit tested.
 import {
 	AppBridge,
+	type McpUiAppCapabilities,
 	type McpUiHostStyles,
 	type McpUiResourceCsp,
 	type McpUiResourcePermissions,
@@ -282,6 +283,20 @@ function readDeviceContextFromDom(): DeviceContext {
  * ResizeObserver keeps the app informed of container width; it is disconnected
  * on bridge close.
  */
+/**
+ * Whether the host should offer a fullscreen control for a given app, gated on
+ * the app's own declared capabilities. The app reports the display modes it
+ * supports via `McpUiAppCapabilities.availableDisplayModes` in its `ui/initialize`
+ * request; the host-side AppBridge surfaces them through `getAppCapabilities()`
+ * once `oninitialized` fires. We only paint the Fullscreen button when the app
+ * declared "fullscreen" — GitHub's `get_me`, for instance, declares only
+ * `["inline"]` (the SDK default it never widened), so it gets no button.
+ * Default-deny: undefined capabilities (handshake not yet complete) hide it.
+ */
+export function appSupportsFullscreen(caps: McpUiAppCapabilities | undefined): boolean {
+	return caps?.availableDisplayModes?.includes("fullscreen") ?? false;
+}
+
 export function newAppBridge(
 	client: Client,
 	iframe: HTMLIFrameElement,
@@ -349,10 +364,14 @@ export function newAppBridge(
 		return {};
 	};
 
-	appBridge.onsizechange = async ({ width, height }) => {
-		if (width !== undefined) {
-			iframe.style.minWidth = `min(${width}px, 100%)`;
-		}
+	appBridge.onsizechange = async ({ height }) => {
+		// We deliberately ignore the reported `width`. The SDK's default auto-resize
+		// (App.setupSizeChangedNotifications) measures content HEIGHT honestly, but
+		// reports `width: window.innerWidth` — the iframe's own inner width, i.e. the
+		// width the host already handed it, not the content's intrinsic width. There
+		// is therefore no content-width signal to shrink the frame to. Inline width is
+		// a host-policy decision: the CSS caps `.mcp-app` to a readable column so a
+		// narrow app refits instead of floating in a full-column iframe.
 		if (containerState.fullscreen) {
 			// In fullscreen the CSS (`height: 100%` under a flex column) owns the
 			// frame height; an inline style would fight it.
