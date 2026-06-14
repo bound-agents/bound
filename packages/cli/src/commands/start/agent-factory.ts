@@ -155,12 +155,19 @@ export function createAgentLoopFactory(
 							threadId: config.threadId,
 							taskId: config.taskId,
 							relayRequest: undefined as unknown | undefined,
+							mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
 						};
 						const result = await loopContextStorage.run(store, () => sandbox.bash.exec(cmd, opts));
 						if (store.relayRequest && isRelayRequest(store.relayRequest)) {
 							const req = store.relayRequest;
 							store.relayRequest = undefined;
 							return req;
+						}
+						// Lift the MCP Apps binding (if a UI-bearing tool was dispatched)
+						// onto the result so the agent loop can stamp it into metadata.
+						// just-bash strips extra fields, so it rides the store side-channel.
+						if (store.mcpApp) {
+							return { ...(result as object), mcpApp: store.mcpApp };
 						}
 						return result;
 					}
