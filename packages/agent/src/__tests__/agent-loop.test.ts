@@ -1818,6 +1818,34 @@ describe("AgentLoop", () => {
 			// exec should come after (during tool execution)
 			expect(callOrder).toContain("exec");
 		});
+
+		it("rehydrateFs runs before capturePreSnapshot at HYDRATE_FS", async () => {
+			const mockBackend = new MockLLMBackend();
+			mockBackend.setTextResponse("Done.");
+
+			const callOrder: string[] = [];
+			const mockBash = {
+				exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				rehydrateFs: async () => {
+					callOrder.push("rehydrateFs");
+				},
+				capturePreSnapshot: async () => {
+					callOrder.push("capturePreSnapshot");
+				},
+			};
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// Re-hydration must seed the VFS before the OCC baseline is captured,
+			// or FS_PERSIST mistakes a re-pulled file for an agent edit (Invariant #5).
+			expect(callOrder).toEqual(["rehydrateFs", "capturePreSnapshot"]);
+		});
 	});
 
 	it("reassigns duplicate tool-use IDs and logs a warning (AC6.4)", async () => {

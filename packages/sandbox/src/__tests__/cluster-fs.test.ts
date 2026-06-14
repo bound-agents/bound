@@ -10,6 +10,7 @@ import {
 	createClusterFs,
 	diffWorkspaceAsync,
 	hydrateWorkspace,
+	rehydrateWorkspaceIncremental,
 	snapshotWorkspace,
 } from "../cluster-fs";
 
@@ -301,5 +302,122 @@ describe("hydrateWorkspace", () => {
 		} catch (_error) {
 			// Expected: soft-deleted file was not hydrated
 		}
+	});
+});
+
+describe("rehydrateWorkspaceIncremental", () => {
+	let db: Database;
+	let fs: MountableFs;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		applySchema(db);
+		fs = new MountableFs({ base: new InMemoryFs() });
+	});
+
+	function insertFileAt(
+		database: Database,
+		path: string,
+		content: string,
+		modifiedAt: string,
+		opts: { deleted?: number; isBinary?: number } = {},
+	) {
+		insertRow(
+			database,
+			"files",
+			{
+				id: path,
+				path,
+				content,
+				deleted: opts.deleted ?? 0,
+				is_binary: opts.isBinary ?? 0,
+				size_bytes: Buffer.byteLength(content),
+				created_at: modifiedAt,
+				modified_at: modifiedAt,
+			},
+			"test-site",
+		);
+	}
+
+	test("restores a text file whose modified_at is past the cursor", async () => {
+		const cursor = "2026-06-14T00:00:00.000Z";
+		insertFileAt(
+			db,
+			"/home/user/uploads/notes.txt",
+			"hello after boot",
+			"2026-06-14T01:00:00.000Z",
+		);
+
+		await rehydrateWorkspaceIncremental(fs, db, cursor);
+
+		expect(await fs.readFile("/home/user/uploads/notes.txt")).toBe("hello after boot");
+	});
+
+	test("does NOT restore a file modified at or before the cursor", async () => {
+		const cursor = "2026-06-14T02:00:00.000Z";
+		// Modified strictly before the cursor — already loaded by the prior hydration.
+		insertFileAt(db, "/home/user/uploads/old.txt", "stale", "2026-06-14T01:00:00.000Z");
+
+		await rehydrateWorkspaceIncremental(fs, db, cursor);
+
+		try {
+			await fs.readFile("/home/user/uploads/old.txt");
+			expect.unreachable("File at/below cursor should not be re-hydrated");
+		} catch (_error) {
+			// Expected: below the cursor, not pulled
+		}
+	});
+
+	test("decodes is_binary=1 content from base64 into a VFS binary string", async () => {
+		const cursor = "2026-06-14T00:00:00.000Z";
+		// A PNG magic-byte header: bytes that are NOT valid UTF-8 text.
+		const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]);
+		const base64 = bytes.toString("base64");
+		insertFileAt(db, "/home/user/uploads/img.png", base64, "2026-06-14T01:00:00.000Z", {
+			isBinary: 1,
+		});
+
+		await rehydrateWorkspaceIncremental(fs, db, cursor);
+
+		// The VFS holds the raw bytes as a latin1 binary string — round-tripping
+		// it back through Buffer must reproduce the original bytes, NOT the base64.
+		const raw = await fs.readFile("/home/user/uploads/img.png");
+		expect(Buffer.from(raw, "binary").equals(bytes)).toBe(true);
+		expect(raw).not.toBe(base64);
+	});
+
+	test("excludes /mnt/ overlay paths and soft-deleted rows", async () => {
+		const cursor = "2026-06-14T00:00:00.000Z";
+		insertFileAt(db, "/mnt/peer/file.txt", "remote", "2026-06-14T01:00:00.000Z");
+		insertFileAt(db, "/home/user/uploads/gone.txt", "deleted", "2026-06-14T01:00:00.000Z", {
+			deleted: 1,
+		});
+
+		await rehydrateWorkspaceIncremental(fs, db, cursor);
+
+		for (const path of ["/mnt/peer/file.txt", "/home/user/uploads/gone.txt"]) {
+			try {
+				await fs.readFile(path);
+				expect.unreachable(`${path} should not be re-hydrated`);
+			} catch (_error) {
+				// Expected
+			}
+		}
+	});
+
+	test("returns a cursor that suppresses re-pulling already-hydrated files", async () => {
+		insertFileAt(db, "/home/user/uploads/once.txt", "first", "2026-06-14T01:00:00.000Z");
+
+		const nextCursor = await rehydrateWorkspaceIncremental(fs, db, "");
+		expect(typeof nextCursor).toBe("string");
+		expect(nextCursor > "2026-06-14T01:00:00.000Z").toBe(true);
+
+		// Overwrite the VFS copy with a sentinel, then re-run with the returned
+		// cursor. The row's modified_at is below the advanced cursor, so it must
+		// NOT be re-pulled — the sentinel survives.
+		await fs.writeFile("/home/user/uploads/once.txt", "edited-in-vfs");
+		await rehydrateWorkspaceIncremental(fs, db, nextCursor);
+
+		expect(await fs.readFile("/home/user/uploads/once.txt")).toBe("edited-in-vfs");
 	});
 });
