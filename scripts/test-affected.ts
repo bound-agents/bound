@@ -164,7 +164,7 @@ function stagedFiles(root: string): string[] {
 		.filter((l) => l.length > 0);
 }
 
-function main(): void {
+export function run(): void {
 	const root = resolve(import.meta.dir, "..");
 	const dryRun = process.argv.includes("--dry-run");
 
@@ -193,6 +193,26 @@ function main(): void {
 		process.exit(0);
 	}
 
+	if (isFull) {
+		// Global-file change: every package's tests need to run. Bun v1.3.14's
+		// filter mode rejects a list of plain package dirs as "no test files
+		// matched" (per CONTRIBUTING's "Common Gotchas" — tests need
+		// `.test`/`_test_`/`.spec`/`_spec_` in the filename), so iterate per
+		// dir: each `bun test <dir>` walks into `src/__tests__/` and runs
+		// matches. Per-dir exit code is preserved; the partial case (3
+		// packages) is unaffected — it never trips the global-file branch.
+		let lastExit = 0;
+		for (const dir of dirs) {
+			const proc = Bun.spawnSync(["bun", "test", dir], {
+				cwd: root,
+				stdout: "inherit",
+				stderr: "inherit",
+			});
+			if ((proc.exitCode ?? 1) !== 0) lastExit = proc.exitCode ?? 1;
+		}
+		process.exit(lastExit);
+	}
+
 	const proc = Bun.spawnSync(["bun", "test", ...dirs], {
 		cwd: root,
 		stdout: "inherit",
@@ -202,5 +222,5 @@ function main(): void {
 }
 
 if (import.meta.main) {
-	main();
+	run();
 }
