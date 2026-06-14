@@ -165,6 +165,34 @@ function parseContentBlocks(content: string | unknown[]): Array<Record<string, u
 }
 
 /**
+ * Build the content-block array for a reconstructed tool RESULT. A sandbox /
+ * MCP-bridge dispatch persists the result as the flattened text the agent loop
+ * consumes (agent-loop.ts pushes a string), not a content-block array — github
+ * `get_me` lands as the bare JSON object `{"login":...}`. An app that reads
+ * `result.content[].text` (github's get-me app JSON.parses it) sees no content
+ * and renders "No user data" unless that text is handed back inside a text
+ * block. So: a real content-block array passes through; flattened text (a JSON
+ * value that isn't an array, or non-JSON) is wrapped as a single text block.
+ */
+function resultContentBlocks(content: string | unknown[]): Array<Record<string, unknown>> {
+	let parsed: unknown = content;
+	if (typeof content === "string") {
+		try {
+			parsed = JSON.parse(content);
+		} catch {
+			// Not JSON at all — a plain-text result. Wrap it (or drop an empty one).
+			return content.length > 0 ? [{ type: "text", text: content }] : [];
+		}
+	}
+	if (Array.isArray(parsed)) {
+		return parsed.filter((b): b is Record<string, unknown> => typeof b === "object" && b !== null);
+	}
+	// Parsed to a non-array JSON value (the flattened structured result) — hand the
+	// original text back inside a text block so a content-reading app can parse it.
+	return typeof content === "string" && content.length > 0 ? [{ type: "text", text: content }] : [];
+}
+
+/**
  * Rebuild the UI-bearing app instances for a thread from its persisted message
  * history, so a page reload re-renders the panels that were live before. The
  * agent's tool-call rows survive a refresh; the in-memory instance store does
@@ -201,7 +229,7 @@ export function reconstructInstancesFromMessages(
 	for (const msg of messages) {
 		if (msg.role === "tool_result" && msg.tool_name) {
 			resultsByToolUseId.set(msg.tool_name, {
-				content: parseContentBlocks(msg.content),
+				content: resultContentBlocks(msg.content),
 				isError: msg.exit_code != null && msg.exit_code !== 0,
 			});
 			const binding = readMcpAppBinding(msg.metadata);
