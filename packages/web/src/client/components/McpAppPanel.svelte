@@ -188,9 +188,11 @@ onDestroy(() => {
 			{:else if status === "error"}
 				<span class="state state-error mono">Failed</span>
 			{/if}
-			<button type="button" class="head-btn" onclick={toggleFullscreen}>
-				{isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-			</button>
+			{#if canFullscreen}
+				<button type="button" class="head-btn" onclick={toggleFullscreen}>
+					{isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+				</button>
+			{/if}
 		</div>
 	</div>
 
