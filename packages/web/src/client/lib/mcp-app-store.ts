@@ -109,6 +109,45 @@ export interface PersistedToolMessage {
 	/** On a tool_result row this holds the originating tool_use id (the linkage). */
 	tool_name?: string | null;
 	exit_code?: number | null;
+	/**
+	 * Raw `messages.metadata` — the opaque JSON property bag (invariant #19). On a
+	 * tool_result row for a UI-bearing MCP call it carries `mcp_app`, the binding
+	 * stamped at dispatch. A JSON string from the API, or already-parsed.
+	 */
+	metadata?: string | Record<string, unknown> | null;
+}
+
+/** The MCP App binding stamped onto a tool_result's `metadata.mcp_app` at dispatch. */
+interface McpAppBinding {
+	server: string;
+	tool: string;
+	uiResourceUri: string;
+}
+
+/**
+ * Read the `mcp_app` binding off a persisted message's `metadata`, tolerating the
+ * raw JSON-string form (the API/WS shape) and an already-parsed object. Returns
+ * undefined for absent, malformed, or incomplete bindings — the renderer simply
+ * doesn't mount a panel for those.
+ */
+function readMcpAppBinding(metadata: PersistedToolMessage["metadata"]): McpAppBinding | undefined {
+	if (metadata == null) return undefined;
+	let bag: unknown = metadata;
+	if (typeof metadata === "string") {
+		try {
+			bag = JSON.parse(metadata);
+		} catch {
+			return undefined;
+		}
+	}
+	if (typeof bag !== "object" || bag === null) return undefined;
+	const mcpApp = (bag as Record<string, unknown>).mcp_app;
+	if (typeof mcpApp !== "object" || mcpApp === null) return undefined;
+	const { server, tool, uiResourceUri } = mcpApp as Record<string, unknown>;
+	if (typeof server !== "string" || typeof tool !== "string" || typeof uiResourceUri !== "string") {
+		return undefined;
+	}
+	return { server, tool, uiResourceUri };
 }
 
 /** Parse a message's content into a content-block array, tolerating both forms. */
@@ -129,12 +168,17 @@ function parseContentBlocks(content: string | unknown[]): Array<Record<string, u
  * Rebuild the UI-bearing app instances for a thread from its persisted message
  * history, so a page reload re-renders the panels that were live before. The
  * agent's tool-call rows survive a refresh; the in-memory instance store does
- * not — this bridges that gap.
+ * not — this bridges that gap. New results streaming in live re-run this scan,
+ * so it doubles as the live render trigger.
  *
- * For each persisted `tool_use` block whose bound name still resolves to a
- * UI-bearing registration on the (reconnected) host, we synthesize an instance
- * whose `resultPromise` is already resolved from the matching persisted
- * `tool_result` (paired by the result row's `tool_name` = the tool_use id).
+ * The render signal is the `mcp_app` binding stamped onto the tool_result row at
+ * dispatch (`messages.metadata.mcp_app`): the authoritative {server, tool,
+ * uiResourceUri} for the call. Keying off that — rather than reverse-parsing the
+ * tool_use call shape — means a UI-bearing call mounts identically no matter
+ * which surface dispatched it (web omnibus `<server>`/subcommand, boundless bash,
+ * a direct bound name). The binding lives on the RESULT, so a call only mounts
+ * once its result has landed; the call's own input (for the args the app renders
+ * from) is paired back from the matching tool_use block.
  *
  * Fidelity note: the app re-renders at full fidelity from the tool INPUT (which
  * is what drives the render — e.g. the whole diagram for an Excalidraw call).
@@ -145,53 +189,58 @@ function parseContentBlocks(content: string | unknown[]): Array<Record<string, u
  */
 export function reconstructInstancesFromMessages(
 	messages: PersistedToolMessage[],
-	host: Pick<McpAppHost, "resolveCall">,
+	host: Pick<McpAppHost, "resolveByServerTool">,
 	threadId: string,
 	now: () => number = Date.now,
 ): McpAppInstance[] {
-	// First pass: tool_use id -> persisted result content blocks.
+	// First pass: index by tool_use id — the result content + the MCP App binding
+	// (both off tool_result rows), and the call's input (off the tool_use block).
 	const resultsByToolUseId = new Map<string, { content: unknown[]; isError: boolean }>();
+	const bindingByToolUseId = new Map<string, McpAppBinding>();
+	const inputByCallId = new Map<string, Record<string, unknown>>();
 	for (const msg of messages) {
-		if (msg.role !== "tool_result" || !msg.tool_name) continue;
-		resultsByToolUseId.set(msg.tool_name, {
-			content: parseContentBlocks(msg.content),
-			isError: msg.exit_code != null && msg.exit_code !== 0,
-		});
-	}
-
-	// Second pass: each UI-bearing tool_use becomes a reconstructed instance. The
-	// tool_use name can be either a direct namespaced bound name OR the agent's
-	// omnibus MCP command (server name + input.subcommand); resolveCall handles
-	// both and hands back the per-tool registration plus the args to forward to
-	// the app (with the `subcommand` wrapper stripped).
-	const instances: McpAppInstance[] = [];
-	for (const msg of messages) {
+		if (msg.role === "tool_result" && msg.tool_name) {
+			resultsByToolUseId.set(msg.tool_name, {
+				content: parseContentBlocks(msg.content),
+				isError: msg.exit_code != null && msg.exit_code !== 0,
+			});
+			const binding = readMcpAppBinding(msg.metadata);
+			if (binding) bindingByToolUseId.set(msg.tool_name, binding);
+		}
 		for (const block of parseContentBlocks(msg.content)) {
 			if (block.type !== "tool_use") continue;
 			const callId = typeof block.id === "string" ? block.id : undefined;
-			const toolName = typeof block.name === "string" ? block.name : undefined;
-			if (!callId || !toolName) continue;
-			const input = (block.input as Record<string, unknown>) ?? {};
-			const resolved = host.resolveCall(toolName, input);
-			const uiResourceUri = resolved?.reg.uiResourceUri;
-			if (!resolved || !uiResourceUri) continue;
-			const { reg, toolArgs } = resolved;
-			const persisted = resultsByToolUseId.get(callId);
-			instances.push({
-				callId,
-				threadId,
-				boundName: reg.boundName,
-				serverName: reg.serverName,
-				uiResourceUri,
-				input: toolArgs,
-				client: reg.client as unknown as UiResourceClient,
-				resultPromise: Promise.resolve({
-					content: persisted?.content ?? [],
-					isError: persisted?.isError ?? false,
-				} as CallToolResult),
-				createdAt: now(),
-			});
+			if (!callId) continue;
+			inputByCallId.set(callId, (block.input as Record<string, unknown>) ?? {});
 		}
+	}
+
+	// Second pass: each bound tool_result becomes a reconstructed instance. The
+	// binding names the (server, tool); the connected host resolves it to the live
+	// client that reads the `ui://` resource. A binding whose server the browser
+	// never connected to has no client, so it can't render and is skipped.
+	const instances: McpAppInstance[] = [];
+	for (const [callId, binding] of bindingByToolUseId) {
+		const reg = host.resolveByServerTool(binding.server, binding.tool);
+		if (!reg) continue;
+		// Strip the omnibus `subcommand` wrapper when present; the app wants only
+		// the tool's own arguments.
+		const { subcommand: _omit, ...toolArgs } = inputByCallId.get(callId) ?? {};
+		const persisted = resultsByToolUseId.get(callId);
+		instances.push({
+			callId,
+			threadId,
+			boundName: reg.boundName,
+			serverName: binding.server,
+			uiResourceUri: binding.uiResourceUri,
+			input: toolArgs,
+			client: reg.client as unknown as UiResourceClient,
+			resultPromise: Promise.resolve({
+				content: persisted?.content ?? [],
+				isError: persisted?.isError ?? false,
+			} as CallToolResult),
+			createdAt: now(),
+		});
 	}
 	return instances;
 }

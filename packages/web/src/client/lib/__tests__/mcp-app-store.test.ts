@@ -191,12 +191,12 @@ describe("reconstructInstancesFromMessages", () => {
 		return h;
 	}
 
-	// The bound names the host assigns (namespaced + sanitized).
-	function names(h: McpAppHost): { ui: string; plain: string } {
-		const defs = h.getToolDefinitions();
-		return { ui: defs[0].function.name, plain: defs[1].function.name };
+	// The bound name the host assigns to the UI tool (namespaced + sanitized).
+	function uiBoundName(h: McpAppHost): string {
+		return h.getToolDefinitions()[0].function.name;
 	}
 
+	// A tool_call row carrying one tool_use block (the call's input lives here).
 	function toolCallMsg(
 		id: string,
 		name: string,
@@ -208,26 +208,40 @@ describe("reconstructInstancesFromMessages", () => {
 		};
 	}
 
-	it("rebuilds a UI-bearing instance from a persisted tool_call, pairing its result", async () => {
+	// A tool_result row keyed back to its call (tool_name = tool_use id), with the
+	// MCP App binding stamped onto messages.metadata.mcp_app at dispatch — the
+	// authoritative render signal the renderer reads (instead of reverse-parsing
+	// the call shape). `binding` null means a non-UI tool: no stamp.
+	function toolResultMsg(
+		toolUseId: string,
+		binding: { server: string; tool: string; uiResourceUri: string } | null,
+		text = "rendered ok",
+	): PersistedToolMessage {
+		return {
+			role: "tool_result",
+			tool_name: toolUseId,
+			content: JSON.stringify([{ type: "text", text }]),
+			metadata: binding ? JSON.stringify({ mcp_app: binding }) : null,
+		};
+	}
+
+	const SRV_BINDING = { server: "srv", tool: "do_thing", uiResourceUri: "ui://srv/app.html" };
+
+	it("rebuilds a UI-bearing instance from the result-row binding, pairing the call's input", async () => {
 		const h = host();
-		const { ui } = names(h);
 		const messages: PersistedToolMessage[] = [
-			toolCallMsg("tooluse_1", ui, { q: "hi" }),
-			{
-				role: "tool_result",
-				// the tool_result row keys back to its call via tool_name = tool_use id
-				tool_name: "tooluse_1",
-				content: JSON.stringify([{ type: "text", text: "rendered ok" }]),
-			},
+			toolCallMsg("tooluse_1", "srv", { subcommand: "do_thing", q: "hi" }),
+			toolResultMsg("tooluse_1", SRV_BINDING),
 		];
 		const instances = reconstructInstancesFromMessages(messages, h, "t1", () => 7);
 		expect(instances).toHaveLength(1);
 		const inst = instances[0];
 		expect(inst.callId).toBe("tooluse_1");
 		expect(inst.threadId).toBe("t1");
-		expect(inst.boundName).toBe(ui);
+		expect(inst.boundName).toBe(uiBoundName(h));
 		expect(inst.serverName).toBe("srv");
 		expect(inst.uiResourceUri).toBe("ui://srv/app.html");
+		// The omnibus `subcommand` wrapper is stripped; the app gets only its args.
 		expect(inst.input).toEqual({ q: "hi" });
 		expect(inst.createdAt).toBe(7);
 		// The result is reconstructed from the persisted tool_result content blocks.
@@ -237,25 +251,74 @@ describe("reconstructInstancesFromMessages", () => {
 		});
 	});
 
-	it("resolves an empty result when no tool_result was persisted yet", async () => {
+	it("mounts regardless of call shape — a binding on a bash-wrapped call still renders", () => {
+		// The whole point of stamping the binding at dispatch: it doesn't matter
+		// where the tool was called from. Here the tool_use is a `bash` call whose
+		// input is a shell string (the boundless shape) — no `subcommand` to parse,
+		// the old resolveCall heuristic would have found nothing. The result-row
+		// binding carries the truth, so the instance still mounts.
 		const h = host();
-		const { ui } = names(h);
-		const instances = reconstructInstancesFromMessages([toolCallMsg("tooluse_x", ui, {})], h, "t1");
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_b", "bash", { command: "github do_thing" }),
+			toolResultMsg("tooluse_b", SRV_BINDING),
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1");
+		expect(instances).toHaveLength(1);
+		expect(instances[0].serverName).toBe("srv");
+		expect(instances[0].uiResourceUri).toBe("ui://srv/app.html");
+	});
+
+	it("resolves an empty result when the bound result row carried no content", async () => {
+		const h = host();
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_x", "srv", { subcommand: "do_thing" }),
+			{
+				role: "tool_result",
+				tool_name: "tooluse_x",
+				content: JSON.stringify([]),
+				metadata: JSON.stringify({ mcp_app: SRV_BINDING }),
+			},
+		];
+		const instances = reconstructInstancesFromMessages(messages, h, "t1");
 		expect(instances).toHaveLength(1);
 		await expect(instances[0].resultPromise).resolves.toEqual({ content: [], isError: false });
 	});
 
-	it("skips non-UI tool calls and unknown tools", () => {
+	it("does not mount until a bound result lands — an unpaired tool_call yields nothing", () => {
+		// The binding lives on the tool_result, so a call whose result hasn't been
+		// persisted yet produces no instance. It mounts on the result's arrival.
 		const h = host();
-		const { plain } = names(h);
 		const messages: PersistedToolMessage[] = [
-			toolCallMsg("tooluse_2", plain, {}),
-			toolCallMsg("tooluse_3", "mcp__gone__tool", {}),
+			toolCallMsg("tooluse_pending", "srv", { subcommand: "do_thing" }),
 		];
 		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
 	});
 
-	it("ignores messages with no tool_use block", () => {
+	it("skips a tool_result with no MCP App binding (a non-UI tool)", () => {
+		const h = host();
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_2", "srv", { subcommand: "plain" }),
+			toolResultMsg("tooluse_2", null),
+		];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
+	});
+
+	it("skips a binding whose server the browser never connected to", () => {
+		// The binding names a (server, tool) the host has no live client for, so
+		// there's nothing to read the ui:// resource with — it can't render.
+		const h = host();
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_3", "gone", { subcommand: "tool" }),
+			toolResultMsg("tooluse_3", {
+				server: "gone",
+				tool: "tool",
+				uiResourceUri: "ui://gone/app.html",
+			}),
+		];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
+	});
+
+	it("ignores messages with no tool_use block and no binding", () => {
 		const h = host();
 		const messages: PersistedToolMessage[] = [
 			{ role: "assistant", content: JSON.stringify([{ type: "text", text: "hello" }]) },
@@ -266,12 +329,12 @@ describe("reconstructInstancesFromMessages", () => {
 
 	it("accepts already-parsed array content (not just JSON strings)", () => {
 		const h = host();
-		const { ui } = names(h);
 		const messages: PersistedToolMessage[] = [
 			{
 				role: "tool_call",
-				content: [{ type: "tool_use", id: "tooluse_4", name: ui, input: { a: 1 } }],
+				content: [{ type: "tool_use", id: "tooluse_4", name: "srv", input: { a: 1 } }],
 			},
+			toolResultMsg("tooluse_4", SRV_BINDING),
 		];
 		const instances = reconstructInstancesFromMessages(messages, h, "t1");
 		expect(instances).toHaveLength(1);
@@ -284,62 +347,12 @@ describe("reconstructInstancesFromMessages", () => {
 		expect(reconstructInstancesFromMessages(messages, h, "t1")).toEqual([]);
 	});
 
-	it("resolves the agent's omnibus tool_use (server name + subcommand) to its UI binding", async () => {
-		const h = host();
-		// The agent calls UI-bearing MCP tools through the per-server omnibus
-		// command — the persisted tool_use name is the SERVER ("srv"), the real
-		// tool rides in input.subcommand ("do_thing"). The render trigger must
-		// unwrap that to find the ui:// binding (generateMCPCommands).
-		const messages: PersistedToolMessage[] = [
-			{
-				role: "tool_call",
-				content: JSON.stringify([
-					{
-						type: "tool_use",
-						id: "tooluse_omni",
-						name: "srv",
-						input: { subcommand: "do_thing", q: "hi" },
-					},
-				]),
-			},
-			{
-				role: "tool_result",
-				tool_name: "tooluse_omni",
-				content: JSON.stringify([{ type: "text", text: "rendered ok" }]),
-			},
-		];
-		const instances = reconstructInstancesFromMessages(messages, h, "t1", () => 9);
-		expect(instances).toHaveLength(1);
-		const inst = instances[0];
-		expect(inst.callId).toBe("tooluse_omni");
-		expect(inst.serverName).toBe("srv");
-		expect(inst.uiResourceUri).toBe("ui://srv/app.html");
-		// The boundName is the canonical per-tool name, not the omnibus "srv".
-		expect(inst.boundName).toBe(names(h).ui);
-		// The subcommand wrapper is stripped from the args forwarded to the app.
-		expect(inst.input).toEqual({ q: "hi" });
-		await expect(inst.resultPromise).resolves.toEqual({
-			content: [{ type: "text", text: "rendered ok" }],
-			isError: false,
-		});
-	});
-
-	it("skips an omnibus tool_use whose subcommand is not a UI-bearing tool", () => {
+	it("tolerates malformed metadata without throwing", () => {
 		const h = host();
 		const messages: PersistedToolMessage[] = [
-			{
-				role: "tool_call",
-				content: JSON.stringify([
-					{ type: "tool_use", id: "t_p", name: "srv", input: { subcommand: "plain" } },
-				]),
-			},
-			{
-				role: "tool_call",
-				content: JSON.stringify([
-					{ type: "tool_use", id: "t_x", name: "srv", input: { subcommand: "nope" } },
-				]),
-			},
+			toolCallMsg("tooluse_5", "srv", { subcommand: "do_thing" }),
+			{ role: "tool_result", tool_name: "tooluse_5", content: "[]", metadata: "{ not json" },
 		];
-		expect(reconstructInstancesFromMessages(messages, h, "t1")).toHaveLength(0);
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toEqual([]);
 	});
 });
