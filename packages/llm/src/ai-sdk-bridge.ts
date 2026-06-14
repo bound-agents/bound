@@ -238,7 +238,7 @@ export function toModelMessages(
 	messages: LLMMessage[],
 	opts: ToModelMessagesOptions = {},
 ): ModelMessage[] {
-	const result: ModelMessage[] = [];
+	let result: ModelMessage[] = [];
 	// Default to the strictest envelope so callers that pre-date envelope
 	// awareness keep their historical universal-rewrite behavior.
 	const envelope = opts.targetEnvelope ?? ANTHROPIC_ENVELOPE;
@@ -546,6 +546,12 @@ export function toModelMessages(
 		pendingDev.length = 0;
 	}
 
+	// Read-boundary backstop: guarantee tool-call / tool-result pairing on the
+	// wire (see helper for rationale). Runs before the conversation-start
+	// invariant so that dropping a leading orphan tool_result still lets the
+	// user-prepend below fire.
+	result = enforceToolPairCompleteness(result);
+
 	// Conversation-start invariant: most providers (Bedrock, Anthropic
 	// direct, Mistral, …) reject requests whose first message isn't from the
 	// user. Defense-in-depth for inputs that start with assistant/tool/system
@@ -558,6 +564,97 @@ export function toModelMessages(
 	}
 
 	return result;
+}
+
+/**
+ * Read-boundary backstop for tool-call / tool-result pairing.
+ *
+ * Bedrock-Anthropic and Anthropic-direct reject a `toolUse` with no matching
+ * `toolResult` ("Expected toolResult blocks ... for the following Ids", 400,
+ * not retryable) AND a `toolResult` with no preceding `toolUse` — either one
+ * fails the whole turn. The upstream guards (context-assembly Stage 3
+ * TOOL_PAIR_SANITIZATION, the warm-path `hasOrphanedToolCall` bail, truncate's
+ * strip-leading-tool_results) keep the assembled `LLMMessage[]` legal in the
+ * common case, but a transient interleaving can still strand an orphan — the
+ * same class of "already-poisoned historical row" the `tool_use`-id and
+ * thinking-signature recovery layers self-heal at this same boundary. This is
+ * the third such layer: it rewrites only the wire projection, never the
+ * persisted rows, and is idempotent (a well-formed batch returns unchanged).
+ *
+ *   - orphan `tool-result` (id with no matching `tool-call`) → dropped; the
+ *     `tool` message is dropped entirely if it empties out.
+ *   - unmatched `tool-call` (id with no matching `tool-result`) → a stub
+ *     `tool-result` is synthesized immediately after the declaring assistant
+ *     message, so the model sees the call was interrupted rather than the turn
+ *     failing. (Consecutive `tool` messages merge on the wire — see the
+ *     emit-time merge note in `toModelMessages` — so a stub placed ahead of a
+ *     real following `tool` message coalesces into one legal message.)
+ */
+function enforceToolPairCompleteness(messages: ModelMessage[]): ModelMessage[] {
+	const callIds = new Set<string>();
+	const callNameById = new Map<string, string>();
+	const resultIds = new Set<string>();
+	for (const m of messages) {
+		if (!Array.isArray(m.content)) continue;
+		for (const p of m.content as Array<Record<string, unknown>>) {
+			if (p.type === "tool-call") {
+				const id = p.toolCallId as string;
+				callIds.add(id);
+				callNameById.set(id, (p.toolName as string) ?? "");
+			} else if (p.type === "tool-result") {
+				resultIds.add(p.toolCallId as string);
+			}
+		}
+	}
+
+	// Fast path: every result has a call, every call has a result.
+	let orphaned = false;
+	for (const id of resultIds) {
+		if (!callIds.has(id)) {
+			orphaned = true;
+			break;
+		}
+	}
+	if (!orphaned) {
+		for (const id of callIds) {
+			if (!resultIds.has(id)) {
+				orphaned = true;
+				break;
+			}
+		}
+	}
+	if (!orphaned) return messages;
+
+	const out: ModelMessage[] = [];
+	for (const m of messages) {
+		if (m.role === "tool" && Array.isArray(m.content)) {
+			const kept = (m.content as Array<Record<string, unknown>>).filter(
+				(p) => p.type !== "tool-result" || callIds.has(p.toolCallId as string),
+			);
+			if (kept.length === 0) continue;
+			out.push({ ...m, content: kept as never });
+			continue;
+		}
+		out.push(m);
+		if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+		const missing = (m.content as Array<Record<string, unknown>>)
+			.filter((p) => p.type === "tool-call" && !resultIds.has(p.toolCallId as string))
+			.map((p) => p.toolCallId as string);
+		if (missing.length === 0) continue;
+		out.push({
+			role: "tool",
+			content: missing.map((id) => ({
+				type: "tool-result" as const,
+				toolCallId: id,
+				toolName: callNameById.get(id) ?? "",
+				output: {
+					type: "text" as const,
+					value: "[no tool result recorded: the call did not complete]",
+				},
+			})) as never,
+		});
+	}
+	return out;
 }
 
 function wrapDev(lines: string[]): string {
