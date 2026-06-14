@@ -232,7 +232,7 @@ describe("McpAppHost", () => {
 	});
 });
 
-describe("McpAppHost.resolveCall", () => {
+describe("McpAppHost.resolveByServerTool", () => {
 	// A host with one server "github" exposing a UI-bearing "get_me" and a plain
 	// "list_issues" — mirrors how an MCP-App-bearing server is registered.
 	function githubHost(): McpAppHost {
@@ -244,40 +244,25 @@ describe("McpAppHost.resolveCall", () => {
 		return host;
 	}
 
-	it("resolves a direct namespaced bound name, forwarding input unchanged", () => {
+	it("resolves a registration by its (server, tool) pair — the binding's shape", () => {
 		const host = githubHost();
-		const resolved = host.resolveCall("mcp__github__get_me", { detail: "full" });
-		expect(resolved?.reg.serverName).toBe("github");
-		expect(resolved?.reg.originalName).toBe("get_me");
-		expect(resolved?.reg.uiResourceUri).toBe("ui://github-mcp-server/get_me.html");
-		expect(resolved?.toolArgs).toEqual({ detail: "full" });
+		const reg = host.resolveByServerTool("github", "get_me");
+		expect(reg?.serverName).toBe("github");
+		expect(reg?.originalName).toBe("get_me");
+		expect(reg?.uiResourceUri).toBe("ui://github-mcp-server/get_me.html");
+		expect(reg?.boundName).toBe("mcp__github__get_me");
 	});
 
-	it("resolves the agent's omnibus shape: server name + input.subcommand", () => {
+	it("resolves a non-UI tool too (the caller gates on the binding, not the host)", () => {
 		const host = githubHost();
-		// The agent calls the per-server command `github` with the real tool in
-		// `subcommand` (generateMCPCommands). The render trigger must unwrap it.
-		const resolved = host.resolveCall("github", { subcommand: "get_me", detail: "full" });
-		expect(resolved?.reg.serverName).toBe("github");
-		expect(resolved?.reg.originalName).toBe("get_me");
-		expect(resolved?.reg.uiResourceUri).toBe("ui://github-mcp-server/get_me.html");
+		const reg = host.resolveByServerTool("github", "list_issues");
+		expect(reg?.originalName).toBe("list_issues");
+		expect(reg?.uiResourceUri).toBeUndefined();
 	});
 
-	it("strips the subcommand wrapper from the args forwarded to the app", () => {
+	it("returns undefined when the browser never connected to that server/tool", () => {
 		const host = githubHost();
-		const resolved = host.resolveCall("github", { subcommand: "get_me", detail: "full" });
-		expect(resolved?.toolArgs).toEqual({ detail: "full" });
-		expect("subcommand" in (resolved?.toolArgs ?? {})).toBe(false);
-	});
-
-	it("returns undefined for an omnibus call whose subcommand isn't a registered tool", () => {
-		const host = githubHost();
-		expect(host.resolveCall("github", { subcommand: "no_such_tool" })).toBeUndefined();
-	});
-
-	it("returns undefined for an unknown tool name with no subcommand", () => {
-		const host = githubHost();
-		expect(host.resolveCall("totally_unknown", { x: 1 })).toBeUndefined();
-		expect(host.resolveCall("github", {})).toBeUndefined();
+		expect(host.resolveByServerTool("github", "no_such_tool")).toBeUndefined();
+		expect(host.resolveByServerTool("nope", "get_me")).toBeUndefined();
 	});
 });
