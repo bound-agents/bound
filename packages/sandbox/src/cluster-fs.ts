@@ -354,14 +354,35 @@ export function diffWorkspace(
 	return changes;
 }
 
+/**
+ * Decode a `files` row's stored content into the VFS representation.
+ *
+ * `is_binary = 1` rows store base64 in `files.content` (the web upload path does
+ * `Buffer.from(data).toString("base64")`); the VFS holds binary as a latin1
+ * "binary string" (1 char = 1 byte), which the read tool re-encodes via
+ * `Buffer.from(raw, "binary").toString("base64")`. So binary rows are decoded
+ * base64 -> binary string here, the symmetric inverse. Text rows pass through.
+ *
+ * Shared by both hydration paths so boot-time and per-turn re-hydration cannot
+ * drift on binary handling.
+ */
+function decodeFileContent(content: string | null, isBinary: number): string {
+	const raw = content ?? "";
+	return isBinary === 1 ? Buffer.from(raw, "base64").toString("binary") : raw;
+}
+
 export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<void> {
 	const query = db.prepare(`
-		SELECT path, content FROM files
+		SELECT path, content, is_binary FROM files
 		WHERE deleted = 0 AND path NOT LIKE '/mnt/%'
 	`);
 
-	for (const row of query.all() as Array<{ path: string; content: string }>) {
-		await fs.writeFile(row.path, row.content);
+	for (const row of query.all() as Array<{
+		path: string;
+		content: string | null;
+		is_binary: number;
+	}>) {
+		await fs.writeFile(row.path, decodeFileContent(row.content, row.is_binary));
 	}
 }
 
@@ -402,9 +423,7 @@ export async function rehydrateWorkspaceIncremental(
 		content: string | null;
 		is_binary: number;
 	}>) {
-		const raw = row.content ?? "";
-		const content = row.is_binary === 1 ? Buffer.from(raw, "base64").toString("binary") : raw;
-		await fs.writeFile(row.path, content);
+		await fs.writeFile(row.path, decodeFileContent(row.content, row.is_binary));
 	}
 
 	return cursor;

@@ -303,6 +303,36 @@ describe("hydrateWorkspace", () => {
 			// Expected: soft-deleted file was not hydrated
 		}
 	});
+
+	test("decodes is_binary=1 content from base64 into a VFS binary string at boot", async () => {
+		// A PNG magic-byte header: bytes that are NOT valid UTF-8 text.
+		const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]);
+		const base64 = bytes.toString("base64");
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"files",
+			{
+				id: "/home/user/uploads/img.png",
+				path: "/home/user/uploads/img.png",
+				content: base64,
+				is_binary: 1,
+				deleted: 0,
+				size_bytes: Buffer.byteLength(base64),
+				created_at: now,
+				modified_at: now,
+			},
+			"test-site",
+		);
+
+		await hydrateWorkspace(fs, db);
+
+		// The VFS holds the raw bytes as a latin1 binary string — round-tripping
+		// it back through Buffer must reproduce the original bytes, NOT the base64.
+		const raw = await fs.readFile("/home/user/uploads/img.png");
+		expect(Buffer.from(raw, "binary").equals(bytes)).toBe(true);
+		expect(raw).not.toBe(base64);
+	});
 });
 
 describe("rehydrateWorkspaceIncremental", () => {
