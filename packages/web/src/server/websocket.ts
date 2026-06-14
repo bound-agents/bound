@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { persistImageBlocksAsFileRefs } from "@bound/agent";
 import {
 	acknowledgeClientToolCall,
 	enqueueToolResult,
@@ -905,8 +906,19 @@ export function createWebSocketHandler(
 					? JSON.stringify([{ type: "text", text: `Error: ${msg.content}` }])
 					: JSON.stringify(contentBlocks);
 			} else {
-				// AC10.2: Persist ContentBlock array verbatim
-				persistedContent = JSON.stringify(msg.content);
+				// AC10.2: Persist ContentBlock array verbatim — but rewrite any
+				// inline-base64 image block to a file_ref first (same as the
+				// native agent-loop dispatch return), so a screenshot-sized
+				// payload from a client tool (boundless_read) never hits the cap.
+				const lightened =
+					db && siteId
+						? persistImageBlocksAsFileRefs(
+								msg.content as Parameters<typeof persistImageBlocksAsFileRefs>[0],
+								db,
+								siteId,
+							)
+						: msg.content;
+				persistedContent = JSON.stringify(lightened);
 			}
 
 			// Universal tool-result cap. Backstop for client-side tools that don't

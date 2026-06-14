@@ -39,6 +39,7 @@ export {
 
 // Export agent loop
 export { AgentLoop } from "./agent-loop";
+export { persistImageBlocksAsFileRefs, persistBinaryResource } from "./tool-result-images";
 export {
 	findPendingUserMessage,
 	insertThreadMessage,
