@@ -48,6 +48,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { injectPythonWorkerStdin } from "./sandbox-runtime-transforms";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, "..");
@@ -223,11 +224,14 @@ async function main() {
 	if (existsSync(OUT_DIR)) rmSync(OUT_DIR, { recursive: true, force: true });
 	mkdirSync(OUT_DIR, { recursive: true });
 
-	// ── Python worker (copy as-is; uses only Bun-compatible node:* APIs) ──
+	// ── Python worker (uses only Bun-compatible node:* APIs) ──
+	// Patched on copy to wire a Module.stdin byte-reader onto fd 0 — just-bash
+	// never installs one, so any sys.stdin / fd-0 read blocks on emscripten's
+	// empty default TTY until the worker deadman timer kills it (bound#157).
 	const pyWorkerSrc = join(justBashDir, "dist/bundle/chunks/worker.js");
 	const pyWorkerDst = join(OUT_DIR, "worker-python.js");
-	copyFileSync(pyWorkerSrc, pyWorkerDst);
-	console.log(`  python worker: ${pyWorkerDst}`);
+	writeFileSync(pyWorkerDst, injectPythonWorkerStdin(readFileSync(pyWorkerSrc, "utf8")));
+	console.log(`  python worker: ${pyWorkerDst} (stdin device patched)`);
 
 	// ── CPython vendor assets (python.cjs, python.wasm, python313.zip) ──
 	const vendorSrc = join(justBashDir, "vendor/cpython-emscripten");
