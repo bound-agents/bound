@@ -14,7 +14,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { BunPlugin } from "bun";
-import { injectPythonCommandStdin } from "./sandbox-runtime-transforms";
+import { injectJsExecCommandStdin, injectPythonCommandStdin } from "./sandbox-runtime-transforms";
 
 /**
  * Many @opentelemetry packages lack an `exports` field and only declare
@@ -107,6 +107,12 @@ function justBashWorkerRewritePlugin(): BunPlugin {
 					// (bound#157). Thread it into the worker input object.
 					if (kind === "python") {
 						contents = injectPythonCommandStdin(contents);
+					} else if (kind === "jsExec") {
+						// Same stdin-on-the-floor bug on the js-exec face: the
+						// chunk reads e.stdin only to pick the script source and
+						// never forwards it, so the QuickJS guest's fd 0 /
+						// process.stdin are starved (bound#157). Thread it in.
+						contents = injectJsExecCommandStdin(contents);
 					}
 					return {
 						contents,
