@@ -1,6 +1,22 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 if (!process.env.LOG_LEVEL) {
 	process.env.LOG_LEVEL = "silent";
 	process.env.BOUND_LOG_STDERR = "0";
+}
+
+// createSandbox() materializes the embedded WASM workers to disk, defaulting
+// to ~/.bound/sandbox-runtime/. Under test that pollutes the developer's real
+// bound install, and under the boundless mxc sandbox (seatbelt/bubblewrap)
+// writes outside cwd + the system temp dir are denied — so the whole sandbox
+// suite died with `EPERM: mkdir '~/.bound/...'` when run through boundless.
+// Redirect materialization into $TMPDIR, which the sandbox allows and which is
+// safe to share: the materializer keys each binary's assets under a content
+// hash subdir + .ready marker, so a stable base path caches the ~30MB copy
+// across runs instead of re-copying every time.
+if (!process.env.BOUND_SANDBOX_RUNTIME_ROOT) {
+	process.env.BOUND_SANDBOX_RUNTIME_ROOT = join(tmpdir(), "bound-sandbox-runtime-test");
 }
 
 // Tests run on a single host with no sync, so the cross-host lease-verification
