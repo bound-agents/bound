@@ -48,7 +48,11 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { injectPythonWorkerStdin } from "./sandbox-runtime-transforms";
+import {
+	injectJsExecWorkerStdin,
+	injectJsExecWorkerStdout,
+	injectPythonWorkerStdin,
+} from "./sandbox-runtime-transforms";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, "..");
@@ -148,7 +152,19 @@ async function bundleJsExecWorker(sourcePath: string, outPath: string): Promise<
 							"  return (src) => src;",
 							"})();",
 						].join("\n");
-						return { contents: src.replace(needle, shim), loader: "js" };
+						// Cooperating edits on the materialized worker: the
+						// stripTS shim (above), the stdin graft, and the
+						// stdout/stderr graft. just-bash never wires fd 0 /
+						// process.stdin into the QuickJS guest, nor process.stdout
+						// / process.stderr, so any stdin read fails loud and any
+						// process.stdout.write throws (bound#157). injectJsExec-
+						// WorkerStdin marshals input.stdin in and serves it from
+						// fs.readFileSync(0) / /dev/stdin and process.stdin;
+						// injectJsExecWorkerStdout exposes raw host writers and
+						// defines process.stdout / process.stderr over them.
+						const withShim = src.replace(needle, shim);
+						const withStdin = injectJsExecWorkerStdin(withShim);
+						return { contents: injectJsExecWorkerStdout(withStdin), loader: "js" };
 					});
 				},
 			},
