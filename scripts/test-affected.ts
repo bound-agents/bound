@@ -111,6 +111,19 @@ export function shouldRunScriptsTests(changedFiles: string[]): boolean {
 }
 
 /**
+ * `bun test <arg>` treats a bare arg as a NAME filter unless it already looks
+ * like a path. A single-segment dir such as "scripts" therefore matches no
+ * test files ("did not match any test files: scripts") and the gate exits 1,
+ * while "packages/foo" happens to work only because the embedded slash makes
+ * bun read it as a path. Prefix every dir with "./" so it is unambiguously a
+ * path regardless of segment count — a no-op for the package dirs and the fix
+ * for "scripts". Absolute / already-relative paths pass through untouched.
+ */
+export function toTestPathArg(dir: string): string {
+	return dir.startsWith("./") || dir.startsWith("/") ? dir : `./${dir}`;
+}
+
+/**
  * Given the changed files and the workspace graph, returns the set of package
  * dirs whose tests should run. A global file change returns every package.
  * Otherwise, directly-changed packages are expanded across transitive
@@ -203,7 +216,7 @@ export function run(): void {
 		// packages) is unaffected — it never trips the global-file branch.
 		let lastExit = 0;
 		for (const dir of dirs) {
-			const proc = Bun.spawnSync(["bun", "test", dir], {
+			const proc = Bun.spawnSync(["bun", "test", toTestPathArg(dir)], {
 				cwd: root,
 				stdout: "inherit",
 				stderr: "inherit",
@@ -213,7 +226,7 @@ export function run(): void {
 		process.exit(lastExit);
 	}
 
-	const proc = Bun.spawnSync(["bun", "test", ...dirs], {
+	const proc = Bun.spawnSync(["bun", "test", ...dirs.map(toTestPathArg)], {
 		cwd: root,
 		stdout: "inherit",
 		stderr: "inherit",

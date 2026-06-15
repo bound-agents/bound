@@ -7,6 +7,7 @@ import {
 	isGlobalFile,
 	packageDirForFile,
 	shouldRunScriptsTests,
+	toTestPathArg,
 } from "../test-affected";
 
 /**
@@ -79,6 +80,24 @@ describe("test-affected: shouldRunScriptsTests", () => {
 	});
 	it("is false when nothing under scripts/ changed", () => {
 		expect(shouldRunScriptsTests(["packages/agent/src/x.ts", "docs/foo.md"])).toBe(false);
+	});
+});
+
+describe("test-affected: toTestPathArg", () => {
+	it("prefixes a single-segment dir so bun reads it as a path, not a name filter", () => {
+		// `bun test scripts` treats "scripts" as a name filter and matches no
+		// test files ("did not match any test files: scripts"); "./scripts" is
+		// unambiguously a path. This is the bug that blocked scripts-only commits.
+		expect(toTestPathArg("scripts")).toBe("./scripts");
+	});
+	it("prefixes a package dir too, for uniform path-mode invocation", () => {
+		// A slash already makes bun read it as a path, but normalizing keeps the
+		// invocation rule single-branch: every dir is passed as an explicit path.
+		expect(toTestPathArg("packages/sandbox")).toBe("./packages/sandbox");
+	});
+	it("leaves an already-relative or absolute path untouched", () => {
+		expect(toTestPathArg("./scripts")).toBe("./scripts");
+		expect(toTestPathArg("/abs/path")).toBe("/abs/path");
 	});
 });
 
