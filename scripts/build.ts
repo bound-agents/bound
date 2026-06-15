@@ -14,6 +14,7 @@ import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { BunPlugin } from "bun";
+import { injectPythonCommandStdin } from "./sandbox-runtime-transforms";
 
 /**
  * Many @opentelemetry packages lack an `exports` field and only declare
@@ -98,8 +99,17 @@ function justBashWorkerRewritePlugin(): BunPlugin {
 					// since materialized paths are always absolute and
 					// have no characters requiring escape on macOS/Linux.
 					const replacement = `new URL("file://" + (globalThis.__boundSandboxWorkerPath__?.("${kind}") ?? (()=>{throw new Error("sandbox worker path not materialized; createSandbox() must run before just-bash commands")})()))`;
+					let contents = src.replace(needle, replacement);
+					// The python3 chunk also drops piped stdin on the floor:
+					// it captures e.stdin only to pick the script source and
+					// never forwards it to the worker, so sys.stdin / fd-0 reads
+					// hang on the worker's empty TTY until the deadman timer
+					// (bound#157). Thread it into the worker input object.
+					if (kind === "python") {
+						contents = injectPythonCommandStdin(contents);
+					}
 					return {
-						contents: src.replace(needle, replacement),
+						contents,
 						loader: "js",
 					};
 				});
