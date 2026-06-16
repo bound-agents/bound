@@ -6,6 +6,7 @@ import DataTable from "../components/DataTable.svelte";
 import Page from "../components/Page.svelte";
 import SecretModal from "../components/SecretModal.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
+import TaskCard from "../components/TaskCard.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
 
@@ -489,6 +490,13 @@ function formatDate(iso: string): string {
 						<div class="section-label">Webhook ID</div>
 						<code class="mono-text">{selectedWebhook.id}</code>
 					</div>
+
+					{#if selectedWebhook.task_id}
+						<div class="detail-section">
+							<div class="section-label">Associated Task</div>
+							<TaskCard taskId={selectedWebhook.task_id} />
+						</div>
+					{/if}
 
 					<div class="detail-section">
 						<div class="section-label">Endpoint URLs</div>

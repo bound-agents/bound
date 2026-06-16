@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { contextFileStaleNote, isContextFile } from "./context-files";
 import { findStringOccurrences } from "./match";
 import { formatProvenance } from "./provenance";
 import {
@@ -13,9 +14,10 @@ import type { ToolHandler, ToolResult } from "./types";
 export function createEditTool(
 	hostname: string,
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
+	contextFiles?: readonly string[],
 ): ToolHandler {
 	return async (args, _signal, cwd) => {
-		return editToolImpl(hostname, args, cwd, sandbox);
+		return editToolImpl(hostname, args, cwd, sandbox, contextFiles);
 	};
 }
 
@@ -24,6 +26,7 @@ async function editToolImpl(
 	args: Record<string, unknown>,
 	cwd: string,
 	sandbox: ResolvedSandboxConfig,
+	contextFiles?: readonly string[],
 ): Promise<ToolResult> {
 	const { file_path, old_string, new_string } = args as {
 		file_path?: string;
@@ -137,15 +140,18 @@ async function editToolImpl(
 		const newContent = content.replace(old_string, new_string);
 		writeFileSync(resolvedPath, newContent, "utf-8");
 
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: `Edited ${file_path}: replaced 1 occurrence`,
-				},
-			],
-		};
+		const blocks: ToolResult["content"] = [
+			provenance,
+			{
+				type: "text",
+				text: `Edited ${file_path}: replaced 1 occurrence`,
+			},
+		];
+		if (isContextFile(file_path, cwd, contextFiles)) {
+			blocks.push({ type: "text", text: contextFileStaleNote(file_path) });
+		}
+
+		const result: ToolResult = { content: blocks };
 		return result;
 	} catch (err) {
 		const error = err as NodeJS.ErrnoException;
