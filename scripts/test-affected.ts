@@ -53,13 +53,26 @@ const GLOBAL_FILE_PATTERNS = [
 	"scripts/test-preload.ts",
 ];
 
+/**
+ * Derives a package dir from a `packages/*\/package.json` glob match. Bun.Glob
+ * yields OS-native separators — backslashes on Windows — so normalize to forward
+ * slashes before stripping. This keeps graph keys consistent with git's
+ * always-forward-slash paths (which `packageDirForFile` matches against) and with
+ * `toTestPathArg`'s `./`-prefixed args; without it, every Windows graph key keeps
+ * its `\package.json` suffix, `allDirs.has("packages/x")` always misses, and the
+ * global-file branch emits `bun test ./packages\x\package.json` (matches nothing).
+ */
+export function pkgDirFromGlobMatch(rel: string): string {
+	return rel.replaceAll("\\", "/").replace(/\/package\.json$/, "");
+}
+
 export function buildWorkspaceGraph(root: string): WorkspaceGraph {
 	const nameToDir = new Map<string, string>();
 	const deps = new Map<string, Set<string>>();
 
 	const pkgGlob = new Glob("packages/*/package.json");
 	for (const rel of pkgGlob.scanSync({ cwd: root })) {
-		const dir = rel.replace(/\/package\.json$/, "");
+		const dir = pkgDirFromGlobMatch(rel);
 		const pkg = JSON.parse(readFileSync(resolve(root, rel), "utf8")) as {
 			name?: string;
 			dependencies?: Record<string, string>;

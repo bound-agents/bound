@@ -6,6 +6,7 @@ import {
 	determineAffectedPackages,
 	isGlobalFile,
 	packageDirForFile,
+	pkgDirFromGlobMatch,
 	shouldRunScriptsTests,
 	toTestPathArg,
 } from "../test-affected";
@@ -98,6 +99,20 @@ describe("test-affected: toTestPathArg", () => {
 	it("leaves an already-relative or absolute path untouched", () => {
 		expect(toTestPathArg("./scripts")).toBe("./scripts");
 		expect(toTestPathArg("/abs/path")).toBe("/abs/path");
+	});
+});
+
+describe("test-affected: pkgDirFromGlobMatch", () => {
+	it("strips the package.json suffix from a POSIX glob match", () => {
+		expect(pkgDirFromGlobMatch("packages/agent/package.json")).toBe("packages/agent");
+	});
+	it("normalizes a Windows backslash glob match to a forward-slash dir", () => {
+		// Bun.Glob.scanSync yields OS-native separators, so on Windows the match
+		// is "packages\\agent\\package.json". The old forward-slash-only strip
+		// left the suffix attached, so graph keys never matched git's
+		// forward-slash paths and the global-file branch emitted an unmatchable
+		// "bun test ./packages\\agent\\package.json". Normalizing fixes the chain.
+		expect(pkgDirFromGlobMatch("packages\\agent\\package.json")).toBe("packages/agent");
 	});
 });
 
