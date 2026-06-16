@@ -99,11 +99,21 @@ Config lives at `~/.bound/less/config.json` (server URL, default model, injected
 context files, shell override, filesystem sandbox) and `~/.bound/less/mcp.json` (MCP servers).
 
 By default, shell commands run inside a filesystem sandbox (Microsoft's
-[mxc](https://github.com/microsoft/mxc), cross-platform via seatbelt on macOS and
-bubblewrap on Linux): the whole filesystem stays readable, but writes are confined to
+[mxc](https://github.com/microsoft/mxc), cross-platform via seatbelt on macOS,
+bubblewrap on Linux, and IsolationSession on Windows): the whole filesystem stays readable, but writes are confined to
 the working directory and the system temp dir — so the agent can edit your project but
-can't clobber `~/.ssh`, a sibling checkout, or `/etc`. Network is unrestricted. It's
-opt-out — set `"sandbox": false` to disable, or use the object form for finer control:
+can't clobber `~/.ssh`, a sibling checkout, or `/etc`. Network is unrestricted.
+
+One carve-out runs the other way: `.git/hooks` and `.git/config` inside the working tree
+stay read-only even though the rest of the tree is writable. They hold scripts and config
+directives (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, aliases) that Git later
+runs as you, outside the sandbox — so a run can't plant a hook that fires on your next
+`git` in the repo. Git's own operations only ever read them. This is enforced on Linux
+(bubblewrap) and for boundless's in-process file tools on every platform **except Windows**:
+no mxc Windows backend can yet express "readable but not writable" for a subpath, so there
+`.git` stays writable (tracked upstream — see CONTRIBUTING "Common Gotchas").
+
+It's opt-out — set `"sandbox": false` to disable, or use the object form for finer control:
 
 ```json
 {
@@ -119,6 +129,31 @@ opt-out — set `"sandbox": false` to disable, or use the object form for finer 
 On a platform where mxc can't sandbox, `onUnavailable` decides the posture:
 `"passthrough"` (default) runs the command unsandboxed with a warning rather than break
 the shell; `"error"` refuses to run it.
+
+**Windows: write confinement via IsolationSession.** On Windows, boundless confines
+writes through mxc's `IsolationSession` backend: it provisions a short-lived Windows
+agent user and runs each shell command as that user, so writes land only in the working
+directory and the system temp dir — the same boundary seatbelt and bubblewrap enforce
+elsewhere.
+
+boundless first tries BaseContainer (`processcontainer`), mxc's one-shot spawn API and
+the direct analog of the macOS/Linux path. On current builds — including 25H2 build 26300
+(Pro) — its kernel entry point `Experimental_CreateProcessInSandbox` returns `E_NOTIMPL`
+(`ERROR_CALL_NOT_IMPLEMENTED`): the OS has not shipped that syscall, and no combination of
+feature flags or optional features changes that. So boundless falls back to IsolationSession,
+which reaches the same write boundary through a working path. A future build that implements
+the one-shot call lets the primary path win again automatically.
+
+Two limits, both narrower than the macOS/Linux backends. IsolationSession enforces the
+*write* boundary but leaves the network open regardless of the `network` setting — no
+regression, since the Windows alternative was an unsandboxed shell. And like every Windows
+backend it cannot mark a read-only subpath inside a writable parent, so the `.git` carve-out
+above does not apply on Windows (`.git` stays writable there). Microsoft notes these
+sandboxes "should not be treated as security boundaries currently."
+
+If neither backend can start, boundless degrades to `onUnavailable` (passthrough by default —
+the shell keeps working, unsandboxed); a `ran UNSANDBOXED` warning on a command is the signal.
+macOS (seatbelt) and Linux (bubblewrap) need no setup.
 
 ### Editor integration (ACP)
 

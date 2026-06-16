@@ -5,10 +5,47 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { bashTool, createBashTool } from "../tools/bash";
 import { DISABLED_SANDBOX } from "../tools/sandbox";
-import type { ResolvedShell } from "../tools/shell";
+import { type ResolvedShell, resolveShell } from "../tools/shell";
 
 // CI runners can be slow; ensure per-test timeout is respected
 setDefaultTimeout(15000);
+
+// Run against the host's real shell — POSIX `sh` off-Windows, PowerShell (then
+// cmd) on Windows — the same resolution the live tool uses. `bashTool` is wired
+// to this same `resolveShell(undefined)`, so the suite exercises the platform
+// path rather than spawning `sh`, which does not exist on a stock Windows host.
+// Commands and a few assertions are shell-aware: PowerShell emits CRLF line
+// endings and backslash paths, so the newline- and path-sensitive checks below
+// normalize before asserting. (`resolveShell` prefers PowerShell over cmd, and
+// powershell.exe ships in System32 on every Windows install, so the non-POSIX
+// branch is always the PowerShell one in practice.)
+const shell = resolveShell(undefined);
+const isPosix = shell.toolName === "boundless_bash";
+
+/** Per-shell command variants for the behaviors each test exercises. */
+const cmd = {
+	echoHello: "echo hello",
+	stdoutAndStderr: isPosix
+		? 'echo "to stdout" && echo "to stderr" >&2'
+		: 'Write-Output "to stdout"; [Console]::Error.WriteLine("to stderr")',
+	exit42: "exit 42",
+	sleep: isPosix ? "sleep 60" : "Start-Sleep -Seconds 60",
+	// >50KB of newline-separated integers to trip the offload threshold.
+	largeOutput: isPosix ? "seq 1 50000" : "1..50000",
+	echoSmall: "echo small-output",
+	echoTest: "echo test",
+	printCwd: isPosix ? "pwd" : "Get-Location | ForEach-Object { $_.Path }",
+	echoQuick: "echo quick",
+	echoDone: "echo done",
+	pipe: isPosix
+		? "echo 'line1\nline2\nline3' | sort -r"
+		: '"line1","line2","line3" | Sort-Object -Descending',
+	echoGuarded: isPosix ? "echo guarded?" : 'echo "guarded?"',
+	echoNolog: "echo nolog",
+};
+
+/** Collapse CRLF → LF so PowerShell output matches the POSIX assertions. */
+const normalizeEol = (s: string) => s.replace(/\r\n/g, "\n");
 
 describe("boundless_bash", () => {
 	let tempDir: string;
@@ -20,19 +57,28 @@ describe("boundless_bash", () => {
 
 	afterEach(() => {
 		if (tempDir) {
-			rmSync(tempDir, { recursive: true, force: true });
+			// maxRetries/retryDelay, not just force: an aborted command (AC5.10)
+			// holds tempDir as its cwd and takes a few ms to release the handle
+			// after kill, so the recursive rm races it and throws EBUSY on
+			// Windows under load. force alone swallows ENOENT but does not retry
+			// EBUSY/EPERM — only maxRetries > 0 does.
+			rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
 	});
 
 	it("AC5.9: executes command in cwd and returns stdout/stderr with exit code", async () => {
-		const result = await bashTool({ command: "echo hello" }, new AbortController().signal, tempDir);
+		const result = await bashTool(
+			{ command: cmd.echoHello },
+			new AbortController().signal,
+			tempDir,
+		);
 
 		expect(result.content).toHaveLength(2);
 		expect(result.isError).toBeUndefined();
 		const provenanceBlock = result.content[0];
 		expect(provenanceBlock.type).toBe("text");
 		expect(provenanceBlock.text).toContain("[boundless]");
-		expect(provenanceBlock.text).toContain("tool=boundless_bash");
+		expect(provenanceBlock.text).toContain(`tool=${shell.toolName}`);
 
 		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
@@ -42,7 +88,7 @@ describe("boundless_bash", () => {
 
 	it("AC5.9: captures stderr separately", async () => {
 		const result = await bashTool(
-			{ command: 'echo "to stdout" && echo "to stderr" >&2' },
+			{ command: cmd.stdoutAndStderr },
 			new AbortController().signal,
 			tempDir,
 		);
@@ -55,7 +101,7 @@ describe("boundless_bash", () => {
 	});
 
 	it("AC5.9: shows exit code for failed commands", async () => {
-		const result = await bashTool({ command: "exit 42" }, new AbortController().signal, tempDir);
+		const result = await bashTool({ command: cmd.exit42 }, new AbortController().signal, tempDir);
 
 		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 42");
@@ -67,7 +113,7 @@ describe("boundless_bash", () => {
 			const controller = new AbortController();
 
 			// Start the tool and abort after a short delay
-			const promise = bashTool({ command: "sleep 60", timeout: 30000 }, controller.signal, tempDir);
+			const promise = bashTool({ command: cmd.sleep, timeout: 30000 }, controller.signal, tempDir);
 
 			// Trigger abort after 200ms (should kill the process quickly)
 			setTimeout(() => controller.abort(), 200);
@@ -86,9 +132,10 @@ describe("boundless_bash", () => {
 	);
 
 	it("AC5.11: offloads output >50KB to a local file and returns a pointer", async () => {
-		// seq 1 50000 emits ~280KB, well over the 50KB offload threshold.
+		// seq 1 50000 (or `1..50000` in PowerShell) emits ~280KB+, well over the
+		// 50KB offload threshold.
 		const result = await bashTool(
-			{ command: "seq 1 50000" },
+			{ command: cmd.largeOutput },
 			new AbortController().signal,
 			tempDir,
 		);
@@ -105,7 +152,9 @@ describe("boundless_bash", () => {
 		const match = text.match(/saved to: (\S+)/);
 		expect(match).not.toBeNull();
 		const filePath = match?.[1] as string;
-		const offloaded = readFileSync(filePath, "utf-8");
+		// PowerShell writes CRLF; normalize so the newline-framed assertions hold
+		// on both shells.
+		const offloaded = normalizeEol(readFileSync(filePath, "utf-8"));
 		expect(offloaded).toContain("Exit code: 0");
 		expect(offloaded).toContain("\n1\n");
 		expect(offloaded).toContain("\n50000\n");
@@ -114,7 +163,7 @@ describe("boundless_bash", () => {
 
 	it("does not offload sub-threshold output (returned inline)", async () => {
 		const result = await bashTool(
-			{ command: "echo small-output" },
+			{ command: cmd.echoSmall },
 			new AbortController().signal,
 			tempDir,
 		);
@@ -125,32 +174,33 @@ describe("boundless_bash", () => {
 	});
 
 	it("AC5.12: always includes provenance block first", async () => {
-		const result = await bashTool({ command: "echo test" }, new AbortController().signal, tempDir);
+		const result = await bashTool({ command: cmd.echoTest }, new AbortController().signal, tempDir);
 
 		expect(result.content.length).toBeGreaterThanOrEqual(1);
 		const firstBlock = result.content[0];
 		expect(firstBlock.type).toBe("text");
 		expect(firstBlock.text).toContain("[boundless]");
-		expect(firstBlock.text).toContain("boundless_bash");
+		expect(firstBlock.text).toContain(shell.toolName);
 	});
 
 	it("respects the cwd parameter for command execution", async () => {
 		const subdir = join(tempDir, "subdir");
 		mkdirSync(subdir);
 
-		const result = await bashTool({ command: "pwd" }, new AbortController().signal, subdir);
+		const result = await bashTool({ command: cmd.printCwd }, new AbortController().signal, subdir);
 
-		// `sh -c "pwd"` always emits forward-slash paths even on Windows (e.g.
-		// `/d/tmp/boundless-test-abcd/subdir`), so comparing against the OS-form path
-		// in `subdir` would fail there. Assert on the unique trailing portion of the
-		// path, which is identical across platforms.
+		// `sh -c "pwd"` emits forward-slash paths (e.g. `/d/tmp/.../subdir`) while
+		// PowerShell's `Get-Location` emits OS-form backslash paths (`C:\...\subdir`).
+		// Normalize separators and assert on the unique trailing portion of the
+		// path, which is identical across platforms once slashes are unified.
 		const contentBlock = result.content[1];
-		expect(contentBlock.text).toContain(`${basename(tempDir)}/subdir`);
+		const out = contentBlock.text.replace(/\\/g, "/");
+		expect(out).toContain(`${basename(tempDir)}/subdir`);
 	});
 
 	it("handles timeout parameter when provided", async () => {
 		const result = await bashTool(
-			{ command: "echo quick", timeout: 1000 },
+			{ command: cmd.echoQuick, timeout: 1000 },
 			new AbortController().signal,
 			tempDir,
 		);
@@ -162,18 +212,14 @@ describe("boundless_bash", () => {
 
 	it("uses 5 minute default timeout if not provided", async () => {
 		// This test just verifies the command runs within default timeout
-		const result = await bashTool({ command: "echo done" }, new AbortController().signal, tempDir);
+		const result = await bashTool({ command: cmd.echoDone }, new AbortController().signal, tempDir);
 
 		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 0");
 	});
 
 	it("handles command with complex redirections and pipes", async () => {
-		const result = await bashTool(
-			{ command: "echo 'line1\nline2\nline3' | sort -r" },
-			new AbortController().signal,
-			tempDir,
-		);
+		const result = await bashTool({ command: cmd.pipe }, new AbortController().signal, tempDir);
 
 		const contentBlock = result.content[1];
 		expect(contentBlock.text).toContain("Exit code: 0");
@@ -181,14 +227,10 @@ describe("boundless_bash", () => {
 	});
 
 	describe("sandbox observability", () => {
-		// POSIX sh, matching the module-private default in bash.ts — built here so
-		// the test doesn't widen bash.ts's public surface just to read a constant.
-		const testShell: ResolvedShell = {
-			command: "sh",
-			execFlag: "-c",
-			toolName: "boundless_bash",
-			label: "POSIX shell (sh)",
-		};
+		// The host's real shell, matching `bashTool`'s resolution — so the spawn
+		// path runs through `sh` off-Windows and PowerShell on Windows rather than
+		// a shell that may not exist on the runner.
+		const testShell: ResolvedShell = shell;
 
 		// A spy matching the BashEventLogger seam. We assert the spawn path emits
 		// a structured event for the policy decision, so "was the write guard on
@@ -214,7 +256,7 @@ describe("boundless_bash", () => {
 			// DISABLED_SANDBOX is the default; pass it explicitly with the logger.
 			const tool = createBashTool("test-host", testShell, DISABLED_SANDBOX, spy);
 			const result = await tool(
-				{ command: "echo guarded?" },
+				{ command: cmd.echoGuarded },
 				new AbortController().signal,
 				tempDir,
 			);
@@ -232,7 +274,7 @@ describe("boundless_bash", () => {
 		it("emits nothing when no logger is supplied (logging is opt-in)", async () => {
 			// Smoke: the spawn path must not throw when logger is undefined.
 			const tool = createBashTool("test-host", testShell, DISABLED_SANDBOX);
-			const result = await tool({ command: "echo nolog" }, new AbortController().signal, tempDir);
+			const result = await tool({ command: cmd.echoNolog }, new AbortController().signal, tempDir);
 			expect(result.isError).toBeUndefined();
 			expect(result.content[1].text).toContain("Exit code: 0");
 		});

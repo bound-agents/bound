@@ -10,7 +10,7 @@
 		"@bound/client": "workspace:*",
 		"@bound/llm": "workspace:*",
 		"@bound/shared": "workspace:*",
-		"@microsoft/mxc-sdk": "^0.6.1",
+		"@microsoft/mxc-sdk": "0.7.0",
 		"@modelcontextprotocol/sdk": "^1.27.1",
 		"ink": "^5.2.0",
 		"marked": "^18.0.2",

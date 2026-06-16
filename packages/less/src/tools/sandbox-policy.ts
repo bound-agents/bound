@@ -22,6 +22,19 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
  * [MIN_VERSION, SUPPORTED_VERSION] window — 0.4.0-alpha .. 0.7.0-alpha as of
  * `@microsoft/mxc-sdk@0.6.1`. A missing or out-of-window version throws at
  * spawn. Bump this in lockstep with the dependency.
+ *
+ * NOT a backend selector. The schema version does NOT pick the platform backend:
+ * `createConfigFromPolicy` maps the abstract "process" containment to a fixed
+ * per-OS structure (seatbelt / bubblewrap / Windows BaseContainer) regardless of
+ * version, and there is no `appcontainer` containment branch in the SDK at all.
+ * An earlier revision pinned win32 to 0.4.0-alpha believing it would fall back to
+ * AppContainer — verified inert: the wire payload carried 0.4.0-alpha and the
+ * native `wxc-exec` still selected BaseContainer (the `wxc-exec --probe` detector
+ * picks `base-container` whenever the BaseContainer API symbol resolves, which it
+ * does on 24H2+). Do not re-introduce a per-platform version pin to change the
+ * backend; it cannot. The Windows sandbox is gated on feature-velocity keys, not
+ * the schema version — see `checkSandboxAvailable` in `./sandbox` and the
+ * "boundless" sandbox section in README.md.
  */
 export const POLICY_VERSION = "0.6.0-alpha";
 
@@ -182,7 +195,18 @@ export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 			// Deny-writes-only: the entire filesystem is readable; only the
 			// writable set above can be written. Anything not under a
 			// readwritePath inherits read-only from this root grant.
-			readonlyPaths: ["/"],
+			//
+			// The `.git` exec-surface paths (hooks + config) are layered on AFTER
+			// "/" so they carve a read-only hole out of the otherwise-writable cwd.
+			// This bites on bubblewrap, where the builder emits readonly binds after
+			// readwrite ones and "later mounts win, overriding any rw parent"
+			// [microsoft/mxc src/backends/bubblewrap/.../bwrap_command.rs]. On
+			// seatbelt it is an inert allow-read (seatbelt readonly cannot subtract
+			// an existing write grant), and on Windows it is empty — see
+			// computeGitProtectedPaths for why. The in-process checkWritePath guard
+			// enforces the same carve-out for the TS file tools on every platform
+			// except Windows.
+			readonlyPaths: ["/", ...computeGitProtectedPaths(cwd)],
 		},
 		// All network flags default to false (no access) when `network` is
 		// omitted, so "blocked" is the empty object. "open" must be genuinely
@@ -215,6 +239,52 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	addPath(tmpdir());
 	for (const extra of cfg.writablePaths) addPath(extra);
 	return [...writable];
+}
+
+/**
+ * Paths under the working repo's `.git` that hold code git later runs *as the
+ * operator*, outside the sandbox: the hook scripts in the repo's `.git/hooks`
+ * directory and the
+ * `core.hooksPath` / `core.fsmonitor` / `core.sshCommand` / `core.pager` /
+ * `alias.* = "!cmd"` directives in `.git/config`. The agent never legitimately
+ * writes these — its own git runs through the shell and only ever *reads*
+ * config — so confining them read-only closes the "plant a payload now, fire it
+ * on the human's next `git` in the repo" vector without touching the writable
+ * parts of `.git` (index, refs, logs, objects) that ordinary git operations
+ * need. Carved out of the otherwise-writable cwd by {@link buildPolicy} (the mxc
+ * kernel guard) and {@link checkWritePath} (the in-process file-tool guard).
+ *
+ * Returns realpath-resolved, *existing* paths only: a bubblewrap `--ro-bind` of
+ * a missing source aborts the sandbox, and a non-repo cwd (or a worktree/submodule
+ * whose `.git` is a file, not a dir) simply has nothing to bind.
+ *
+ * WINDOWS CARVE-OUT (returns `[]` on win32): none of mxc's Windows backends can
+ * express "readable but not writable" for a subpath of a writable parent. The
+ * DACL and base-container tiers only have additive allow-ACLs plus a full-access
+ * *deny* — and a full-access deny on `.git/config` would also block git's own
+ * *reads* of config and break the repo. There is no write-only deny primitive,
+ * so the only Windows options are "no protection" or "break git"; we choose no
+ * protection and leave `.git` writable there until mxc grows the primitive
+ * (tracked upstream — see CONTRIBUTING "Common Gotchas" and the bound issue).
+ * Linux (bubblewrap) and the in-process file-tool guard still apply on every
+ * other platform.
+ */
+const GIT_EXEC_SURFACE_RELPATHS = [".git/hooks", ".git/config"] as const;
+
+export function computeGitProtectedPaths(
+	cwd: string,
+	platform: NodeJS.Platform = process.platform,
+): string[] {
+	if (platform === "win32") return [];
+	const protectedPaths: string[] = [];
+	for (const rel of GIT_EXEC_SURFACE_RELPATHS) {
+		try {
+			protectedPaths.push(realpathSync(resolve(cwd, rel)));
+		} catch {
+			// Missing (non-repo cwd, or `.git` is a worktree/submodule file) — nothing to bind.
+		}
+	}
+	return protectedPaths;
 }
 
 /**
@@ -254,6 +324,14 @@ export interface WritePathCheck {
 	resolvedTarget: string;
 	/** The writable roots the target was checked against. */
 	writableRoots: string[];
+	/**
+	 * True when the target sits inside a writable root but was denied because it
+	 * falls under a `.git` exec-surface carve-out (see
+	 * {@link computeGitProtectedPaths}). Distinguishes the "git-protected" denial
+	 * (a deliberate read-only hole in the writable cwd) from the ordinary
+	 * "outside the writable set" denial, so {@link formatWriteDenied} can explain it.
+	 */
+	gitProtected?: boolean;
 }
 
 /**
@@ -270,10 +348,15 @@ export function checkWritePath(
 	cfg: ResolvedSandboxConfig,
 ): WritePathCheck {
 	const writableRoots = computeWritableRoots(cwd, cfg);
+	const protectedRoots = computeGitProtectedPaths(cwd);
 	const absTarget = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 	const resolvedTarget = resolveThroughExisting(absTarget);
-	const allowed = writableRoots.some((root) => isWithin(resolvedTarget, root));
-	return { allowed, resolvedTarget, writableRoots };
+	const withinWritable = writableRoots.some((root) => isWithin(resolvedTarget, root));
+	// A `.git` exec-surface path sits inside the writable cwd but is carved out
+	// read-only (see computeGitProtectedPaths), so the protected check must win
+	// over the writable check.
+	const gitProtected = protectedRoots.some((root) => isWithin(resolvedTarget, root));
+	return { allowed: withinWritable && !gitProtected, resolvedTarget, writableRoots, gitProtected };
 }
 
 /**
@@ -286,6 +369,15 @@ export function formatWriteDenied(
 	targetPath: string,
 	check: WritePathCheck,
 ): string {
+	if (check.gitProtected) {
+		return [
+			`Error: ${toolName} refused — "${targetPath}" resolves to ${check.resolvedTarget}, a Git exec-surface path (.git/hooks or .git/config) the sandbox keeps read-only.`,
+			"",
+			"These hold code Git later runs as the operator outside the sandbox (hook scripts; config directives like core.hooksPath, core.fsmonitor, core.sshCommand, aliases), so they stay read-only even though the rest of the working tree is writable. Git's normal operations only ever read them.",
+			"",
+			'To allow this write, set "sandbox": false in your boundless config to disable the guard entirely.',
+		].join("\n");
+	}
 	const roots = check.writableRoots.map((r) => `  - ${r}`).join("\n");
 	return [
 		`Error: ${toolName} refused — "${targetPath}" resolves to ${check.resolvedTarget}, which is outside the sandbox writable set.`,

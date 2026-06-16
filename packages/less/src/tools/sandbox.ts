@@ -60,7 +60,21 @@ function loadMxcSdk(): Promise<MxcSdk> {
  * failed SDK/node-pty load, reporting it as "unsupported" so an unloadable
  * native module degrades to `onUnavailable` instead of throwing at the caller.
  */
-export async function checkSandboxAvailable(): Promise<{ supported: boolean; reason?: string }> {
+export function checkSandboxAvailable(): Promise<{ supported: boolean; reason?: string }> {
+	// Memoize across the process: the probe spawns a real subprocess, so it runs
+	// at most once per boundless session (matching the lazy SDK import). If an
+	// operator runs host prep mid-session, reconnecting re-probes.
+	if (!availabilityPromise) availabilityPromise = probeSandboxAvailable();
+	return availabilityPromise;
+}
+
+/** Memoized {@link checkSandboxAvailable} result; the probe runs at most once per process. */
+let availabilityPromise: Promise<{ supported: boolean; reason?: string }> | undefined;
+
+/** Wall-clock ceiling for the availability probe; a wedged spawn degrades to unsupported. */
+const SANDBOX_PROBE_TIMEOUT_MS = 10_000;
+
+async function probeSandboxAvailable(): Promise<{ supported: boolean; reason?: string }> {
 	try {
 		ensureMxcRuntime();
 		const { getPlatformSupport } = await loadMxcSdk();
@@ -68,11 +82,71 @@ export async function checkSandboxAvailable(): Promise<{ supported: boolean; rea
 		if (!support.isSupported) {
 			return { supported: false, reason: support.reason ?? "platform not supported by mxc" };
 		}
-		return { supported: true };
+		// getPlatformSupport() only confirms the SDK build + native symbols are
+		// present — NOT that the backend can actually create a container here. On
+		// Windows the AppContainer/BaseContainer tiers resolve their symbols yet
+		// fail at container creation: BaseContainer returns E_NOTIMPL when the
+		// feature-velocity flags are off, AppContainer fails when the one-time
+		// elevated host prep (wxc-host-prep.exe) hasn't run. That failure surfaces
+		// as a fast non-zero exit from the spawned process, not a thrown error — so
+		// a symbol-only check reports "supported" while every real command then
+		// dies with a cryptic exit 255 and onUnavailable never gets to decide.
+		// Probe the real spawn path with a no-op: if mxc can't contain it, report
+		// unsupported so the passthrough/error posture takes over.
+		return await runSandboxProbe();
 	} catch (err) {
 		return { supported: false, reason: (err as Error).message };
 	}
 }
+
+/**
+ * Spawn a side-effect-free no-op through the real {@link spawnSandboxed} path
+ * and report whether mxc contained it. Uses the same policy + containment a real
+ * command gets, so the verdict matches what the next command will actually see.
+ * A non-zero exit (mxc couldn't create the container), a launch throw, or a
+ * timeout all read as unsupported. Reused across platforms; the no-op is the one
+ * command-string difference (`true` under `sh -c` on POSIX, `cd .` — a builtin
+ * in cmd and PowerShell — on Windows).
+ */
+async function runSandboxProbe(): Promise<{ supported: boolean; reason?: string }> {
+	const noop = process.platform === "win32" ? "cd ." : "true";
+	const probeCfg: ResolvedSandboxConfig = {
+		enabled: true,
+		writablePaths: [],
+		network: "open",
+		onUnavailable: "passthrough",
+	};
+	let proc: SandboxSpawnResult;
+	try {
+		proc = await spawnSandboxed(noop, process.cwd(), probeCfg);
+	} catch (err) {
+		// The SDK couldn't even launch the executor (missing binary, or a node-pty
+		// load failure surfacing here rather than at import).
+		return { supported: false, reason: (err as Error).message };
+	}
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const exit = await Promise.race([
+		proc.exited,
+		new Promise<number>((resolve) => {
+			timer = setTimeout(() => resolve(SANDBOX_PROBE_TIMEOUT), SANDBOX_PROBE_TIMEOUT_MS);
+		}),
+	]);
+	if (timer) clearTimeout(timer);
+	if (exit === SANDBOX_PROBE_TIMEOUT) {
+		proc.kill();
+		return { supported: false, reason: "mxc sandbox probe timed out" };
+	}
+	if (exit !== 0) {
+		return {
+			supported: false,
+			reason: `mxc could not start a sandboxed process here (probe exit ${exit}) — the platform backend is unavailable or requires host preparation`,
+		};
+	}
+	return { supported: true };
+}
+
+/** Sentinel exit value the probe timeout resolves to (real exit codes are 0..255 or -1). */
+const SANDBOX_PROBE_TIMEOUT = -2;
 
 /** Adapt a Node `ChildProcess` to the {@link SandboxSpawnResult} contract. */
 function adaptChildProcess(child: ChildProcess): SandboxSpawnResult {
@@ -122,9 +196,9 @@ export async function spawnSandboxed(
 	// hatch. `experimental.seatbelt` is `{}` here on the seatbelt path and
 	// absent on others (bubblewrap/Windows resolve identity via NSS/SAM, so
 	// the guard is a no-op there).
-	if (config.experimental?.seatbelt) {
-		config.experimental.seatbelt.extraMachLookups = [
-			...(config.experimental.seatbelt.extraMachLookups ?? []),
+	if (config.seatbelt) {
+		config.seatbelt.extraMachLookups = [
+			...(config.seatbelt.extraMachLookups ?? []),
 			...IDENTITY_MACH_LOOKUPS,
 		];
 	}

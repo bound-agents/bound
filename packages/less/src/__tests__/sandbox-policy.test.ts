@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type ResolvedSandboxConfig,
 	buildPolicy,
 	checkWritePath,
+	computeGitProtectedPaths,
 	decideSandboxSpawn,
 	formatWriteDenied,
 	resolveSandboxConfig,
@@ -129,10 +130,16 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		expect(policy.network).toEqual({});
 	});
 
-	it("stamps a policy version (the SDK rejects a missing one)", () => {
+	it("stamps a single schema version on every platform (NOT a backend selector)", () => {
+		// Regression guard against re-introducing a per-platform version pin. The
+		// schema version does not select the mxc backend: an earlier revision pinned
+		// win32 to 0.4.0-alpha believing it fell back to AppContainer, and it was
+		// verified inert (the native wxc-exec probe picks base-container by API-symbol
+		// presence regardless of version). The Windows sandbox is gated on
+		// feature-velocity keys, not the schema version. If this needs to differ per
+		// platform, the reason must NOT be "to change the backend".
 		const policy = buildPolicy(process.cwd(), enabled);
-		expect(typeof policy.version).toBe("string");
-		expect(policy.version.length).toBeGreaterThan(0);
+		expect(policy.version).toBe("0.6.0-alpha");
 	});
 });
 
@@ -267,6 +274,109 @@ describe("checkWritePath (in-process write guard)", () => {
 	});
 });
 
+// The `.git` exec-surface carve-out: hooks + config are kept read-only even
+// though they live inside the otherwise-writable cwd. Enforced on bubblewrap
+// (via buildPolicy.readonlyPaths) and for the in-process file tools everywhere
+// EXCEPT Windows, which has no mxc backend able to express "readable but not
+// writable" for a subpath — so `.git` stays writable there (see
+// computeGitProtectedPaths). These tests pass an explicit `platform` where the
+// behavior is platform-dependent so they assert the same thing on every runner.
+describe(".git exec-surface protection", () => {
+	const cfg: ResolvedSandboxConfig = {
+		enabled: true,
+		writablePaths: [],
+		network: "open",
+		onUnavailable: "passthrough",
+	};
+
+	let repo: string;
+
+	beforeEach(() => {
+		repo = realpathSync(
+			(() => {
+				const d = join(tmpdir(), `gitguard-${randomBytes(4).toString("hex")}`);
+				mkdirSync(join(d, ".git", "hooks"), { recursive: true });
+				writeFileSync(join(d, ".git", "config"), "[core]\n\trepositoryformatversion = 0\n");
+				return d;
+			})(),
+		);
+	});
+
+	afterEach(() => {
+		if (repo) rmSync(repo, { recursive: true, force: true });
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"denies a write to a hook script even though it is inside cwd (non-win32)",
+		() => {
+			const check = checkWritePath(".git/hooks/post-checkout", repo, cfg);
+			expect(check.allowed).toBe(false);
+			expect(check.gitProtected).toBe(true);
+		},
+	);
+
+	it.skipIf(process.platform === "win32")("denies overwriting .git/config (non-win32)", () => {
+		const check = checkWritePath(".git/config", repo, cfg);
+		expect(check.allowed).toBe(false);
+		expect(check.gitProtected).toBe(true);
+	});
+
+	it("still allows ordinary writes inside cwd and the rest of .git", () => {
+		expect(checkWritePath("src/index.ts", repo, cfg).allowed).toBe(true);
+		// index / refs / logs / objects must stay writable or git itself breaks.
+		expect(checkWritePath(".git/index", repo, cfg).allowed).toBe(true);
+		expect(checkWritePath(".git/refs/heads/main", repo, cfg).allowed).toBe(true);
+	});
+
+	it("does not over-block a sibling that string-prefixes a protected file", () => {
+		// `.git/configuration` prefixes `.git/config` but is not it nor under it.
+		expect(checkWritePath(".git/configuration", repo, cfg).allowed).toBe(true);
+	});
+
+	it("computeGitProtectedPaths resolves the existing hooks dir and config file", () => {
+		const paths = computeGitProtectedPaths(repo, "linux");
+		expect(paths).toContain(realpathSync(join(repo, ".git", "hooks")));
+		expect(paths).toContain(realpathSync(join(repo, ".git", "config")));
+	});
+
+	it("returns [] on Windows — .git stays writable where mxc can't carve it out", () => {
+		expect(computeGitProtectedPaths(repo, "win32")).toEqual([]);
+		// And the in-process guard agrees: the same write the non-win32 lanes deny
+		// is allowed once the platform gate trips. (checkWritePath uses the real
+		// process.platform, so this asserts the gate via the helper directly.)
+		const winProtected = computeGitProtectedPaths(repo, "win32");
+		expect(winProtected.some((p) => p.includes(".git"))).toBe(false);
+	});
+
+	it("returns [] for a non-repo cwd — nothing to protect, no broken bind", () => {
+		const bare = realpathSync(
+			(() => {
+				const d = join(tmpdir(), `norepo-${randomBytes(4).toString("hex")}`);
+				mkdirSync(d, { recursive: true });
+				return d;
+			})(),
+		);
+		try {
+			expect(computeGitProtectedPaths(bare, "linux")).toEqual([]);
+		} finally {
+			rmSync(bare, { recursive: true, force: true });
+		}
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"buildPolicy layers the protected paths into readonlyPaths after the cwd grant (non-win32)",
+		() => {
+			const policy = buildPolicy(repo, cfg);
+			const ro = policy.filesystem.readonlyPaths;
+			expect(ro[0]).toBe("/");
+			expect(ro).toContain(realpathSync(join(repo, ".git", "hooks")));
+			expect(ro).toContain(realpathSync(join(repo, ".git", "config")));
+			// cwd stays in the writable set — the carve-out is a hole, not a lockout.
+			expect(policy.filesystem.readwritePaths).toContain(repo);
+		},
+	);
+});
+
 describe("formatWriteDenied", () => {
 	it("names the tool, the resolved target, the roots, and both escape hatches", () => {
 		const msg = formatWriteDenied("boundless_write", "/etc/passwd", {
@@ -280,5 +390,22 @@ describe("formatWriteDenied", () => {
 		expect(msg).toContain("/tmp");
 		expect(msg).toContain("sandbox.writablePaths");
 		expect(msg).toContain('"sandbox": false');
+	});
+
+	it("explains the git exec-surface case distinctly and offers the right escape hatch", () => {
+		const msg = formatWriteDenied("boundless_write", ".git/hooks/post-checkout", {
+			allowed: false,
+			resolvedTarget: "/repo/.git/hooks/post-checkout",
+			writableRoots: ["/repo", "/tmp"],
+			gitProtected: true,
+		});
+		expect(msg).toContain("boundless_write refused");
+		expect(msg).toContain("Git exec-surface");
+		expect(msg).toContain(".git/hooks");
+		expect(msg).toContain(".git/config");
+		// The writablePaths hatch does NOT apply here (the path IS inside cwd), so
+		// only the disable-the-guard hatch is offered.
+		expect(msg).toContain('"sandbox": false');
+		expect(msg).not.toContain("sandbox.writablePaths");
 	});
 });
