@@ -206,7 +206,8 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 
 - [Core Infrastructure](core-infrastructure.md) -- shared types, SQLite schema, DI container, config
 - [Sync Protocol](sync-protocol.md) -- Ed25519 signing, reducers, three-phase sync
-- [Sandbox and LLM](sandbox-and-llm.md) -- virtual filesystem, command framework, LLM drivers
+- [Sandbox](sandbox.md) -- virtual filesystem, command framework, boundless filesystem sandbox
+- [Inference Backends](inference-backends.md) -- LLM driver shims, capabilities, model routing
 - [Agent System](agent-system.md) -- agent loop, scheduler, commands, MCP bridge
 - [Web and Discord](web-and-discord.md) -- HTTP API, WebSocket, Svelte UI, Discord bot
 - [CLI and Operations](../cli-operations.md) -- init, start, management commands, binary build
