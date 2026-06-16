@@ -7,7 +7,6 @@ import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 
 export interface InitArgs {
 	ollama?: boolean;
-	anthropic?: boolean;
 	bedrock?: boolean;
 	cerebras?: boolean;
 	zai?: boolean;
@@ -42,9 +41,14 @@ export async function runInit(args: InitArgs): Promise<void> {
 	mkdirSync(configDir, { recursive: true });
 
 	const operatorName = args.name || process.env.USER || "operator";
-	let provider: "ollama" | "anthropic" | "bedrock" | "cerebras" | "zai" | "opencode-go" = "ollama";
-	let baseUrl = "http://localhost:11434";
-	let apiKey: string | undefined;
+	// Default preset: Ollama, reached through the OpenAI-compatible driver. Ollama serves an
+	// OpenAI-compatible API at /v1 and ignores the bearer token, but the driver requires a
+	// non-empty api_key, so we write a placeholder. The bare `init` (no preset flag) lands on
+	// these defaults too, so the zero-flag path produces a config that actually starts.
+	let provider: "openai-compatible" | "bedrock" | "cerebras" | "zai" | "opencode-go" =
+		"openai-compatible";
+	let baseUrl = "http://localhost:11434/v1";
+	let apiKey: string | undefined = "ollama";
 	let region: string | undefined;
 	let model = "llama3";
 
@@ -54,24 +58,17 @@ export async function runInit(args: InitArgs): Promise<void> {
 		// proxies LLM calls to spokes that have inference backends configured.
 		// No provider/model selection needed.
 	} else if (args.ollama) {
-		// Ollama preset
-		provider = "ollama";
-		baseUrl = "http://localhost:11434";
+		// Ollama preset — same as the default; kept explicit so `--ollama` stays documented.
+		provider = "openai-compatible";
+		baseUrl = "http://localhost:11434/v1";
+		apiKey = "ollama";
 		model = "llama3";
-	} else if (args.anthropic) {
-		// Anthropic preset
-		provider = "anthropic";
-		model = "claude-3-5-sonnet-20241022";
-		apiKey = process.env.ANTHROPIC_API_KEY;
-
-		if (!apiKey) {
-			console.log("ANTHROPIC_API_KEY not found in environment.");
-		}
 	} else if (args.bedrock) {
 		// Bedrock preset
 		provider = "bedrock";
 		region = args.region || "us-east-1";
 		model = "anthropic.claude-3-5-sonnet-20241022-v2:0";
+		apiKey = undefined; // override the default Ollama placeholder — Bedrock auths via AWS SigV4
 	} else if (args.cerebras) {
 		// Cerebras preset
 		provider = "cerebras";
@@ -132,7 +129,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 			tier: 3,
 		};
 
-		if (baseUrl && provider !== "anthropic" && provider !== "bedrock") {
+		if (baseUrl && provider !== "bedrock") {
 			backendConfig.base_url = baseUrl;
 		}
 

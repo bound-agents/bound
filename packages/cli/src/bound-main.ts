@@ -30,7 +30,6 @@ COMMANDS:
 
 OPTIONS:
   bound init --ollama              Initialize with Ollama preset
-  bound init --anthropic           Initialize with Anthropic API preset
   bound init --bedrock --region <region>  Initialize with AWS Bedrock
   bound init --cerebras            Initialize with Cerebras Cloud preset
   bound init --zai                 Initialize with z.AI (GLM) preset
@@ -48,7 +47,7 @@ OPTIONS:
 EXAMPLES:
   bound init --ollama
   bound start
-  bound init --anthropic --with-sync --with-mcp
+  bound init --ollama --with-sync --with-mcp
   bound init --opencode-go
   bound init --hub --name hub-node  # Initialize relay hub
 `);
@@ -63,7 +62,6 @@ EXAMPLES:
 		const initArgs = {
 			hub: args.includes("--hub"),
 			ollama: args.includes("--ollama"),
-			anthropic: args.includes("--anthropic"),
 			bedrock: args.includes("--bedrock"),
 			cerebras: args.includes("--cerebras"),
 			zai: args.includes("--zai"),

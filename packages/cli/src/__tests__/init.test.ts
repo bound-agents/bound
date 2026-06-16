@@ -50,7 +50,9 @@ describe("bound init", () => {
 		expect(modelBackends).toHaveProperty("backends");
 		expect(modelBackends).toHaveProperty("default");
 		expect(modelBackends.backends.length).toBe(1);
-		expect(modelBackends.backends[0].provider).toBe("ollama");
+		expect(modelBackends.backends[0].provider).toBe("openai-compatible");
+		expect(modelBackends.backends[0].base_url).toBe("http://localhost:11434/v1");
+		expect(modelBackends.backends[0].api_key).toBe("ollama");
 	});
 
 	it("does not overwrite existing config without --force flag", async () => {
@@ -151,22 +153,6 @@ describe("bound init", () => {
 
 		expect(allowlist.default_web_user).toBe("custom-operator");
 		expect(allowlist.users).toHaveProperty("custom-operator");
-	});
-
-	it("creates Anthropic preset with --anthropic", async () => {
-		// Set env var for test
-		process.env.ANTHROPIC_API_KEY = "test-key";
-
-		await runInit({
-			anthropic: true,
-			configDir: tempDir,
-		});
-
-		const modelBackendsPath = join(tempDir, "model_backends.json");
-		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
-
-		expect(modelBackends.backends[0].provider).toBe("anthropic");
-		expect(modelBackends.backends[0].model).toBe("claude-3-5-sonnet-20241022");
 	});
 
 	it("creates OpenCode Go preset with --opencode-go", async () => {
