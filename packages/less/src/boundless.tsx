@@ -22,6 +22,7 @@ import { acquireLock, releaseLock } from "./lockfile";
 import { AppLogger } from "./logging";
 import { McpServerManager } from "./mcp/manager";
 import { performAttach } from "./session/attach";
+import { deprovisionActiveSession, sweepIsoOrphans } from "./tools/iso-session";
 import { buildToolSet } from "./tools/registry";
 import { resolveSandboxConfig } from "./tools/sandbox";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
@@ -125,6 +126,7 @@ async function runAcpMode(args: {
 			contextFiles: config.contextFiles,
 		});
 	} finally {
+		await deprovisionActiveSession();
 		logger.close();
 		await shutdownTelemetry();
 	}
@@ -147,6 +149,25 @@ async function main(): Promise<void> {
 		} catch (error) {
 			process.stderr.write(`Error: ${(error as Error).message}\n`);
 			process.exit(1);
+		}
+
+		// Reap any IsolationSession sandbox agent-users orphaned by a prior hard
+		// kill (Windows only; a cheap no-op elsewhere — the session state file only
+		// exists once IsolationSession has provisioned, which is win32-gated). This
+		// is the crash-recovery half of the deprovision-on-shutdown contract: a
+		// clean exit deprovisions its own session, a hard kill leaves an Indefinite
+		// agent-user that only this sweep reclaims. Best-effort — a sweep failure
+		// must never block startup — and placed before the ACP branch so both the
+		// TUI and ACP paths are covered by a single call.
+		try {
+			const swept = await sweepIsoOrphans();
+			if (swept.reaped.length > 0) {
+				process.stderr.write(
+					`[sandbox] reaped ${swept.reaped.length} orphaned sandbox session(s)\n`,
+				);
+			}
+		} catch (err) {
+			process.stderr.write(`[sandbox] orphan sweep failed: ${(err as Error).message}\n`);
 		}
 
 		// ACP mode: run as an ACP agent server over stdio. Branch BEFORE the
@@ -305,6 +326,7 @@ async function main(): Promise<void> {
 		// Step 10: SIGTERM handler for graceful shutdown
 		process.on("SIGTERM", async () => {
 			await mcpManager.terminateAll();
+			await deprovisionActiveSession();
 			releaseLock(configDir, threadId);
 			client.disconnect();
 			logger.close();
@@ -317,6 +339,7 @@ async function main(): Promise<void> {
 
 		// Clean up on normal exit
 		await mcpManager.terminateAll();
+		await deprovisionActiveSession();
 		releaseLock(configDir, threadId);
 		client.disconnect();
 		logger.close();

@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "@bound/shared";
+import { execInSession } from "./iso-session";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -13,7 +14,7 @@ import {
 	nonInteractiveEnv,
 	spawnSandboxed,
 } from "./sandbox";
-import type { ResolvedShell } from "./shell";
+import { type ResolvedShell, resolveShell } from "./shell";
 import type { ToolHandler, ToolResult } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
@@ -46,6 +47,46 @@ function spawnUnsandboxed(command: string, cwd: string, shell: ResolvedShell): S
 		pid: proc.pid,
 		kill: (signal) => proc.kill(signal as number),
 	};
+}
+
+/**
+ * Windows fallback to the IsolationSession backend. The one-shot BaseContainer
+ * spawn path (`spawnSandboxed`) returns E_NOTIMPL on Windows builds where the
+ * kernel container API is a stub, so the abstract sandbox decision lands on
+ * passthrough/error there. IsolationSession is a separate mxc backend that DOES
+ * enforce the deny-writes-only boundary on those builds — via a process-memoized
+ * provisioned session rather than a per-spawn container. Returns the normalized
+ * handle on success, or null on any other platform / when IsolationSession is
+ * itself unavailable (missing SDK, provision failure), so the caller can honor
+ * the original passthrough/error posture. Network is left open: provisioning
+ * forwards only the filesystem boundary, so `network: "none"` is not enforced on
+ * this path — no regression, since passthrough enforced nothing at all.
+ */
+async function trySandboxedViaIsolationSession(
+	command: string,
+	cwd: string,
+	shell: ResolvedShell,
+	sandbox: ResolvedSandboxConfig,
+	logger?: BashEventLogger,
+): Promise<SandboxSpawnResult | null> {
+	if (process.platform !== "win32") return null;
+	try {
+		const proc = await execInSession(command, cwd, sandbox, shell);
+		logger?.info("sandbox_spawn", {
+			cwd,
+			pid: proc.pid,
+			network: sandbox.network,
+			writableExtras: sandbox.writablePaths.length,
+			backend: "isolation_session",
+		});
+		return proc;
+	} catch (err) {
+		logger?.warn("iso_session_unavailable", {
+			cwd,
+			reason: err instanceof Error ? err.message : String(err),
+		});
+		return null;
+	}
 }
 
 /**
@@ -83,9 +124,15 @@ async function spawnForBash(
 			return { proc };
 		}
 		case "error":
-			// Hard refusal: sandbox required but unavailable. WARN — this aborts the
-			// command, and the reason is the actionable bit (missing binary, bad
-			// platform) the operator needs to fix the install.
+			// Hard refusal: the one-shot sandbox is required but unavailable. On
+			// Windows, try IsolationSession before refusing — it enforces the same
+			// write boundary on builds where the one-shot path is a kernel stub.
+			{
+				const iso = await trySandboxedViaIsolationSession(command, cwd, shell, sandbox, logger);
+				if (iso) return { proc: iso };
+			}
+			// WARN — this aborts the command, and the reason is the actionable bit
+			// (missing binary, bad platform) the operator needs to fix the install.
 			logger?.warn("sandbox_unavailable", {
 				cwd,
 				reason: decision.reason,
@@ -95,6 +142,13 @@ async function spawnForBash(
 				`Filesystem sandbox unavailable (${decision.reason}); refusing to run unsandboxed because sandbox.onUnavailable is "error".`,
 			);
 		case "passthrough":
+			// The one-shot path fell through. On Windows, try IsolationSession before
+			// degrading — a successful session IS a real sandbox spawn (write guard
+			// active), so it short-circuits the unsandboxed path entirely.
+			{
+				const iso = await trySandboxedViaIsolationSession(command, cwd, shell, sandbox, logger);
+				if (iso) return { proc: iso };
+			}
 			// Silent degradation — the one event you MUST be able to find after the
 			// fact: a command ran with NO write guard because the sandbox fell
 			// through. WARN, durable, with the reason, so "did anything run
@@ -306,12 +360,22 @@ export async function bashToolWithStreaming(
 				}
 			}
 
-			// Wait for process to exit (race against abort for orphan child scenarios)
+			// Wait for the process to exit. On abort, the handler above has already
+			// issued SIGTERM (then SIGKILL after 2s); await the *real* exit with a
+			// bounded grace window so the process is actually reaped — and its cwd
+			// handle released — before we return. Returning the synthetic code while
+			// the process is still dying orphans it: on Windows the child keeps the
+			// cwd locked, so a caller cleaning up that directory races it and hits
+			// EBUSY. The 3s window clears the 2s SIGKILL deadline; the 137 sentinel
+			// only stands if the process somehow outlived even SIGKILL.
 			let exitCode: number;
 			const exitResult = await raceAbort(proc.exited);
 			if (exitResult === "aborted") {
-				// Process didn't exit cleanly — use a sentinel exit code
-				exitCode = 137; // SIGKILL convention
+				const reaped = await Promise.race([
+					proc.exited.then((code) => code),
+					new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+				]);
+				exitCode = reaped ?? 137; // SIGKILL convention if it truly never died
 			} else {
 				exitCode = exitResult;
 			}
@@ -356,4 +420,8 @@ export async function bashToolWithStreaming(
 	}
 }
 
-export const bashTool: ToolHandler = createBashTool("unknown");
+// Convenience export with no host identity and no override: resolve the host's
+// shell the same way the live tool does (POSIX `sh` off-Windows; PowerShell, then
+// cmd, on Windows). The hardcoded `POSIX_DEFAULT_SHELL` would spawn `sh`, which
+// does not exist on a stock Windows host — so this export was unusable there.
+export const bashTool: ToolHandler = createBashTool("unknown", resolveShell(undefined));

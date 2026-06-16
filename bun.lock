@@ -97,7 +97,7 @@
         "@bound/client": "workspace:*",
         "@bound/llm": "workspace:*",
         "@bound/shared": "workspace:*",
-        "@microsoft/mxc-sdk": "^0.6.1",
+        "@microsoft/mxc-sdk": "0.7.0",
         "@modelcontextprotocol/sdk": "^1.27.1",
         "ink": "^5.2.0",
         "marked": "^18.0.2",
@@ -489,7 +489,7 @@
 
     "@mermaid-js/parser": ["@mermaid-js/parser@1.1.1", "", { "dependencies": { "@chevrotain/types": "~11.1.1" } }, "sha512-VuHdsYMK1bT6X2JbcAaWAhugTRvRBRyuZgd+c22swUeI9g/ntaxF7CY7dYarhZovofCbUNO0G7JesfmNtjYOCw=="],
 
-    "@microsoft/mxc-sdk": ["@microsoft/mxc-sdk@0.6.1", "", { "dependencies": { "node-pty": "^1.2.0-beta.12", "semver": "^7.7.4" } }, "sha512-jpbJU/xfF4qLWcNMplDTUX/q13m2A6vYao1QN3lkZaQlzsRce95H+iU0Qu0wlweJZ2gx6eY1PRQU+/bnQki/dw=="],
+    "@microsoft/mxc-sdk": ["@microsoft/mxc-sdk@0.7.0", "", { "dependencies": { "node-pty": "^1.2.0-beta.12", "semver": "^7.7.4" } }, "sha512-EWhz2pKkcPluZHAOI1yneV+JK0NO/3hdh7nABBb0x4PjyUWMeSWPTBAjtIu+BhtMYOqlaijSPZMZ0Hs/J4ZL4A=="],
 
     "@mixmark-io/domino": ["@mixmark-io/domino@2.2.0", "", {}, "sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw=="],
 
