@@ -176,9 +176,6 @@ packages/less/src/_mxc/
 pnpm-lock.yaml
 pnpm-workspace.yaml
 
-# Letta local agent state (unrelated to bound, machine-local)
-.letta/
-
 # persona-lab working files (local-only; *.example.* templates stay tracked).
 # Path-scoped so biome's root-only useIgnoreFile honors them too (1.x ignores nested .gitignore).
 /packages/agent/scripts/persona-lab/persona.md
