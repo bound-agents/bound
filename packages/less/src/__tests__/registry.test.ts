@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildSystemPromptAddition,
@@ -813,9 +815,20 @@ describe("collectContextFiles", () => {
 	});
 
 	it("silently skips files that are not present", async () => {
-		// bound repo has no AGENTS.md
-		const result = await collectContextFiles(REPO_ROOT);
-		expect(result).not.toContain("### AGENTS.md");
+		// A directory with only README.md should not emit headers for the others.
+		const dir = mkdtempSync(join(tmpdir(), "boundless-ctx-"));
+		try {
+			writeFileSync(join(dir, "README.md"), "readme content");
+
+			const result = await collectContextFiles(dir);
+
+			expect(result).toContain("### README.md");
+			expect(result).not.toContain("### CONTRIBUTING.md");
+			expect(result).not.toContain("### AGENTS.md");
+			expect(result).not.toContain("### CLAUDE.md");
+		} finally {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
 	});
 
 	it("includes multiple files when several are present", async () => {
@@ -823,6 +836,50 @@ describe("collectContextFiles", () => {
 		const result = await collectContextFiles(REPO_ROOT);
 		const headerCount = (result.match(/^### /gm) || []).length;
 		expect(headerCount).toBeGreaterThanOrEqual(2);
+	});
+
+	it("skips CLAUDE.md when AGENTS.md is present (AGENTS.md is the open standard)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "boundless-ctx-"));
+		try {
+			writeFileSync(join(dir, "AGENTS.md"), "agents content");
+			writeFileSync(join(dir, "CLAUDE.md"), "claude content");
+
+			const result = await collectContextFiles(dir);
+
+			expect(result).toContain("### AGENTS.md");
+			expect(result).not.toContain("### CLAUDE.md");
+		} finally {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it("injects CLAUDE.md when AGENTS.md is absent", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "boundless-ctx-"));
+		try {
+			writeFileSync(join(dir, "CLAUDE.md"), "claude content");
+
+			const result = await collectContextFiles(dir);
+
+			expect(result).toContain("### CLAUDE.md");
+			expect(result).not.toContain("### AGENTS.md");
+		} finally {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
+
+	it("does not let a custom candidate list trigger the AGENTS/CLAUDE precedence", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "boundless-ctx-"));
+		try {
+			writeFileSync(join(dir, "AGENTS.md"), "agents content");
+			writeFileSync(join(dir, "CLAUDE.md"), "claude content");
+
+			// Explicitly asking for CLAUDE.md alone must still honor the request.
+			const result = await collectContextFiles(dir, ["CLAUDE.md"]);
+
+			expect(result).toContain("### CLAUDE.md");
+		} finally {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
 	});
 });
 
