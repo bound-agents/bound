@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "bun:test";
 import type { Message } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
+import { MessageBlock } from "../tui/components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../tui/hooks/useMessages";
 import {
 	ChatView,
@@ -177,7 +178,7 @@ describe("buildToolResultMetaMap", () => {
 		];
 		const m = buildToolResultMetaMap(messages);
 		expect(m.size).toBe(1);
-		expect(m.get("r1")).toEqual({ filePath: "/a.ts", isLastInGroup: true });
+		expect(m.get("r1")).toEqual({ filePath: "/a.ts", isLastInGroup: true, toolName: "read" });
 	});
 
 	it("marks all but the final sibling result as mid-group for parallel calls", () => {
@@ -257,7 +258,22 @@ describe("buildToolResultMetaMap", () => {
 		expect(buildToolResultMetaMap(messages).get("r1")).toEqual({
 			filePath: undefined,
 			isLastInGroup: true,
+			toolName: "bash",
 		});
+	});
+
+	it("carries the parent tool_use's name through to each result", () => {
+		const messages = [
+			toolCall("c1", [
+				{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } },
+				{ id: "tu2", name: "tavily" },
+			]),
+			toolResult("r1", "tu1"),
+			toolResult("r2", "tu2"),
+		];
+		const m = buildToolResultMetaMap(messages);
+		expect(m.get("r1")?.toolName).toBe("boundless_read");
+		expect(m.get("r2")?.toolName).toBe("tavily");
 	});
 });
 
@@ -301,5 +317,47 @@ describe("partitionPendingMessage (#134)", () => {
 		const { committed, pending: p } = partitionPendingMessage([a, b, pending]);
 		expect(committed).toEqual([a, b]);
 		expect(p).toBe(pending);
+	});
+});
+
+/**
+ * The tool_result row's `tool_name` column holds the opaque tool_use_id, not a
+ * human name. The header must render the resolved tool name (via the `toolName`
+ * prop) and never leak that id to the screen.
+ */
+describe("MessageBlock tool_result header", () => {
+	const toolUseId = "tooluse_01ABCdefGHIjklMNOpqrST";
+
+	function resultMsg(): Message {
+		return msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: toolUseId,
+			content: "ok",
+			exit_code: 0,
+		});
+	}
+
+	it("renders the resolved tool name, not the tool_use_id", () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: resultMsg(),
+				toolName: "boundless_read",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("read");
+		expect(out).not.toContain(toolUseId);
+	});
+
+	it("omits the header label entirely when no tool name resolves", () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: resultMsg(),
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").not.toContain(toolUseId);
 	});
 });

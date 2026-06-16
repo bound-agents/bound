@@ -285,6 +285,14 @@ export interface MessageBlockProps {
 	 */
 	filePath?: string;
 	/**
+	 * The originating tool_call's tool name (e.g. "boundless_read"), resolved by
+	 * ChatView through the tool_use_id correlation map. Rendered on tool_result
+	 * header lines. The result row's own `tool_name` column holds the opaque
+	 * tool_use_id, not a name, so this prop is the only source of a human name
+	 * for the result header.
+	 */
+	toolName?: string;
+	/**
 	 * Live terminal column count from `useTerminalSize()`. Forwarded into
 	 * `StripeBox`'s `width` so long lines wrap inside the colored stripe
 	 * instead of soft-wrapping at the terminal edge.
@@ -303,6 +311,7 @@ export interface MessageBlockProps {
 export function MessageBlock({
 	message,
 	filePath,
+	toolName: resolvedToolName,
 	terminalColumns,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
@@ -471,7 +480,11 @@ export function MessageBlock({
 		const isError = message.exit_code != null && message.exit_code !== 0;
 		const indicator = isError ? "✗" : "✓";
 		const indicatorColor = isError ? "red" : "green";
-		const toolName = message.tool_name ? displayToolName(message.tool_name) : null;
+		// Render the tool NAME resolved upstream (e.g. "read"), never
+		// `message.tool_name` — on tool_result rows that column holds the opaque
+		// tool_use_id, which is noise in the TUI. When the name can't be resolved
+		// (orphan result), show no label rather than echo the id.
+		const toolName = resolvedToolName ? displayToolName(resolvedToolName) : null;
 
 		// When this tool_result is for a tool that operated on a file (read,
 		// most importantly), the file path is resolved upstream via the

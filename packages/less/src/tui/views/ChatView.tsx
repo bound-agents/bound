@@ -28,6 +28,13 @@ import { useTerminalSize } from "../hooks/useTerminalSize";
 export type ToolResultMeta = {
 	filePath?: string;
 	isLastInGroup: boolean;
+	/**
+	 * The originating tool_use's `name` (e.g. "boundless_read"), resolved via
+	 * the correlation map. MessageBlock renders this on the result line — the
+	 * result row's own `tool_name` column holds the opaque tool_use_id, not a
+	 * name, so without this the header would echo a useless id.
+	 */
+	toolName?: string;
 };
 
 /**
@@ -50,24 +57,31 @@ export type ToolResultMeta = {
 export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolResultMeta> {
 	// Pass 1: index every tool_use block from every tool_call message.
 	// Each entry knows its parent call and the call's total tool_use count.
-	const toolUseToInfo = new Map<string, { filePath?: string; callMsgId: string; total: number }>();
+	const toolUseToInfo = new Map<
+		string,
+		{ filePath?: string; toolName?: string; callMsgId: string; total: number }
+	>();
 	for (const msg of messages) {
 		if (msg.role !== "tool_call") continue;
 		try {
 			const blocks = JSON.parse(msg.content) as Array<{
 				type?: string;
 				id?: string;
+				name?: string;
 				input?: Record<string, unknown>;
 			}>;
 			if (!Array.isArray(blocks)) continue;
 			const uses = blocks.filter(
-				(b): b is { type: "tool_use"; id: string; input?: Record<string, unknown> } =>
+				(
+					b,
+				): b is { type: "tool_use"; id: string; name?: string; input?: Record<string, unknown> } =>
 					b.type === "tool_use" && typeof b.id === "string",
 			);
 			for (const block of uses) {
 				const filePath =
 					typeof block.input?.file_path === "string" ? block.input.file_path : undefined;
-				toolUseToInfo.set(block.id, { filePath, callMsgId: msg.id, total: uses.length });
+				const toolName = typeof block.name === "string" ? block.name : undefined;
+				toolUseToInfo.set(block.id, { filePath, toolName, callMsgId: msg.id, total: uses.length });
 			}
 		} catch {
 			// Non-parseable content — skip; not all tool_call messages parse cleanly.
@@ -87,6 +101,7 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 		result.set(msg.id, {
 			filePath: info.filePath,
 			isLastInGroup: seen === info.total,
+			toolName: info.toolName,
 		});
 	}
 	return result;
@@ -325,6 +340,7 @@ export function ChatView({
 								<MessageBlock
 									message={msg}
 									filePath={meta?.filePath}
+									toolName={meta?.toolName}
 									terminalColumns={termColumns}
 								/>
 							</Box>
