@@ -377,10 +377,25 @@ export function buildToolSet(
  * warning string if git is unavailable or the directory is not a repository.
  */
 export async function collectGitContext(cwd: string): Promise<string> {
+	// Strip ambient git environment so `-C cwd` is authoritative. Git honors an
+	// inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE over `-C` repo discovery,
+	// so without this a process launched inside a git operation (e.g. a pre-commit
+	// hook) would report the inherited repo regardless of cwd. In normal operation
+	// none of these are set, so this is a no-op.
+	const gitEnv: Record<string, string | undefined> = {
+		...process.env,
+		GIT_DIR: undefined,
+		GIT_WORK_TREE: undefined,
+		GIT_INDEX_FILE: undefined,
+		GIT_OBJECT_DIRECTORY: undefined,
+		GIT_COMMON_DIR: undefined,
+	};
+
 	try {
 		const branchProc = Bun.spawn(["git", "-C", cwd, "branch", "--show-current"], {
 			stdout: "pipe",
 			stderr: "pipe",
+			env: gitEnv,
 		});
 		const [branchOut, , branchExit] = await Promise.all([
 			Bun.readableStreamToText(branchProc.stdout),
@@ -397,6 +412,7 @@ export async function collectGitContext(cwd: string): Promise<string> {
 		const logProc = Bun.spawn(["git", "-C", cwd, "log", "--oneline", "-10"], {
 			stdout: "pipe",
 			stderr: "pipe",
+			env: gitEnv,
 		});
 		const [logOut, , logExit] = await Promise.all([
 			Bun.readableStreamToText(logProc.stdout),
@@ -429,13 +445,24 @@ const CONTEXT_FILE_CANDIDATES = ["README.md", "CONTRIBUTING.md", "AGENTS.md", "C
  */
 export async function collectContextFiles(cwd: string, candidates?: string[]): Promise<string> {
 	const sections: string[] = [];
+	const included = new Set<string>();
 
 	for (const filename of candidates ?? CONTEXT_FILE_CANDIDATES) {
+		// AGENTS.md is the cross-agent open standard; CLAUDE.md is the
+		// Claude-specific fallback. When AGENTS.md is present, injecting CLAUDE.md
+		// too is redundant duplication on the wire — skip it. (AGENTS.md precedes
+		// CLAUDE.md in CONTEXT_FILE_CANDIDATES, so it's already been collected here
+		// if present-and-non-empty.)
+		if (filename === "CLAUDE.md" && included.has("AGENTS.md")) {
+			continue;
+		}
+
 		const filepath = join(cwd, filename);
 		try {
 			const content = await Bun.file(filepath).text();
 			if (content.trim()) {
 				sections.push(`### ${filename}\n${content.trim()}`);
+				included.add(filename);
 			}
 		} catch {
 			// File doesn't exist or can't be read — skip silently
