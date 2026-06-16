@@ -72,15 +72,15 @@ describe("Config schemas", () => {
 			const config = {
 				backends: [
 					{
-						id: "ollama-local",
-						provider: "ollama",
-						model: "llama2",
-						base_url: "http://localhost:11434",
+						id: "local-compat",
+						provider: "openai-compatible",
+						model: "llama3",
+						base_url: "http://localhost:11434/v1",
 						context_window: 4096,
 						tier: 1,
 					},
 				],
-				default: "ollama-local",
+				default: "local-compat",
 			};
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(true);
@@ -110,9 +110,9 @@ describe("Config schemas", () => {
 				backends: [
 					{
 						id: "backend1",
-						provider: "ollama",
+						provider: "openai-compatible",
 						model: "llama2",
-						base_url: "http://localhost:11434",
+						base_url: "http://localhost:11434/v1",
 						context_window: 4096,
 						tier: 1,
 					},
@@ -123,13 +123,14 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
-		it("requires base_url for ollama provider", () => {
+		it("rejects the removed ollama provider (use openai-compatible instead)", () => {
 			const config = {
 				backends: [
 					{
 						id: "ollama-local",
 						provider: "ollama",
 						model: "llama2",
+						base_url: "http://localhost:11434",
 						context_window: 4096,
 						tier: 1,
 					},
@@ -1163,7 +1164,7 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "ollama",
+					provider: "openai-compatible",
 					model: "llama2",
 					base_url: "http://localhost:11434",
 					context_window: 4096,
@@ -1226,7 +1227,7 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "ollama",
+					provider: "openai-compatible",
 					model: "llama2",
 					base_url: "http://localhost:11434",
 					context_window: 4096,

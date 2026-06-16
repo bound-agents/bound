@@ -149,7 +149,7 @@ describe("Quiescence note injection", () => {
 					backends: [
 						{
 							id: "mock",
-							provider: "ollama",
+							provider: "openai-compatible",
 							model: "mock",
 							base_url: "http://localhost:11434",
 							context_window: 8000,

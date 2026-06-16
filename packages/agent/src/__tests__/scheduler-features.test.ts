@@ -80,7 +80,7 @@ describe("Scheduler features", () => {
 					backends: [
 						{
 							id: "mock",
-							provider: "ollama",
+							provider: "openai-compatible",
 							model: "mock",
 							base_url: "http://localhost:11434",
 							context_window: 8000,
@@ -186,7 +186,7 @@ describe("Scheduler features", () => {
 						backends: [
 							{
 								id: "mock",
-								provider: "ollama",
+								provider: "openai-compatible",
 								model: "mock",
 								base_url: "http://localhost:11434",
 								context_window: 8000,

@@ -341,10 +341,10 @@ type ModelBackendsConfig = {
   daily_budget_usd?: number;
   backends: Array<{
     id: string;
-    provider: "ollama" | "bedrock" | "anthropic" | "openai-compatible" | "cerebras" | "zai";
+    provider: "bedrock" | "bedrock-mantle" | "anthropic" | "openai-compatible" | "cerebras" | "zai" | "opencode-go";
     model: string;
-    base_url?: string;              // Required for ollama and openai-compatible
-    api_key?: string;               // Required for cerebras, anthropic, and zai
+    base_url?: string;              // Required for openai-compatible
+    api_key?: string;               // Required for cerebras, anthropic, zai, and opencode-go
     region?: string;
     profile?: string;
     context_window: number;
@@ -365,7 +365,7 @@ type ModelBackendsConfig = {
 };
 ```
 
-Three cross-field constraints are enforced: `default` must reference a `backend.id` that exists in `backends` (or be the empty string sentinel when `backends` is empty, for hub-only nodes that relay inference to spokes); `ollama` / `openai-compatible` providers must supply `base_url`; and `cerebras` / `anthropic` / `zai` providers must supply `api_key`. The optional `capabilities` object overrides the capabilities that the driver auto-detects at startup, allowing operators to enable or disable specific features (e.g. marking a model as vision-capable or disabling tool use) without changing the driver code.
+Three cross-field constraints are enforced: `default` must reference a `backend.id` that exists in `backends` (or be the empty string sentinel when `backends` is empty, for hub-only nodes that relay inference to spokes); `openai-compatible` providers must supply `base_url`; and `cerebras` / `anthropic` / `zai` / `opencode-go` providers must supply `api_key`. The optional `capabilities` object overrides the capabilities that the driver auto-detects at startup, allowing operators to enable or disable specific features (e.g. marking a model as vision-capable or disabling tool use) without changing the driver code.
 
 #### Optional Config Schemas
 

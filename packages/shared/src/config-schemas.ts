@@ -130,7 +130,6 @@ const modelBackendSchema = z
 	.object({
 		id: z.string().min(1),
 		provider: z.enum([
-			"ollama",
 			"bedrock",
 			"bedrock-mantle",
 			"anthropic",
@@ -214,13 +213,13 @@ export const modelBackendsSchema = z
 	.refine(
 		(data) => {
 			return data.backends.every((b) => {
-				if (b.provider === "ollama" || b.provider === "openai-compatible") {
+				if (b.provider === "openai-compatible") {
 					return b.base_url !== undefined;
 				}
 				return true;
 			});
 		},
-		{ message: "ollama and openai-compatible providers require base_url" },
+		{ message: "openai-compatible providers require base_url" },
 	)
 	.refine(
 		(data) => {

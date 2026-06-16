@@ -631,7 +631,7 @@ const driver = new OpenAICompatibleDriver({
 ```typescript
 interface BackendConfig {
   id: string;
-  provider: string;  // "anthropic" | "bedrock" | "openai-compatible" | "ollama" | "cerebras" | "zai"
+  provider: string;  // "anthropic" | "bedrock" | "bedrock-mantle" | "openai-compatible" | "cerebras" | "zai" | "opencode-go"
   model: string;
   baseUrl?: string;
   contextWindow?: number;
@@ -654,7 +654,6 @@ Provider-specific extra fields:
 | `anthropic` | `apiKey` | `contextWindow` (default 200 000) |
 | `bedrock` | `region` | `profile`, `contextWindow` (default 200 000) |
 | `openai-compatible` | `apiKey` | `baseUrl` (default `http://localhost:8000`), `contextWindow` (default 8 192) |
-| `ollama` | — | `baseUrl` (default `http://localhost:11434`), `contextWindow` (default 4 096) |
 | `cerebras` | `apiKey` | `baseUrl` (default `https://api.cerebras.ai/v1`), `contextWindow` (default 128 000) |
 | `zai` | `apiKey` | `baseUrl` (default `https://api.z.ai/api/coding/paas/v4`), `contextWindow` (default 128 000) |
 
@@ -677,9 +676,10 @@ const router = createModelRouter({
     },
     {
       id: "local",
-      provider: "ollama",
+      provider: "openai-compatible",
       model: "llama3.2",
-      baseUrl: "http://localhost:11434",
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: "ollama",
     },
   ],
   default: "primary",
