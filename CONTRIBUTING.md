@@ -7,7 +7,7 @@ Thanks for your interest in contributing! This document is the developer-facing 
 ## Prerequisites
 
 - [Bun](https://bun.sh) 1.2+
-- An LLM backend for end-to-end testing (Ollama works offline; Bedrock/Anthropic/OpenAI-compatible also supported)
+- An LLM backend for end-to-end testing (Ollama works offline; Bedrock/OpenAI-compatible also supported)
 - For Playwright e2e: system dependencies per `bun run test:e2e` output
 
 ## Setup
