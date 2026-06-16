@@ -88,7 +88,14 @@ export interface AgentLoopConfig {
 			parameters: Record<string, unknown>;
 		};
 	}>;
-	/** Platform identifier when the loop runs in a platform context (e.g. "discord"). */
+	/**
+	 * Originating surface tag for this loop — the same value space as
+	 * `threads.interface` (e.g. "web", "boundless"). Used for intake-affinity routing
+	 * (Invariant #15) and to derive the cache-TTL / interface bucket, and surfaced to
+	 * the agent as the "## Platform Context" volatile-context tag. The loop itself is
+	 * connector-agnostic: platform connectors are in-process MCP servers whose tools
+	 * arrive through the normal tool list, so nothing here branches on a specific value.
+	 */
 	platform?: string;
 	/**
 	 * Client-side tool definitions, keyed by tool name.
