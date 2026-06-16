@@ -26,6 +26,7 @@ import type { BoundClient, ToolCallRequest, ToolCallResult } from "@bound/client
 import type { ContentBlock } from "@bound/llm";
 import type { WsStreamChunk } from "@bound/shared";
 import type { AppLogger } from "../logging";
+import { parseContentBlocks } from "../session/tool-call-pairing";
 import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import {
@@ -379,6 +380,37 @@ export class AcpSession {
 		void this.send({
 			sessionUpdate: "agent_message_chunk",
 			content: { type: "text", text: `\n\n${content}` },
+		});
+	}
+
+	/**
+	 * Surfaces a daemon-side (native) tool's RESULT to the editor. Native tool
+	 * results never cross the response stream — the daemon executes the tool,
+	 * persists a `tool_result` message, and broadcasts it via `message:created`
+	 * (the same channel the boundless TUI renders from). Without this, the editor
+	 * sees the call fire (title + rawInput at `tool_use_end`) and then the empty
+	 * `completed` update `resolveTurn` emits at turn end — but never the output.
+	 *
+	 * Pairs the result to the open ACP tool call by the originating tool-call id,
+	 * which the agent loop stores on the `tool_result` row's `tool_name` (set to
+	 * `toolCall.id`), the same id the daemon stream minted its ACP toolCallId from.
+	 * Client tools (`boundless_*`) report their result through `handleToolCall`
+	 * and are skipped in the stream path (never added to `openDaemonToolCalls`),
+	 * so they are ignored here and never double-complete. Emitting the real
+	 * completion now and dropping the id keeps `resolveTurn` from later sending a
+	 * second, contentless completion for the same call.
+	 */
+	handleToolResultMessage(toolUseId: string, content: string): void {
+		const turn = this.turn;
+		if (!turn || turn.resolved) return;
+		const acpId = turn.acpToolCallIds.get(toolUseId);
+		if (!acpId || !turn.openDaemonToolCalls.has(acpId)) return;
+		turn.openDaemonToolCalls.delete(acpId);
+		void this.send({
+			sessionUpdate: "tool_call_update",
+			toolCallId: acpId,
+			status: "completed",
+			content: toolResultToAcpContent(parseContentBlocks(content) ?? content),
 		});
 	}
 

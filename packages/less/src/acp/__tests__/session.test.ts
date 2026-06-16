@@ -613,6 +613,54 @@ describe("AcpSession daemon-side tool stream", () => {
 		expect(completed).toBe(true);
 	});
 
+	it("emits the daemon tool RESULT as a completed update carrying content", async () => {
+		const { session, rec } = setup();
+		const p = session.runPrompt("go");
+		session.handleThreadStatus(true);
+		await session.handleStreamChunk({ type: "tool_use_start", id: "tu1", name: "memory" });
+		await session.handleStreamChunk({ type: "tool_use_end", id: "tu1" });
+		// The daemon executes the tool and broadcasts the result as a tool_result
+		// message; tool_name carries the originating tool-call id (agent loop sets
+		// it to toolCall.id). The server routes it here.
+		session.handleToolResultMessage("tu1", "stored: foo=bar");
+		session.handleThreadStatus(false);
+		await p;
+
+		const created = rec.updates.find((u) => u.sessionUpdate === "tool_call") as {
+			toolCallId: string;
+		};
+		const completedForTu1 = rec.updates.filter(
+			(u) =>
+				u.sessionUpdate === "tool_call_update" &&
+				(u as { toolCallId: string }).toolCallId === created.toolCallId &&
+				(u as { status: string }).status === "completed",
+		);
+		// Exactly one completed update — the content-bearing one from the result,
+		// NOT a second empty one from resolveTurn's turn-end cleanup.
+		expect(completedForTu1.length).toBe(1);
+		expect((completedForTu1[0] as { content: unknown }).content).toEqual([
+			{ type: "content", content: { type: "text", text: "stored: foo=bar" } },
+		]);
+	});
+
+	it("ignores a tool_result for a client tool (already reported via tool:call)", async () => {
+		const { session, rec } = setup();
+		const p = session.runPrompt("go");
+		session.handleThreadStatus(true);
+		// Client tools are skipped in the stream path, so no daemon tool call is
+		// open for "cx"; the result echo must not synthesize a completion.
+		await session.handleStreamChunk({ type: "tool_use_start", id: "cx", name: "boundless_read" });
+		session.handleToolResultMessage("cx", "file contents");
+		session.handleThreadStatus(false);
+		await p;
+
+		const completed = rec.updates.filter(
+			(u) =>
+				u.sessionUpdate === "tool_call_update" && (u as { status: string }).status === "completed",
+		);
+		expect(completed.length).toBe(0);
+	});
+
 	it("skips client-tool tool_use chunks (handled via tool:call)", async () => {
 		const { session, rec } = setup();
 		session.runPrompt("go");
