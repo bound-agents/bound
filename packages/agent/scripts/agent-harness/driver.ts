@@ -532,14 +532,19 @@ function deterministicUuid(prefix: string, n: number): string {
 const AGENT_PROMPT_SIGNATURE = "**Environment.** You run inside **bound**";
 
 function isAgentLoopWire(wire: { url: string; body: string }): boolean {
-	// Body opens with `{"system":[{"text":"...`. Find the first system text
-	// block and check for the signature literal in its first ~200 chars.
-	// Avoids parsing the full JSON for every wire.
-	const sysOpen = wire.body.indexOf('"system":[{"text":"');
-	if (sysOpen < 0) return false;
-	const start = sysOpen + '"system":[{"text":"'.length;
-	const sniff = wire.body.slice(start, start + 200);
-	return sniff.includes(AGENT_PROMPT_SIGNATURE);
+	// The agent-loop stable prefix always carries the persona signature
+	// literal; auxiliary callers (summary extraction, title generation) never
+	// do. The literal's wire location is protocol-dependent: Bedrock/Anthropic
+	// Converse bodies put it in a top-level `"system":[{"text":"..."}]` block,
+	// while OpenAI-compatible bodies (the OpenCode Go GLM/Kimi/DeepSeek/MiMo
+	// leg, plus the openai-compatible / cerebras / zai drivers) put it in a
+	// `messages` array entry `{"role":"system","content":"..."}`. Anchoring to
+	// the Bedrock JSON path silently dropped every OpenAI-compatible wire as
+	// "auxiliary", which is why --dump-wire captured 0 turns for those models.
+	// Match on the literal anywhere in the body so all wire shapes are seen;
+	// the signature is unique enough that this keeps the no-false-positives
+	// guarantee without parsing the full JSON.
+	return wire.body.includes(AGENT_PROMPT_SIGNATURE);
 }
 
 /** Sum of `cost_usd` across all turn rows for the harness thread. */
