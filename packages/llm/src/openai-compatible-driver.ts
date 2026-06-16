@@ -96,6 +96,16 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			cacheProvider: null,
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: PERMISSIVE_ENVELOPE,
+			// This driver speaks /chat/completions (`.chatModel()` below), which
+			// does not accept replayed assistant reasoning as input. Without a
+			// providerKey, buildReasoningPart replays every prior thinking block as
+			// bare text, so a long session — especially one that ran a reasoning
+			// model like Kimi K2.7, or inherited thinking blocks from a prior
+			// Anthropic/Bedrock turn — accumulates hundreds of thousands of tokens
+			// of stale chain-of-thought. "openai" drops reasoning that lacks
+			// encrypted continuation state, matching the mantle and opencode-go
+			// openai-compatible legs.
+			reasoningProviderOptions: "openai",
 		});
 		const tools = toToolSet(params.tools);
 

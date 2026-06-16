@@ -92,6 +92,12 @@ export class OpenCodeGoDriver implements LLMBackend {
 				cacheProvider: null,
 				resolveFileRef: params.resolveFileRef,
 				targetEnvelope: ANTHROPIC_ENVELOPE,
+				// The /messages surface is Anthropic-protocol: prior-turn thinking
+				// blocks are only legal on the wire with their signature. MiniMax/Qwen
+				// emit signature-less reasoning, so without this they replay as bare
+				// text and accumulate unboundedly across the thread (see the
+				// `thinking`-signature gotcha in CONTRIBUTING). "anthropic" drops them.
+				reasoningProviderOptions: "anthropic",
 			});
 			const result = streamText({
 				model: this.anthropicProvider.messages(modelId),
@@ -118,6 +124,12 @@ export class OpenCodeGoDriver implements LLMBackend {
 			cacheProvider: null,
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: PERMISSIVE_ENVELOPE,
+			// /chat/completions does not accept replayed assistant reasoning as
+			// input. Without a providerKey, buildReasoningPart replays every prior
+			// thinking block as bare text, so a long session accumulates hundreds of
+			// thousands of tokens of stale chain-of-thought. "openai" drops reasoning
+			// that lacks encrypted continuation state, matching the mantle driver.
+			reasoningProviderOptions: "openai",
 		});
 		const result = streamText({
 			model: this.openaiProvider.chatModel(modelId),
