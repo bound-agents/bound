@@ -1722,7 +1722,7 @@ export class RelayProcessor {
 						throw error;
 					}
 				},
-				// onComplete: finalize relay response and platform delivery
+				// onComplete: finalize the relay response
 				async (result) => {
 					this.finalizeProcess(entry, payload, result);
 				},
