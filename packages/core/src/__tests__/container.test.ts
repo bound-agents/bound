@@ -29,7 +29,7 @@ describe("DI Container", () => {
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "ollama",
+					provider: "openai-compatible",
 					model: "llama3",
 					context_window: 4096,
 					tier: 1,
@@ -144,7 +144,7 @@ describe("AppContext", () => {
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "ollama",
+					provider: "openai-compatible",
 					model: "llama3",
 					context_window: 4096,
 					tier: 1,

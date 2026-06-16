@@ -31,7 +31,7 @@ describe("Phase 1 Integration", () => {
 			backends: [
 				{
 					id: "ollama-local",
-					provider: "ollama",
+					provider: "openai-compatible",
 					model: "llama3",
 					context_window: 4096,
 					tier: 1,

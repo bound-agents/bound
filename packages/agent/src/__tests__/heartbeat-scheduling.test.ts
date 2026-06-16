@@ -69,7 +69,7 @@ describe("rescheduleHeartbeat", () => {
 					backends: [
 						{
 							id: "mock",
-							provider: "ollama",
+							provider: "openai-compatible",
 							model: "mock",
 							base_url: "http://localhost:11434",
 							context_window: 8000,
@@ -660,7 +660,7 @@ describe("rescheduleHeartbeat outbox routing (R-LR11)", () => {
 					backends: [
 						{
 							id: "mock",
-							provider: "ollama",
+							provider: "openai-compatible",
 							model: "mock",
 							base_url: "http://localhost:11434",
 							context_window: 8000,
