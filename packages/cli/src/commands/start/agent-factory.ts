@@ -25,7 +25,7 @@ export const sandboxTool: ToolDefinition = {
 	function: {
 		name: "bash",
 		description:
-			"Execute a command in the sandboxed shell. MCP tools are available as commands. Run standard shell commands too.",
+			"Execute a command in the sandboxed shell. MCP tools are available as commands. Run standard shell commands too. Every command starts in /home/user and a `cd` lasts only for that one command, so do not prefix commands with a `cd` into the directory you are already in.",
 		parameters: {
 			type: "object",
 			properties: {

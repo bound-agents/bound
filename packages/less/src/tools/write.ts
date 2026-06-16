@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { contextFileStaleNote, isContextFile } from "./context-files";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -13,9 +14,10 @@ import type { ToolHandler, ToolResult } from "./types";
 export function createWriteTool(
 	hostname: string,
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
+	contextFiles?: readonly string[],
 ): ToolHandler {
 	return async (args, _signal, cwd) => {
-		return writeToolImpl(hostname, args, cwd, sandbox);
+		return writeToolImpl(hostname, args, cwd, sandbox, contextFiles);
 	};
 }
 
@@ -24,6 +26,7 @@ async function writeToolImpl(
 	args: Record<string, unknown>,
 	cwd: string,
 	sandbox: ResolvedSandboxConfig,
+	contextFiles?: readonly string[],
 ): Promise<ToolResult> {
 	const { file_path, content } = args as {
 		file_path?: string;
@@ -96,15 +99,18 @@ async function writeToolImpl(
 		// Calculate byte count
 		const byteCount = Buffer.byteLength(content, "utf-8");
 
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: `Wrote ${byteCount} bytes to ${file_path}`,
-				},
-			],
-		};
+		const blocks: ToolResult["content"] = [
+			provenance,
+			{
+				type: "text",
+				text: `Wrote ${byteCount} bytes to ${file_path}`,
+			},
+		];
+		if (isContextFile(file_path, cwd, contextFiles)) {
+			blocks.push({ type: "text", text: contextFileStaleNote(file_path) });
+		}
+
+		const result: ToolResult = { content: blocks };
 		return result;
 	} catch (err) {
 		const error = err as NodeJS.ErrnoException;

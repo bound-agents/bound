@@ -356,6 +356,7 @@ export class BoundAcpAgent implements Agent {
 			this.opts.mcpManager,
 			this.opts.sandbox,
 			this.opts.logger,
+			this.opts.contextFiles,
 		);
 		const clientToolNames = new Set(toolSet.tools.map((t) => t.function.name));
 
@@ -495,11 +496,24 @@ export class BoundAcpAgent implements Agent {
 		// turn looks like a silent success. Route them to the session, which
 		// surfaces the text and fails the prompt when the turn produced no output.
 		this.opts.client.on("message:created", (msg) => {
-			if (msg.role !== "alert") return;
 			const entry = this.sessions.get(msg.thread_id);
 			if (!entry) return;
-			const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-			entry.session.handleAlert(text);
+			if (msg.role === "alert") {
+				const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+				entry.session.handleAlert(text);
+				return;
+			}
+			// Daemon-side (native) tool results never cross the response stream —
+			// they are persisted as `tool_result` rows and broadcast here. The row's
+			// `tool_name` holds the originating tool-call id (agent loop sets it to
+			// `toolCall.id`), which pairs the result to the open ACP tool call so the
+			// editor sees the output, not just an empty completion. Client tools
+			// (`boundless_*`) report through the dispatch path and are filtered out
+			// inside `handleToolResultMessage`.
+			if (msg.role === "tool_result" && msg.tool_name) {
+				const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+				entry.session.handleToolResultMessage(msg.tool_name, content);
+			}
 		});
 
 		this.opts.client.onToolCall(async (call) => {

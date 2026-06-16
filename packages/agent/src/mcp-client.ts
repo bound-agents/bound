@@ -288,6 +288,22 @@ export class MCPClient {
 			? extractMCPToolResult(result.content as Array<Record<string, unknown>>)
 			: { content: "", images: undefined, documents: undefined, resourceLinks: undefined };
 
+		// The MCP convention is that a server returning `structuredContent` SHOULD
+		// also mirror a human/model-readable representation into `content`. A
+		// server that returns structured-only (empty `content[]`, payload solely
+		// in `structuredContent`) would otherwise hand the model an empty string
+		// (bound-agents/bound#165). Project the structured payload as stringified
+		// JSON when nothing else carried a readable block.
+		if (
+			!extracted.content &&
+			!extracted.images &&
+			!extracted.documents &&
+			!extracted.resourceLinks &&
+			result.structuredContent != null
+		) {
+			extracted.content = JSON.stringify(result.structuredContent);
+		}
+
 		return {
 			...extracted,
 			isError: result.isError === true,

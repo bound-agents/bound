@@ -136,6 +136,13 @@ onDestroy(() => {
 		color: var(--paper);
 		border: none;
 		cursor: pointer;
+		/* The top bar is align-items: center, so when a nav tab word-wraps on a
+		   narrow width the bar grows taller and the brand block — keyed off its
+		   own padding — gets centered with paper-colored gaps above and below
+		   its ink fill (#163). Stretch it to the full bar height like the nav
+		   row (#99); align-items: center above keeps the glyph + wordmark
+		   vertically centered within the taller block. */
+		align-self: stretch;
 		font-family: var(--font-display);
 		font-size: 18px;
 		font-weight: 700;
