@@ -1,5 +1,19 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
+
+// Register the just-bash worker-path rewrite as a runtime plugin so `bun test`
+// spawns the SHIMMED materialized worker — identical to the compiled `bound`
+// binary, which applies the same plugin at `Bun.build` time. Without this, a
+// js-exec/python3 command run through `createSandbox` resolves `new Worker(new
+// URL("./js-exec-worker.js", import.meta.url))` to the raw node_modules worker,
+// whose top-level `import { stripTypeScriptTypes } from "node:module"` Bun
+// cannot link, so the worker dies and the command hangs to its deadman timer
+// (bound#157). The rewrite redirects the chunk's `new URL(...)` to consult
+// `globalThis.__boundSandboxWorkerPath__`, populated by
+// `materializeSandboxRuntime()` inside `createSandbox()`. The onLoad hook is
+// lazy: it fires only when a test actually imports a just-bash worker chunk.
+Bun.plugin(justBashWorkerRewritePlugin());
 
 if (!process.env.LOG_LEVEL) {
 	process.env.LOG_LEVEL = "silent";
