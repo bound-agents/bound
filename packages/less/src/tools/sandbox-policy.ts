@@ -13,9 +13,9 @@
  * The policy shape mirrors an empirically-verified probe: reads anywhere
  * succeed, writes outside the writable set are denied, network is open.
  */
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /**
  * mxc SandboxPolicy schema version. The SDK validates this against its own
@@ -237,6 +237,7 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	};
 	addPath(cwd);
 	addPath(tmpdir());
+	for (const dir of gitWorktreeWritablePaths(cwd)) addPath(dir);
 	for (const extra of cfg.writablePaths) addPath(extra);
 	return [...writable];
 }
@@ -285,6 +286,55 @@ export function computeGitProtectedPaths(
 		}
 	}
 	return protectedPaths;
+}
+
+/**
+ * Extra writable directories a git WORKTREE needs that live OUTSIDE cwd. In a
+ * normal checkout `cwd/.git` is a directory nested under cwd, already covered by
+ * the cwd root. In a worktree it is instead a FILE — `gitdir: <abs path>` —
+ * pointing at the main repo's `.git/worktrees/<name>`, and that gitdir's
+ * `commondir` file points back at the shared `.git` (where `objects/`,
+ * `packed-refs`, etc. live). Both sit outside cwd, so without granting them the
+ * worktree's index.lock, loose-object writes, and ref updates all EPERM and
+ * `git commit` dies at the first commit. We return BOTH the per-worktree gitdir
+ * and the shared commondir.
+ *
+ * Resolved by reading files (the `.git` pointer and the `commondir` file) rather
+ * than spawning `git rev-parse` — no subprocess, works even when git isn't on
+ * PATH, and stays a pure fs read like the rest of this module. A normal checkout
+ * (`.git` is a directory) and a cwd with no `.git` at all both return `[]`.
+ */
+function gitWorktreeWritablePaths(cwd: string): string[] {
+	const dotGit = join(cwd, ".git");
+	let st: ReturnType<typeof statSync>;
+	try {
+		st = statSync(dotGit);
+	} catch {
+		return []; // not a repo working tree
+	}
+	// Normal checkout: .git is a directory already nested under cwd.
+	if (!st.isFile()) return [];
+
+	let pointer: string;
+	try {
+		pointer = readFileSync(dotGit, "utf8");
+	} catch {
+		return [];
+	}
+	const match = pointer.match(/^gitdir:\s*(.+?)\s*$/m);
+	if (!match) return [];
+	const gitdir = isAbsolute(match[1]) ? match[1] : resolve(cwd, match[1]);
+	const paths = [gitdir];
+
+	// The shared object store / refs: `commondir` holds a path (usually relative,
+	// e.g. `../..`) resolved against the per-worktree gitdir.
+	try {
+		const raw = readFileSync(join(gitdir, "commondir"), "utf8").trim();
+		if (raw) paths.push(isAbsolute(raw) ? raw : resolve(gitdir, raw));
+	} catch {
+		// No commondir file — gitdir alone (degenerate/older layouts).
+	}
+	return paths;
 }
 
 /**
