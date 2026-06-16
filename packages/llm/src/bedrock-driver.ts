@@ -241,7 +241,15 @@ export class BedrockDriver implements LLMBackend {
 			cacheProvider: "bedrock",
 			cacheTtl: params.cache_ttl,
 			resolveFileRef: params.resolveFileRef,
-			reasoningProviderOptions: isAnthropicModel ? "bedrock" : null,
+			// Anthropic-on-Bedrock replays its signed reasoning blocks via the
+			// "bedrock" policy. Non-Anthropic Converse models can't carry a
+			// reasoning signature, but `null` here means "replay signature-less
+			// reasoning as bare text", which re-accumulates a reasoning-heavy
+			// model's prior chain-of-thought every turn — the same context bloat
+			// that degraded the OpenCode Go models. Use "openai" so signature-less
+			// reasoning is dropped on replay (kept only if it carries replayable
+			// encrypted content), matching every other non-signature leg.
+			reasoningProviderOptions: isAnthropicModel ? "bedrock" : "openai",
 			targetEnvelope: isAnthropicModel ? ANTHROPIC_ENVELOPE : BEDROCK_PERMISSIVE_ENVELOPE,
 		});
 		// Inject the system prompt as a `role: "system"` ModelMessage at index 0
