@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
 	buildPolicy,
 	checkWritePath,
 	computeGitProtectedPaths,
+	computeWritableRoots,
 	decideSandboxSpawn,
 	formatWriteDenied,
 	resolveSandboxConfig,
@@ -93,7 +94,11 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 
 	it("grants the whole tree read-only so reads are unrestricted", () => {
 		const policy = buildPolicy(process.cwd(), enabled);
-		expect(policy.filesystem.readonlyPaths).toEqual(["/"]);
+		// The whole tree is granted read-only so reads stay unrestricted. The set
+		// may also carry the `.git` exec-surface carve-out when cwd is a real repo
+		// (see the ".git exec-surface protection" block) — assert membership of the
+		// root grant rather than an exact set so this stays checkout-layout-agnostic.
+		expect(policy.filesystem.readonlyPaths).toContain("/");
 	});
 
 	it("puts cwd and tmpdir in the writable set", () => {
@@ -140,6 +145,91 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		// platform, the reason must NOT be "to change the backend".
 		const policy = buildPolicy(process.cwd(), enabled);
 		expect(policy.version).toBe("0.6.0-alpha");
+	});
+});
+
+describe("computeWritableRoots (git worktree gitdir resolution)", () => {
+	const cfg: ResolvedSandboxConfig = {
+		enabled: true,
+		writablePaths: [],
+		network: "open",
+		onUnavailable: "passthrough",
+	};
+
+	let root: string;
+
+	beforeEach(() => {
+		root = realpathSync(mkdtempSync(join(tmpdir(), "wt-")));
+	});
+
+	afterEach(() => {
+		if (root) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	});
+
+	it("adds the worktree gitdir and shared commondir to the writable set", () => {
+		// Mirror git's worktree layout: the main repo's .git holds a per-worktree
+		// gitdir under .git/worktrees/<name>, the worktree's own .git is a FILE
+		// pointing at it, and that gitdir's `commondir` file points back at the
+		// shared .git (where objects/ and packed-refs live). Both are OUTSIDE cwd.
+		const mainGit = join(root, "repo", ".git");
+		const wtGitdir = join(mainGit, "worktrees", "wt1");
+		const worktree = join(root, "repo", ".worktrees", "wt1");
+		mkdirSync(wtGitdir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
+		writeFileSync(join(wtGitdir, "commondir"), "../..\n");
+
+		const roots = computeWritableRoots(worktree, cfg);
+		expect(roots).toContain(realpathSync(worktree));
+		expect(roots).toContain(realpathSync(wtGitdir));
+		expect(roots).toContain(realpathSync(mainGit));
+	});
+
+	it("resolves an absolute commondir as-is", () => {
+		const mainGit = join(root, "repo", ".git");
+		const wtGitdir = join(mainGit, "worktrees", "wt1");
+		const worktree = join(root, "elsewhere", "wt1");
+		mkdirSync(wtGitdir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
+		writeFileSync(join(wtGitdir, "commondir"), `${mainGit}\n`);
+
+		const roots = computeWritableRoots(worktree, cfg);
+		expect(roots).toContain(realpathSync(wtGitdir));
+		expect(roots).toContain(realpathSync(mainGit));
+	});
+
+	it("falls back to the gitdir alone when no commondir file exists", () => {
+		const wtGitdir = join(root, "bare-gitdir");
+		const worktree = join(root, "wt");
+		mkdirSync(wtGitdir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
+
+		const roots = computeWritableRoots(worktree, cfg);
+		expect(roots).toContain(realpathSync(wtGitdir));
+	});
+
+	it("leaves a normal checkout unaffected (.git is a directory, already under cwd)", () => {
+		const repo = join(root, "normal");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+
+		const roots = computeWritableRoots(repo, cfg);
+		expect(roots).toContain(realpathSync(repo));
+		// The .git dir is nested under cwd, already writable via the cwd root — it
+		// must NOT be added as a separate root.
+		expect(roots).not.toContain(realpathSync(join(repo, ".git")));
+	});
+
+	it("no-ops when cwd has no .git at all", () => {
+		const bare = join(root, "plain");
+		mkdirSync(bare, { recursive: true });
+
+		const roots = computeWritableRoots(bare, cfg);
+		// cwd + tmpdir only.
+		expect(roots).toContain(realpathSync(bare));
+		expect(roots).toContain(realpathSync(tmpdir()));
+		expect(roots.length).toBe(2);
 	});
 });
 
