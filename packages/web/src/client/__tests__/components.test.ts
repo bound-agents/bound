@@ -20,4 +20,14 @@ describe("Component Tests", () => {
 		const TaskDetailView = await import("../views/TaskDetailView.svelte");
 		expect(TaskDetailView).toBeDefined();
 	});
+
+	it("MessageList component module imports without error", async () => {
+		const MessageList = await import("../components/MessageList.svelte");
+		expect(MessageList).toBeDefined();
+	});
+
+	it("LineView component module imports without error", async () => {
+		const LineView = await import("../views/LineView.svelte");
+		expect(LineView).toBeDefined();
+	});
 });
