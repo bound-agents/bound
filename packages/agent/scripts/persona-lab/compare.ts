@@ -25,28 +25,30 @@
  * maps model id -> [low, high] input-token windows that reliably fault
  * server-side, used only to warn before a run wastes time. Absent = no warning.
  */
-import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	InMemoryTurnStateStore,
-	applyMetricsSchema,
-	applySchema,
-	insertRow,
-	loadConfigFile,
-} from "@bound/core";
-import { type ModelRouter, createModelRouter } from "@bound/llm";
-import { type AppContext, type Logger, modelBackendsSchema } from "@bound/shared";
-import { InMemoryFs } from "just-bash";
+import { insertRow, loadConfigFile } from "@bound/core";
+import { createModelRouter } from "@bound/llm";
+import { modelBackendsSchema } from "@bound/shared";
 import { toRouterConfig } from "../../../cli/src/commands/start/inference";
-import { AgentLoop } from "../../src/agent-loop";
 import { insertThreadMessage } from "../../src/agent-loop-utils";
+// Shared hermetic seed-and-run environment. persona-lab observes the model's
+// EMITTED content (assistant text + reasoning), the axis the agent-harness
+// wire diagnostics don't cover; the emitted-content helpers live alongside the
+// environment so both consumers read the DB the same way.
+import {
+	type HarnessEnvironment,
+	countAssistantMessages,
+	createHarnessEnvironment,
+	latestAssistantText,
+	latestTurnMetrics,
+	silentLogger,
+} from "../../src/harness/environment";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-const TURN_STATE_TTL_MS = 55 * 60 * 1000;
 const ESTIMATED_PROMPT_OVERHEAD_TOK = 200;
 const estTokens = (text: string) => Math.round(text.length / 4);
 
@@ -178,150 +180,36 @@ function loadInputs(args: Record<string, string>): Inputs {
 
 // --- harness plumbing -------------------------------------------------------
 
-const silentLogger: Logger = {
-	trace() {},
-	debug() {},
-	info() {},
-	warn() {},
-	error() {},
-	fatal() {},
-	child() {
-		return silentLogger;
-	},
-	isLevelEnabled() {
-		return false;
-	},
-} as Logger;
-
-function silentBus(): AppContext["eventBus"] {
-	const noop = () => undefined;
-	return {
-		on: noop,
-		off: noop,
-		emit: noop,
-		once: noop,
-		removeAllListeners: noop,
-	} as unknown as AppContext["eventBus"];
-}
-
-type SeededDb = {
-	db: Database;
-	siteId: string;
-	userId: string;
-	threadId: string;
-	hostName: string;
-};
-
 /**
- * Build a fresh in-memory bound DB seeded with a user, a thread carrying the
- * persona + summary, and the synthetic conversation history. The next message
- * to insert is the prompt under test.
+ * Seed the synthetic conversation history into the harness thread, stamped
+ * strictly before the environment's `now` so the prompt under test sorts
+ * last. The persona itself rides in the `cluster_config` row the context
+ * assembler reads; the caller seeds that alongside this.
  */
-function seedDatabase(
-	persona: string,
-	seed: SeedFile,
-	modelId: string,
-	promptName: string,
-): SeededDb {
-	const db = new Database(":memory:");
-	applySchema(db);
-	applyMetricsSchema(db);
-
-	const siteId = randomUUID();
-	const userId = randomUUID();
-	const threadId = randomUUID();
-	const hostName = `persona-lab-${modelId}-${promptName}`;
-	const now = new Date().toISOString();
-
-	insertRow(
-		db,
-		"users",
-		{
-			id: userId,
-			display_name: "persona-lab",
-			platform_ids: null,
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		},
-		siteId,
-	);
-	insertRow(
-		db,
-		"threads",
-		{
-			id: threadId,
-			user_id: userId,
-			interface: "harness",
-			host_origin: siteId,
-			color: 0,
-			title: "persona-lab",
-			summary: seed.summary,
-			summary_through: now,
-			summary_model_id: null,
-			extracted_through: null,
-			created_at: now,
-			last_message_at: now,
-			modified_at: now,
-			deleted: 0,
-			model_hint: null,
-		},
-		siteId,
-	);
-	insertRow(db, "cluster_config", { key: "persona", value: persona, modified_at: now }, siteId);
-
-	seed.messages.forEach((message, i) => {
-		// Stamp history strictly before `now` so the prompt sorts last.
-		const offsetMs = (seed.messages.length - i + 1) * 1000;
+function seedHistory(env: HarnessEnvironment, messages: SeedMessage[]): void {
+	const base = Date.parse(env.now);
+	messages.forEach((message, i) => {
+		const offsetMs = (messages.length - i + 1) * 1000;
 		insertRow(
-			db,
+			env.db,
 			"messages",
 			{
 				id: randomUUID(),
-				thread_id: threadId,
+				thread_id: env.threadId,
 				role: message.role,
 				content: message.content,
 				model_id: null,
 				tool_name: null,
-				host_origin: hostName,
-				created_at: new Date(Date.parse(now) - offsetMs).toISOString(),
+				host_origin: env.hostName,
+				created_at: new Date(base - offsetMs).toISOString(),
 				modified_at: null,
 				deleted: 0,
 				exit_code: null,
 				metadata: null,
 			},
-			siteId,
+			env.siteId,
 		);
 	});
-
-	return { db, siteId, userId, threadId, hostName };
-}
-
-function countAssistantMessages(db: Database): number {
-	return (
-		db.query<{ n: number }, []>("SELECT COUNT(*) n FROM messages WHERE role='assistant'").get()
-			?.n ?? 0
-	);
-}
-
-function latestAssistantText(db: Database): string {
-	return (
-		db
-			.query<{ content: string }, []>(
-				"SELECT content FROM messages WHERE role='assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-			)
-			.get()?.content ?? "(empty)"
-	);
-}
-
-function latestTurnMetrics(db: Database): TurnMetrics | null {
-	return (
-		db
-			.query<TurnMetrics, []>(
-				"SELECT cost_usd, tokens_in, tokens_out FROM turns ORDER BY created_at DESC, rowid DESC LIMIT 1",
-			)
-			.get() ?? null
-	);
 }
 
 // --- run one case -----------------------------------------------------------
@@ -347,14 +235,22 @@ async function runCase(
 	}
 
 	const router = createModelRouter(toRouterConfig({ backends: [backend], default: backend.id }), {
-		logger: silentLogger,
+		logger: silentLogger(),
 	});
-	const { db, siteId, userId, threadId, hostName } = seedDatabase(
-		persona,
-		seed,
-		modelId,
-		prompt.name,
-	);
+	const env = createHarnessEnvironment({
+		rawBackends,
+		router,
+		hostName: `persona-lab-${modelId}-${prompt.name}`,
+		userDisplayName: "persona-lab",
+		threadTitle: "persona-lab",
+		threadSummary: seed.summary,
+	});
+	const { db, siteId, threadId, hostName } = env;
+	// Persona under test lives in the synced cluster_config row the context
+	// assembler reads; seed it plus the synthetic history before injecting
+	// the prompt so the prompt is the last message in the thread.
+	insertRow(db, "cluster_config", { key: "persona", value: persona, modified_at: env.now }, siteId);
+	seedHistory(env, seed.messages);
 	insertThreadMessage(
 		db,
 		{ threadId, role: "user", content: prompt.text, hostOrigin: hostName },
@@ -362,37 +258,21 @@ async function runCase(
 	);
 
 	const before = countAssistantMessages(db);
-	const ctx = {
-		db,
-		config: { allowlist: { users: [userId] }, modelBackends: rawBackends },
-		optionalConfig: {},
-		eventBus: silentBus(),
-		logger: silentLogger,
-		siteId,
-		hostName,
-		turnStateStore: new InMemoryTurnStateStore(TURN_STATE_TTL_MS),
-		commandRegistry: [],
-		fs: new InMemoryFs(),
-	} as unknown as AppContext;
-	const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) };
 	// Reasoning/thinking is never persisted to the DB on a no-tool turn (it is
 	// only folded into tool_call messages, which a persona-lab run never produces
 	// — empty tool registry). So capture it live off the stream: thinking arrives
 	// as `type: "thinking"` chunks, each carrying a `content` delta.
 	let reasoning = "";
-	const loop = new AgentLoop(ctx, sandbox, router as ModelRouter, {
-		threadId,
-		userId,
-		modelId,
-		toolRegistry: new Map(),
-		onStreamChunk: (chunk) => {
-			if (chunk.type === "thinking") reasoning += chunk.content;
-		},
-	});
 
 	let threw = "";
 	try {
-		await loop.run();
+		await env.runLoop({
+			modelId,
+			toolRegistry: new Map(),
+			onStreamChunk: (chunk) => {
+				if (chunk.type === "thinking") reasoning += chunk.content;
+			},
+		});
 	} catch (e) {
 		const err = e as { name?: string; message?: string };
 		threw = `${err?.name}: ${err?.message?.slice?.(0, 200)}`;

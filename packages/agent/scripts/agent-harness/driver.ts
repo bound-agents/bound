@@ -63,25 +63,15 @@
  *     enforces via its fixture loader.
  */
 
-import { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
-import {
-	type AppContext,
-	InMemoryTurnStateStore,
-	applyMetricsSchema,
-	applySchema,
-	insertRow,
-	loadConfigFile,
-} from "@bound/core";
+import type { Database } from "bun:sqlite";
+import { insertRow, loadConfigFile } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
-import type { ModelRouter, ToolDefinition } from "@bound/llm";
+import type { ToolDefinition } from "@bound/llm";
 import {
 	type Logger,
 	type ModelBackendsConfig as RawBackendsConfig,
-	type TypedEventEmitter,
 	modelBackendsSchema,
 } from "@bound/shared";
-import { InMemoryFs } from "just-bash";
 // `toRouterConfig` lives in the cli package; this is a known minor coupling
 // (the harness needs the same SharedModelBackendsConfig → ModelBackendsConfig
 // translation production uses for Critical Invariant #17 parity). Imported
@@ -89,10 +79,13 @@ import { InMemoryFs } from "just-bash";
 // would touch CI surface unrelated to the harness.
 import { toRouterConfig } from "../../../cli/src/commands/start/inference";
 // `@bound/agent` is the package this harness lives in; use relative paths to
-// avoid the package self-reference resolution issue under tsc.
-import { AgentLoop } from "../../src/agent-loop";
+// avoid the package self-reference resolution issue under tsc. The hermetic
+// seed-and-run environment (in-memory DB, silent bus, AppContext stub, sandbox
+// shim, AgentLoop construction) is shared with persona-lab via the harness
+// core; only the wire-capture / budget / diagnostic logic is driver-specific.
 import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
-import type { AgentLoopConfig, RegisteredTool } from "../../src/types";
+import { createHarnessEnvironment } from "../../src/harness/environment";
+import type { RegisteredTool } from "../../src/types";
 import { createCapturingFetch } from "./capture";
 import type { Diagnostic, DiagnosticTurnData } from "./diagnostics/types";
 import type { HarnessFixture, VolatilePrefixSeedSpec } from "./fixtures/types";
@@ -182,53 +175,22 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		fetchByBackendId: new Map([[picked.id, capturing.fetch]]),
 	});
 
-	// 6. Hermetic environment.
-	const db = new Database(":memory:");
-	applySchema(db);
-	applyMetricsSchema(db);
+	// 6. Hermetic environment: in-memory DB with the full schema applied, a
+	//    seeded user + thread, a silent event bus, and an AppContext stub —
+	//    all shared with persona-lab via the harness core. The capturing
+	//    router built above is injected so wire bodies are recorded per
+	//    inference. Everything below (pre-seeded history, volatile-prefix
+	//    seeding, tool registry, budget, diagnostics) is driver-specific and
+	//    operates on the returned db / siteId / threadId / hostName.
+	const env = createHarnessEnvironment({
+		rawBackends,
+		router,
+		logger: opts.logger,
+		threadTitle: opts.fixture.name,
+		threadSummary: opts.fixture.threadSummary ?? null,
+	});
+	const { db, siteId, threadId, hostName, now } = env;
 
-	const siteId = randomUUID();
-	const userId = randomUUID();
-	const threadId = randomUUID();
-	const hostName = "agent-harness";
-
-	// Seed users + thread rows. Outbox-compliant via insertRow.
-	const now = new Date().toISOString();
-	insertRow(
-		db,
-		"users",
-		{
-			id: userId,
-			display_name: "harness",
-			platform_ids: null,
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		},
-		siteId,
-	);
-	insertRow(
-		db,
-		"threads",
-		{
-			id: threadId,
-			user_id: userId,
-			interface: "harness",
-			host_origin: siteId,
-			color: 0,
-			title: opts.fixture.name,
-			summary: opts.fixture.threadSummary ?? null,
-			summary_through: opts.fixture.threadSummary ? now : null,
-			summary_model_id: null,
-			extracted_through: null,
-			created_at: now,
-			last_message_at: now,
-			modified_at: now,
-			deleted: 0,
-			model_hint: null,
-		},
-		siteId,
-	);
 	// Pre-seed messages when the fixture defines them. Used by fixtures
 	// that need a thread large enough to trigger truncation before turn 1.
 	if (opts.fixture.preSeededMessages && opts.fixture.preSeededMessages.length > 0) {
@@ -273,36 +235,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		seedVolatilePrefix(db, siteId, now, opts.fixture.volatilePrefix);
 	}
 
-	const fs = new InMemoryFs();
-
-	// 7. AppContext stub. Mirrors the shape of the production AppContext;
-	//    silent event bus + logger keep the harness output clean unless
-	//    the operator passes --log-level.
-	const ctx = {
-		db,
-		config: {
-			allowlist: { users: [userId] },
-			modelBackends: rawBackends,
-		},
-		optionalConfig: {},
-		eventBus: silentEventBus(),
-		logger: opts.logger,
-		siteId,
-		hostName,
-		turnStateStore: new InMemoryTurnStateStore(55 * 60 * 1000),
-		commandRegistry: [],
-		// `fs` is read by some agent-loop paths via `ctx as any`; attach for parity.
-		fs,
-	} as unknown as AppContext;
-
-	// 8. Sandbox shim. The harness fixture's tools are stubbed deterministically
-	//    so the agent loop never invokes real bash. The shim returns empty
-	//    success for any unexpected exec call.
-	const sandbox = {
-		exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-	};
-
-	// 9. Tool registry. Each fixture-declared tool becomes a RegisteredTool
+	// 7. Tool registry. Each fixture-declared tool becomes a RegisteredTool
 	//    with a `kind: "builtin"` execute that calls the deterministic stub.
 	const toolRegistry = buildToolRegistry(opts.fixture);
 
@@ -343,16 +276,9 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		// the per-inference rows it adds during this user-turn.
 		const turnsRowCountBefore = countTurnRows(db, threadId);
 
-		// Build the loop config and run.
-		const config: AgentLoopConfig = {
-			threadId,
-			userId,
-			modelId: picked.id,
-			toolRegistry,
-		};
-		const loop = new AgentLoop(ctx, sandbox, router as ModelRouter, config);
+		// Build the loop config and run it against the shared environment.
 		try {
-			await loop.run();
+			await env.runLoop({ modelId: picked.id, toolRegistry });
 		} catch (err) {
 			abortReason = "error";
 			abortMessage = `user-turn ${userTurn} threw: ${(err as Error).message}`;
@@ -728,17 +654,6 @@ function buildTurnData(
 		contextDebug,
 		costUsd: row.cost_usd ?? 0,
 	};
-}
-
-function silentEventBus(): TypedEventEmitter {
-	const noop = () => undefined;
-	return {
-		on: noop,
-		off: noop,
-		emit: noop,
-		once: noop,
-		removeAllListeners: noop,
-	} as unknown as TypedEventEmitter;
 }
 
 type LogLevel = "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal";

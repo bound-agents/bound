@@ -189,7 +189,7 @@ this table.
 | packages/sandbox/src/overlay-scanner.ts:128, 149, 170 | overlay_index (INSERT, UPDATE, soft-delete) | (d) known-deferred | `overlay_index` IS synced. Annotation says "outbox not provided (backward compat)". TODO: follow-up RFC to convert these to `insertRow`/`updateRow`/`softDelete`. |
 | packages/agent/src/task-resolution.ts:428 | tasks.no_history | (d) known-deferred | Active legacy migration that runs on startup. TODO: follow-up RFC to route through outbox or formalize as a Section A exception. |
 | packages/agent/scripts/agent-harness/driver.ts:51 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/scripts/agent-harness/driver.ts:233 | (none — comment-only) | (e) comment-only | Reference / educational note. |
+| packages/agent/scripts/agent-harness/driver.ts:225 | (none — comment-only) | (e) comment-only | Reference / educational note. |
 | packages/agent/src/validation/run-stable-prefix-drift-validation.ts:244 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
 
 ### Consistency and events
