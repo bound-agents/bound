@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { Implementation } from "@agentclientprotocol/sdk";
 import type { ToolDefinition } from "@bound/client";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -6,6 +5,7 @@ import type { McpServerConfig } from "../config";
 import type { McpServerManager } from "../mcp/manager";
 import { proxyToolCall } from "../mcp/proxy";
 import { type BashEventLogger, createBashTool } from "./bash";
+import { CONTEXT_FILE_CANDIDATES, collectContextFiles } from "./context-files";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
@@ -36,6 +36,7 @@ export function buildToolSet(
 	mcpManager?: McpServerManager,
 	sandbox?: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
+	contextFiles?: readonly string[],
 ): BuildToolSetResult {
 	const resolvedShell = shell ?? resolveShell(undefined);
 	const toolDefinitions: ToolDefinition[] = [];
@@ -207,8 +208,14 @@ export function buildToolSet(
 
 	toolDefinitions.push(...coreToolDefs);
 	handlers.set("boundless_read", createReadTool(hostname));
-	handlers.set("boundless_write", createWriteTool(hostname, sandbox));
-	handlers.set("boundless_edit", createEditTool(hostname, sandbox));
+	handlers.set(
+		"boundless_write",
+		createWriteTool(hostname, sandbox, contextFiles ?? CONTEXT_FILE_CANDIDATES),
+	);
+	handlers.set(
+		"boundless_edit",
+		createEditTool(hostname, sandbox, contextFiles ?? CONTEXT_FILE_CANDIDATES),
+	);
 	handlers.set("boundless_search", createSearchTool(hostname));
 	handlers.set(resolvedShell.toolName, createBashTool(hostname, resolvedShell, sandbox, logger));
 	handlers.set(
@@ -376,11 +383,42 @@ export function buildToolSet(
  * working directory. Returns formatted context lines on success, or a
  * warning string if git is unavailable or the directory is not a repository.
  */
+/**
+ * Explains, in the system prompt, why the injected git context does not change
+ * when the agent commits mid-session. Like the context-file copies, this block
+ * is captured once at session start and held frozen for prompt-cache stability;
+ * the `head` attribute is the freshness key (analogous to a context-file mtime),
+ * so a model can compare it against `git rev-parse HEAD` to see the staleness
+ * directly rather than re-running `git log` to "confirm" a commit landed (#172).
+ */
+const GIT_CONTEXT_STALENESS_NOTE =
+	"This git context (branch, HEAD, recent commits) was read when the session started and is held FROZEN for prompt-cache stability — it is NOT refreshed when you commit, branch, or pull during this session, so the head attribute and commit list below will NOT reflect commits you make now. After you commit, trust the commit command's own output; do not re-run git log or git rev-parse just to confirm a commit landed.";
+
 export async function collectGitContext(cwd: string): Promise<string> {
+	// Strip repository-location env vars so `git -C <cwd>` discovers the repo by
+	// walking up from cwd rather than honoring an inherited GIT_DIR. Without this,
+	// when collectGitContext runs inside a git hook (e.g. the pre-commit suite),
+	// the hook's GIT_DIR / GIT_INDEX_FILE leak into the spawned git and override
+	// `-C`, so a probe against an unrelated directory wrongly resolves to the
+	// hook's repository. Forcing cwd-based discovery makes the reported context
+	// match the working directory regardless of ambient git environment.
+	const gitEnv = { ...process.env };
+	for (const key of [
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_INDEX_FILE",
+		"GIT_COMMON_DIR",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_NAMESPACE",
+		"GIT_PREFIX",
+	]) {
+		delete gitEnv[key];
+	}
 	try {
 		const branchProc = Bun.spawn(["git", "-C", cwd, "branch", "--show-current"], {
 			stdout: "pipe",
 			stderr: "pipe",
+			env: gitEnv,
 		});
 		const [branchOut, , branchExit] = await Promise.all([
 			Bun.readableStreamToText(branchProc.stdout),
@@ -397,6 +435,7 @@ export async function collectGitContext(cwd: string): Promise<string> {
 		const logProc = Bun.spawn(["git", "-C", cwd, "log", "--oneline", "-10"], {
 			stdout: "pipe",
 			stderr: "pipe",
+			env: gitEnv,
 		});
 		const [logOut, , logExit] = await Promise.all([
 			Bun.readableStreamToText(logProc.stdout),
@@ -404,9 +443,14 @@ export async function collectGitContext(cwd: string): Promise<string> {
 			logProc.exited,
 		]);
 
-		const commits = logExit === 0 && logOut.trim() ? logOut.trim() : "(no commits)";
+		const hasCommits = logExit === 0 && logOut.trim().length > 0;
+		const commits = hasCommits ? logOut.trim() : "(no commits)";
+		// HEAD short SHA = first token of the first --oneline entry. This is the
+		// freshness key; "none" when the repo has no commits yet.
+		const head = hasCommits ? (logOut.trim().split("\n")[0]?.split(" ")[0] ?? "unknown") : "none";
 
-		return `Git branch: ${branch}\nRecent commits:\n${commits}`;
+		const body = `Git branch: ${branch}\nRecent commits:\n${commits}`;
+		return `<git-context head="${head}" note="${GIT_CONTEXT_STALENESS_NOTE}">\n${body}\n</git-context>`;
 	} catch {
 		return "Git context: (git unavailable)";
 	}
@@ -414,40 +458,12 @@ export async function collectGitContext(cwd: string): Promise<string> {
 
 /**
  * The standard context files that boundless auto-injects when present in the
- * working directory. These are project-level instruction files for agents.
+ * working directory, and the reader that wraps them for the system prompt, live
+ * in ./context-files (shared with the write/edit tools' steering note, which
+ * registry.ts cannot import from without a cycle). Re-exported here so callers
+ * and tests that reach for them via registry keep resolving.
  */
-const CONTEXT_FILE_CANDIDATES = ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"] as const;
-
-/**
- * Reads context files from the given working directory. Files that are absent
- * or unreadable are silently skipped. Returns a formatted block for all found
- * files, or an empty string if none are present.
- *
- * @param cwd - Working directory to search in
- * @param candidates - Files to look for. Defaults to CONTEXT_FILE_CANDIDATES.
- *   Pass a custom list (relative paths) to override the defaults.
- */
-export async function collectContextFiles(cwd: string, candidates?: string[]): Promise<string> {
-	const sections: string[] = [];
-
-	for (const filename of candidates ?? CONTEXT_FILE_CANDIDATES) {
-		const filepath = join(cwd, filename);
-		try {
-			const content = await Bun.file(filepath).text();
-			if (content.trim()) {
-				sections.push(`### ${filename}\n${content.trim()}`);
-			}
-		} catch {
-			// File doesn't exist or can't be read — skip silently
-		}
-	}
-
-	if (sections.length === 0) {
-		return "";
-	}
-
-	return `Context files:\n\n${sections.join("\n\n")}`;
-}
+export { CONTEXT_FILE_CANDIDATES, collectContextFiles };
 
 export async function buildSystemPromptAddition(
 	cwd: string,

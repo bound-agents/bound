@@ -356,6 +356,7 @@ export class BoundAcpAgent implements Agent {
 			this.opts.mcpManager,
 			this.opts.sandbox,
 			this.opts.logger,
+			this.opts.contextFiles,
 		);
 		const clientToolNames = new Set(toolSet.tools.map((t) => t.function.name));
 

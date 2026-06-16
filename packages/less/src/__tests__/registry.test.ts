@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildSystemPromptAddition,
@@ -772,6 +774,20 @@ describe("collectGitContext", () => {
 		expect(result).not.toContain("Git context:");
 	});
 
+	it("wraps the success body in a git-context envelope with a head key", async () => {
+		const result = await collectGitContext(process.cwd());
+		expect(result).toContain("<git-context head=");
+		expect(result).toContain("</git-context>");
+		// head is a short SHA (hex) — the freshness key, not a timestamp
+		expect(result).toMatch(/<git-context head="[0-9a-f]{7,}"/);
+	});
+
+	it("explains the frozen-copy semantics in the note", async () => {
+		const result = await collectGitContext(process.cwd());
+		expect(result).toContain("FROZEN");
+		expect(result).toContain("do not re-run git log");
+	});
+
 	it("returns warning for non-git directory", async () => {
 		// /tmp is not a git repo
 		const result = await collectGitContext("/tmp");
@@ -803,26 +819,47 @@ describe("collectContextFiles", () => {
 		// The bound repo has README.md, CONTRIBUTING.md, and CLAUDE.md at its root
 		const result = await collectContextFiles(REPO_ROOT);
 		expect(result).not.toBe("");
-		expect(result).toContain("Context files:");
+		expect(result).toContain("<context-files");
 	});
 
-	it("formats each file under a header", async () => {
+	it("wraps each file in a context-file node carrying its path", async () => {
 		const result = await collectContextFiles(REPO_ROOT);
-		// Each found file should have a ### header
-		expect(result).toContain("### README.md");
+		expect(result).toContain('<context-file path="README.md"');
+	});
+
+	it("carries an mtime attribute on each node", async () => {
+		const result = await collectContextFiles(REPO_ROOT);
+		// ISO timestamp, e.g. mtime="2026-06-16T01:00:00.000Z"
+		expect(result).toMatch(/mtime="[0-9T:.Z-]+"/);
+	});
+
+	it("explains the frozen-copy semantics in the parent note", async () => {
+		const result = await collectContextFiles(REPO_ROOT);
+		expect(result).toContain("FROZEN");
+		expect(result).toContain("do not re-read");
 	});
 
 	it("silently skips files that are not present", async () => {
-		// bound repo has no AGENTS.md
-		const result = await collectContextFiles(REPO_ROOT);
-		expect(result).not.toContain("### AGENTS.md");
+		// Pin to a controlled temp dir rather than REPO_ROOT: a worktree may carry
+		// an AGENTS.md symlink that REPO_ROOT would legitimately pick up. Here only
+		// README.md exists, so the other candidates must be skipped.
+		const dir = mkdtempSync(join(tmpdir(), "ctx-skip-"));
+		try {
+			writeFileSync(join(dir, "README.md"), "# Title\n");
+			const result = await collectContextFiles(dir);
+			expect(result).toContain('path="README.md"');
+			expect(result).not.toContain('path="AGENTS.md"');
+			expect(result).not.toContain('path="CONTRIBUTING.md"');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("includes multiple files when several are present", async () => {
 		// bound repo has at least README.md and CONTRIBUTING.md
 		const result = await collectContextFiles(REPO_ROOT);
-		const headerCount = (result.match(/^### /gm) || []).length;
-		expect(headerCount).toBeGreaterThanOrEqual(2);
+		const nodeCount = (result.match(/<context-file /g) || []).length;
+		expect(nodeCount).toBeGreaterThanOrEqual(2);
 	});
 });
 
@@ -830,15 +867,15 @@ describe("buildSystemPromptAddition context files", () => {
 	it("includes context files by default when files are present", async () => {
 		// bound repo root has README.md — use REPO_ROOT so we hit the actual files
 		const prompt = await buildSystemPromptAddition(REPO_ROOT, "localhost", []);
-		expect(prompt).toContain("Context files:");
-		expect(prompt).toContain("### README.md");
+		expect(prompt).toContain("<context-files");
+		expect(prompt).toContain('<context-file path="README.md"');
 	});
 
 	it("excludes context files when injectContextFiles is empty array", async () => {
 		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", [], {
 			injectContextFiles: [],
 		});
-		expect(prompt).not.toContain("Context files:");
+		expect(prompt).not.toContain("<context-files");
 		// But still has git context
 		expect(prompt).toContain("Git branch:");
 		expect(prompt).toContain("Available tool namespaces:");
@@ -847,7 +884,7 @@ describe("buildSystemPromptAddition context files", () => {
 	it("does not include context files block when none are present", async () => {
 		// /tmp has no README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
 		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
-		expect(prompt).not.toContain("Context files:");
+		expect(prompt).not.toContain("<context-files");
 	});
 
 	it("still includes all other sections when context files list is empty", async () => {

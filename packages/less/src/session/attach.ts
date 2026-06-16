@@ -64,6 +64,7 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 		confirmFn,
 		shell,
 		sandbox,
+		injectContextFiles,
 	} = params;
 
 	// Step 1: List recent messages and scan for pending tool calls (AC7.2)
@@ -124,6 +125,7 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 		mcpManager,
 		sandbox,
 		logger,
+		injectContextFiles,
 	);
 
 	logger.info("attach_flow_tools_built", {
