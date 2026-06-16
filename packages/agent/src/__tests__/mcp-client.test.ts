@@ -1,5 +1,24 @@
 import { describe, expect, it } from "bun:test";
-import { escapeNonAscii, extractMCPToolResult } from "../mcp-client";
+import { MCPClient, escapeNonAscii, extractMCPToolResult } from "../mcp-client";
+
+/**
+ * Build an MCPClient with its transport stubbed out so `callTool` can be
+ * exercised against a canned `CallToolResult` shape without a live server.
+ */
+function stubbedClient(callToolResult: Record<string, unknown>): MCPClient {
+	const client = new MCPClient({
+		name: "stub",
+		transport: "stdio",
+		command: "true",
+	} as never);
+	const internals = client as unknown as {
+		connected: boolean;
+		client: { callTool: (args: unknown) => Promise<Record<string, unknown>> };
+	};
+	internals.connected = true;
+	internals.client = { callTool: async () => callToolResult };
+	return client;
+}
 
 describe("extractMCPToolResult", () => {
 	it("extracts text-only content", () => {
@@ -156,6 +175,41 @@ describe("extractMCPToolResult", () => {
 	it("ignores resource_link items missing the uri field (malformed)", () => {
 		const result = extractMCPToolResult([{ type: "resource_link", name: "no-uri" }]);
 		expect(result.resourceLinks).toBeUndefined();
+	});
+});
+
+describe("MCPClient.callTool structuredContent fallback (#165)", () => {
+	it("projects structuredContent as JSON when no content block carries text", async () => {
+		const client = stubbedClient({
+			content: [],
+			structuredContent: { temperature: 21, unit: "C" },
+		});
+		const result = await client.callTool("weather", {});
+		expect(result.content).toBe(JSON.stringify({ temperature: 21, unit: "C" }));
+		expect(result.isError).toBe(false);
+	});
+
+	it("projects structuredContent when content is absent entirely", async () => {
+		const client = stubbedClient({
+			structuredContent: { rows: [1, 2, 3] },
+		});
+		const result = await client.callTool("query", {});
+		expect(result.content).toBe(JSON.stringify({ rows: [1, 2, 3] }));
+	});
+
+	it("prefers the text mirror over structuredContent when both are present", async () => {
+		const client = stubbedClient({
+			content: [{ type: "text", text: "21C" }],
+			structuredContent: { temperature: 21 },
+		});
+		const result = await client.callTool("weather", {});
+		expect(result.content).toBe("21C");
+	});
+
+	it("leaves content empty when neither a text block nor structuredContent exists", async () => {
+		const client = stubbedClient({ content: [] });
+		const result = await client.callTool("noop", {});
+		expect(result.content).toBe("");
 	});
 });
 
