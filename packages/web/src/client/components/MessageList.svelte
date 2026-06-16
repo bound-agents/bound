@@ -25,12 +25,20 @@ interface TurnRange {
 	to: string | null;
 }
 
+// A one-shot scroll request from the context panel (turn click). `nonce` bumps
+// on every click so repeat-clicks on the same message re-fire the scroll.
+interface ScrollRequest {
+	messageId: string;
+	nonce: number;
+}
+
 interface Props {
 	messages: Message[];
 	waiting?: boolean;
 	streamingText?: string;
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
+	scrollRequest?: ScrollRequest | null;
 	threadColor?: number;
 	lineColor?: string;
 	isAgentActive?: boolean;
@@ -43,6 +51,7 @@ const {
 	streamingText = "",
 	emptyText = null,
 	turnRange = null,
+	scrollRequest = null,
 	threadColor = 0,
 	lineColor = "#999",
 	isAgentActive = false,
@@ -126,6 +135,35 @@ $effect(() => {
 				const offset = targetTop - containerTop + scrollContainer.scrollTop - 12;
 				scrollContainer.scrollTo({ top: offset, behavior: "smooth" });
 			}
+		});
+	});
+});
+
+// --- Scroll-to-message (context-panel turn click) ---
+// Mirrors the turn-range scroll above but keys off a specific message id and
+// deliberately does NOT set `turnRange`, so no rows are dimmed — just a jump.
+let prevScrollNonce = -1;
+$effect(() => {
+	const req = scrollRequest;
+	if (!req || req.nonce === prevScrollNonce) return;
+	prevScrollNonce = req.nonce;
+	if (!scrollContainer) return;
+	const { messageId } = req;
+	const selectorId =
+		typeof CSS !== "undefined" && typeof CSS.escape === "function"
+			? CSS.escape(messageId)
+			: messageId;
+	tick().then(() => {
+		requestAnimationFrame(() => {
+			if (!scrollContainer) return;
+			const target = scrollContainer.querySelector(
+				`[data-message-id="${selectorId}"]`,
+			) as HTMLElement | null;
+			if (!target) return;
+			const containerTop = scrollContainer.getBoundingClientRect().top;
+			const targetTop = target.getBoundingClientRect().top;
+			const offset = targetTop - containerTop + scrollContainer.scrollTop - 12;
+			scrollContainer.scrollTo({ top: offset, behavior: "smooth" });
 		});
 	});
 });

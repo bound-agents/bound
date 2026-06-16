@@ -54,6 +54,15 @@ let streamingText = $state("");
 // A selected-turn range emitted by the debugger's turn scrubber. When set, the
 // conversation dims other turns and scrolls the selected one into view.
 let turnRange = $state<{ from: string; to: string | null } | null>(null);
+// Context-panel turn click → scroll the conversation to that message. The nonce
+// bumps per click so clicking the same turn twice still re-fires the scroll.
+let scrollRequest = $state<{ messageId: string; nonce: number } | null>(null);
+let scrollNonce = 0;
+function scrollToTurn(messageId: string | undefined): void {
+	if (!messageId) return;
+	scrollNonce += 1;
+	scrollRequest = { messageId, nonce: scrollNonce };
+}
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -387,6 +396,7 @@ function turnPreview(content: string): string {
 				{waiting}
 				{streamingText}
 				turnRange={panelMode === "debugger" ? turnRange : null}
+					scrollRequest={panelMode === "context" ? scrollRequest : null}
 				threadColor={thread?.color ?? 0}
 				{lineColor}
 				isAgentActive={agentActive}
@@ -501,7 +511,7 @@ function turnPreview(content: string): string {
 									<div class="turns-list">
 										{#each userTurns as turn, i}
 											{@const isLast = i === userTurns.length - 1}
-											<div class="turn-stop" class:turn-stop-current={isLast}>
+											<button type="button" class="turn-stop" class:turn-stop-current={isLast} onclick={() => scrollToTurn(turn.id)} title="Jump to this message in the conversation">
 												<div class="turn-rail">
 													{#if !isLast}
 														<div
@@ -523,7 +533,7 @@ function turnPreview(content: string): string {
 													</div>
 													<div class="turn-time mono">{fmtHhmm(turn.created_at)}</div>
 												</div>
-											</div>
+											</button>
 										{/each}
 									</div>
 								</div>
@@ -860,6 +870,27 @@ function turnPreview(content: string): string {
 		grid-template-columns: 24px 1fr;
 		align-items: flex-start;
 		min-height: 32px;
+		width: 100%;
+		box-sizing: border-box;
+		border: none;
+		background: none;
+		padding: 0;
+		margin: 0;
+		font: inherit;
+		color: inherit;
+		text-align: left;
+		cursor: pointer;
+		border-radius: 4px;
+		transition: background 0.12s ease;
+	}
+
+	.turn-stop:hover {
+		background: var(--rule-soft);
+	}
+
+	.turn-stop:focus-visible {
+		outline: 2px solid var(--ink-3);
+		outline-offset: -1px;
 	}
 
 	.turn-rail {
