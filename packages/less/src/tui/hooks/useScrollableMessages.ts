@@ -58,9 +58,15 @@ export function useScrollableMessages<T extends { id: string }>(
 
 	// Enable mouse reporting for scroll wheel support.
 	// \x1B[?1000h = basic mouse tracking, \x1B[?1006h = SGR extended mode
-	// Only enable on real TTYs (not in test environments)
+	// Gate on the TTY-ness of the stream we actually write to — Ink's injected
+	// stdout — not the global process.stdout. In production useStdout() returns
+	// the real process.stdout (so behavior is unchanged on a terminal), but
+	// under ink-testing-library it returns a non-TTY capture stream; checking
+	// process.stdout.isTTY there would leak these control bytes into the frame
+	// that lastFrame() reads whenever the ambient process.stdout happens to be
+	// a TTY (e.g. an interactive pre-commit hook run).
 	useEffect(() => {
-		if (!process.stdout.isTTY) return;
+		if (!stdout?.isTTY) return;
 		stdout.write("\x1B[?1000h\x1B[?1006h");
 		return () => {
 			stdout.write("\x1B[?1000l\x1B[?1006l");
