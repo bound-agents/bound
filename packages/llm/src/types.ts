@@ -311,6 +311,17 @@ export interface BackendConfig {
 	 * `<= 0` → no deadline (pure passthrough). See `createLoggingFetch`.
 	 */
 	connectTimeoutMs?: number;
+	/**
+	 * Arbitrary custom HTTP headers added to every request this backend sends
+	 * to its upstream endpoint. A flat key-value map, layered on top of the
+	 * provider's own headers (the apiKey-derived `Authorization` is applied
+	 * first). Currently consumed by the OpenAI-compatible-shim providers
+	 * (`openai-compatible`, `cerebras`, `zai`), which thread these into the AI
+	 * SDK's `headers` option. A host-local
+	 * concern applied on whichever host runs the fetch — not forwarded over the
+	 * relay. Absent → no extra headers.
+	 */
+	additionalHeaders?: Record<string, string>;
 	[key: string]: unknown;
 }
 

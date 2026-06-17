@@ -476,6 +476,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				additionalHeaders: config.additionalHeaders,
 			});
 		}
 
@@ -495,6 +496,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				additionalHeaders: config.additionalHeaders,
 			});
 		}
 
@@ -514,6 +516,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				additionalHeaders: config.additionalHeaders,
 			});
 		}
 

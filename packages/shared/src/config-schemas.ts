@@ -183,6 +183,18 @@ const modelBackendSchema = z
 		// spoke uses its own deadline rather than honoring a hub-set one. Absent /
 		// `<= 0` → no deadline (pure passthrough). See `createLoggingFetch`.
 		connect_timeout_ms: z.number().int().positive().optional(),
+		// Arbitrary custom HTTP headers added to every request this backend
+		// sends to its upstream endpoint. A flat key-value map, layered on top
+		// of the provider's own headers (the `api_key`-derived `Authorization`
+		// is applied first, so a header set here cannot silently clobber auth
+		// unless it names `Authorization` itself). Currently consumed by the
+		// OpenAI-compatible-shim providers (`openai-compatible`, `cerebras`,
+		// `zai`) — their shared driver threads these through to the AI SDK's
+		// `headers` option. A host-local concern applied on
+		// whichever host runs the fetch, NOT forwarded over the relay, so a
+		// spoke uses its own headers rather than honoring a hub-set set (mirrors
+		// `connect_timeout_ms`). Absent → no extra headers.
+		additional_headers: z.record(z.string(), z.string()).optional(),
 	})
 	.strict();
 

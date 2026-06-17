@@ -58,6 +58,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 						}
 					: undefined,
 				connectTimeoutMs: b.connect_timeout_ms,
+				additionalHeaders: b.additional_headers,
 			}),
 		),
 		default: rawBackends.default,
