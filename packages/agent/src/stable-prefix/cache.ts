@@ -56,6 +56,12 @@ export interface GetStableSubsectionParams {
 	db: Database;
 	threadId: string;
 	budgetPressure: boolean;
+	/**
+	 * Current host's `host_name`, threaded into the cluster-model collector so
+	 * the `<stable-context>` `local` flags reflect this host. Constant per
+	 * process, so it does NOT participate in the per-thread cache key.
+	 */
+	siteId?: string;
 	/** TTL override for tests. Defaults to STABLE_SUBSECTION_TTL_MS. */
 	ttlMs?: number;
 	/** Wall-clock override for tests. Defaults to Date.now(). */
@@ -97,7 +103,7 @@ export class StableSubsectionCache {
 			return cached.lines;
 		}
 
-		const inputs = collectStableVolatileInputs(params.db, params.budgetPressure);
+		const inputs = collectStableVolatileInputs(params.db, params.budgetPressure, params.siteId);
 		const lines = composeStableVolatileSubsection(inputs);
 		this.entries.set(params.threadId, { lines, createdAtMs: nowMs });
 		return lines;

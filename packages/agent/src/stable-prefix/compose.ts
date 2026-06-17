@@ -31,7 +31,7 @@
  * `validation/run-stable-prefix-drift-validation.ts`.
  */
 
-import { compareBytewise } from "@bound/shared";
+import { compareBytewise, escapeXmlAttr } from "@bound/shared";
 import {
 	DISCOVERABLE_FOOTER,
 	DISCOVERABLE_HEADER,
@@ -64,6 +64,39 @@ export function composeStableVolatileSubsection(inputs: StableVolatileInputs): s
 	lines.push(...renderWorkingKnowledgeStable(inputs.pinned, inputs.summaries));
 	lines.push(...renderDiscoverableArchiveStable(inputs));
 	lines.push(...renderSkillIndex(inputs.skillIndex).split("\n"));
+	lines.push(...renderClusterModels(inputs.clusterModels));
+	return lines;
+}
+
+/**
+ * Single source of truth for the `<stable-context>` cluster-model topology
+ * block. Used both by `composeStableVolatileSubsection` (the R-VC25 purity
+ * seam / property test) and by the production stable-prefix fold in
+ * `context-assembly.ts`, so the two channels stay byte-equivalent.
+ *
+ * Pure in `models` alone. Input arrays are pre-sorted upstream (bytewise by
+ * `name`, hosts bytewise within each entry — see `loadClusterModels`), so no
+ * sorting happens here; this renderer is a straight projection. Returns an
+ * empty array when there are no models (no host topology yet), mirroring
+ * `renderSkillIndex`'s suppress-when-empty behavior so an empty cluster adds
+ * no bytes.
+ *
+ * Every attribute value routes through `escapeXmlAttr`: model aliases are
+ * tame today, but host_names and future alias schemes are not guaranteed
+ * XML-safe, and an unescaped `&` would make the fragment ill-formed.
+ */
+export function renderClusterModels(
+	models: ReadonlyArray<{ name: string; hosts: ReadonlyArray<string>; local: boolean }>,
+): string[] {
+	if (models.length === 0) return [];
+	const lines: string[] = ["<stable-context>"];
+	for (const m of models) {
+		lines.push(
+			`<model name="${escapeXmlAttr(m.name)}" local="${m.local}"` +
+				` hosts="${escapeXmlAttr(m.hosts.join(","))}"/>`,
+		);
+	}
+	lines.push("</stable-context>");
 	return lines;
 }
 

@@ -252,13 +252,26 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  *   - `skills`: skill index entries (the active set drives the
  *     rendered `<available_skills>` block).
  *
+ *   - `hosts`: cluster model topology drives the `<stable-context>`
+ *     models section (model→host mapping + the per-model `local`
+ *     flag, from each host row's `models` JSON). Only the configured
+ *     model set participates in the rendered bytes — NOT `online_at`
+ *     liveness, which flaps on every heartbeat and is deliberately
+ *     excluded from the projection (see `ClusterModelView`). A
+ *     topology change (a host adding/dropping a model) advances the
+ *     input fingerprint AND writes a `hosts` change_log row, so it is
+ *     correctly classified as a collect-covered change rather than a
+ *     compose leak. A bare `online_at` bump writes a `hosts` row too,
+ *     but does not move the fingerprint, so it never triggers a
+ *     finding.
+ *
  *   - `advisories`, `files`, `overlay_index`: NOT consulted by the
  *     stable-side renderer. Listed here only so future additions
  *     to the stable-side input set don't silently fail to update
  *     this list — the JSDoc on `StableVolatileInputs` makes the
  *     boundary explicit.
  */
-const STABLE_SIDE_TABLES = ["semantic_memory", "skills"] as const;
+const STABLE_SIDE_TABLES = ["semantic_memory", "skills", "hosts"] as const;
 
 function changeLogTouchedStableSources(db: Database, fromIso: string, toIso: string): boolean {
 	const placeholders = STABLE_SIDE_TABLES.map(() => "?").join(",");
