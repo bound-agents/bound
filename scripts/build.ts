@@ -176,6 +176,41 @@ async function compileBinary(
 async function build() {
 	console.log("Building Bound...\n");
 
+	// Preflight: reconcile node_modules with the committed lockfile before we
+	// compile anything. `bun run build` does NOT install dependencies, so a
+	// lockfile that moved (a branch switch, a pull, a dependency bump) without a
+	// follow-up `bun install` leaves node_modules stale, and the compiled binary
+	// silently bundles the OLD dependency. This bit us once: a boundless build
+	// picked up an older @microsoft/mxc-sdk than the lockfile pinned and shipped a
+	// binary whose sandbox identity path was wired against the wrong SDK shape.
+	// `--frozen-lockfile` relinks node_modules to the lockfile WITHOUT rewriting
+	// it (fixing exactly that drift) and errors only if package.json and the
+	// lockfile genuinely disagree.
+	//
+	// Failure handling is environment-aware. Under CI, deps must be clean, so any
+	// failure is fatal. Elsewhere we degrade to a loud warning: `bun install`
+	// writes to its global cache (~/.bun/install/cache), which sits outside the
+	// working dir, so a build run inside a filesystem sandbox (e.g. boundless)
+	// will hit a tempdir PermissionDenied that is not lockfile drift — and a
+	// constrained shell should still be able to build.
+	console.log("Preflight: reconciling dependencies with the lockfile...");
+	try {
+		execSync("bun install --frozen-lockfile", { stdio: "inherit" });
+	} catch {
+		if (process.env.CI) {
+			console.error(
+				"Dependency check failed under CI: node_modules could not be reconciled " +
+					"with the lockfile. Resolve lockfile drift (`bun install`) before building.",
+			);
+			process.exit(1);
+		}
+		console.warn(
+			"WARNING: could not reconcile dependencies with the lockfile " +
+				"(`bun install --frozen-lockfile` failed). If this build is NOT sandboxed, run " +
+				"`bun install` and check for lockfile drift — the binary may bundle stale deps.",
+		);
+	}
+
 	// Step 0: Generate build metadata (commit hash, timestamp)
 	console.log("0. Generating build metadata...");
 	try {
