@@ -31,6 +31,9 @@ import {
 	renderSkillIndex,
 } from "./stable-prefix";
 import type { StableSubsectionCache } from "./stable-prefix/cache";
+import { loadClusterModels } from "./stable-prefix/collect";
+import { renderClusterModels } from "./stable-prefix/compose";
+import type { ClusterModelView } from "./stable-prefix/types";
 import {
 	type LiveStateTaskEntry,
 	RELEVANT_MEMORY_HEADER,
@@ -57,6 +60,7 @@ import {
 	resolveVc15Tunables,
 	resolveVc27Cap,
 	selectRelevantMemory,
+	wrapVolatileContext,
 } from "./summary-extraction.js";
 import { buildStaticSystemParts } from "./system-parts";
 import { sanitizeToolPairs } from "./tool-pair-sanitize";
@@ -375,6 +379,7 @@ function computeStablePrefixInputFingerprint(args: {
 	staleChildrenMap: ReadonlyMap<string, ReadonlyArray<{ key: string }>>;
 	budgetPressure: boolean;
 	activeSkills: ReadonlyArray<{ name: string; description: string }>;
+	clusterModels: ReadonlyArray<ClusterModelView>;
 }): string {
 	// Route every fingerprint computation through the same pure
 	// projector (`projectStableVolatileInputs` in `stable-prefix/`).
@@ -392,6 +397,7 @@ function computeStablePrefixInputFingerprint(args: {
 			budgetPressure: args.budgetPressure,
 			activeSkills: args.activeSkills,
 			tunables: resolveVc15Tunables(),
+			clusterModels: args.clusterModels,
 		}),
 	);
 }
@@ -453,6 +459,12 @@ interface ComposeVolatileSectionsParams {
 	recencyEntries: StageEntry[];
 	budgetPressure: boolean;
 	nowMs: number;
+	/**
+	 * Current host's `host_name`. Threaded into `renderLiveState` to resolve
+	 * the `local` attribute on thread/session/file pointers. Optional — absent
+	 * resolves every `local` to false (conservative).
+	 */
+	currentHost?: string;
 }
 
 /**
@@ -568,6 +580,7 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		synthesisBacklogCount: da.synthesisBacklogCount,
 		budgetPressure: params.budgetPressure,
 		nowMs: params.nowMs,
+		currentHost: params.currentHost,
 	});
 	varyingLines.push(...ls.lines);
 
@@ -576,6 +589,44 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		varyingLines,
 		synthesisBacklogCount: da.synthesisBacklogCount,
 	};
+}
+
+/**
+ * Wraps the internal portion of a varying developer-message line array in the
+ * `<volatile-context half="varying">` envelope (ask #3), leaving any trailing
+ * operator/platform instruction OUTSIDE the envelope as the final word.
+ *
+ * Every varying-tail construction path (cold `buildVolatileContext`, the
+ * noHistory path, and the budget-pressure rebuild) appends
+ * `platformInstructions` then `systemPromptAddition` LAST, each as a `["",
+ * content]` pair. Those are user intent, not internal state to downplay, so the
+ * envelope must not swallow them — the note ("don't mention unless relevant,
+ * confirm against canonical source") is wrong for an operator's task
+ * instruction. Splitting by trailing line count keeps them after the closing
+ * tag uniformly across all three paths.
+ */
+function envelopeVaryingTail(
+	rawLines: string[],
+	params: { platformInstructions?: string; systemPromptAddition?: string },
+): string {
+	let trailingLineCount = 0;
+	if (params.platformInstructions) trailingLineCount += 2; // "" + content
+	if (params.systemPromptAddition) trailingLineCount += 2;
+
+	const splitAt = rawLines.length - trailingLineCount;
+	const internalLines = trailingLineCount > 0 ? rawLines.slice(0, splitAt) : rawLines;
+	const trailingLines = trailingLineCount > 0 ? rawLines.slice(splitAt) : [];
+
+	const internalContent = internalLines.join("\n");
+	const outLines: string[] = [];
+	if (internalContent.length > 0) {
+		outLines.push(wrapVolatileContext("varying", internalContent));
+	}
+	for (const line of trailingLines) outLines.push(line);
+	// If there was no internal content, the trailing block's leading "" would
+	// produce a spurious leading blank line — trim it.
+	while (outLines.length > 0 && outLines[0] === "") outLines.shift();
+	return outLines.join("\n");
 }
 
 export function buildVolatileContext(params: {
@@ -790,6 +841,17 @@ export function buildVolatileContext(params: {
 		// Non-fatal: active skills query failed
 	}
 
+	// --- STABLE: cluster model topology (`<stable-context>`). Folds in the
+	// same channel as the skill index, AFTER it, to match the seam ordering in
+	// `composeStableVolatileSubsection` (renderSkillIndex → renderClusterModels)
+	// so the parity test stays byte-equivalent. Suppressed-when-empty by
+	// `renderClusterModels`, so a host with no synced topology adds no bytes.
+	const clusterModelLines = renderClusterModels(loadClusterModels(params.db, params.siteId));
+	if (clusterModelLines.length > 0) {
+		stableLines.push(...clusterModelLines);
+		suffixLines.push(...clusterModelLines);
+	}
+
 	// --- VARYING: operator-feedback notifications (24h window). Surfaces
 	// recent operator actions on this site's skills so the agent learns when
 	// its skill proposals were acted on. See `notifications/`.
@@ -856,7 +918,12 @@ export function buildVolatileContext(params: {
 	const allVaryingLines = [...varyingLines];
 	const content = suffixLines.join("\n");
 	const stableContent = stableLines.join("\n");
-	const varyingContent = varyingLines.join("\n");
+	// `<volatile-context half="varying">` envelope (ask #3) wraps the internal
+	// volatile lines; trailing operator/platform instructions stay outside it.
+	const varyingContent = envelopeVaryingTail(varyingLines, {
+		platformInstructions: params.platformInstructions,
+		systemPromptAddition: params.systemPromptAddition,
+	});
 
 	const tokenEstimate = countTokens(content);
 	const stableTokenEstimate = stableContent.length > 0 ? countTokens(stableContent) : 0;
@@ -874,6 +941,7 @@ export function buildVolatileContext(params: {
 		staleChildrenMap,
 		budgetPressure: false,
 		activeSkills,
+		clusterModels: loadClusterModels(params.db, params.siteId),
 	});
 
 	return {
@@ -1428,22 +1496,34 @@ Original output was too large for the context window. If you need the full conte
 						db,
 						threadId,
 						budgetPressure: false,
+						siteId,
 					})
 					.join("\n")
 			: volatileCtx.stableContent;
 		if (stableContentForWire.length > 0) {
-			systemParts.push(stableContentForWire);
+			// `<volatile-context half="stable">` envelope (ask #3). Applied here,
+			// at the channel boundary, NOT inside the cached subsection: the inner
+			// bytes ride the per-process cache and the R-VC25 parity/drift
+			// byte-comparisons untouched, while the constant wrapper stays
+			// prefix-stable so the system-level cache breakpoint still hits.
+			const wrappedStable = wrapVolatileContext("stable", stableContentForWire);
+			systemParts.push(wrappedStable);
 			sections[volatilePrefixSectionIndex] = {
 				name: "volatile-prefix",
 				tokens: params.stableSubsectionCache
-					? countTokens(stableContentForWire)
+					? countTokens(wrappedStable)
 					: volatileCtx.stableTokenEstimate,
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
-		// an adjacent user message wrapped in <system-context>; uncached.
+		// an adjacent user message wrapped in <system-context>; uncached. The
+		// `<volatile-context half="varying">` envelope (ask #3) is already
+		// applied inside buildVolatileContext — it wraps only the internal
+		// volatile content (prefix + enrichment + Live State), leaving any
+		// trailing operator/platform instruction OUTSIDE the envelope as the
+		// last word (those are user intent, not internal state to downplay).
 		assembled.push({ role: "developer", content: volatileCtx.varyingContent });
 
 		suffixContent = volatileCtx.varyingContent;
@@ -1533,6 +1613,7 @@ Original output was too large for the context window. If you need the full conte
 			staleChildrenMap: inputs.staleChildrenMap,
 			budgetPressure: false,
 			activeSkills: [],
+			clusterModels: loadClusterModels(db, siteId),
 		});
 
 		const varyingTailLines: string[] = [];
@@ -1598,7 +1679,17 @@ Original output was too large for the context window. If you need the full conte
 
 		if (varyingTailLines.length > 0) {
 			enrichmentMessageIndex = assembled.length;
-			assembled.push({ role: "developer", content: varyingTailLines.join("\n") });
+			// `<volatile-context half="varying">` envelope (ask #3): wrap the
+			// internal lines, keep trailing operator/platform instructions
+			// outside. `allVaryingLines` stays the raw (unwrapped) array so the
+			// budget-pressure splice indices remain valid.
+			assembled.push({
+				role: "developer",
+				content: envelopeVaryingTail(varyingTailLines, {
+					platformInstructions: params.platformInstructions,
+					systemPromptAddition: params.systemPromptAddition,
+				}),
+			});
 			allVaryingLines = varyingTailLines;
 		}
 	}
@@ -1694,7 +1785,16 @@ Original output was too large for the context window. If you need the full conte
 					...bpVarying,
 					...allVaryingLines.slice(varyingEnrichmentEndIdx),
 				];
-				assembled[devIdx] = { role: "developer", content: rebuiltVarying.join("\n") };
+				// Re-apply the <volatile-context half="varying"> envelope (ask #3)
+				// to the rebuilt tail; trailing operator/platform instructions
+				// (still the last lines of rebuiltVarying) stay outside it.
+				assembled[devIdx] = {
+					role: "developer",
+					content: envelopeVaryingTail(rebuiltVarying, {
+						platformInstructions: params.platformInstructions,
+						systemPromptAddition: params.systemPromptAddition,
+					}),
+				};
 			} else if (params.noHistory) {
 				// noHistory: developer tail is varying-only by construction.
 				// Replace with reduced varying lines + trailing connector
@@ -1711,7 +1811,10 @@ Original output was too large for the context window. If you need the full conte
 				}
 				assembled[devIdx] = {
 					role: "developer",
-					content: noHistVaryingLines.join("\n"),
+					content: envelopeVaryingTail(noHistVaryingLines, {
+						platformInstructions: params.platformInstructions,
+						systemPromptAddition: params.systemPromptAddition,
+					}),
 				};
 			}
 		}

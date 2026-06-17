@@ -110,6 +110,14 @@ const loadedArb: fc.Arbitrary<LoadedStableInputs> = fc.record({
 		selector: (s) => s.name,
 	}),
 	tunables: fc.constant(tunables),
+	clusterModels: fc.array(
+		fc.record({
+			name: safeKey,
+			hosts: fc.array(safeKey, { maxLength: 3 }),
+			local: fc.boolean(),
+		}),
+		{ maxLength: 5 },
+	),
 });
 
 describe("projectStableVolatileInputs — property tests", () => {

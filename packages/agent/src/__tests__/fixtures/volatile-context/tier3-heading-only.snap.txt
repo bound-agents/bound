@@ -621,7 +621,5 @@ Title-only catalog (detail entries + older summary overflow). Bodies are accesse
 - _summary:topic-47 [changed since last turn]
 - _summary:topic-48 [changed since last turn]
 - _summary:topic-49 [changed since last turn]
-## Live State — pointers to canonical sources
-
-
-Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
+<live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
+</live-state>

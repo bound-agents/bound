@@ -158,25 +158,24 @@ describe("composeVolatileVarying — property tests", () => {
 		);
 	});
 
-	it("V3: source-label totality — every Live-State line carries exactly one [tag]", () => {
-		// Every line in the LS section starts with `- [tag]`. Tags are
-		// from a fixed enum: thread, task, file, advisory, synthesis-backlog.
+	it("V3: source-label totality — every Live-State line is exactly one tagged element", () => {
+		// Every line in the LS body is a self-closing XML element whose tag
+		// names the subsystem: <thread>, <task>, <file>, <advisory>,
+		// <synthesis-backlog>. R-VC26 source-label totality, now carried by the
+		// element name instead of a `[tag]` prefix.
 		fc.assert(
 			fc.property(varyingInputs, (inputs) => {
 				const lines = composeVolatileVarying(inputs);
-				// Find the LS body: between `## Live State —` header and
-				// the LS footer.
-				const lsHeaderIdx = lines.findIndex((l) => l.startsWith("## Live State"));
-				const lsFooterIdx = lines.findIndex((l) => l.startsWith("Current-thread event payloads"));
-				if (lsHeaderIdx === -1 || lsFooterIdx === -1) return false;
-				const body = lines.slice(lsHeaderIdx + 2, lsFooterIdx - 1); // skip header, blank, blank-before-footer
-				const validPrefixes = ["[thread]", "[task]", "[file]", "[advisory]", "[synthesis-backlog]"];
+				// LS body sits between the `<live-state ...>` open and `</live-state>`.
+				const lsOpenIdx = lines.findIndex((l) => l.startsWith("<live-state"));
+				const lsCloseIdx = lines.findIndex((l) => l === "</live-state>");
+				if (lsOpenIdx === -1 || lsCloseIdx === -1) return false;
+				const body = lines.slice(lsOpenIdx + 1, lsCloseIdx);
+				const validTags = ["<thread ", "<task ", "<file ", "<advisory ", "<synthesis-backlog "];
 				return body.every((line) => {
 					if (line === "") return true; // blank lines OK
-					if (!line.startsWith("- ")) return false;
-					const after = line.slice(2);
-					const matches = validPrefixes.filter((p) => after.startsWith(p));
-					return matches.length === 1; // exactly one tag
+					const matches = validTags.filter((t) => line.startsWith(t));
+					return matches.length === 1; // exactly one element tag
 				});
 			}),
 			{ numRuns: 100 },
@@ -191,15 +190,15 @@ describe("composeVolatileVarying — property tests", () => {
 		fc.assert(
 			fc.property(varyingInputs, (inputs) => {
 				const lines = composeVolatileVarying(inputs);
-				const lsHeaderIdx = lines.findIndex((l) => l.startsWith("## Live State"));
-				if (lsHeaderIdx === -1) return true; // no LS content
-				const body = lines.slice(lsHeaderIdx + 2);
-				const idxOf = (tag: string) => body.findIndex((l) => l.startsWith(`- ${tag}`));
-				const threadIdx = idxOf("[thread]");
-				const taskIdx = idxOf("[task]");
-				const fileIdx = idxOf("[file]");
-				const advisoryIdx = idxOf("[advisory]");
-				const backlogIdx = idxOf("[synthesis-backlog]");
+				const lsOpenIdx = lines.findIndex((l) => l.startsWith("<live-state"));
+				if (lsOpenIdx === -1) return true; // no LS content
+				const body = lines.slice(lsOpenIdx + 1);
+				const idxOf = (tag: string) => body.findIndex((l) => l.startsWith(tag));
+				const threadIdx = idxOf("<thread ");
+				const taskIdx = idxOf("<task ");
+				const fileIdx = idxOf("<file ");
+				const advisoryIdx = idxOf("<advisory ");
+				const backlogIdx = idxOf("<synthesis-backlog ");
 				// Treat -1 as +Infinity so missing subsystems don't
 				// break the monotonic chain.
 				const norm = (n: number) => (n === -1 ? Number.MAX_SAFE_INTEGER : n);
@@ -223,13 +222,12 @@ describe("composeVolatileVarying — property tests", () => {
 			fc.property(varyingInputs, (baseInputs) => {
 				const inputs: VolatileVaryingInputs = { ...baseInputs, budgetPressure: true };
 				const lines = composeVolatileVarying(inputs);
-				const countWith = (prefix: string) =>
-					lines.filter((l) => l.startsWith(`- ${prefix}`)).length;
+				const countWith = (prefix: string) => lines.filter((l) => l.startsWith(prefix)).length;
 				return (
-					countWith("[thread]") <= 3 &&
-					countWith("[task]") <= 3 &&
-					countWith("[file]") <= 3 &&
-					countWith("[advisory]") <= 3
+					countWith("<thread ") <= 3 &&
+					countWith("<task ") <= 3 &&
+					countWith("<file ") <= 3 &&
+					countWith("<advisory ") <= 3
 				);
 			}),
 			{ numRuns: 100 },

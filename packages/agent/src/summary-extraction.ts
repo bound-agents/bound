@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { getPkColumn, insertRow, updateRow } from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
 import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
-import { compareBytewise, safeSlice } from "@bound/shared";
+import { compareBytewise, escapeXmlAttr, safeSlice } from "@bound/shared";
 import { getClientSessions } from "./delegation";
 import { normalizeFilePathForKey } from "./file-thread-tracker";
 import { graphSeededRetrieval } from "./graph-queries";
@@ -2272,12 +2272,48 @@ export interface LiveStateInput {
 	budgetPressure: boolean;
 	/** Wall-clock anchor for relative-time formatting. Pass Date.now() at assembly time. */
 	nowMs: number;
+	/**
+	 * Current host's `host_name`, used to compute the `local` attribute on
+	 * `<thread>`/`<session>`/`<file>` elements (locality = "this pointer's
+	 * activity is happening on the host assembling the context"). Optional:
+	 * when absent (some test harnesses, pre-host-registration boot) every
+	 * `local` resolves false, which is the correct conservative default.
+	 */
+	currentHost?: string;
 }
 
 export const LIVE_STATE_HEADER = "## Live State — pointers to canonical sources";
 export const LIVE_STATE_FOOTER =
 	"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.";
 export const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
+
+/**
+ * Meta-note carried on both `<volatile-context>` halves. Tells the model the
+ * wrapped content is internal operational state — present so the agent can act
+ * coherently, NOT something to surface to the user unprompted — and that when a
+ * detail IS relevant, the wrapped pointers are a starting point to confirm
+ * against the canonical source, not ground truth to quote verbatim.
+ */
+export const VOLATILE_CONTEXT_NOTE =
+	"Internal operational state, refreshed each turn. Don't mention or quote this to the user unless it's directly relevant to their request; when it is, treat these as pointers and confirm against the canonical source (query the DB, read the file) before relying on them.";
+
+/**
+ * Wraps one half of the volatile context in its `<volatile-context>` envelope.
+ *
+ * Applied at the channel boundary (context-assembly: the `systemParts` push for
+ * `half="stable"`, the `developer` tail message for `half="varying"`), NOT
+ * inside the renderers. Two reasons: (1) the stable inner bytes ride the
+ * per-process subsection cache and the R-VC25 parity/drift checks — keeping the
+ * envelope outside the cached unit leaves those byte-comparisons untouched
+ * while the constant wrapper stays prefix-stable, so the prompt cache still
+ * hits; (2) the two halves live in different channels with ~history between
+ * them, so they can't share one element instance — each is a well-formed
+ * fragment carrying the same root tag + note. `body` is the already-joined
+ * inner content; the caller guards against empty bodies.
+ */
+export function wrapVolatileContext(half: "stable" | "varying", body: string): string {
+	return `<volatile-context half="${half}" note="${escapeXmlAttr(VOLATILE_CONTEXT_NOTE)}">\n${body}\n</volatile-context>`;
+}
 
 /**
  * Renders the Live State section — the third top-level section.
@@ -2295,59 +2331,75 @@ export const BUDGET_PRESSURE_SUBSYSTEM_CAP = 3;
  * R-VC22: Header uses ## (top-level, uniform across sections).
  */
 export function renderLiveState(input: LiveStateInput): RenderedSection {
-	const lines: string[] = [];
-	lines.push(LIVE_STATE_HEADER);
-	lines.push("");
-
 	const cap = (arr: unknown[]) =>
 		input.budgetPressure ? arr.slice(0, BUDGET_PRESSURE_SUBSYSTEM_CAP) : arr;
 
-	// §5.3 step 1 — cross-thread entries (R-VC7).
+	const host = input.currentHost;
+	const lines: string[] = [];
+	// `<live-state>` replaces the old `## Live State` markdown header + footer.
+	// The footer's canonical-source routing guidance survives as the `sources`
+	// attribute. Element name carries the R-VC26 source label (thread / task /
+	// file / advisory / synthesis-backlog) structurally — one label per row,
+	// totality preserved. R-VC5 fixed ordering preserved: thread → task → file
+	// → advisory → synthesis-backlog.
+	lines.push(`<live-state sources="${escapeXmlAttr(LIVE_STATE_FOOTER)}">`);
+
+	// §5.3 step 1 — cross-thread entries (R-VC7). `local` = a live client
+	// session for this thread sits on the host assembling the context.
 	for (const e of cap(input.crossThreadEntries) as CrossThreadDigestEntry[]) {
-		let line = `- [thread] ${e.title}: ${e.messageCount} messages (last updated ${e.lastUpdatedAt})`;
-		// Surface the executing host(s) for any thread holding a client (boundless)
-		// session, so a sibling running on another machine is visibly distinct from
-		// one running here. Stale sessions are marked so they aren't read as live.
-		if (e.sessions && e.sessions.length > 0) {
-			const hosts = e.sessions
-				.map((s) => (s.live ? s.hostName : `${s.hostName} (stale)`))
-				.join(", ");
-			line += ` [client session${e.sessions.length > 1 ? "s" : ""}: ${hosts}]`;
+		const sessions = e.sessions ?? [];
+		const threadLocal = host !== undefined && sessions.some((s) => s.live && s.hostName === host);
+		const open =
+			`<thread title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
+			` updated="${escapeXmlAttr(e.lastUpdatedAt)}" local="${threadLocal}"`;
+		if (sessions.length === 0) {
+			lines.push(`${open}/>`);
+			continue;
 		}
-		lines.push(line);
+		lines.push(`${open}>`);
+		for (const s of sessions) {
+			lines.push(
+				`<session host="${escapeXmlAttr(s.hostName)}" live="${s.live}"` +
+					` local="${host !== undefined && s.hostName === host}"/>`,
+			);
+		}
+		lines.push("</thread>");
 	}
 
 	// §5.3 step 2 — task digest entries (R-MV6/R-MV7/R-MV8/R-MV9).
 	for (const t of cap(input.taskEntries) as LiveStateTaskEntry[]) {
 		lines.push(
-			`- [task] ${t.taskId} (${t.taskType}): run_count=${t.runCount}, last_run_at=${t.lastRunAt}, status=${t.status}`,
+			`<task id="${escapeXmlAttr(t.taskId)}" type="${escapeXmlAttr(t.taskType)}"` +
+				` runs="${t.runCount}" last-run="${escapeXmlAttr(t.lastRunAt)}"` +
+				` status="${escapeXmlAttr(t.status)}"/>`,
 		);
 	}
 
-	// §5.3 step 3 — file modification notices (R-VC13, R-E20, R-VC28).
+	// §5.3 step 3 — file modification notices (R-VC13, R-E20, R-VC28). `local`
+	// = the file's owning host is the one assembling the context (f.isLocal,
+	// precomputed upstream). `host` attribute omitted when unresolvable.
 	for (const f of cap(input.fileEntries) as LiveStateFileEntry[]) {
-		// em-dash separator U+2014; host attribution rides in a trailing bracket.
-		// Format MUST match composeVolatileVarying's renderFileLine byte-for-byte
-		// (parity-with-production.test.ts).
-		const hostSuffix = f.host ? ` [host: ${f.host}${f.isLocal ? "" : ", remote"}]` : "";
-		lines.push(`- [file] ${f.path} — last modified by thread "${f.threadTitle}"${hostSuffix}`);
+		const hostAttr = f.host ? ` host="${escapeXmlAttr(f.host)}"` : "";
+		lines.push(
+			`<file path="${escapeXmlAttr(f.path)}" thread="${escapeXmlAttr(f.threadTitle)}"` +
+				`${hostAttr} local="${f.isLocal}"/>`,
+		);
 	}
 
 	// §5.3 step 4 — applied advisories (R-VC12).
 	for (const a of cap(input.advisories) as LiveStateAdvisory[]) {
 		lines.push(
-			`- [advisory] ${a.title} — applied ${relativeTimeFragment(a.appliedAt, input.nowMs)}`,
+			`<advisory title="${escapeXmlAttr(a.title)}"` +
+				` applied="${escapeXmlAttr(relativeTimeFragment(a.appliedAt, input.nowMs))}"/>`,
 		);
 	}
 
-	// §5.3 trailing rule — synthesis-backlog line (R-VC15).
-	// Not subject to budget cap; singleton line when active.
+	// §5.3 trailing rule — synthesis-backlog line (R-VC15). Not budget-capped.
 	if (input.synthesisBacklogCount !== null) {
-		lines.push(`- [synthesis-backlog] ${input.synthesisBacklogCount} uncategorized detail entries`);
+		lines.push(`<synthesis-backlog count="${input.synthesisBacklogCount}"/>`);
 	}
 
-	lines.push("");
-	lines.push(LIVE_STATE_FOOTER);
+	lines.push("</live-state>");
 
 	return { lines };
 }

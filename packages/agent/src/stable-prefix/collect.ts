@@ -46,6 +46,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { compareBytewise } from "@bound/shared";
 import {
 	buildParentSummaryMap,
 	buildStaleChildrenMap,
@@ -55,7 +56,7 @@ import {
 	resolveVc15Tunables,
 } from "../summary-extraction";
 import type { StageEntry, Vc15Tunables } from "../summary-extraction";
-import type { StableVolatileInputs } from "./types";
+import type { ClusterModelView, StableVolatileInputs } from "./types";
 
 /**
  * Wider shapes consumed by `projectStableVolatileInputs`. Mirrors
@@ -77,6 +78,8 @@ export interface LoadedStableInputs {
 	budgetPressure: boolean;
 	activeSkills: ReadonlyArray<{ name: string; description: string }>;
 	tunables: Vc15Tunables;
+	/** Cluster model topology for the `<stable-context>` section. */
+	clusterModels: ReadonlyArray<ClusterModelView>;
 }
 
 /**
@@ -118,7 +121,72 @@ export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableV
 		budgetPressure: loaded.budgetPressure,
 		tunables: { n: loaded.tunables.n, m: loaded.tunables.m },
 		skillIndex: loaded.activeSkills.map((s) => ({ name: s.name, description: s.description })),
+		clusterModels: loaded.clusterModels.map((m) => ({
+			name: m.name,
+			hosts: [...m.hosts],
+			local: m.local,
+		})),
 	};
+}
+
+/**
+ * Read cluster model topology from the synced `hosts` table and project it
+ * into the `<stable-context>` shape. Pure-after-read: no clock, no env.
+ *
+ * Each host row carries a `models` JSON column — either `string[]` (logical
+ * aliases) or `{ id: string }[]`. We invert it into a model→hosts map, sort
+ * everything bytewise for determinism (locale-independent, R-VC25-safe), and
+ * mark a model `local` when the current site serves it.
+ *
+ * Liveness (`online_at`) is deliberately NOT read: it flaps on every
+ * heartbeat and would churn the cross-thread cache. Topology shifts only when
+ * a host's configured model set changes, whose `hosts` `change_log` row is
+ * the covering write the drift detector keys on.
+ */
+export function loadClusterModels(db: Database, siteId?: string): ClusterModelView[] {
+	let rows: Array<{ site_id: string; host_name: string; models: string | null }>;
+	try {
+		rows = db
+			.prepare("SELECT site_id, host_name, models FROM hosts WHERE deleted = 0")
+			.all() as Array<{ site_id: string; host_name: string; models: string | null }>;
+	} catch {
+		// Non-fatal — match the graceful-degradation posture of the skills read.
+		return [];
+	}
+
+	const hostsByModel = new Map<string, Set<string>>();
+	const localModels = new Set<string>();
+	for (const row of rows) {
+		if (!row.models) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+		for (const entry of parsed) {
+			const name =
+				typeof entry === "string"
+					? entry
+					: entry && typeof entry === "object" && "id" in entry
+						? String((entry as { id: unknown }).id)
+						: null;
+			if (!name) continue;
+			const set = hostsByModel.get(name) ?? new Set<string>();
+			set.add(row.host_name);
+			hostsByModel.set(name, set);
+			if (siteId && row.site_id === siteId) localModels.add(name);
+		}
+	}
+
+	return [...hostsByModel.entries()]
+		.map(([name, set]) => ({
+			name,
+			hosts: [...set].sort(compareBytewise),
+			local: localModels.has(name),
+		}))
+		.sort((a, b) => compareBytewise(a.name, b.name));
 }
 
 /**
@@ -138,6 +206,7 @@ export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableV
 export function collectStableVolatileInputs(
 	db: Database,
 	budgetPressure: boolean,
+	siteId?: string,
 ): StableVolatileInputs {
 	const pinned = loadPinnedEntries(db);
 	const summaries = loadSummaryEntries(db, pinned.exclusionSet);
@@ -169,5 +238,6 @@ export function collectStableVolatileInputs(
 		budgetPressure,
 		activeSkills,
 		tunables: resolveVc15Tunables(),
+		clusterModels: loadClusterModels(db, siteId),
 	});
 }

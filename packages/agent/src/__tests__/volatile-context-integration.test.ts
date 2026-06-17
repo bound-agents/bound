@@ -74,12 +74,12 @@ describe("volatile-context-integration", () => {
 		expect(result.content).toContain(
 			"## Discoverable Archive — title-only; bodies via memory search",
 		);
-		expect(result.content).toContain("## Live State — pointers to canonical sources");
+		expect(result.content).toContain("<live-state sources=");
 
 		// Verify order: Working Knowledge before Discoverable Archive before Live State
 		const wkIdx = result.content.indexOf("## Working Knowledge");
 		const daIdx = result.content.indexOf("## Discoverable Archive");
-		const lsIdx = result.content.indexOf("## Live State");
+		const lsIdx = result.content.indexOf("<live-state");
 
 		expect(wkIdx).toBeGreaterThan(0);
 		expect(daIdx).toBeGreaterThan(wkIdx);
@@ -213,10 +213,10 @@ describe("volatile-context-integration", () => {
 
 		// Should have the three sections
 		expect(result.content).toContain("## Working Knowledge");
-		expect(result.content).toContain("## Live State");
+		expect(result.content).toContain("<live-state");
 
 		// Live State should reference cross-thread entries
-		expect(result.content).toContain("[thread]");
+		expect(result.content).toContain("<thread ");
 	});
 
 	test("Working Knowledge entries render with full content", () => {
@@ -443,7 +443,7 @@ describe("volatile-context-integration", () => {
 
 		// Tier-3 should be active (1100 total entries > 1000), and uncategorized count (60) > 50,
 		// so synthesis-backlog should be signaled in Live State
-		expect(result.content).toContain("[synthesis-backlog] 60 uncategorized detail entries");
+		expect(result.content).toContain('<synthesis-backlog count="60"/>');
 	});
 
 	test("Cross-thread digest summary excerpt absent", () => {

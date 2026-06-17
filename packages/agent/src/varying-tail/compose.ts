@@ -1,8 +1,8 @@
+import { escapeXmlAttr } from "@bound/shared";
 import {
 	BUDGET_PRESSURE_SUBSYSTEM_CAP,
 	DELTA_MARKER,
 	LIVE_STATE_FOOTER,
-	LIVE_STATE_HEADER,
 	RELEVANT_MEMORY_HEADER,
 	STALE_CHILD_GLOSS_MAX,
 	WORKING_KNOWLEDGE_UPDATES_HEADER,
@@ -130,8 +130,15 @@ function renderLiveStateBlock(
 	nowMs: number,
 ): string[] {
 	const out: string[] = [];
-	out.push(LIVE_STATE_HEADER);
-	out.push("");
+	// Mirror of production `renderLiveState` (summary-extraction.ts): emits the
+	// `<live-state>` XML element, NOT the legacy `## Live State` markdown. This
+	// seam carries no client-session data (CrossThreadEntryView has no
+	// `sessions`) and no `currentHost`, so every `<thread>` self-closes with
+	// `local="false"` — which is exactly what production renders when fed the
+	// same sessionless, host-less input (the parity test maps this view onto
+	// the production renderer). Byte-equivalence is enforced by
+	// parity-with-production.test.ts.
+	out.push(`<live-state sources="${escapeXmlAttr(LIVE_STATE_FOOTER)}">`);
 
 	const cap = <T>(arr: ReadonlyArray<T>): ReadonlyArray<T> =>
 		budgetPressure ? arr.slice(0, BUDGET_PRESSURE_SUBSYSTEM_CAP) : arr;
@@ -149,30 +156,38 @@ function renderLiveStateBlock(
 		out.push(renderAdvisoryLine(a, nowMs));
 	}
 	if (live.synthesisBacklogCount !== null) {
-		out.push(`- [synthesis-backlog] ${live.synthesisBacklogCount} uncategorized detail entries`);
+		out.push(`<synthesis-backlog count="${live.synthesisBacklogCount}"/>`);
 	}
 
-	out.push("");
-	out.push(LIVE_STATE_FOOTER);
+	out.push("</live-state>");
 	return out;
 }
 
 function renderCrossThreadLine(e: CrossThreadEntryView): string {
-	return `- [thread] ${e.title}: ${e.messageCount} messages (last updated ${e.lastUpdatedAt})`;
+	return (
+		`<thread title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
+		` updated="${escapeXmlAttr(e.lastUpdatedAt)}" local="false"/>`
+	);
 }
 
 function renderTaskLine(t: TaskEntryView): string {
-	return `- [task] ${t.taskId} (${t.taskType}): run_count=${t.runCount}, last_run_at=${t.lastRunAt}, status=${t.status}`;
+	return (
+		`<task id="${escapeXmlAttr(t.taskId)}" type="${escapeXmlAttr(t.taskType)}"` +
+		` runs="${t.runCount}" last-run="${escapeXmlAttr(t.lastRunAt)}"` +
+		` status="${escapeXmlAttr(t.status)}"/>`
+	);
 }
 
 function renderFileLine(f: FileEntryView): string {
-	// em-dash separator U+2014 — must match production byte-for-byte.
-	// Host attribution rides in a trailing bracket (R-VC28); local edits show
-	// the host plainly, remote edits append `, remote`.
-	const hostSuffix = f.host ? ` [host: ${f.host}${f.isLocal ? "" : ", remote"}]` : "";
-	return `- [file] ${f.path} — last modified by thread "${f.threadTitle}"${hostSuffix}`;
+	// Host attribution rides as an attribute (R-VC28); `local` reflects whether
+	// the modifying thread ran on this host. Must match production byte-for-byte.
+	const hostAttr = f.host ? ` host="${escapeXmlAttr(f.host)}"` : "";
+	return (
+		`<file path="${escapeXmlAttr(f.path)}" thread="${escapeXmlAttr(f.threadTitle)}"` +
+		`${hostAttr} local="${f.isLocal}"/>`
+	);
 }
 
 function renderAdvisoryLine(a: AdvisoryEntryView, nowMs: number): string {
-	return `- [advisory] ${a.title} — applied ${relativeTimeAt(a.appliedAt, nowMs)}`;
+	return `<advisory title="${escapeXmlAttr(a.title)}" applied="${escapeXmlAttr(relativeTimeAt(a.appliedAt, nowMs))}"/>`;
 }

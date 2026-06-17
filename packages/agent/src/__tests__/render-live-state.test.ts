@@ -23,10 +23,8 @@ describe("renderLiveState", () => {
 
 		const result = renderLiveState(input);
 		expect(result.lines).toEqual([
-			"## Live State — pointers to canonical sources",
-			"",
-			"",
-			"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.",
+			'<live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">',
+			"</live-state>",
 		]);
 	});
 
@@ -59,10 +57,10 @@ describe("renderLiveState", () => {
 		const lines = result.lines;
 
 		expect(lines).toContain(
-			"- [thread] Project Alpha: 42 messages (last updated 2026-05-23T10:30:00Z)",
+			'<thread title="Project Alpha" messages="42" updated="2026-05-23T10:30:00Z" local="false"/>',
 		);
 		expect(lines).toContain(
-			"- [thread] Project Beta: 15 messages (last updated 2026-05-23T09:00:00Z)",
+			'<thread title="Project Beta" messages="15" updated="2026-05-23T09:00:00Z" local="false"/>',
 		);
 	});
 
@@ -100,17 +98,19 @@ describe("renderLiveState", () => {
 
 		const lines = renderLiveState(input).lines;
 
-		// Live session: host shown, no stale marker.
+		// Live session: thread carries a <session> child with live="true".
 		expect(lines).toContain(
-			"- [thread] On Mac: 7 messages (last updated 2026-05-23T10:30:00Z) [client session: mac-studio]",
+			'<thread title="On Mac" messages="7" updated="2026-05-23T10:30:00Z" local="false">',
 		);
-		// Stale session: host shown with a stale marker so it isn't mistaken for live.
+		expect(lines).toContain('<session host="mac-studio" live="true" local="false"/>');
+		// Stale session: same shape, live="false" so it isn't mistaken for live.
 		expect(lines).toContain(
-			"- [thread] Stale Elsewhere: 3 messages (last updated 2026-05-23T09:00:00Z) [client session: old-laptop (stale)]",
+			'<thread title="Stale Elsewhere" messages="3" updated="2026-05-23T09:00:00Z" local="false">',
 		);
-		// No session: line is byte-identical to the pre-feature format.
+		expect(lines).toContain('<session host="old-laptop" live="false" local="false"/>');
+		// No session: self-closing thread element, no children.
 		expect(lines).toContain(
-			"- [thread] No Session: 1 messages (last updated 2026-05-23T08:00:00Z)",
+			'<thread title="No Session" messages="1" updated="2026-05-23T08:00:00Z" local="false"/>',
 		);
 	});
 
@@ -147,10 +147,10 @@ describe("renderLiveState", () => {
 		const lines = result.lines;
 
 		expect(lines).toContain(
-			"- [task] task-001 (scheduled): run_count=5, last_run_at=2026-05-23T08:00:00Z, status=ran",
+			'<task id="task-001" type="scheduled" runs="5" last-run="2026-05-23T08:00:00Z" status="ran"/>',
 		);
 		expect(lines).toContain(
-			"- [task] task-002 (cron): run_count=2, last_run_at=2026-05-23T07:30:00Z, status=failed",
+			'<task id="task-002" type="cron" runs="2" last-run="2026-05-23T07:30:00Z" status="failed"/>',
 		);
 	});
 
@@ -184,13 +184,14 @@ describe("renderLiveState", () => {
 		const result = renderLiveState(input);
 		const lines = result.lines;
 
-		// em-dash is U+2014; host attribution rides in a bracket suffix (R-VC28).
-		// Local edits show the host plainly; remote edits are marked `, remote`.
+		// `local` reflects f.isLocal (file's owning host == assembling host).
+		// `host` rides as an attribute; remote-ness is the local="false" flag,
+		// not a textual `, remote` marker.
 		expect(lines).toContain(
-			'- [file] /home/user/docs/report.md — last modified by thread "Documentation Review" [host: 7cf34dd659c0]',
+			'<file path="/home/user/docs/report.md" thread="Documentation Review" host="7cf34dd659c0" local="true"/>',
 		);
 		expect(lines).toContain(
-			'- [file] /home/user/code/app.ts — last modified by thread "Feature Development" [host: MSI, remote]',
+			'<file path="/home/user/code/app.ts" thread="Feature Development" host="MSI" local="false"/>',
 		);
 	});
 
@@ -217,7 +218,7 @@ describe("renderLiveState", () => {
 
 		const result = renderLiveState(input);
 		expect(result.lines).toContain(
-			'- [file] /home/user/orphan.md — last modified by thread "Orphaned Thread"',
+			'<file path="/home/user/orphan.md" thread="Orphaned Thread" local="false"/>',
 		);
 	});
 
@@ -248,8 +249,8 @@ describe("renderLiveState", () => {
 		const result = renderLiveState(input);
 		const text = result.lines.join("\n");
 
-		expect(text).toContain("- [advisory] Rate limit warning — applied 30m ago");
-		expect(text).toContain("- [advisory] Memory pressure alert — applied 6h ago");
+		expect(text).toContain('<advisory title="Rate limit warning" applied="30m ago"/>');
+		expect(text).toContain('<advisory title="Memory pressure alert" applied="6h ago"/>');
 	});
 
 	// Test 6: All four subsystems composed in fixed order
@@ -297,10 +298,10 @@ describe("renderLiveState", () => {
 		const lines = result.lines;
 
 		// Find indices of each subsystem
-		const threadLineIdx = lines.findIndex((l) => l.includes("[thread]"));
-		const taskLineIdx = lines.findIndex((l) => l.includes("[task]"));
-		const fileLineIdx = lines.findIndex((l) => l.includes("[file]"));
-		const advisoryLineIdx = lines.findIndex((l) => l.includes("[advisory]"));
+		const threadLineIdx = lines.findIndex((l) => l.includes("<thread "));
+		const taskLineIdx = lines.findIndex((l) => l.includes("<task "));
+		const fileLineIdx = lines.findIndex((l) => l.includes("<file "));
+		const advisoryLineIdx = lines.findIndex((l) => l.includes("<advisory "));
 
 		// Verify order: thread < task < file < advisory
 		expect(threadLineIdx).toBeLessThan(taskLineIdx);
@@ -321,7 +322,7 @@ describe("renderLiveState", () => {
 		};
 
 		const result = renderLiveState(input);
-		expect(result.lines).toContain("- [synthesis-backlog] 75 uncategorized detail entries");
+		expect(result.lines).toContain('<synthesis-backlog count="75"/>');
 	});
 
 	// Test 8: Synthesis-backlog line not raised when null
@@ -377,10 +378,10 @@ describe("renderLiveState", () => {
 		const result = renderLiveState(input);
 		const lines = result.lines;
 
-		const threadLines = lines.filter((l) => l.includes("[thread]"));
-		const taskLines = lines.filter((l) => l.includes("[task]"));
-		const fileLines = lines.filter((l) => l.includes("[file]"));
-		const advisoryLines = lines.filter((l) => l.includes("[advisory]"));
+		const threadLines = lines.filter((l) => l.includes("<thread "));
+		const taskLines = lines.filter((l) => l.includes("<task "));
+		const fileLines = lines.filter((l) => l.includes("<file "));
+		const advisoryLines = lines.filter((l) => l.includes("<advisory "));
 
 		expect(threadLines).toHaveLength(3);
 		expect(taskLines).toHaveLength(3);
@@ -402,13 +403,13 @@ describe("renderLiveState", () => {
 
 		const result = renderLiveState(input);
 		const lines = result.lines;
-		const backlogLine = lines.find((l) => l.includes("[synthesis-backlog]"));
+		const backlogLine = lines.find((l) => l.includes("<synthesis-backlog "));
 
-		expect(backlogLine).toBe("- [synthesis-backlog] 100 uncategorized detail entries");
+		expect(backlogLine).toBe('<synthesis-backlog count="100"/>');
 	});
 
-	// Test 11: Header and footer literals exact
-	it("renders exact header and footer literals per R-VC2 and R-VC6", () => {
+	// Test 11: <live-state> wrapper opens with sources attribute and closes
+	it("wraps subsystems in a <live-state> element carrying the sources attribute", () => {
 		const input: LiveStateInput = {
 			crossThreadEntries: [],
 			taskEntries: [],
@@ -422,14 +423,14 @@ describe("renderLiveState", () => {
 		const result = renderLiveState(input);
 		const lines = result.lines;
 
-		expect(lines[0]).toBe("## Live State — pointers to canonical sources");
-		expect(lines[lines.length - 1]).toBe(
-			"Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.",
+		expect(lines[0]).toBe(
+			'<live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">',
 		);
+		expect(lines[lines.length - 1]).toBe("</live-state>");
 	});
 
-	// Test 12: Source-label distinction between [advisory] and [synthesis-backlog]
-	it("renders both [advisory] and [synthesis-backlog] labels distinctly", () => {
+	// Test 12: Source-label distinction between advisory and synthesis-backlog
+	it("renders both advisory and synthesis-backlog elements distinctly", () => {
 		const nowMs = Date.now();
 		const advisories: LiveStateAdvisory[] = [
 			{
@@ -452,13 +453,13 @@ describe("renderLiveState", () => {
 		const lines = result.lines;
 		const text = result.lines.join("\n");
 
-		// Verify both labels are present
-		expect(text).toContain("[advisory]");
-		expect(text).toContain("[synthesis-backlog]");
+		// Verify both element tags are present
+		expect(text).toContain("<advisory ");
+		expect(text).toContain("<synthesis-backlog ");
 
 		// Verify they are distinct lines
-		const advisoryLine = lines.find((l) => l.includes("[advisory]"));
-		const backlogLine = lines.find((l) => l.includes("[synthesis-backlog]"));
+		const advisoryLine = lines.find((l) => l.includes("<advisory "));
+		const backlogLine = lines.find((l) => l.includes("<synthesis-backlog "));
 
 		expect(advisoryLine).toBeDefined();
 		expect(backlogLine).toBeDefined();

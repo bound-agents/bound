@@ -84,6 +84,7 @@ interface CanonicalInputs {
 	budgetPressure: boolean;
 	tunables: { n: number; m: number };
 	skillIndex: ReadonlyArray<{ name: string; description: string }>;
+	clusterModels: ReadonlyArray<{ name: string; hosts: ReadonlyArray<string>; local: boolean }>;
 }
 
 function canonicalizeInputs(inputs: StableVolatileInputs): CanonicalInputs {
@@ -109,6 +110,16 @@ function canonicalizeInputs(inputs: StableVolatileInputs): CanonicalInputs {
 		budgetPressure: inputs.budgetPressure,
 		tunables: { n: inputs.tunables.n, m: inputs.tunables.m },
 		skillIndex: inputs.skillIndex.map((s) => ({ name: s.name, description: s.description })),
+		// Cluster model topology drives the `<stable-context>` section. Arrays
+		// are pre-sorted upstream (bytewise by name, hosts bytewise within each)
+		// so order is already canonical; we copy verbatim like `pinned`/`summaries`
+		// rather than re-sort, surfacing any upstream ordering bug rather than
+		// papering over it.
+		clusterModels: inputs.clusterModels.map((m) => ({
+			name: m.name,
+			hosts: [...m.hosts],
+			local: m.local,
+		})),
 	};
 }
 
