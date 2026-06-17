@@ -51,8 +51,10 @@ Bodies of summary entries are accessed via memory search using terms from the en
 - curiosity:item-9-det000009
 
 Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
+</volatile-context>
 
 --- VARYING TAIL ---
+<volatile-context half="varying" note="Internal operational state, refreshed each turn. Don&apos;t mention or quote this to the user unless it&apos;s directly relevant to their request; when it is, treat these as pointers and confirm against the canonical source (query the DB, read the file) before relying on them.">
 User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
 ## Working Knowledge — updates
 
@@ -66,19 +68,18 @@ User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
 - _summary:topic-2 [changed since last turn]
 - _summary:topic-3 [changed since last turn]
 - _summary:topic-4 [changed since last turn]
-## Live State — pointers to canonical sources
-
-- [thread] sibling-4: 2 messages (last updated 2026-05-21T23:59:59.000Z)
-- [thread] sibling-3: 4 messages (last updated 2026-05-21T23:59:59.000Z)
-- [thread] sibling-2: 1 messages (last updated 2026-05-21T23:59:59.000Z)
-- [task] a56f31a5-3fa2-5c84-8474-674377678c76 (deploy): run_count=1, last_run_at=2026-05-21T23:54:00.000Z, status=ran
-- [task] cf187721-8d56-5a24-9658-593c95ea62e0 (analyze): run_count=1, last_run_at=2026-05-21T23:30:00.000Z, status=ran
-- [task] 690e8dbc-5fc2-5494-a117-763231b71469 (debug): run_count=1, last_run_at=2026-05-21T23:00:00.000Z, status=ran
-- [file] src/main.ts — last modified by thread "sibling-0" [host: fixture-host, remote]
-- [file] docs/README.md — last modified by thread "sibling-1" [host: fixture-host, remote]
-- [file] config/settings.json — last modified by thread "sibling-2" [host: fixture-host, remote]
-- [advisory] Advisory D — applied 30m ago
-- [advisory] Advisory B — applied 1h ago
-- [advisory] Advisory A — applied 2h ago
-
-Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
+<live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
+<thread title="sibling-4" messages="2" updated="2026-05-21T23:59:59.000Z" local="false"/>
+<thread title="sibling-3" messages="4" updated="2026-05-21T23:59:59.000Z" local="false"/>
+<thread title="sibling-2" messages="1" updated="2026-05-21T23:59:59.000Z" local="false"/>
+<task id="a56f31a5-3fa2-5c84-8474-674377678c76" type="deploy" runs="1" last-run="2026-05-21T23:54:00.000Z" status="ran"/>
+<task id="cf187721-8d56-5a24-9658-593c95ea62e0" type="analyze" runs="1" last-run="2026-05-21T23:30:00.000Z" status="ran"/>
+<task id="690e8dbc-5fc2-5494-a117-763231b71469" type="debug" runs="1" last-run="2026-05-21T23:00:00.000Z" status="ran"/>
+<file path="src/main.ts" thread="sibling-0" host="fixture-host" local="false"/>
+<file path="docs/README.md" thread="sibling-1" host="fixture-host" local="false"/>
+<file path="config/settings.json" thread="sibling-2" host="fixture-host" local="false"/>
+<advisory title="Advisory D" applied="30m ago"/>
+<advisory title="Advisory B" applied="1h ago"/>
+<advisory title="Advisory A" applied="2h ago"/>
+</live-state>
+</volatile-context>

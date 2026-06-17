@@ -2762,7 +2762,7 @@ This skill reviews pull requests.`;
 
 			// Task digest should be in systemSuffix (now in Live State section)
 			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain("[task]");
+			expect(systemSuffix).toContain("<task ");
 			expect(systemSuffix).toContain("manual");
 		});
 
@@ -2836,7 +2836,7 @@ This skill reviews pull requests.`;
 			expect(
 				combined.includes("## Working Knowledge") ||
 					combined.includes("## Discoverable Archive") ||
-					combined.includes("## Live State"),
+					combined.includes("<live-state"),
 			).toBe(true);
 			expect(combined).toContain("nohist_key");
 		});
@@ -3016,7 +3016,7 @@ This skill reviews pull requests.`;
 			// Budget pressure should trigger re-composition with three sections (R-VC1)
 			expect(combined).toContain("## Working Knowledge");
 			expect(combined).toContain("## Discoverable Archive");
-			expect(combined).toContain("## Live State");
+			expect(combined).toContain("<live-state");
 
 			// Memory deltas should be inline with [changed since] markers, not standalone "Memory:" header
 			expect(combined.match(/^Memory:\s+/m)).toBeNull();

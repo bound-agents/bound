@@ -200,4 +200,34 @@ describe("useScrollableMessages", () => {
 		expect(frame).toContain("Message 0");
 		expect(frame).toContain("hidden:0");
 	});
+
+	// Regression: the mouse-reporting enable sequence (\x1B[?1000h\x1B[?1006h)
+	// must be gated on the TTY-ness of Ink's injected stdout — the stream we
+	// write to — not the global process.stdout. When the suite runs with an
+	// ambient TTY stdout (e.g. an interactive `git commit` driving the
+	// pre-commit hook) the old `process.stdout.isTTY` check fired even under
+	// ink-testing-library's non-TTY capture stream, writing the control bytes
+	// into the very frame lastFrame() reads and corrupting every assertion.
+	it("does not leak mouse-enable control bytes into the captured frame on an ambient TTY", async () => {
+		const originalIsTTY = process.stdout.isTTY;
+		try {
+			// Simulate the interactive-terminal launch that flipped this on.
+			process.stdout.isTTY = true;
+			const messages = makeMessages(3);
+			const { lastFrame } = render(
+				React.createElement(ScrollHarness, { messages, viewportHeight: 20 }),
+			);
+			await tick();
+
+			const frame = lastFrame() ?? "";
+			// The rendered content is present...
+			expect(frame).toContain("visible:3");
+			// ...and the mouse-tracking escapes are NOT — Ink's capture stream is
+			// not a TTY, so the write is correctly skipped.
+			expect(frame).not.toContain("\x1B[?1000h");
+			expect(frame).not.toContain("\x1B[?1006h");
+		} finally {
+			process.stdout.isTTY = originalIsTTY;
+		}
+	});
 });

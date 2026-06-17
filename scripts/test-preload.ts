@@ -20,6 +20,21 @@ if (!process.env.LOG_LEVEL) {
 	process.env.BOUND_LOG_STDERR = "0";
 }
 
+// Pin color OFF for the whole test run. ink-testing-library frame-capture tests
+// (packages/less) assert on plain-text frames, but chalk derives its color level
+// from supports-color, which keys off process.stdout.isTTY when FORCE_COLOR is
+// unset. So the same TUI test renders plain when the suite is piped (CI, an
+// editor task) and ANSI-laden when stdout is a real terminal (an interactive
+// `git commit` driving the pre-commit hook) — the inverse-video cursor cell and
+// [remote] tool prefix then carry SGR codes into the captured frame and the
+// toBe / toContain assertions fail. FORCE_COLOR takes precedence over TTY
+// detection and chalk reads its level once at import, so setting it here (before
+// any test imports chalk) makes frame output deterministic regardless of how the
+// suite was launched. Honors an explicit override for local color debugging.
+if (process.env.FORCE_COLOR === undefined) {
+	process.env.FORCE_COLOR = "0";
+}
+
 // createSandbox() materializes the embedded WASM workers to disk, defaulting
 // to ~/.bound/sandbox-runtime/. Under test that pollutes the developer's real
 // bound install, and under the boundless mxc sandbox (seatbelt/bubblewrap)
