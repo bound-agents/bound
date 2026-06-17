@@ -75,6 +75,13 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Unit tests
+        # Step-level (not job-level) timeout: a wedged test fails THIS step
+        # without cancelling the job, so the summary + upload steps below
+        # (gated on !cancelled()) still run and surface partial diagnostics.
+        # The unit suite finishes in a few minutes on every lane; 20 caps a
+        # hang at minutes instead of GitHub's 360-minute default — which is
+        # what let a wedged worker burn ~6h on the Windows lane.
+        timeout-minutes: 20
         shell: bash
         run: |
           # bun test --recursive silently skips 5 packages on Linux due to a

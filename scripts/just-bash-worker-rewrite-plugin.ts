@@ -42,8 +42,18 @@ export function justBashWorkerRewritePlugin(): BunPlugin {
 			// Chunks have Bun's content-hash suffix (uppercase alnum);
 			// this excludes literal siblings like `js-exec-worker.js`
 			// that lack the hash suffix.
+			//
+			// Separators are `[\\/]`, not a literal `/`: Bun hands the loader
+			// OS-native paths, so on Windows this filter sees backslashes
+			// (`dist\bundle\chunks\...`). A forward-slash-only pattern missed
+			// there, the rewrite was skipped, the raw worker loaded, and its
+			// unlinkable `node:module` import killed it on spawn — the command
+			// then hung to its deadman timer, surfacing as a multi-hour Windows
+			// CI timeout in js-exec-execution.test.ts (same root cause as the
+			// Bun.Glob fix in c3cd4122). `[\\/]` matches both styles; POSIX is
+			// unaffected.
 			const filterFor = (prefix: string) =>
-				new RegExp(`dist/bundle/chunks/${prefix}-[A-Z0-9]+\\.js$`);
+				new RegExp(`dist[\\\\/]bundle[\\\\/]chunks[\\\\/]${prefix}-[A-Z0-9]+\\.js$`);
 
 			const rewriteChunk = (
 				kind: "python" | "jsExec",
@@ -112,7 +122,8 @@ export function justBashWorkerRewritePlugin(): BunPlugin {
 			// This is resilient to identifier renaming by minifiers
 			// while anchoring on `import.meta.url` (syntax, not an
 			// identifier) and the function-with-default-param shape.
-			build.onLoad({ filter: /dist\/bundle\/chunks\/chunk-[A-Z0-9]+\.js$/ }, (args) => {
+			// Separators are `[\\/]` for the same Windows reason as filterFor.
+			build.onLoad({ filter: /dist[\\/]bundle[\\/]chunks[\\/]chunk-[A-Z0-9]+\.js$/ }, (args) => {
 				const src = readFileSync(args.path, "utf8");
 				// Only target the chunk that contains the sqlite3 worker spawner.
 				// Return the file unchanged otherwise: an identity `{ contents }`
