@@ -63,6 +63,14 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		 * (harness/test) is used verbatim. See `createLoggingFetch`.
 		 */
 		connectTimeoutMs?: number;
+		/**
+		 * Arbitrary custom HTTP headers added to every request. Threaded into
+		 * the AI SDK's `headers` option, which the SDK layers on top of the
+		 * apiKey-derived `Authorization` (applied first), so a header set here
+		 * cannot silently clobber auth unless it names `Authorization` itself.
+		 * Absent → no extra headers.
+		 */
+		additionalHeaders?: Record<string, string>;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
@@ -76,6 +84,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			name: this.providerName,
 			baseURL: config.baseUrl,
 			apiKey: config.apiKey,
+			...(config.additionalHeaders && { headers: config.additionalHeaders }),
 			...(customFetch && { fetch: customFetch }),
 		});
 	}
