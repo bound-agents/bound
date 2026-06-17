@@ -33,7 +33,7 @@ import {
 	renderDiscoverableArchive,
 	renderWorkingKnowledge,
 } from "../../summary-extraction";
-import { composeStableVolatileSubsection, renderSkillIndex } from "../compose";
+import { composeStableVolatileSubsection, renderClusterModels, renderSkillIndex } from "../compose";
 import type { StableVolatileInputs } from "../types";
 
 /**
@@ -71,6 +71,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 			budgetPressure: false,
 			tunables: { n: 1000, m: 20 },
 			skillIndex: [],
+			clusterModels: [],
 		};
 
 		const ours = composeStableVolatileSubsection(inputs).join("\n");
@@ -102,6 +103,10 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 			budgetPressure: false,
 			tunables: { n: 1000, m: 20 },
 			skillIndex: [{ name: "alpha", description: "the alpha skill" }],
+			clusterModels: [
+				{ name: "opus", hosts: ["7cf34dd659c0"], local: true },
+				{ name: "deepseek-v4-pro", hosts: ["MSI"], local: false },
+			],
 		};
 
 		const ours = composeStableVolatileSubsection(inputs).join("\n");
@@ -123,6 +128,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 			budgetPressure: true,
 			tunables: { n: 1000, m: 20 },
 			skillIndex: [],
+			clusterModels: [],
 		};
 
 		const ours = composeStableVolatileSubsection(inputs).join("\n");
@@ -144,6 +150,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 			budgetPressure: false,
 			tunables: { n: 1000, m: 20 },
 			skillIndex: [],
+			clusterModels: [],
 		};
 
 		const ours = composeStableVolatileSubsection(inputs).join("\n");
@@ -174,6 +181,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 			budgetPressure: false,
 			tunables: { n: 1000, m: 20 },
 			skillIndex: [],
+			clusterModels: [],
 		};
 
 		const ours = composeStableVolatileSubsection(inputs).join("\n");
@@ -222,6 +230,18 @@ function renderProductionStableConcat(inputs: StableVolatileInputs): string {
 	// the skill-index byte layout.
 	const skillIndex = renderSkillIndex(inputs.skillIndex);
 
-	const lines = ["", ...wk.stableLines, ...da.section.lines, ...skillIndex.split("\n")];
+	// `<stable-context>` cluster models render last, via the same shared helper
+	// the production fold (context-assembly.ts) and the seam both call. Empty
+	// models add no lines (suppress-when-empty), so legacy fixtures stay byte-
+	// identical; non-empty fixtures exercise the divergence here.
+	const clusterModels = renderClusterModels(inputs.clusterModels);
+
+	const lines = [
+		"",
+		...wk.stableLines,
+		...da.section.lines,
+		...skillIndex.split("\n"),
+		...clusterModels,
+	];
 	return lines.join("\n");
 }

@@ -254,3 +254,27 @@ export function compareBytewise(a: string, b: string): number {
 	if (a > b) return 1;
 	return 0;
 }
+
+/**
+ * Escape a string for safe inclusion inside a double-quoted XML attribute
+ * value. Escapes the five XML predefined entities (`& < > " '`).
+ *
+ * The volatile-context XML renderers (Live State `<thread>/<file>/<task>/…`,
+ * the `<stable-context>` model topology) carry thread titles, file paths,
+ * memory keys, and advisory titles as attribute values — content that
+ * routinely contains backticks, `&`, `<`, and quotes (e.g. a thread titled
+ * ``Can you fix the `mxc` policy…``). A stray `&` or `<` would make the
+ * fragment ill-formed, so every attribute value MUST route through this.
+ *
+ * Deterministic and locale-independent: the replacement order is fixed and
+ * `&` is escaped first so already-escaped entities are not double-escaped on
+ * a single pass. Safe to feed the R-VC25 stable-prefix bytes.
+ */
+export function escapeXmlAttr(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}

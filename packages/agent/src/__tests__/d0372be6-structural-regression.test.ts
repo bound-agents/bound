@@ -275,7 +275,7 @@ describe("d0372be6 confabulation pattern — structural surface", () => {
 		db.close();
 	});
 
-	test("Live State header text is exact", () => {
+	test("Live State opens with the <live-state> element", () => {
 		const db = createTempDb(dbPath);
 		const userId = "test-user";
 		const threadId = "test-thread";
@@ -307,8 +307,8 @@ describe("d0372be6 confabulation pattern — structural surface", () => {
 			siteId,
 		});
 
-		// The em-dash is U+2014
-		expect(result.content).toContain("## Live State — pointers to canonical sources");
+		// `<live-state>` replaces the old `## Live State` markdown header.
+		expect(result.content).toContain("<live-state sources=");
 
 		db.close();
 	});

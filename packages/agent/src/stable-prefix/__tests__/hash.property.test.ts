@@ -71,6 +71,14 @@ const stableInputsArb: fc.Arbitrary<StableVolatileInputs> = fc.record({
 		}),
 		{ maxLength: 4 },
 	),
+	clusterModels: fc.array(
+		fc.record({
+			name: safeKey,
+			hosts: fc.array(safeKey, { maxLength: 3 }),
+			local: fc.boolean(),
+		}),
+		{ maxLength: 5 },
+	),
 });
 
 describe("hashSystemPromptString — property tests", () => {

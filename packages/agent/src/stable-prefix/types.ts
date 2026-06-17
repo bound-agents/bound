@@ -94,6 +94,35 @@ export interface SkillIndexView {
 }
 
 /**
+ * Cluster model-topology projection for the `<stable-context>` models
+ * section (Kara's ask, 2026-06-16). `name` is the logical model alias;
+ * `hosts` is the bytewise-sorted list of `host_name`s serving it (parsed
+ * from each host row's `hosts.models` JSON); `local` is true when the
+ * current host is among the serving set.
+ *
+ * Deliberately EXCLUDES two signals that look tempting but would defeat the
+ * point of living on the stable side:
+ *
+ *   - **liveness** (online/offline): a host's heartbeat flaps `online_at`
+ *     constantly; folding it in would churn the cross-thread cache every
+ *     time a host blinks.
+ *   - **current-turn model marker**: which model serves *this* turn is a
+ *     varying signal — it already rides the varying prefix
+ *     (`buildVaryingPrefix`'s `Current Model:` line). Putting it here would
+ *     bust the prefix on every model switch.
+ *
+ * Model→host topology changes only when a host's configured model set
+ * changes (rare), so this is a legitimate R-VC25 stable-side input. Its
+ * covering write is the `hosts` table's `change_log` row — see
+ * `STABLE_SIDE_TABLES` in the drift detector.
+ */
+export interface ClusterModelView {
+	name: string;
+	hosts: ReadonlyArray<string>;
+	local: boolean;
+}
+
+/**
  * Complete declared input set for `composeStableVolatileSubsection`.
  *
  * **Adding a new field here is a contract change.** The drift
@@ -135,4 +164,10 @@ export interface StableVolatileInputs {
 	tunables: Vc15Tunables;
 	/** Active skills, rendered into the skill-index XML. */
 	skillIndex: ReadonlyArray<SkillIndexView>;
+	/**
+	 * Cluster model topology for the `<stable-context>` section. Pre-sorted
+	 * upstream (bytewise by `name`, and `hosts` bytewise within each entry)
+	 * so the rendered bytes are a pure function of the topology.
+	 */
+	clusterModels: ReadonlyArray<ClusterModelView>;
 }

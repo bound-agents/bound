@@ -104,6 +104,19 @@ const stableInputs: fc.Arbitrary<StableVolatileInputs> = fc.record({
 		m: fc.integer({ min: 5, max: 50 }),
 	}),
 	skillIndex: fc.array(skillIndexView, { maxLength: 5 }),
+	clusterModels: fc.array(
+		fc.record({
+			name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => !/[\n\r<>]/.test(s)),
+			hosts: fc.array(
+				fc.string({ minLength: 1, maxLength: 20 }).filter((s) => !/[\n\r<>]/.test(s)),
+				{
+					maxLength: 3,
+				},
+			),
+			local: fc.boolean(),
+		}),
+		{ maxLength: 6 },
+	),
 });
 
 // ---------- Properties ----------
@@ -256,6 +269,7 @@ describe("composeStableVolatileSubsection — property tests", () => {
 						budgetPressure: false,
 						tunables: { n: 1000, m: 20 },
 						skillIndex: [],
+						clusterModels: [],
 					};
 					const baseEntryLines = composeStableVolatileSubsection(baseInputs).filter((l) =>
 						l.startsWith("- "),

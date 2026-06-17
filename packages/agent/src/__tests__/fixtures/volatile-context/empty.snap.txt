@@ -8,7 +8,5 @@ Bodies of summary entries are accessed via memory search using terms from the en
 
 
 Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
-## Live State — pointers to canonical sources
-
-
-Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.
+<live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
+</live-state>
