@@ -13,7 +13,7 @@ Thanks for your interest in contributing! This document is the developer-facing 
 ## Setup
 
 ```bash
-git clone https://github.com/karashiiro/bound.git
+git clone https://github.com/bound-agents/bound.git
 cd bound
 bun install
 ```
