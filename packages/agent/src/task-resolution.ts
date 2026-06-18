@@ -61,6 +61,22 @@ export function deriveFiringWakeupIds(firingKey: string): FiringWakeupIds {
 	};
 }
 
+/**
+ * Derive a deterministic message id for one *other* per-firing artifact (beyond
+ * the wakeup triplet) from a firing key — the quiescence note the scheduler
+ * appends at wakeup, the alert it persists on a hard failure, etc.
+ *
+ * Same convergence property as {@link deriveFiringWakeupIds}: two hosts racing
+ * the same firing derive the same `(firing key, artifact)` id, so the rows they
+ * each insert LWW-collapse to one on sync rather than doubling in the thread.
+ * The `artifact` suffix keeps these distinct from the triplet ids and from each
+ * other within a single firing. Callers fall back to a random id when the firing
+ * has no scheduled instant to key on (event tasks).
+ */
+export function deriveFiringArtifactId(firingKey: string, artifact: string): string {
+	return deterministicUUID(BOUND_NAMESPACE, `${firingKey}:${artifact}`);
+}
+
 // Cron expression parser - supports basic 5-field cron: minute hour day month weekday
 // Returns the next execution time
 function parseCron(cronExpr: string, from: Date = new Date()): Date {

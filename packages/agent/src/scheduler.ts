@@ -21,6 +21,7 @@ import {
 	canRunHere,
 	computeFiringKey,
 	computeNextRunAt,
+	deriveFiringArtifactId,
 	deriveFiringWakeupIds,
 	verifyLeaseStillHeld,
 } from "./task-resolution";
@@ -1534,7 +1535,11 @@ export class Scheduler {
 							this.ctx.db,
 							"messages",
 							{
-								id: randomUUID(),
+								// Same firing-key convergence as the wakeup triplet (#46): two
+								// hosts racing this firing derive the same id, so the quiescence
+								// note they each insert LWW-collapses to one row instead of
+								// doubling in the thread. Random fallback for event firings.
+								id: firingKey ? deriveFiringArtifactId(firingKey, "quiescence") : randomUUID(),
 								thread_id: threadId,
 								role: "developer",
 								content: quiescenceNote,
@@ -2005,11 +2010,20 @@ export class Scheduler {
 					if (task.thread_id) {
 						try {
 							const now = new Date().toISOString();
+							// Recompute the firing key here: the one in runTask's try block
+							// is out of scope in this catch, but task.next_run_at still holds
+							// the claim-time instant (the reschedule below runs after this and
+							// does not mutate the in-memory task), so it yields the same key.
+							const firingKey = computeFiringKey(task.id, task.next_run_at);
 							insertRow(
 								this.ctx.db,
 								"messages",
 								{
-									id: randomUUID(),
+									// Firing-key convergence (#46): a split-brain double-dispatch
+									// that fails on both hosts derives the same alert id, so the
+									// "Task failed" rows LWW-collapse to one instead of doubling.
+									// Random fallback for event firings (no scheduled instant).
+									id: firingKey ? deriveFiringArtifactId(firingKey, "failalert") : randomUUID(),
 									thread_id: task.thread_id,
 									role: "alert",
 									content: `Task ${task.id} failed: ${errorMsg}`,

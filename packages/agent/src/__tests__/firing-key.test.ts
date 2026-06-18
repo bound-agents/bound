@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { computeFiringKey, deriveFiringWakeupIds } from "../task-resolution";
+import {
+	computeFiringKey,
+	deriveFiringArtifactId,
+	deriveFiringWakeupIds,
+} from "../task-resolution";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOOL_USE_RE = /^tooluse_[a-zA-Z0-9_-]+$/;
@@ -75,5 +79,42 @@ describe("deriveFiringWakeupIds", () => {
 		expect(a.toolCallMessageId).not.toBe(b.toolCallMessageId);
 		expect(a.toolResultMessageId).not.toBe(b.toolResultMessageId);
 		expect(a.toolUseId).not.toBe(b.toolUseId);
+	});
+});
+
+describe("deriveFiringArtifactId", () => {
+	const key = computeFiringKey("task-abc", "2026-06-18T02:00:00.000Z");
+	if (key === null) throw new Error("expected non-null firing key");
+
+	it("is deterministic for a given (firing key, artifact) — the cross-host convergence property", () => {
+		const hostA = deriveFiringArtifactId(key, "quiescence");
+		const hostB = deriveFiringArtifactId(key, "quiescence");
+		expect(hostA).toBe(hostB);
+	});
+
+	it("produces a wire-legal message UUID", () => {
+		expect(deriveFiringArtifactId(key, "failalert")).toMatch(UUID_RE);
+	});
+
+	it("distinguishes artifacts of the same firing so they don't overwrite each other", () => {
+		const quiescence = deriveFiringArtifactId(key, "quiescence");
+		const failalert = deriveFiringArtifactId(key, "failalert");
+		expect(quiescence).not.toBe(failalert);
+	});
+
+	it("does not collide with the wakeup-triplet ids of the same firing", () => {
+		const wakeup = deriveFiringWakeupIds(key);
+		const artifact = deriveFiringArtifactId(key, "quiescence");
+		expect(artifact).not.toBe(wakeup.wakeupMessageId);
+		expect(artifact).not.toBe(wakeup.toolCallMessageId);
+		expect(artifact).not.toBe(wakeup.toolResultMessageId);
+	});
+
+	it("does not collide across different firings for the same artifact", () => {
+		const k2 = computeFiringKey("task-abc", "2026-06-18T02:30:00.000Z");
+		if (k2 === null) throw new Error("expected non-null firing key");
+		expect(deriveFiringArtifactId(key, "quiescence")).not.toBe(
+			deriveFiringArtifactId(k2, "quiescence"),
+		);
 	});
 });
