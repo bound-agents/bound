@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
+	type FiringCandidateHost,
 	computeFiringKey,
 	deriveFiringArtifactId,
 	deriveFiringWakeupIds,
+	selectFiringHost,
 } from "../task-resolution";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -116,5 +118,70 @@ describe("deriveFiringArtifactId", () => {
 		expect(deriveFiringArtifactId(key, "quiescence")).not.toBe(
 			deriveFiringArtifactId(k2, "quiescence"),
 		);
+	});
+});
+
+describe("selectFiringHost", () => {
+	const hosts = (...ids: string[]): FiringCandidateHost[] =>
+		ids.map((siteId) => ({ siteId, hostName: `host-${siteId}` }));
+
+	it("returns null when there are no candidates", () => {
+		expect(selectFiringHost("firing:t:2026-06-18T02:00:00.000Z", [])).toBeNull();
+	});
+
+	it("returns the only candidate when the set is a singleton", () => {
+		const winner = selectFiringHost("firing:t:2026-06-18T02:00:00.000Z", hosts("site-a"));
+		expect(winner).toBe("site-a");
+	});
+
+	it("picks exactly one winner from the candidate set", () => {
+		const winner = selectFiringHost(
+			"firing:t:2026-06-18T02:00:00.000Z",
+			hosts("site-a", "site-b", "site-c"),
+		);
+		expect(["site-a", "site-b", "site-c"]).toContain(winner);
+	});
+
+	it("is deterministic — every host computes the same winner from the same inputs", () => {
+		const key = "firing:heartbeat:2026-06-18T02:00:00.000Z";
+		const set = hosts("site-a", "site-b", "site-c");
+		const a = selectFiringHost(key, set);
+		const b = selectFiringHost(key, [...set].reverse());
+		const c = selectFiringHost(key, [set[1], set[2], set[0]]);
+		expect(a).toBe(b);
+		expect(a).toBe(c);
+	});
+
+	it("does not depend on candidate ordering", () => {
+		const key = "firing:t:2026-06-18T03:00:00.000Z";
+		const w1 = selectFiringHost(key, hosts("x", "y", "z"));
+		const w2 = selectFiringHost(key, hosts("z", "y", "x"));
+		expect(w1).toBe(w2);
+	});
+
+	it("distributes winners across firing keys rather than always picking one host", () => {
+		const set = hosts("site-a", "site-b", "site-c");
+		const winners = new Set<string>();
+		for (let i = 0; i < 200; i++) {
+			const key = `firing:heartbeat:2026-06-18T${String(i % 24).padStart(2, "0")}:${String(
+				i % 60,
+			).padStart(2, "0")}:00.000Z`;
+			const w = selectFiringHost(key, set);
+			if (w) winners.add(w);
+		}
+		// HRW over a uniform hash should hand work to more than one host across many keys.
+		expect(winners.size).toBeGreaterThan(1);
+	});
+
+	it("moves the winner deterministically when the winning host leaves the set", () => {
+		const key = "firing:t:2026-06-18T04:00:00.000Z";
+		const full = hosts("site-a", "site-b", "site-c");
+		const winner = selectFiringHost(key, full);
+		const without = full.filter((h) => h.siteId !== winner);
+		const next = selectFiringHost(key, without);
+		expect(next).not.toBe(winner);
+		expect(without.map((h) => h.siteId)).toContain(next);
+		// Re-selection is stable.
+		expect(selectFiringHost(key, without)).toBe(next);
 	});
 });

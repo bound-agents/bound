@@ -18,11 +18,11 @@ import type { AgentLoop } from "./agent-loop";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import {
-	canRunHere,
 	computeFiringKey,
 	computeNextRunAt,
 	deriveFiringArtifactId,
 	deriveFiringWakeupIds,
+	shouldDispatchHere,
 	verifyLeaseStillHeld,
 } from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
@@ -1124,7 +1124,7 @@ export class Scheduler {
 			.all(now) as Task[];
 
 		for (const task of pendingTasks) {
-			if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+			if (shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
 				const claimedAt = new Date().toISOString();
 				// CAS: only claim if still pending (prevents duplicate scheduling from other hosts)
 				const txFn = this.ctx.db.transaction(() => {
@@ -2095,7 +2095,7 @@ export class Scheduler {
 				.all(eventType) as Task[];
 
 			for (const task of eventTasks) {
-				if (canRunHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+				if (shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
 					const claimedAt = new Date().toISOString();
 					// CAS: only claim if still pending (prevents duplicate event execution)
 					const txFn = this.ctx.db.transaction(() => {
