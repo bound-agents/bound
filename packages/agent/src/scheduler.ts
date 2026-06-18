@@ -17,7 +17,13 @@ import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
-import { canRunHere, computeNextRunAt, verifyLeaseStillHeld } from "./task-resolution";
+import {
+	canRunHere,
+	computeFiringKey,
+	computeNextRunAt,
+	deriveFiringWakeupIds,
+	verifyLeaseStillHeld,
+} from "./task-resolution";
 import type { AgentLoopConfig } from "./types";
 
 const getTracer = () => trace.getTracer("bound.scheduler");
@@ -1359,7 +1365,22 @@ export class Scheduler {
 				// Anthropic direct) receive a synthetic leading user message
 				// carrying the wakeup content, constructed in the ai-sdk-bridge's
 				// toModelMessages() conversation-start invariant.
-				const toolCallId = `tooluse_${randomUUID().replace(/-/g, "").slice(0, 22)}`;
+				// Deterministic idempotency key for this firing (#46 split-brain
+				// blast-radius bound). When two hosts race the same pending row they
+				// read the same (id, next_run_at) snapshot and derive the same wakeup
+				// message ids, so the triplets they each insert LWW-collapse to one
+				// set on sync rather than doubling the synthetic wakeup structure in
+				// the thread. Converges the persisted effect of a double-dispatch; it
+				// does not prevent the second run (that needs consensus over claims —
+				// tracked in #46). Null for firings with no scheduled instant (event
+				// tasks: next_run_at NULL) → random ids, i.e. current behavior.
+				const firingKey = computeFiringKey(task.id, task.next_run_at);
+				const firingIds = firingKey ? deriveFiringWakeupIds(firingKey) : null;
+				const toolCallId =
+					firingIds?.toolUseId ?? `tooluse_${randomUUID().replace(/-/g, "").slice(0, 22)}`;
+				const wakeupMessageId = firingIds?.wakeupMessageId ?? randomUUID();
+				const toolCallMessageId = firingIds?.toolCallMessageId ?? randomUUID();
+				const toolResultMessageId = firingIds?.toolResultMessageId ?? randomUUID();
 				let taskContent: string;
 				let inboxIdsToMarkProcessed: string[] = [];
 				if (task.type === "heartbeat") {
@@ -1391,7 +1412,7 @@ export class Scheduler {
 					this.ctx.db,
 					"messages",
 					{
-						id: randomUUID(),
+						id: wakeupMessageId,
 						thread_id: threadId,
 						role: "developer",
 						content: `[Task wakeup] Scheduled ${task.type} task ${task.id} triggered.`,
@@ -1412,7 +1433,7 @@ export class Scheduler {
 					this.ctx.db,
 					"messages",
 					{
-						id: randomUUID(),
+						id: toolCallMessageId,
 						thread_id: threadId,
 						role: "tool_call",
 						content: JSON.stringify([
@@ -1452,7 +1473,7 @@ export class Scheduler {
 					this.ctx.db,
 					"messages",
 					{
-						id: randomUUID(),
+						id: toolResultMessageId,
 						thread_id: threadId,
 						role: "tool_result",
 						content: systemInjectedBanner + taskContent,

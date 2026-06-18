@@ -3,6 +3,64 @@ import { insertRow } from "@bound/core";
 import type { HeartbeatConfig, Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
+/**
+ * Deterministic idempotency key for a single task firing, stable across hosts.
+ *
+ * Two hosts that race the same pending row both read the same `(id, next_run_at)`
+ * snapshot — that pair IS the firing they collide on — so they compute the same
+ * key and (via {@link deriveFiringWakeupIds}) the same synthetic-wakeup message
+ * ids. The two wakeup triplets they each insert then LWW-collapse to one set on
+ * sync, bounding the blast radius of a split-brain double-dispatch (#46) to wasted
+ * inference rather than a doubled, interleaved wakeup structure in the thread.
+ *
+ * `scheduledRunAt` is the task's `next_run_at` at claim time — the due instant,
+ * before `rescheduleHeartbeat` / `rescheduleCronTask` advances it at completion.
+ * The claim CAS (`pending → claimed → running`) never touches `next_run_at`, so
+ * the value in the `runTask` snapshot is still the scheduled instant.
+ *
+ * Returns `null` when there is no scheduled instant to key on (event tasks carry
+ * `next_run_at = NULL`); callers fall back to random ids — i.e. current behavior —
+ * for those firings.
+ *
+ * Note: this converges the persisted *effect* of a double-dispatch; it does not
+ * prevent the second run. Leaderless exactly-once dispatch needs consensus over
+ * claims, which is tracked separately (#46). Idempotent effects are the
+ * topology-independent half of that fix.
+ */
+export function computeFiringKey(taskId: string, scheduledRunAt: string | null): string | null {
+	if (!scheduledRunAt) {
+		return null;
+	}
+	return `firing:${taskId}:${scheduledRunAt}`;
+}
+
+export interface FiringWakeupIds {
+	wakeupMessageId: string;
+	toolCallMessageId: string;
+	toolResultMessageId: string;
+	toolUseId: string;
+}
+
+/**
+ * Derive the deterministic ids for the synthetic wakeup triplet
+ * (developer notice → assistant `tool_call` → `tool_result`) from a firing key.
+ *
+ * `toolUseId` keeps the `tooluse_` prefix + 22-char body shape the random path
+ * produced, within the `[a-zA-Z0-9_-]` charset (and ≤ 64-char length) every
+ * supported provider accepts — see the cross-provider tool_use portability note
+ * in CONTRIBUTING.md.
+ */
+export function deriveFiringWakeupIds(firingKey: string): FiringWakeupIds {
+	return {
+		wakeupMessageId: deterministicUUID(BOUND_NAMESPACE, `${firingKey}:wakeup`),
+		toolCallMessageId: deterministicUUID(BOUND_NAMESPACE, `${firingKey}:toolcall`),
+		toolResultMessageId: deterministicUUID(BOUND_NAMESPACE, `${firingKey}:toolresult`),
+		toolUseId: `tooluse_${deterministicUUID(BOUND_NAMESPACE, `${firingKey}:tooluse`)
+			.replace(/-/g, "")
+			.slice(0, 22)}`,
+	};
+}
+
 // Cron expression parser - supports basic 5-field cron: minute hour day month weekday
 // Returns the next execution time
 function parseCron(cronExpr: string, from: Date = new Date()): Date {
