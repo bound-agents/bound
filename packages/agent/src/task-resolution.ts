@@ -77,6 +77,143 @@ export function deriveFiringArtifactId(firingKey: string, artifact: string): str
 	return deterministicUUID(BOUND_NAMESPACE, `${firingKey}:${artifact}`);
 }
 
+/** A host eligible to dispatch a firing, identified by its synced `hosts` row. */
+export interface FiringCandidateHost {
+	siteId: string;
+	hostName: string;
+}
+
+/**
+ * Leaderless rendezvous (highest-random-weight) selection of the single host
+ * that should dispatch a given firing.
+ *
+ * Each host scores every candidate as `deterministicUUID(firingKey:siteId)` and
+ * the highest score wins. Because the firing key and the candidate set are both
+ * synced cluster state, every host that observes the same inputs computes the
+ * same winner with no coordination round-trip — two dispatchers working a
+ * single-track 交換駅 off the same 運行図, each deriving the identical passing
+ * assignment without speaking. They only diverge when their views of the inputs
+ * diverge (a real partition / clock skew), where dispatch degrades cleanly back
+ * to the firing-key idempotency backstop (#46).
+ *
+ * HRW (vs. modulo-hashing the key onto a host index) keeps the assignment stable
+ * under membership churn: when a host leaves, only the firings it owned move, and
+ * they redistribute deterministically across the survivors rather than reshuffling
+ * the whole map. The UUID string compare is a total order; the explicit `<`/`>`
+ * tie-break on `siteId` keeps selection deterministic even in the (astronomically
+ * unlikely) event of equal scores.
+ *
+ * Returns the winning `siteId`, or `null` when there are no candidates.
+ */
+export function selectFiringHost(
+	firingKey: string,
+	candidates: FiringCandidateHost[],
+): string | null {
+	let winnerSiteId: string | null = null;
+	let winnerScore = "";
+	for (const { siteId } of candidates) {
+		const score = deterministicUUID(BOUND_NAMESPACE, `${firingKey}:${siteId}`);
+		if (
+			winnerSiteId === null ||
+			score > winnerScore ||
+			(score === winnerScore && siteId > winnerSiteId)
+		) {
+			winnerSiteId = siteId;
+			winnerScore = score;
+		}
+	}
+	return winnerSiteId;
+}
+
+/**
+ * Liveness window for firing-key rendezvous candidacy. A host is a dispatch
+ * candidate only when its heartbeat-maintained `modified_at` (falling back to
+ * `online_at`) is fresh within this window — mirrors the client-session window
+ * in `delegation.ts` and `relay-router`'s `STALE_THRESHOLD_MS`.
+ */
+export const FIRING_HOST_STALE_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Per-host dispatch gate: `canRunHere` AND (when this firing has a schedule key)
+ * the rendezvous winner.
+ *
+ * This is the leaderless coordination layer for singleton dispatch (#46). The
+ * firing-key idempotency keys converge the *persisted effects* of a double
+ * dispatch after the fact; this gate avoids the double dispatch in the first
+ * place during normal operation, where every live host shares the same `hosts`
+ * view and so agrees on one winner. It does NOT claim exactly-once under a
+ * partition — when views diverge, two hosts can each believe they won, and the
+ * idempotency backstop is what bounds the blast radius there. Eliminating the
+ * partition case is consensus, tracked separately.
+ *
+ * Degradation is deliberate:
+ * - Event firings carry `next_run_at = NULL` → no firing key → no rendezvous;
+ *   returns the bare `canRunHere` verdict (event intake is hub-affined and
+ *   idempotency-keyed elsewhere).
+ * - A lone live host (or only this host) → no contention → runs.
+ * - This host is ALWAYS a candidate even if the `hosts` table hasn't caught up
+ *   to its own registration — a host knows it is live. The residual availability
+ *   cost is the inverse: a peer that is fresh-in-table but already dead can win a
+ *   firing that is then skipped until liveness eviction reassigns it (a missed
+ *   heartbeat beat, recovered next tick).
+ *
+ * Candidates are the live hosts that are THEMSELVES eligible for this task
+ * (`canRunHere` evaluated against each peer's host_name/site_id), so a
+ * host-pinned task rendezvouses only over the hosts its affinity admits.
+ */
+export function shouldDispatchHere(
+	db: Database,
+	task: Task,
+	hostName: string,
+	siteId: string,
+	staleMs: number = FIRING_HOST_STALE_MS,
+): boolean {
+	if (!canRunHere(db, task, hostName, siteId)) {
+		return false;
+	}
+
+	const firingKey = computeFiringKey(task.id, task.next_run_at);
+	if (firingKey === null) {
+		// No scheduled instant to key on (event firing) — rely on canRunHere +
+		// intake affinity + the idempotency backstop, exactly as before HRW.
+		return true;
+	}
+
+	const cutoff = Date.now() - staleMs;
+	const rows = db
+		.query("SELECT site_id, host_name, modified_at, online_at FROM hosts WHERE deleted = 0")
+		.all() as Array<{
+		site_id: string;
+		host_name: string | null;
+		modified_at: string | null;
+		online_at: string | null;
+	}>;
+
+	const candidates: FiringCandidateHost[] = [];
+	const seen = new Set<string>();
+	for (const row of rows) {
+		if (seen.has(row.site_id)) continue;
+		const ts = row.modified_at ?? row.online_at;
+		if (!ts || new Date(ts).getTime() < cutoff) continue;
+		const peerHostName = row.host_name ?? row.site_id;
+		// Only hosts that pass this task's own affinity/dependency gate contend.
+		if (!canRunHere(db, task, peerHostName, row.site_id)) continue;
+		seen.add(row.site_id);
+		candidates.push({ siteId: row.site_id, hostName: peerHostName });
+	}
+
+	// This host knows it is live even if its hosts row lags or is missing.
+	if (!seen.has(siteId)) {
+		candidates.push({ siteId, hostName });
+	}
+
+	if (candidates.length <= 1) {
+		return true;
+	}
+
+	return selectFiringHost(firingKey, candidates) === siteId;
+}
+
 // Cron expression parser - supports basic 5-field cron: minute hour day month weekday
 // Returns the next execution time
 function parseCron(cronExpr: string, from: Date = new Date()): Date {
