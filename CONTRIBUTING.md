@@ -99,182 +99,53 @@ For design rationale per package, see `docs/design/` — seven topic files cover
 
 ## Critical Invariants
 
-These rules exist because violating them has historically caused real production incidents (sync loss, SQL injection risk, cache misses, hot loops). Read each one before writing code that touches the subject.
+These rules exist because violating them has historically caused real production incidents (sync loss, SQL injection risk, cache misses, hot loops). The list below is the index — the full explanation, rationale, and mitigation for each lives in [docs/invariants.md](docs/invariants.md). Read the linked section before writing code that touches the subject. They're numbered flat (no category grouping), because the numbers and the old category headings disagreed about order.
 
-### Database writes
-
-**1. Change-log outbox pattern.** All writes to synced tables MUST use `insertRow()`, `updateRow()`, or `softDelete()` from `@bound/core` (`packages/core/src/change-log.ts`). Never write directly to a synced table with raw SQL. Synced tables are:
-
-```
-users, threads, messages, semantic_memory, tasks, files, hosts,
-overlay_index, cluster_config, advisories, skills, memory_edges,
-connector_handles, webhooks, turns, client_sessions
-```
-
-The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
-
-**2. Soft deletes only.** Synced tables use a `deleted = 0|1` column. Never physically `DELETE` rows — use `softDelete()`.
-
-**3. Relay tables are local-only.** `relay_outbox`, `relay_inbox`, `relay_cycles` do NOT use the change-log outbox. Use the dedicated CRUD helpers (`writeOutbox`, `insertInbox`, …) from `@bound/core`.
-
-**4. Column-name validation.** Any SQL that interpolates a column name MUST pass it through `validateColumnName()` (regex `/^[a-z_]+$/`). Values always use parameterized queries. This applies to change-log replay, restore, reducers — anywhere JSON row data could drive column selection.
-
-**20. No foreign key constraints on synced tables.** Synced tables must NOT declare `REFERENCES` / `FOREIGN KEY` constraints. `PRAGMA foreign_keys = ON` is set, but no synced table uses FK clauses. This is intentional: changelog replay, snapshot seeding, and backfill all insert rows in non-deterministic order — a message may arrive before its parent thread, a memory edge before its source node. FK constraints would cause intermittent hard failures during sync that depend on network timing. Referential integrity is enforced by the application write path (outbox helpers), not by the database engine during replay.
-
-### Section A: Documented Narrow Exceptions to Invariant #1 (outbox pattern)
-
-The outbox is mandatory for all writes to synced tables EXCEPT for the explicitly-justified
-per-host hint columns listed below. Each exception is local-relevance-only with no cross-host
-correctness invariant, and routing through `updateRow` would either cascade into stale-child
-detection (advancing `modified_at`) or generate wasteful change-log volume for a signal other
-hosts ignore. Do not extend this list without writing down the same justification.
-
-- **`semantic_memory.last_accessed_at`**, bumped by `bumpRenderedDetailEntries` in
-  `packages/agent/src/summary-extraction.ts` from `buildVolatileContext` on every cold
-  assembly (debounced 1h per entry). Justified because (a) per-host relevance hint with no
-  cross-host correctness invariant, (b) routing through `updateRow` would advance
-  `modified_at` along with it, cascading into `buildStaleChildrenMap` and misclassifying
-  every actively-rendered detail entry as stale, and (c) per-cold-assembly bumps would
-  generate wasteful change-log volume for a signal other hosts ignore.
-
-- **`tasks` bootstrap reset** (`packages/cli/src/commands/start/bootstrap.ts:62`), scoped to
-  `claimed_by = ?siteId` per R-LR10. Justified because (a) per-host crash recovery on startup,
-  (b) the reset reclaims rows owned by the booting host that were left mid-`running` from a
-  prior crash, (c) routing through `outbox` would either (i) emit a change_log entry per
-  crash-recovered task on every startup (potentially hundreds), polluting the cross-host log
-  with site-local recovery noise, or (ii) require synthesizing a synthetic siteId before
-  AppContext is fully bootstrapped. The R-LR10 scope predicate (`claimed_by = ?siteId`)
-  makes this safe: each booting host only resets its own claims. Peer hosts handle
-  peer-claimed stale rows via R-LR2's host-liveness eviction (Phase 4).
-
-The PR review gate (R-LR6) blocks new `// outbox-exempt` annotations on synced-table writes
-unless the new exemption is added to this list with the same justification format, OR the
-write is on a non-synced table (category c below), OR the annotation is `// outbox-routed`
-(asserting an explicit `createChangeLogEntry` follow-up in the same transaction).
-
-### Audit Disposition Table for `outbox-exempt` Annotations
-
-This table is an exhaustive snapshot of every `outbox-exempt` annotation in the repo as of
-2026-05-26 (RFC `2026-05-26-task-lifecycle-resilience.md` close). Categories per R-LR12:
-- **(a) justified-and-documented exception** — listed in the section above
-- **(b) fixed by this RFC** — annotation removed or rewritten by R-LR1, R-LR3, R-LR5, or R-LR11
-- **(c) non-synced table** — write target is NOT in `SyncedTableName`
-- **(d) known-deferred** — synced-table write not fixed by this RFC; recorded with TODO link
-- **(e) comment-only** — text mentioning "outbox-exempt" that's not an active annotation
-
-The CI gate at `scripts/validate-outbox-invariant.ts` cross-checks new annotations against
-this table.
-
-| File:Line | Write target | Category | Disposition |
-|-----------|-------------|----------|-------------|
-| packages/agent/src/summary-extraction.ts:1915 | semantic_memory.last_accessed_at | (a) justified | Per-host relevance hint; see Section A above. |
-| packages/agent/src/scheduler.ts:549 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed timer-driven heartbeat refresh through outbox. |
-| packages/agent/src/scheduler.ts:1226 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed activity-driven heartbeat refresh through outbox. |
-| packages/agent/src/scheduler.ts:311 (REMOVED) | tasks.next_run_at, tasks.status | (b) fixed | R-LR11 routed rescheduleHeartbeat through outbox. |
-| packages/agent/src/scheduler.ts:915 (REWRITTEN) | tasks (status, claimed_by, claimed_at) | (b) fixed | R-LR5 rewrote to outbox-routed annotation; explicit createChangeLogEntry follows. |
-| packages/agent/src/scheduler.ts:1005 (REWRITTEN) | tasks (status, lease_id, heartbeat_at) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/agent/src/scheduler.ts:1343 (REWRITTEN) | tasks (running → failed, model-validation) | (b) fixed | R-LR5 rewrote to outbox-routed annotation; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1517 (REWRITTEN) | tasks (running → failed, soft-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1673 (REWRITTEN) | tasks (running → failed, hard-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1796 (REWRITTEN) | tasks (post-eviction reclaim) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:62 | tasks (status, lease_id, claimed_by, claimed_at) | (a) justified | Per-host crash recovery scoped to claimed_by = ?siteId; see Section A above. |
-| packages/cli/src/commands/start/bootstrap.ts:368 (REWRITTEN) | hosts (registration) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:391 (REWRITTEN) | hosts (INSERT) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/platforms/src/leader-election.ts:73 (REWRITTEN) | cluster_config (leader election) | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/drain.ts:42, 46, 83, 87, 101 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/set-hub.ts:125, 129 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/config-reload.ts:69, 73 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/stop-resume.ts:33, 37, 66 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/core/src/relay-metrics.ts:48 | turns.relay_target, turns.relay_latency_ms | (d) known-deferred | Synced-table write not fixed by this RFC. `turns` is synced; these columns are local-only instrumentation. TODO: follow-up RFC to either route through outbox or formalize as a Section A exception. |
-| packages/sandbox/src/overlay-scanner.ts:128, 149, 170 | overlay_index (INSERT, UPDATE, soft-delete) | (d) known-deferred | `overlay_index` IS synced. Annotation says "outbox not provided (backward compat)". TODO: follow-up RFC to convert these to `insertRow`/`updateRow`/`softDelete`. |
-| packages/agent/src/task-resolution.ts:428 | tasks.no_history | (d) known-deferred | Active legacy migration that runs on startup. TODO: follow-up RFC to route through outbox or formalize as a Section A exception. |
-| packages/agent/scripts/agent-harness/driver.ts:51 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/scripts/agent-harness/driver.ts:225 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/src/validation/run-stable-prefix-drift-validation.ts:244 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
-
-### Consistency and events
-
-**5. OCC filesystem.** Compare hash-to-hash (never hash vs raw content). Persist inside `BEGIN IMMEDIATE`. Emit `file:changed` events AFTER the commit, never during.
-
-**6. Events after commit.** `file:changed`, `changelog:written`, and similar events must fire AFTER `db.exec("COMMIT")`. Emitting during the transaction can cause listeners to observe uncommitted state.
-
-**7. Tool-message persistence.** Tool messages must be persisted immediately after each tool execution, before the next LLM call. Batching these persists has caused context drift and duplicate tool calls.
-
-### Types and shapes
-
-**8. `bun:sqlite .get()` returns `null`** (not `undefined`) when no row is found. Guard accordingly.
-
-**9. LLM message roles diverge between layers.** Two distinct types:
-- `MessageRole` in `@bound/shared` (DB + event bus): `user | assistant | system | developer | alert | tool_call | tool_result | purge`
-- `LLMMessage.role` in `@bound/llm` (driver input): `user | assistant | system | tool_call | tool_result | developer | cache`
-
-`developer` carries volatile context and MUST be merged into an adjacent user message by the driver/bridge — wrapped in `<system-context>...</system-context>`. Orphan developer-only inputs are dropped. `cache` is a zero-content marker that tells drivers to place a cache breakpoint on the preceding message.
-
-**10. `LLMMessage.content` can be `string | ContentBlock[]`.** Code handling messages must account for both forms. String-only assumptions break image/tool-use content.
-
-**11. Model-alias passthrough.** Never pass `payload.model` to `backend.chat()` from the relay processor — `payload.model` is a logical alias (e.g., `"opus"`) that differs from the provider-specific identifier (e.g., a Bedrock ARN). The backend already knows its configured model.
-
-**12. Canonical edge relations.** `memory_edges.relation` must be one of 10 values in `CANONICAL_RELATIONS` (from `@bound/core/memory-relations.ts`): `related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes`. SQLite triggers enforce this. Use the `context` TEXT column for bespoke phrasing. `upsertEdge()` validates before write and throws `InvalidRelationError`.
-
-**13. Config schemas are closed (strict mode).** Every schema in `configSchemaMap` in `packages/shared/src/config-schemas.ts` uses `.strict()`, so unknown keys fail parse loudly. `cronSchedulesSchema` is closed-by-shape via `.catchall(cronEntrySchema)`. **When adding a config field, declare it in the Zod schema first** — otherwise the loader rejects the file at startup.
-
-**19. `role: "system"` is forbidden in the `messages` table.** It is reserved for the LLM driver layer (stable-prefix system prompt). Use `role: "developer"` for any injected system-generated context intended for the agent — notifications, wakeup context, interruption notices, retry nudges. Defense in depth: `insertRow()` throws on `role: "system"` at the write boundary, AND both sync reducers in `packages/sync/src/reducers.ts` reject + log on replay so a peer running pre-fix code cannot corrupt this node via changelog push. Historically, `resolveDelegationMessageId()` (notifications) and the client-tool-expiry injector wrote `role: "system"` rows that Stage 2.5 of context assembly silently dropped; the rows existed in the DB but the LLM never saw them. `readMessageMetadata()` / `writeMessageMetadata()` in `@bound/core` provide an opaque JSON property bag on `messages.metadata` for platform-specific state (e.g. Discord delivery-retry tombstones); keys follow a `<platform>_*` namespace convention and the field is invisible to the agent loop and context assembly.
-
-### Inference routing
-
-**14. Hub response-kind routing.** Response kinds (`stream_chunk`, `stream_end`, `result`, `error`, `status_forward`) targeting the hub itself must be inserted into `relay_inbox`, NOT sent through `executeImmediate()`. The executor only handles request kinds.
-
-**15. Platform intake affinity.** `intake` relay with a `platform` field must route to the host with that platform connector, not the host with the best model. Without this, the agent lacks platform tools (e.g., `discord_send_message`).
-
-**16. Extended-thinking routing.** `ChatParams.thinking` is a discriminated union; `ChatParams.effort` rides alongside. The Bedrock driver folds both into `providerOptions.bedrock.reasoningConfig`. Temperature is suppressed whenever `reasoningConfig` is set. Config lives in `model_backends.json` and must be mirrored in `inferenceRequestPayloadSchema` to forward over the relay.
-
-**18. ProcessPayload.message_id must reference a real `messages` row.** When `handleThread()` (spoke side) delegates to a remote host, the `message_id` it forwards via `ProcessPayload` must exist in the `messages` table on the delegating host so the receiving host's `executeProcess()` can resolve it. User-message entries are safe because `enqueueMessage(db, messageId, threadId)` stores the real `messages.id` as `dispatch_queue.message_id`. **Notifications are the trap**: `enqueueNotification()` generates a synthetic UUID — the injected system message gets a fresh UUID in a separate `insertRow()` call. Historically the spoke forwarded the dispatch-queue id, the hub's lookup returned null, and the notification was silently dropped. Use `resolveDelegationMessageId()` in `packages/cli/src/commands/start/server.ts` — it injects notifications AND returns the id to forward. The receiving side no longer hard-rejects on missing rows (it warns and proceeds on thread state alone), but the spoke is still the source of truth and should always forward a real id.
-
-**21. Client-session affinity wins over model-based delegation.** A `notify` / `introspect` wakeup can fire on any host (webhook ingestion and PR-watch tasks run hub-side; the dispatch fires `handleThread` wherever the notify was enqueued). But a thread with a live boundless / `BoundClient` WS session can only execute `client`-kind tools (`boundless_*`) on the host holding that connection — client tool calls defer over that host's local event bus and are unreachable cross-host. So the delegation decision in `packages/cli/src/commands/start/server.ts` consults the `client_sessions` table (synced, LWW) BEFORE model-based `getDelegationTarget()`: (1) a live session on another host → delegate there; (2) a live session on this host → run locally and suppress model delegation (otherwise an opus-backed boundless loop gets pulled to the hub and stripped of its client tools — issue #91); (3) no live session → fall back to model-based delegation. `getClientSessionDelegationTarget()` answers cases 1+3 (returns the remote `EligibleHost` or null), `hasLocalClientSession()` disambiguates case 2. Sessions are recorded on `thread:subscribe`, soft-deleted on `thread:unsubscribe` and on WS close, and a staleness window (`CLIENT_SESSION_HOST_STALE_MS`) guards against a host that died without a clean close. `client_sessions` must stay in `SYNCED_TABLE_NAMES` / `SNAPSHOT_TABLE_ORDER` so peers learn session locations. The same staleness join is exposed for introspection (issue #96): `isClientSessionLive()` (host-agnostic "any live session anywhere") and `getClientSessions()` (per-(thread,host) rows tagged live/stale) live alongside the routing helpers in `delegation.ts`. The `hostinfo` tool renders a **Client Sessions** section from `getClientSessions()`, and `notify` / `introspect` append a shared non-fatal warning (`clientSessionWakeupWarning()`) when the target is a `CLIENT_TOOL_INTERFACES` thread (`boundless`) with no live session — the wakeup still enqueues and delivers on reconnect, but the woken loop can't run client tools meanwhile.
-
-### Shared-config → router hand-off
-
-**17.** `toRouterConfig()` in `packages/cli/src/commands/start/inference.ts` is the single place that translates snake_case `ModelBackendsConfig` into the camelCase `BackendConfig` consumed by `createModelRouter`. Any new per-backend field (e.g., `thinking`, `effort`, `max_output_tokens`, `cache_ttl`) MUST be copied here or it silently never reaches the router. `ModelResolution.local` must also carry the field, and both agent-loop and relay-processor must propagate it. For `cache_ttl` specifically, `relay-processor.executeInference` deliberately reads from the local backend (`modelRouter.getCacheTtl(payload.model)`) rather than the payload, so spokes apply their own TTL preference rather than honoring a hub-set TTL for a model the spoke does not support. The same hand-off direction applies to **per-turn cost**: `relay-processor.executeInference` computes `cost_usd` from `appCtx.config.modelBackends.backends` (the hub's authoritative pricing) and stamps it onto the final `done` `StreamChunk`; the spoke's agent-loop happy-path `recordTurn` prefers `parsed.costUsdFromHub` over its own `calculateTurnCost(...)` so hub-only spokes (empty `backends: []`) don't write `cost_usd = 0` for every delegated turn. The local `calculateTurnCost` call remains as the fallback for non-delegated inference and for backward-compat with hubs on pre-fix code.
+1. [Change-log outbox pattern](docs/invariants.md#1-change-log-outbox-pattern) — all writes to synced tables go through `insertRow()` / `updateRow()` / `softDelete()`, never raw SQL.
+2. [Soft deletes only](docs/invariants.md#2-soft-deletes-only) — flip `deleted = 0|1` via `softDelete()`; never physically `DELETE` a synced row.
+3. [Relay tables are local-only](docs/invariants.md#3-relay-tables-are-local-only) — `relay_outbox` / `relay_inbox` / `relay_cycles` use dedicated CRUD, not the outbox.
+4. [Column-name validation](docs/invariants.md#4-column-name-validation) — any interpolated column name passes through `validateColumnName()`; values stay parameterized.
+5. [OCC filesystem](docs/invariants.md#5-occ-filesystem) — compare hash-to-hash, persist inside `BEGIN IMMEDIATE`, emit `file:changed` only after commit.
+6. [Events after commit](docs/invariants.md#6-events-after-commit) — `file:changed` / `changelog:written` fire after `COMMIT`, never mid-transaction.
+7. [Tool-message persistence](docs/invariants.md#7-tool-message-persistence) — persist each tool message before the next LLM call; batching causes context drift.
+8. [`bun:sqlite` `.get()` returns `null`](docs/invariants.md#8-empty-reads-return-null-not-undefined) — guard for `null`, not `undefined`, on empty reads.
+9. [LLM message roles diverge between layers](docs/invariants.md#9-llm-message-roles-diverge-between-layers) — `MessageRole` (DB) and `LLMMessage.role` (driver) are different unions.
+10. [`LLMMessage.content` can be `string | ContentBlock[]`](docs/invariants.md#10-message-content-is-string-or-contentblock-array) — handle both forms or break image/tool-use content.
+11. [Model-alias passthrough](docs/invariants.md#11-model-alias-passthrough) — never pass `payload.model` to `backend.chat()` from the relay processor.
+12. [Canonical edge relations](docs/invariants.md#12-canonical-edge-relations) — `memory_edges.relation` must be one of the 10 `CANONICAL_RELATIONS`.
+13. [Config schemas are closed (strict mode)](docs/invariants.md#13-config-schemas-are-closed-strict-mode) — declare every config field in its Zod schema or the loader rejects the file.
+14. [Hub response-kind routing](docs/invariants.md#14-hub-response-kind-routing) — hub-targeted response kinds go into `relay_inbox`, not `executeImmediate()`.
+15. [Platform intake affinity](docs/invariants.md#15-platform-intake-affinity) — `intake` relay with a `platform` field routes to the host with that connector.
+16. [Extended-thinking routing](docs/invariants.md#16-extended-thinking-routing) — `thinking` / `effort` fold into `reasoningConfig`; mirror new fields in `inferenceRequestPayloadSchema`.
+17. [Shared-config → router hand-off](docs/invariants.md#17-shared-config-to-router-hand-off) — new per-backend fields must be copied in `toRouterConfig()` or they never reach the router.
+18. [`ProcessPayload.message_id` must reference a real `messages` row](docs/invariants.md#18-forwarded-message_id-must-reference-a-real-messages-row) — forward a real id; notifications are the trap (use `resolveDelegationMessageId()`).
+19. [`role: "system"` is forbidden in the `messages` table](docs/invariants.md#19-the-system-role-is-forbidden-in-the-messages-table) — use `role: "developer"` for injected system context.
+20. [No foreign key constraints on synced tables](docs/invariants.md#20-no-foreign-key-constraints-on-synced-tables) — replay inserts rows out of order; FK clauses would fail intermittently.
+21. [Client-session affinity wins over model-based delegation](docs/invariants.md#21-client-session-affinity-wins-over-model-based-delegation) — a live boundless / `BoundClient` session pins client-tool execution to its host.
 
 ## Common Gotchas
 
-Accumulated the hard way — check here before writing a bug report.
+Accumulated the hard way — check here before writing a bug report. The list below is the index; each links to the full writeup in [docs/gotchas.md](docs/gotchas.md).
 
-- **AI SDK `usage.inputTokens` is the SUMMED total, not non-cached input**: across both Bedrock and Anthropic providers, the AI SDK's `usage.inputTokens` aggregates `noCache + cacheRead + cacheWrite` into a single number. The non-cached portion (what AWS bills at the full input rate, matching CloudWatch's `InputTokenCount`) lives on `usage.inputTokenDetails.noCacheTokens`. `extractUsage` in `packages/llm/src/ai-sdk-bridge.ts` reads from `inputTokenDetails.noCacheTokens` first and falls back to `inputTokens` only when details are absent. This means `StreamChunk.done.usage.input_tokens` (and downstream `turns.tokens_in`) is non-cached only — the three fields `tokens_in`, `tokens_cache_read`, `tokens_cache_write` are independent, NOT components of the same total; the full wire prompt size is the sum of all three. The agent-loop's inflation EMA at `applyActualUsageToContextDebug` deliberately sums all three back into `actualTotalTokens` because cache reads + writes occupy wire bytes (they're discounted in pricing, not absent from the prompt). Pre-fix (commit `ae09084b`), `calculateTurnCost` double-charged the cached portion at the full input rate; real AWS cost was ~50% of what `turns.cost_usd` recorded for cache-heavy turns. Verified live via 7-day CloudWatch reconciliation: DB-derived `noCache = tokens_in_pre_fix - cache_read - cache_write` matched `InputTokenCount` within 0.4% on opus. Historical `turns.cost_usd` rows are not backfilled — they're recorded with the old semantic and self-correct as new turns land.
-- **`global.fetch` pollution**: tests that mock `global.fetch` (e.g., Ollama driver tests) MUST save and restore it in `afterAll`, or sync integration tests start failing with mysterious network errors.
-- **TUI frame-capture tests are sensitive to ambient stdout state**: `packages/less` tests render Ink components through `ink-testing-library` and assert on the plain-text frame from `lastFrame()`. Two ambient `process.stdout` signals can corrupt those frames depending only on *how the suite was launched* — a piped run (CI, an editor task) renders clean, while a real terminal (an interactive `git commit` driving the pre-commit hook) does not, which reads as a "flake" that won't reproduce in isolation. (1) **Color level**: chalk derives its level from `process.stdout.isTTY` when `FORCE_COLOR` is unset, so the inverse-video cursor cell and colored tool prefixes leak SGR codes into the frame and break `toBe` / `toContain`. `scripts/test-preload.ts` pins `FORCE_COLOR=0` for the whole run to make this deterministic; don't rely on a test's own `isTTY` state for color. (2) **TTY-gated control writes**: a component that emits terminal control sequences (e.g. mouse-tracking enable) must gate on the TTY-ness of the stream it *writes to* — Ink's injected `useStdout()` stream — not the global `process.stdout`. Gating on `process.stdout.isTTY` while writing to the injected capture stream leaks the control bytes into `lastFrame()` whenever the ambient stdout is a TTY. See `useScrollableMessages.ts` and its regression test.
-- **SQLite `datetime()` vs ISO 8601**: never compare `datetime('now', '-Nh hours')` (which returns `2026-03-28 22:23:33`, space-separated) against JS `toISOString()` timestamps (`2026-03-28T22:23:33.091Z`, `T`-separated). ASCII `T` > ASCII space, so all ISO dates appear "newer". Always compute cutoffs in JS: `new Date(Date.now() - N * 3600_000).toISOString()` and pass as a parameter.
-- **Zod v4 `z.record`**: requires two arguments — `z.record(keySchema, valueSchema)`. Single-arg calls don't type-check.
-- **Typecheck is per-package**: there is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` or `bun run typecheck` (sequential).
-- **`bun test packages/cli`** prints init-test stdout — use the exit code to check success, not `grep`.
-- **Mixed positional + flag arg parsing** (in `commands.ts`): Only affects MCP bridge commands (the only commands still dispatched through bash). Native agent tools use structured JSON parameters, eliminating this class of bugs.
-- **`loopContextStorage` (AsyncLocalStorage)**: exported from `@bound/sandbox`. Commands running inside the agent loop see `threadId` / `taskId` in context automatically. Commands invoked outside (e.g., boundctl) don't.
-- **`bound-mcp` polling**: `polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
-- **bound CLI config dir**: defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
-- **Stale binaries**: `bun run build && cp dist/bound* ~/.local/bin/` is the install step. Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
-- **Universal 256 KiB tool-result cap**: every tool result, regardless of `kind`, is bounded by `capToolResultContent` (from `@bound/shared/strings.ts`, `MAX_TOOL_RESULT_BYTES = 256 * 1024`) at two boundaries — the agent-loop dispatch return (covers platform/sandbox/builtin and the legacy fallback) and `handleToolResult` in `packages/web/src/server/websocket.ts` (covers WS-deferred client tools from boundless / bound-mcp / external `BoundClient` consumers). Truncation is middle-cut with the marker `[truncated N bytes from middle; tool result exceeded 262144-byte cap — re-run with a narrower scope or pipe through head/grep]`; the marker's byte width is subtracted from the half-budgets so the function is idempotent and the output is guaranteed ≤ cap. If a tool result looks like it's missing a chunk, grep for the marker — that's the cap firing, not a bug. Per-tool caps still run first; this is a backstop, not the primary ceiling.
-- **Oversized bash output offloads to a file (`50KB`, fires before the 256 KiB cap)**: both bash surfaces offload to a file when the assembled result exceeds `TOOL_RESULT_OFFLOAD_THRESHOLD` (`@bound/shared/src/offload.ts`, `50_000` chars), rather than middle-cutting it. The full output is written to disk and the in-context result is replaced with a short pointer (`buildOffloadMessage`, shared) telling the agent where to `cat`/`grep` it — so nothing is lost, it just leaves the context window. The destination is the only surface-specific bit: the sandbox/agent path writes to a VFS path (`/home/user/.tool-results/<toolCallId>.txt`, `offloadToolResultPath` in `packages/agent/src/tool-result-offload.ts`, applied in the agent-loop dispatch offload loop), and `boundless_bash` writes to a real local temp file (`os.tmpdir()/bound-tool-results/<uuid>.txt`, `offloadIfOversized` in `packages/less/src/tools/bash.ts`). Threshold and pointer-message format live in `@bound/shared` so the two surfaces cannot drift. If `boundless_bash` can't write the file, it falls back to inline output and the universal 256 KiB `capToolResultContent` backstop still applies. Historically (`cfe8aa22` … `3b088b77`) both surfaces middle-cut each stream at ~50KB via `truncateStreamOutput`; that fought the agent-loop offload loop (the cut shaved bytes below the offload threshold before offload saw them) and was reverted in favor of offload-on-both-surfaces. If bash output is missing and you see a `[Tool result offloaded: …]` pointer, that's this — read the named file.
-- **`query` accepts PRAGMAs**: the agent `query` tool allows `SELECT` plus a small read-only PRAGMA allowlist (`table_info`, `index_list`, `foreign_key_list`, `integrity_check`, etc.; see `SAFE_PRAGMA_ALLOWLIST` in `packages/agent/src/tools/query.ts`). The `PRAGMA x = y` assignment form is rejected regardless of name. Anything else (INSERT/UPDATE/DELETE/ATTACH/unknown PRAGMA) errors out. `LIMIT 1000` is still auto-appended to SELECTs but skipped for PRAGMAs.
-- **Thread `interface` tag**: POST `/api/threads` accepts an optional body `{ interface?: string }` (default `"web"`, regex `/^[a-z0-9-]+$/i`, ≤32 chars; 400 otherwise). The value lives in `threads.interface` and flows into the agent's volatile context as a platform tag. `isUserFacingInterface()` in `@bound/shared` (`packages/shared/src/interface-tags.ts`) is the single gate for "should the agent see `platform: <name>`?" — currently allows everything except `scheduler`, `mcp`, and `webhook` (the canonical exclusion list lives in the same module as `NON_USER_FACING_INTERFACES`, also used by the `POST /api/threads` and `POST /api/mcp/threads` color cycle to skip system-driven threads when picking the next palette color). Adding a new user-facing surface usually needs no code change beyond setting the tag on thread creation; adding a new system-driven surface means extending the filter. `BoundClient.createThread(options?: { interface?: string })` is the client-side counterpart — `boundless` sets `interface: "boundless"`.
-- **Cross-provider `tool_use` portability (id and name)**: `tool_use.id` and `tool_use.name` values persist in the `messages` table and survive provider switches. Anthropic enforces `^[a-zA-Z0-9_-]+$` on `tool_use.id` and rejects the entire request when a historical id contains anything else; Bedrock Converse caps both `toolUseId` and `toolUse.name` at 64 chars and validates them against `[a-zA-Z0-9_.:-]+` and `[a-zA-Z0-9_-]{1,64}` respectively. Two pathologies have been observed in production:
-   1. **Charset (Kimi/Moonshot fallback ids)**: the OpenAI-compatible path, where the AI SDK synthesizes ids from `function.name + index` when the upstream emits no explicit id, routinely produces ids of the shape `functions.<name>:<index>` containing `.` and `:`. When such a thread later routes to opus or Bedrock-Anthropic, the API returns `messages.N.content.M.tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'` and the turn fails.
-   2. **Length+charset (Kimi/Moonshot template-token leakage, thread `81bd5e8d` 2026-05-21)**: the same path occasionally streams Moonshot's own `<|tool_call_argument_begin|>` template token mid-stream as plain text, and the AI SDK collapses the entire template fragment into the synthesized `tool_use.id` and `tool_use.name`. Persisted ContentBlocks end up with 200+ char id and name fields containing `<`, `|`, `>`, `{`, `}`, `"`, spaces, etc. The next turn fails with 6 simultaneous Bedrock validation errors (`Member must have length less than or equal to 64`, `Member must satisfy regular expression pattern: …`) on both the `toolUse` and the matching `toolResult`. The thread cannot self-recover and the task cannot be restarted without losing state.
-
-  **Fix:** universal sanitization in two layers, both deterministic and idempotent.
-  - **Streaming boundary** (`mapChunks` in `packages/llm/src/ai-sdk-bridge.ts`): `tool-input-start` / `-delta` / `-end` events run their `id` and `name` through `sanitizeToolUseId` and `sanitizeToolName` (the latter from `stream-utils.ts`) before yielding the corresponding `tool_use_start` / `_args` / `_end` `StreamChunk`s. Fresh tool calls therefore land in the DB already wire-legal. A `logger.warn` fires only when length truncation occurs (`sanitized.length < input.length`); charset-only diffs are expected steady state for AI SDK fallback ids and would spam logs. Both `BedrockDriver` and `OpenAICompatibleDriver` pass `providerName` into `MapChunksOptions` so the warn log identifies which provider is leaking.
-  - **Read boundary** (`toModelMessages` in the same file): same sanitization is re-applied at all four sites — assistant `tool_call`-role tool_use parts, inline assistant content tool_use parts, `tool_result.tool_use_id`, and the `toolNameById` index keys + values. Idempotent on freshly-sanitized data, but **the recovery mechanism for already-poisoned historical rows**: a thread that pre-dates this fix self-heals on the next assembly without manual DB surgery or task recreation. The original DB content is preserved for auditability — only the wire projection is rewritten.
-
-  `sanitizeToolUseId` (`[a-zA-Z0-9_-]{1,64}`, exported alongside `MAX_TOOL_USE_ID_LENGTH`) and `sanitizeToolName` (`[a-zA-Z0-9_-]{1,64}` with `unknown` empty fallback) both target the strict subset across every supported provider's accepted charset and length cap, so universal sanitization is lossless on the wire and avoids per-provider branching. When adding a new id-bearing or name-bearing field at the bridge boundary, route it through these helpers too.
-
-- **`thinking`-signature portability**: `thinking` ContentBlocks persist in the `messages` table and replay on later turns the same way `tool_use` ids do. Bedrock-Anthropic and Anthropic-direct reject any `thinking`/`reasoning` block on the wire that lacks its cryptographic `signature` with `messages.N.content.M.thinking.signature: Field required` (Bedrock `ValidationException`, 400, not retryable) — the whole turn fails, and there is no signature to synthesize after the fact. A persisted thinking block can lack a signature two ways:
-   1. **Same-provider signature loss** — a turn that streamed reasoning text but never captured the signature event. This is the observed 2026-06-06 incident: a fresh thread targeting opus (`global.anthropic.claude-opus-4-8`) from the start, where exactly ONE assistant turn (of 679 on that host, 14,085 cluster-wide) persisted a thinking block with no signature, immediately before the failing replay. A singleton, not a systematic capture or relay bug — the root cause of the loss on that one turn is unconfirmed (the block's thinking text ended mid-sentence and a text block resumed mid-sentence, consistent with an interrupted/interleaved reasoning capture, but unproven).
-   2. **Cross-provider replay** — a thinking block produced by a non-Anthropic model (local, OpenAI-compatible, non-Anthropic Bedrock), legal with no signature for the model that made it, that later routes to an Anthropic target.
-
-  The fix covers both, since the illegal wire state is identical regardless of origin.
-
-  **Fix (read boundary, `buildReasoningPart` in `packages/llm/src/ai-sdk-bridge.ts`):** when the target requires a signature (`reasoningProviderOptions` is `"bedrock"` or `"anthropic"`) and the block has neither a `signature` nor a Bedrock-replayable `redacted_data`, the reasoning part is dropped — both `toModelMessages` call sites (assistant `tool_call`-role parts and inline assistant content parts) skip the `null` return. Dropping is the only legal move and is safe: an assistant `tool_call` turn carrying no reasoning block is accepted by Bedrock-Anthropic even when a `tool_result` immediately follows it — verified against production, where 34,847 opus `tool_call` turns with no thinking block at all have replayed without error. The inline text / tool_use in the same assistant message is unaffected, so the turn keeps its substance and loses only the unreplayable reasoning trace. Like the `tool_use` sanitization, this is the **recovery mechanism for already-poisoned historical rows** — any thread holding a signature-less thinking block (whether from cross-provider replay or a one-off same-provider capture loss) self-heals on the next assembly against a strict provider without DB surgery. A Bedrock redacted-reasoning block (`redacted_data`, no signature) IS legally replayable via `providerOptions.bedrock.redactedData` and survives; non-signature targets (`reasoningProviderOptions: null` / unset) never demand a signature, so signature-less blocks replay as bare reasoning text there.
-
-- **`boundless_bash` runs inside a filesystem sandbox by default**: shell commands launched through boundless's `bash` tool execute inside Microsoft [mxc](https://github.com/microsoft/mxc) (seatbelt on macOS, bubblewrap on Linux, IsolationSession on Windows), which confines writes to the working directory and the system temp dir while leaving reads open. On Windows, boundless first tries BaseContainer (`containment: "process"`), but its kernel entry point `Experimental_CreateProcessInSandbox` returns `E_NOTIMPL` on current builds (including 25H2 build 26300 Pro), so it falls back to IsolationSession — a stateful backend that provisions a short-lived Windows agent user and enforces the same write boundary. Only if IsolationSession itself fails does boundless degrade to `onUnavailable` (passthrough by default). Three consequences bite during development. (1) On a host where neither backend can start, boundless degrades to `onUnavailable` (passthrough) and runs unsandboxed; tests that rely on sandbox enforcement behave differently there. (2) A test that writes outside cwd or `$TMPDIR` — most commonly a hardcoded `/tmp/...` path, which on macOS resolves through the `/tmp` → `/private/tmp` symlink to a location distinct from the per-user `$TMPDIR` the sandbox actually allows — fails with `EPERM` when the suite is run *through* boundless, even though it passes in a plain terminal. This is the runtime enforcement behind the `os.tmpdir()` testing convention above. (3) The sandbox keeps `.git/hooks` and `.git/config` inside the working tree **read-only** even though the rest of cwd is writable — they hold scripts and config directives that Git later runs as you outside the sandbox, so a run can't plant a hook that fires on your next `git`. This is enforced on Linux (bubblewrap last-mount-wins) and for boundless's in-process file tools on every platform **except Windows**: no mxc Windows backend can yet express "readable but not writable" for a subpath of a writable parent (IsolationSession and BaseContainer both grant write to a subtree with no subpath deny; the AppContainer+DACL fallback has only additive allow-ACLs plus a full-access deny that would also block Git's reads of config; IsolationSession's folder-share model gives the writable parent grant precedence over an overlapping readonly subpath), so `.git` stays writable on Windows until mxc grows a write-only-deny primitive. The carve-out logic and the Windows gate live in `computeGitProtectedPaths` (`packages/less/src/tools/sandbox-policy.ts`). Disable per session with `"sandbox": false` in `~/.bound/less/config.json`, or set `onUnavailable` / `writablePaths` for finer control (see the README's boundless section).
+- [AI SDK `usage.inputTokens` is the summed total, not non-cached input](docs/gotchas.md#ai-sdk-inputtokens-is-the-summed-total-not-non-cached-input)
+- [`global.fetch` pollution in tests](docs/gotchas.md#globalfetch-pollution-in-tests)
+- [TUI frame-capture tests are sensitive to ambient stdout state](docs/gotchas.md#tui-frame-capture-tests-and-ambient-stdout-state)
+- [SQLite `datetime()` vs ISO 8601](docs/gotchas.md#sqlite-datetime-vs-iso-8601)
+- [Zod v4 `z.record` requires two arguments](docs/gotchas.md#zod-v4-zrecord-needs-two-arguments)
+- [Typecheck is per-package](docs/gotchas.md#typecheck-is-per-package)
+- [`bun test packages/cli` prints init stdout — check the exit code](docs/gotchas.md#bun-test-cli-prints-init-stdout)
+- [Mixed positional + flag arg parsing](docs/gotchas.md#mixed-positional-and-flag-arg-parsing)
+- [`loopContextStorage` (AsyncLocalStorage) scope](docs/gotchas.md#loopcontextstorage-scope-asynclocalstorage)
+- [`bound-mcp` polling can return stale turns](docs/gotchas.md#bound-mcp-polling-can-return-stale-turns)
+- [bound CLI config and data dirs](docs/gotchas.md#bound-cli-config-and-data-dirs)
+- [Stale binaries](docs/gotchas.md#stale-binaries)
+- [Universal 256 KiB tool-result cap](docs/gotchas.md#universal-256-kib-tool-result-cap)
+- [Oversized bash output offloads to a file](docs/gotchas.md#oversized-bash-output-offloads-to-a-file)
+- [`query` accepts PRAGMAs](docs/gotchas.md#query-accepts-pragmas)
+- [Thread `interface` tag](docs/gotchas.md#thread-interface-tag)
+- [Cross-provider `tool_use` portability (id and name)](docs/gotchas.md#cross-provider-tool_use-portability-id-and-name)
+- [`thinking`-signature portability](docs/gotchas.md#thinking-signature-portability)
+- [`boundless_bash` runs inside a filesystem sandbox by default](docs/gotchas.md#boundless_bash-runs-inside-a-filesystem-sandbox-by-default)
 
 ## Recurring Checklists
 
@@ -314,13 +185,15 @@ Accumulated the hard way — check here before writing a bug report.
 - `bun run typecheck` clean across all packages
 - Relevant tests added or updated
 - For user-visible changes: update `README.md` and/or `docs/design/*`
-- For new invariants or gotchas: add them here
+- For new invariants or gotchas: add them to [docs/invariants.md](docs/invariants.md) / [docs/gotchas.md](docs/gotchas.md) and add an index line here
 
 See the git log for commit message style — concise, conventional-commits-ish (`feat(web):`, `fix(llm):`, etc.), present tense.
 
 ## Further Reading
 
 - [README.md](README.md) — user-facing overview and quickstart
+- [docs/invariants.md](docs/invariants.md) — full explanations of the critical invariants indexed above
+- [docs/gotchas.md](docs/gotchas.md) — full writeups of the common gotchas indexed above
 - [docs/design/architecture.md](docs/design/architecture.md) — package dep graph and data flow
 - [docs/design/core-infrastructure.md](docs/design/core-infrastructure.md) — schema, DI, config, outbox internals
 - [docs/design/sync-protocol.md](docs/design/sync-protocol.md) — Ed25519, HLC, reducers, relay
