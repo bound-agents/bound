@@ -200,7 +200,12 @@ describe("boundless_bash", () => {
 
 	it("handles timeout parameter when provided", async () => {
 		const result = await bashTool(
-			{ command: cmd.echoQuick, timeout: 1000 },
+			// This asserts a quick command with a provided timeout completes — not
+			// that the timeout fires. The value must clear the shell's cold-start
+			// floor: POSIX `sh` starts instantly, but Windows PowerShell takes
+			// ~1.1-1.3s just to launch, so a 1000ms budget would SIGTERM the shell
+			// before `echo` ran (exit 143). 10s gives both a wide margin.
+			{ command: cmd.echoQuick, timeout: isPosix ? 1000 : 10000 },
 			new AbortController().signal,
 			tempDir,
 		);
