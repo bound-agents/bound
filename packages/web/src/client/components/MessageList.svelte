@@ -141,7 +141,7 @@ $effect(() => {
 
 // --- Scroll-to-message (context-panel turn click) ---
 // Mirrors the turn-range scroll above but keys off a specific message id and
-// deliberately does NOT set `turnRange`, so no rows are dimmed — just a jump.
+// deliberately does NOT set `turnRange`, so no rows are dimmed â just a jump.
 let prevScrollNonce = -1;
 $effect(() => {
 	const req = scrollRequest;
@@ -168,7 +168,7 @@ $effect(() => {
 	});
 });
 
-// Build a lookup from tool_use id → tool_result message so ToolCallCard can
+// Build a lookup from tool_use id â tool_result message so ToolCallCard can
 // surface the result inline beneath its originating tool_use row.
 interface ToolResultMsg {
 	content: string;
@@ -200,8 +200,8 @@ const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
 // Anchor each live MCP App panel beneath the display item carrying the tool_use
 // that spawned it (instance.callId === the persisted tool_use.id). `perItem`
 // keys panels by display-item key for inline render; `trailing` holds instances
-// with no matching item yet — in-flight calls whose tool_call message hasn't
-// streamed in — which fall to the end of the stream until their row arrives.
+// with no matching item yet â in-flight calls whose tool_call message hasn't
+// streamed in â which fall to the end of the stream until their row arrives.
 const anchoredInstances = $derived.by(
 	(): {
 		perItem: Map<string, McpAppInstance[]>;
@@ -235,7 +235,7 @@ function isItemInRange(item: DisplayItem): boolean {
 	return tsInRange(item.earliest, turnRange);
 }
 
-// Render time as HH:MM in the local timezone — matches the reference
+// Render time as HH:MM in the local timezone â matches the reference
 // signage aesthetic (tabular-numeric mono, 24-hour).
 function fmtTime(iso: string | undefined): string {
 	if (!iso) return "";
@@ -401,6 +401,18 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 		align-items: flex-start;
 		position: relative;
 		transition: opacity 0.3s ease;
+		/* #175: skip layout + paint for rows outside the viewport. On a thread
+		 * with 1k+ turns, a window resize otherwise reflows every row
+		 * synchronously, which is the reported lag; content-visibility scopes
+		 * the reflow to on-screen rows only. `contain-intrinsic-size: auto <len>`
+		 * reserves a placeholder height for not-yet-rendered rows (keeping the
+		 * scrollbar stable) and the `auto` keyword makes the browser remember
+		 * each row's real height once measured, so scroll position stays
+		 * accurate after a row has been seen. Rows stay in the DOM, so
+		 * querySelector / getBoundingClientRect (turn-scroll and MCP-panel
+		 * anchoring above) are unaffected. */
+		content-visibility: auto;
+		contain-intrinsic-size: auto 96px;
 	}
 
 	.turn-row.dimmed {
