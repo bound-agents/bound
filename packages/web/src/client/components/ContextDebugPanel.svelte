@@ -416,6 +416,23 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			{/if}
 
+			{#if selectedTurn.context_debug.relevantMemory && selectedTurn.context_debug.relevantMemory.length > 0}
+				<div class="cross-section">
+					<div class="section-kicker">
+						Relevant memory injected · {selectedTurn.context_debug.relevantMemory.length}
+					</div>
+					<div class="rmem-list">
+						{#each selectedTurn.context_debug.relevantMemory as rm (rm.key)}
+							<div class="rmem-row" class:rmem-forgotten={rm.deleted}>
+								<span class="rmem-tier mono">{rm.deleted ? "forgotten" : rm.tier}</span>
+								<span class="rmem-key mono">{rm.key}</span>
+								<span class="rmem-tag mono">{rm.tag}</span>
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
 			<div class="section-kicker">
 				Context usage
 			</div>
@@ -874,6 +891,54 @@ function openCrossThread(src: CrossThreadSource): void {
 		font-family: var(--font-mono);
 		font-size: 10.5px;
 		color: var(--ink-3);
+	}
+
+	.rmem-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.rmem-row {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 5px 8px;
+		background: var(--paper-2);
+		border: 1px solid var(--rule-soft);
+		font-size: 11px;
+	}
+
+	.rmem-tier {
+		flex: 0 0 auto;
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--ink-3);
+		min-width: 56px;
+	}
+
+	.rmem-key {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--ink);
+	}
+
+	.rmem-tag {
+		flex: 0 0 auto;
+		font-size: 10px;
+		color: var(--ink-3);
+	}
+
+	.rmem-forgotten {
+		border-color: var(--warn);
+	}
+
+	.rmem-forgotten .rmem-tier {
+		color: var(--warn);
 	}
 
 	.footer-fields {

@@ -6,6 +6,7 @@ import type {
 	ContextSection,
 	CrossThreadSource,
 	Message,
+	RelevantMemoryDebugEntry,
 } from "@bound/shared";
 import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
@@ -60,6 +61,7 @@ import {
 	resolveVc15Tunables,
 	resolveVc27Cap,
 	selectRelevantMemory,
+	toRelevantMemoryDebug,
 	wrapVolatileContext,
 } from "./summary-extraction.js";
 import { buildStaticSystemParts } from "./system-parts";
@@ -268,6 +270,13 @@ export interface VolatileContext {
 	 * the drift is in the renderer (not in input collection).
 	 */
 	stablePrefixInputFingerprint: string;
+	/**
+	 * R-VC27 relevant-memory selection rendered into this turn's varying tail,
+	 * projected to the title-only debug shape (#179). Propagated up to
+	 * `ContextDebugInfo.relevantMemory` by `assembleContext` (cold) and read
+	 * directly by the agent loop's warm path. Empty array when no entry matched.
+	 */
+	relevantMemory: RelevantMemoryDebugEntry[];
 }
 
 interface VolatileSectionInputs {
@@ -779,6 +788,15 @@ export function buildVolatileContext(params: {
 	// Live State.
 	const enrichmentStartIdx = suffixLines.length;
 	const varyingEnrichmentStartIdx = varyingLines.length;
+	// Hoisted so the R-VC27 selection can ride onto the returned VolatileContext
+	// (and from there onto ContextDebugInfo.relevantMemory, #179) without
+	// re-running the keyword+graph pipeline at the debug-construction site.
+	const relevantMemorySelection = selectRelevantMemory(
+		flattenRecencyEntries(enrichmentTiers),
+		pinned.entries,
+		summaries.entries,
+		resolveVc27Cap(),
+	);
 	const { stableLines: enrichmentStableLines, varyingLines: enrichmentVaryingLines } =
 		composeVolatileSections({
 			db: params.db,
@@ -794,12 +812,7 @@ export function buildVolatileContext(params: {
 			taskDigestEntries,
 			fileEntries,
 			advisories,
-			recencyEntries: selectRelevantMemory(
-				flattenRecencyEntries(enrichmentTiers),
-				pinned.entries,
-				summaries.entries,
-				resolveVc27Cap(),
-			),
+			recencyEntries: relevantMemorySelection,
 			budgetPressure: false,
 			nowMs,
 		});
@@ -963,6 +976,7 @@ export function buildVolatileContext(params: {
 		crossThreadSources,
 		totalMemCount,
 		stablePrefixInputFingerprint,
+		relevantMemory: toRelevantMemoryDebug(relevantMemorySelection),
 	};
 }
 
@@ -1442,6 +1456,10 @@ Original output was too large for the context window. If you need the full conte
 	// accounting and warm-path token reuse.
 	let crossThreadSources: CrossThreadSource[] | undefined;
 	let suffixContent: string | undefined;
+	// R-VC27 selection surfaced into ContextDebugInfo.relevantMemory (#179).
+	// Set by whichever volatile path ran (primary via buildVolatileContext,
+	// no-history inline below); referenced at both debug return sites.
+	let relevantMemoryDebug: RelevantMemoryDebugEntry[] | undefined;
 	// Stable-prefix fingerprints for the drift detector.
 	// Populated by the primary cold path (via `buildVolatileContext`)
 	// and the no-history task path (inline below); left undefined on
@@ -1516,6 +1534,7 @@ Original output was too large for the context window. If you need the full conte
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
+		relevantMemoryDebug = volatileCtx.relevantMemory;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
 		// an adjacent user message wrapped in <system-context>; uncached. The
@@ -1570,6 +1589,16 @@ Original output was too large for the context window. If you need the full conte
 		enrichmentTiers = inputs.tiers;
 		taskDigestLinesSnapshot = inputs.taskDigestLines;
 
+		// R-VC27 selection for the no-history path (#179): hoisted so it can
+		// ride onto ContextDebugInfo.relevantMemory at the return sites below.
+		const nhRelevantMemory = selectRelevantMemory(
+			flattenRecencyEntries(inputs.tiers),
+			inputs.pinned.entries,
+			inputs.summaries.entries,
+			resolveVc27Cap(),
+		);
+		relevantMemoryDebug = toRelevantMemoryDebug(nhRelevantMemory);
+
 		// Compose the three sections using the shared helper. The noHistory
 		// path mirrors the primary path's split: stable subsections fold into
 		// systemParts (cacheable cross-thread), varying tail rides as a
@@ -1588,12 +1617,7 @@ Original output was too large for the context window. If you need the full conte
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
 			advisories: inputs.advisories,
-			recencyEntries: selectRelevantMemory(
-				flattenRecencyEntries(inputs.tiers),
-				inputs.pinned.entries,
-				inputs.summaries.entries,
-				resolveVc27Cap(),
-			),
+			recencyEntries: nhRelevantMemory,
 			budgetPressure: false,
 			nowMs,
 		});
@@ -2114,6 +2138,7 @@ Original output was too large for the context window. If you need the full conte
 					stablePrefixHash: hashSystemPromptString(systemPrompt),
 					...(stablePrefixInputFingerprint !== undefined ? { stablePrefixInputFingerprint } : {}),
 					...(progressiveFidelity ? { progressiveFidelity } : {}),
+					...(relevantMemoryDebug ? { relevantMemory: relevantMemoryDebug } : {}),
 				},
 			};
 		}
@@ -2149,6 +2174,7 @@ Original output was too large for the context window. If you need the full conte
 			budgetPressure,
 			truncated: truncatedCount,
 			...(crossThreadSources ? { crossThreadSources } : {}),
+			...(relevantMemoryDebug ? { relevantMemory: relevantMemoryDebug } : {}),
 		},
 	};
 }

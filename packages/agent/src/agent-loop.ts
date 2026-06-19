@@ -1095,6 +1095,7 @@ export class AgentLoop {
 								effectiveTruncationRatio: adaptiveTruncationRatio,
 								measuredInflation,
 								warmCompactionTokensSaved,
+								relevantMemory: volatileContext.relevantMemory,
 								cacheMarkers: buildCacheMarkers({
 									sections: warmSections,
 									messagePlacement: rollingPlacement ?? {
