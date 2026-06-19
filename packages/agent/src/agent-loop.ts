@@ -181,6 +181,45 @@ export const MAX_CONSECUTIVE_TRUNCATED_TURNS = 5;
 export const MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS = 12;
 
 /**
+ * Circuit breaker for consecutive turns whose tool calls return the
+ * byte-identical ERROR result. Distinct from MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS
+ * above, which keys on the CALL inputs (name + args) and resets the moment the
+ * model varies its args. The 2026-06-12 connector-name-contamination spin
+ * (thread 53c7635e, gpt-5.5) defeated the input-signature breaker exactly that
+ * way: the model emitted ~26 calls under the name "connector" with *different*
+ * skill/memory arg schemas each turn, so the input signature kept resetting
+ * while every call returned the identical Zod validation error (an enum error
+ * enumerates the *valid* options, not the rejected value, so it is
+ * input-independent). The loop never broke — the same error 26 times across
+ * ~4 minutes, two user cancels, no self-recovery. This breaker keys on the
+ * ERROR RESULT instead, and only counts turns where EVERY tool call errored
+ * (a mixed turn means the model is getting *some* useful signal — not a spin).
+ * It can only fire post-execution (the error isn't known until the tool runs),
+ * unlike the two pre-execution breakers above.
+ */
+export const MAX_CONSECUTIVE_ERROR_TOOL_CALLS = 12;
+
+/**
+ * Before the hard abort at MAX_CONSECUTIVE_ERROR_TOOL_CALLS, inject a single
+ * corrective developer nudge at this count — re-surfacing the repeated error as
+ * an imperative directive (the model is evidently ignoring the identical
+ * tool_result it sees every turn). The nudge fires once per error chain and
+ * resets when the chain breaks, so a model that recovers never sees it again.
+ */
+export const ERROR_SIGNATURE_NUDGE_AT = 5;
+
+/**
+ * Excerpt a tool error for inclusion in a loop-guard nudge/abort notice. Keeps
+ * the head (where validation errors enumerate the valid options) and caps the
+ * length so a large error body can't bloat the developer message.
+ */
+function truncateForNudge(content: string): string {
+	const MAX = 400;
+	const trimmed = content.trim();
+	return trimmed.length <= MAX ? trimmed : `${trimmed.slice(0, MAX)}…`;
+}
+
+/**
  * Scale silence timeout based on estimated context size.
  * With a 10-minute base timeout, only very large contexts (100k+) need
  * additional time for cold-cache processing.
@@ -576,6 +615,12 @@ export class AgentLoop {
 		// Circuit breaker state for MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS guardrail.
 		let consecutiveDuplicateToolCalls = 0;
 		let lastToolCallSignature: string | null = null;
+		// Circuit breaker state for MAX_CONSECUTIVE_ERROR_TOOL_CALLS guardrail.
+		// Keys on the byte-identical ERROR result (not the call inputs), and
+		// fires one corrective nudge at ERROR_SIGNATURE_NUDGE_AT before aborting.
+		let consecutiveErrorSignature = 0;
+		let lastErrorSignature: string | null = null;
+		let errorNudgeInjected = false;
 
 		this.ctx.logger.info("[agent-loop] Starting", {
 			threadId: this.config.threadId,
@@ -2307,6 +2352,26 @@ export class AgentLoop {
 						this.config.onActivity?.();
 					}
 
+					// Error-result circuit breaker (MAX_CONSECUTIVE_ERROR_TOOL_CALLS).
+					// Computed HERE — on the raw result content, before the offload
+					// loop and duration-suffix loop below mutate it (the duration
+					// suffix embeds a per-turn millisecond count, which would defeat a
+					// byte-identical comparison). Only a turn where EVERY tool call
+					// errored counts toward the chain: a mixed turn means the model is
+					// getting *some* useful signal back and isn't purely spinning.
+					const turnErrorSignature =
+						toolResults.length > 0 && toolResults.every((r) => r.exitCode !== 0)
+							? toolResults.map((r) => `${r.toolCall.name}\u0000${r.content}`).join("\u0001")
+							: null;
+					if (turnErrorSignature !== null && turnErrorSignature === lastErrorSignature) {
+						consecutiveErrorSignature++;
+					} else {
+						consecutiveErrorSignature = turnErrorSignature !== null ? 1 : 0;
+						lastErrorSignature = turnErrorSignature;
+						// New (or no) error chain — let a fresh corrective nudge fire.
+						errorNudgeInjected = false;
+					}
+
 					if (this.sandbox.writeFile) {
 						for (const result of toolResults) {
 							if (result.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
@@ -2470,6 +2535,61 @@ export class AgentLoop {
 					// malformed prefill continuation.
 
 					toolPersistSpan.end();
+
+					// Error-result circuit breaker — acted on HERE, after the
+					// tool_result rows are persisted (so a nudge/abort notice lands
+					// AFTER the result it refers to, not before). The signature and
+					// counter were computed up in TOOL_EXECUTE on the raw content.
+					if (consecutiveErrorSignature >= MAX_CONSECUTIVE_ERROR_TOOL_CALLS) {
+						const lastResult = toolResults[toolResults.length - 1];
+						const errToolNames = [...new Set(toolResults.map((r) => r.toolCall.name))].join(", ");
+						this.ctx.logger.error("[agent-loop] Aborting: consecutive identical tool-error loop", {
+							threadId: this.config.threadId,
+							taskId: this.config.taskId ?? null,
+							toolNames: errToolNames,
+							consecutiveTurns: consecutiveErrorSignature,
+							threshold: MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
+							turn: turnCount,
+						});
+						const noticeId = insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "developer",
+								content: `[Agent loop aborted] The "${errToolNames}" tool returned the identical error ${consecutiveErrorSignature} turns in a row, while the call arguments kept changing — the model is stuck on a failing call without acting on the error. Last error: ${truncateForNudge(lastResult?.content ?? "")} Aborting to prevent runaway token usage.`,
+								hostOrigin: this.ctx.siteId,
+							},
+							this.ctx.siteId,
+						);
+						this.broadcastMessage(noticeId);
+						this.messagesCreated++;
+						continueLoop = false;
+						break;
+					}
+
+					if (!errorNudgeInjected && consecutiveErrorSignature >= ERROR_SIGNATURE_NUDGE_AT) {
+						// One corrective developer nudge before the harder abort above —
+						// re-surface the repeated error as an imperative directive, since
+						// the model is evidently not acting on the identical tool_result
+						// it already sees each turn.
+						const lastResult = toolResults[toolResults.length - 1];
+						const errToolNames = [...new Set(toolResults.map((r) => r.toolCall.name))].join(", ");
+						const nudge = `[Loop guard] The "${errToolNames}" tool has returned the same error ${consecutiveErrorSignature} times in a row. Re-issuing the call with different arguments has not changed the result. Stop and re-read the error below — it states what is wrong and (for a validation error) enumerates the valid parameter values. If you meant a different tool, call that tool instead. Do not re-issue this same failing call. Error: ${truncateForNudge(lastResult?.content ?? "")}`;
+						const nudgeId = insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "developer",
+								content: nudge,
+								hostOrigin: this.ctx.siteId,
+							},
+							this.ctx.siteId,
+						);
+						this.broadcastMessage(nudgeId);
+						this.messagesCreated++;
+						llmMessages.push({ role: "developer", content: nudge });
+						errorNudgeInjected = true;
+					}
 
 					if (this.sandbox.checkMemoryThreshold) {
 						const memCheck = this.sandbox.checkMemoryThreshold();
