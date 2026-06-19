@@ -24,6 +24,51 @@ export interface EventWakeupContent {
 const DEFAULT_FALLBACK = "Execute scheduled task.";
 
 /**
+ * #177: webhook envelopes are stored as a JSON string whose `body` field holds
+ * the raw request body verbatim (see `webhook-handler.ts`). For JSON webhooks
+ * (GitHub, Stripe, …) that body is itself JSON, so it lands double-escaped
+ * inside the envelope — every quote in the event becomes `\"` on the wire,
+ * inflating the wakeup with escape noise the model has to mentally un-escape.
+ *
+ * Parse the envelope and, when its `body` is a JSON string, inline the parsed
+ * value so the wakeup carries structured JSON rather than an escaped blob.
+ * Provider-agnostic: keyed only on the envelope's own `body` field, with no
+ * webhook-source-specific knowledge. Anything that doesn't fit the shape —
+ * a payload that isn't JSON, an envelope without a string `body`, or a body
+ * that isn't itself JSON (form-encoded, plain text) — is returned verbatim, so
+ * this can only ever reduce bloat, never lose or corrupt a payload.
+ */
+function inlineWebhookEnvelopeBody(rawPayload: string): string {
+	let envelope: unknown;
+	try {
+		envelope = JSON.parse(rawPayload);
+	} catch {
+		return rawPayload; // not JSON — leave verbatim
+	}
+	if (
+		envelope === null ||
+		typeof envelope !== "object" ||
+		Array.isArray(envelope) ||
+		typeof (envelope as Record<string, unknown>).body !== "string"
+	) {
+		return rawPayload; // not the envelope shape we fold
+	}
+	const env = envelope as Record<string, unknown>;
+	let parsedBody: unknown;
+	try {
+		parsedBody = JSON.parse(env.body as string);
+	} catch {
+		return rawPayload; // body isn't JSON — nothing to un-nest
+	}
+	// A body that parses to a bare scalar ("ok", 42, true) gains nothing from
+	// inlining and would lose its string-ness; only fold structured values.
+	if (parsedBody === null || typeof parsedBody !== "object") {
+		return rawPayload;
+	}
+	return JSON.stringify({ ...env, body: parsedBody });
+}
+
+/**
  * Builds wakeup content for an event task, folding in any pending
  * relay_inbox envelopes for the task's thread (the path used by the
  * webhook intake pipeline in packages/web/src/server/webhook-handler.ts,
@@ -72,7 +117,7 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 				entries.length === 1
 					? `Envelope (received ${entry.received_at}):`
 					: `Envelope ${i + 1} of ${entries.length} (received ${entry.received_at}):`;
-			return `${heading}\n${entry.payload}`;
+			return `${heading}\n${inlineWebhookEnvelopeBody(entry.payload)}`;
 		})
 		.join("\n\n");
 
