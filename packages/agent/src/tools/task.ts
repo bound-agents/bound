@@ -8,11 +8,20 @@ import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 function parseTimeOffset(offset: string): Date {
 	const now = new Date();
+
+	// #181: immediate dispatch. A deferred task whose next_run_at is at-or-before
+	// now is picked up on the next scheduler poll, so "fire now" is expressible as
+	// a zero offset. Accept the natural spellings ("now", "immediate", "0") rather
+	// than forcing the unintuitive "0s".
+	if (/^(now|immediate|0)$/i.test(offset.trim())) {
+		return now;
+	}
+
 	const match = offset.match(/^(\d+)([smhd])$/);
 
 	if (!match) {
 		throw new Error(
-			`Invalid time offset format: ${offset}. Expected a positive integer followed by a unit — s, m, h, or d (e.g. '5s', '5m', '2h', '1d').`,
+			`Invalid time offset format: ${offset}. Expected 'now' (or 'immediate'/'0') for immediate dispatch, or a positive integer followed by a unit — s, m, h, or d (e.g. '5s', '5m', '2h', '1d').`,
 		);
 	}
 
@@ -52,7 +61,9 @@ const taskSchema = z.object({
 	delay: z
 		.string()
 		.optional()
-		.describe("Deferred time offset (e.g., '5m', '2h', '1d') (for schedule)"),
+		.describe(
+			"Deferred time offset (e.g., '5m', '2h', '1d'), or 'now'/'immediate' for immediate dispatch on the next scheduler poll (for schedule)",
+		),
 	on_event: z.string().optional().describe("Event name for event-driven tasks (for schedule)"),
 	payload: z.string().optional().describe("Task payload as JSON string (for schedule)"),
 	thread_id: z.string().optional().describe("Thread ID for task context (for schedule)"),

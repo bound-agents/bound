@@ -310,6 +310,46 @@ describe("Native Task Tool", () => {
 			expect(diff).toBeLessThan(2000); // within 2 seconds
 		});
 
+		it("should dispatch immediately when delay is 'now' (#181)", async () => {
+			const tool = createTaskTool(toolContext);
+			const result = await getExecute(tool)({
+				action: "schedule",
+				task_description: "Test immediate dispatch",
+				delay: "now",
+			});
+
+			expect(typeof result).toBe("string");
+			expect(result).not.toMatch(/Error/);
+
+			const taskId = result.trim();
+			const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
+			expect(task).not.toBeNull();
+
+			const triggerSpec = JSON.parse(task.trigger_spec);
+			expect(triggerSpec.type).toBe("deferred");
+
+			// next_run_at is at-or-before now, so the next scheduler poll picks it up.
+			expect(task.next_run_at).not.toBeNull();
+			const nextRun = new Date(task.next_run_at).getTime();
+			expect(nextRun).toBeLessThanOrEqual(Date.now() + 1000);
+			expect(nextRun).toBeGreaterThan(Date.now() - 5000);
+		});
+
+		it("should also accept '0' and 'immediate' as immediate dispatch (#181)", async () => {
+			const tool = createTaskTool(toolContext);
+			for (const delay of ["0", "immediate"]) {
+				const result = await getExecute(tool)({
+					action: "schedule",
+					task_description: `Test immediate via ${delay}`,
+					delay,
+				});
+				expect(result).not.toMatch(/Error/);
+				const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(result.trim()) as any;
+				expect(JSON.parse(task.trigger_spec).type).toBe("deferred");
+				expect(new Date(task.next_run_at).getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+			}
+		});
+
 		it("should list valid units when the delay format is unparseable", async () => {
 			const tool = createTaskTool(toolContext);
 			const result = await getExecute(tool)({
