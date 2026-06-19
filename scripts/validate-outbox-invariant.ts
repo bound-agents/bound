@@ -4,7 +4,8 @@
  * insertRow/updateRow/softDelete from @bound/core. Direct SQL mutations
  * (INSERT INTO, UPDATE, DELETE FROM) on synced tables are flagged as violations.
  *
- * Lines containing "// outbox-exempt" are cross-checked against CONTRIBUTING.md.
+ * Lines containing "// outbox-exempt" are cross-checked against the audit
+ * disposition table in docs/invariants.md (invariant #1 appendix).
  * Lines containing "// outbox-routed" are skipped (explicit createChangeLogEntry pattern).
  *
  * Run: bun run scripts/validate-outbox-invariant.ts
@@ -149,12 +150,12 @@ export async function main() {
 	const glob = new Glob("packages/*/src/**/*.ts");
 	const violations: Violation[] = [];
 
-	// Read CONTRIBUTING.md once
+	// Read the invariants doc once (holds the audit disposition table)
 	let contributing = "";
 	try {
-		contributing = readFileSync(resolve(root, "CONTRIBUTING.md"), "utf-8");
+		contributing = readFileSync(resolve(root, "docs/invariants.md"), "utf-8");
 	} catch {
-		console.warn("Warning: Could not read CONTRIBUTING.md for cross-check validation");
+		console.warn("Warning: Could not read docs/invariants.md for cross-check validation");
 	}
 
 	for await (const relPath of glob.scan({ cwd: root })) {

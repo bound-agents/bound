@@ -1,0 +1,93 @@
+# Common Gotchas
+
+Accumulated the hard way — check here before writing a bug report. [CONTRIBUTING.md](../CONTRIBUTING.md#common-gotchas) carries the one-line index; this file carries the full writeup for each.
+
+### AI SDK inputTokens is the summed total, not non-cached input
+
+Across both Bedrock and Anthropic providers, the AI SDK's `usage.inputTokens` aggregates `noCache + cacheRead + cacheWrite` into a single number. The non-cached portion (what AWS bills at the full input rate, matching CloudWatch's `InputTokenCount`) lives on `usage.inputTokenDetails.noCacheTokens`. `extractUsage` in `packages/llm/src/ai-sdk-bridge.ts` reads from `inputTokenDetails.noCacheTokens` first and falls back to `inputTokens` only when details are absent. This means `StreamChunk.done.usage.input_tokens` (and downstream `turns.tokens_in`) is non-cached only — the three fields `tokens_in`, `tokens_cache_read`, `tokens_cache_write` are independent, NOT components of the same total; the full wire prompt size is the sum of all three. The agent-loop's inflation EMA at `applyActualUsageToContextDebug` deliberately sums all three back into `actualTotalTokens` because cache reads + writes occupy wire bytes (they're discounted in pricing, not absent from the prompt). Pre-fix (commit `ae09084b`), `calculateTurnCost` double-charged the cached portion at the full input rate; real AWS cost was ~50% of what `turns.cost_usd` recorded for cache-heavy turns. Verified live via 7-day CloudWatch reconciliation: DB-derived `noCache = tokens_in_pre_fix - cache_read - cache_write` matched `InputTokenCount` within 0.4% on opus. Historical `turns.cost_usd` rows are not backfilled — they're recorded with the old semantic and self-correct as new turns land.
+
+### global.fetch pollution in tests
+
+Tests that mock `global.fetch` (e.g., Ollama driver tests) MUST save and restore it in `afterAll`, or sync integration tests start failing with mysterious network errors.
+
+### TUI frame-capture tests and ambient stdout state
+
+`packages/less` tests render Ink components through `ink-testing-library` and assert on the plain-text frame from `lastFrame()`. Two ambient `process.stdout` signals can corrupt those frames depending only on *how the suite was launched* — a piped run (CI, an editor task) renders clean, while a real terminal (an interactive `git commit` driving the pre-commit hook) does not, which reads as a "flake" that won't reproduce in isolation. (1) **Color level**: chalk derives its level from `process.stdout.isTTY` when `FORCE_COLOR` is unset, so the inverse-video cursor cell and colored tool prefixes leak SGR codes into the frame and break `toBe` / `toContain`. `scripts/test-preload.ts` pins `FORCE_COLOR=0` for the whole run to make this deterministic; don't rely on a test's own `isTTY` state for color. (2) **TTY-gated control writes**: a component that emits terminal control sequences (e.g. mouse-tracking enable) must gate on the TTY-ness of the stream it *writes to* — Ink's injected `useStdout()` stream — not the global `process.stdout`. Gating on `process.stdout.isTTY` while writing to the injected capture stream leaks the control bytes into `lastFrame()` whenever the ambient stdout is a TTY. See `useScrollableMessages.ts` and its regression test.
+
+### SQLite datetime vs ISO 8601
+
+Never compare `datetime('now', '-Nh hours')` (which returns `2026-03-28 22:23:33`, space-separated) against JS `toISOString()` timestamps (`2026-03-28T22:23:33.091Z`, `T`-separated). ASCII `T` > ASCII space, so all ISO dates appear "newer". Always compute cutoffs in JS: `new Date(Date.now() - N * 3600_000).toISOString()` and pass as a parameter.
+
+### Zod v4 z.record needs two arguments
+
+`z.record` requires two arguments — `z.record(keySchema, valueSchema)`. Single-arg calls don't type-check.
+
+### Typecheck is per-package
+
+There is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` or `bun run typecheck` (sequential).
+
+### bun test cli prints init stdout
+
+`bun test packages/cli` prints init-test stdout — use the exit code to check success, not `grep`.
+
+### Mixed positional and flag arg parsing
+
+In `commands.ts`: only affects MCP bridge commands (the only commands still dispatched through bash). Native agent tools use structured JSON parameters, eliminating this class of bugs.
+
+### loopContextStorage scope (AsyncLocalStorage)
+
+`loopContextStorage` is exported from `@bound/sandbox`. Commands running inside the agent loop see `threadId` / `taskId` in context automatically. Commands invoked outside (e.g., boundctl) don't.
+
+### bound-mcp polling can return stale turns
+
+`polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
+
+### bound CLI config and data dirs
+
+The bound CLI config dir defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
+
+### Stale binaries
+
+`bun run build && cp dist/bound* ~/.local/bin/` is the install step. Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
+
+### Universal 256 KiB tool-result cap
+
+Every tool result, regardless of `kind`, is bounded by `capToolResultContent` (from `@bound/shared/strings.ts`, `MAX_TOOL_RESULT_BYTES = 256 * 1024`) at two boundaries — the agent-loop dispatch return (covers platform/sandbox/builtin and the legacy fallback) and `handleToolResult` in `packages/web/src/server/websocket.ts` (covers WS-deferred client tools from boundless / bound-mcp / external `BoundClient` consumers). Truncation is middle-cut with the marker `[truncated N bytes from middle; tool result exceeded 262144-byte cap — re-run with a narrower scope or pipe through head/grep]`; the marker's byte width is subtracted from the half-budgets so the function is idempotent and the output is guaranteed ≤ cap. If a tool result looks like it's missing a chunk, grep for the marker — that's the cap firing, not a bug. Per-tool caps still run first; this is a backstop, not the primary ceiling.
+
+### Oversized bash output offloads to a file
+
+Offload fires at `50KB`, before the 256 KiB cap. Both bash surfaces offload to a file when the assembled result exceeds `TOOL_RESULT_OFFLOAD_THRESHOLD` (`@bound/shared/src/offload.ts`, `50_000` chars), rather than middle-cutting it. The full output is written to disk and the in-context result is replaced with a short pointer (`buildOffloadMessage`, shared) telling the agent where to `cat`/`grep` it — so nothing is lost, it just leaves the context window. The destination is the only surface-specific bit: the sandbox/agent path writes to a VFS path (`/home/user/.tool-results/<toolCallId>.txt`, `offloadToolResultPath` in `packages/agent/src/tool-result-offload.ts`, applied in the agent-loop dispatch offload loop), and `boundless_bash` writes to a real local temp file (`os.tmpdir()/bound-tool-results/<uuid>.txt`, `offloadIfOversized` in `packages/less/src/tools/bash.ts`). Threshold and pointer-message format live in `@bound/shared` so the two surfaces cannot drift. If `boundless_bash` can't write the file, it falls back to inline output and the universal 256 KiB `capToolResultContent` backstop still applies. Historically (`cfe8aa22` … `3b088b77`) both surfaces middle-cut each stream at ~50KB via `truncateStreamOutput`; that fought the agent-loop offload loop (the cut shaved bytes below the offload threshold before offload saw them) and was reverted in favor of offload-on-both-surfaces. If bash output is missing and you see a `[Tool result offloaded: …]` pointer, that's this — read the named file.
+
+### query accepts PRAGMAs
+
+The agent `query` tool allows `SELECT` plus a small read-only PRAGMA allowlist (`table_info`, `index_list`, `foreign_key_list`, `integrity_check`, etc.; see `SAFE_PRAGMA_ALLOWLIST` in `packages/agent/src/tools/query.ts`). The `PRAGMA x = y` assignment form is rejected regardless of name. Anything else (INSERT/UPDATE/DELETE/ATTACH/unknown PRAGMA) errors out. `LIMIT 1000` is still auto-appended to SELECTs but skipped for PRAGMAs.
+
+### Thread interface tag
+
+POST `/api/threads` accepts an optional body `{ interface?: string }` (default `"web"`, regex `/^[a-z0-9-]+$/i`, ≤32 chars; 400 otherwise). The value lives in `threads.interface` and flows into the agent's volatile context as a platform tag. `isUserFacingInterface()` in `@bound/shared` (`packages/shared/src/interface-tags.ts`) is the single gate for "should the agent see `platform: <name>`?" — currently allows everything except `scheduler`, `mcp`, and `webhook` (the canonical exclusion list lives in the same module as `NON_USER_FACING_INTERFACES`, also used by the `POST /api/threads` and `POST /api/mcp/threads` color cycle to skip system-driven threads when picking the next palette color). Adding a new user-facing surface usually needs no code change beyond setting the tag on thread creation; adding a new system-driven surface means extending the filter. `BoundClient.createThread(options?: { interface?: string })` is the client-side counterpart — `boundless` sets `interface: "boundless"`.
+
+### Cross-provider tool_use portability (id and name)
+
+`tool_use.id` and `tool_use.name` values persist in the `messages` table and survive provider switches. Anthropic enforces `^[a-zA-Z0-9_-]+$` on `tool_use.id` and rejects the entire request when a historical id contains anything else; Bedrock Converse caps both `toolUseId` and `toolUse.name` at 64 chars and validates them against `[a-zA-Z0-9_.:-]+` and `[a-zA-Z0-9_-]{1,64}` respectively. Two pathologies have been observed in production:
+   1. **Charset (Kimi/Moonshot fallback ids)**: the OpenAI-compatible path, where the AI SDK synthesizes ids from `function.name + index` when the upstream emits no explicit id, routinely produces ids of the shape `functions.<name>:<index>` containing `.` and `:`. When such a thread later routes to opus or Bedrock-Anthropic, the API returns `messages.N.content.M.tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'` and the turn fails.
+   2. **Length+charset (Kimi/Moonshot template-token leakage, thread `81bd5e8d` 2026-05-21)**: the same path occasionally streams Moonshot's own `<|tool_call_argument_begin|>` template token mid-stream as plain text, and the AI SDK collapses the entire template fragment into the synthesized `tool_use.id` and `tool_use.name`. Persisted ContentBlocks end up with 200+ char id and name fields containing `<`, `|`, `>`, `{`, `}`, `"`, spaces, etc. The next turn fails with 6 simultaneous Bedrock validation errors (`Member must have length less than or equal to 64`, `Member must satisfy regular expression pattern: …`) on both the `toolUse` and the matching `toolResult`. The thread cannot self-recover and the task cannot be restarted without losing state.
+
+**Fix:** universal sanitization in two layers, both deterministic and idempotent.
+  - **Streaming boundary** (`mapChunks` in `packages/llm/src/ai-sdk-bridge.ts`): `tool-input-start` / `-delta` / `-end` events run their `id` and `name` through `sanitizeToolUseId` and `sanitizeToolName` (the latter from `stream-utils.ts`) before yielding the corresponding `tool_use_start` / `_args` / `_end` `StreamChunk`s. Fresh tool calls therefore land in the DB already wire-legal. A `logger.warn` fires only when length truncation occurs (`sanitized.length < input.length`); charset-only diffs are expected steady state for AI SDK fallback ids and would spam logs. Both `BedrockDriver` and `OpenAICompatibleDriver` pass `providerName` into `MapChunksOptions` so the warn log identifies which provider is leaking.
+  - **Read boundary** (`toModelMessages` in the same file): same sanitization is re-applied at all four sites — assistant `tool_call`-role tool_use parts, inline assistant content tool_use parts, `tool_result.tool_use_id`, and the `toolNameById` index keys + values. Idempotent on freshly-sanitized data, but **the recovery mechanism for already-poisoned historical rows**: a thread that pre-dates this fix self-heals on the next assembly without manual DB surgery or task recreation. The original DB content is preserved for auditability — only the wire projection is rewritten.
+
+`sanitizeToolUseId` (`[a-zA-Z0-9_-]{1,64}`, exported alongside `MAX_TOOL_USE_ID_LENGTH`) and `sanitizeToolName` (`[a-zA-Z0-9_-]{1,64}` with `unknown` empty fallback) both target the strict subset across every supported provider's accepted charset and length cap, so universal sanitization is lossless on the wire and avoids per-provider branching. When adding a new id-bearing or name-bearing field at the bridge boundary, route it through these helpers too.
+
+### thinking-signature portability
+
+`thinking` ContentBlocks persist in the `messages` table and replay on later turns the same way `tool_use` ids do. Bedrock-Anthropic and Anthropic-direct reject any `thinking`/`reasoning` block on the wire that lacks its cryptographic `signature` with `messages.N.content.M.thinking.signature: Field required` (Bedrock `ValidationException`, 400, not retryable) — the whole turn fails, and there is no signature to synthesize after the fact. A persisted thinking block can lack a signature two ways:
+   1. **Same-provider signature loss** — a turn that streamed reasoning text but never captured the signature event. This is the observed 2026-06-06 incident: a fresh thread targeting opus (`global.anthropic.claude-opus-4-8`) from the start, where exactly ONE assistant turn (of 679 on that host, 14,085 cluster-wide) persisted a thinking block with no signature, immediately before the failing replay. A singleton, not a systematic capture or relay bug — the root cause of the loss on that one turn is unconfirmed (the block's thinking text ended mid-sentence and a text block resumed mid-sentence, consistent with an interrupted/interleaved reasoning capture, but unproven).
+   2. **Cross-provider replay** — a thinking block produced by a non-Anthropic model (local, OpenAI-compatible, non-Anthropic Bedrock), legal with no signature for the model that made it, that later routes to an Anthropic target.
+
+  The fix covers both, since the illegal wire state is identical regardless of origin.
+
+  **Fix (read boundary, `buildReasoningPart` in `packages/llm/src/ai-sdk-bridge.ts`):** when the target requires a signature (`reasoningProviderOptions` is `"bedrock"` or `"anthropic"`) and the block has neither a `signature` nor a Bedrock-replayable `redacted_data`, the reasoning part is dropped — both `toModelMessages` call sites (assistant `tool_call`-role parts and inline assistant content parts) skip the `null` return. Dropping is the only legal move and is safe: an assistant `tool_call` turn carrying no reasoning block is accepted by Bedrock-Anthropic even when a `tool_result` immediately follows it — verified against production, where 34,847 opus `tool_call` turns with no thinking block at all have replayed without error. The inline text / tool_use in the same assistant message is unaffected, so the turn keeps its substance and loses only the unreplayable reasoning trace. Like the `tool_use` sanitization, this is the **recovery mechanism for already-poisoned historical rows** — any thread holding a signature-less thinking block (whether from cross-provider replay or a one-off same-provider capture loss) self-heals on the next assembly against a strict provider without DB surgery. A Bedrock redacted-reasoning block (`redacted_data`, no signature) IS legally replayable via `providerOptions.bedrock.redactedData` and survives; non-signature targets (`reasoningProviderOptions: null` / unset) never demand a signature, so signature-less blocks replay as bare reasoning text there.
+
+### boundless_bash runs inside a filesystem sandbox by default
+
+Shell commands launched through boundless's `bash` tool execute inside Microsoft [mxc](https://github.com/microsoft/mxc) (seatbelt on macOS, bubblewrap on Linux, IsolationSession on Windows), which confines writes to the working directory and the system temp dir while leaving reads open. On Windows, boundless first tries BaseContainer (`containment: "process"`), but its kernel entry point `Experimental_CreateProcessInSandbox` returns `E_NOTIMPL` on current builds (including 25H2 build 26300 Pro), so it falls back to IsolationSession — a stateful backend that provisions a short-lived Windows agent user and enforces the same write boundary. Only if IsolationSession itself fails does boundless degrade to `onUnavailable` (passthrough by default). Three consequences bite during development. (1) On a host where neither backend can start, boundless degrades to `onUnavailable` (passthrough) and runs unsandboxed; tests that rely on sandbox enforcement behave differently there. (2) A test that writes outside cwd or `$TMPDIR` — most commonly a hardcoded `/tmp/...` path, which on macOS resolves through the `/tmp` → `/private/tmp` symlink to a location distinct from the per-user `$TMPDIR` the sandbox actually allows — fails with `EPERM` when the suite is run *through* boundless, even though it passes in a plain terminal. This is the runtime enforcement behind the `os.tmpdir()` testing convention. (3) The sandbox keeps `.git/hooks` and `.git/config` inside the working tree **read-only** even though the rest of cwd is writable — they hold scripts and config directives that Git later runs as you outside the sandbox, so a run can't plant a hook that fires on your next `git`. This is enforced on Linux (bubblewrap last-mount-wins) and for boundless's in-process file tools on every platform **except Windows**: no mxc Windows backend can yet express "readable but not writable" for a subpath of a writable parent (IsolationSession and BaseContainer both grant write to a subtree with no subpath deny; the AppContainer+DACL fallback has only additive allow-ACLs plus a full-access deny that would also block Git's reads of config; IsolationSession's folder-share model gives the writable parent grant precedence over an overlapping readonly subpath), so `.git` stays writable on Windows until mxc grows a write-only-deny primitive. The carve-out logic and the Windows gate live in `computeGitProtectedPaths` (`packages/less/src/tools/sandbox-policy.ts`). Disable per session with `"sandbox": false` in `~/.bound/less/config.json`, or set `onUnavailable` / `writablePaths` for finer control (see the README's boundless section).
