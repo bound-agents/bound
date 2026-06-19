@@ -1,4 +1,4 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 /**
  * The standard context files that boundless auto-injects when present in the
@@ -39,7 +39,15 @@ export function isContextFile(
 	cwd: string,
 	candidates: readonly string[] = CONTEXT_FILE_CANDIDATES,
 ): boolean {
-	const resolved = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+	// Normalize both sides through resolve() so the comparison is
+	// platform-correct. resolve() discards `cwd` when `filePath` is already
+	// absolute, so this handles relative and absolute inputs alike — and unlike
+	// using `filePath` verbatim for the absolute case, it canonicalizes
+	// separators and the drive letter. On path.win32 the verbatim form
+	// ("/repo/AGENTS.md", forward slashes, no drive) never equals the resolved
+	// candidate ("C:\repo\AGENTS.md"), so absolute-path matching silently failed
+	// on Windows.
+	const resolved = resolve(cwd, filePath);
 	return candidates.some((candidate) => resolve(cwd, candidate) === resolved);
 }
 
