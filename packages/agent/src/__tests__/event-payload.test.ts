@@ -218,4 +218,57 @@ describe("buildEventWakeupContent", () => {
 		// its own dispatch path.
 		expect(result.processedIds.length).toBe(1);
 	});
+
+	test("inlines a JSON request body so the envelope isn't double-escaped (#177)", () => {
+		const threadId = randomUUID();
+		const githubEvent = {
+			action: "opened",
+			issue: { number: 42, title: "Bug", body: "repro steps" },
+		};
+		const envelope = JSON.stringify({
+			method: "POST",
+			path: "/webhook/bound",
+			headers: { "x-github-event": "issues" },
+			content_type: "application/json",
+			body: JSON.stringify(githubEvent),
+		});
+		insertEnvelope(threadId, envelope, "2026-05-18T21:00:00Z");
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task);
+
+		// The double-escaped form must NOT survive into the wakeup.
+		expect(result.content).not.toContain('\\"action\\"');
+		// The event lands as structured JSON the agent can read directly.
+		expect(result.content).toContain('"action":"opened"');
+		expect(result.content).toContain('"number":42');
+		expect(result.content).toContain('"body":"repro steps"');
+	});
+
+	test("leaves a non-JSON request body verbatim (#177)", () => {
+		const threadId = randomUUID();
+		const envelope = JSON.stringify({
+			method: "POST",
+			path: "/webhook/forms",
+			headers: { "content-type": "application/x-www-form-urlencoded" },
+			content_type: "application/x-www-form-urlencoded",
+			body: "name=foo&value=bar",
+		});
+		insertEnvelope(threadId, envelope, "2026-05-18T21:00:00Z");
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task);
+
+		expect(result.content).toContain("name=foo&value=bar");
+	});
+
+	test("leaves a payload that isn't a JSON envelope verbatim (#177)", () => {
+		const threadId = randomUUID();
+		insertEnvelope(threadId, "not json at all", "2026-05-18T21:00:00Z");
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task);
+
+		expect(result.content).toContain("not json at all");
+	});
 });
