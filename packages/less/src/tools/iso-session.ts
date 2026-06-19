@@ -70,8 +70,9 @@ type IsoPty = Awaited<ReturnType<MxcSdk["execInSandbox"]>>;
 const START_CONFIGURATION_ID = "small";
 
 /** Resolved location of the session state file, beside the boundless config. */
+let statePathOverride: string | undefined;
 function isoStatePath(): string {
-	return join(homedir(), ".bound", "less", "iso-sessions.json");
+	return statePathOverride ?? join(homedir(), ".bound", "less", "iso-sessions.json");
 }
 
 interface ActiveSession {
@@ -245,8 +246,22 @@ export async function getOrProvisionSession(
 	if (activeSessionPromise && activeSessionCwd === cwd) return activeSessionPromise;
 	if (activeSessionPromise) await deprovisionActiveSession();
 	activeSessionCwd = cwd;
-	activeSessionPromise = provisionSession(cwd, cfg);
-	return activeSessionPromise;
+	const pending = provisionSession(cwd, cfg);
+	activeSessionPromise = pending;
+	// A failed provision must NOT poison the memo for the rest of the process
+	// lifetime. Without this, a transient first-provision failure — the mxc
+	// broker not yet up in the post-boot race is the observed one — caches a
+	// rejected promise that every later command re-awaits, stranding a
+	// long-lived ACP host in passthrough until the process is killed. A
+	// client/editor restart that keeps the same subprocess alive never clears
+	// it. Clear the slot on rejection so the next command retries provisioning.
+	pending.catch(() => {
+		if (activeSessionPromise === pending) {
+			activeSessionPromise = undefined;
+			activeSessionCwd = undefined;
+		}
+	});
+	return pending;
 }
 
 /**
@@ -258,6 +273,27 @@ export async function getOrProvisionSession(
  * before consuming the handle, exactly as with {@link spawnSandboxed}.
  */
 export async function execInSession(
+	command: string,
+	cwd: string,
+	cfg: ResolvedSandboxConfig,
+	shell: ResolvedShell,
+): Promise<SandboxSpawnResult> {
+	try {
+		return await execInSessionOnce(command, cwd, cfg, shell);
+	} catch {
+		// The memoized session may have gone stale — the broker (IsolationProxy)
+		// restarted and reclaimed the sandbox out from under us, so exec against
+		// the cached id fails. Tear it down and re-provision once before
+		// surfacing the failure to the caller (which degrades to passthrough). A
+		// spawn-time failure means the command never ran, so the single retry
+		// cannot double-execute side effects; if the retry also fails it
+		// propagates and the wrapper degrades as before.
+		await deprovisionActiveSession();
+		return await execInSessionOnce(command, cwd, cfg, shell);
+	}
+}
+
+async function execInSessionOnce(
 	command: string,
 	cwd: string,
 	cfg: ResolvedSandboxConfig,
@@ -324,3 +360,23 @@ export async function sweepIsoOrphans(): Promise<{ reaped: string[]; failed: str
 	}
 	return { reaped, failed };
 }
+
+/**
+ * Test-only seam — NOT part of the public API. Lets a unit test drive the
+ * session-memo lifecycle ({@link getOrProvisionSession}, {@link execInSession})
+ * with a fake mxc SDK and a scratch state path, so the provision-failure-recovery
+ * and stale-session-retry paths are exercisable without a real IsolationSession
+ * broker. Each field mutates the same module bindings the production code reads.
+ */
+export const __isoSessionTestSeam = {
+	setSdk(sdk: MxcSdk | undefined): void {
+		sdkPromise = sdk ? Promise.resolve(sdk) : undefined;
+	},
+	setStatePath(path: string | undefined): void {
+		statePathOverride = path;
+	},
+	resetMemo(): void {
+		activeSessionPromise = undefined;
+		activeSessionCwd = undefined;
+	},
+};
