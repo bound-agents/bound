@@ -11,7 +11,12 @@ import { ModelRouter } from "@bound/llm";
 import type { EventMap } from "@bound/shared";
 import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop, MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS } from "../agent-loop";
+import {
+	AgentLoop,
+	ERROR_SIGNATURE_NUDGE_AT,
+	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
+	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
+} from "../agent-loop";
 import { VALID_TRANSITIONS } from "../types";
 
 // Mock LLM Backend that returns configurable responses
@@ -2619,6 +2624,138 @@ describe("AgentLoop", () => {
 				)
 				.all(threadId) as Array<{ content: string }>;
 			expect(notices.length).toBe(0);
+		});
+	});
+
+	describe("error-result circuit breaker", () => {
+		it("aborts when consecutive turns return the byte-identical error despite varying args", async () => {
+			const mockBackend = new MockLLMBackend();
+			// Reproduces the 2026-06-12 connector-name-contamination spin (thread
+			// 53c7635e): the model emitted ~26 tool calls under a CONSTANT tool name
+			// with DIFFERENT args each turn. The args differ, so the byte-identical
+			// CALL-signature breaker (MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS) keeps
+			// resetting and never fires. But every call returns the byte-identical
+			// error (an unknown-tool / validation error that does not echo the args),
+			// so the ERROR-signature breaker must catch it.
+			const overshoot = MAX_CONSECUTIVE_ERROR_TOOL_CALLS + 3;
+			for (let i = 0; i < overshoot; i++) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "tool_use_start" as const, id: `err-${i}`, name: "nonexistent_tool_xyz" };
+					yield {
+						type: "tool_use_args" as const,
+						id: `err-${i}`,
+						// Distinct args every turn → distinct call signature → the
+						// duplicate-call breaker never accumulates.
+						partial_json: JSON.stringify({ attempt: i, payload: `variant-${i}` }),
+					};
+					yield { type: "tool_use_end" as const, id: `err-${i}` };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
+				});
+			}
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// The loop short-circuits at the threshold — it does NOT consume every
+			// pushed response. The breaker fires after executing (and seeing the
+			// identical error from) the Nth call.
+			expect(mockBackend.getCallCount()).toBe(MAX_CONSECUTIVE_ERROR_TOOL_CALLS);
+
+			// An abort notice must have been persisted explaining the identical-error loop.
+			const aborts = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%identical error%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(aborts.length).toBe(1);
+			expect(aborts[0].content).toContain("Agent loop aborted");
+
+			// A single corrective nudge must have fired earlier (at ERROR_SIGNATURE_NUDGE_AT),
+			// trying to un-stick the model before the harder abort.
+			const nudges = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%same error%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(nudges.length).toBe(1);
+			expect(ERROR_SIGNATURE_NUDGE_AT).toBeLessThan(MAX_CONSECUTIVE_ERROR_TOOL_CALLS);
+		});
+
+		it("does NOT abort when the error differs each turn (progress through distinct failures)", async () => {
+			const mockBackend = new MockLLMBackend();
+			// Vary the tool NAME each turn → the unknown-tool error embeds the name →
+			// the error signature changes turn-over-turn and the counter never
+			// accumulates. Healthy "trying different things" behaviour.
+			const turns = MAX_CONSECUTIVE_ERROR_TOOL_CALLS + 3;
+			for (let i = 0; i < turns; i++) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "tool_use_start" as const, id: `diff-${i}`, name: `nonexistent_${i}` };
+					yield {
+						type: "tool_use_args" as const,
+						id: `diff-${i}`,
+						partial_json: JSON.stringify({ attempt: i }),
+					};
+					yield { type: "tool_use_end" as const, id: `diff-${i}` };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
+				});
+			}
+			// Final turn: plain text so the loop ends naturally.
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Tried distinct tools, done." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+
+			await agentLoop.run();
+
+			// No abort — distinct errors are not a spin.
+			const aborts = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%identical error%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(aborts.length).toBe(0);
 		});
 	});
 });
