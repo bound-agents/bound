@@ -1722,32 +1722,32 @@ export class AgentLoop {
 						continue; // Re-enter the while loop → LLM_CALL
 					}
 
-					if (error instanceof LLMError && (error.statusCode === 429 || error.statusCode === 529)) {
+					if (
+						error instanceof LLMError &&
+						(error.statusCode === 429 || error.statusCode === 529 || error.statusCode === 402)
+					) {
+						const statusCode = error.statusCode;
 						const backendId =
 							this.lastModelResolution?.kind === "local" ? this.lastModelResolution.modelId : null;
 						if (backendId) {
 							const retryAfterMs = error.retryAfterMs || 60_000;
 							this.modelRouter.markRateLimited(backendId, retryAfterMs);
-							this.ctx.logger.warn("[agent-loop] Backend rate-limited, marked for exclusion", {
+							this.ctx.logger.warn("[agent-loop] Backend unavailable, marked for exclusion", {
 								backendId,
 								retryAfterMs,
-								statusCode: error.statusCode,
+								statusCode,
 							});
 
-							const newResolution = resolveModel(
-								undefined,
-								this.modelRouter,
-								this.ctx.db,
-								this.ctx.siteId,
-								requirements,
-							);
-							if (newResolution.kind !== "error") {
+							// Re-point resolution at a new backend, emitting a developer-visible
+							// note only when the model actually changes.
+							const applySwitch = (
+								newResolution: Exclude<ModelResolution, { kind: "error" }>,
+							): string => {
 								const previousModelId = getResolvedModelId(this.lastModelResolution, backendId);
 								const newModelId = newResolution.modelId;
 								this.lastModelResolution = newResolution;
-
 								if (previousModelId !== newModelId) {
-									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (rate limit on ${previousModelId})`;
+									const switchMsg = `Model switched from ${previousModelId} to ${newModelId} (backend unavailable on ${previousModelId}, status ${statusCode})`;
 									llmMessages.push({ role: "developer", content: switchMsg });
 									const switchMsgId = insertThreadMessage(
 										this.ctx.db,
@@ -1762,24 +1762,74 @@ export class AgentLoop {
 									this.broadcastMessage(switchMsgId);
 									this.messagesCreated++;
 								}
+								return newModelId;
+							};
 
+							// 1) Prefer a same-tier sibling, excluding the failed backend. The
+							// failed model's tier is knowable from the router even when no
+							// model_hint was passed (empty-hint tasks resolve to the host
+							// default), so this covers default/cron tasks that carry no
+							// modelTier — e.g. the heartbeat hitting a provider usage cap.
+							// Cost-safe: a same-tier sibling sits in the same pricing band.
+							const failedTier = this.modelRouter.getBackendTier(backendId);
+							const sameTierFallback =
+								failedTier !== null
+									? resolveSameTierFallback(
+											backendId,
+											this.modelRouter,
+											this.ctx.db,
+											this.ctx.siteId,
+											failedTier,
+											requirements,
+										)
+									: null;
+							if (sameTierFallback && sameTierFallback.kind !== "error") {
+								const newModelId = applySwitch(sameTierFallback);
 								this.ctx.logger.info(
-									"[agent-loop] Rate-limit fallback: re-resolved to alternative backend",
-									{
-										previousBackend: backendId,
-										newBackend: newModelId,
-										newKind: newResolution.kind,
-									},
+									"[agent-loop] Unavailable-backend fallback: re-resolved to same-tier alternative",
+									{ previousBackend: backendId, newBackend: newModelId, tier: failedTier },
 								);
 								transportRetries = 0;
 								turnSpan.end();
 								continue;
 							}
 
-							this.ctx.logger.warn(
-								"[agent-loop] Rate-limit fallback: no alternative backend available",
-								{ backendId },
-							);
+							// 2) No same-tier alternative. For 429/529 keep the historical
+							// re-resolve-to-host-default behavior. For 402 (quota/payment cap)
+							// a re-resolve to the same capped default would just spin, so fail
+							// cleanly rather than hammer a backend that won't recover soon.
+							if (statusCode === 429 || statusCode === 529) {
+								const newResolution = resolveModel(
+									undefined,
+									this.modelRouter,
+									this.ctx.db,
+									this.ctx.siteId,
+									requirements,
+								);
+								if (newResolution.kind !== "error") {
+									const newModelId = applySwitch(newResolution);
+									this.ctx.logger.info(
+										"[agent-loop] Rate-limit fallback: re-resolved to alternative backend",
+										{
+											previousBackend: backendId,
+											newBackend: newModelId,
+											newKind: newResolution.kind,
+										},
+									);
+									transportRetries = 0;
+									turnSpan.end();
+									continue;
+								}
+								this.ctx.logger.warn(
+									"[agent-loop] Rate-limit fallback: no alternative backend available",
+									{ backendId },
+								);
+							} else {
+								this.ctx.logger.warn(
+									"[agent-loop] Quota/payment cap and no same-tier alternative; failing turn",
+									{ backendId, statusCode },
+								);
+							}
 						}
 					}
 

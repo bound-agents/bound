@@ -1749,6 +1749,59 @@ describe("AgentLoop", () => {
 		expect(result.messagesCreated).toBe(0);
 	});
 
+	it("falls over to a same-tier model when the resolved model errors at inference with a quota cap (402)", async () => {
+		// The heartbeat shape: empty model-hint resolves to the host default, which
+		// then errors at the inference boundary with a hard quota cap (not 429/529,
+		// not transient). Pre-fix this lands in none of the fallback paths and the
+		// task hard-fails. Post-fix it should fail over to a same-tier sibling.
+		const { LLMError } = await import("@bound/llm");
+		const capped = {
+			// biome-ignore lint/correctness/useYield: throws before first yield
+			async *chat() {
+				throw new LLMError("Weekly usage limit reached. Resets in 2 days.", "opencode-go", 402);
+			},
+			capabilities() {
+				return {
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: false,
+					max_context: 8000,
+				};
+			},
+		} as unknown as LLMBackend;
+
+		const healthy = new MockLLMBackend();
+		healthy.setTextResponse("Completed on the same-tier sibling.");
+
+		// Two tier-1 backends. Default is the capped one — exactly the empty-hint
+		// case where resolveModel(undefined) picks the host default.
+		const backends = new Map<string, LLMBackend>([
+			["deepseek", capped],
+			["kimi", healthy],
+		]);
+		const tiers = new Map([
+			["deepseek", 1],
+			["kimi", 1],
+		]);
+		const router = new ModelRouter(backends, "deepseek", undefined, tiers);
+
+		const ctx = makeCtx();
+		const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+			// No modelId / modelTier — empty hint, resolves to default "deepseek".
+		});
+
+		const result = await agentLoop.run();
+
+		// Should succeed via same-tier failover to "kimi".
+		expect(result.error).toBeUndefined();
+		expect(result.messagesCreated).toBeGreaterThan(0);
+		expect(healthy.getCallCount()).toBeGreaterThan(0);
+	});
+
 	describe("capturePreSnapshot hook", () => {
 		it("AC5.1: capturePreSnapshot called exactly once per run()", async () => {
 			const mockBackend = new MockLLMBackend();
