@@ -677,6 +677,24 @@ export interface CrossThreadSource {
 	lastMessageAt: string;
 }
 
+/**
+ * Title-only projection of one R-VC27 relevant-memory entry as it was injected
+ * into a turn's volatile tail. Mirrors what `formatRelevantMemoryTitleLine`
+ * renders (key + tier/forgotten + recency) without carrying the heavy `value`
+ * body, so the persisted `context_debug` row stays compact. Surfaced in the web
+ * debugger (#179) so memory tuning can spot relevant — or poor — injections.
+ */
+export interface RelevantMemoryDebugEntry {
+	key: string;
+	/** Actual storage tier — where the body lives (what the injected line shows). */
+	tier: MemoryTier;
+	/** Retrieval-stage tag, e.g. "[graph]" / "[recency]" — how the entry surfaced. */
+	tag: string;
+	modifiedAt: string;
+	/** 1 when soft-deleted; the injected line renders it as `[forgotten]`. Omitted for live entries. */
+	deleted?: number;
+}
+
 export interface ContextDebugInfo {
 	contextWindow: number;
 	/**
@@ -709,6 +727,13 @@ export interface ContextDebugInfo {
 	budgetPressure: boolean;
 	truncated: number;
 	crossThreadSources?: CrossThreadSource[];
+	/**
+	 * R-VC27 relevant-memory selection injected into this turn's volatile tail,
+	 * title-only (#179). Lets the web debugger show which memories were matched
+	 * to a turn — and flag poor ones (e.g. resurfaced `[forgotten]` entries) —
+	 * for memory tuning. Omitted on older rows and on paths that match nothing.
+	 */
+	relevantMemory?: RelevantMemoryDebugEntry[];
 	/**
 	 * Which assembly path produced this turn's wire payload.
 	 *

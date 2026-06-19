@@ -2,7 +2,12 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { getPkColumn, insertRow, updateRow } from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
-import type { CrossThreadSource, MemoryTier, Result } from "@bound/shared";
+import type {
+	CrossThreadSource,
+	MemoryTier,
+	RelevantMemoryDebugEntry,
+	Result,
+} from "@bound/shared";
 import { compareBytewise, escapeXmlAttr, safeSlice } from "@bound/shared";
 import { getClientSessions } from "./delegation";
 import { normalizeFilePathForKey } from "./file-thread-tracker";
@@ -986,6 +991,25 @@ export function selectRelevantMemory(
 export function formatRelevantMemoryTitleLine(entry: StageEntry): string {
 	const tierTag = entry.deleted ? "forgotten" : entry.tier;
 	return `- ${entry.key} [${tierTag}] (${relativeTime(entry.modifiedAt)})`;
+}
+
+/**
+ * Project the R-VC27 selected entries onto the compact debug shape recorded on
+ * `ContextDebugInfo.relevantMemory` (#179). Title-only — drops the heavy `value`
+ * body so the persisted `context_debug` row doesn't balloon — and preserves
+ * selection order. The `deleted` flag rides through (omitted for live entries)
+ * so the debugger can flag a resurfaced `[forgotten]` entry as a poor injection.
+ */
+export function toRelevantMemoryDebug(
+	entries: ReadonlyArray<StageEntry>,
+): RelevantMemoryDebugEntry[] {
+	return entries.map((e) => ({
+		key: e.key,
+		tier: e.tier,
+		tag: e.tag,
+		modifiedAt: e.modifiedAt,
+		...(e.deleted ? { deleted: e.deleted } : {}),
+	}));
 }
 
 export function renderDiscoverableArchive(
