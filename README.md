@@ -1,55 +1,50 @@
 # Bound
 
-A persistent, model-agnostic personal agent that runs on your own infrastructure. It maintains memory across conversations and hosts, reads codebases via overlay mounts, uses external services through MCP tools, and performs autonomous work on schedules or in response to events.
+A self-hosted personal agent that runs on your own infrastructure, maintains a persistent semantic memory graph across sessions and devices, executes autonomous work on schedules and events, and routes inference across multiple LLM backends — all replicated between hosts over a crypto-authenticated sync protocol.
 
-## What it does
+## What makes it different
 
-- **Autonomous task execution** with full conversational context -- schedule checks, post updates, file issues, send reminders
-- **Cross-session memory** that persists across conversations, devices, and interfaces (web, Discord)
-- **Multi-host sync** -- run on a laptop and a cloud VM, with state replicating via Ed25519-signed HTTP
-- **Model-agnostic** -- switch between Ollama, AWS Bedrock, OpenCode Go, and OpenAI-compatible endpoints per session
-- **Your infrastructure, your data** -- runs locally, no external dependencies beyond the LLM backend you choose
+**Persistent semantic memory.** The agent's knowledge lives in a typed graph — not flat key-value pairs, but nodes connected by ten canonical relations (informs, supports, contrasts-with, summarizes, synthesizes, etc.) with automatic tier demotion (pinned → summary → detail) and stale-child cleanup. Memory is surfaced in context automatically and traversable by the agent.
+
+**8-stage context assembly.** Every turn runs through a documented pipeline: retrieval → purge substitution → tool-pair sanitization → queueing → annotation → assembly → budget validation → metric recording. The assembler distinguishes a cold path (full rebuild, fixed cache marker) from a warm path (stable prefix + rolling cache marker + fresh volatile tail), applies telescope-model truncation across RECENT/MIDDLE/ANCIENT tiers, and detects orphan tool calls. Prompt cache placement is intentional, not incidental.
+
+**Multi-host sync with Ed25519 identity.** Each host generates an Ed25519 keypair at startup; its `site_id` is derived from the public key. State replicates via a three-phase push/pull/ack protocol over XChaCha20-Poly1305-encrypted WebSocket frames, ordered by Hybrid Logical Clock. Spoke hosts delegate inference to the hub or other spokes via a relay transport that preserves context and cost attribution.
+
+**Cluster-wide model routing.** The model router runs three phases: identify candidates across all connected hosts, qualify against capability requirements (tool_use, vision, extended_thinking, prompt_caching, max_context), and dispatch — local, remote relay, or structured error with unmet capabilities and earliest recovery time. Model selection is per-session, with tier-based fallback and same-tier failover on quota caps.
+
+**Advisory system.** The agent can propose structured advisories (title, detail, action, impact) that appear in the operator interface. Advisories sit in a pending state until the operator approves, applies, defers, or dismisses them — giving the agent a way to surface recommendations without acting unilaterally.
+
+**Skill injection.** Operator-defined `SKILL.md` files with frontmatter (name, description, triggers) are injected as system messages when a task payload names them, letting autonomous tasks carry specialized instructions without bloating the base prompt.
 
 ## Prerequisites
 
 - [Bun](https://bun.sh) 1.2+
 - An LLM backend (one of):
-  - [Ollama](https://ollama.com) running locally (easiest to start)
+  - [Ollama](https://ollama.com) running locally — easiest to start
+  - [Anthropic](https://www.anthropic.com) API key
   - AWS Bedrock access
-  - [OpenCode Go](https://opencode.ai/docs/go) API key
-  - Any OpenAI-compatible endpoint
+  - Any OpenAI-compatible endpoint (Cerebras, z.AI, OpenCode Go, etc.)
 
 ## Quick start
 
 ```bash
-# Clone and install
 git clone https://github.com/bound-agents/bound.git
 cd bound
 bun install
 
-# Initialize config (pick your LLM backend)
-bun run packages/cli/src/bound.ts init --ollama
+# Pick an LLM backend
+bun run packages/cli/src/bound.ts init --ollama        # local Ollama
+bun run packages/cli/src/bound.ts init --anthropic     # Anthropic API
+bun run packages/cli/src/bound.ts init --bedrock --region us-east-1
+bun run packages/cli/src/bound.ts init --opencode-go   # OpenCode Go
 
-# Start the system
+# Start
 bun run packages/cli/src/bound.ts start
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser. (The web UI listens on `WEB_PORT`, default 3001; the sync protocol uses `PORT`, default 3000.)
+Open [http://localhost:3001](http://localhost:3001). The sync protocol listens on port 3000 (`PORT`); the web UI on port 3001 (`WEB_PORT`).
 
-### Other LLM backends
-
-```bash
-# AWS Bedrock
-bun run packages/cli/src/bound.ts init --bedrock --region us-east-1
-
-# OpenCode Go
-OPENCODE_API_KEY=... bun run packages/cli/src/bound.ts init --opencode-go
-
-# With optional features
-bun run packages/cli/src/bound.ts init --ollama --with-sync --with-mcp --with-overlay
-```
-
-## Build a single binary
+### Build a single binary
 
 ```bash
 bun run build
@@ -57,63 +52,116 @@ bun run build
 ./dist/bound start
 ```
 
-## Management commands
+### Docker
 
 ```bash
-# Set a sync hub (multi-host)
+docker build -t bound . --build-arg TARGETARCH=amd64
+docker run -v /app/config -v /app/data -p 3000:3000 -p 3001:3001 bound
+```
+
+### Optional init flags
+
+```bash
+# Add optional feature config files at init time
+bun run packages/cli/src/bound.ts init --ollama --with-sync --with-mcp --with-overlay
+```
+
+## Management (`boundctl`)
+
+```bash
+# Register a sync hub (multi-host setup)
 bun run packages/cli/src/boundctl.ts set-hub my-cloud-vm
 
 # Set the cluster-wide persona (propagates to every host on next sync)
 bun run packages/cli/src/boundctl.ts set-persona --file config/persona.md
 cat config/persona.md | bun run packages/cli/src/boundctl.ts set-persona
 
-# Emergency stop (all hosts halt on next sync)
+# Emergency stop — all hosts halt on next sync
 bun run packages/cli/src/boundctl.ts stop
-
-# Resume operations
 bun run packages/cli/src/boundctl.ts resume
 
-# Point-in-time restore
+# Point-in-time restore (soft-delete undo)
 bun run packages/cli/src/boundctl.ts restore --before "2026-03-20T10:00:00Z" --preview
+bun run packages/cli/src/boundctl.ts restore --before "2026-03-20T10:00:00Z"
 ```
 
-## Coding agent (boundless)
+## LLM backends
 
-`boundless` is a terminal coding-agent client for bound. It connects to a running
-bound server, attaches to a thread, and registers host-side filesystem and shell
-tools (plus any MCP servers you configure) into the agent's tool set — so the agent
-can read and edit files and run commands in your working directory. The session's
-messages, tool calls, and memory all live in bound, so other surfaces (web, Discord,
-scheduled tasks) see the work too.
+Bound supports four driver families, all over the Vercel AI SDK with a unified streaming interface (`StreamChunk`: text, thinking, tool_use_start/_args/_end, done, error):
+
+| Backend | Provider key | Notes |
+|---------|-------------|-------|
+| Ollama | `ollama` | NDJSON streaming, local or remote |
+| Anthropic | `anthropic` | SSE streaming, prompt caching, extended thinking |
+| AWS Bedrock | `bedrock` | SigV4 auth, converse API, cross-account ARN routing, reasoning effort levels (low/medium/high/xhigh/max) |
+| OpenAI-compatible | `openai` | stdio or HTTP, custom headers, `cerebras`/`zai`/`opencode-go` shims |
+
+Tool IDs and names are sanitized to `[a-zA-Z0-9_-]{1,64}` at streaming and read boundaries for cross-provider portability. Extended-thinking signatures are enforced on replay to Anthropic and Bedrock; blocks with missing signatures are dropped rather than forwarded.
+
+Per-backend config (in `model_backends.json`) supports: `context_window`, `tier`, pricing fields, `thinking`, `effort`, `max_output_tokens`, `cache_ttl` (`"5m"` | `"1h"`), `capabilities` overrides, `connect_timeout_ms`, `additional_headers`, and `cache_warming`.
+
+## Autonomous tasks
+
+The scheduler runs three task types with DAG dependency resolution:
+
+- **cron** — standard 5-field cron expressions
+- **delay** — relative offsets (`5m`, `2h`, `1d`)
+- **on_event** — triggered by named events emitted from tools or external webhooks
+
+Tasks carry optional `payload` (JSON), `skill` (injected system message), `model_hint`, `after` (predecessor task IDs), `require_success`, and `inject_mode` (results/all/file). Alert thresholds trigger advisories after consecutive failures. In a cluster, a leaderless rendezvous gate ensures singleton tasks run on exactly one host.
+
+The agent schedules and cancels tasks via the `task` tool, emits events with `emit`, and blocks on event sets with `await_event`.
+
+## Agent tools
+
+Bound ships 15 native tools with typed JSON schemas — no argument-parsing bugs, no shell injection surface:
+
+| Tool | Actions |
+|------|---------|
+| `memory` | store, forget, search, connect, disconnect, traverse, neighbors |
+| `task` | schedule, update |
+| `skill` | activate, list, read, retire |
+| `cache` | warm, pin, unpin, evict |
+| `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer |
+| `query` | read-only SQL (SELECT + safe PRAGMA whitelist, auto-LIMIT 1000) |
+| `cancel` | by task_id or payload match |
+| `emit` | name + JSON payload, broadcast to all cluster hosts |
+| `await_event` | block on task_ids + timeout |
+| `purge` | exclude message_ids or last_n from future context |
+| `notify` | inject developer-role context into a thread |
+| `introspect` | execute on a remote host and stream output back |
+| `archive` | soft-delete messages older than a threshold |
+| `model_hint` | set model preference for the next turn |
+| `hostinfo` | cluster topology, sync state, active sessions, advisories |
+
+MCP servers connected via `mcp.json` are auto-registered as additional tools — one command per server, dispatched by `subcommand`.
+
+## Boundless — terminal coding agent
+
+`boundless` connects to a running bound server, attaches to a thread, and registers local filesystem and shell tools (plus any MCP servers in `~/.bound/less/mcp.json`) into the agent's tool set. The agent can read and edit files and run commands in your working directory. All messages, tool calls, and memory live in bound — the web UI, Discord, and scheduled tasks all see the same state.
 
 ```bash
-# Run the terminal UI in your project directory
 bun run packages/cli/src/boundless.ts          # or ./dist/boundless after a build
 
-# Point at a non-default server, or resume an existing thread
-boundless --url http://localhost:3001
-boundless --attach <thread-id>
+boundless --url http://localhost:3001          # non-default server
+boundless --attach <thread-id>                 # resume an existing thread
 ```
 
-Config lives at `~/.bound/less/config.json` (server URL, default model, injected
-context files, shell override, filesystem sandbox) and `~/.bound/less/mcp.json` (MCP servers).
+Config: `~/.bound/less/config.json` (server URL, default model, injected context files, shell override, sandbox policy) and `~/.bound/less/mcp.json` (MCP servers).
 
-By default, shell commands run inside a filesystem sandbox (Microsoft's
-[mxc](https://github.com/microsoft/mxc), cross-platform via seatbelt on macOS,
-bubblewrap on Linux, and IsolationSession on Windows): the whole filesystem stays readable, but writes are confined to
-the working directory and the system temp dir — so the agent can edit your project but
-can't clobber `~/.ssh`, a sibling checkout, or `/etc`. Network is unrestricted.
+### Filesystem sandbox
 
-One carve-out runs the other way: `.git/hooks` and `.git/config` inside the working tree
-stay read-only even though the rest of the tree is writable. They hold scripts and config
-directives (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, aliases) that Git later
-runs as you, outside the sandbox — so a run can't plant a hook that fires on your next
-`git` in the repo. Git's own operations only ever read them. This is enforced on Linux
-(bubblewrap) and for boundless's in-process file tools on every platform **except Windows**:
-no mxc Windows backend can yet express "readable but not writable" for a subpath, so there
-`.git` stays writable (tracked upstream — see CONTRIBUTING "Common Gotchas").
+Shell commands run inside a write-confinement sandbox via Microsoft's [mxc](https://github.com/microsoft/mxc): the whole filesystem stays readable, but writes are confined to the working directory and `/tmp`. The agent can edit your project but can't touch `~/.ssh`, sibling checkouts, or `/etc`. Network is unrestricted.
 
-It's opt-out — set `"sandbox": false` to disable, or use the object form for finer control:
+| Platform | Backend |
+|----------|---------|
+| macOS | seatbelt — no setup required |
+| Linux | bubblewrap — no setup required |
+| Windows | IsolationSession (BaseContainer `E_NOTIMPL` on current builds; falls back automatically) |
+
+`.git/hooks` and `.git/config` inside the working tree stay read-only even though the rest of the tree is writable — a run can't plant a hook that fires on your next `git` command. Enforced on macOS and Linux, and for in-process file tools on every platform; Windows cannot express the read-only subpath constraint in the current mxc backend (tracked upstream).
+
+The sandbox is on by default. `onUnavailable: "error"` (default) refuses to run a command rather than silently drop write protection; `"passthrough"` runs unsandboxed with a warning. Fine-grained control:
 
 ```json
 {
@@ -126,49 +174,9 @@ It's opt-out — set `"sandbox": false` to disable, or use the object form for f
 }
 ```
 
-On a platform where mxc can't sandbox, `onUnavailable` decides the posture:
-`"error"` (default) refuses to run the command rather than execute it without
-write confinement, so a backend that breaks (e.g. after an OS update) can't
-silently drop write protection — the error names the exact config edit to opt
-into the lower-friction posture. `"passthrough"` runs the command unsandboxed
-with a warning instead. Dropping confinement is a deliberate choice, never an
-implicit one.
-
-**Windows: write confinement via IsolationSession.** On Windows, boundless confines
-writes through mxc's `IsolationSession` backend: it provisions a short-lived Windows
-agent user and runs each shell command as that user, so writes land only in the working
-directory and the system temp dir — the same boundary seatbelt and bubblewrap enforce
-elsewhere.
-
-boundless first tries BaseContainer (`processcontainer`), mxc's one-shot spawn API and
-the direct analog of the macOS/Linux path. On current builds — including 25H2 build 26300
-(Pro) — its kernel entry point `Experimental_CreateProcessInSandbox` returns `E_NOTIMPL`
-(`ERROR_CALL_NOT_IMPLEMENTED`): the OS has not shipped that syscall, and no combination of
-feature flags or optional features changes that. So boundless falls back to IsolationSession,
-which reaches the same write boundary through a working path. A future build that implements
-the one-shot call lets the primary path win again automatically.
-
-Two limits, both narrower than the macOS/Linux backends. IsolationSession enforces the
-*write* boundary but leaves the network open regardless of the `network` setting — no
-regression, since the Windows alternative was an unsandboxed shell. And like every Windows
-backend it cannot mark a read-only subpath inside a writable parent, so the `.git` carve-out
-above does not apply on Windows (`.git` stays writable there). Microsoft notes these
-sandboxes "should not be treated as security boundaries currently."
-
-If neither backend can start, the command fails by default (`onUnavailable: "error"`)
-with an error explaining how to switch to `"passthrough"` or disable the sandbox
-entirely; set `"passthrough"` and a `ran UNSANDBOXED` warning on a command becomes the
-signal instead.
-macOS (seatbelt) and Linux (bubblewrap) need no setup.
-
 ### Editor integration (ACP)
 
-`boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com)
-agent over stdio, so ACP-compatible editors (Zed and others) can drive bound as their
-backend agent. The editor spawns `boundless --acp` as a subprocess and speaks JSON-RPC
-over stdin/stdout; bound provides the inference, memory, and model routing, while the
-file and shell tools run locally in the editor's workspace. Tool calls are gated
-through the editor's permission prompts, and existing bound threads can be resumed.
+`boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio. ACP-compatible editors (Zed and others) spawn it as a subprocess; bound provides inference, memory, and model routing while file and shell tools run locally. Tool calls are gated through the editor's permission prompts.
 
 Example Zed configuration (`~/.config/zed/settings.json`):
 
@@ -185,94 +193,19 @@ Example Zed configuration (`~/.config/zed/settings.json`):
 }
 ```
 
-Pass `--url` after `--acp` to target a non-default server. Requires a running bound
-server (`bound start`).
+ACP session options exposed as `configOptions` dropdowns: **model** (for new turns) and **mode** (`Ask every time` / `Accept edits` / `Bypass permissions`). MCP servers the editor passes at init/resume are merged alongside `~/.bound/less/mcp.json`; on name collision the local entry wins.
 
-MCP servers the editor passes at session init/resume (Zed's `mcp_servers`) are merged
-into the agent's tool set alongside any servers in `~/.bound/less/mcp.json`. `stdio` and
-`http` transports map through (including `http` request headers); `sse` and nested-`acp`
-transports are skipped with a log
-warning. On a name collision the local `mcp.json` entry wins, so a session param can't
-silently shadow an operator-configured server (which may carry secrets in `env`).
+Image prompts forward through: `image/jpeg`, `image/png`, `image/gif`, and `image/webp` content blocks ride to the model as real image data (stored as `file_ref` in the `files` table; resolved at inference time). Unsupported types and audio are elided with a labeled text note.
 
-Two session-level selectors ride alongside the conversation as ACP `configOptions` (the
-editor renders them as dropdowns): the **model** for new turns, and the **mode** — the
-permission posture for tool calls. Modes are `Ask every time` (prompt before each call,
-the default), `Accept edits` (auto-approve file reads and edits, still prompt before
-running commands), and `Bypass permissions` (auto-approve everything). The default mode
-is byte-identical to per-call prompting; a non-default mode is opt-in per session.
+## MCP integration
 
-Image prompts are forwarded: a prompt that includes an image content block (a pasted or
-attached `image/jpeg`, `image/png`, `image/gif`, or `image/webp`) rides through to the
-model as a real image rather than being flattened to a placeholder. The bytes are
-persisted as a `file_ref` into the `files` table so `messages.content` stays light, and
-resolved back to image data at inference time. Unsupported image media types and audio
-are still elided with a labeled text note.
+Bound both consumes and exposes MCP:
 
-## Project structure
+**Consuming** — servers in `mcp.json` (`stdio` or `http` transport) are registered as agent tools. The web server exposes a cross-host MCP proxy at `POST /api/mcp-proxy`. MCP Apps (servers advertising the `io.modelcontextprotocol/ui` capability) render their tool results inline as interactive apps in the web UI.
 
-```
-packages/
-  shared/       Cross-cutting types, events, config schemas (Zod)
-  core/         SQLite database (WAL mode, STRICT tables), DI container, config loader, outbox
-  sync/         Ed25519-signed WebSocket sync with XChaCha20 encryption, LWW/append-only reducers
-  sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), OCC persistence, command framework
-  llm/          LLM drivers (Bedrock, OpenAI-compatible) over the Vercel AI SDK, model router
-  agent/        Agent loop state machine, 8-stage context pipeline, 12 native tools, scheduler, MCP bridge
-  platforms/    MCP-based platform connectors (Discord), connector handles, connector tool
-  web/          Hono API server, WebSocket, Svelte 5 UI
-  client/       BoundClient: unified HTTP + WebSocket client for external consumers
-  mcp-server/   Standalone MCP stdio server (bound-mcp)
-  less/         Terminal coding agent client (boundless)
-  cli/          CLI commands (bound init/start, boundctl); compiles to four binaries
-```
+**Exposing** — `bound-mcp` is a standalone stdio MCP server that exposes a `bound_chat` tool, letting any MCP-compatible client drive a bound thread.
 
-See [docs/design/architecture.md](docs/design/architecture.md) for the package dependency graph and data flow, and [CONTRIBUTING.md](CONTRIBUTING.md) for developer-facing setup, testing conventions, and invariants.
-
-## Development
-
-```bash
-# Run all tests
-bun test --recursive
-
-# Lint
-bun run lint
-
-# Type check
-bun run typecheck
-
-# Fix formatting
-bun run lint:fix
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for testing conventions, critical invariants, and contributor checklists.
-
-### Config files
-
-After `bound init`, the `config/` directory contains:
-
-| File | Required | Description |
-|------|----------|-------------|
-| `allowlist.json` | Yes | Users allowed to interact with the agent |
-| `model_backends.json` | Yes | LLM backend configuration (per-backend model routing, pricing, and optional cache warming) |
-| `platforms.json` | No | Platform connector config (Discord bot token, MCP server settings) |
-| `sync.json` | No | Hub URL, sync interval, relay and WS settings |
-| `keyring.json` | No | Per-host identity keys (auto-populated) |
-| `mcp.json` | No | MCP server connections (stdio or http transport). UI-bearing tools on an http/sse server (per the [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) `io.modelcontextprotocol/ui` capability) render inline as interactive apps in the web UI. |
-| `overlay.json` | No | Codebase mount points |
-| `cron_schedules.json` | No | Recurring task definitions |
-| `memory.json` | No | Pinned-memory caps (`pinned_count_cap`, default 10; `pinned_size_cap`, default 2000 chars) |
-| `persona.md` | No | Seed for the cluster-wide persona. On first start it is loaded into the synced `cluster_config['persona']` row; after that the row is source of truth and the file is inert. Edit the live persona with `boundctl set-persona` or the web UI. |
-
-All config schemas are **strict** — unknown keys fail parse. Declare new fields in the Zod schema (`packages/shared/src/config-schemas.ts`) before using them.
-
-See [docs/config.md](docs/config.md) for the per-field reference for every config file.
-
-### MCP Server Configuration
-
-MCP servers are configured in `mcp.json` with either `stdio` or `http` transport. Tools from connected servers are automatically registered as commands available to the agent during chat.
-
-Example with stdio transport:
+Example `mcp.json`:
 ```json
 {
   "servers": [
@@ -287,19 +220,68 @@ Example with stdio transport:
 }
 ```
 
-The web server also exposes a cross-host MCP proxy at `POST /api/mcp-proxy` for accessing tools from connected servers in a distributed setup.
+## Discord
+
+The Discord connector runs as an in-process MCP server. DMs are routed to threads; leader election (auto/leader/standby/all roles, configurable failover threshold) ensures only one host holds active subscriptions. Outbound delivery via `discord_send_message`; inbound via webhook or polling. Configured in `platforms.json`.
+
+## Configuration
+
+After `bound init`, `config/` contains:
+
+| File | Required | Description |
+|------|----------|-------------|
+| `allowlist.json` | Yes | Users permitted to interact; `default_web_user` + user map with display_name and platform handles |
+| `model_backends.json` | Yes | LLM backend definitions; per-backend routing, pricing, cache warming, extended thinking, and capability overrides |
+| `network.json` | No | Outbound HTTP allowlist for the sandbox, with per-URL header injection |
+| `platforms.json` | No | Platform connectors (Discord token, allowed users, leadership role, failover threshold) |
+| `sync.json` | No | Hub URL (on spokes), relay tuning, WebSocket backoff and backpressure settings |
+| `keyring.json` | No | Per-host Ed25519 public keys and URLs (auto-populated by sync handshake) |
+| `mcp.json` | No | MCP server connections; `io.modelcontextprotocol/ui` tools render inline in the web UI |
+| `overlay.json` | No | Codebase mount points (`/mnt/<name>` → real path) |
+| `cron_schedules.json` | No | Recurring task definitions with schedule, payload, skill, model hint, and dependency fields |
+| `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
+| `persona.md` | No | Seed for the cluster-wide persona — loaded once into `cluster_config['persona']` on first start; edit live with `boundctl set-persona` or the web UI |
+
+All schemas are **strict** — unknown keys fail loudly. Add new fields in `packages/shared/src/config-schemas.ts` before using them.
+
+See [docs/config.md](docs/config.md) for the full per-field reference.
 
 ## Architecture
 
-The system uses an event-sourced architecture with SQLite as the storage layer:
+```
+packages/
+  shared/       Cross-cutting types, Zod config schemas, HLC, OpenTelemetry support
+  core/         SQLite schema (19 STRICT tables, WAL mode), DI container, config loader, outbox
+  sync/         Ed25519-signed sync, XChaCha20 encryption, LWW/append-only reducers, three-phase protocol
+  sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), OCC persistence, command framework
+  llm/          4 LLM drivers over Vercel AI SDK, cluster-wide model router, capability detection
+  agent/        Agent loop state machine, 8-stage context pipeline, 15 native tools, scheduler, MCP bridge
+  platforms/    In-process platform connectors (Discord), leader election, intake pipeline
+  web/          Hono API + Bun.serve WebSocket, Svelte 5 SPA (embedded into binary)
+  client/       BoundClient: HTTP + WebSocket SDK for external consumers
+  mcp-server/   Standalone stdio MCP server (bound-mcp, exposes bound_chat tool)
+  less/         Terminal coding agent client (boundless), TUI, ACP mode, filesystem sandbox
+  cli/          bound init/start, boundctl, boundless, bound-mcp — compiles to four binaries
+```
 
-- **Agent loop** processes messages through a state machine: hydrate filesystem, assemble context, call LLM, execute tools, persist results
-- **Scheduler** fires cron, deferred, and event-driven tasks with DAG dependency resolution
-- **Sync protocol** replicates state between hosts over encrypted WebSocket frames (Ed25519 identity, XChaCha20-Poly1305 at frame level, HLC-ordered change log). Keypair is auto-generated at `data/host.key` / `data/host.pub`.
-- **12 native agent tools** with structured JSON schemas (`task`, `query`, `memory`, `skill`, `advisory`, `cancel`, `purge`, `notify`, `introspect`, `archive`, `model_hint`, `hostinfo`). Tools receive typed parameters directly from the LLM, eliminating argument-parsing bugs.
-- **MCP integration** auto-generates one command per connected MCP server (stdio or http transport), dispatched via a `subcommand` parameter. Tools are available during chat and via a cross-host MCP proxy.
-- **Platform connectors** (Discord, etc.) are implemented as in-process MCP servers. A unified connector tool manages event subscriptions (connector handles), and platform tools are scoped per-thread through annotation-based filtering. Leader election ensures only one host runs active subscriptions.
-- **Web UI** is built as a Svelte 5 SPA and embedded into the compiled binary for zero external dependencies.
+**Agent loop states:** IDLE → HYDRATE_FS → ASSEMBLE_CONTEXT → LLM_CALL → PARSE_RESPONSE → TOOL_EXECUTE → TOOL_PERSIST → RESPONSE_PERSIST → FS_PERSIST → QUEUE_CHECK (→ RELAY_WAIT / RELAY_STREAM for remote inference) → back to IDLE or ERROR_PERSIST.
+
+**Sync protocol:** push (spoke sends events) → pull (fetch hub's events) → ack (confirm receipt). Relay kinds include tool_call, inference, intake, platform_deliver, event_broadcast, and their response counterparts. State is never hard-deleted; all synced tables use soft deletes and LWW conflict resolution by `modified_at`.
+
+**Virtual filesystem:** the agent's working directory is an in-memory overlay. Writes flush to SQLite via optimistic concurrency control (pre/post SHA-256 snapshot, `BEGIN IMMEDIATE`). The `ClusterFs` routes `/mnt/<name>` to overlay mounts on real host paths.
+
+See [docs/design/architecture.md](docs/design/architecture.md) for the package dependency graph and data flow.
+
+## Development
+
+```bash
+bun test --recursive    # all tests
+bun run lint            # Biome lint
+bun run typecheck       # tsc
+bun run lint:fix        # auto-fix formatting
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for testing conventions, critical invariants, and contributor checklists.
 
 ## License
 
