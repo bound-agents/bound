@@ -134,7 +134,7 @@ export function resolveSandboxConfig(setting: SandboxSetting | undefined): Resol
 	// Absent → opt-out default is ON (a fresh install with no config still
 	// gets the guard). `false` shorthand → disabled.
 	if (setting === undefined || setting === true) {
-		return { enabled: true, writablePaths: [], network: "open", onUnavailable: "passthrough" };
+		return { enabled: true, writablePaths: [], network: "open", onUnavailable: "error" };
 	}
 	if (setting === false) {
 		return DISABLED_SANDBOX;
@@ -143,7 +143,7 @@ export function resolveSandboxConfig(setting: SandboxSetting | undefined): Resol
 		enabled: setting.enabled ?? true,
 		writablePaths: setting.writablePaths ?? [],
 		network: setting.network ?? "open",
-		onUnavailable: setting.onUnavailable ?? "passthrough",
+		onUnavailable: setting.onUnavailable ?? "error",
 	};
 }
 

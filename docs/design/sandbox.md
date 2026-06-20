@@ -399,7 +399,7 @@ It is enforced on Linux (bubblewrap layers the read-only bind after the cwd read
 
 ### Degradation
 
-When mxc cannot sandbox on a platform, behavior follows the `onUnavailable` setting: `"passthrough"` (default) runs the command unsandboxed with a warning rather than break the shell; `"error"` refuses to run it. The sandbox is configured in `~/.bound/less/config.json` under the `sandbox` key — `false` to disable, or an object (`enabled`, `writablePaths`, `network`, `onUnavailable`) for finer control.
+When mxc cannot sandbox on a platform, behavior follows the `onUnavailable` setting: `"error"` (default) refuses to run the command rather than execute it without write confinement, so a backend that breaks (e.g. after an OS update) can't silently drop write protection — the error names the exact config edit to opt into the lower-friction posture. `"passthrough"` runs the command unsandboxed with a warning instead. The sandbox is configured in `~/.bound/less/config.json` under the `sandbox` key — `false` to disable, or an object (`enabled`, `writablePaths`, `network`, `onUnavailable`) for finer control.
 
 ### The Windows backend
 

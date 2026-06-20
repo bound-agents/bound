@@ -32,7 +32,7 @@ describe("resolveSandboxConfig", () => {
 			enabled: true,
 			writablePaths: [],
 			network: "open",
-			onUnavailable: "passthrough",
+			onUnavailable: "error",
 		});
 	});
 
@@ -41,7 +41,7 @@ describe("resolveSandboxConfig", () => {
 			enabled: true,
 			writablePaths: [],
 			network: "open",
-			onUnavailable: "passthrough",
+			onUnavailable: "error",
 		});
 	});
 
@@ -59,7 +59,7 @@ describe("resolveSandboxConfig", () => {
 			enabled: true,
 			writablePaths: ["/opt/extra"],
 			network: "open",
-			onUnavailable: "passthrough",
+			onUnavailable: "error",
 		});
 	});
 
