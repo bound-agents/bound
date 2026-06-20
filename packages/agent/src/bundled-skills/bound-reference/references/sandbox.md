@@ -77,15 +77,19 @@ being told.
 When the current thread is a **boundless** terminal session, you also have
 `boundless_read` / `boundless_write` / `boundless_edit` / `boundless_bash`. These
 act on the operator's **real local working directory**, NOT the VFS. They are a
-different filesystem entirely:
+different filesystem entirely. The two environments have names so you can keep them
+straight:
 
-- `bms_read` / `bms_write` / `bms_edit` / `bms_bash` → the sandbox VFS (synced, database-backed).
-- `boundless_*` → the host's actual disk in the boundless cwd (not synced).
+- **Bound Main Station** — the sandbox VFS (synced, database-backed), reached through
+  `bms_read` / `bms_write` / `bms_edit` / `bms_bash`.
+- **Boundless Satellite Station** — the boundless host's actual disk in the boundless
+  cwd (not synced), reached through `boundless_*`.
 
 Mixing them up is a common error: editing a real repo file requires `boundless_edit`,
 while `bms_edit` would (silently, harmlessly) write into the VFS instead. The
-`boundless_copy` tool moves bytes between the two filesystems without round-tripping
-through your context.
+`boundless_copy` tool moves bytes between the two stations without round-tripping
+through your context — its `source`/`target` take `"main"` (the VFS) or `"satellite"`
+(the host disk).
 
 ## What is NOT in the sandbox
 

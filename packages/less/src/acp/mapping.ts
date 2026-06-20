@@ -95,7 +95,9 @@ function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd:
 		return filePath ? [absolutePath(cwd, filePath)] : [];
 	}
 
-	if (toolName === "boundless_copy" && args.target === "host") {
+	// "satellite" is the #180 name for the real host disk; "host" is the legacy
+	// spelling that may still appear in replayed history from older threads.
+	if (toolName === "boundless_copy" && (args.target === "satellite" || args.target === "host")) {
 		const targetPath = typeof args.target_path === "string" ? args.target_path : "";
 		return targetPath ? [absolutePath(cwd, targetPath)] : [];
 	}
@@ -190,8 +192,9 @@ export function toolCallLocations(
 	) {
 		pushHostPath(args.file_path, followAlongLine(toolName, args, cwd));
 	} else if (toolName === "boundless_copy") {
-		if (args.source === "host") pushHostPath(args.source_path);
-		if (args.target === "host") pushHostPath(args.target_path);
+		// Accept both the #180 "satellite" name and the legacy "host" spelling.
+		if (args.source === "satellite" || args.source === "host") pushHostPath(args.source_path);
+		if (args.target === "satellite" || args.target === "host") pushHostPath(args.target_path);
 	}
 
 	return locations;
