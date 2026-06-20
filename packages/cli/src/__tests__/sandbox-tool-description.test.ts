@@ -23,7 +23,7 @@ describe("sandboxTool description (AC4.3)", () => {
 
 	it("sandboxTool function has correct structure", () => {
 		expect(sandboxTool.type).toBe("function");
-		expect(sandboxTool.function.name).toBe("bash");
+		expect(sandboxTool.function.name).toBe("bms_bash");
 		expect(typeof sandboxTool.function.description).toBe("string");
 		expect(sandboxTool.function.parameters).toBeDefined();
 		expect(sandboxTool.function.parameters.type).toBe("object");
