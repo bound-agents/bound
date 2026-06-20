@@ -28,6 +28,11 @@ describe("SessionHeader", () => {
 		expect(lastFrame() ?? "").toContain("/etc/hosts");
 	});
 
+	it("announces service to the Boundless Satellite Station", () => {
+		const { lastFrame } = render(<SessionHeader commitHash="abc1234" cwd="/tmp/work" />);
+		expect(lastFrame() ?? "").toContain("Beginning service to the Boundless Satellite Station");
+	});
+
 	it("renders the favicon ASCII art (all-cyan, chunky-block ring)", () => {
 		const { lastFrame } = render(<SessionHeader commitHash="dev" cwd="/tmp" />);
 		const frame = lastFrame() ?? "";
