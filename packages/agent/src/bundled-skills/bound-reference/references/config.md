@@ -2,7 +2,7 @@
 
 Configuration is **operator-owned host state**, deliberately kept out of the
 sandbox VFS. This is the single most common orientation mistake: reaching for
-`read` or `bash` to inspect config and finding nothing, because config does not
+`bms_read` or `bms_bash` to inspect config and finding nothing, because config does not
 live where your file tools look. It lives on the host's real disk in a `config/`
 directory, is loaded into memory once at startup, and is guarded by strict
 schemas.
@@ -60,7 +60,7 @@ auto-generated and not something you edit.
 ## Config vs the sandbox — the mental model
 
 - **Sandbox VFS** (`files` table, synced): your writable workspace. Database-backed,
-  replicates across hosts, reachable with `read`/`write`/`edit`/`bash`.
+  replicates across hosts, reachable with `bms_read`/`bms_write`/`bms_edit`/`bms_bash`.
 - **Config** (`config/` on host disk, loaded into `AppContext`): operator-owned
   inputs that shape how bound runs. Not in the VFS, not reachable with your file
   tools, strict-schema validated, changed by the operator and (for some fields)

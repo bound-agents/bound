@@ -987,6 +987,60 @@ describe("foldMessages — read-class action log", () => {
 		expect(line.text).not.toContain("code line 96");
 	});
 
+	it("folds a bms_read (renamed VFS read) as a read-class action line, not a body", () => {
+		// #180 renamed the always-on VFS tools to bms_*. The fold's read-class
+		// detection is suffix-based (`*_read`), so bms_read must fold to an action
+		// line from args — never the body — exactly like read/boundless_read.
+		const body = Array.from({ length: 50 }, (_, k) => `  ${10 + k}\tvfs line ${10 + k}`);
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "t1",
+						name: "bms_read",
+						input: { path: "/home/user/notes.md", offset: 10, limit: 50 },
+					},
+				]),
+			},
+			{ role: "tool_result", content: readResult(body) },
+		];
+		const [line] = foldMessages(messages, 0, messages.length);
+		expect(line.text).toContain("/home/user/notes.md");
+		expect(line.text).toMatch(/read/i);
+		expect(line.text).not.toContain("vfs line 10");
+	});
+
+	it("folds a thread mixing old-name (read) and new-name (bms_read) cycles", () => {
+		// A thread that predates the #180 rename has bare `read` rows in replayed
+		// history; new turns emit `bms_read`. Both must fold as read-class so the
+		// rename is safe across the version boundary (no body leak, no orphan).
+		const messages: LLMMessage[] = [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "old", name: "read", input: { file_path: "/repo/a.ts" } },
+				]),
+			},
+			{ role: "tool_result", tool_use_id: "old", content: readResult(["  1\told body"]) },
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "new", name: "bms_read", input: { file_path: "/repo/b.ts" } },
+				]),
+			},
+			{ role: "tool_result", tool_use_id: "new", content: readResult(["  1\tnew body"]) },
+		];
+		const result = foldMessages(messages, 0, messages.length);
+		const text = result.map((l) => l.text).join("\n");
+		expect(text).toContain("/repo/a.ts");
+		expect(text).toContain("/repo/b.ts");
+		// Neither body leaks — both folded as read-class action lines.
+		expect(text).not.toContain("old body");
+		expect(text).not.toContain("new body");
+	});
+
 	it("renders a read with no offset/limit (whole file) without a bogus range", () => {
 		const messages: LLMMessage[] = [
 			{

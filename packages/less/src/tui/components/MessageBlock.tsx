@@ -19,7 +19,9 @@ const WRITE_PREVIEW_MAX_LINES = 8;
 
 /** Strip the "boundless_" prefix from local tool names for cleaner display. */
 function displayToolName(name: string): string {
-	return name.startsWith("boundless_") ? name.slice("boundless_".length) : name;
+	if (name.startsWith("boundless_")) return name.slice("boundless_".length);
+	if (name.startsWith("bms_")) return name.slice("bms_".length);
+	return name;
 }
 
 /** Summarize tool arguments for display, showing the most relevant arg value. */
