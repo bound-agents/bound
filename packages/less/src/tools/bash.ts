@@ -139,7 +139,7 @@ async function spawnForBash(
 				onUnavailable: "error",
 			});
 			throw new Error(
-				`Filesystem sandbox unavailable (${decision.reason}); refusing to run unsandboxed because sandbox.onUnavailable is "error".`,
+				`Filesystem sandbox unavailable (${decision.reason}); refusing to run the command unsandboxed. The sandbox is required by default so a backend that breaks (e.g. after an OS update) can't silently drop write protection. To run without it -- a deliberate choice that removes the write guard around your filesystem -- edit ~/.bound/less/config.json and set "sandbox": { "onUnavailable": "passthrough" } (keep trying the sandbox, fall back to an unsandboxed run with a warning when it can't) or "sandbox": false (disable the sandbox entirely).`,
 			);
 		case "passthrough":
 			// The one-shot path fell through. On Windows, try IsolationSession before

@@ -16,10 +16,11 @@ const sandboxConfigSchema = z
 		// Outbound network from sandboxed commands. "open" (default) leaves it
 		// reachable; "blocked" denies all network access.
 		network: z.enum(["open", "blocked"]).default("open"),
-		// Behavior when mxc can't sandbox on this platform: "passthrough"
-		// (default) runs the command unsandboxed with a warning; "error" fails
-		// the command rather than running it without containment.
-		onUnavailable: z.enum(["passthrough", "error"]).default("passthrough"),
+		// Behavior when mxc can't sandbox on this platform: "error" (default)
+		// fails the command rather than running it without containment, so a
+		// backend that breaks after an OS update can't silently drop write
+		// protection; "passthrough" runs the command unsandboxed with a warning.
+		onUnavailable: z.enum(["passthrough", "error"]).default("error"),
 	})
 	.strict();
 

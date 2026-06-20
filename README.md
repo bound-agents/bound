@@ -121,14 +121,18 @@ It's opt-out — set `"sandbox": false` to disable, or use the object form for f
     "enabled": true,
     "writablePaths": ["/extra/path/to/allow/writes"],
     "network": "open",
-    "onUnavailable": "passthrough"
+    "onUnavailable": "error"
   }
 }
 ```
 
 On a platform where mxc can't sandbox, `onUnavailable` decides the posture:
-`"passthrough"` (default) runs the command unsandboxed with a warning rather than break
-the shell; `"error"` refuses to run it.
+`"error"` (default) refuses to run the command rather than execute it without
+write confinement, so a backend that breaks (e.g. after an OS update) can't
+silently drop write protection — the error names the exact config edit to opt
+into the lower-friction posture. `"passthrough"` runs the command unsandboxed
+with a warning instead. Dropping confinement is a deliberate choice, never an
+implicit one.
 
 **Windows: write confinement via IsolationSession.** On Windows, boundless confines
 writes through mxc's `IsolationSession` backend: it provisions a short-lived Windows
@@ -151,8 +155,10 @@ backend it cannot mark a read-only subpath inside a writable parent, so the `.gi
 above does not apply on Windows (`.git` stays writable there). Microsoft notes these
 sandboxes "should not be treated as security boundaries currently."
 
-If neither backend can start, boundless degrades to `onUnavailable` (passthrough by default —
-the shell keeps working, unsandboxed); a `ran UNSANDBOXED` warning on a command is the signal.
+If neither backend can start, the command fails by default (`onUnavailable: "error"`)
+with an error explaining how to switch to `"passthrough"` or disable the sandbox
+entirely; set `"passthrough"` and a `ran UNSANDBOXED` warning on a command becomes the
+signal instead.
 macOS (seatbelt) and Linux (bubblewrap) need no setup.
 
 ### Editor integration (ACP)
