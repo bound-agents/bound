@@ -62,12 +62,31 @@ describe("boundless_copy", () => {
 	it("rejects invalid source value", async () => {
 		const tool = makeCopyTool();
 		const result = await tool(
-			{ source: "moon", source_path: "a", target: "host", target_path: "b" },
+			{ source: "moon", source_path: "a", target: "satellite", target_path: "b" },
 			new AbortController().signal,
 			tempDir,
 		);
 		expect(result.isError).toBe(true);
-		expect((result.content[1] as { text: string }).text).toContain('"host" or "sandbox"');
+		expect((result.content[1] as { text: string }).text).toContain('"main" or "satellite"');
+	});
+
+	it("accepts the legacy host/sandbox spelling for replayed history", async () => {
+		const sourcePath = join(tempDir, "legacy.txt");
+		writeFileSync(sourcePath, "hi");
+		const tool = makeCopyTool();
+		// "host" normalizes to "satellite", "sandbox" would normalize to "main";
+		// here both legacy values map to the real disk so the copy stays local.
+		const result = await tool(
+			{
+				source: "host",
+				source_path: sourcePath,
+				target: "host",
+				target_path: join(tempDir, "legacy-out.txt"),
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBeUndefined();
 	});
 
 	it("rejects empty source_path", async () => {

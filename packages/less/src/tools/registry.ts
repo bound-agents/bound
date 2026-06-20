@@ -142,30 +142,32 @@ export function buildToolSet(
 			function: {
 				name: "boundless_copy",
 				description:
-					"Copy a file between the host filesystem (where boundless runs) and the bound runtime sandbox, without round-tripping bytes through the LLM context. Use this instead of read+write whenever you only need to move file contents from one filesystem to the other.",
+					"Copy a file between the Boundless Satellite Station (the host disk where boundless runs) and the Bound Main Station (the virtualized bound VFS), without round-tripping bytes through the LLM context. Use this instead of read+write whenever you only need to move file contents from one environment to the other.",
 				parameters: {
 					type: "object",
 					required: ["source", "source_path", "target", "target_path"],
 					properties: {
 						source: {
 							type: "string",
-							enum: ["host", "sandbox"],
-							description: 'Source filesystem: "host" or "sandbox"',
+							enum: ["main", "satellite"],
+							description:
+								'Source environment: "satellite" (the host disk where boundless runs) or "main" (the bound VFS)',
 						},
 						source_path: {
 							type: "string",
 							description:
-								"Path on the source filesystem. Host paths may be relative to the boundless cwd; sandbox paths must be absolute.",
+								"Path on the source environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute.",
 						},
 						target: {
 							type: "string",
-							enum: ["host", "sandbox"],
-							description: 'Target filesystem: "host" or "sandbox"',
+							enum: ["main", "satellite"],
+							description:
+								'Target environment: "satellite" (the host disk where boundless runs) or "main" (the bound VFS)',
 						},
 						target_path: {
 							type: "string",
 							description:
-								"Path on the target filesystem. Host paths may be relative to the boundless cwd; sandbox paths must be absolute. Parent directories are created on the host side.",
+								"Path on the target environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute. Parent directories are created on the satellite side.",
 						},
 					},
 				},
@@ -290,12 +292,16 @@ export function buildToolSet(
 
 				const mcpToolName = `boundless_mcp_${serverName}_${tool.name}`;
 
-				// Create a new tool definition with the namespaced name
+				// Create a new tool definition with the namespaced name. Prefix a
+				// note that the tool executes on the Boundless Satellite Station
+				// (the host where boundless runs), not the Bound Main Station VFS,
+				// so the agent does not conflate it with bound-side native tools.
+				const baseDescription = tool.description ?? tool.name;
 				const mcpToolDef: ToolDefinition = {
 					type: "function",
 					function: {
 						name: mcpToolName,
-						description: tool.description ?? tool.name,
+						description: `(Runs on the Boundless Satellite Station — the host where boundless is attached, not the Bound Main Station VFS.) ${baseDescription}`,
 						parameters: tool.inputSchema as Record<string, unknown>,
 					},
 				};

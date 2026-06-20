@@ -9,7 +9,11 @@ import {
 } from "./sandbox-policy";
 import type { ToolHandler, ToolResult } from "./types";
 
-type Filesystem = "host" | "sandbox";
+// "satellite" is the Boundless Satellite Station -- the host disk where
+// boundless runs. "main" is the Bound Main Station -- the virtualized VFS
+// that bound owns. The legacy "host"/"sandbox" spelling (#180) is normalized
+// on the way in so replayed tool calls from older threads still resolve.
+type Filesystem = "main" | "satellite";
 
 interface CopyArgs {
 	source?: unknown;
@@ -18,8 +22,11 @@ interface CopyArgs {
 	target_path?: unknown;
 }
 
-function isFilesystem(v: unknown): v is Filesystem {
-	return v === "host" || v === "sandbox";
+/** Normalize the param value to a station name, accepting the legacy "host"/"sandbox" spelling. */
+function normalizeFilesystem(v: unknown): Filesystem | undefined {
+	if (v === "satellite" || v === "host") return "satellite";
+	if (v === "main" || v === "sandbox") return "main";
+	return undefined;
 }
 
 function errorResult(provenance: ToolResult["content"][number], message: string): ToolResult {
@@ -51,34 +58,37 @@ async function readSource(
 	cwd: string,
 	boundUrl: string,
 ): Promise<{ bytes: Buffer } | { error: string; status: "not_found" | "is_dir" | "other" }> {
-	if (fs === "host") {
+	if (fs === "satellite") {
 		try {
 			const resolved = resolveHostPath(path, cwd);
 			return { bytes: readFileSync(resolved) };
 		} catch (err) {
 			const e = err as NodeJS.ErrnoException;
 			if (e?.code === "ENOENT") {
-				return { error: `host source not found: ${path}`, status: "not_found" };
+				return { error: `satellite source not found: ${path}`, status: "not_found" };
 			}
 			if (e?.code === "EISDIR") {
-				return { error: `host source is a directory: ${path}`, status: "is_dir" };
+				return { error: `satellite source is a directory: ${path}`, status: "is_dir" };
 			}
-			return { error: `host source read failed: ${e?.message ?? String(err)}`, status: "other" };
+			return {
+				error: `satellite source read failed: ${e?.message ?? String(err)}`,
+				status: "other",
+			};
 		}
 	}
 
-	// sandbox
+	// main (the bound VFS)
 	const url = `${boundUrl.replace(/\/$/, "")}/api/sandbox/file?path=${encodeURIComponent(path)}`;
 	let res: Response;
 	try {
 		res = await fetch(url);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		return { error: `sandbox source request failed: ${msg}`, status: "other" };
+		return { error: `main source request failed: ${msg}`, status: "other" };
 	}
 
 	if (res.status === 404) {
-		return { error: `sandbox source not found: ${path}`, status: "not_found" };
+		return { error: `main source not found: ${path}`, status: "not_found" };
 	}
 	if (!res.ok) {
 		let detail = "";
@@ -89,7 +99,7 @@ async function readSource(
 		}
 		const trimmed = detail.length > 200 ? `${detail.slice(0, 200)}...` : detail;
 		return {
-			error: `sandbox source read failed (HTTP ${res.status}): ${trimmed}`,
+			error: `main source read failed (HTTP ${res.status}): ${trimmed}`,
 			status: res.status === 400 ? "is_dir" : "other",
 		};
 	}
@@ -111,7 +121,7 @@ async function writeTarget(
 	boundUrl: string,
 	bytes: Buffer,
 ): Promise<{ bytesWritten: number } | { error: string }> {
-	if (fs === "host") {
+	if (fs === "satellite") {
 		try {
 			const resolved = resolveHostPath(path, cwd);
 			mkdirSync(dirname(resolved), { recursive: true });
@@ -119,11 +129,11 @@ async function writeTarget(
 			return { bytesWritten: bytes.byteLength };
 		} catch (err) {
 			const e = err as NodeJS.ErrnoException;
-			return { error: `host target write failed: ${e?.message ?? String(err)}` };
+			return { error: `satellite target write failed: ${e?.message ?? String(err)}` };
 		}
 	}
 
-	// sandbox
+	// main (the bound VFS)
 	const url = `${boundUrl.replace(/\/$/, "")}/api/sandbox/file?path=${encodeURIComponent(path)}`;
 	let res: Response;
 	try {
@@ -140,7 +150,7 @@ async function writeTarget(
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		return { error: `sandbox target request failed: ${msg}` };
+		return { error: `main target request failed: ${msg}` };
 	}
 
 	if (!res.ok) {
@@ -151,7 +161,7 @@ async function writeTarget(
 			// noop — best effort
 		}
 		const trimmed = detail.length > 200 ? `${detail.slice(0, 200)}...` : detail;
-		return { error: `sandbox target write failed (HTTP ${res.status}): ${trimmed}` };
+		return { error: `main target write failed (HTTP ${res.status}): ${trimmed}` };
 	}
 
 	return { bytesWritten: bytes.byteLength };
@@ -180,11 +190,13 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 	const provenance = formatProvenance(deps.hostname, cwd, "boundless_copy");
 
 	// Argument validation
-	if (!isFilesystem(args.source)) {
-		return errorResult(provenance, 'Error: source is required and must be "host" or "sandbox"');
+	const source = normalizeFilesystem(args.source);
+	if (!source) {
+		return errorResult(provenance, 'Error: source is required and must be "main" or "satellite"');
 	}
-	if (!isFilesystem(args.target)) {
-		return errorResult(provenance, 'Error: target is required and must be "host" or "sandbox"');
+	const target = normalizeFilesystem(args.target);
+	if (!target) {
+		return errorResult(provenance, 'Error: target is required and must be "main" or "satellite"');
 	}
 	if (typeof args.source_path !== "string" || args.source_path.length === 0) {
 		return errorResult(provenance, "Error: source_path is required and must be a non-empty string");
@@ -193,8 +205,6 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 		return errorResult(provenance, "Error: target_path is required and must be a non-empty string");
 	}
 
-	const source: Filesystem = args.source;
-	const target: Filesystem = args.target;
 	const sourcePath: string = args.source_path;
 	const targetPath: string = args.target_path;
 
@@ -203,12 +213,12 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 		return errorResult(provenance, `Error: ${readResult.error}`);
 	}
 
-	// In-process write guard: a host target write calls fs directly and never
+	// In-process write guard: a satellite target write calls fs directly and never
 	// passes through mxc, so when the sandbox is enabled, confine it to the same
-	// writable set. The sandbox target is out of scope — it round-trips through
+	// writable set. The main (VFS) target is out of scope — it round-trips through
 	// bound's HTTP API, which owns its own containment.
 	const sandbox = deps.sandbox ?? DISABLED_SANDBOX;
-	if (target === "host" && sandbox.enabled) {
+	if (target === "satellite" && sandbox.enabled) {
 		const check = checkWritePath(targetPath, cwd, sandbox);
 		if (!check.allowed) {
 			return errorResult(provenance, formatWriteDenied("boundless_copy", targetPath, check));
