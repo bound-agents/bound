@@ -302,7 +302,7 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
-			name: "read",
+			name: "bms_read",
 			description:
 				"Read a file from the in-memory sandbox VFS (not the host filesystem). Returns the file's text content. " +
 				"Output is head-truncated to 2000 lines or 50,000 bytes (whichever is smaller); " +
@@ -314,7 +314,7 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(inputRaw) {
-			const parsed = parseToolInput(readSchema, inputRaw, "read");
+			const parsed = parseToolInput(readSchema, inputRaw, "bms_read");
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 
@@ -406,7 +406,7 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
-			name: "write",
+			name: "bms_write",
 			description:
 				"Write (or overwrite) a file in the in-memory sandbox VFS (not the host filesystem). " +
 				"Parent directories are created automatically. Content is stored as UTF-8 text. " +
@@ -418,7 +418,7 @@ function createWriteTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(inputRaw) {
-			const parsed = parseToolInput(writeSchema, inputRaw, "write");
+			const parsed = parseToolInput(writeSchema, inputRaw, "bms_write");
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 
@@ -449,7 +449,7 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
-			name: "edit",
+			name: "bms_edit",
 			description:
 				"Apply one or more search-and-replace edits to an existing file in the in-memory sandbox " +
 				"VFS (not the host filesystem). Each edit's old_text " +
@@ -463,7 +463,7 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(inputRaw) {
-			const parsed = parseToolInput(editSchema, inputRaw, "edit");
+			const parsed = parseToolInput(editSchema, inputRaw, "bms_edit");
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 
@@ -648,7 +648,7 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 	const toolDefinition: ToolDefinition = {
 		type: "function",
 		function: {
-			name: "search",
+			name: "bms_search",
 			description:
 				"Search file contents in the sandbox filesystem for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through bash — it returns identical results to the host boundless_search.",
 			parameters: jsonSchema,
@@ -658,7 +658,7 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 	return {
 		toolDefinition,
 		async execute(inputRaw) {
-			const parsed = parseToolInput(searchSchema, inputRaw, "search");
+			const parsed = parseToolInput(searchSchema, inputRaw, "bms_search");
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 
@@ -702,10 +702,10 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 
 export function createBuiltInTools(fs: IFileSystem): Map<string, BuiltInTool> {
 	const map = new Map<string, BuiltInTool>();
-	map.set("read", createReadTool(fs));
-	map.set("write", createWriteTool(fs));
-	map.set("edit", createEditTool(fs));
-	map.set("search", createSearchTool(fs));
+	map.set("bms_read", createReadTool(fs));
+	map.set("bms_write", createWriteTool(fs));
+	map.set("bms_edit", createEditTool(fs));
+	map.set("bms_search", createSearchTool(fs));
 	map.set("retrieve_task", createRetrieveTaskTool());
 	return map;
 }
