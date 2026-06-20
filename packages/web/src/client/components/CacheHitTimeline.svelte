@@ -184,6 +184,8 @@ function hideTooltip(): void {
 					r="2.5"
 					fill="var(--line-5)"
 					class="data-point"
+					role="img"
+					aria-label="Cache hit rate data point"
 					onmouseenter={(e) => showTooltip(e, d)}
 					onmousemove={(e) => showTooltip(e, d)}
 					onmouseleave={hideTooltip}

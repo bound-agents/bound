@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { Skill } from "@bound/shared";
+import { untrack } from "svelte";
 import { client } from "../lib/bound";
 import Btn from "./Btn.svelte";
 
@@ -19,11 +20,11 @@ function parseSkillBody(raw: string): string {
 	return match[1] ?? "";
 }
 
-let description = $state(skill.description ?? "");
-let body = $state(parseSkillBody(content));
-let allowedTools = $state(skill.allowed_tools ?? "");
-let compatibility = $state(skill.compatibility ?? "");
-let showAdvanced = $state(Boolean(skill.allowed_tools || skill.compatibility));
+let description = $state(untrack(() => skill.description ?? ""));
+let body = $state(untrack(() => parseSkillBody(content)));
+let allowedTools = $state(untrack(() => skill.allowed_tools ?? ""));
+let compatibility = $state(untrack(() => skill.compatibility ?? ""));
+let showAdvanced = $state(untrack(() => Boolean(skill.allowed_tools || skill.compatibility)));
 
 let submitting = $state(false);
 let serverError = $state<string | null>(null);
@@ -66,7 +67,15 @@ async function submitEdit(): Promise<void> {
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="modal-backdrop" onclick={onClose} onkeydown={handleKeydown} role="presentation">
-	<div class="modal-panel" role="dialog" aria-modal="true" aria-label="Edit Skill" onclick={(e) => e.stopPropagation()}>
+	<div
+		class="modal-panel"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Edit Skill"
+		tabindex="-1"
+		onclick={(e) => e.stopPropagation()}
+		onkeydown={(e) => e.stopPropagation()}
+	>
 		<header class="modal-header">
 			<h2>Edit Skill</h2>
 			<div class="skill-name-badge">{skill.name}</div>

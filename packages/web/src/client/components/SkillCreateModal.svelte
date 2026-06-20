@@ -50,7 +50,7 @@ const formValid = $derived(
 
 // Upload state
 let selectedFile = $state<File | null>(null);
-let fileInputEl: HTMLInputElement;
+let fileInputEl = $state<HTMLInputElement>();
 
 // Upload validation
 const uploadValid = $derived(
@@ -120,7 +120,15 @@ async function submitUpload(): Promise<void> {
 </script>
 
 <div class="modal-backdrop" onclick={onClose} onkeydown={handleKeydown} role="presentation">
-	<div class="modal-panel" role="dialog" aria-modal="true" aria-label="Create Skill" onclick={(e) => e.stopPropagation()}>
+	<div
+		class="modal-panel"
+		role="dialog"
+		aria-modal="true"
+		aria-label="Create Skill"
+		tabindex="-1"
+		onclick={(e) => e.stopPropagation()}
+		onkeydown={(e) => e.stopPropagation()}
+	>
 		<header class="modal-header">
 			<h2>Create Skill</h2>
 			<div class="mode-tabs">

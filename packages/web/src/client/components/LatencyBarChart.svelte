@@ -133,6 +133,8 @@ function hideTooltip(): void {
 				height={rowHeight / 2 - 8}
 				fill={getColorForLatency(d.avg_latency_ms, 1)}
 				class="bar"
+				role="img"
+				aria-label="Average latency bar"
 				onmouseenter={(e) => showTooltip(e, d, "avg")}
 				onmousemove={(e) => showTooltip(e, d, "avg")}
 				onmouseleave={hideTooltip}
@@ -156,6 +158,8 @@ function hideTooltip(): void {
 				height={rowHeight / 2 - 8}
 				fill={getColorForLatency(d.p95_latency_ms, 0.5)}
 				class="bar"
+				role="img"
+				aria-label="P95 latency bar"
 				onmouseenter={(e) => showTooltip(e, d, "p95")}
 				onmousemove={(e) => showTooltip(e, d, "p95")}
 				onmouseleave={hideTooltip}

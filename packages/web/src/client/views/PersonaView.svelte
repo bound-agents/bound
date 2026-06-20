@@ -137,12 +137,6 @@ function revert(): void {
 		line-height: 1.5;
 		margin: 0 0 20px;
 	}
-	.blurb code {
-		font-family: var(--font-mono);
-		font-size: 12px;
-		background: var(--paper-3);
-		padding: 1px 4px;
-	}
 	.editor {
 		width: 100%;
 		min-height: 420px;
