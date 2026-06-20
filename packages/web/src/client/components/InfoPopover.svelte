@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+import { type Snippet, untrack } from "svelte";
 
 /**
  * Instant hover/focus info popover. Replaces native `title=` tooltips, whose
@@ -40,7 +40,7 @@ const {
 let visible = $state(false);
 let left = $state(0);
 let top = $state(0);
-let resolvedPlacement = $state<"top" | "bottom">(placement);
+let resolvedPlacement = $state<"top" | "bottom">(untrack(() => placement));
 let triggerEl: HTMLButtonElement | undefined;
 
 const BUBBLE_MAX_WIDTH = 300;

@@ -66,6 +66,7 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 		{@const pct = contextWindow > 0 ? (section.tokens / contextWindow) * 100 : 0}
 		{@const expandable = !!(section.children && section.children.length > 0)}
 		<div class="section-row" class:expandable>
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 			<div
 				class="section-lead"
 				class:clickable={expandable}

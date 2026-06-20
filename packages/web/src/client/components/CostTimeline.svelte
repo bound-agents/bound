@@ -274,6 +274,8 @@ function hideTooltip(): void {
 						r="2.5"
 						fill={series.color}
 						class="data-point"
+						role="img"
+						aria-label="Cost data point"
 						onmouseenter={(e) => showTooltip(e, series, point)}
 						onmousemove={(e) => showTooltip(e, series, point)}
 						onmouseleave={hideTooltip}

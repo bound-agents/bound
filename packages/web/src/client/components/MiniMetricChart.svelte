@@ -168,6 +168,8 @@ function hideTooltip(): void {
 					r="2"
 					fill={color}
 					class="data-point"
+					role="img"
+					aria-label="Metric data point"
 					onmouseenter={(e) => showTooltip(e, p)}
 					onmousemove={(e) => showTooltip(e, p)}
 					onmouseleave={hideTooltip}
