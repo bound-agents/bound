@@ -171,4 +171,23 @@ describe("bound init", () => {
 		expect(modelBackends.backends[0].base_url).toBe("https://opencode.ai/zen/go/v1");
 		expect(modelBackends.backends[0].api_key).toBe("test-key");
 	});
+
+	it("creates Anthropic direct preset with --anthropic", async () => {
+		process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
+
+		await runInit({
+			anthropic: true,
+			configDir: tempDir,
+		});
+
+		const modelBackendsPath = join(tempDir, "model_backends.json");
+		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
+
+		expect(modelBackends.backends[0].provider).toBe("anthropic");
+		expect(modelBackends.backends[0].model).toBe("claude-sonnet-4-5");
+		expect(modelBackends.backends[0].api_key).toBe("test-anthropic-key");
+		// Direct Anthropic uses the SDK default endpoint — no base_url is written.
+		expect(modelBackends.backends[0].base_url).toBeUndefined();
+		expect(modelBackends.default).toBe("anthropic");
+	});
 });

@@ -18,6 +18,8 @@ export type {
 
 export { LLMError } from "./types";
 
+export { AnthropicDriver } from "./anthropic-driver";
+
 export { BedrockDriver } from "./bedrock-driver";
 
 export { BedrockMantleDriver } from "./bedrock-mantle-driver";

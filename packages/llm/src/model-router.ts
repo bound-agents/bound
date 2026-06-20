@@ -1,4 +1,5 @@
 import type { Logger } from "@bound/shared";
+import { AnthropicDriver } from "./anthropic-driver";
 import { BedrockDriver } from "./bedrock-driver";
 import { BedrockMantleDriver } from "./bedrock-mantle-driver";
 import { OpenAICompatibleDriver } from "./openai-compatible-driver";
@@ -460,6 +461,23 @@ function createBackendFromConfig(
 			});
 		}
 
+		case "anthropic": {
+			const apiKey = config.apiKey as string | undefined;
+			if (!apiKey) {
+				throw new Error("Anthropic driver requires apiKey in config");
+			}
+			const contextWindow = config.contextWindow ?? 200000;
+			return new AnthropicDriver({
+				apiKey,
+				model: config.model,
+				contextWindow,
+				baseUrl: config.baseUrl,
+				logger,
+				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
+			});
+		}
+
 		case "openai-compatible": {
 			const baseUrl = config.baseUrl ?? "http://localhost:8000";
 			const apiKey = config.apiKey as string | undefined;
@@ -557,11 +575,11 @@ function createBackendFromConfig(
 		}
 
 		default:
-			// anthropic, ollama, and other providers deliberately removed in the
-			// 2026-04-25 AI SDK migration. If a config still references them, it
-			// needs to be updated — anthropic backends should use bedrock, and
-			// local inference should go through the relay to a spoke host that
-			// runs bedrock or openai-compatible.
+			// `ollama` and other providers were removed in the 2026-04-25 AI SDK
+			// migration — local inference now goes through `openai-compatible`
+			// (Ollama serves an OpenAI-compatible API at /v1). `anthropic` was
+			// restored as a first-class direct backend in issue #176 (see the
+			// case above). A config naming any other provider needs updating.
 			throw new Error(`Provider not supported: ${config.provider}`);
 	}
 }
