@@ -451,7 +451,12 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "memory",
 				description:
-					"Semantic memory operations: store, forget, search, connect, disconnect, traverse, neighbors. To make a memory durable across context compaction, pass tier='pinned' on store. Tier is the single source of truth for pinning — key naming alone never auto-pins.",
+					"Your durable cross-session knowledge graph — entries persist across sessions and surface back into context automatically, so reach for it instead of re-deriving what you already worked out. Actions, and when to use each:\n" +
+					"- store: when you learn something worth reusing later — a durable fact, a research finding, a user preference, a correction, or an operating rule. Use a descriptive, namespaced key (e.g. 'curiosity:*', 'person:*'). Pass tier='pinned' for rules/corrections/policy that must survive context compaction; tier is the single source of truth for pinning (key naming never auto-pins), and pinned space is capped, so keep pinned entries lean.\n" +
+					"- search: before answering or starting work that prior knowledge might bear on, rather than researching from scratch — also pulls a detail-tier entry's body by key.\n" +
+					"- connect / disconnect: link related entries so retrieval surfaces them together; relation must be one of CANONICAL_RELATIONS, with any bespoke phrasing in 'context' rather than the relation.\n" +
+					"- traverse / neighbors: walk the graph outward from a known entry to gather related context.\n" +
+					"- forget: retire an entry that is obsolete or wrong.",
 				parameters: jsonSchema,
 			},
 		},
