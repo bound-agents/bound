@@ -157,20 +157,16 @@ describe("annotateMessages — property tests", () => {
 			msg("developer", "d1", "note"),
 		];
 		const out = annotateMessages({ messages: msgs, nowMs: NOW_MS });
-		// User message should be timestamp-prefixed (it's an hour old).
+		// User message should be wrapped in the metadata envelope.
 		const u = out.find((m) => m.role === "user");
-		if (!u || typeof u.content !== "string" || !u.content.startsWith("[")) {
-			throw new Error("user message should have timestamp prefix");
+		if (!u || typeof u.content !== "string" || !u.content.startsWith("<user-message")) {
+			throw new Error("user message should be wrapped in the <user-message> envelope");
 		}
-		// Assistant + developer should NOT be prefixed.
+		// Assistant + developer should NOT be enveloped.
 		for (const m of out) {
 			if (m.role === "assistant" || m.role === "developer") {
-				if (
-					typeof m.content === "string" &&
-					m.content.startsWith("[") &&
-					/^\[\w+ \d/.test(m.content)
-				) {
-					throw new Error(`role ${m.role} got timestamp prefix`);
+				if (typeof m.content === "string" && m.content.startsWith("<user-message")) {
+					throw new Error(`role ${m.role} got the user-message envelope`);
 				}
 			}
 		}
@@ -220,8 +216,56 @@ describe("annotateMessages — property tests", () => {
 		// And the annotation must be PRESENT (timestamp prefix added) so
 		// the model still sees when the user spoke.
 		const out = annotateMessages({ messages: [userMsg], nowMs: NOW_MS });
-		if (typeof out[0].content !== "string" || !out[0].content.startsWith("[")) {
-			throw new Error("user message should always have timestamp prefix for byte stability");
+		if (typeof out[0].content !== "string" || !out[0].content.startsWith("<user-message")) {
+			throw new Error("user message should always be enveloped for byte stability");
+		}
+	});
+
+	it("N9: user messages are wrapped in a <user-message> envelope carrying the send time", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		// String content: full wrap with a sent="..." attribute.
+		const strOut = annotateMessages({
+			messages: [msg("user", "u1", "hello there", { created_at: created })],
+			nowMs: NOW_MS,
+		});
+		const strContent = strOut[0].content;
+		if (typeof strContent !== "string") throw new Error("expected string content");
+		if (!/^<user-message sent="[^"]+">\n/.test(strContent)) {
+			throw new Error(`missing opening envelope tag: ${strContent}`);
+		}
+		if (!strContent.endsWith("\n</user-message>")) {
+			throw new Error(`missing closing envelope tag: ${strContent}`);
+		}
+		if (!strContent.includes("hello there")) {
+			throw new Error("original content lost inside envelope");
+		}
+
+		// ContentBlock[] content (e.g. an image message): wrap with leading +
+		// trailing text blocks so the original blocks (including non-text) are
+		// preserved between the envelope tags.
+		const blocks = JSON.stringify([
+			{ type: "text", text: "look at this" },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+		]);
+		const arrOut = annotateMessages({
+			messages: [msg("user", "u2", blocks, { created_at: created })],
+			nowMs: NOW_MS,
+		});
+		const arrContent = arrOut[0].content;
+		if (!Array.isArray(arrContent)) throw new Error("expected ContentBlock[] content");
+		if (arrContent.length !== 4) {
+			throw new Error(`expected 4 blocks (open + 2 orig + close), got ${arrContent.length}`);
+		}
+		const first = arrContent[0] as { type: string; text?: string };
+		const last = arrContent[3] as { type: string; text?: string };
+		if (first.type !== "text" || !first.text?.startsWith("<user-message sent=")) {
+			throw new Error("first block should open the envelope");
+		}
+		if ((arrContent[2] as { type: string }).type !== "image") {
+			throw new Error("original image block should be preserved");
+		}
+		if (last.type !== "text" || last.text !== "</user-message>") {
+			throw new Error("last block should close the envelope");
 		}
 	});
 

@@ -1050,6 +1050,21 @@ function formatUtcOffset(offsetMinutes: number): string {
  *   "[Jun 5, 18:38 UTC-04:00]". The year-variant check uses the shifted (local) year.
  */
 export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): string {
+	return `[${formatInstant(isoTimestamp, offsetMinutes)}]`;
+}
+
+/**
+ * The bracket-free instant string used by {@link formatTimestamp} and by the
+ * Stage 5 user-message envelope's `sent` attribute (see annotation/annotate.ts).
+ * Same determinism guarantee: output is a pure function of (isoTimestamp,
+ * offsetMinutes), so it never varies between turns and preserves the
+ * byte-stable annotation rule.
+ *
+ * Without an offset, components are read in UTC: same-year "Apr 4, 14:30 UTC",
+ * different year "Jan 15 '25, 09:45 UTC". With `offsetMinutes` the instant is
+ * shifted into the sender's local wall-clock and a `UTC±HH:MM` suffix appended.
+ */
+export function formatInstant(isoTimestamp: string, offsetMinutes?: number): string {
 	const utc = new Date(isoTimestamp);
 	const hasOffset = typeof offsetMinutes === "number" && Number.isFinite(offsetMinutes);
 	// Shift to the sender's local wall-clock, then read UTC components off the
@@ -1070,10 +1085,10 @@ export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): s
 	const currentYear = new Date().getUTCFullYear();
 	if (d.getUTCFullYear() !== currentYear) {
 		const yearShort = String(d.getUTCFullYear()).slice(-2);
-		return `[${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}]`;
+		return `${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}`;
 	}
 
-	return `[${month} ${day}, ${hours}:${minutes}${suffix}]`;
+	return `${month} ${day}, ${hours}:${minutes}${suffix}`;
 }
 
 /**
