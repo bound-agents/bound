@@ -32,6 +32,10 @@ This SKILL.md is the index. The detail lives in `references/`:
 - `references/config.md` — operator-owned host configuration: where it lives
   (`config/` on host disk, **not** the sandbox), strict schemas, and why your
   file tools cannot reach it.
+- `references/trace-queries.md` — the canonical join keys and common-question
+  query recipes for reconstructing "who ran what, where, and why" across the
+  cluster through the `query` tool. **Read this before writing an ad-hoc
+  multi-table join** — the join paths are already mapped.
 
 ## What bound gives you
 
