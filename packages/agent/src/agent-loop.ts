@@ -241,6 +241,18 @@ export function scaledMaxRetries(_estimatedTokens: number): number {
 
 const textEncoder = new TextEncoder();
 
+/**
+ * Default wall-clock ceiling for a single bms_bash (sandbox) command, in ms.
+ * Mirrors boundless_bash's DEFAULT_TIMEOUT_MS (packages/less/src/tools/bash.ts)
+ * so the two bash tools expose the same `timeout` contract and default. NOTE on
+ * the residual difference: boundless_bash runs a subprocess and enforces the
+ * timeout with SIGTERM/SIGKILL, whereas the sandbox is an in-process just-bash
+ * interpreter — the timeout fires an AbortSignal that stops execution at the
+ * next statement boundary (cooperative). It reliably bounds shell-level loops,
+ * but a single synchronous python3/js-exec worker call runs to completion.
+ */
+const DEFAULT_SANDBOX_EXEC_TIMEOUT_MS = 300_000;
+
 interface BashLike {
 	exec?: (
 		cmd: string,
@@ -2944,6 +2956,48 @@ export class AgentLoop {
 		return merged.length > 0 ? merged : undefined;
 	}
 
+	/**
+	 * Run a sandbox (bms_bash) command with a wall-clock timeout derived from the
+	 * tool call's optional `timeout` arg (ms), defaulting to
+	 * DEFAULT_SANDBOX_EXEC_TIMEOUT_MS. The timeout fires an AbortSignal that
+	 * just-bash honors cooperatively (see the constant's note). On timeout we
+	 * synthesize a 124 result (the conventional `timeout(1)` exit code) rather
+	 * than letting the abort throw escape the dispatch.
+	 *
+	 * Returns whatever `sandbox.exec` returns (a {stdout,stderr,exitCode} result
+	 * OR a relay request the wrapper lifted onto it), so callers still run their
+	 * isRelayRequest check.
+	 */
+	private async execSandboxWithTimeout(
+		command: string,
+		timeoutArg: unknown,
+	): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+		const exec = this.sandbox.exec;
+		if (!exec) {
+			return { stdout: "", stderr: "sandbox execution not available", exitCode: 1 };
+		}
+		const timeoutMs =
+			typeof timeoutArg === "number" && Number.isFinite(timeoutArg) && timeoutArg > 0
+				? timeoutArg
+				: DEFAULT_SANDBOX_EXEC_TIMEOUT_MS;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		try {
+			return await exec(command, { signal: controller.signal });
+		} catch (err) {
+			if (controller.signal.aborted) {
+				return {
+					stdout: "",
+					stderr: `Command timed out after ${timeoutMs}ms`,
+					exitCode: 124,
+				};
+			}
+			throw err;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools or client tool call request. */
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
@@ -3035,7 +3089,10 @@ export class AgentLoop {
 							};
 							break;
 						}
-						const sandboxResult = await this.sandbox.exec(command);
+						const sandboxResult = await this.execSandboxWithTimeout(
+							command,
+							toolCall.input.timeout,
+						);
 						if (isRelayRequest(sandboxResult)) {
 							toolSpan.setStatus({ code: SpanStatusCode.OK });
 							return sandboxResult; // finally block ends span
@@ -3178,7 +3235,7 @@ export class AgentLoop {
 			};
 		}
 
-		const result = await this.sandbox.exec(command);
+		const result = await this.execSandboxWithTimeout(command, toolCall.input.timeout);
 
 		// The exec wrapper in agent-factory.ts propagates RelayToolCallRequest
 		// objects from remote MCP proxy commands via loopContextStorage side-channel

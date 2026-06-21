@@ -30,4 +30,13 @@ describe("sandboxTool description (AC4.3)", () => {
 		expect(sandboxTool.function.parameters.properties).toBeDefined();
 		expect(sandboxTool.function.parameters.properties.command).toBeDefined();
 	});
+
+	it("sandboxTool exposes an optional timeout param matching boundless_bash", () => {
+		const params = sandboxTool.function.parameters;
+		// Same contract as boundless_bash: optional number, ms, not required.
+		expect(params.properties.timeout).toBeDefined();
+		expect(params.properties.timeout.type).toBe("number");
+		expect(params.required).not.toContain("timeout");
+		expect(params.required).toContain("command");
+	});
 });
