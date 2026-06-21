@@ -517,9 +517,9 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
    - Loads overlay mounts from `overlay.json` if present
 
 10. **Load persona**
-    - Reads the synced `cluster_config['persona']` row, seeding it once from `config/persona.md` if absent
+    - Reads the synced `cluster_config['persona']` row, if present
     - Uses the value as a system-prompt block for the agent
-    - Falls back to default system prompt if neither the row nor the file exists
+    - Falls back to default system prompt if the row is absent
 
 11. **Initialize LLM**
     - Creates model router from `model_backends.json`
@@ -561,7 +561,7 @@ Bootstrap is driven by file presence and configuration:
 
 - If `sync.json` is absent, step 14 is skipped (single-host mode)
 - If `mcp.json` is absent, step 8 is skipped (no external tool integrations)
-- If `persona.md` is absent, step 10 uses default system prompt
+- If the `cluster_config['persona']` row is absent, step 10 uses default system prompt
 - If `platforms.json` is absent, step 13 is skipped
 - If `overlay.json` is absent, step 15 is skipped
 
@@ -1335,11 +1335,15 @@ Each key in the object is a task name. The value is a task configuration object.
 
 ---
 
-### persona.md
+### persona
 
-**Optional.** A Markdown file that seeds the agent's identity, voice, role, and behavioral guidelines.
+**Optional.** The agent's identity, voice, role, and behavioral guidelines.
 
-The persona is a **cluster-wide synced value**, not a per-host file read. On the first start where the `cluster_config['persona']` row is absent, `persona.md` is loaded into that row; from then on the row is the source of truth and the file is inert. The value replicates to every host (so a turn relayed elsewhere renders the same voice) and is read live at context-assembly time — no cache. Edit it with `boundctl set-persona` or the web UI's Persona view; the change takes effect on the next turn cluster-wide. The value is capped at 64 KB.
+The persona is a **cluster-wide synced value**, not a config file. It lives as a single
+`cluster_config['persona']` row, set after initialization with `boundctl set-persona` or the
+web UI's Persona view — a fresh install starts with no persona. The value replicates to every
+host (so a turn relayed elsewhere renders the same voice) and is read live at context-assembly
+time — no cache. Edits take effect on the next turn cluster-wide. The value is capped at 64 KB.
 
 The agent cannot read the raw persona (it lives outside the sandbox trust boundary). Without a persona the agent uses the model's default behavior.
 
@@ -1351,7 +1355,7 @@ There is no fixed schema. The persona is free-form Markdown. A typical persona m
 - Behavioral boundaries and things the agent should or should not do
 - How the agent should handle ambiguous requests
 
-**Example (`config/persona.md`):**
+**Example (`boundctl set-persona --file my-persona.md`):**
 
 ```markdown
 You are Aria, a technical assistant for the Acme engineering team.

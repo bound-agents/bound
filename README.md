@@ -60,7 +60,6 @@ After `bound init`, `config/` contains:
 | `overlay.json` | No | Codebase mount points (`/mnt/<name>` → real path) |
 | `cron_schedules.json` | No | Recurring task definitions with schedule, payload, skill, model hint, and dependency fields |
 | `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
-| `persona.md` | No | Seed for the cluster-wide persona — loaded once on first start; edit live with `boundctl set-persona` or the web UI |
 
 All schemas are strict — unknown keys fail loudly. See [docs/config.md](docs/config.md) for the per-field reference.
 

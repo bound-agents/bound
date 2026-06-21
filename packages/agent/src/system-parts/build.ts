@@ -40,7 +40,7 @@ export const CONCURRENCY_PARAGRAPH =
 
 export interface BuildStaticSystemPartsParams {
 	db: Database;
-	/** Resolved persona body, or `null` when `config/persona.md` doesn't exist. */
+	/** Resolved persona body, or `null` when the `cluster_config['persona']` row is absent. */
 	persona: string | null;
 	commandRegistry: ReadonlyArray<CommandRegistryEntry>;
 	hostName: string | undefined;

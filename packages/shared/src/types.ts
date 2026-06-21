@@ -375,8 +375,8 @@ export const MAX_FILE_STORAGE_BYTES = 50 * 1024 * 1024; // 50 MB
  * persona was historically a per-host `config/persona.md` file read off disk
  * at context-assembly time, which silently diverged across the cluster (a
  * relayed turn assembled on a peer used that peer's file). It now lives as a
- * single synced LWW row so an edit on any host propagates everywhere; the file
- * survives only as a one-time seed (see the sandbox boot step).
+ * single synced LWW row so an edit on any host propagates everywhere; it is
+ * set after initialization via `boundctl set-persona` or `POST /api/persona`.
  */
 export const PERSONA_CLUSTER_CONFIG_KEY = "persona";
 

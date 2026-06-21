@@ -21,7 +21,6 @@ this is where the per-field detail lives.
 | [`overlay.json`](#overlayjson) | No | Codebase mount points |
 | [`cron_schedules.json`](#cron_schedulesjson) | No | Recurring + heartbeat task definitions |
 | [`memory.json`](#memoryjson) | No | Pinned-memory caps |
-| `persona.md` | No | Seed for the cluster-wide persona (free-form Markdown, no schema). Loaded into `cluster_config['persona']` on first start, then inert. |
 
 ---
 
@@ -271,17 +270,19 @@ Pinned-memory caps — a context-management control. Absent means the defaults b
 
 ---
 
-## `persona.md`
+## `persona`
 
-Free-form Markdown folded into the system prompt as personality. No schema, no fields —
-whatever you write is the voice.
+The cluster-wide operator persona — free-form Markdown folded into the system prompt as
+personality. No schema, no fields — whatever you write is the voice.
 
-`persona.md` is a **seed**, not the live source of truth. On the first start where the
-synced `cluster_config['persona']` row is absent, the file's contents are loaded into that
-row; from then on the row is authoritative and the file is inert. The persona is a single
-global value that replicates to every host (so a turn relayed to another host renders the
-same voice) and is read live at context-assembly time — no cache, no reload signal.
+The persona is **not** a config file. It lives as a single synced `cluster_config['persona']`
+row, set after initialization with `boundctl set-persona` (from a file or stdin) or the web
+UI's Persona view. There is no `persona.md` seed; a fresh install starts with no persona and
+uses the model's default behavior until you set one. The value is a single global row that
+replicates to every host (so a turn relayed elsewhere renders the same voice) and is read
+live at context-assembly time — no cache, no reload signal. Capped at 64 KB.
 
-Edit the live persona with `boundctl set-persona` (from a file or stdin) or the web UI's
-Persona view. Editing `persona.md` after the first start has no effect. The value is capped
-at 64 KB.
+```bash
+boundctl set-persona --file my-persona.md
+cat my-persona.md | boundctl set-persona
+```

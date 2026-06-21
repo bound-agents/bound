@@ -232,7 +232,7 @@ The final message array is composed in this order:
 
 ```
 [ system: base prompt ]
-[ system: persona ]        <- only if config/persona.md exists
+[ system: persona ]        <- only if the cluster_config['persona'] row is set
 [ system: orientation ]    <- available commands, model, host identity
 [ system: skill body ]     <- only if task payload contains an active skill ref
 [ ... history messages ]
@@ -260,11 +260,11 @@ Reserved for token usage recording when the metrics subsystem is available. Curr
 
 ### Persona Injection
 
-The persona is a single cluster-wide value stored in the synced `cluster_config['persona']` row, injected as a `system` message after the base prompt. It is seeded once from `config/persona.md` at first start (if the row is absent), then the row is the source of truth and the file is inert. Edit it with `boundctl set-persona` (file or stdin) or `POST /api/persona`; the value is capped at 64 KB and read live at assembly time (no cache), so an edit propagates to every host and applies on the next turn cluster-wide.
+The persona is a single cluster-wide value stored in the synced `cluster_config['persona']` row, injected as a `system` message after the base prompt. It is set after initialization with `boundctl set-persona` (file or stdin) or `POST /api/persona` — a fresh install starts with no persona and uses the model's default behavior until one is set. The value is capped at 64 KB and read live at assembly time (no cache), so an edit propagates to every host and applies on the next turn cluster-wide.
 
 ```
 cluster_config['persona']   <- injected as a system message after the base prompt
-                               (seeded once from config/persona.md)
+                               (set via `boundctl set-persona` / the web UI)
 ```
 
 ---
