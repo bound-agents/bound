@@ -22,7 +22,7 @@ interface TaskDetail {
 	created_at: string;
 	created_by: string | null;
 	error: string | null;
-	no_history: number;
+	no_history: boolean;
 }
 
 interface Message {
@@ -122,7 +122,7 @@ async function fetchData() {
 async function toggleNoHistory() {
 	if (!task || togglingHistory) return;
 	togglingHistory = true;
-	const next = task.no_history !== 1;
+	const next = !task.no_history;
 	try {
 		const updated = (await client.updateTask(task.id, { no_history: next })) as TaskDetail;
 		task = updated;
@@ -223,14 +223,14 @@ onDestroy(() => {
 					<span class="stat-label">History</span>
 					<button
 						class="history-toggle"
-						class:off={task.no_history === 1}
+						class:off={task.no_history}
 						onclick={toggleNoHistory}
 						disabled={togglingHistory}
-						title={task.no_history === 1
+						title={task.no_history
 							? "Conversation history is disabled — click to re-enable"
 							: "Conversation history is enabled — click to disable"}
 					>
-						{togglingHistory ? "…" : task.no_history === 1 ? "DISABLED" : "ENABLED"}
+						{togglingHistory ? "…" : task.no_history ? "DISABLED" : "ENABLED"}
 					</button>
 				</div>
 
