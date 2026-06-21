@@ -33,6 +33,10 @@ export const sandboxTool: ToolDefinition = {
 					type: "string",
 					description: "The shell command to execute",
 				},
+				timeout: {
+					type: "number",
+					description: "Timeout in milliseconds (default 300000)",
+				},
 			},
 			required: ["command"],
 		},

@@ -120,7 +120,7 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: resolvedShell.toolName,
-				description: `Execute a command via ${resolvedShell.label} with AbortSignal support. Commands already run in the working directory shown in your context — do not prefix them with a \`cd\` into that same directory.`,
+				description: `Execute a command via ${resolvedShell.label} with AbortSignal support. Every command starts in the working directory shown in your context and a \`cd\` lasts only for that one command, so do not prefix commands with a \`cd\` into the directory you are already in.`,
 				parameters: {
 					type: "object",
 					required: ["command"],
