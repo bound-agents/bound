@@ -106,13 +106,13 @@ function createMockModelRouter(): ModelRouter {
 
 // Test database setup
 let db: Database;
-let testDbPath: string;
 
 beforeEach(() => {
-	const testId = randomBytes(4).toString("hex");
-	testDbPath = join(tmpdir(), `test-relay-processor-${testId}.db`);
+	// In-memory DB — these tests pass the handle directly and never reopen
+	// from a path, so :memory: avoids the Windows EBUSY / WAL checkpoint
+	// slowdown that tips the per-hook budget under CI load.
 	const sqlite3 = require("bun:sqlite");
-	db = new sqlite3.Database(testDbPath);
+	db = new sqlite3.Database(":memory:");
 	applySchema(db);
 	applyMetricsSchema(db);
 });
@@ -122,11 +122,6 @@ afterEach(() => {
 		db.close();
 	} catch {
 		// Already closed
-	}
-	try {
-		require("node:fs").unlinkSync(testDbPath);
-	} catch {
-		// Already deleted
 	}
 });
 

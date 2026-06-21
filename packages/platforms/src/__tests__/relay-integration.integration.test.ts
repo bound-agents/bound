@@ -1,8 +1,6 @@
 import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import type { Logger } from "@bound/shared";
@@ -76,26 +74,22 @@ const createMockMcpServer = async (name: string): Promise<Server> => {
 describe("Platform MCP Registry — Relay Integration (AC6 + AC7)", () => {
 	let dbLead: Database.Database;
 	let dbStandby: Database.Database;
-	let testDbPathLead: string;
-	let testDbPathStandby: string;
 	let siteIdLeader: string;
 	let siteIdStandby: string;
 	let eventBusLeader: TypedEventEmitter;
 	let eventBusStandby: TypedEventEmitter;
 
 	beforeEach(async () => {
-		const testId = randomBytes(4).toString("hex");
-
-		// Leader DB (has MCP servers)
-		testDbPathLead = join(tmpdir(), `test-relay-lead-${testId}.db`);
+		// In-memory DBs — these tests pass the handle directly and never
+		// reopen from a path, so :memory: avoids the Windows EBUSY / WAL
+		// checkpoint slowdown that tips the per-hook budget under CI load.
 		const sqlite3 = require("bun:sqlite");
-		dbLead = new sqlite3.Database(testDbPathLead);
+		dbLead = new sqlite3.Database(":memory:");
 		applySchema(dbLead);
 		siteIdLeader = `leader-${randomBytes(4).toString("hex")}`;
 
 		// Standby DB (no MCP servers)
-		testDbPathStandby = join(tmpdir(), `test-relay-standby-${testId}.db`);
-		dbStandby = new sqlite3.Database(testDbPathStandby);
+		dbStandby = new sqlite3.Database(":memory:");
 		applySchema(dbStandby);
 		siteIdStandby = `standby-${randomBytes(4).toString("hex")}`;
 
@@ -114,16 +108,6 @@ describe("Platform MCP Registry — Relay Integration (AC6 + AC7)", () => {
 			dbStandby.close();
 		} catch {
 			// Already closed
-		}
-		try {
-			require("node:fs").unlinkSync(testDbPathLead);
-		} catch {
-			// Already deleted
-		}
-		try {
-			require("node:fs").unlinkSync(testDbPathStandby);
-		} catch {
-			// Already deleted
 		}
 	});
 
