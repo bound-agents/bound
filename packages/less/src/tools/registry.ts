@@ -497,7 +497,7 @@ export async function buildSystemPromptAddition(
 	// account for, e.g. it need not echo file contents back to describe an edit.
 	const surfaceLine =
 		options?.surface?.type === "acp"
-			? `You are connected to a boundless session driving an ACP-compatible editor (${options.surface.clientInfo.title ?? options.surface.clientInfo.name} ${options.surface.clientInfo.version}). The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass).`
+			? `You are connected to a boundless session driving an ACP-compatible editor (${options.surface.clientInfo.title ?? options.surface.clientInfo.name} ${options.surface.clientInfo.version}). The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. When you cite a file location, write it as a bare workspace-relative \`path:line\` (optionally \`path:line:col\`) so the editor turns it into a clickable jump target — do NOT wrap it in brackets or use a line range like \`path:120-135\`, which suppresses the link. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass).`
 			: "You are connected to a boundless terminal client.";
 
 	return `${surfaceLine}

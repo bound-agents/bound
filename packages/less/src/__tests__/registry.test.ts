@@ -761,6 +761,31 @@ describe("buildSystemPromptAddition", () => {
 		expect(prompt).toContain("Host: example.com");
 		expect(prompt).toContain("boundless_read");
 	});
+
+	it("tells the ACP agent how to cite a linkable file location", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [], {
+			surface: {
+				type: "acp",
+				clientInfo: {
+					name: "test",
+					version: "0.0.0",
+				},
+			},
+		});
+
+		// The editor linkifies a bare `path:line`; brackets or a line range
+		// defeat it (the failure that motivated documenting this).
+		expect(prompt).toContain("path:line");
+		expect(prompt.toLowerCase()).toContain("clickable");
+		expect(prompt).toContain("bracket");
+	});
+
+	it("omits the citation guidance on the terminal surface", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
+
+		// Linkification is an editor behavior; the plain terminal line stays bare.
+		expect(prompt).not.toContain("path:line");
+	});
 });
 
 describe("collectGitContext", () => {
