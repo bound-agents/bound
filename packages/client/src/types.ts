@@ -14,6 +14,12 @@ export interface ThreadListEntry extends Thread {
 	active: boolean;
 }
 
+/** Thread with computed fields from GET /api/threads/:id. */
+export interface ThreadDetail extends Thread {
+	/** Host display names for live boundless / external client sessions attached to this thread. */
+	attachedSessionHosts: string[];
+}
+
 /** GET /api/threads/:id/status */
 export interface ThreadStatus {
 	active: boolean;

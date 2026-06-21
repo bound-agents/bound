@@ -9,6 +9,23 @@ import { Hono } from "hono";
 
 const logger = createLogger("@bound/web", "threads-routes");
 
+function getAttachedSessionHosts(db: Database, threadId: string): string[] {
+	const rows = db
+		.query(`
+			SELECT label
+			FROM (
+				SELECT COALESCE(h.host_name, cs.site_id) as label
+				FROM client_sessions cs
+				LEFT JOIN hosts h ON h.site_id = cs.site_id AND h.deleted = 0
+				WHERE cs.thread_id = ? AND cs.deleted = 0
+				GROUP BY cs.site_id, label
+				ORDER BY label ASC
+			)
+		`)
+		.all(threadId) as Array<{ label: string }>;
+	return rows.map((row) => row.label).filter((label): label is string => typeof label === "string");
+}
+
 export function createThreadsRoutes(
 	db: Database,
 	operatorUserId: string,
@@ -280,7 +297,10 @@ export function createThreadsRoutes(
 				);
 			}
 
-			return c.json(thread);
+			return c.json({
+				...thread,
+				attachedSessionHosts: getAttachedSessionHosts(db, id),
+			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
