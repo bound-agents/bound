@@ -31,6 +31,7 @@ import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import {
 	PERMISSION_OPTIONS,
+	formatDaemonNotice,
 	isShellToolName,
 	streamChunkToSessionUpdate,
 	toolCallContent,
@@ -317,7 +318,7 @@ export class AcpSession {
 				// not see a raw JSON-RPC error frame.
 				await this.send({
 					sessionUpdate: "agent_message_chunk",
-					content: { type: "text", text: `\n\n[error] ${chunk.error}` },
+					content: { type: "text", text: `\n\n${formatDaemonNotice(chunk.error)}` },
 				});
 				break;
 			default:
@@ -379,7 +380,7 @@ export class AcpSession {
 		}
 		void this.send({
 			sessionUpdate: "agent_message_chunk",
-			content: { type: "text", text: `\n\n${content}` },
+			content: { type: "text", text: `\n\n${formatDaemonNotice(content)}` },
 		});
 	}
 

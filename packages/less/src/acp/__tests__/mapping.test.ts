@@ -499,7 +499,10 @@ describe("messageToSessionUpdate", () => {
 		).toEqual([
 			{
 				sessionUpdate: "agent_message_chunk",
-				content: { type: "text", text: "Internal error: inference timed out after 300s" },
+				content: {
+					type: "text",
+					text: "[bound] Internal error: inference timed out after 300s",
+				},
 				messageId: "m1",
 			},
 		]);
