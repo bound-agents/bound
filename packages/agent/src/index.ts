@@ -127,7 +127,6 @@ export {
 
 // Export task resolution
 export {
-	seedCronTasks,
 	seedHeartbeat,
 	computeNextRunAt,
 	canRunHere,

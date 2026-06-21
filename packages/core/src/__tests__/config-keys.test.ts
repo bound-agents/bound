@@ -5,7 +5,7 @@
  * match the keys actually used by consuming code throughout the codebase.
  *
  * This catches the exact class of bug where the loader stores a config
- * under key "cronSchedules" but the consumer looks for "cron_schedules",
+ * under key "modelBackends" but the consumer looks for "model_backends",
  * causing the feature to silently never activate.
  */
 
@@ -56,7 +56,6 @@ describe("Config key consistency", () => {
 		expect(LOADER_KEYS).toContain("keyring");
 		expect(LOADER_KEYS).toContain("mcp");
 		expect(LOADER_KEYS).toContain("overlay");
-		expect(LOADER_KEYS).toContain("cronSchedules");
 	});
 
 	it("all optionalConfig[...] lookups in the codebase use keys from the loader", () => {
@@ -108,17 +107,6 @@ describe("Config key consistency", () => {
 		}
 
 		expect(unknownKeys.length).toBe(0);
-	});
-
-	it("cron_schedules.json maps to 'cronSchedules' key (documents the naming convention)", () => {
-		// The filename is cron_schedules.json but the optionalConfig key is
-		// camelCased to "cronSchedules".  Any consumer must use "cronSchedules".
-		expect(LOADER_KEYS).toContain("cronSchedules");
-
-		// Verify the scheduler uses the correct key (dot or bracket notation)
-		const schedulerPath = join(PROJECT_ROOT, "packages/agent/src/scheduler.ts");
-		const schedulerSource = readFileSync(schedulerPath, "utf-8");
-		expect(schedulerSource).toMatch(/optionalConfig(\["cronSchedules"\]|\.cronSchedules)/);
 	});
 
 	it("config loader filename-to-key mapping is internally consistent", () => {

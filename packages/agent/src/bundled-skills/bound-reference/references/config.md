@@ -28,15 +28,13 @@ about *running* behavior, the loaded config is what matters, not the file on dis
 | `keyring.json` | no | per-host identity keys (auto-populated) |
 | `mcp.json` | no | MCP server connections (stdio or http transport) |
 | `overlay.json` | no | codebase mount points (drives the sandbox overlays) |
-| `cron_schedules.json` | no | recurring task definitions |
 | `memory.json` | no | pinned-memory caps (`pinned_count_cap`, `pinned_size_cap`) |
 
 ## Schemas are strict — unknown keys fail loudly
 
 Every schema in `configSchemaMap`
 (`packages/shared/src/config-schemas.ts`) is declared `.strict()`, so an unknown
-key fails the parse at startup rather than being ignored.
-`cron_schedules.json` is closed-by-shape via `.catchall(...)`. The practical
+key fails the parse at startup rather than being ignored. The practical
 consequence: **a new config field must be declared in the Zod schema before it can
 be used**, or the loader rejects the whole file and the process will not come up.
 This is invariant #13.
@@ -46,10 +44,10 @@ This is invariant #13.
 At startup `createAppContext(configDir, dbPath)` loads and validates the files
 into `AppContext.config` (required) and `AppContext.optionalConfig` (the rest).
 From there it flows to wherever it is needed — model routing reads
-`model_backends.json` via `toRouterConfig()`, the scheduler reads
-`cron_schedules.json`, platform connectors read `platforms.json`, and so on. You
+`model_backends.json` via `toRouterConfig()`, platform connectors read
+`platforms.json`, and so on. You
 never parse config yourself; you observe its *effects* (which models resolve,
-which crons exist, which connectors are up).
+which connectors are up).
 
 `config-reload` exists as an operator command to re-read config without a full
 restart for the subset of fields that support it. Identity keys in `keyring.json`

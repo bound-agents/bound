@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { insertRow } from "@bound/core";
-import type { HeartbeatConfig, Task } from "@bound/shared";
+import type { Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
 /**
@@ -507,82 +507,21 @@ export function canRunHere(db: Database, task: Task, hostName: string, siteId: s
 	return true;
 }
 
-export function seedCronTasks(
-	db: Database,
-	cronConfigs: Array<{ name: string; cron: string; payload?: string }>,
-	siteId: string,
-): void {
-	for (const config of cronConfigs) {
-		const taskId = deterministicUUID(BOUND_NAMESPACE, `cron-${config.name}`);
-		const now = new Date().toISOString();
-		const nextRunAt = computeNextRunAt(config.cron).toISOString();
+/**
+ * Default heartbeat cadence. The heartbeat is a system-managed, uncancellable
+ * task seeded once per install. It has no operator config surface — the cadence
+ * is fixed here, and per-host tuning is intentionally not supported.
+ */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = 1_800_000; // 30 minutes
 
-		// Check if task already exists (idempotent)
-		const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(taskId) as {
-			id: string;
-		} | null;
-
-		if (!existing) {
-			insertRow(
-				db,
-				"tasks",
-				{
-					id: taskId,
-					type: "cron",
-					status: "pending",
-					trigger_spec: config.cron,
-					payload: config.payload || null,
-					thread_id: null,
-					origin_thread_id: null,
-					claimed_by: null,
-					claimed_at: null,
-					lease_id: null,
-					next_run_at: nextRunAt,
-					last_run_at: null,
-					run_count: 0,
-					max_runs: null,
-					requires: null,
-					model_hint: null,
-					no_history: 0,
-					inject_mode: "status",
-					depends_on: null,
-					require_success: 0,
-					alert_threshold: 5,
-					consecutive_failures: 0,
-					event_depth: 0,
-					no_quiescence: 0,
-					system_prompt_addition: null,
-					heartbeat_at: null,
-					result: null,
-					error: null,
-					created_at: now,
-					created_by: "system",
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-		}
-	}
-}
-
-export function seedHeartbeat(
-	db: Database,
-	heartbeatConfig: HeartbeatConfig | undefined,
-	siteId: string,
-): void {
-	// Default: enabled with 30min interval
-	const config = heartbeatConfig ?? { enabled: true, interval_ms: 1_800_000 };
-
-	if (!config.enabled) return;
-
+export function seedHeartbeat(db: Database, siteId: string): void {
 	const id = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 	const now = new Date();
-	const intervalMs = config.interval_ms;
+	const intervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
 	const nextBoundary = Math.ceil(now.getTime() / intervalMs) * intervalMs;
 	const nextRunAt = new Date(nextBoundary).toISOString();
 	const triggerSpec = JSON.stringify({ type: "heartbeat", interval_ms: intervalMs });
-	const modelHint = config.model_hint ?? null;
+	const modelHint = null;
 
 	// Check if heartbeat task already exists (idempotent)
 	const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(id) as {

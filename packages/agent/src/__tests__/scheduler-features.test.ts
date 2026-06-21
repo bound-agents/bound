@@ -5,8 +5,6 @@
  * - Quiescence multiplier modifies poll interval
  * - Daily budget checking gates autonomous task execution
  * - Task failure produces an alert message
- * - Cron templates execute via sandbox
- * - seedCronTasks seeds from config
  */
 
 import type { Database } from "bun:sqlite";
@@ -22,7 +20,6 @@ import { TypedEventEmitter } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { Scheduler, rescheduleCronTask, rescheduleHeartbeat } from "../scheduler";
-import { seedCronTasks } from "../task-resolution";
 import { sleep, waitFor } from "./helpers";
 
 describe("Scheduler features", () => {
@@ -771,93 +768,6 @@ describe("Scheduler features", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// Cron template wiring (deterministic, no scheduler timing dependency)
-	// -----------------------------------------------------------------------
-	describe("cron template execution", () => {
-		it("executes template commands via sandbox when optionalConfig.cronSchedules is Result-wrapped", async () => {
-			// This is the real production path: the config loader stores
-			// optionalConfig["cronSchedules"] as { ok: true, value: { <map> } }.
-			// getCronTemplate must unwrap .value to find the template — this test
-			// confirms the Scheduler handles the Result wrapper correctly end-to-end.
-
-			const cronExpression = "0 */6 * * *";
-			const taskId = randomUUID();
-			const now = new Date().toISOString();
-			const pastTime = new Date(Date.now() - 60_000).toISOString();
-
-			// triggerSpec as produced by the `schedule --every` command
-			const triggerSpec = JSON.stringify({ type: "cron", expression: cronExpression });
-
-			db.run(
-				`INSERT INTO tasks (
-					id, type, status, trigger_spec, payload, thread_id,
-					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
-					run_count, max_runs, requires, model_hint, no_history,
-					inject_mode, depends_on, require_success, alert_threshold,
-					consecutive_failures, event_depth, no_quiescence,
-					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
-				) VALUES (
-					?, 'cron', 'pending', ?, NULL, NULL,
-					NULL, NULL, NULL, ?, NULL,
-					0, NULL, NULL, NULL, 0,
-					'status', NULL, 0, 5,
-					0, 0, 0,
-					NULL, NULL, NULL, ?, 'system', ?, 0
-				)`,
-				[taskId, triggerSpec, pastTime, now, now],
-			);
-
-			const execCalls: string[] = [];
-			let agentLoopCalled = false;
-
-			// optionalConfig with Result-wrapped cronSchedules (real production format)
-			const ctx = makeCtx({
-				optionalConfig: {
-					cronSchedules: {
-						ok: true,
-						value: {
-							backup: {
-								schedule: cronExpression,
-								template: ["echo backup-start", "echo backup-done"],
-							},
-						},
-					},
-				} as unknown as AppContext["optionalConfig"],
-			});
-
-			const agentLoopFactory = () => {
-				agentLoopCalled = true;
-				return {
-					run: async (): Promise<AgentLoopResult> => ({
-						messagesCreated: 0,
-						toolCallsMade: 0,
-						filesChanged: 0,
-					}),
-				};
-			};
-
-			const sandbox = {
-				exec: async (cmd: string) => {
-					execCalls.push(cmd);
-					return { stdout: cmd, stderr: "", exitCode: 0 };
-				},
-			};
-
-			const scheduler = new Scheduler(ctx as any, agentLoopFactory as any, {}, sandbox);
-			const { stop } = scheduler.start(10);
-			await waitFor(() => execCalls.length > 0, { message: "cron template not executed" });
-			stop();
-
-			// Template was found and executed via sandbox — agent loop was NOT used
-			expect(agentLoopCalled).toBe(false);
-			expect(execCalls).toContain("echo backup-start");
-			expect(execCalls).toContain("echo backup-done");
-
-			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
-		});
-	});
-
-	// -----------------------------------------------------------------------
 	// Bug #4: runTask must create a thread row when generating a new threadId
 	// Bug #1: runTask must inject the task payload as a user message before running
 	// -----------------------------------------------------------------------
@@ -1286,89 +1196,6 @@ describe("Scheduler features", () => {
 			expect(task?.next_run_at).not.toBeNull();
 			const nextRun = new Date(task?.next_run_at ?? "");
 			expect(nextRun.getTime()).toBeGreaterThan(Date.now());
-
-			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
-		});
-
-		it("reschedules cron template task after hard error", async () => {
-			const cronExpression = "0 */6 * * *";
-			const taskId = randomUUID();
-			const now = new Date().toISOString();
-			const pastTime = new Date(Date.now() - 60_000).toISOString();
-			const triggerSpec = JSON.stringify({ type: "cron", expression: cronExpression });
-
-			db.run(
-				`INSERT INTO tasks (
-					id, type, status, trigger_spec, payload, thread_id,
-					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
-					run_count, max_runs, requires, model_hint, no_history,
-					inject_mode, depends_on, require_success, alert_threshold,
-					consecutive_failures, event_depth, no_quiescence,
-					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
-				) VALUES (
-					?, 'cron', 'pending', ?, NULL, NULL,
-					NULL, NULL, NULL, ?, NULL,
-					0, NULL, NULL, NULL, 0,
-					'status', NULL, 0, 5,
-					0, 0, 0,
-					NULL, NULL, NULL, ?, 'system', ?, 0
-				)`,
-				[taskId, triggerSpec, pastTime, now, now],
-			);
-
-			const ctx = makeCtx({
-				optionalConfig: {
-					cronSchedules: {
-						ok: true,
-						value: {
-							backup: {
-								schedule: cronExpression,
-								template: ["echo start", "false"], // 'false' will fail
-							},
-						},
-					},
-				} as unknown as AppContext["optionalConfig"],
-			});
-
-			const failingSandbox = {
-				exec: async (_cmd: string) => {
-					throw new Error("sandbox execution failed");
-				},
-			};
-
-			const scheduler = new Scheduler(
-				ctx as any,
-				makeAgentLoopFactory() as any,
-				{},
-				failingSandbox,
-			);
-			const { stop } = scheduler.start(10);
-
-			await waitFor(
-				() => {
-					const task = db
-						.query("SELECT status, next_run_at FROM tasks WHERE id = ?")
-						.get(taskId) as {
-						status: string;
-						next_run_at: string | null;
-					} | null;
-					return (
-						task?.status === "pending" &&
-						task?.next_run_at !== null &&
-						new Date(task.next_run_at).getTime() > Date.now()
-					);
-				},
-				{ message: "cron template task not rescheduled after hard error", timeoutMs: 5000 },
-			);
-			stop();
-
-			const task = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as {
-				status: string;
-				next_run_at: string | null;
-			} | null;
-
-			expect(task).not.toBeNull();
-			expect(task?.status).toBe("pending");
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
@@ -1942,81 +1769,6 @@ describe("Scheduler features", () => {
 			expect(new Date(row?.next_run_at ?? "").getTime()).toBeGreaterThan(Date.now());
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
-		});
-	});
-
-	// -----------------------------------------------------------------------
-	// seedCronTasks from config
-	// -----------------------------------------------------------------------
-	describe("seedCronTasks", () => {
-		it("seeds cron tasks from config on startup", () => {
-			const cronConfigs = [
-				{ name: "daily-backup", cron: "0 2 * * *", payload: "backup all" },
-				{ name: "hourly-check", cron: "0 * * * *" },
-			];
-
-			const tasksBefore = (
-				db.query("SELECT COUNT(*) as count FROM tasks WHERE type = 'cron'").get() as {
-					count: number;
-				}
-			).count;
-
-			seedCronTasks(db, cronConfigs, siteId);
-
-			const tasksAfter = (
-				db.query("SELECT COUNT(*) as count FROM tasks WHERE type = 'cron'").get() as {
-					count: number;
-				}
-			).count;
-
-			expect(tasksAfter).toBe(tasksBefore + 2);
-
-			// Verify the tasks were created with correct fields
-			const tasks = db
-				.query(
-					"SELECT * FROM tasks WHERE type = 'cron' AND created_by = 'system' ORDER BY trigger_spec",
-				)
-				.all() as Array<{
-				id: string;
-				type: string;
-				status: string;
-				trigger_spec: string;
-				payload: string | null;
-				next_run_at: string | null;
-			}>;
-
-			const dailyBackup = tasks.find((t) => t.trigger_spec === "0 2 * * *");
-			expect(dailyBackup).toBeDefined();
-			expect(dailyBackup?.status).toBe("pending");
-			expect(dailyBackup?.payload).toBe("backup all");
-			expect(dailyBackup?.next_run_at).not.toBeNull();
-
-			const hourlyCheck = tasks.find((t) => t.trigger_spec === "0 * * * *");
-			expect(hourlyCheck).toBeDefined();
-			expect(hourlyCheck?.status).toBe("pending");
-			expect(hourlyCheck?.next_run_at).not.toBeNull();
-		});
-
-		it("does not duplicate cron tasks on re-seed (uses INSERT OR IGNORE)", () => {
-			const cronConfigs = [{ name: "unique-task", cron: "30 3 * * *" }];
-
-			seedCronTasks(db, cronConfigs, siteId);
-			const countAfterFirst = (
-				db.query("SELECT COUNT(*) as count FROM tasks WHERE trigger_spec = '30 3 * * *'").get() as {
-					count: number;
-				}
-			).count;
-
-			// Seed again with the same config
-			seedCronTasks(db, cronConfigs, siteId);
-			const countAfterSecond = (
-				db.query("SELECT COUNT(*) as count FROM tasks WHERE trigger_spec = '30 3 * * *'").get() as {
-					count: number;
-				}
-			).count;
-
-			// Should not have created a duplicate
-			expect(countAfterSecond).toBe(countAfterFirst);
 		});
 	});
 

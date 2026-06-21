@@ -395,20 +395,6 @@ export const overlaySchema = z
 
 export type OverlayConfig = z.infer<typeof overlaySchema>;
 
-export const heartbeatConfigSchema = z
-	.object({
-		enabled: z.boolean().default(true),
-		interval_ms: z
-			.number()
-			.int()
-			.min(60_000, "Heartbeat interval must be at least 60 seconds")
-			.default(1_800_000),
-		model_hint: z.string().optional(),
-	})
-	.strict();
-
-export type HeartbeatConfig = z.infer<typeof heartbeatConfigSchema>;
-
 // Memory Config — caps on pinned-memory creation as a context-management
 // control. Enabled by default: when memory.json is absent the loader skips it,
 // so the enforcement code falls back to these same defaults (see
@@ -433,27 +419,6 @@ export const memoryConfigSchema = z
 
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
-export const cronEntrySchema = z
-	.object({
-		schedule: z.string().min(1),
-		thread: z.string().optional(),
-		payload: z.string().optional(),
-		template: z.array(z.string()).optional(),
-		requires: z.array(z.string()).optional(),
-		model_hint: z.string().optional(),
-	})
-	.strict();
-
-export type CronEntry = z.infer<typeof cronEntrySchema>;
-
-export const cronSchedulesSchema = z
-	.object({
-		heartbeat: heartbeatConfigSchema.optional(),
-	})
-	.catchall(cronEntrySchema);
-
-export type CronSchedulesConfig = z.infer<typeof cronSchedulesSchema>;
-
 // Config type union
 export type ConfigType =
 	| AllowlistConfig
@@ -464,7 +429,6 @@ export type ConfigType =
 	| KeyringConfig
 	| McpConfig
 	| OverlayConfig
-	| CronSchedulesConfig
 	| MemoryConfig
 	| CacheWarmingConfig;
 
@@ -478,5 +442,4 @@ export const configSchemaMap = {
 	"keyring.json": keyringSchema,
 	"mcp.json": mcpSchema,
 	"overlay.json": overlaySchema,
-	"cron_schedules.json": cronSchedulesSchema,
 } as const;

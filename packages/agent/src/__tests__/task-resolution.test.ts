@@ -11,7 +11,6 @@ import {
 	canRunHere,
 	computeNextRunAt,
 	isDependencySatisfied,
-	seedCronTasks,
 	verifyLeaseStillHeld,
 } from "../task-resolution";
 
@@ -444,54 +443,6 @@ describe("task-resolution", () => {
 
 			// Should fail on different site_id
 			expect(canRunHere(db, task, "any-host", randomUUID())).toBe(false);
-		});
-	});
-
-	describe("seedCronTasks", () => {
-		it("creates cron tasks from config", () => {
-			const siteId = randomUUID();
-			const cronConfigs = [
-				{ name: "hourly-task", cron: "0 * * * *" },
-				{ name: "daily-task", cron: "0 9 * * *", payload: '{"data":"test"}' },
-			];
-
-			seedCronTasks(db, cronConfigs, siteId);
-
-			// Query back the tasks
-			const tasks = db
-				.query("SELECT id, type, status, trigger_spec FROM tasks ORDER BY created_at")
-				.all() as Array<{
-				id: string;
-				type: string;
-				status: string;
-				trigger_spec: string;
-			}>;
-
-			expect(tasks.length).toBeGreaterThanOrEqual(2);
-
-			const hourlyTask = tasks.find((t) => t.trigger_spec === "0 * * * *");
-			expect(hourlyTask).toBeDefined();
-			expect(hourlyTask?.type).toBe("cron");
-			expect(hourlyTask?.status).toBe("pending");
-
-			const dailyTask = tasks.find((t) => t.trigger_spec === "0 9 * * *");
-			expect(dailyTask).toBeDefined();
-			expect(dailyTask?.type).toBe("cron");
-		});
-
-		it("is idempotent (INSERT OR IGNORE)", () => {
-			const siteId = randomUUID();
-			const cronConfigs = [{ name: "test-idempotent", cron: "0 * * * *" }];
-
-			seedCronTasks(db, cronConfigs, siteId);
-			const countAfterFirst = (db.query("SELECT COUNT(*) as c FROM tasks").get() as { c: number })
-				.c;
-
-			seedCronTasks(db, cronConfigs, siteId);
-			const countAfterSecond = (db.query("SELECT COUNT(*) as c FROM tasks").get() as { c: number })
-				.c;
-
-			expect(countAfterFirst).toBe(countAfterSecond);
 		});
 	});
 
