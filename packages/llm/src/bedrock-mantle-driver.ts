@@ -32,15 +32,9 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import {
-	PERMISSIVE_ENVELOPE,
-	mapChunks,
-	mapError,
-	toModelMessages,
-	toToolSet,
-} from "./ai-sdk-bridge";
+import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "./ai-sdk-bridge";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-import { createLoggingFetch } from "./fetch-logger";
+import { mapProviderStream, resolveProviderFetch } from "./driver-utils";
 import { createSigV4Fetch } from "./sigv4-fetch";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
@@ -216,11 +210,7 @@ export class BedrockMantleDriver implements LLMBackend {
 
 		// Transport the signed request is handed to: explicit override (tests) →
 		// logger-backed fetch → global fetch (inside createSigV4Fetch's default).
-		const baseFetch =
-			config.fetch ??
-			(config.logger
-				? createLoggingFetch(config.logger, PROVIDER_NAME, config.connectTimeoutMs)
-				: undefined);
+		const baseFetch = resolveProviderFetch(PROVIDER_NAME, config);
 
 		const signedFetch = createSigV4Fetch({
 			credentials,
@@ -263,44 +253,42 @@ export class BedrockMantleDriver implements LLMBackend {
 
 		// One streaming attempt — built fresh per retry so a re-issue is a clean
 		// new request (new SigV4 signature, new stream), not a replayed one.
-		const runAttempt = (): AsyncIterable<StreamChunk> => {
-			const result = streamText({
-				model: this.provider.responses(modelId),
-				messages,
-				...(params.system && { system: params.system }),
-				...(tools && { tools }),
-				...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-				...(params.temperature !== undefined && { temperature: params.temperature }),
-				abortSignal: params.signal,
-				providerOptions: { openai: buildMantleOpenAIOptions(params.effort) },
-			});
-			return mapChunks(result.fullStream, {
-				estimateInputFromMessages: params.messages,
+		const runAttempt = (): AsyncIterable<StreamChunk> =>
+			mapProviderStream({
 				providerName: PROVIDER_NAME,
-				// Mantle GPT-5.x streams the answer as a sequence of progressively
-				// re-stated `message` items (each a prefix-extension of the prior,
-				// interleaved with reasoning rounds). Without coalescing, the
-				// default `outputText += text` concatenates every draft and a
-				// single reply lands N-fold duplicated — verified live 2026-06-07
-				// against gpt-5.5 (sixfold). Emit only forward progress so the
-				// stream converges to exactly the final item.
-				coalescePrefixItems: true,
+				stream: () =>
+					streamText({
+						model: this.provider.responses(modelId),
+						messages,
+						...(params.system && { system: params.system }),
+						...(tools && { tools }),
+						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+						...(params.temperature !== undefined && { temperature: params.temperature }),
+						abortSignal: params.signal,
+						providerOptions: { openai: buildMantleOpenAIOptions(params.effort) },
+					}).fullStream,
+				map: {
+					estimateInputFromMessages: params.messages,
+					// Mantle GPT-5.x streams the answer as a sequence of progressively
+					// re-stated `message` items (each a prefix-extension of the prior,
+					// interleaved with reasoning rounds). Without coalescing, the
+					// default `outputText += text` concatenates every draft and a
+					// single reply lands N-fold duplicated — verified live 2026-06-07
+					// against gpt-5.5 (sixfold). Emit only forward progress so the
+					// stream converges to exactly the final item.
+					coalescePrefixItems: true,
+				},
 			});
-		};
 
-		try {
-			yield* withEmptyRetry(runAttempt, {
-				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-				isAborted: () => params.signal?.aborted ?? false,
-				onRetry: (attempt) =>
-					this.logger?.warn?.(
-						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-						{ model: modelId },
-					),
-			});
-		} catch (err) {
-			throw mapError(err, PROVIDER_NAME);
-		}
+		yield* withEmptyRetry(runAttempt, {
+			maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+			isAborted: () => params.signal?.aborted ?? false,
+			onRetry: (attempt) =>
+				this.logger?.warn?.(
+					`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+					{ model: modelId },
+				),
+		});
 	}
 
 	capabilities(): BackendCapabilities {

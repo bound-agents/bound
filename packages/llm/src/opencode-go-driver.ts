@@ -5,15 +5,14 @@ import { streamText } from "ai";
 import {
 	ANTHROPIC_ENVELOPE,
 	PERMISSIVE_ENVELOPE,
-	mapChunks,
-	mapError,
 	toModelMessages,
 	toToolSet,
 } from "./ai-sdk-bridge";
-import { createLoggingFetch } from "./fetch-logger";
+import { mapProviderStream, resolveProviderFetch } from "./driver-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
 const DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
+const PROVIDER_NAME = "opencode-go";
 
 export function deriveOpenCodeGoBaseUrl(override?: string): string {
 	return override ?? DEFAULT_OPENCODE_GO_BASE_URL;
@@ -60,20 +59,16 @@ export class OpenCodeGoDriver implements LLMBackend {
 		this.model = stripOpenCodeGoModelPrefix(config.model);
 		this.contextWindow = config.contextWindow;
 		const baseUrl = deriveOpenCodeGoBaseUrl(config.baseUrl);
-		const customFetch =
-			config.fetch ??
-			(config.logger
-				? createLoggingFetch(config.logger, "opencode-go", config.connectTimeoutMs)
-				: undefined);
+		const customFetch = resolveProviderFetch(PROVIDER_NAME, config);
 
 		this.openaiProvider = createOpenAICompatible({
-			name: "opencode-go",
+			name: PROVIDER_NAME,
 			baseURL: baseUrl,
 			apiKey: config.apiKey,
 			...(customFetch && { fetch: customFetch }),
 		});
 		this.anthropicProvider = createAnthropic({
-			name: "opencode-go",
+			name: PROVIDER_NAME,
 			baseURL: baseUrl,
 			apiKey: config.apiKey,
 			...(customFetch && { fetch: customFetch }),
@@ -99,24 +94,20 @@ export class OpenCodeGoDriver implements LLMBackend {
 				// `thinking`-signature gotcha in CONTRIBUTING). "anthropic" drops them.
 				reasoningProviderOptions: "anthropic",
 			});
-			const result = streamText({
-				model: this.anthropicProvider.messages(modelId),
-				messages,
-				...(params.system && { system: params.system }),
-				...(tools && { tools }),
-				...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-				...(params.temperature !== undefined && { temperature: params.temperature }),
-				abortSignal: params.signal,
+			yield* mapProviderStream({
+				providerName: PROVIDER_NAME,
+				stream: () =>
+					streamText({
+						model: this.anthropicProvider.messages(modelId),
+						messages,
+						...(params.system && { system: params.system }),
+						...(tools && { tools }),
+						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+						...(params.temperature !== undefined && { temperature: params.temperature }),
+						abortSignal: params.signal,
+					}).fullStream,
+				map: { estimateInputFromMessages: params.messages },
 			});
-
-			try {
-				yield* mapChunks(result.fullStream, {
-					estimateInputFromMessages: params.messages,
-					providerName: "opencode-go",
-				});
-			} catch (err) {
-				throw mapError(err, "opencode-go");
-			}
 			return;
 		}
 
@@ -131,24 +122,20 @@ export class OpenCodeGoDriver implements LLMBackend {
 			// that lacks encrypted continuation state, matching the mantle driver.
 			reasoningProviderOptions: "openai",
 		});
-		const result = streamText({
-			model: this.openaiProvider.chatModel(modelId),
-			messages,
-			...(params.system && { system: params.system }),
-			...(tools && { tools }),
-			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-			...(params.temperature !== undefined && { temperature: params.temperature }),
-			abortSignal: params.signal,
+		yield* mapProviderStream({
+			providerName: PROVIDER_NAME,
+			stream: () =>
+				streamText({
+					model: this.openaiProvider.chatModel(modelId),
+					messages,
+					...(params.system && { system: params.system }),
+					...(tools && { tools }),
+					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+					...(params.temperature !== undefined && { temperature: params.temperature }),
+					abortSignal: params.signal,
+				}).fullStream,
+			map: { estimateInputFromMessages: params.messages },
 		});
-
-		try {
-			yield* mapChunks(result.fullStream, {
-				estimateInputFromMessages: params.messages,
-				providerName: "opencode-go",
-			});
-		} catch (err) {
-			throw mapError(err, "opencode-go");
-		}
 	}
 
 	capabilities(): BackendCapabilities {
