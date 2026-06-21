@@ -191,6 +191,103 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
+	describe("client-session affinity rows", () => {
+		it("does not record tool-less subscriptions as client sessions", async () => {
+			const { applySchema, createDatabase } = await import("@bound/core");
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "site-a",
+				defaultUserId: "test-user",
+			});
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			const row = db
+				.query("SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND deleted = 0")
+				.get("thread-1") as { count: number };
+			expect(row.count).toBe(0);
+
+			testHandler.cleanup();
+			db.close();
+		});
+
+		it("records a session when tools are configured after subscribing", async () => {
+			const { applySchema, createDatabase } = await import("@bound/core");
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "site-a",
+				defaultUserId: "test-user",
+			});
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "boundless_read",
+								description: "Read a file",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			let row = db
+				.query(
+					"SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND site_id = ? AND deleted = 0",
+				)
+				.get("thread-1", "site-a") as { count: number };
+			expect(row.count).toBe(1);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+				}),
+			);
+
+			row = db
+				.query(
+					"SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND site_id = ? AND deleted = 0",
+				)
+				.get("thread-1", "site-a") as { count: number };
+			expect(row.count).toBe(0);
+
+			testHandler.cleanup();
+			db.close();
+		});
+	});
+
 	describe("WS message schemas - tool:result", () => {
 		it("should accept valid tool:result", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
