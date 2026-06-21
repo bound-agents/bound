@@ -241,4 +241,46 @@ describe("bms_bash timeout dispatch", () => {
 
 		expect(sawSignal).toBe(true);
 	});
+
+	it("forwards the cwd arg into exec opts so just-bash scopes the run dir", async () => {
+		const backend = new ScriptedLLMBackend();
+		backend.toolThenText("call-4", { command: "pwd", cwd: "/home/user/pkg" }, "done");
+		let sawCwd: unknown;
+		const sandbox = {
+			exec: async (_cmd: string, opts?: { cwd?: string }) => {
+				sawCwd = opts?.cwd;
+				return { stdout: "ok", stderr: "", exitCode: 0 };
+			},
+		};
+
+		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+			threadId,
+			userId: "test-user",
+			toolRegistry: BASH_REGISTRY,
+		});
+		await loop.run();
+
+		expect(sawCwd).toBe("/home/user/pkg");
+	});
+
+	it("omits cwd from exec opts when no cwd arg is given", async () => {
+		const backend = new ScriptedLLMBackend();
+		backend.toolThenText("call-5", { command: "pwd" }, "done");
+		let hadCwdKey = true;
+		const sandbox = {
+			exec: async (_cmd: string, opts?: Record<string, unknown>) => {
+				hadCwdKey = !!opts && "cwd" in opts;
+				return { stdout: "ok", stderr: "", exitCode: 0 };
+			},
+		};
+
+		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+			threadId,
+			userId: "test-user",
+			toolRegistry: BASH_REGISTRY,
+		});
+		await loop.run();
+
+		expect(hadCwdKey).toBe(false);
+	});
 });

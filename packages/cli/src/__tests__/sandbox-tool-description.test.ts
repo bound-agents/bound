@@ -39,4 +39,21 @@ describe("sandboxTool description (AC4.3)", () => {
 		expect(params.required).not.toContain("timeout");
 		expect(params.required).toContain("command");
 	});
+
+	it("sandboxTool exposes an optional cwd param matching boundless_bash", () => {
+		const params = sandboxTool.function.parameters;
+		// Dedicated working-directory override: optional string, not required, so
+		// directory changes go through the param instead of an inline `cd`.
+		expect(params.properties.cwd).toBeDefined();
+		expect(params.properties.cwd.type).toBe("string");
+		expect(params.required).not.toContain("cwd");
+	});
+
+	it("sandboxTool description steers cwd changes to the param, not inline cd", () => {
+		const description = sandboxTool.function.description;
+		expect(description).toContain("cwd");
+		// Old phrasing told the agent not to `cd`; the new phrasing points at the
+		// param as the way to change directory.
+		expect(description).not.toContain("do not prefix commands with a `cd`");
+	});
 });

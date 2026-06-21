@@ -2971,6 +2971,7 @@ export class AgentLoop {
 	private async execSandboxWithTimeout(
 		command: string,
 		timeoutArg: unknown,
+		cwdArg?: unknown,
 	): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 		const exec = this.sandbox.exec;
 		if (!exec) {
@@ -2980,10 +2981,14 @@ export class AgentLoop {
 			typeof timeoutArg === "number" && Number.isFinite(timeoutArg) && timeoutArg > 0
 				? timeoutArg
 				: DEFAULT_SANDBOX_EXEC_TIMEOUT_MS;
+		// just-bash applies `cwd` for this execution only and restores it afterward
+		// (ExecOptions.cwd), so the dedicated arg gives the same one-command scope an
+		// inline `cd` would, without leaking the directory into the next command.
+		const cwd = typeof cwdArg === "string" && cwdArg.length > 0 ? cwdArg : undefined;
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 		try {
-			return await exec(command, { signal: controller.signal });
+			return await exec(command, { signal: controller.signal, ...(cwd ? { cwd } : {}) });
 		} catch (err) {
 			if (controller.signal.aborted) {
 				return {
@@ -3092,6 +3097,7 @@ export class AgentLoop {
 						const sandboxResult = await this.execSandboxWithTimeout(
 							command,
 							toolCall.input.timeout,
+							toolCall.input.cwd,
 						);
 						if (isRelayRequest(sandboxResult)) {
 							toolSpan.setStatus({ code: SpanStatusCode.OK });
@@ -3235,7 +3241,11 @@ export class AgentLoop {
 			};
 		}
 
-		const result = await this.execSandboxWithTimeout(command, toolCall.input.timeout);
+		const result = await this.execSandboxWithTimeout(
+			command,
+			toolCall.input.timeout,
+			toolCall.input.cwd,
+		);
 
 		// The exec wrapper in agent-factory.ts propagates RelayToolCallRequest
 		// objects from remote MCP proxy commands via loopContextStorage side-channel

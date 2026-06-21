@@ -120,7 +120,7 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: resolvedShell.toolName,
-				description: `Execute a command via ${resolvedShell.label} with AbortSignal support. Every command starts in the working directory shown in your context and a \`cd\` lasts only for that one command, so do not prefix commands with a \`cd\` into the directory you are already in.`,
+				description: `Execute a command via ${resolvedShell.label} with AbortSignal support. Every command starts in the working directory shown in your context; to run in a different directory pass the \`cwd\` parameter instead of prefixing the command with a \`cd\` (an inline \`cd\` only lasts for that one command).`,
 				parameters: {
 					type: "object",
 					required: ["command"],
@@ -132,6 +132,11 @@ export function buildToolSet(
 						timeout: {
 							type: "number",
 							description: "Timeout in milliseconds (default 300000)",
+						},
+						cwd: {
+							type: "string",
+							description:
+								"Working directory for this command (defaults to the working directory shown in your context). Relative paths resolve against it; writes stay confined to the working directory regardless. Use this instead of a leading `cd`.",
 						},
 					},
 				},

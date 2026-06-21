@@ -73,6 +73,30 @@ describe("buildToolSet", () => {
 		expect(properties.limit).toBeDefined();
 	});
 
+	it("shell tool exposes optional timeout + cwd params, command required", () => {
+		const { tools } = buildToolSet("/tmp", "localhost");
+
+		const shellTool = tools.find((t) => t.function.name === SHELL_TOOL_NAME);
+		expect(shellTool).toBeDefined();
+		if (!shellTool) return;
+
+		const params = shellTool.function.parameters as {
+			required: string[];
+			properties: Record<string, { type?: string }>;
+		};
+		expect(params.required).toContain("command");
+		expect(params.required).not.toContain("timeout");
+		expect(params.required).not.toContain("cwd");
+		expect(params.properties.timeout?.type).toBe("number");
+		// Dedicated working-directory override (defaults to the session cwd), so
+		// directory changes go through the param instead of an inline `cd`.
+		expect(params.properties.cwd?.type).toBe("string");
+
+		const description = shellTool.function.description;
+		expect(description).toContain("cwd");
+		expect(description).not.toContain("do not prefix commands with a `cd`");
+	});
+
 	it("has correct boundless_write parameters", () => {
 		const { tools } = buildToolSet("/tmp", "localhost");
 
