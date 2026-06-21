@@ -387,6 +387,19 @@ export function createWebSocketHandler(
 			conn.threadSystemPromptAdditions.clear();
 		}
 
+		// Update tool-bearing client-session affinity rows for all subscribed
+		// threads. A plain web UI subscribes to receive message/status events but
+		// registers no client tools, so it must not pin inference to its host; a
+		// boundless attach subscribes first, then configures tools, and becomes the
+		// affinity target here.
+		for (const threadId of conn.subscriptions) {
+			if (conn.clientTools.size > 0) {
+				recordClientSession(conn, threadId);
+			} else {
+				clearClientSession(conn, threadId);
+			}
+		}
+
 		// Re-deliver pending client tool calls for each subscribed thread (AC7.1-AC7.2)
 		for (const threadId of conn.subscriptions) {
 			redeliverPendingToolCalls(conn, threadId);
@@ -399,11 +412,12 @@ export function createWebSocketHandler(
 	): void {
 		conn.subscriptions.add(msg.thread_id);
 
-		// Record client-session affinity so notify/introspect wakeups fired on
-		// other hosts can be routed back here (issue #91, invariant #21). The
-		// session lives wherever the WS connection is — client tool calls defer
-		// over this host's local event bus and can't be reached cross-host.
-		recordClientSession(conn, msg.thread_id);
+		// Record client-session affinity only for tool-bearing clients. A web UI
+		// subscription is just a viewport; pinning inference to that host would
+		// mask the actual boundless session on another spoke.
+		if (conn.clientTools.size > 0) {
+			recordClientSession(conn, msg.thread_id);
+		}
 
 		// Propagate systemPromptAddition to the new subscription (AC2.3)
 		if (conn.systemPromptAddition !== undefined) {
