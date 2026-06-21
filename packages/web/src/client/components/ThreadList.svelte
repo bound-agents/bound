@@ -236,6 +236,7 @@ onMount(() => {
 						{@const maxActivity = Math.max(1, ...activity)}
 						{@const totalActivity = activity.reduce((a, b) => a + b, 0)}
 						{@const isActive = threadStatuses.get(thread.id)?.active ?? false}
+						{@const attachedSessionHosts = getAttachedSessionHosts(thread)}
 						<a
 							class="thread-card"
 							class:selected
@@ -254,7 +255,6 @@ onMount(() => {
 								<LineBadge lineIndex={thread.color} size="compact" />
 								<span class="line-name">{getLineName(thread.color)}</span>
 								<span class="thread-id mono">{thread.id.slice(0, 8)}</span>
-								{@const attachedSessionHosts = getAttachedSessionHosts(thread)}
 								{#if attachedSessionHosts.length > 0}
 									<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
 										<span class="session-dot"></span>
