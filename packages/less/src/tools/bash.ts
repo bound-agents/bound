@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "@bound/shared";
 import { execInSession } from "./iso-session";
 import { formatProvenance } from "./provenance";
@@ -65,13 +65,14 @@ function spawnUnsandboxed(command: string, cwd: string, shell: ResolvedShell): S
 async function trySandboxedViaIsolationSession(
 	command: string,
 	cwd: string,
+	policyCwd: string,
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
 ): Promise<SandboxSpawnResult | null> {
 	if (process.platform !== "win32") return null;
 	try {
-		const proc = await execInSession(command, cwd, sandbox, shell);
+		const proc = await execInSession(command, policyCwd, sandbox, shell, cwd);
 		logger?.info("sandbox_spawn", {
 			cwd,
 			pid: proc.pid,
@@ -99,6 +100,7 @@ async function trySandboxedViaIsolationSession(
 async function spawnForBash(
 	command: string,
 	cwd: string,
+	policyCwd: string,
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
@@ -109,7 +111,7 @@ async function spawnForBash(
 	);
 	switch (decision.mode) {
 		case "sandboxed": {
-			const proc = await spawnSandboxed(command, cwd, sandbox);
+			const proc = await spawnSandboxed(command, cwd, sandbox, policyCwd);
 			// Normal enforcement: a command ran inside the write guard. INFO so the
 			// happy path is recorded, not just the exceptions — without this, the
 			// log can only ever tell you when the sandbox FAILED, never that it was
@@ -128,7 +130,14 @@ async function spawnForBash(
 			// Windows, try IsolationSession before refusing — it enforces the same
 			// write boundary on builds where the one-shot path is a kernel stub.
 			{
-				const iso = await trySandboxedViaIsolationSession(command, cwd, shell, sandbox, logger);
+				const iso = await trySandboxedViaIsolationSession(
+					command,
+					cwd,
+					policyCwd,
+					shell,
+					sandbox,
+					logger,
+				);
 				if (iso) return { proc: iso };
 			}
 			// WARN — this aborts the command, and the reason is the actionable bit
@@ -146,7 +155,14 @@ async function spawnForBash(
 			// degrading — a successful session IS a real sandbox spawn (write guard
 			// active), so it short-circuits the unsandboxed path entirely.
 			{
-				const iso = await trySandboxedViaIsolationSession(command, cwd, shell, sandbox, logger);
+				const iso = await trySandboxedViaIsolationSession(
+					command,
+					cwd,
+					policyCwd,
+					shell,
+					sandbox,
+					logger,
+				);
 				if (iso) return { proc: iso };
 			}
 			// Silent degradation — the one event you MUST be able to find after the
@@ -228,12 +244,30 @@ export async function bashToolWithStreaming(
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
 	logger?: BashEventLogger,
 ): Promise<ToolResult> {
-	const { command, timeout } = args as {
+	const {
+		command,
+		timeout,
+		cwd: cwdArg,
+	} = args as {
 		command?: string;
 		timeout?: number;
+		cwd?: string;
 	};
 
-	const provenance = formatProvenance(hostname, cwd, shell.toolName);
+	// The dedicated `cwd` arg picks where the command RUNS (relative paths resolve
+	// against the session working dir). It deliberately does NOT move the
+	// write-confinement boundary — that stays anchored to the session `cwd` as
+	// `policyCwd` below. This mirrors an inline `cd`: you can run and read
+	// anywhere, but writes outside the working dir are still denied. Treating the
+	// arg as a writable-root override would turn it into a sandbox escape hatch.
+	const spawnCwd =
+		typeof cwdArg === "string" && cwdArg.length > 0
+			? isAbsolute(cwdArg)
+				? cwdArg
+				: resolve(cwd, cwdArg)
+			: cwd;
+
+	const provenance = formatProvenance(hostname, spawnCwd, shell.toolName);
 
 	if (!command || typeof command !== "string") {
 		const result: ToolResult = {
@@ -269,7 +303,14 @@ export async function bashToolWithStreaming(
 			// Spawn the subprocess (inside the mxc filesystem sandbox or not,
 			// per resolved config). `sandboxNote` carries any degraded-to-
 			// passthrough warning to surface back to the agent.
-			const { proc, note: sandboxNote } = await spawnForBash(command, cwd, shell, sandbox, logger);
+			const { proc, note: sandboxNote } = await spawnForBash(
+				command,
+				spawnCwd,
+				cwd,
+				shell,
+				sandbox,
+				logger,
+			);
 
 			// Handle abort: SIGTERM -> 2s wait -> SIGKILL
 			const abortHandler = () => {

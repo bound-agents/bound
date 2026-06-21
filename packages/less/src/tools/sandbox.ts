@@ -184,9 +184,10 @@ export async function spawnSandboxed(
 	command: string,
 	cwd: string,
 	cfg: ResolvedSandboxConfig,
+	policyCwd: string = cwd,
 ): Promise<SandboxSpawnResult> {
 	const { buildSandboxPayload, spawnSandboxFromConfig } = await loadMxcSdk();
-	const policy = buildPolicy(cwd, cfg);
+	const policy = buildPolicy(policyCwd, cfg);
 	const config = buildSandboxPayload(command, policy, cwd, undefined, "process");
 	// Restore user/group identity resolution under seatbelt. mxc's baseline
 	// profile blocks the opendirectoryd Mach lookups that back getpwuid(3), so
