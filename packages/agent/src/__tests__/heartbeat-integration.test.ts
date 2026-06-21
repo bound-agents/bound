@@ -17,10 +17,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, type createAppContext, createDatabase, insertRow } from "@bound/core";
 import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
-import type { HeartbeatConfig } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { buildHeartbeatContext } from "../heartbeat-context";
-import { seedHeartbeat } from "../task-resolution";
+import { DEFAULT_HEARTBEAT_INTERVAL_MS, seedHeartbeat } from "../task-resolution";
 
 describe("Heartbeat Integration", () => {
 	let tmpDir: string;
@@ -71,13 +70,8 @@ describe("Heartbeat Integration", () => {
 	});
 
 	// AC4.1: Heartbeat task seeded on startup
-	it("seeds heartbeat task with default config when enabled (AC4.1)", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, appContext.siteId);
+	it("seeds heartbeat task with system defaults (AC4.1)", () => {
+		seedHeartbeat(db, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
@@ -91,12 +85,7 @@ describe("Heartbeat Integration", () => {
 
 	// AC1.2: Thread creation on first run
 	it("creates persistent thread on first heartbeat run", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 		const task = db.query("SELECT thread_id FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
@@ -107,12 +96,7 @@ describe("Heartbeat Integration", () => {
 
 	// AC3.1: CAS blocks concurrent claim
 	it("blocks concurrent heartbeat claim via CAS (AC3.1)", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 
@@ -205,27 +189,21 @@ describe("Heartbeat Integration", () => {
 
 	// AC1.2: Next_run_at is clock-aligned
 	it("seeds heartbeat with clock-aligned next_run_at boundary", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000, // 30 minutes
-		};
-
-		seedHeartbeat(db, config, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 		const task = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(heartbeatTaskId) as any;
 
 		const nextRunTime = new Date(task.next_run_at).getTime();
-		const intervalMs = config.interval_ms;
 
 		// Verify it's on a boundary
-		const remainder = nextRunTime % intervalMs;
+		const remainder = nextRunTime % DEFAULT_HEARTBEAT_INTERVAL_MS;
 		expect(remainder).toBe(0);
 	});
 
 	// AC1.3: Task error and status can be persisted to DB
 	it("persists task error and status to database (basic state update)", () => {
-		seedHeartbeat(db, { enabled: true, interval_ms: 1_800_000 }, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 
@@ -246,14 +224,9 @@ describe("Heartbeat Integration", () => {
 
 	// AC1.2: Idempotent seeding
 	it("does not create duplicate heartbeat on multiple seed calls (idempotent)", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, appContext.siteId);
-		seedHeartbeat(db, config, appContext.siteId);
-		seedHeartbeat(db, config, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
 
 		const count = db
 			.query("SELECT COUNT(*) as count FROM tasks WHERE type = ?")
@@ -325,12 +298,7 @@ describe("Heartbeat Integration", () => {
 
 	// AC1.2: Persistent thread reuse
 	it("reuses the same thread_id across multiple heartbeat runs", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, appContext.siteId);
+		seedHeartbeat(db, appContext.siteId);
 
 		const heartbeatTaskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 

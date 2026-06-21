@@ -58,7 +58,6 @@ After `bound init`, `config/` contains:
 | `keyring.json` | No | Per-host Ed25519 public keys and URLs (auto-populated by sync handshake) |
 | `mcp.json` | No | MCP server connections (`stdio` or `http`; `io.modelcontextprotocol/ui` tools render inline in the web UI) |
 | `overlay.json` | No | Codebase mount points (`/mnt/<name>` → real path) |
-| `cron_schedules.json` | No | Recurring task definitions with schedule, payload, skill, model hint, and dependency fields |
 | `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
 
 All schemas are strict — unknown keys fail loudly. See [docs/config.md](docs/config.md) for the per-field reference.

@@ -54,7 +54,7 @@ const LEASE_VERIFY_SETTLE_MS = (() => {
 /**
  * Extracts the raw cron expression from a trigger_spec string.
  * The schedule command stores trigger_spec as JSON like {"type":"cron","expression":"0 * * * *"},
- * but seedCronTasks stores raw cron strings like "0 * * * *".
+ * but older rows may carry a raw cron string like "0 * * * *".
  * This helper handles both formats.
  */
 function extractCronExpression(triggerSpec: string): string {
@@ -1258,13 +1258,6 @@ export class Scheduler {
 			runCount: task.run_count ?? 0,
 		});
 
-		// Check if this is a cron task with a template (R-U28)
-		const template = this.getCronTemplate(task);
-		if (template && template.length > 0) {
-			this.runTemplateTask(task, leaseId, template);
-			return;
-		}
-
 		// Create agent loop and run asynchronously
 		setImmediate(async () => {
 			// Cross-host lease verification: the phase1/phase3 CAS updates above
@@ -2163,174 +2156,6 @@ export class Scheduler {
 				taskId: task.id,
 			});
 		}
-	}
-
-	private getCronTemplate(task: Task): string[] | null {
-		// Only check cron tasks
-		if (task.type !== "cron") {
-			return null;
-		}
-
-		// Parse trigger_spec to get cron expression
-		const specResult = parseJsonUntyped(task.trigger_spec, "cron trigger_spec");
-		if (!specResult.ok || typeof specResult.value !== "object" || specResult.value === null) {
-			return null;
-		}
-		const cronSpec = specResult.value as { type?: string; expression?: string; name?: string };
-
-		// Look up in cron_schedules config if available
-		const cronResult = this.ctx.optionalConfig.cronSchedules;
-		if (!cronResult || !cronResult.ok) {
-			return null;
-		}
-
-		// Find matching schedule by expression or name
-		const schedules = cronResult.value as Record<string, { schedule: string; template?: string[] }>;
-		for (const [name, schedule] of Object.entries(schedules)) {
-			// Skip non-cron entries (e.g., heartbeat config)
-			if (name === "heartbeat" || !schedule.schedule) continue;
-			if (schedule.schedule === cronSpec.expression && schedule.template) {
-				return schedule.template;
-			}
-		}
-
-		return null;
-	}
-
-	private runTemplateTask(task: Task, leaseId: string, template: string[]): void {
-		setImmediate(async () => {
-			try {
-				// Execute template commands directly (no LLM call)
-				const outputs: string[] = [];
-
-				if (this.sandbox?.exec) {
-					for (const cmd of template) {
-						const result = await this.sandbox.exec(cmd);
-						outputs.push(result.stdout || result.stderr);
-						if (result.exitCode !== 0) {
-							this.ctx.logger.warn("[scheduler] Template command failed", {
-								taskId: task.id,
-								cmd,
-								exitCode: result.exitCode,
-								stderr: result.stderr,
-							});
-						}
-					}
-				} else {
-					this.ctx.logger.warn("[scheduler] No sandbox available for template execution", {
-						taskId: task.id,
-					});
-				}
-
-				// Verify lease_id still matches
-				const currentTask = this.ctx.db
-					.query("SELECT lease_id FROM tasks WHERE id = ?")
-					.get(task.id) as { lease_id: string | null } | undefined;
-
-				if (currentTask?.lease_id === leaseId) {
-					const result = JSON.stringify({
-						template_executed: true,
-						commands: template,
-						outputs,
-					});
-
-					// CAS on status='running' so a prior heartbeat-timeout eviction
-					// stays sticky. Clearing `error` pairs with the CAS.
-					const wrote = updateRowIf(
-						this.ctx.db,
-						"tasks",
-						task.id,
-						{ status: "running" },
-						{
-							status: "completed",
-							result,
-							error: "",
-							run_count: (task.run_count ?? 0) + 1,
-							last_run_at: new Date().toISOString(),
-						},
-						this.ctx.siteId,
-					);
-
-					if (!wrote) {
-						this.ctx.logger.warn(
-							"[scheduler] Template completion skipped — task no longer running (likely evicted)",
-							{
-								taskId: task.id,
-								triggerSpec: task.trigger_spec,
-								type: task.type,
-							},
-						);
-					}
-
-					// If cron task, compute next run time
-					rescheduleCronTask(
-						this.ctx.db,
-						task,
-						this.ctx.logger,
-						"completion",
-						this.ctx.siteId,
-						leaseId,
-					);
-					rescheduleHeartbeat(
-						this.ctx.db,
-						task,
-						this.ctx.logger,
-						"template completion",
-						this.ctx.siteId,
-						this.lastUserInteractionAt,
-					);
-					resetEventTask(
-						this.ctx.db,
-						task,
-						this.ctx.logger,
-						"template completion",
-						this.ctx.siteId,
-					);
-				}
-			} catch (error) {
-				const errorMsg = formatError(error);
-				const currentTask = this.ctx.db
-					.query("SELECT lease_id FROM tasks WHERE id = ?")
-					.get(task.id) as { lease_id: string | null } | undefined;
-
-				if (currentTask?.lease_id === leaseId) {
-					updateRow(
-						this.ctx.db,
-						"tasks",
-						task.id,
-						{ status: "failed", error: errorMsg },
-						this.ctx.siteId,
-					);
-
-					// Cron template tasks must reschedule even after hard errors
-					rescheduleCronTask(
-						this.ctx.db,
-						task,
-						this.ctx.logger,
-						"template hard error",
-						this.ctx.siteId,
-						leaseId,
-					);
-					rescheduleHeartbeat(
-						this.ctx.db,
-						task,
-						this.ctx.logger,
-						"template hard error",
-						this.ctx.siteId,
-						this.lastUserInteractionAt,
-					);
-					resetEventTask(
-						this.ctx.db,
-						task,
-						this.ctx.logger,
-						"template hard error",
-						this.ctx.siteId,
-					);
-				}
-			} finally {
-				this.runningTasks.delete(task.id);
-			}
-		});
 	}
 
 	// Get current quiescence-adjusted poll interval using 4-tier graduated table

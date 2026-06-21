@@ -473,7 +473,7 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 
 1. **Load and validate all config files**
    - Reads and validates `allowlist.json` and `model_backends.json`
-   - Checks for optional files (`sync.json`, `keyring.json`, `mcp.json`, `overlay.json`, `network.json`, `platforms.json`, `cron_schedules.json`)
+   - Checks for optional files (`sync.json`, `keyring.json`, `mcp.json`, `overlay.json`, `network.json`, `platforms.json`)
    - Exits with error if required files are missing or invalid
 
 2. **Initialize cryptography**
@@ -1257,48 +1257,7 @@ Files under the mounted path are indexed into `overlay_index` and accessible to 
 
 ### cron_schedules.json
 
-**Optional.** Operator-defined scheduled tasks seeded into the `tasks` table at startup. Tasks are created with deterministic UUIDs (`UUID5(BOUND_NAMESPACE, "name|expression")`) so seeding is idempotent across restarts.
-
-**Schema:**
-
-Each key in the object is a task name. The value is a task configuration object. One reserved key, `heartbeat`, carries the heartbeat task configuration (see `heartbeatConfigSchema`).
-
-| Field | Type | Description |
-|---|---|---|
-| `schedule` | string | Cron expression (5-field). |
-| `thread` | string | Optional. Name of the thread to post results to. |
-| `payload` | string | Optional. Payload passed to the agent loop as the task directive. |
-| `template` | array of strings | Optional. Shell commands to execute without an LLM call. Variables assigned in earlier commands are available in later ones. If any command exits non-zero the task is marked failed. |
-| `requires` | array of strings | Optional. List of MCP server names, model specifiers (`model:claude-opus-4`), or host pins (`host:laptop`) required to claim this task. |
-| `model_hint` | string | Optional. Preferred backend ID for the agent loop. |
-
-**Example:**
-
-```json
-{
-  "daily_standup": {
-    "schedule": "0 9 * * 1-5",
-    "thread": "Daily Standup",
-    "payload": "summarize overnight activity",
-    "requires": ["github", "slack"]
-  },
-  "hourly_ci_check": {
-    "schedule": "0 * * * *",
-    "thread": "CI Monitoring",
-    "requires": ["github"],
-    "payload": "check failing builds"
-  },
-  "weekly_pipeline": {
-    "schedule": "0 9 * * 1",
-    "thread": "Weekly Report",
-    "template": [
-      "T1=$(schedule --quiet --no-history --in 0s --requires github --payload '{\"repo\":\"acme/frontend\"}')",
-      "T2=$(schedule --quiet --no-history --in 0s --requires github --payload '{\"repo\":\"acme/backend\"}')",
-      "schedule --after $T1,$T2 --requires slack --payload '{\"action\":\"post_weekly_summary\"}'"
-    ]
-  }
-}
-```
+**Removed.** Recurring tasks are now created at runtime through the agent's `task` tool (`schedule` action with a `cron` expression), which writes `tasks` rows directly — the file's per-task seeding was redundant with that path. The agent heartbeat is a system-managed, uncancellable task seeded at a fixed 30-minute cadence with no operator config surface.
 
 ---
 

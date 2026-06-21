@@ -2,8 +2,6 @@ import { describe, expect, it } from "bun:test";
 import {
 	allowlistSchema,
 	configSchemaMap,
-	cronSchedulesSchema,
-	heartbeatConfigSchema,
 	keyringSchema,
 	mcpSchema,
 	modelBackendsSchema,
@@ -860,148 +858,6 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 	});
-
-	describe("heartbeatConfigSchema", () => {
-		it("validates correct heartbeat config with defaults", () => {
-			const result = heartbeatConfigSchema.safeParse({});
-			expect(result.success).toBe(true);
-			if (result.success) {
-				expect(result.data.enabled).toBe(true);
-				expect(result.data.interval_ms).toBe(1_800_000);
-			}
-		});
-
-		it("validates heartbeat config with custom interval", () => {
-			const result = heartbeatConfigSchema.safeParse({
-				enabled: true,
-				interval_ms: 900_000,
-			});
-			expect(result.success).toBe(true);
-			if (result.success) {
-				expect(result.data.interval_ms).toBe(900_000);
-			}
-		});
-
-		it("validates disabled heartbeat config", () => {
-			const result = heartbeatConfigSchema.safeParse({
-				enabled: false,
-				interval_ms: 1_800_000,
-			});
-			expect(result.success).toBe(true);
-			if (result.success) {
-				expect(result.data.enabled).toBe(false);
-			}
-		});
-
-		it("rejects interval_ms: 0", () => {
-			const result = heartbeatConfigSchema.safeParse({
-				interval_ms: 0,
-			});
-			expect(result.success).toBe(false);
-		});
-
-		it("rejects negative interval_ms", () => {
-			const result = heartbeatConfigSchema.safeParse({
-				interval_ms: -1,
-			});
-			expect(result.success).toBe(false);
-		});
-
-		it("rejects interval_ms below 60 seconds", () => {
-			const result = heartbeatConfigSchema.safeParse({
-				interval_ms: 59_999,
-			});
-			expect(result.success).toBe(false);
-		});
-
-		it("accepts interval_ms at exactly 60 seconds", () => {
-			const result = heartbeatConfigSchema.safeParse({
-				interval_ms: 60_000,
-			});
-			expect(result.success).toBe(true);
-		});
-	});
-
-	describe("cronSchedulesSchema", () => {
-		it("validates correct cron schedules config", () => {
-			const config = {
-				daily_summary: {
-					schedule: "0 9 * * *",
-					thread: "summary-thread",
-					payload: "daily",
-				},
-				hourly_check: {
-					schedule: "0 * * * *",
-					requires: ["initialize"],
-					model_hint: "fast",
-				},
-			};
-			const result = cronSchedulesSchema.safeParse(config);
-			expect(result.success).toBe(true);
-		});
-
-		it("requires schedule field", () => {
-			const config = {
-				task: {
-					thread: "some-thread",
-				},
-			};
-			const result = cronSchedulesSchema.safeParse(config);
-			expect(result.success).toBe(false);
-		});
-
-		it("accepts cron schedules without heartbeat key", () => {
-			const config = {
-				daily_summary: {
-					schedule: "0 9 * * *",
-					thread: "summary-thread",
-				},
-			};
-			const result = cronSchedulesSchema.safeParse(config);
-			expect(result.success).toBe(true);
-		});
-
-		it("accepts cron schedules with heartbeat key", () => {
-			const config = {
-				heartbeat: {
-					enabled: true,
-					interval_ms: 1_800_000,
-				},
-				daily_summary: {
-					schedule: "0 9 * * *",
-					thread: "summary-thread",
-				},
-			};
-			const result = cronSchedulesSchema.safeParse(config);
-			expect(result.success).toBe(true);
-		});
-
-		it("defaults heartbeat to undefined when not provided", () => {
-			const config = {
-				daily_summary: {
-					schedule: "0 9 * * *",
-				},
-			};
-			const result = cronSchedulesSchema.safeParse(config);
-			expect(result.success).toBe(true);
-			if (result.success) {
-				expect(result.data.heartbeat).toBeUndefined();
-			}
-		});
-
-		it("accepts heartbeat with disabled:true", () => {
-			const config = {
-				heartbeat: {
-					enabled: false,
-				},
-			};
-			const result = cronSchedulesSchema.safeParse(config);
-			expect(result.success).toBe(true);
-			if (result.success) {
-				expect(result.data.heartbeat?.enabled).toBe(false);
-			}
-		});
-	});
 });
 
 describe("platform-connectors Phase 1 config schema validation", () => {
@@ -1194,7 +1050,6 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 		"overlay.json": {
 			mounts: {},
 		},
-		"cron_schedules.json": {},
 	};
 
 	for (const [filename, baseConfig] of Object.entries(fixtures)) {

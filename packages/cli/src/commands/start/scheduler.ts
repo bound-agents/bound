@@ -8,7 +8,6 @@ import {
 	generateThreadTitle,
 	resolveModel,
 	resolveModelTier,
-	seedCronTasks,
 	seedHeartbeat,
 } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
@@ -29,7 +28,6 @@ import {
 	createConnectorTool,
 	registerConnectorEventDelivery,
 } from "@bound/platforms";
-import type { CronSchedulesConfig } from "@bound/shared";
 import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 import { shutdownTelemetry } from "./telemetry.js";
 
@@ -69,48 +67,13 @@ export function initScheduler(
 	sandbox: any,
 	platformMcpRegistry?: PlatformMcpRegistry | null,
 ): SchedulerResult {
-	// 16. Seed cron tasks from config
-	appContext.logger.info("Seeding cron tasks...");
-	{
-		const cronResult = appContext.optionalConfig.cronSchedules;
-		if (cronResult?.ok) {
-			const cronSchedules = cronResult.value as Record<
-				string,
-				{ schedule: string; payload?: string }
-			>;
-			const cronConfigs = Object.entries(cronSchedules)
-				.filter(([name]) => name !== "heartbeat")
-				.map(([name, cfg]) => ({
-					name,
-					cron: cfg.schedule,
-					payload: cfg.payload,
-				}));
-			try {
-				seedCronTasks(appContext.db, cronConfigs, appContext.siteId);
-				appContext.logger.info(`[scheduler] Seeded ${cronConfigs.length} cron task(s)`);
-			} catch (error) {
-				appContext.logger.warn("[scheduler] Failed to seed cron tasks", {
-					error: formatError(error),
-				});
-			}
-		} else {
-			appContext.logger.info("[scheduler] No cron schedules configured");
-		}
-	}
-
-	// 16b. Seed heartbeat task
-	{
-		const cronResult = appContext.optionalConfig.cronSchedules;
-		const parsed = cronResult?.ok ? (cronResult.value as CronSchedulesConfig) : undefined;
-		const heartbeatConfig = parsed?.heartbeat;
-		try {
-			seedHeartbeat(appContext.db, heartbeatConfig, appContext.siteId);
-			appContext.logger.info("[scheduler] Heartbeat task seeded");
-		} catch (error) {
-			appContext.logger.warn("[scheduler] Failed to seed heartbeat", {
-				error: formatError(error),
-			});
-		}
+	try {
+		seedHeartbeat(appContext.db, appContext.siteId);
+		appContext.logger.info("[scheduler] Heartbeat task seeded");
+	} catch (error) {
+		appContext.logger.warn("[scheduler] Failed to seed heartbeat", {
+			error: formatError(error),
+		});
 	}
 
 	// 17. Scheduler
