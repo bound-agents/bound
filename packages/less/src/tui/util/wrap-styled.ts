@@ -14,6 +14,16 @@ export interface StyledRun {
 	strikethrough?: boolean;
 	dim?: boolean;
 	color?: string;
+	/**
+	 * Target URL for a Markdown link. When set, the renderer wraps `text` in an
+	 * OSC 8 hyperlink escape at draw time — NOT here. The escape bytes are
+	 * deliberately kept out of `text` so the char-offset wrapping below measures
+	 * only the visible label; a wrap boundary inside the escape sequence would
+	 * otherwise split it and corrupt the link. When a link label wraps across
+	 * lines, `sliceRuns` carries this href onto each slice, so each visual line
+	 * emits its own (same-URL) hyperlink — which terminals coalesce.
+	 */
+	hyperlink?: string;
 }
 
 /**
