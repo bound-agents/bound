@@ -199,6 +199,75 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("Standing context");
 	});
 
+	test("wraps folded envelopes in a <connector-events> envelope, one <event> node each", () => {
+		const threadId = randomUUID();
+		const id1 = insertEnvelope(threadId, "body-one", "2026-05-18T21:00:00Z");
+		const id2 = insertEnvelope(threadId, "body-two", "2026-05-18T21:01:00Z");
+
+		const task = makeTask({ thread_id: threadId, trigger_spec: "connector:github" });
+		const result = buildEventWakeupContent(db, task);
+
+		// Parent envelope carries the trigger + event count.
+		expect(result.content).toContain('<connector-events trigger="connector:github" count="2">');
+		expect(result.content).toContain("</connector-events>");
+
+		// Each event is its own node with attributes drawn from the inbox row.
+		expect(result.content).toMatch(
+			/<event index="1" received="2026-05-18T21:00:00Z" kind="webhook_intake" source-site="[^"]+">/,
+		);
+		expect(result.content).toMatch(/<event index="2" received="2026-05-18T21:01:00Z"/);
+		expect((result.content.match(/<event /g) || []).length).toBe(2);
+		expect((result.content.match(/<\/event>/g) || []).length).toBe(2);
+
+		// Bodies live inside the nodes, in order.
+		expect(result.content).toContain("body-one");
+		expect(result.content).toContain("body-two");
+		expect(result.content.indexOf("body-one")).toBeLessThan(result.content.indexOf("body-two"));
+		expect(result.processedIds).toEqual([id1, id2]);
+	});
+
+	test('wraps a single envelope with count=1 and one <event index="1"> node', () => {
+		const threadId = randomUUID();
+		insertEnvelope(threadId, "solo-body", "2026-05-18T21:00:00Z");
+
+		const task = makeTask({ thread_id: threadId, trigger_spec: "connector:stripe" });
+		const result = buildEventWakeupContent(db, task);
+
+		expect(result.content).toContain('<connector-events trigger="connector:stripe" count="1">');
+		expect(result.content).toMatch(/<event index="1" received="2026-05-18T21:00:00Z"/);
+		expect((result.content.match(/<\/event>/g) || []).length).toBe(1);
+		expect(result.content).toContain("solo-body");
+	});
+
+	test("escapes special characters in connector-events attribute values", () => {
+		const threadId = randomUUID();
+		insertEnvelope(threadId, "body", "2026-05-18T21:00:00Z");
+
+		const task = makeTask({ thread_id: threadId, trigger_spec: 'weird"&<spec>' });
+		const result = buildEventWakeupContent(db, task);
+
+		// The raw, unescaped trigger must never reach the attribute.
+		expect(result.content).not.toContain('trigger="weird"&<spec>"');
+		expect(result.content).toContain("&quot;");
+		expect(result.content).toContain("&amp;");
+		expect(result.content).toContain("&lt;");
+		expect(result.content).toContain("&gt;");
+	});
+
+	test("keeps the standing task payload outside the connector-events envelope", () => {
+		const threadId = randomUUID();
+		insertEnvelope(threadId, "envelope-body", "2026-05-18T21:00:00Z");
+
+		const task = makeTask({ thread_id: threadId, payload: "Standing context" });
+		const result = buildEventWakeupContent(db, task);
+
+		expect(result.content).toContain("Standing context");
+		// Standing payload sits after the closed envelope, not nested in it.
+		expect(result.content.indexOf("</connector-events>")).toBeLessThan(
+			result.content.indexOf("Standing context"),
+		);
+	});
+
 	test("ignores rows of other kinds even when they share the ref_id", () => {
 		// Pre-fix the helper queried only by ref_id, so a stray platform-MCP
 		// `intake` row (entirely different payload schema) on the same thread
