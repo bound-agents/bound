@@ -149,14 +149,14 @@ describe("built-in tools integration", () => {
 		const backend = new ScriptedLLMBackend();
 
 		// Step 1: LLM calls write
-		backend.pushToolCall("t1", "write", {
+		backend.pushToolCall("t1", "bms_write", {
 			path: "/home/user/test.py",
 			content: 'print("hello world")\n',
 		});
 		// Step 2: LLM calls read
-		backend.pushToolCall("t2", "read", { path: "/home/user/test.py" });
+		backend.pushToolCall("t2", "bms_read", { path: "/home/user/test.py" });
 		// Step 3: LLM calls edit
-		backend.pushToolCall("t3", "edit", {
+		backend.pushToolCall("t3", "bms_edit", {
 			path: "/home/user/test.py",
 			edits: [{ old_text: "hello world", new_text: "goodbye world" }],
 		});
@@ -211,7 +211,7 @@ describe("built-in tools integration", () => {
 
 		const backend = new ScriptedLLMBackend();
 		// Try to read a file that doesn't exist
-		backend.pushToolCall("t1", "read", { path: "/nope.txt" });
+		backend.pushToolCall("t1", "bms_read", { path: "/nope.txt" });
 		backend.pushText("The file was not found.");
 
 		const router = new ModelRouter(new Map([["test", backend]]), "test");
