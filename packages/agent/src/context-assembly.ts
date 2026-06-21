@@ -1258,14 +1258,28 @@ Original output was too large for the context window. If you need the full conte
 	const messagesAfterPurge = substitutePurgedMessages({ messages, threadId });
 	stage2Span.end();
 
-	// Stage 2.5: NON-LLM ROLE FILTERING
-	// Drop non-LLM-compatible roles before Stage 3 sanitizer runs. Per
-	// Invariant #19, role='system' must never be persisted into the messages
-	// table — insertRow() enforces this at the write boundary. Any row
-	// reaching this filter with role='system' is legacy/corrupt data; drop it.
+	// Stage 2.5: NON-LLM ROLE HANDLING
+	// Two roles are genuinely non-LLM and get dropped: 'purge' (a tombstone
+	// consumed by Stage 2 substitution, never shown) and 'system' (forbidden in
+	// the messages table per Invariant #19 — any row here is legacy/corrupt).
+	//
+	// 'alert' is different. Alert rows (non-retryable inference failures, fatal
+	// loop errors — see emitAlert in agent-loop.ts) render inline in the
+	// conversation on every human-facing surface, so dropping them from the
+	// agent's context creates an asymmetry: the operator can point to an error
+	// the agent cannot see on the next turn. Instead, surface them in place as
+	// developer-role messages (Invariant #9 — 'alert' is not a wire role;
+	// Invariant #19 — 'developer' is the role for injected system context). The
+	// label keeps them distinguishable from operator-authored developer context.
 	const stage2_5Span = getTracer().startSpan("context.stage-2.5-role-filtering");
-	const NON_LLM_ROLES = new Set(["alert", "purge", "system"]);
-	const messagesFiltered = messagesAfterPurge.filter((m) => !NON_LLM_ROLES.has(m.role));
+	const DROP_ROLES = new Set(["purge", "system"]);
+	const messagesFiltered = messagesAfterPurge
+		.filter((m) => !DROP_ROLES.has(m.role))
+		.map((m): Message => {
+			if (m.role !== "alert") return m;
+			const labeled = typeof m.content === "string" ? `[system alert] ${m.content}` : m.content;
+			return { ...m, role: "developer", content: labeled };
+		});
 	stage2_5Span.end();
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
