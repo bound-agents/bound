@@ -37,13 +37,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// Phase 2: MCP connections and command generation
 	const { mcpClientsMap, mcpCommands, mcpServerNames, confirmGates } = await initMcp(appContext);
 
-	// Phase 3: Sandbox, command registry, VFS hydration, persona
+	// Phase 3: Sandbox, command registry, VFS hydration
 	const { sandbox, clusterFsObj, commandContext } = await initSandbox(
 		appContext,
 		mcpClientsMap,
 		mcpCommands,
 		mcpServerNames,
-		configDir,
 	);
 
 	// Phase 4: Model router and inference setup

@@ -1003,9 +1003,9 @@ export function estimateContentLength(content: string | ContentBlock[]): number 
  * Historically this read `config/persona.md` off disk and memoized per
  * configDir. That diverged silently across the cluster: a relayed turn
  * assembled on a peer used the peer's file, not the editing host's. The
- * persona now lives as a single synced LWW row (seeded once from the file at
- * boot — see `initSandbox`), so an edit on any host — via `boundctl
- * set-persona` or `POST /api/persona` — propagates everywhere.
+ * persona now lives as a single synced LWW row, set via `boundctl
+ * set-persona` or `POST /api/persona`, so an edit on any host propagates
+ * everywhere.
  *
  * No cache by design: the source is a one-row primary-key lookup on the local
  * SQLite, cheaper than the file `stat`+read it replaces, and memoizing a
