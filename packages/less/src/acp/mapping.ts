@@ -532,6 +532,21 @@ export function messageToSessionUpdate(
 					messageId: message.id,
 				},
 			];
+		case "alert":
+			// Daemon alerts (inference timeouts, non-retryable LLM errors) are
+			// surfaced live by AcpSession.handleAlert as an agent_message_chunk.
+			// Replay must mirror that so a resumed transcript keeps the alert in
+			// place — otherwise it vanishes and two user turns that flanked it
+			// concatenate in the editor (Zed). Live prepends "\n\n" to separate
+			// the alert from an open streaming run; on replay each row is its own
+			// message, so the text rides clean.
+			return [
+				{
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: message.content },
+					messageId: message.id,
+				},
+			];
 		case "tool_call": {
 			const blocks = parseContentBlocks(message.content);
 			if (!blocks) {
