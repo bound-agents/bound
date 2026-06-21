@@ -83,6 +83,7 @@ import {
 	buildOffloadMessage,
 	offloadToolResultPath,
 } from "./tool-result-offload";
+import { suggestToolForAction } from "./tools/tool-suggestion";
 import type {
 	AgentLoopConfig,
 	AgentLoopResult,
@@ -3149,6 +3150,29 @@ export class AgentLoop {
 							result = { content: builtinResult, exitCode };
 						}
 						break;
+					}
+				}
+
+				// Action-enum cross-tool suggestion. When a model routes an
+				// action value to the wrong tool (e.g. calling `connector`
+				// with `action: "activate"`, which belongs to `skill`), the
+				// Zod error enumerates valid options for the CALLED tool but
+				// never reveals the value belongs to a DIFFERENT tool.
+				// Models that confuse two action-dispatcher tools re-decide
+				// the same wrong routing every turn — the 2026-06-12 and
+				// 2026-06-21 gpt-5.5 connector-vs-skill spins (26+ and 12+
+				// identical-error turns) both followed this pattern. Append
+				// the suggestion on the FIRST failed call so the model gets
+				// the correct tool name immediately, not after the loop
+				// guard's 5-turn threshold.
+				if (result.exitCode !== 0) {
+					const suggestion = suggestToolForAction(
+						toolCall.name,
+						toolCall.input,
+						this.config.toolRegistry,
+					);
+					if (suggestion) {
+						result = { ...result, content: `${result.content}\n${suggestion}` };
 					}
 				}
 
