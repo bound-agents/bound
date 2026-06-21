@@ -238,7 +238,7 @@ function ToolCallRow({
 /**
  * Wraps content in a colored left-edge stripe to visually anchor a turn.
  * User messages get a green stripe; assistant messages and their tool
- * calls/results share a blue stripe so the eye can follow a single turn
+ * calls/results share a cyan stripe so the eye can follow a single turn
  * down the page even when it spans many child blocks.
  *
  * `width` is the explicit column budget for the stripe + content. Without
@@ -305,9 +305,9 @@ export interface MessageBlockProps {
 /**
  * Renders a message based on its role and content.
  * - `"user"`: green left-stripe, "you" header, content
- * - `"assistant"`: blue left-stripe, "agent" header, content (string or ContentBlock[])
- * - `"tool_call"`: blue stripe (continues assistant turn), `⏵ name args` rows
- * - `"tool_result"`: blue stripe, `✓/✗ name · summary` with truncated body
+ * - `"assistant"`: cyan left-stripe, "agent" header, content (string or ContentBlock[])
+ * - `"tool_call"`: cyan stripe (continues assistant turn), `⏵ name args` rows
+ * - `"tool_result"`: cyan stripe, `✓/✗ name · summary` with truncated body
  * - Pending placeholder: dimmed "Waiting for tool result..." text
  */
 export function MessageBlock({
@@ -375,8 +375,8 @@ export function MessageBlock({
 
 	if (message.role === "assistant") {
 		return (
-			<StripeBox color="blue" width={stripeWidth}>
-				<Text bold color="blue">
+			<StripeBox color="cyan" width={stripeWidth}>
+				<Text bold color="cyan">
 					agent
 				</Text>
 				{renderContent(parsedContent)}
@@ -410,10 +410,10 @@ export function MessageBlock({
 
 		if (toolUseBlocks.length > 0) {
 			return (
-				<StripeBox color="blue" width={stripeWidth}>
+				<StripeBox color="cyan" width={stripeWidth}>
 					{inlineText && (
 						<Box flexDirection="column" marginBottom={1}>
-							<Text bold color="blue">
+							<Text bold color="cyan">
 								agent
 							</Text>
 							<Markdown text={inlineText} />
@@ -428,7 +428,7 @@ export function MessageBlock({
 		}
 
 		return (
-			<StripeBox color="blue" width={stripeWidth}>
+			<StripeBox color="cyan" width={stripeWidth}>
 				<Text>
 					<Text color="cyan">⏵ </Text>
 					<Text color="cyan" bold>
