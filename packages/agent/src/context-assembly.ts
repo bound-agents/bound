@@ -67,6 +67,7 @@ import {
 import { buildStaticSystemParts } from "./system-parts";
 import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
+import { collectThreadPinnedSkills } from "./tools/skill-utils";
 import { buildVaryingPrefix } from "./varying-prefix";
 import { computeRecentWindow } from "./warm-compaction";
 
@@ -1348,6 +1349,14 @@ Original output was too large for the context window. If you need the full conte
 	const systemPartCountBeforeSkill = systemParts.length;
 
 	let inactiveSkillRef: string | undefined;
+	// Determinant of the thread's pinned-skill set, folded into the input
+	// fingerprint below so a `deactivate` (which writes no stable-side row)
+	// is classified as benign `collect` drift rather than a spurious
+	// `compose` leak. Undefined when nothing is pinned. Issue #173.
+	let pinnedSkillsFingerprint: string | undefined;
+	// The skill injected via the task payload (if any), excluded from the
+	// thread-pinned block below so it is not duplicated.
+	let taskReferencedSkillName: string | undefined;
 
 	// Inject task-referenced skill body into system prompt
 	// Must be outside the !noHistory guard so it works when noHistory = true
@@ -1391,6 +1400,7 @@ Original output was too large for the context window. If you need the full conte
 
 						if (skillMdRow?.content) {
 							systemParts.push(skillMdRow.content);
+							taskReferencedSkillName = skillName;
 						}
 					} else {
 						// Skill referenced but not active — note will appear in volatile context
@@ -1400,6 +1410,23 @@ Original output was too large for the context window. If you need the full conte
 			}
 		} catch (_error) {
 			// Non-fatal: skip skill body injection on any error
+		}
+	}
+
+	// Inject thread-pinned activated skills (issue #173). Aggressive
+	// context-slicing drops activated skills out of the rolling window; pinning
+	// their SKILL.md bodies into the stable prefix keeps them in context across
+	// cold rebuilds. Gated to history threads — noHistory tasks rely on the
+	// task-referenced skill above and intentionally carry minimal context.
+	if (!noHistory && threadId) {
+		try {
+			const pinned = collectThreadPinnedSkills(db, threadId, taskReferencedSkillName);
+			if (pinned.block) {
+				systemParts.push(pinned.block);
+				pinnedSkillsFingerprint = pinned.fingerprint;
+			}
+		} catch (_error) {
+			// Non-fatal: skip pinned-skill injection on any error
 		}
 	}
 
@@ -1416,9 +1443,12 @@ Original output was too large for the context window. If you need the full conte
 		.reduce((sum, part) => sum + countTokens(part), 0);
 	sections.push({ name: "system", tokens: systemTokens });
 
-	// Track skill section if a skill part was added
+	// Track skill section if any skill parts were added (task-referenced body
+	// and/or thread-pinned bodies). Sum all of them, not just the last.
 	if (systemParts.length > systemPartCountBeforeSkill) {
-		const skillTokens = countTokens(systemParts[systemParts.length - 1]);
+		const skillTokens = systemParts
+			.slice(systemPartCountBeforeSkill)
+			.reduce((sum, part) => sum + countTokens(part), 0);
 		if (skillTokens > 0) {
 			sections.push({ name: "skill-context", tokens: skillTokens });
 		}
@@ -1548,6 +1578,16 @@ Original output was too large for the context window. If you need the full conte
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
+		// Fold the thread-pinned skill determinant into the input fingerprint.
+		// A `deactivate` writes no stable-side row and doesn't move the skill
+		// index, so without this it would surface as a spurious `compose` leak
+		// (same fingerprint, different system-prompt bytes). Folding the
+		// determinant shifts the fingerprint instead, classifying the change as
+		// benign `collect` drift — the soft arm that already tolerates
+		// `last_accessed_at`-style uncovered shifts. Issue #173.
+		if (pinnedSkillsFingerprint && stablePrefixInputFingerprint) {
+			stablePrefixInputFingerprint = `${stablePrefixInputFingerprint}+skp:${pinnedSkillsFingerprint}`;
+		}
 		relevantMemoryDebug = volatileCtx.relevantMemory;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
