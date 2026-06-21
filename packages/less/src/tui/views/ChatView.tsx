@@ -12,6 +12,7 @@ import {
 	StatusBar,
 	TextInput,
 	ToolCallCard,
+	computeStdoutRowBudget,
 } from "../components";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
@@ -223,7 +224,7 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
-	const { columns: termColumns } = useTerminalSize();
+	const { columns: termColumns, rows: termRows } = useTerminalSize();
 	// Per-tool_result metadata (file_path for syntax highlighting +
 	// isLastInGroup for parallel-call group margin collapsing). Memoized
 	// over the messages array so we walk it only when new messages arrive,
@@ -395,7 +396,11 @@ export function ChatView({
 						</Box>
 					)}
 
-					{/* In-flight tool calls */}
+					{/* In-flight tool calls. The per-card stdout budget is derived from
+					    the live terminal height and the number of concurrent tools so
+					    the whole dynamic region stays under the viewport — otherwise
+					    Ink's `outputHeight >= rows` branch strands the spinner card in
+					    scrollback (see computeStdoutRowBudget). */}
 					{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
 						<Box key={callId} marginBottom={1}>
 							<ToolCallCard
@@ -403,6 +408,7 @@ export function ChatView({
 								startTime={startTime}
 								stdout={stdout}
 								terminalColumns={termColumns}
+								maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
 							/>
 						</Box>
 					))}
