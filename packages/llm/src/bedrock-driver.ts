@@ -24,13 +24,11 @@ import type { ModelMessage } from "ai";
 import {
 	ANTHROPIC_ENVELOPE,
 	BEDROCK_PERMISSIVE_ENVELOPE,
-	mapChunks,
-	mapError,
 	toModelMessages,
 	toToolSet,
 } from "./ai-sdk-bridge";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-import { createLoggingFetch } from "./fetch-logger";
+import { resolveProviderFetch, runProviderStream } from "./driver-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
 interface BedrockReasoningConfig {
@@ -212,11 +210,7 @@ export class BedrockDriver implements LLMBackend {
 			: undefined;
 		// Custom fetch takes precedence over logger-backed fetch. When both
 		// are absent the SDK uses its default fetch with zero overhead.
-		const customFetch =
-			config.fetch ??
-			(config.logger
-				? createLoggingFetch(config.logger, "bedrock", config.connectTimeoutMs)
-				: undefined);
+		const customFetch = resolveProviderFetch("bedrock", config);
 		this.provider = createAmazonBedrock({
 			region: config.region,
 			...(credentialProvider && { credentialProvider }),
@@ -278,34 +272,27 @@ export class BedrockDriver implements LLMBackend {
 		// Emit heartbeat immediately. Extended thinking can produce a 60s+ gap
 		// before the first content event, which would trip the relay silence
 		// timeout. This matches the legacy driver's messageStart behavior.
-		yield { type: "heartbeat" };
-
-		const result = streamText({
-			model: this.provider.languageModel(modelId),
-			messages,
-			...(tools && { tools }),
-			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-			// Reasoning requests disallow temperature on Anthropic; only set it
-			// when we're not in thinking mode. Mirrors the old validator gate.
-			...(params.temperature !== undefined &&
-				!reasoningConfig && { temperature: params.temperature }),
-			abortSignal: params.signal,
-			providerOptions: {
-				bedrock: {
-					...(reasoningConfig && { reasoningConfig }),
-				} as Record<string, unknown> as never,
-			},
+		yield* runProviderStream({
+			providerName: "bedrock",
+			stream: () =>
+				streamText({
+					model: this.provider.languageModel(modelId),
+					messages,
+					...(tools && { tools }),
+					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+					// Reasoning requests disallow temperature on Anthropic; only set it
+					// when we're not in thinking mode. Mirrors the old validator gate.
+					...(params.temperature !== undefined &&
+						!reasoningConfig && { temperature: params.temperature }),
+					abortSignal: params.signal,
+					providerOptions: {
+						bedrock: {
+							...(reasoningConfig && { reasoningConfig }),
+						} as Record<string, unknown> as never,
+					},
+				}).fullStream,
+			map: { usageProvider: "bedrock", estimateInputFromMessages: params.messages },
 		});
-
-		try {
-			yield* mapChunks(result.fullStream, {
-				usageProvider: "bedrock",
-				estimateInputFromMessages: params.messages,
-				providerName: "bedrock",
-			});
-		} catch (err) {
-			throw mapError(err, "bedrock");
-		}
 	}
 
 	capabilities(): BackendCapabilities {
