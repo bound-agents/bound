@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { Thread } from "@bound/shared";
+import type { ThreadDetail } from "@bound/client";
 import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
@@ -44,7 +44,7 @@ let agentActive = $state(false);
 let agentState = $state<string | null>(null);
 let uploadStatus = $state<string | null>(null);
 let pendingFile = $state<File | null>(null);
-let thread = $state<Thread | null>(null);
+let thread = $state<ThreadDetail | null>(null);
 let panelMode = $state<"context" | "debugger">("context");
 
 // Streaming state: accumulates partial text from the agent while it's generating.
@@ -314,6 +314,21 @@ function viewTitle(): string {
 	return "Conversation";
 }
 
+function getAttachedSessionHosts(): string[] {
+	return Array.isArray(thread?.attachedSessionHosts) ? thread.attachedSessionHosts : [];
+}
+
+function formatAttachedSessionLabel(hosts: string[]): string {
+	if (hosts.length === 0) return "";
+	if (hosts.length === 1) return hosts[0];
+	return `${hosts[0]} +${hosts.length - 1}`;
+}
+
+function attachedSessionTitle(hosts: string[]): string {
+	const plural = hosts.length === 1 ? "session" : "sessions";
+	return `Attached ${plural} on ${hosts.join(", ")}`;
+}
+
 const lineColor = $derived(thread ? getLineColor(thread.color) : "#999");
 const lineName = $derived(thread ? getLineName(thread.color) : "");
 
@@ -376,6 +391,13 @@ function turnPreview(content: string): string {
 			</div>
 			{#if thread}
 				<StatusChip status={agentActive ? "active" : "idle"} />
+				{@const attachedSessionHosts = getAttachedSessionHosts()}
+				{#if attachedSessionHosts.length > 0}
+					<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
+						<span class="session-dot"></span>
+						<span class="session-host">{formatAttachedSessionLabel(attachedSessionHosts)}</span>
+					</span>
+				{/if}
 			{/if}
 			{#if agentActive}
 				<span class="agent-state mono">
@@ -630,6 +652,36 @@ function turnPreview(content: string): string {
 		font-family: var(--font-mono);
 		font-size: 11.5px;
 		color: var(--ok);
+	}
+
+	.session-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		max-width: 160px;
+		padding: 3px 7px;
+		border: 1px solid color-mix(in srgb, var(--accent-blue) 38%, transparent);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+		color: var(--accent-blue);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.session-host {
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.session-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: currentColor;
+		box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+		flex-shrink: 0;
 	}
 
 	.body {

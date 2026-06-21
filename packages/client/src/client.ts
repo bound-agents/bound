@@ -31,6 +31,7 @@ import type {
 	RedactThreadResult,
 	SendMessageOptions,
 	TaskListEntry,
+	ThreadDetail,
 	ThreadListEntry,
 	ThreadStatus,
 	ToolCallRequest,
@@ -514,7 +515,7 @@ export class BoundClient {
 		return this.fetchJson("/api/mcp/threads", { method: "POST" });
 	}
 
-	async getThread(id: string): Promise<Thread> {
+	async getThread(id: string): Promise<ThreadDetail> {
 		return this.fetchJson(`/api/threads/${id}`);
 	}
 

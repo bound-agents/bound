@@ -12,6 +12,7 @@ export {
 // API-specific types
 export type {
 	ThreadListEntry,
+	ThreadDetail,
 	ThreadStatus,
 	CreateThreadOptions,
 	SendMessageOptions,

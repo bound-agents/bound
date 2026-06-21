@@ -258,4 +258,17 @@ describe("GET /api/threads cursor-based pagination", () => {
 		expect(attached?.attachedSessionHosts).toEqual(["Alpha Host", "Beta Host", "site-unknown"]);
 		expect(plain?.attachedSessionHosts).toEqual([]);
 	});
+
+	it("includes active attached-session host labels for single-thread fetch", async () => {
+		insertThread("t-attached", "2026-05-20T00:00:01Z");
+		attachSession("t-attached", "site-beta", "Beta Host");
+		attachSession("t-attached", "site-alpha", "Alpha Host");
+		attachSession("t-attached", "site-unknown");
+
+		const res = await app.fetch(new Request("http://localhost/t-attached"));
+		expect(res.status).toBe(200);
+		const thread = (await res.json()) as ListedThread;
+
+		expect(thread.attachedSessionHosts).toEqual(["Alpha Host", "Beta Host", "site-unknown"]);
+	});
 });
