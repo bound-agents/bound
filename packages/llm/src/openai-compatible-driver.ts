@@ -128,6 +128,21 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 			...(params.temperature !== undefined && { temperature: params.temperature }),
 			abortSignal: params.signal,
+			// Reasoning effort: @ai-sdk/openai-compatible maps `reasoningEffort`
+			// → `reasoning_effort` on the wire body (index.js:551) and routes it
+			// via `providerOptions[this.providerOptionsName]`, where
+			// `providerOptionsName` is derived from the `name` passed to
+			// createOpenAICompatible — which this driver sets to `this.providerName`
+			// (e.g. "zai" for z.AI). The SDK schema is free-form (z.string), so
+			// the full bound effort enum ("low".."max") passes through verbatim.
+			// Unlike the mantle OpenAI Responses path, z.AI accepts "max" natively,
+			// so no folding is needed. Unset → omitted, leaving the provider's
+			// server-side default (z.AI: thinking on, effort "max").
+			...(params.effort && {
+				providerOptions: {
+					[this.providerName]: { reasoningEffort: params.effort },
+				},
+			}),
 		});
 
 		try {

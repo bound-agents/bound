@@ -78,3 +78,71 @@ describe("OpenAICompatibleDriver custom headers", () => {
 		expect(seen?.headers.get("authorization")).toBe("Bearer sk-test");
 	});
 });
+
+describe("OpenAICompatibleDriver reasoning effort", () => {
+	it("threads params.effort into reasoning_effort on the wire body", async () => {
+		let seenBody: Record<string, unknown> | undefined;
+		const captureFetch: typeof fetch = async (_input, init) => {
+			seenBody = init?.body ? JSON.parse(init.body as string) : undefined;
+			return sseResponse();
+		};
+
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "https://example.test/v1",
+			apiKey: "sk-test",
+			model: "test-model",
+			contextWindow: 8192,
+			providerName: "zai",
+			fetch: captureFetch,
+		});
+
+		await drain(driver.chat({ ...baseParams, effort: "high" }));
+
+		expect(seenBody).toBeDefined();
+		expect(seenBody?.reasoning_effort).toBe("high");
+	});
+
+	it("passes 'max' straight through — z.ai supports it natively, unlike the mantle path", async () => {
+		let seenBody: Record<string, unknown> | undefined;
+		const captureFetch: typeof fetch = async (_input, init) => {
+			seenBody = init?.body ? JSON.parse(init.body as string) : undefined;
+			return sseResponse();
+		};
+
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "https://example.test/v1",
+			apiKey: "sk-test",
+			model: "test-model",
+			contextWindow: 8192,
+			providerName: "zai",
+			fetch: captureFetch,
+		});
+
+		await drain(driver.chat({ ...baseParams, effort: "max" }));
+
+		expect(seenBody).toBeDefined();
+		expect(seenBody?.reasoning_effort).toBe("max");
+	});
+
+	it("omits reasoning_effort entirely when effort is unset", async () => {
+		let seenBody: Record<string, unknown> | undefined;
+		const captureFetch: typeof fetch = async (_input, init) => {
+			seenBody = init?.body ? JSON.parse(init.body as string) : undefined;
+			return sseResponse();
+		};
+
+		const driver = new OpenAICompatibleDriver({
+			baseUrl: "https://example.test/v1",
+			apiKey: "sk-test",
+			model: "test-model",
+			contextWindow: 8192,
+			providerName: "zai",
+			fetch: captureFetch,
+		});
+
+		await drain(driver.chat(baseParams));
+
+		expect(seenBody).toBeDefined();
+		expect("reasoning_effort" in (seenBody ?? {})).toBe(false);
+	});
+});
