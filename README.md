@@ -1,6 +1,9 @@
 # Bound
 
-Bound is a personal agent that maintains state across multiple hosts. Messages, memory, files, and tasks replicate between a laptop and a cloud VM over an encrypted sync protocol, so every interface sees the same agent with the same context. Model selection is cluster-wide — inference is routed to the right backend and host automatically, with fallback. The scheduler runs tasks on cron schedules, time delays, or events; tasks can depend on one another and, in a cluster, run on exactly one host. The agent accumulates a knowledge graph across sessions that surfaces in context automatically. It can also propose advisories that wait for operator approval before any action is taken.
+Bound is a personal agent that maintains state across multiple hosts. Messages, memory, files, and tasks replicate between a laptop and a cloud VM over an encrypted sync protocol, so every interface sees the same agent with the same context. Model selection is cluster-wide — inference is routed to the right backend and host automatically, with fallback. The scheduler runs tasks on cron schedules, time delays, or events; tasks can depend on one another and, in a cluster, run on exactly one host. The agent accumulates a knowledge graph across sessions that surfaces in context automatically.
+
+![](docs/assets/promo_chat.png)
+![](docs/assets/promo_network.png)
 
 ## Prerequisites
 
