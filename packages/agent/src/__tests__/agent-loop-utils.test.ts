@@ -416,6 +416,25 @@ describe("isTransientLLMError", () => {
 		expect(isTransientLLMError(err)).toBe(true);
 	});
 
+	it("returns true for 'socket connection was closed unexpectedly'", () => {
+		const err = new Error("The socket connection was closed unexpectedly");
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
+	it("returns true for 'socket connection was closed' wrapped as a provider LLMError (zai)", () => {
+		// z.ai's undici transport closes mid-stream with this message. mapError
+		// wraps it as an LLMError with no HTTP status code — a connection that
+		// drops without a response is the textbook transient case.
+		const { LLMError } = require("@bound/llm");
+		const err = new LLMError(
+			"zai request failed: The socket connection was closed unexpectedly",
+			"zai",
+			undefined,
+			new Error("The socket connection was closed unexpectedly"),
+		);
+		expect(isTransientLLMError(err)).toBe(true);
+	});
+
 	it("returns false for 'not valid JSON' — this is a 400 client error, not transient", () => {
 		const err = new Error(
 			"Bedrock request failed: The model returned the following errors: The request body is not valid JSON.",
