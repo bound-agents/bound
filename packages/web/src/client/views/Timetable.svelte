@@ -9,6 +9,7 @@ import StatusChip from "../components/StatusChip.svelte";
 import TicketTab from "../components/TicketTab.svelte";
 import { client } from "../lib/bound";
 import { getLineColor } from "../lib/metro-lines";
+import { taskRoute } from "../lib/route-utils";
 import { navigateTo } from "../lib/router";
 import { sortTasks } from "../lib/task-sort";
 
@@ -250,6 +251,16 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 												? ` (${task.consecutive_failures} failures)`
 												: ""}
 										</span>
+									</div>
+									<div class="detail-row">
+										<span class="detail-kicker kicker">History</span>
+										<button
+											class="thread-link mono"
+											onclick={() => navigateTo(taskRoute(task.id))}
+										>
+											{task.no_history ? "disabled" : "enabled"}
+											<span>→</span>
+										</button>
 									</div>
 									<div class="detail-row">
 										<span class="detail-kicker kicker">Schedule</span>
