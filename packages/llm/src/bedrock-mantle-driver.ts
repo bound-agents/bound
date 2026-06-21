@@ -24,9 +24,12 @@
  *
  * Caching: mantle GPT-5.x caches automatically on the input prefix with no
  * markers, so the driver places no cache breakpoints (`cacheProvider: null`)
- * yet reports `prompt_caching: true`. Cached-token accounting rides the
- * existing bridge path — `extractUsage` reads `cachedInputTokens` into
- * `cache_read_tokens`, which the agent-loop folds into contextDebug.
+ * yet reports `prompt_caching: true`. It MUST also request
+ * `promptCacheRetention: "24h"` — gpt-5.5 doesn't support the `in_memory`
+ * default and caches nothing without it (see `buildMantleOpenAIOptions`).
+ * Cached-token accounting rides the existing bridge path — `extractUsage`
+ * reads `cachedInputTokens` into `cache_read_tokens`, which the agent-loop
+ * folds into contextDebug.
  */
 
 import { createOpenAI } from "@ai-sdk/openai";
@@ -99,9 +102,22 @@ function toReasoningEffort(
  * Forcing the flag restores it (`reasoning: { effort }` on the wire) and
  * flips the system prompt to the `developer` role reasoning models expect.
  *
- * `store: false` keeps the turn stateless — nothing persists on AWS's side
- * (the zero-retention requirement). Caching is prefix-based and needs no
- * stored response (#155).
+ * `store: false` keeps the turn stateless — the response object never
+ * persists on AWS's side (the zero-retention requirement). That governs the
+ * *response*; it does not, on its own, buy prompt caching.
+ *
+ * `promptCacheRetention: "24h"` is what actually engages the cache for this
+ * model. Per OpenAI's prompt-caching guide, gpt-5.5 / -pro (and all future
+ * models) do NOT support the `in_memory` retention policy — only `24h` — and
+ * a request that omits the parameter falls to an `in_memory` default the model
+ * can't honor, so it caches nothing. Verified live against the mantle endpoint
+ * (issue #155): `store:false` with no retention reports `cached_tokens: 0`
+ * across repeated identical prefixes; `store:false` + `"24h"` reports cache
+ * hits. Extended retention is explicitly ZDR-clean — only the prompt's
+ * key/value tensors persist (≤24h, GPU-local), never the response, and the
+ * guide states extended-retention requests are not blocked under Zero Data
+ * Retention (which bars `store:true`, not the cache). So this pairs the two:
+ * stateless response, cached prefix.
  */
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
@@ -109,6 +125,7 @@ export function buildMantleOpenAIOptions(
 	const reasoningEffort = toReasoningEffort(effort);
 	return {
 		store: false,
+		promptCacheRetention: "24h",
 		forceReasoning: true,
 		...(reasoningEffort && { reasoningEffort }),
 	};

@@ -86,6 +86,22 @@ describe("buildMantleOpenAIOptions", () => {
 		expect(opts.store).toBe(false);
 	});
 
+	// gpt-5.5 does not support the in_memory cache-retention policy at all — per
+	// OpenAI's prompt-caching guide, only "24h" is offered for gpt-5.5/-pro and
+	// future models, and a request that omits the parameter falls to an
+	// in_memory default the model can't honor, caching nothing. Verified live
+	// against the mantle endpoint: store:false with no retention → cached_tokens
+	// flat 0 across repeated identical prefixes; store:false + "24h" → cache
+	// hits. Extended retention is explicitly permitted under Zero Data Retention
+	// (only key/value tensors persist, ≤24h; never store:true), so this is the
+	// ZDR-clean lever for recovering cache reads on this model.
+	it("requests 24h prompt-cache retention (the only policy gpt-5.5 supports)", () => {
+		const opts = buildMantleOpenAIOptions("high");
+		expect(opts.promptCacheRetention).toBe("24h");
+		// still stateless — retention caches the prompt prefix, not the response
+		expect(opts.store).toBe(false);
+	});
+
 	it("maps a supported effort straight through to reasoningEffort", () => {
 		expect(buildMantleOpenAIOptions("medium").reasoningEffort).toBe("medium");
 		expect(buildMantleOpenAIOptions("high").reasoningEffort).toBe("high");
