@@ -1595,7 +1595,7 @@ describe("ClientConnection type and WS message schemas", () => {
 			handler.cleanup();
 		});
 
-		it("should merge tools from multiple connections", () => {
+		it("should evict earlier tool-bearing connection when new one subscribes to same thread", () => {
 			const eventBus = new TypedEventEmitter();
 			const handler = createWebSocketHandler(eventBus);
 
@@ -1659,8 +1659,8 @@ describe("ClientConnection type and WS message schemas", () => {
 
 			// Query registry  should have both tools
 			const tools = handler.registry.getClientToolsForThread("thread-1");
-			expect(tools.size).toBe(2);
-			expect(tools.has("tool_a")).toBe(true);
+			expect(tools.size).toBe(1);
+			expect(tools.has("tool_a")).toBe(false);
 			expect(tools.has("tool_b")).toBe(true);
 
 			handler.cleanup();
@@ -2477,7 +2477,7 @@ describe("issue #189: single tool-bearing session per thread (eviction)", () => 
 		configureTools(handler, ws1, ["boundless_read"]);
 		expect(sessionsFor(db, "thread-1")).toBe(1);
 
-		// New connection configures tools first, then subscribes — eviction must
+		// New connection configures tools first, then subscribes  eviction must
 		// fire on the subscribe path too.
 		const ws2 = openWs(handler);
 		configureTools(handler, ws2, ["boundless_read"]);
