@@ -2391,12 +2391,17 @@ This skill reviews pull requests.`;
 
 			const userMsg = messages.find((m) => m.role === "user");
 			expect(userMsg).toBeDefined();
-			// Content should be parsed into ContentBlock[] array, not left as JSON string
+			// Content should be parsed into ContentBlock[] array, then wrapped
+			// in the <user-message> envelope: [open-text, orig-text, image, close-text].
 			expect(Array.isArray(userMsg?.content)).toBe(true);
 			const blocks = userMsg?.content as Array<{ type: string; [k: string]: unknown }>;
-			expect(blocks.length).toBe(2);
+			expect(blocks.length).toBe(4);
 			expect(blocks[0].type).toBe("text");
-			expect(blocks[1].type).toBe("image");
+			expect((blocks[0] as { text: string }).text).toMatch(/^<user-message sent=/);
+			expect(blocks[1].type).toBe("text");
+			expect(blocks[2].type).toBe("image");
+			expect(blocks[3].type).toBe("text");
+			expect((blocks[3] as { text: string }).text).toBe("</user-message>");
 		});
 
 		it("leaves plain text content as string", () => {
@@ -2514,13 +2519,14 @@ This skill reviews pull requests.`;
 			const userMsgs = messages.filter((m) => m.role === "user");
 			expect(userMsgs.length).toBe(2);
 
-			// First message should have absolute timestamp annotation (not relative)
-			expect(userMsgs[0].content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
+			// First message should be wrapped in the envelope carrying an
+			// absolute send time (not relative).
+			expect(userMsgs[0].content).toMatch(/^<user-message sent="[^"]*\d{1,2}:\d{2} UTC[^"]*">/);
 			expect(userMsgs[0].content).not.toContain("ago");
 			expect(userMsgs[0].content).toContain("Hello from the past");
 
-			// Second message should also have absolute timestamp annotation
-			expect(userMsgs[1].content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
+			// Second message should also be enveloped with an absolute send time.
+			expect(userMsgs[1].content).toMatch(/^<user-message sent="[^"]*\d{1,2}:\d{2} UTC[^"]*">/);
 			expect(userMsgs[1].content).not.toContain("ago");
 			expect(userMsgs[1].content).toContain("Hello from recently");
 		});
@@ -2653,9 +2659,9 @@ This skill reviews pull requests.`;
 				userId,
 			});
 
-			// User message should be annotated
+			// User message should be enveloped
 			const userMsg = messages.find((m) => m.role === "user");
-			expect(userMsg?.content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
+			expect(userMsg?.content).toMatch(/^<user-message sent="[^"]*\d{1,2}:\d{2} UTC[^"]*">/);
 
 			// Assistant message should NOT be annotated (avoids LLM echo pattern)
 			const assistantMsg = messages.find((m) => m.role === "assistant");

@@ -372,11 +372,15 @@ describe("context assembly content substitution", () => {
 
 		const userMsg = userMessages[0];
 		if (Array.isArray(userMsg.content)) {
-			// Should have a text block placeholder
-			const textBlocks = userMsg.content.filter((b: ContentBlock) => b.type === "text");
+			// Should have a text-block placeholder somewhere among the blocks.
+			// The user message is wrapped in a <user-message> envelope (Stage 5),
+			// so block[0] is the envelope open tag and the placeholder sits after it.
+			const textBlocks = userMsg.content.filter((b: ContentBlock) => b.type === "text") as Array<{
+				text: string;
+			}>;
 			expect(textBlocks.length).toBeGreaterThan(0);
-			const placeholder = textBlocks[0] as { text: string };
-			expect(placeholder.text).toContain("[Image file unavailable:");
+			const placeholder = textBlocks.find((b) => b.text.includes("[Image file unavailable:"));
+			expect(placeholder).toBeDefined();
 		}
 	});
 
