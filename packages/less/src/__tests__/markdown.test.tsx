@@ -51,16 +51,15 @@ describe("Markdown", () => {
 			expect(frame).not.toContain("*italic*");
 		});
 
-		it("renders inline code with backtick markers", async () => {
+		it("renders inline code without backtick markers", async () => {
 			const { lastFrame } = render(
 				React.createElement(Markdown, { text: "run `npm install` now" }),
 			);
 			await tick();
 			const frame = lastFrame();
 			expect(frame).toContain("npm install");
-			// The backticks should be replaced with visual markers
-			expect(frame).toContain("`");
-			expect(frame).not.toContain("``");
+			// The backticks are dropped entirely — the color is the affordance.
+			expect(frame).not.toContain("`");
 		});
 
 		it("renders links showing text and URL", async () => {
