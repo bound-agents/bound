@@ -7,6 +7,8 @@ import type { AgentFile, MemoryTier, Message, Task, Thread, WsStreamChunk } from
 export interface ThreadListEntry extends Thread {
 	messageCount: number;
 	lastModel: string | null;
+	/** Host display names for live boundless / external client sessions attached to this thread. */
+	attachedSessionHosts: string[];
 	/** Whether the thread currently has an active agent loop or running task.
 	 *  Server-side derived so clients don't need to poll /status per-thread. */
 	active: boolean;

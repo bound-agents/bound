@@ -10,6 +10,7 @@ type ListedThread = {
 	last_message_at: string;
 	messageCount: number;
 	active: boolean;
+	attachedSessionHosts: string[];
 };
 
 describe("GET /api/threads cursor-based pagination", () => {
@@ -57,6 +58,18 @@ describe("GET /api/threads cursor-based pagination", () => {
 		const header = res.headers.get("X-Total-Count");
 		expect(header).not.toBeNull();
 		return Number.parseInt(header as string, 10);
+	}
+
+	function attachSession(threadId: string, siteId: string, hostName?: string): void {
+		const now = "2026-05-20T00:30:00Z";
+		if (hostName) {
+			db.prepare(
+				"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+			).run(siteId, hostName, now, now);
+		}
+		db.prepare(
+			"INSERT INTO client_sessions (id, connection_id, thread_id, site_id, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, 0)",
+		).run(`${siteId}::${threadId}`, `conn-${siteId}`, threadId, siteId, now, now);
 	}
 
 	it("respects ?limit=N and returns the most-recent N", async () => {
@@ -229,5 +242,20 @@ describe("GET /api/threads cursor-based pagination", () => {
 			// include_empty surfaces all 4.
 			expect(await fetchTotalCount("?include_empty=true")).toBe(4);
 		});
+	});
+
+	it("includes active attached-session host labels", async () => {
+		insertThread("t-attached", "2026-05-20T00:00:01Z");
+		insertThread("t-plain", "2026-05-20T00:00:02Z");
+		attachSession("t-attached", "site-beta", "Beta Host");
+		attachSession("t-attached", "site-alpha", "Alpha Host");
+		attachSession("t-attached", "site-unknown");
+
+		const threads = await fetchPage("?limit=10");
+		const attached = threads.find((t) => t.id === "t-attached");
+		const plain = threads.find((t) => t.id === "t-plain");
+
+		expect(attached?.attachedSessionHosts).toEqual(["Alpha Host", "Beta Host", "site-unknown"]);
+		expect(plain?.attachedSessionHosts).toEqual([]);
 	});
 });

@@ -68,6 +68,17 @@ export function createThreadsRoutes(
 				SELECT t.*,
 					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
 					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.created_at DESC LIMIT 1) as lastModel,
+					(
+						SELECT COALESCE(json_group_array(label), '[]')
+						FROM (
+							SELECT COALESCE(h.host_name, cs.site_id) as label
+							FROM client_sessions cs
+							LEFT JOIN hosts h ON h.site_id = cs.site_id AND h.deleted = 0
+							WHERE cs.thread_id = t.id AND cs.deleted = 0
+							GROUP BY cs.site_id, label
+							ORDER BY label ASC
+						)
+					) as attachedSessionHostsJson,
 					EXISTS(
 						SELECT 1 FROM tasks
 						WHERE thread_id = t.id AND status = 'running' AND deleted = 0
@@ -95,7 +106,12 @@ export function createThreadsRoutes(
 			}
 
 			const threads = db.query(sql).all(...params) as Array<
-				Thread & { messageCount: number; lastModel: string | null; hasRunningTask: number }
+				Thread & {
+					messageCount: number;
+					lastModel: string | null;
+					attachedSessionHostsJson: string | null;
+					hasRunningTask: number;
+				}
 			>;
 
 			// Decorate each thread with `active` using the same logic as the
@@ -110,8 +126,19 @@ export function createThreadsRoutes(
 					!!t.hasRunningTask ||
 					forwarded?.status === "thinking" ||
 					forwarded?.status === "tool_call";
-				const { hasRunningTask: _, ...rest } = t;
-				return { ...rest, active };
+				const { hasRunningTask: _, attachedSessionHostsJson, ...rest } = t;
+				let attachedSessionHosts: string[] = [];
+				try {
+					const parsed = JSON.parse(attachedSessionHostsJson ?? "[]");
+					if (Array.isArray(parsed)) {
+						attachedSessionHosts = parsed.filter(
+							(host): host is string => typeof host === "string",
+						);
+					}
+				} catch {
+					attachedSessionHosts = [];
+				}
+				return { ...rest, attachedSessionHosts, active };
 			});
 
 			// Total count of threads matching the same filter, independent of
