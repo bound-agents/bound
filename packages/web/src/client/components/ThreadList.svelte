@@ -70,6 +70,21 @@ function makeActivity(seed: string, messageCount: number): number[] {
 	return out;
 }
 
+function getAttachedSessionHosts(thread: ThreadListEntry): string[] {
+	return Array.isArray(thread.attachedSessionHosts) ? thread.attachedSessionHosts : [];
+}
+
+function formatAttachedSessionLabel(hosts: string[]): string {
+	if (hosts.length === 0) return "";
+	if (hosts.length === 1) return hosts[0];
+	return `${hosts[0]} +${hosts.length - 1}`;
+}
+
+function attachedSessionTitle(hosts: string[]): string {
+	const plural = hosts.length === 1 ? "session" : "sessions";
+	return `Attached ${plural} on ${hosts.join(", ")}`;
+}
+
 // Virtualization: flatten group headers + thread cards into a single linear
 // list of `Item`s, then only render the slice currently visible inside the
 // scroll container. With ~325 threads this drops DOM node count from ~5000
@@ -239,6 +254,13 @@ onMount(() => {
 								<LineBadge lineIndex={thread.color} size="compact" />
 								<span class="line-name">{getLineName(thread.color)}</span>
 								<span class="thread-id mono">{thread.id.slice(0, 8)}</span>
+								{@const attachedSessionHosts = getAttachedSessionHosts(thread)}
+								{#if attachedSessionHosts.length > 0}
+									<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
+										<span class="session-dot"></span>
+										<span class="session-host">{formatAttachedSessionLabel(attachedSessionHosts)}</span>
+									</span>
+								{/if}
 								<div class="spacer"></div>
 								<span class="relative-time tnum">
 									{formatRelativeTime(thread.last_message_at)}
@@ -387,6 +409,36 @@ onMount(() => {
 		font-size: 10.5px;
 		color: var(--ink-4);
 		letter-spacing: 0.04em;
+	}
+
+	.session-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		max-width: 120px;
+		padding: 2px 6px;
+		border: 1px solid color-mix(in srgb, var(--accent-blue) 38%, transparent);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+		color: var(--accent-blue);
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.session-host {
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.session-dot {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: currentColor;
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 18%, transparent);
+		flex: 0 0 auto;
 	}
 
 	.spacer {
