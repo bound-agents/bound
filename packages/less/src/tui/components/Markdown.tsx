@@ -479,10 +479,34 @@ export function Markdown({ text, width }: MarkdownProps): React.ReactElement {
 		return <Text>{""}</Text>;
 	}
 
+	// Insert a blank line ONLY between two rendered blocks that the author
+	// separated with a blank line (a `space` token). Tracking position here —
+	// rather than rendering `space` as a blank line in renderBlock — is what
+	// keeps leading/trailing `space` tokens (marked emits them for blank lines
+	// at the very start/end of the input) from stranding stray blank rows above
+	// or below the message. Consecutive blanks collapse to one `space` token, so
+	// the gap is always exactly one row regardless of how many blanks were typed.
 	const tokens = Lexer.lex(text);
-	const blocks = tokens
-		.map((token, index) => renderBlock(token, index, width))
-		.filter((el): el is React.ReactElement => el !== null);
+	const blocks: React.ReactElement[] = [];
+	let pendingGap = false;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index];
+		if (token.type === "space") {
+			if (blocks.length > 0) {
+				pendingGap = true;
+			}
+			continue;
+		}
+		const el = renderBlock(token, index, width);
+		if (el === null) {
+			continue;
+		}
+		if (pendingGap) {
+			blocks.push(<Text key={`gap-${index}`}> </Text>);
+			pendingGap = false;
+		}
+		blocks.push(el);
+	}
 
 	if (blocks.length === 0) {
 		return <Text>{""}</Text>;

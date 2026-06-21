@@ -58,4 +58,48 @@ describe("Markdown — formatting tweaks", () => {
 		// No blank line anywhere (no authored newline → nothing to double).
 		expect(frame).not.toMatch(/\S\s*\n\s*\n\s*\S/);
 	});
+
+	it("puts a single blank line between two paragraphs", () => {
+		const { lastFrame } = render(
+			React.createElement(Markdown, {
+				text: "Para one.\n\nPara two.",
+				width: 60,
+			}),
+		);
+		const frame = stripSgr(lastFrame() ?? "");
+		expect(frame).toMatch(/Para one\.\n\s*\nPara two\./);
+	});
+
+	it("collapses 3+ blank lines between paragraphs to a single gap", () => {
+		// marked emits one `space` token regardless of how many blank lines were
+		// typed, so the gap is always exactly one row.
+		const { lastFrame } = render(
+			React.createElement(Markdown, {
+				text: "Para one.\n\n\n\nPara two.",
+				width: 60,
+			}),
+		);
+		const frame = stripSgr(lastFrame() ?? "");
+		expect(frame).toMatch(/Para one\.\n\s*\nPara two\./);
+		// Not two blank rows.
+		expect(frame).not.toMatch(/Para one\.\n\s*\n\s*\nPara two\./);
+	});
+
+	it("does not strand a blank row from a trailing blank line", () => {
+		// marked emits a trailing `space` token for "Para.\n\n"; the positional
+		// walker must not turn it into a stray blank row below the message.
+		const { lastFrame } = render(
+			React.createElement(Markdown, { text: "Only para.\n\n", width: 60 }),
+		);
+		const frame = stripSgr(lastFrame() ?? "");
+		expect(frame).toBe("Only para.");
+	});
+
+	it("does not strand a blank row from a leading blank line", () => {
+		const { lastFrame } = render(
+			React.createElement(Markdown, { text: "\n\nOnly para.", width: 60 }),
+		);
+		const frame = stripSgr(lastFrame() ?? "");
+		expect(frame).toBe("Only para.");
+	});
 });
