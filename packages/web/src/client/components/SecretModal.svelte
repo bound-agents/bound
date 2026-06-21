@@ -39,7 +39,7 @@ function handleBackdropClick(): void {
 }
 </script>
 
-<div class="modal-backdrop" onkeydown={handleKeydown}>
+<div class="modal-backdrop" onkeydown={handleKeydown} role="presentation">
 	<button
 		class="backdrop-close"
 		onclick={() => {

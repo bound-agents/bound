@@ -67,6 +67,7 @@ import {
 import { buildStaticSystemParts } from "./system-parts";
 import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
+import { collectThreadPinnedSkills } from "./tools/skill-utils";
 import { buildVaryingPrefix } from "./varying-prefix";
 import { computeRecentWindow } from "./warm-compaction";
 
@@ -1003,9 +1004,9 @@ export function estimateContentLength(content: string | ContentBlock[]): number 
  * Historically this read `config/persona.md` off disk and memoized per
  * configDir. That diverged silently across the cluster: a relayed turn
  * assembled on a peer used the peer's file, not the editing host's. The
- * persona now lives as a single synced LWW row (seeded once from the file at
- * boot — see `initSandbox`), so an edit on any host — via `boundctl
- * set-persona` or `POST /api/persona` — propagates everywhere.
+ * persona now lives as a single synced LWW row, set via `boundctl
+ * set-persona` or `POST /api/persona`, so an edit on any host propagates
+ * everywhere.
  *
  * No cache by design: the source is a one-row primary-key lookup on the local
  * SQLite, cheaper than the file `stat`+read it replaces, and memoizing a
@@ -1049,6 +1050,21 @@ function formatUtcOffset(offsetMinutes: number): string {
  *   "[Jun 5, 18:38 UTC-04:00]". The year-variant check uses the shifted (local) year.
  */
 export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): string {
+	return `[${formatInstant(isoTimestamp, offsetMinutes)}]`;
+}
+
+/**
+ * The bracket-free instant string used by {@link formatTimestamp} and by the
+ * Stage 5 user-message envelope's `sent` attribute (see annotation/annotate.ts).
+ * Same determinism guarantee: output is a pure function of (isoTimestamp,
+ * offsetMinutes), so it never varies between turns and preserves the
+ * byte-stable annotation rule.
+ *
+ * Without an offset, components are read in UTC: same-year "Apr 4, 14:30 UTC",
+ * different year "Jan 15 '25, 09:45 UTC". With `offsetMinutes` the instant is
+ * shifted into the sender's local wall-clock and a `UTC±HH:MM` suffix appended.
+ */
+export function formatInstant(isoTimestamp: string, offsetMinutes?: number): string {
 	const utc = new Date(isoTimestamp);
 	const hasOffset = typeof offsetMinutes === "number" && Number.isFinite(offsetMinutes);
 	// Shift to the sender's local wall-clock, then read UTC components off the
@@ -1069,10 +1085,10 @@ export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): s
 	const currentYear = new Date().getUTCFullYear();
 	if (d.getUTCFullYear() !== currentYear) {
 		const yearShort = String(d.getUTCFullYear()).slice(-2);
-		return `[${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}]`;
+		return `${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}`;
 	}
 
-	return `[${month} ${day}, ${hours}:${minutes}${suffix}]`;
+	return `${month} ${day}, ${hours}:${minutes}${suffix}`;
 }
 
 /**
@@ -1258,14 +1274,28 @@ Original output was too large for the context window. If you need the full conte
 	const messagesAfterPurge = substitutePurgedMessages({ messages, threadId });
 	stage2Span.end();
 
-	// Stage 2.5: NON-LLM ROLE FILTERING
-	// Drop non-LLM-compatible roles before Stage 3 sanitizer runs. Per
-	// Invariant #19, role='system' must never be persisted into the messages
-	// table — insertRow() enforces this at the write boundary. Any row
-	// reaching this filter with role='system' is legacy/corrupt data; drop it.
+	// Stage 2.5: NON-LLM ROLE HANDLING
+	// Two roles are genuinely non-LLM and get dropped: 'purge' (a tombstone
+	// consumed by Stage 2 substitution, never shown) and 'system' (forbidden in
+	// the messages table per Invariant #19 — any row here is legacy/corrupt).
+	//
+	// 'alert' is different. Alert rows (non-retryable inference failures, fatal
+	// loop errors — see emitAlert in agent-loop.ts) render inline in the
+	// conversation on every human-facing surface, so dropping them from the
+	// agent's context creates an asymmetry: the operator can point to an error
+	// the agent cannot see on the next turn. Instead, surface them in place as
+	// developer-role messages (Invariant #9 — 'alert' is not a wire role;
+	// Invariant #19 — 'developer' is the role for injected system context). The
+	// label keeps them distinguishable from operator-authored developer context.
 	const stage2_5Span = getTracer().startSpan("context.stage-2.5-role-filtering");
-	const NON_LLM_ROLES = new Set(["alert", "purge", "system"]);
-	const messagesFiltered = messagesAfterPurge.filter((m) => !NON_LLM_ROLES.has(m.role));
+	const DROP_ROLES = new Set(["purge", "system"]);
+	const messagesFiltered = messagesAfterPurge
+		.filter((m) => !DROP_ROLES.has(m.role))
+		.map((m): Message => {
+			if (m.role !== "alert") return m;
+			const labeled = typeof m.content === "string" ? `[system alert] ${m.content}` : m.content;
+			return { ...m, role: "developer", content: labeled };
+		});
 	stage2_5Span.end();
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
@@ -1334,6 +1364,14 @@ Original output was too large for the context window. If you need the full conte
 	const systemPartCountBeforeSkill = systemParts.length;
 
 	let inactiveSkillRef: string | undefined;
+	// Determinant of the thread's pinned-skill set, folded into the input
+	// fingerprint below so a `deactivate` (which writes no stable-side row)
+	// is classified as benign `collect` drift rather than a spurious
+	// `compose` leak. Undefined when nothing is pinned. Issue #173.
+	let pinnedSkillsFingerprint: string | undefined;
+	// The skill injected via the task payload (if any), excluded from the
+	// thread-pinned block below so it is not duplicated.
+	let taskReferencedSkillName: string | undefined;
 
 	// Inject task-referenced skill body into system prompt
 	// Must be outside the !noHistory guard so it works when noHistory = true
@@ -1377,6 +1415,7 @@ Original output was too large for the context window. If you need the full conte
 
 						if (skillMdRow?.content) {
 							systemParts.push(skillMdRow.content);
+							taskReferencedSkillName = skillName;
 						}
 					} else {
 						// Skill referenced but not active — note will appear in volatile context
@@ -1386,6 +1425,23 @@ Original output was too large for the context window. If you need the full conte
 			}
 		} catch (_error) {
 			// Non-fatal: skip skill body injection on any error
+		}
+	}
+
+	// Inject thread-pinned activated skills (issue #173). Aggressive
+	// context-slicing drops activated skills out of the rolling window; pinning
+	// their SKILL.md bodies into the stable prefix keeps them in context across
+	// cold rebuilds. Gated to history threads — noHistory tasks rely on the
+	// task-referenced skill above and intentionally carry minimal context.
+	if (!noHistory && threadId) {
+		try {
+			const pinned = collectThreadPinnedSkills(db, threadId, taskReferencedSkillName);
+			if (pinned.block) {
+				systemParts.push(pinned.block);
+				pinnedSkillsFingerprint = pinned.fingerprint;
+			}
+		} catch (_error) {
+			// Non-fatal: skip pinned-skill injection on any error
 		}
 	}
 
@@ -1402,9 +1458,12 @@ Original output was too large for the context window. If you need the full conte
 		.reduce((sum, part) => sum + countTokens(part), 0);
 	sections.push({ name: "system", tokens: systemTokens });
 
-	// Track skill section if a skill part was added
+	// Track skill section if any skill parts were added (task-referenced body
+	// and/or thread-pinned bodies). Sum all of them, not just the last.
 	if (systemParts.length > systemPartCountBeforeSkill) {
-		const skillTokens = countTokens(systemParts[systemParts.length - 1]);
+		const skillTokens = systemParts
+			.slice(systemPartCountBeforeSkill)
+			.reduce((sum, part) => sum + countTokens(part), 0);
 		if (skillTokens > 0) {
 			sections.push({ name: "skill-context", tokens: skillTokens });
 		}
@@ -1534,6 +1593,16 @@ Original output was too large for the context window. If you need the full conte
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
+		// Fold the thread-pinned skill determinant into the input fingerprint.
+		// A `deactivate` writes no stable-side row and doesn't move the skill
+		// index, so without this it would surface as a spurious `compose` leak
+		// (same fingerprint, different system-prompt bytes). Folding the
+		// determinant shifts the fingerprint instead, classifying the change as
+		// benign `collect` drift — the soft arm that already tolerates
+		// `last_accessed_at`-style uncovered shifts. Issue #173.
+		if (pinnedSkillsFingerprint && stablePrefixInputFingerprint) {
+			stablePrefixInputFingerprint = `${stablePrefixInputFingerprint}+skp:${pinnedSkillsFingerprint}`;
+		}
 		relevantMemoryDebug = volatileCtx.relevantMemory;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into

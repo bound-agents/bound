@@ -17,14 +17,8 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import {
-	PERMISSIVE_ENVELOPE,
-	mapChunks,
-	mapError,
-	toModelMessages,
-	toToolSet,
-} from "./ai-sdk-bridge";
-import { createLoggingFetch } from "./fetch-logger";
+import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "./ai-sdk-bridge";
+import { resolveProviderFetch, runProviderStream } from "./driver-utils";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
 export class OpenAICompatibleDriver implements LLMBackend {
@@ -75,11 +69,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
 		this.providerName = config.providerName ?? "openai-compatible";
-		const customFetch =
-			config.fetch ??
-			(config.logger
-				? createLoggingFetch(config.logger, this.providerName, config.connectTimeoutMs)
-				: undefined);
+		const customFetch = resolveProviderFetch(this.providerName, config);
 		this.provider = createOpenAICompatible({
 			name: this.providerName,
 			baseURL: config.baseUrl,
@@ -118,26 +108,35 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		});
 		const tools = toToolSet(params.tools);
 
-		yield { type: "heartbeat" };
-
-		const result = streamText({
-			model: this.provider.chatModel(modelId),
-			messages,
-			...(params.system && { system: params.system }),
-			...(tools && { tools }),
-			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-			...(params.temperature !== undefined && { temperature: params.temperature }),
-			abortSignal: params.signal,
+		yield* runProviderStream({
+			providerName: this.providerName,
+			stream: () =>
+				streamText({
+					model: this.provider.chatModel(modelId),
+					messages,
+					...(params.system && { system: params.system }),
+					...(tools && { tools }),
+					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+					...(params.temperature !== undefined && { temperature: params.temperature }),
+					abortSignal: params.signal,
+					// Reasoning effort: @ai-sdk/openai-compatible maps `reasoningEffort`
+					// → `reasoning_effort` on the wire body (index.js:551) and routes it
+					// via `providerOptions[this.providerOptionsName]`, where
+					// `providerOptionsName` is derived from the `name` passed to
+					// createOpenAICompatible — which this driver sets to `this.providerName`
+					// (e.g. "zai" for z.AI). The SDK schema is free-form (z.string), so
+					// the full bound effort enum ("low".."max") passes through verbatim.
+					// Unlike the mantle OpenAI Responses path, z.AI accepts "max" natively,
+					// so no folding is needed. Unset → omitted, leaving the provider's
+					// server-side default (z.AI: thinking on, effort "max").
+					...(params.effort && {
+						providerOptions: {
+							[this.providerName]: { reasoningEffort: params.effort },
+						},
+					}),
+				}).fullStream,
+			map: { estimateInputFromMessages: params.messages },
 		});
-
-		try {
-			yield* mapChunks(result.fullStream, {
-				estimateInputFromMessages: params.messages,
-				providerName: this.providerName,
-			});
-		} catch (err) {
-			throw mapError(err, this.providerName);
-		}
 	}
 
 	capabilities(): BackendCapabilities {

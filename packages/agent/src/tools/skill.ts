@@ -7,8 +7,10 @@ import { MAX_SKILL_NAME_LENGTH, SKILL_NAME_REGEX, importSkillFromFiles } from ".
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 const skillSchema = z.object({
-	action: z.enum(["activate", "list", "read", "retire"]).describe("Skill operation to perform"),
-	name: z.string().optional().describe("Skill name (for activate, read, retire)"),
+	action: z
+		.enum(["activate", "list", "read", "deactivate", "retire"])
+		.describe("Skill operation to perform"),
+	name: z.string().optional().describe("Skill name (for activate, read, deactivate, retire)"),
 	status: z.enum(["active", "retired"]).optional().describe("Filter by status (for list)"),
 	verbose: z.boolean().optional().describe("Show extra columns (for list)"),
 	reason: z.string().optional().describe("Reason for retiring (for retire)"),
@@ -23,7 +25,7 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 			type: "function",
 			function: {
 				name: "skill",
-				description: "Manage skills: activate, list, read, or retire",
+				description: "Manage skills: activate, list, read, deactivate, or retire",
 				parameters: jsonSchema,
 			},
 		},
@@ -38,6 +40,12 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 				case "activate":
 				case "retire":
 					return { idempotent: true, readOnly: false };
+				case "deactivate":
+					// No DB mutation — the deactivation is observed from this
+					// thread's tool-call log at the next context rebuild. Not
+					// readOnly: false would let dedup collapse repeated calls,
+					// but it writes nothing, so mark readOnly true / idempotent.
+					return { idempotent: true, readOnly: true };
 				default:
 					return {};
 			}
@@ -55,10 +63,12 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 						return await handleList(ctx, input);
 					case "read":
 						return await handleRead(ctx, input);
+					case "deactivate":
+						return await handleDeactivate(ctx, input);
 					case "retire":
 						return await handleRetire(ctx, input);
 					default:
-						return `Error: Invalid action '${input.action}'. Valid actions: activate, list, read, retire`;
+						return `Error: Invalid action '${input.action}'. Valid actions: activate, list, read, deactivate, retire`;
 				}
 			} catch (error) {
 				return `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -251,6 +261,32 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 	].join("\n");
 
 	return `${header}${skillMdContent}`;
+}
+
+async function handleDeactivate(
+	ctx: ToolContext,
+	input: z.infer<typeof skillSchema>,
+): Promise<string> {
+	if (!input.name) {
+		return "Error: 'name' is required for deactivate action";
+	}
+	if (!SKILL_NAME_REGEX.test(input.name)) {
+		return `Error: Invalid skill name '${input.name}': must be lowercase alphanumeric with single hyphens`;
+	}
+
+	// Deactivation is a per-thread, context-retention concern. It writes no row:
+	// the next context rebuild observes this tool call in the thread's log and
+	// drops the skill from the pinned-skill block in the system prompt. The
+	// global skill status is untouched (use `retire` for that). Issue #173.
+	const skill = ctx.db
+		.prepare("SELECT status FROM skills WHERE name = ? AND deleted = 0")
+		.get(input.name) as { status: string } | null;
+
+	if (!skill) {
+		return `Skill '${input.name}' not found; nothing to deactivate.`;
+	}
+
+	return `Skill '${input.name}' deactivated for this thread. Its instructions will no longer be pinned to your system prompt on the next context rebuild. Re-run \`skill\` activate to pin it again.`;
 }
 
 async function handleRetire(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {

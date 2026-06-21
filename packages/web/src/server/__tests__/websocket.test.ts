@@ -191,6 +191,103 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
+	describe("client-session affinity rows", () => {
+		it("does not record tool-less subscriptions as client sessions", async () => {
+			const { applySchema, createDatabase } = await import("@bound/core");
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "site-a",
+				defaultUserId: "test-user",
+			});
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+
+			const row = db
+				.query("SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND deleted = 0")
+				.get("thread-1") as { count: number };
+			expect(row.count).toBe(0);
+
+			testHandler.cleanup();
+			db.close();
+		});
+
+		it("records a session when tools are configured after subscribing", async () => {
+			const { applySchema, createDatabase } = await import("@bound/core");
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "site-a",
+				defaultUserId: "test-user",
+			});
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "thread:subscribe",
+					thread_id: "thread-1",
+				}),
+			);
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: {
+								name: "boundless_read",
+								description: "Read a file",
+								parameters: { type: "object" },
+							},
+						},
+					],
+				}),
+			);
+
+			let row = db
+				.query(
+					"SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND site_id = ? AND deleted = 0",
+				)
+				.get("thread-1", "site-a") as { count: number };
+			expect(row.count).toBe(1);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [],
+				}),
+			);
+
+			row = db
+				.query(
+					"SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND site_id = ? AND deleted = 0",
+				)
+				.get("thread-1", "site-a") as { count: number };
+			expect(row.count).toBe(0);
+
+			testHandler.cleanup();
+			db.close();
+		});
+	});
+
 	describe("WS message schemas - tool:result", () => {
 		it("should accept valid tool:result", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
@@ -951,7 +1048,7 @@ describe("ClientConnection type and WS message schemas", () => {
 					call_id: "call-123",
 					thread_id: "thread-123",
 					content: "Edited file.ts: replaced 1 occurrence",
-					// no is_error flag — success path
+					// no is_error flag  success path
 				}),
 			);
 
@@ -1560,7 +1657,7 @@ describe("ClientConnection type and WS message schemas", () => {
 				}),
 			);
 
-			// Query registry — should have both tools
+			// Query registry  should have both tools
 			const tools = handler.registry.getClientToolsForThread("thread-1");
 			expect(tools.size).toBe(2);
 			expect(tools.has("tool_a")).toBe(true);
@@ -1710,7 +1807,7 @@ describe("ClientConnection type and WS message schemas", () => {
 				}),
 			);
 
-			// Query for thread-1 — should only find tool_a from mockWs1
+			// Query for thread-1  should only find tool_a from mockWs1
 			const tools = handler.registry.getClientToolsForThread("thread-1");
 			expect(tools.size).toBe(1);
 			expect(tools.has("tool_a")).toBe(true);
@@ -1992,7 +2089,7 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
-	describe("Protocol Extension — Content Widening (AC10)", () => {
+	describe("Protocol Extension  Content Widening (AC10)", () => {
 		it("AC10.1 & AC10.4: tool:result with string content is accepted by schema", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
 			const eventBus = new TypedEventEmitter();
@@ -2284,5 +2381,156 @@ describe("ClientConnection type and WS message schemas", () => {
 				handler.cleanup();
 			});
 		});
+	});
+});
+
+describe("issue #189: single tool-bearing session per thread (eviction)", () => {
+	async function makeDbHandler(siteId = "site-a") {
+		const { applySchema, createDatabase } = await import("@bound/core");
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const eventBus = new TypedEventEmitter();
+		const handler = createWebSocketHandler({
+			eventBus,
+			db,
+			siteId,
+			defaultUserId: "test-user",
+		});
+		return { db, handler };
+	}
+
+	function openWs(handler: ReturnType<typeof createWebSocketHandler>) {
+		const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+		handler.open(ws);
+		return ws;
+	}
+
+	function configureTools(
+		handler: ReturnType<typeof createWebSocketHandler>,
+		ws: ServerWebSocket<unknown>,
+		names: string[],
+	) {
+		handler.message(
+			ws,
+			JSON.stringify({
+				type: "session:configure",
+				tools: names.map((name) => ({
+					type: "function",
+					function: { name, description: name, parameters: { type: "object" } },
+				})),
+			}),
+		);
+	}
+
+	function subscribe(
+		handler: ReturnType<typeof createWebSocketHandler>,
+		ws: ServerWebSocket<unknown>,
+		threadId: string,
+	) {
+		handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: threadId }));
+	}
+
+	function sessionsFor(db: Database, threadId: string): number {
+		const row = db
+			.query("SELECT COUNT(*) as count FROM client_sessions WHERE thread_id = ? AND deleted = 0")
+			.get(threadId) as { count: number };
+		return row.count;
+	}
+
+	function evictedNotices(ws: ServerWebSocket<unknown>) {
+		return (ws as unknown as MockWebSocket).messages.filter(
+			(m) => (m as Record<string, unknown>).type === "session:evicted",
+		);
+	}
+
+	it("evicts an existing tool-bearing connection when a new one configures tools (configure path)", async () => {
+		const { db, handler } = await makeDbHandler();
+		const ws1 = openWs(handler);
+		subscribe(handler, ws1, "thread-1");
+		configureTools(handler, ws1, ["boundless_read"]);
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+
+		const ws2 = openWs(handler);
+		subscribe(handler, ws2, "thread-1");
+		configureTools(handler, ws2, ["boundless_read"]);
+
+		// Only the most-recent tool provider keeps an affinity row.
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+		// The older connection got an explicit eviction notice.
+		const notices = evictedNotices(ws1);
+		expect(notices).toHaveLength(1);
+		expect((notices[0] as Record<string, unknown>).thread_id).toBe("thread-1");
+		expect((notices[0] as Record<string, unknown>).reason).toBe("superseded_by_new_tool_session");
+		// Dispatch resolves to a single connection (no first-match ambiguity).
+		const tools = handler.registry.getClientToolsForThread("thread-1");
+		expect(tools.size).toBe(1);
+		expect(handler.registry.getConnectionForTool("thread-1", "boundless_read")).toBeDefined();
+
+		handler.cleanup();
+		db.close();
+	});
+
+	it("evicts the earlier tool-bearing connection when a tool-bearing connection subscribes (subscribe path)", async () => {
+		const { db, handler } = await makeDbHandler();
+		const ws1 = openWs(handler);
+		subscribe(handler, ws1, "thread-1");
+		configureTools(handler, ws1, ["boundless_read"]);
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+
+		// New connection configures tools first, then subscribes — eviction must
+		// fire on the subscribe path too.
+		const ws2 = openWs(handler);
+		configureTools(handler, ws2, ["boundless_read"]);
+		subscribe(handler, ws2, "thread-1");
+
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+		expect(evictedNotices(ws1)).toHaveLength(1);
+
+		handler.cleanup();
+		db.close();
+	});
+
+	it("does not evict a tool-less viewport (web UI stays subscribed)", async () => {
+		const { db, handler } = await makeDbHandler();
+		// Plain web UI viewport: subscribes, registers no tools.
+		const viewer = openWs(handler);
+		subscribe(handler, viewer, "thread-1");
+
+		// Boundless attaches with tools.
+		const boundless = openWs(handler);
+		subscribe(handler, boundless, "thread-1");
+		configureTools(handler, boundless, ["boundless_read"]);
+
+		// The viewport is not a tool provider, so it is never evicted.
+		expect(evictedNotices(viewer)).toHaveLength(0);
+		// Only boundless holds an affinity row.
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+
+		handler.cleanup();
+		db.close();
+	});
+
+	it("leaves the evicted connection's other-thread subscriptions intact", async () => {
+		const { db, handler } = await makeDbHandler();
+		const ws1 = openWs(handler);
+		subscribe(handler, ws1, "thread-1");
+		subscribe(handler, ws1, "thread-2");
+		configureTools(handler, ws1, ["boundless_read"]);
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+		expect(sessionsFor(db, "thread-2")).toBe(1);
+
+		// New tool-bearing connection takes over thread-1 only.
+		const ws2 = openWs(handler);
+		subscribe(handler, ws2, "thread-1");
+		configureTools(handler, ws2, ["boundless_read"]);
+
+		expect(sessionsFor(db, "thread-1")).toBe(1);
+		// ws1 is evicted from thread-1 but keeps thread-2.
+		expect(sessionsFor(db, "thread-2")).toBe(1);
+		expect(handler.registry.getClientToolsForThread("thread-2").has("boundless_read")).toBe(true);
+		expect(handler.registry.getClientToolsForThread("thread-1").size).toBe(1);
+
+		handler.cleanup();
+		db.close();
 	});
 });

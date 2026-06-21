@@ -114,6 +114,37 @@ describe("MessageBlock", () => {
 			expect(frame).not.toContain("[remote]");
 		});
 
+		it("strips the bms_ prefix but keeps the [remote] tag for VFS tools", async () => {
+			const content = JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_fff666",
+					name: "bms_bash",
+					input: { command: "echo hi" },
+				},
+			]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-1",
+						role: "tool_call",
+						content,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 120,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			// Main Station (VFS) tool: prefix stripped for display, but still tagged
+			// [remote] because it executes server-side, not in the local cwd.
+			expect(frame).toContain("[remote] bash");
+			expect(frame).not.toContain("bms_");
+		});
+
 		it("shows tool arguments in a readable format", async () => {
 			const content = JSON.stringify([
 				{

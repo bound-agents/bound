@@ -80,6 +80,11 @@ export function isTransientLLMError(error: unknown): boolean {
 		errMsg.includes("http2") ||
 		errMsg.includes("ECONNRESET") ||
 		errMsg.includes("socket hang up") ||
+		// undici's message when the TCP socket drops mid-request without a
+		// response — fires on z.ai and other streaming endpoints that hold
+		// connections open for long completions. Distinct from "socket hang
+		// up" (node http) and ECONNRESET (raw TCP reset).
+		errMsg.includes("socket connection was closed") ||
 		errMsg.includes("timed out") ||
 		errMsg.includes("ETIMEDOUT")
 	);

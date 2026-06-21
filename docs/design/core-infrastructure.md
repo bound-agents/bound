@@ -377,7 +377,6 @@ Three cross-field constraints are enforced: `default` must reference a `backend.
 | `keyringSchema` | `keyring.json` | Per-host public key and URL map |
 | `mcpSchema` | `mcp.json` | MCP server definitions (stdio or http transport) |
 | `overlaySchema` | `overlay.json` | Virtual filesystem mount points |
-| `cronSchedulesSchema` | `cron_schedules.json` | Named cron jobs with schedule, thread, and model hints |
 
 **`networkSchema`:**
 
@@ -411,24 +410,10 @@ type McpConfig = {
 
 **`cronSchedulesSchema`:**
 
-```typescript
-type CronSchedulesConfig = {
-  heartbeat?: {              // Reserved top-level key: agent heartbeat config
-    enabled: boolean;        // default true
-    interval_ms: number;     // default 1_800_000, minimum 60_000
-    model_hint?: string;
-  };
-  // All other keys are cron entries (zod .catchall)
-  [name: string]: {
-    schedule: string;        // Cron expression
-    thread?: string;
-    payload?: string;
-    template?: string[];
-    requires?: string[];
-    model_hint?: string;
-  } | undefined;
-};
-```
+Removed. Recurring tasks are created at runtime through the agent's `task` tool
+(`schedule` action with a `cron` expression) rather than seeded from a config file.
+The heartbeat is a system-managed, uncancellable task with a fixed cadence and no
+config surface.
 
 #### configSchemaMap
 
@@ -442,7 +427,6 @@ const configSchemaMap: {
   "keyring.json":         typeof keyringSchema;
   "mcp.json":             typeof mcpSchema;
   "overlay.json":         typeof overlaySchema;
-  "cron_schedules.json":  typeof cronSchedulesSchema;
 }
 ```
 

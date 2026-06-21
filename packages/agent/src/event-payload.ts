@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { readUnprocessedInboxByRefId } from "@bound/core";
+import { escapeXmlAttr } from "@bound/shared";
 import type { Task } from "@bound/shared";
 
 export interface EventWakeupContent {
@@ -106,25 +107,39 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 	}
 
 	const triggerSpec = task.trigger_spec || "(unspecified)";
-	const header =
-		entries.length === 1
-			? `[Event trigger fired] ${triggerSpec} — 1 envelope delivered:`
-			: `[Event trigger fired] ${triggerSpec} — ${entries.length} envelopes delivered (oldest first):`;
 
-	const body = entries
+	// Wrap the folded envelopes in a dedicated connector-specific XML envelope:
+	// a `<connector-events>` parent carrying the shared trigger + event count,
+	// with each inbox entry as its own `<event>` node. Per-event attributes are
+	// drawn straight from the immutable relay_inbox row (received time, relay
+	// kind, originating site), so the agent can reason over provenance without
+	// re-deriving it. This mirrors the structural shape of the per-user-message
+	// `<user-message>` envelope and the volatile-context `<volatile-context>`
+	// envelope (kebab-case tags, attribute-escaped via escapeXmlAttr).
+	//
+	// Attribute values route through escapeXmlAttr because the trigger spec is
+	// task-defined and may contain quotes/`<`/`&`. The event BODY is left raw —
+	// it's the #177-inlined webhook payload (typically JSON), meant to read
+	// directly, and escaping it would resurrect the double-escape noise #177
+	// removed. The body is a function of the row, so the wakeup stays stable.
+	const eventNodes = entries
 		.map((entry, i) => {
-			const heading =
-				entries.length === 1
-					? `Envelope (received ${entry.received_at}):`
-					: `Envelope ${i + 1} of ${entries.length} (received ${entry.received_at}):`;
-			return `${heading}\n${inlineWebhookEnvelopeBody(entry.payload)}`;
+			const attrs = [
+				`index="${i + 1}"`,
+				`received="${escapeXmlAttr(entry.received_at)}"`,
+				`kind="${escapeXmlAttr(entry.kind)}"`,
+				`source-site="${escapeXmlAttr(entry.source_site_id)}"`,
+			].join(" ");
+			return `<event ${attrs}>\n${inlineWebhookEnvelopeBody(entry.payload)}\n</event>`;
 		})
-		.join("\n\n");
+		.join("\n");
+
+	const envelope = `<connector-events trigger="${escapeXmlAttr(triggerSpec)}" count="${entries.length}">\n${eventNodes}\n</connector-events>`;
 
 	const standing = task.payload ? `\n\nStanding task payload:\n${task.payload}` : "";
 
 	return {
-		content: `${header}\n\n${body}${standing}`,
+		content: `${envelope}${standing}`,
 		processedIds: entries.map((e) => e.id),
 	};
 }

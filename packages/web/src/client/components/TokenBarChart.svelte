@@ -135,6 +135,8 @@ function hideTooltip(): void {
 				fill="var(--line-3)"
 				opacity="0.8"
 				class="bar"
+				role="img"
+				aria-label="Input tokens bar"
 				onmouseenter={(e) => showTooltip(e, d)}
 				onmousemove={(e) => showTooltip(e, d)}
 				onmouseleave={hideTooltip}
@@ -149,6 +151,8 @@ function hideTooltip(): void {
 				fill="var(--line-0)"
 				opacity="0.8"
 				class="bar"
+				role="img"
+				aria-label="Output tokens bar"
 				onmouseenter={(e) => showTooltip(e, d)}
 				onmousemove={(e) => showTooltip(e, d)}
 				onmouseleave={hideTooltip}
@@ -163,6 +167,8 @@ function hideTooltip(): void {
 				fill="var(--line-4)"
 				opacity="0.8"
 				class="bar"
+				role="img"
+				aria-label="Cache read tokens bar"
 				onmouseenter={(e) => showTooltip(e, d)}
 				onmousemove={(e) => showTooltip(e, d)}
 				onmouseleave={hideTooltip}
@@ -177,6 +183,8 @@ function hideTooltip(): void {
 				fill="var(--line-6)"
 				opacity="0.8"
 				class="bar"
+				role="img"
+				aria-label="Cache write tokens bar"
 				onmouseenter={(e) => showTooltip(e, d)}
 				onmousemove={(e) => showTooltip(e, d)}
 				onmouseleave={hideTooltip}

@@ -379,6 +379,94 @@ describe("Context Assembly Pipeline", () => {
 			expect(purgeSummary?.content).toContain("Removed initial greeting messages");
 		});
 
+		it("surfaces alert rows into context as developer messages at their position", async () => {
+			const testThreadId = randomUUID();
+			const testUserId = randomUUID();
+
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					testThreadId,
+					testUserId,
+					"web",
+					"local",
+					0,
+					"Alert Visibility Test",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			// A turn, then an alert (e.g. a non-retryable inference failure or a
+			// fatal loop error emitted via emitAlert), then the recovery turn.
+			const t0 = Date.now();
+			const rows: Array<[string, string, string]> = [
+				[randomUUID(), "user", "first request"],
+				[randomUUID(), "alert", "Internal error: inference timed out after 300s"],
+				[randomUUID(), "user", "did that go through?"],
+			];
+			rows.forEach(([id, role, content], i) => {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						id,
+						testThreadId,
+						role,
+						content,
+						null,
+						null,
+						new Date(t0 + i * 1000).toISOString(),
+						new Date(t0 + i * 1000).toISOString(),
+						"local",
+					],
+				);
+			});
+
+			const { messages } = assembleContext({
+				db,
+				threadId: testThreadId,
+				userId: testUserId,
+			});
+
+			// The alert must NOT be silently dropped: the agent should see the same
+			// error the operator sees inline in the conversation. It rides as a
+			// developer-role message (Invariant #9/#19 — alert is not a wire role).
+			const alertDev = messages.find(
+				(m) =>
+					m.role === "developer" &&
+					typeof m.content === "string" &&
+					m.content.includes("inference timed out after 300s"),
+			);
+			expect(alertDev).toBeDefined();
+
+			// And it stays between the two user turns, not hoisted to the end.
+			const order = messages
+				.filter(
+					(m) =>
+						(m.role === "user" &&
+							typeof m.content === "string" &&
+							m.content.includes("first request")) ||
+						(m.role === "user" &&
+							typeof m.content === "string" &&
+							m.content.includes("did that go through")) ||
+						m === alertDev,
+				)
+				.map((m) =>
+					m === alertDev
+						? "alert"
+						: (m.content as string).includes("first request")
+							? "first"
+							: "second",
+				);
+			expect(order).toEqual(["first", "alert", "second"]);
+		});
+
 		it("should purge tool_call/tool_result pairs together", async () => {
 			const testThreadId = randomUUID();
 			const testUserId = randomUUID();
@@ -2303,12 +2391,17 @@ This skill reviews pull requests.`;
 
 			const userMsg = messages.find((m) => m.role === "user");
 			expect(userMsg).toBeDefined();
-			// Content should be parsed into ContentBlock[] array, not left as JSON string
+			// Content should be parsed into ContentBlock[] array, then wrapped
+			// in the <user-message> envelope: [open-text, orig-text, image, close-text].
 			expect(Array.isArray(userMsg?.content)).toBe(true);
 			const blocks = userMsg?.content as Array<{ type: string; [k: string]: unknown }>;
-			expect(blocks.length).toBe(2);
+			expect(blocks.length).toBe(4);
 			expect(blocks[0].type).toBe("text");
-			expect(blocks[1].type).toBe("image");
+			expect((blocks[0] as { text: string }).text).toMatch(/^<user-message sent=/);
+			expect(blocks[1].type).toBe("text");
+			expect(blocks[2].type).toBe("image");
+			expect(blocks[3].type).toBe("text");
+			expect((blocks[3] as { text: string }).text).toBe("</user-message>");
 		});
 
 		it("leaves plain text content as string", () => {
@@ -2426,13 +2519,14 @@ This skill reviews pull requests.`;
 			const userMsgs = messages.filter((m) => m.role === "user");
 			expect(userMsgs.length).toBe(2);
 
-			// First message should have absolute timestamp annotation (not relative)
-			expect(userMsgs[0].content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
+			// First message should be wrapped in the envelope carrying an
+			// absolute send time (not relative).
+			expect(userMsgs[0].content).toMatch(/^<user-message sent="[^"]*\d{1,2}:\d{2} UTC[^"]*">/);
 			expect(userMsgs[0].content).not.toContain("ago");
 			expect(userMsgs[0].content).toContain("Hello from the past");
 
-			// Second message should also have absolute timestamp annotation
-			expect(userMsgs[1].content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
+			// Second message should also be enveloped with an absolute send time.
+			expect(userMsgs[1].content).toMatch(/^<user-message sent="[^"]*\d{1,2}:\d{2} UTC[^"]*">/);
 			expect(userMsgs[1].content).not.toContain("ago");
 			expect(userMsgs[1].content).toContain("Hello from recently");
 		});
@@ -2565,9 +2659,9 @@ This skill reviews pull requests.`;
 				userId,
 			});
 
-			// User message should be annotated
+			// User message should be enveloped
 			const userMsg = messages.find((m) => m.role === "user");
-			expect(userMsg?.content).toMatch(/^\[.*\d{1,2}:\d{2} UTC[^\]]*\]/);
+			expect(userMsg?.content).toMatch(/^<user-message sent="[^"]*\d{1,2}:\d{2} UTC[^"]*">/);
 
 			// Assistant message should NOT be annotated (avoids LLM echo pattern)
 			const assistantMsg = messages.find((m) => m.role === "assistant");

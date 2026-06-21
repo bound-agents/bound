@@ -23,15 +23,24 @@ import {
 export const sandboxTool: ToolDefinition = {
 	type: "function",
 	function: {
-		name: "bash",
+		name: "bms_bash",
 		description:
-			"Execute a command in the sandboxed shell. MCP tools are available as commands. Run standard shell commands too. Every command starts in /home/user and a `cd` lasts only for that one command, so do not prefix commands with a `cd` into the directory you are already in.",
+			"Execute a command in the sandboxed shell. MCP tools are available as commands. Run standard shell commands too. Every command starts in /home/user; to run in a different directory pass the `cwd` parameter instead of prefixing the command with a `cd` (an inline `cd` only lasts for that one command).",
 		parameters: {
 			type: "object",
 			properties: {
 				command: {
 					type: "string",
 					description: "The shell command to execute",
+				},
+				timeout: {
+					type: "number",
+					description: "Timeout in milliseconds (default 300000)",
+				},
+				cwd: {
+					type: "string",
+					description:
+						"Working directory for this command, restored afterward (defaults to /home/user). Relative paths resolve against the current directory. Use this instead of a leading `cd`.",
 				},
 			},
 			required: ["command"],
@@ -69,7 +78,7 @@ export function createToolRegistry(
 	};
 
 	// 1. Register the sandbox (bash) tool first
-	registerTool("bash", {
+	registerTool("bms_bash", {
 		kind: "sandbox",
 		toolDefinition: sandboxTool,
 	});

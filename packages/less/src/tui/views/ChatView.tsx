@@ -1,8 +1,8 @@
 import type { BoundClient, ConnectionState } from "@bound/client";
 import type { Message } from "@bound/shared";
-import { Box, Static, Text } from "ink";
+import { Box, Static, Text, useStdout } from "ink";
 import type React from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
 	ActionBar,
 	Banner,
@@ -12,9 +12,11 @@ import {
 	StatusBar,
 	TextInput,
 	ToolCallCard,
+	computeStdoutRowBudget,
 } from "../components";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { createResizeRedrawHandler } from "../util/resizeRedraw";
 
 /**
  * Per-tool_result metadata derived from its originating tool_call:
@@ -223,7 +225,27 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
-	const { columns: termColumns } = useTerminalSize();
+	const { columns: termColumns, rows: termRows } = useTerminalSize();
+	const { stdout } = useStdout();
+	// Repaint nonce: bumped on a width change to force <Static> to remount and
+	// re-emit every committed item at the new width. See resizeRedraw.ts for the
+	// full rationale (log-update erases the stale frame by logical line count, so
+	// a narrower terminal strands the top of the old input box as junk).
+	const [redrawNonce, setRedrawNonce] = useState(0);
+	useEffect(() => {
+		if (!stdout) return;
+		const handler = createResizeRedrawHandler({
+			initialColumns: (stdout as { columns?: number }).columns ?? 80,
+			write: (data) => stdout.write(data),
+			redraw: () => setRedrawNonce((n) => n + 1),
+		});
+		const onResize = () => handler.onResize((stdout as { columns?: number }).columns ?? 80);
+		stdout.on("resize", onResize);
+		return () => {
+			stdout.off("resize", onResize);
+			handler.dispose();
+		};
+	}, [stdout]);
 	// Per-tool_result metadata (file_path for syntax highlighting +
 	// isLastInGroup for parallel-call group margin collapsing). Memoized
 	// over the messages array so we walk it only when new messages arrive,
@@ -316,7 +338,7 @@ export function ChatView({
 			    into the root output grid, creating a blank gap between the
 			    scrollback messages and the dynamic input area. */}
 			<Box height={0}>
-				<Static items={staticItems}>
+				<Static key={redrawNonce} items={staticItems}>
 					{(item) => {
 						if (item.kind === "splash") {
 							return (
@@ -395,7 +417,11 @@ export function ChatView({
 						</Box>
 					)}
 
-					{/* In-flight tool calls */}
+					{/* In-flight tool calls. The per-card stdout budget is derived from
+					    the live terminal height and the number of concurrent tools so
+					    the whole dynamic region stays under the viewport — otherwise
+					    Ink's `outputHeight >= rows` branch strands the spinner card in
+					    scrollback (see computeStdoutRowBudget). */}
 					{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
 						<Box key={callId} marginBottom={1}>
 							<ToolCallCard
@@ -403,6 +429,7 @@ export function ChatView({
 								startTime={startTime}
 								stdout={stdout}
 								terminalColumns={termColumns}
+								maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
 							/>
 						</Box>
 					))}

@@ -1,8 +1,10 @@
 /**
  * Heartbeat seeding tests.
  *
- * Verifies that seedHeartbeat() correctly creates the heartbeat task with
- * proper defaults, configuration, idempotency, and CAS-blocking semantics.
+ * Verifies that seedHeartbeat() creates the heartbeat task with the fixed
+ * system defaults, idempotency, and CAS-blocking semantics. The heartbeat is a
+ * system-managed, uncancellable task with no operator config surface — the
+ * cadence is fixed at DEFAULT_HEARTBEAT_INTERVAL_MS.
  */
 
 import type { Database } from "bun:sqlite";
@@ -13,9 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
-import type { HeartbeatConfig } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { seedHeartbeat } from "../task-resolution";
+import { DEFAULT_HEARTBEAT_INTERVAL_MS, seedHeartbeat } from "../task-resolution";
 
 describe("seedHeartbeat", () => {
 	let tmpDir: string;
@@ -57,9 +58,9 @@ describe("seedHeartbeat", () => {
 		return result?.count ?? 0;
 	}
 
-	// AC4.1: Default seeding (no config provided)
-	it("seeds heartbeat with defaults when config is undefined (AC4.1)", () => {
-		seedHeartbeat(db, undefined, siteId);
+	// Default seeding — fixed 30-minute cadence, no config surface
+	it("seeds heartbeat with the fixed default cadence", () => {
+		seedHeartbeat(db, siteId);
 
 		const task = getHeartbeatTask();
 		expect(task).toBeDefined();
@@ -69,63 +70,26 @@ describe("seedHeartbeat", () => {
 
 		const triggerSpec = JSON.parse(task.trigger_spec);
 		expect(triggerSpec.type).toBe("heartbeat");
-		expect(triggerSpec.interval_ms).toBe(1_800_000); // 30 minutes default
+		expect(triggerSpec.interval_ms).toBe(DEFAULT_HEARTBEAT_INTERVAL_MS); // 30 minutes
 
 		// Verify next_run_at is set and is in the future
 		const nextRunAt = new Date(task.next_run_at);
 		expect(nextRunAt.getTime()).toBeGreaterThan(Date.now());
 	});
 
-	// AC4.2: Custom interval
-	it("seeds heartbeat with custom interval_ms (AC4.2)", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 900_000, // 15 minutes
-		};
-
-		seedHeartbeat(db, config, siteId);
-
-		const task = getHeartbeatTask();
-		expect(task).toBeDefined();
-
-		const triggerSpec = JSON.parse(task.trigger_spec);
-		expect(triggerSpec.interval_ms).toBe(900_000);
-	});
-
-	// AC4.3: Idempotency
-	it("does not create duplicate heartbeat tasks on multiple calls (AC4.3)", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, siteId);
-		seedHeartbeat(db, config, siteId);
-		seedHeartbeat(db, config, siteId);
+	// Idempotency
+	it("does not create duplicate heartbeat tasks on multiple calls", () => {
+		seedHeartbeat(db, siteId);
+		seedHeartbeat(db, siteId);
+		seedHeartbeat(db, siteId);
 
 		const count = countHeartbeatTasks();
 		expect(count).toBe(1);
 	});
 
-	// AC4.4: Disabled config
-	it("does not seed heartbeat when enabled is false (AC4.4)", () => {
-		const config: HeartbeatConfig = {
-			enabled: false,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, siteId);
-
-		const count = countHeartbeatTasks();
-		expect(count).toBe(0);
-
-		const task = getHeartbeatTask();
-		expect(task).toBeNull();
-	});
-
 	// Deterministic UUID consistency
 	it("uses consistent deterministic UUID for heartbeat task", () => {
-		seedHeartbeat(db, undefined, siteId);
+		seedHeartbeat(db, siteId);
 
 		const expectedId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
 		const task = getHeartbeatTask();
@@ -134,25 +98,19 @@ describe("seedHeartbeat", () => {
 
 	// Clock alignment verification
 	it("sets next_run_at to a clock-aligned boundary", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000, // 30 minutes
-		};
-
-		seedHeartbeat(db, config, siteId);
+		seedHeartbeat(db, siteId);
 
 		const task = getHeartbeatTask();
 		const nextRunTime = new Date(task.next_run_at).getTime();
-		const intervalMs = config.interval_ms;
 
 		// Verify it's on a boundary by checking that nextRunTime % intervalMs == 0
-		const remainder = nextRunTime % intervalMs;
+		const remainder = nextRunTime % DEFAULT_HEARTBEAT_INTERVAL_MS;
 		expect(remainder).toBe(0);
 	});
 
 	// Field validation
 	it("sets all required task fields correctly", () => {
-		seedHeartbeat(db, undefined, siteId);
+		seedHeartbeat(db, siteId);
 
 		const task = getHeartbeatTask();
 		expect(task.type).toBe("heartbeat");
@@ -183,7 +141,7 @@ describe("seedHeartbeat", () => {
 
 	// CAS blocking (AC3.1)
 	it("heartbeat can be blocked by CAS when running (AC3.1)", () => {
-		seedHeartbeat(db, undefined, siteId);
+		seedHeartbeat(db, siteId);
 
 		// Manually update the task to running status
 		const taskId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
@@ -199,84 +157,35 @@ describe("seedHeartbeat", () => {
 
 	// Trigger spec validation
 	it("creates valid trigger_spec JSON", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 900_000,
-		};
-
-		seedHeartbeat(db, config, siteId);
+		seedHeartbeat(db, siteId);
 
 		const task = getHeartbeatTask();
 		const triggerSpec = JSON.parse(task.trigger_spec);
 
 		expect(triggerSpec.type).toBe("heartbeat");
 		expect(typeof triggerSpec.interval_ms).toBe("number");
-		expect(triggerSpec.interval_ms).toBe(900_000);
+		expect(triggerSpec.interval_ms).toBe(DEFAULT_HEARTBEAT_INTERVAL_MS);
 	});
 
-	// Multiple configurations (testing idempotency with different configs)
-	it("respects config changes on subsequent seeding (idempotent but not updated)", () => {
-		// Seed with one config
-		seedHeartbeat(db, { enabled: true, interval_ms: 1_800_000 }, siteId);
+	// Idempotent: a re-seed never updates an existing row (INSERT OR IGNORE)
+	it("does not update an existing heartbeat task on re-seed", () => {
+		seedHeartbeat(db, siteId);
 
-		let task = getHeartbeatTask();
-		let spec = JSON.parse(task.trigger_spec);
-		expect(spec.interval_ms).toBe(1_800_000);
+		const task = getHeartbeatTask();
+		const spec = JSON.parse(task.trigger_spec);
+		expect(spec.interval_ms).toBe(DEFAULT_HEARTBEAT_INTERVAL_MS);
 
-		// Seed again with different config - should not update (INSERT OR IGNORE)
-		seedHeartbeat(db, { enabled: true, interval_ms: 900_000 }, siteId);
+		seedHeartbeat(db, siteId);
 
-		task = getHeartbeatTask();
-		spec = JSON.parse(task.trigger_spec);
-		// Should still be the original value because INSERT OR IGNORE doesn't update
-		expect(spec.interval_ms).toBe(1_800_000);
-
-		// Only one task should exist
 		const count = countHeartbeatTasks();
 		expect(count).toBe(1);
 	});
 
-	// Model hint from config
-	it("sets model_hint on heartbeat task when provided in config", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-			model_hint: "glm-4.7",
-		};
-
-		seedHeartbeat(db, config, siteId);
-
-		const task = getHeartbeatTask();
-		expect(task).toBeDefined();
-		expect(task.model_hint).toBe("glm-4.7");
-	});
-
-	it("leaves model_hint null when not provided in config", () => {
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000,
-		};
-
-		seedHeartbeat(db, config, siteId);
+	// model_hint is always null — there is no config to set it from
+	it("leaves model_hint null", () => {
+		seedHeartbeat(db, siteId);
 
 		const task = getHeartbeatTask();
 		expect(task.model_hint).toBeNull();
-	});
-
-	// Default values when config is empty object
-	it("handles partial config by using passed values", () => {
-		// When config is passed without interval_ms, we still need to provide it
-		// The seedHeartbeat function uses config.interval_ms directly, not defaults
-		// This test verifies that when we provide a config, we must provide interval_ms
-		const config: HeartbeatConfig = {
-			enabled: true,
-			interval_ms: 1_800_000, // Must provide this
-		};
-		seedHeartbeat(db, config, siteId);
-
-		const task = getHeartbeatTask();
-		expect(task).toBeDefined();
-		const spec = JSON.parse(task.trigger_spec);
-		expect(spec.interval_ms).toBe(1_800_000);
 	});
 });

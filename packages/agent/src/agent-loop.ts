@@ -83,6 +83,7 @@ import {
 	buildOffloadMessage,
 	offloadToolResultPath,
 } from "./tool-result-offload";
+import { suggestToolForAction } from "./tools/tool-suggestion";
 import type {
 	AgentLoopConfig,
 	AgentLoopResult,
@@ -240,6 +241,18 @@ export function scaledMaxRetries(_estimatedTokens: number): number {
 }
 
 const textEncoder = new TextEncoder();
+
+/**
+ * Default wall-clock ceiling for a single bms_bash (sandbox) command, in ms.
+ * Mirrors boundless_bash's DEFAULT_TIMEOUT_MS (packages/less/src/tools/bash.ts)
+ * so the two bash tools expose the same `timeout` contract and default. NOTE on
+ * the residual difference: boundless_bash runs a subprocess and enforces the
+ * timeout with SIGTERM/SIGKILL, whereas the sandbox is an in-process just-bash
+ * interpreter — the timeout fires an AbortSignal that stops execution at the
+ * next statement boundary (cooperative). It reliably bounds shell-level loops,
+ * but a single synchronous python3/js-exec worker call runs to completion.
+ */
+const DEFAULT_SANDBOX_EXEC_TIMEOUT_MS = 300_000;
 
 interface BashLike {
 	exec?: (
@@ -2944,6 +2957,53 @@ export class AgentLoop {
 		return merged.length > 0 ? merged : undefined;
 	}
 
+	/**
+	 * Run a sandbox (bms_bash) command with a wall-clock timeout derived from the
+	 * tool call's optional `timeout` arg (ms), defaulting to
+	 * DEFAULT_SANDBOX_EXEC_TIMEOUT_MS. The timeout fires an AbortSignal that
+	 * just-bash honors cooperatively (see the constant's note). On timeout we
+	 * synthesize a 124 result (the conventional `timeout(1)` exit code) rather
+	 * than letting the abort throw escape the dispatch.
+	 *
+	 * Returns whatever `sandbox.exec` returns (a {stdout,stderr,exitCode} result
+	 * OR a relay request the wrapper lifted onto it), so callers still run their
+	 * isRelayRequest check.
+	 */
+	private async execSandboxWithTimeout(
+		command: string,
+		timeoutArg: unknown,
+		cwdArg?: unknown,
+	): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+		const exec = this.sandbox.exec;
+		if (!exec) {
+			return { stdout: "", stderr: "sandbox execution not available", exitCode: 1 };
+		}
+		const timeoutMs =
+			typeof timeoutArg === "number" && Number.isFinite(timeoutArg) && timeoutArg > 0
+				? timeoutArg
+				: DEFAULT_SANDBOX_EXEC_TIMEOUT_MS;
+		// just-bash applies `cwd` for this execution only and restores it afterward
+		// (ExecOptions.cwd), so the dedicated arg gives the same one-command scope an
+		// inline `cd` would, without leaking the directory into the next command.
+		const cwd = typeof cwdArg === "string" && cwdArg.length > 0 ? cwdArg : undefined;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		try {
+			return await exec(command, { signal: controller.signal, ...(cwd ? { cwd } : {}) });
+		} catch (err) {
+			if (controller.signal.aborted) {
+				return {
+					stdout: "",
+					stderr: `Command timed out after ${timeoutMs}ms`,
+					exitCode: 124,
+				};
+			}
+			throw err;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	/** Execute a tool call via platform tools or sandbox. Returns relay request for remote MCP tools or client tool call request. */
 	private async executeToolCall(
 		toolCall: ParsedToolCall,
@@ -3035,7 +3095,11 @@ export class AgentLoop {
 							};
 							break;
 						}
-						const sandboxResult = await this.sandbox.exec(command);
+						const sandboxResult = await this.execSandboxWithTimeout(
+							command,
+							toolCall.input.timeout,
+							toolCall.input.cwd,
+						);
 						if (isRelayRequest(sandboxResult)) {
 							toolSpan.setStatus({ code: SpanStatusCode.OK });
 							return sandboxResult; // finally block ends span
@@ -3086,6 +3150,29 @@ export class AgentLoop {
 							result = { content: builtinResult, exitCode };
 						}
 						break;
+					}
+				}
+
+				// Action-enum cross-tool suggestion. When a model routes an
+				// action value to the wrong tool (e.g. calling `connector`
+				// with `action: "activate"`, which belongs to `skill`), the
+				// Zod error enumerates valid options for the CALLED tool but
+				// never reveals the value belongs to a DIFFERENT tool.
+				// Models that confuse two action-dispatcher tools re-decide
+				// the same wrong routing every turn — the 2026-06-12 and
+				// 2026-06-21 gpt-5.5 connector-vs-skill spins (26+ and 12+
+				// identical-error turns) both followed this pattern. Append
+				// the suggestion on the FIRST failed call so the model gets
+				// the correct tool name immediately, not after the loop
+				// guard's 5-turn threshold.
+				if (result.exitCode !== 0) {
+					const suggestion = suggestToolForAction(
+						toolCall.name,
+						toolCall.input,
+						this.config.toolRegistry,
+					);
+					if (suggestion) {
+						result = { ...result, content: `${result.content}\n${suggestion}` };
 					}
 				}
 
@@ -3178,7 +3265,11 @@ export class AgentLoop {
 			};
 		}
 
-		const result = await this.sandbox.exec(command);
+		const result = await this.execSandboxWithTimeout(
+			command,
+			toolCall.input.timeout,
+			toolCall.input.cwd,
+		);
 
 		// The exec wrapper in agent-factory.ts propagates RelayToolCallRequest
 		// objects from remote MCP proxy commands via loopContextStorage side-channel

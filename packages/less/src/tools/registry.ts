@@ -120,7 +120,7 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: resolvedShell.toolName,
-				description: `Execute a command via ${resolvedShell.label} with AbortSignal support. Commands already run in the working directory shown in your context — do not prefix them with a \`cd\` into that same directory.`,
+				description: `Execute a command via ${resolvedShell.label} with AbortSignal support. Every command starts in the working directory shown in your context; to run in a different directory pass the \`cwd\` parameter instead of prefixing the command with a \`cd\` (an inline \`cd\` only lasts for that one command).`,
 				parameters: {
 					type: "object",
 					required: ["command"],
@@ -133,6 +133,11 @@ export function buildToolSet(
 							type: "number",
 							description: "Timeout in milliseconds (default 300000)",
 						},
+						cwd: {
+							type: "string",
+							description:
+								"Working directory for this command (defaults to the working directory shown in your context). Relative paths resolve against it; writes stay confined to the working directory regardless. Use this instead of a leading `cd`.",
+						},
 					},
 				},
 			},
@@ -142,30 +147,32 @@ export function buildToolSet(
 			function: {
 				name: "boundless_copy",
 				description:
-					"Copy a file between the host filesystem (where boundless runs) and the bound runtime sandbox, without round-tripping bytes through the LLM context. Use this instead of read+write whenever you only need to move file contents from one filesystem to the other.",
+					"Copy a file between the Boundless Satellite Station (the host disk where boundless runs) and the Bound Main Station (the virtualized bound VFS), without round-tripping bytes through the LLM context. Use this instead of read+write whenever you only need to move file contents from one environment to the other.",
 				parameters: {
 					type: "object",
 					required: ["source", "source_path", "target", "target_path"],
 					properties: {
 						source: {
 							type: "string",
-							enum: ["host", "sandbox"],
-							description: 'Source filesystem: "host" or "sandbox"',
+							enum: ["main", "satellite"],
+							description:
+								'Source environment: "satellite" (the host disk where boundless runs) or "main" (the bound VFS)',
 						},
 						source_path: {
 							type: "string",
 							description:
-								"Path on the source filesystem. Host paths may be relative to the boundless cwd; sandbox paths must be absolute.",
+								"Path on the source environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute.",
 						},
 						target: {
 							type: "string",
-							enum: ["host", "sandbox"],
-							description: 'Target filesystem: "host" or "sandbox"',
+							enum: ["main", "satellite"],
+							description:
+								'Target environment: "satellite" (the host disk where boundless runs) or "main" (the bound VFS)',
 						},
 						target_path: {
 							type: "string",
 							description:
-								"Path on the target filesystem. Host paths may be relative to the boundless cwd; sandbox paths must be absolute. Parent directories are created on the host side.",
+								"Path on the target environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute. Parent directories are created on the satellite side.",
 						},
 					},
 				},
@@ -290,12 +297,16 @@ export function buildToolSet(
 
 				const mcpToolName = `boundless_mcp_${serverName}_${tool.name}`;
 
-				// Create a new tool definition with the namespaced name
+				// Create a new tool definition with the namespaced name. Prefix a
+				// note that the tool executes on the Boundless Satellite Station
+				// (the host where boundless runs), not the Bound Main Station VFS,
+				// so the agent does not conflate it with bound-side native tools.
+				const baseDescription = tool.description ?? tool.name;
 				const mcpToolDef: ToolDefinition = {
 					type: "function",
 					function: {
 						name: mcpToolName,
-						description: tool.description ?? tool.name,
+						description: `(Runs on the Boundless Satellite Station — the host where boundless is attached, not the Bound Main Station VFS.) ${baseDescription}`,
 						parameters: tool.inputSchema as Record<string, unknown>,
 					},
 				};
@@ -491,7 +502,7 @@ export async function buildSystemPromptAddition(
 	// account for, e.g. it need not echo file contents back to describe an edit.
 	const surfaceLine =
 		options?.surface?.type === "acp"
-			? `You are connected to a boundless session driving an ACP-compatible editor (${options.surface.clientInfo.title ?? options.surface.clientInfo.name} ${options.surface.clientInfo.version}). The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass).`
+			? `You are connected to a boundless session driving an ACP-compatible editor (${options.surface.clientInfo.title ?? options.surface.clientInfo.name} ${options.surface.clientInfo.version}). The editor renders your file reads and edits inline as diffs and follows its cursor to the locations you touch, so you do not need to echo file contents back to describe a change. When you cite a file location, write it as a bare workspace-relative \`path:line\` (optionally \`path:line:col\`) so the editor turns it into a clickable jump target — do NOT wrap it in brackets or use a line range like \`path:120-135\`, which suppresses the link. Tool calls may be gated through the editor's permission modes (ask before each call, auto-accept edits, or bypass).`
 			: "You are connected to a boundless terminal client.";
 
 	return `${surfaceLine}

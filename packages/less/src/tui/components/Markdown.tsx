@@ -6,6 +6,42 @@ import { HighlightedCodeBlock } from "./HighlightedCode";
 
 const HR_WIDTH = 40;
 
+/**
+ * Wrap visible text in an OSC 8 hyperlink so the terminal renders it as a real
+ * clickable link instead of literal `[label](url)`. Format is
+ * `ESC ] 8 ; ; <uri> BEL <label> ESC ] 8 ; ; BEL` — the empty params slot
+ * between the two `;` is where a link id would go (omitted; terminals coalesce
+ * adjacent same-URI cells without one). Terminals that don't grok OSC 8 ignore
+ * the escapes and show the bare label, so this degrades cleanly.
+ */
+function osc8Link(href: string, label: string): string {
+	return `\u001B]8;;${href}\u0007${label}\u001B]8;;\u0007`;
+}
+
+/**
+ * Split a run sequence into logical lines at authored newlines (embedded `\n`
+ * in text tokens, and `br` tokens). Each returned line is a run array with no
+ * remaining newlines, preserving every run's style. This is the pre-wrap step
+ * that keeps {@link wrapStyledRuns} on its documented newline-free contract:
+ * its char-offset slicing assumes wrap-ansi only *inserts* break newlines, so
+ * an embedded `\n` would drift the offsets and drop/strand characters. Splitting
+ * here also gives a clean seam for double-spacing (a blank visual line is
+ * inserted between logical lines, never between soft-wrap continuations).
+ */
+function splitRunsOnNewlines(runs: StyledRun[]): StyledRun[][] {
+	const lines: StyledRun[][] = [[]];
+	for (const run of runs) {
+		const parts = run.text.split("\n");
+		for (let i = 0; i < parts.length; i++) {
+			if (i > 0) lines.push([]);
+			if (parts[i].length > 0) {
+				lines[lines.length - 1].push({ ...run, text: parts[i] });
+			}
+		}
+	}
+	return lines;
+}
+
 export interface MarkdownProps {
 	text: string;
 	/**
@@ -48,12 +84,23 @@ function inlineTokensToRuns(tokens: Token[], base: InlineStyle = {}): StyledRun[
 				runs.push(...inlineTokensToRuns((token as Tokens.Em).tokens, { ...base, italic: true }));
 				break;
 			case "codespan":
-				runs.push({ ...base, color: "yellow", text: `\`${(token as Tokens.Codespan).text}\`` });
+				// Inline code renders styled but WITHOUT literal backticks (the color
+				// is the affordance; the backticks were just noise).
+				runs.push({ ...base, color: "yellow", text: (token as Tokens.Codespan).text });
 				break;
 			case "link": {
 				const t = token as Tokens.Link;
-				runs.push({ ...base, color: "cyan", underline: true, text: t.text });
-				runs.push({ ...base, dim: true, text: ` (${t.href})` });
+				// Carry the href on the run; renderRun wraps the label in an OSC 8
+				// hyperlink escape at draw time. Recurse so styled link labels (e.g.
+				// **bold** text) keep their styling under the link.
+				runs.push(
+					...inlineTokensToRuns(t.tokens, {
+						...base,
+						color: "cyan",
+						underline: true,
+						hyperlink: t.href,
+					}),
+				);
 				break;
 			}
 			case "del":
@@ -79,6 +126,10 @@ function inlineTokensToRuns(tokens: Token[], base: InlineStyle = {}): StyledRun[
 
 /** Render a single styled run as an Ink `<Text>` element. */
 function renderRun(run: StyledRun, key: string): React.ReactElement {
+	// OSC 8 escapes are zero-width to string-width@7 / wrap-ansi@9 (Ink's own
+	// measurement deps), so wrapping the already-wrapped label here doesn't
+	// disturb layout. See wrap-styled.ts for why the escape can't live in `text`.
+	const content = run.hyperlink ? osc8Link(run.hyperlink, run.text) : run.text;
 	return (
 		<Text
 			key={key}
@@ -89,17 +140,21 @@ function renderRun(run: StyledRun, key: string): React.ReactElement {
 			dimColor={run.dim}
 			color={run.color}
 		>
-			{run.text}
+			{content}
 		</Text>
 	);
 }
 
 /**
- * Render prose inline tokens as a pre-wrapped `<Text>`. Break points are
- * computed at `width` (when > 0) and leading whitespace on continuation lines
- * is elided; each visual line is emitted as its own styled run sequence joined
- * by explicit newlines, so every line fits within `width` and Ink does not
- * re-wrap (and so cannot reintroduce leading-whitespace continuations).
+ * Render prose inline tokens as a pre-wrapped `<Text>`. Authored line breaks
+ * (embedded `\n`, `br` tokens) split the prose into logical lines first; each
+ * is width-wrapped independently and they are rejoined with a BLANK line
+ * between them, so separate lines a message author wrote get room to breathe.
+ * Soft-wrap continuations stay tight (no blank line) — only authored breaks
+ * double-space. Break points are computed at `width` (when > 0) and leading
+ * whitespace on continuation lines is elided; each visual line is emitted as
+ * its own styled run sequence joined by explicit newlines, so every line fits
+ * within `width` and Ink does not re-wrap.
  */
 function renderProse(
 	tokens: Token[],
@@ -107,8 +162,17 @@ function renderProse(
 	key: string,
 	base: InlineStyle = {},
 ): React.ReactElement {
-	const runs = inlineTokensToRuns(tokens, base);
-	const lines = width && width > 0 ? wrapStyledRuns(runs, width) : [runs];
+	const logicalLines = splitRunsOnNewlines(inlineTokensToRuns(tokens, base));
+	const lines: StyledRun[][] = [];
+	for (let i = 0; i < logicalLines.length; i++) {
+		// Blank visual line between authored lines = the double-spacing.
+		if (i > 0) {
+			lines.push([]);
+		}
+		const logical = logicalLines[i];
+		const wrapped = width && width > 0 ? wrapStyledRuns(logical, width) : [logical];
+		lines.push(...wrapped);
+	}
 	const children: React.ReactNode[] = [];
 	for (let li = 0; li < lines.length; li++) {
 		if (li > 0) {
@@ -162,23 +226,20 @@ function renderInline(tokens: Token[], key = ""): React.ReactElement[] {
 			}
 			case "codespan": {
 				const t = token as Tokens.Codespan;
+				// No literal backticks — the color carries the inline-code affordance.
 				elements.push(
 					<Text key={k} color="yellow">
-						{"`"}
 						{t.text}
-						{"`"}
 					</Text>,
 				);
 				break;
 			}
 			case "link": {
 				const t = token as Tokens.Link;
+				// Real terminal hyperlink (OSC 8) over the label, no trailing `(url)`.
 				elements.push(
-					<Text key={k}>
-						<Text color="cyan" underline>
-							{t.text}
-						</Text>
-						<Text dimColor> ({t.href})</Text>
+					<Text key={k} color="cyan" underline>
+						{osc8Link(t.href, t.text)}
 					</Text>,
 				);
 				break;
@@ -418,10 +479,34 @@ export function Markdown({ text, width }: MarkdownProps): React.ReactElement {
 		return <Text>{""}</Text>;
 	}
 
+	// Insert a blank line ONLY between two rendered blocks that the author
+	// separated with a blank line (a `space` token). Tracking position here —
+	// rather than rendering `space` as a blank line in renderBlock — is what
+	// keeps leading/trailing `space` tokens (marked emits them for blank lines
+	// at the very start/end of the input) from stranding stray blank rows above
+	// or below the message. Consecutive blanks collapse to one `space` token, so
+	// the gap is always exactly one row regardless of how many blanks were typed.
 	const tokens = Lexer.lex(text);
-	const blocks = tokens
-		.map((token, index) => renderBlock(token, index, width))
-		.filter((el): el is React.ReactElement => el !== null);
+	const blocks: React.ReactElement[] = [];
+	let pendingGap = false;
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index];
+		if (token.type === "space") {
+			if (blocks.length > 0) {
+				pendingGap = true;
+			}
+			continue;
+		}
+		const el = renderBlock(token, index, width);
+		if (el === null) {
+			continue;
+		}
+		if (pendingGap) {
+			blocks.push(<Text key={`gap-${index}`}> </Text>);
+			pendingGap = false;
+		}
+		blocks.push(el);
+	}
 
 	if (blocks.length === 0) {
 		return <Text>{""}</Text>;

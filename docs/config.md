@@ -19,9 +19,8 @@ this is where the per-field detail lives.
 | [`keyring.json`](#keyringjson) | No | Per-host identity keys (auto-populated) |
 | [`mcp.json`](#mcpjson) | No | MCP server connections |
 | [`overlay.json`](#overlayjson) | No | Codebase mount points |
-| [`cron_schedules.json`](#cron_schedulesjson) | No | Recurring + heartbeat task definitions |
+| [`cron_schedules.json`](#cron_schedulesjson) | — | Removed — use the `task` tool for recurring tasks |
 | [`memory.json`](#memoryjson) | No | Pinned-memory caps |
-| `persona.md` | No | Seed for the cluster-wide persona (free-form Markdown, no schema). Loaded into `cluster_config['persona']` on first start, then inert. |
 
 ---
 
@@ -234,28 +233,10 @@ Codebase mount points exposed to the agent's virtual filesystem.
 
 ## `cron_schedules.json`
 
-Recurring tasks. The `heartbeat` key is special (the agent's maintenance loop); every
-other key defines a named cron entry. The schema is closed-by-shape: any non-`heartbeat`
-key must match the cron-entry shape.
-
-**`heartbeat`:**
-
-| Field | Type | Default | Meaning |
-|-------|------|---------|---------|
-| `enabled` | bool | `true` | Run the heartbeat at all. |
-| `interval_ms` | int ≥ 60000 | `1800000` (30m) | Heartbeat cadence. Floor is 60s. |
-| `model_hint` | string | absent | Model to run the heartbeat on. |
-
-**Any other key (a named cron entry):**
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `schedule` | string (non-empty) | Cron expression. |
-| `thread` | string | Optional thread id to run in. |
-| `payload` | string | Optional task payload (the instructions). |
-| `template` | array<string> | Optional payload template lines. |
-| `requires` | array<string> | Optional task dependencies. |
-| `model_hint` | string | Optional model to run on. |
+Removed. Recurring tasks are created at runtime through the agent's `task` tool
+(`schedule` action with a `cron` expression), which writes `tasks` rows directly —
+the file's per-task seeding was redundant with that path. The agent heartbeat is now
+a system-managed, uncancellable task seeded at a fixed cadence with no config surface.
 
 ---
 
@@ -271,17 +252,19 @@ Pinned-memory caps — a context-management control. Absent means the defaults b
 
 ---
 
-## `persona.md`
+## `persona`
 
-Free-form Markdown folded into the system prompt as personality. No schema, no fields —
-whatever you write is the voice.
+The cluster-wide operator persona — free-form Markdown folded into the system prompt as
+personality. No schema, no fields — whatever you write is the voice.
 
-`persona.md` is a **seed**, not the live source of truth. On the first start where the
-synced `cluster_config['persona']` row is absent, the file's contents are loaded into that
-row; from then on the row is authoritative and the file is inert. The persona is a single
-global value that replicates to every host (so a turn relayed to another host renders the
-same voice) and is read live at context-assembly time — no cache, no reload signal.
+The persona is **not** a config file. It lives as a single synced `cluster_config['persona']`
+row, set after initialization with `boundctl set-persona` (from a file or stdin) or the web
+UI's Persona view. There is no `persona.md` seed; a fresh install starts with no persona and
+uses the model's default behavior until you set one. The value is a single global row that
+replicates to every host (so a turn relayed elsewhere renders the same voice) and is read
+live at context-assembly time — no cache, no reload signal. Capped at 64 KB.
 
-Edit the live persona with `boundctl set-persona` (from a file or stdin) or the web UI's
-Persona view. Editing `persona.md` after the first start has no effect. The value is capped
-at 64 KB.
+```bash
+boundctl set-persona --file my-persona.md
+cat my-persona.md | boundctl set-persona
+```

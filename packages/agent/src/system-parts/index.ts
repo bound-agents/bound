@@ -4,7 +4,7 @@
  * Builds the byte-stable static portion of `systemPrompt`:
  *   1. Environment paragraph (constant)
  *   2. Concurrency paragraph (constant)
- *   3. Persona body (file-cached from `config/persona.md`)
+ *   3. Persona body (from the synced `cluster_config['persona']` row)
  *   4. Orientation block (commandRegistry + host identity)
  *   5. `## Database Schema` block (live `PRAGMA table_info` snapshot)
  *

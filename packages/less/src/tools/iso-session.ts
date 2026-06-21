@@ -277,9 +277,10 @@ export async function execInSession(
 	cwd: string,
 	cfg: ResolvedSandboxConfig,
 	shell: ResolvedShell,
+	execCwd: string = cwd,
 ): Promise<SandboxSpawnResult> {
 	try {
-		return await execInSessionOnce(command, cwd, cfg, shell);
+		return await execInSessionOnce(command, cwd, cfg, shell, execCwd);
 	} catch {
 		// The memoized session may have gone stale — the broker (IsolationProxy)
 		// restarted and reclaimed the sandbox out from under us, so exec against
@@ -289,7 +290,7 @@ export async function execInSession(
 		// cannot double-execute side effects; if the retry also fails it
 		// propagates and the wrapper degrades as before.
 		await deprovisionActiveSession();
-		return await execInSessionOnce(command, cwd, cfg, shell);
+		return await execInSessionOnce(command, cwd, cfg, shell, execCwd);
 	}
 }
 
@@ -298,13 +299,19 @@ async function execInSessionOnce(
 	cwd: string,
 	cfg: ResolvedSandboxConfig,
 	shell: ResolvedShell,
+	execCwd: string = cwd,
 ): Promise<SandboxSpawnResult> {
+	// `cwd` anchors the session: it sets the write-confinement boundary at
+	// provision time and is the memoization key (boundless attaches to one
+	// working dir, so the session is reused). `execCwd` only picks where THIS
+	// command runs — a dedicated `cwd` arg moves the run dir without widening
+	// the writable roots, mirroring an inline `cd`.
 	const session = await getOrProvisionSession(cwd, cfg);
 	const sdk = await loadMxcSdk();
 	const pty = await sdk.execInSandbox(session.sandboxId, {
 		process: {
 			commandLine: `${shell.command} ${shell.execFlag} ${command}`,
-			cwd,
+			cwd: execCwd,
 			env: toEnvArray(nonInteractiveEnv()),
 		},
 	});

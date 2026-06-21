@@ -9,8 +9,8 @@ There are three families:
 1. **Native agent tools** — built into bound, with structured JSON-schema
    parameters. The LLM receives typed parameters directly; there is no string
    parsing. These are always available.
-2. **Built-in file/sandbox tools** — `read`, `write`, `edit`, `bash`. File tools
-   operate on the virtual filesystem; `bash` runs in the sandbox. (On a
+2. **Built-in file/sandbox tools** — `bms_read`, `bms_write`, `bms_edit`, `bms_bash`. File tools
+   operate on the virtual filesystem; `bms_bash` runs in the sandbox. (On a
    `boundless` terminal session these are additionally surfaced as
    `boundless_read` / `boundless_write` / `boundless_edit` / `boundless_bash`,
    scoped to the user's local working directory.)
@@ -101,18 +101,18 @@ phrasing in the `context` field, not the relation. This is your durable
 cross-session memory — see `references/memory.md`.
 
 ### `skill`
-Manage skills: `activate`, `list`, `read`, `retire`. Skills are reusable
+Manage skills: `activate`, `list`, `bms_read`, `retire`. Skills are reusable
 instruction sets; activating one makes its index entry appear in every turn and
 lets a task inject its body. See the `skill-authoring` skill for how to write one.
 
 ## Built-in file and sandbox tools
 
-- **`read`** — read a file from the virtual filesystem (head-truncated; use
+- **`bms_read`** — read a file from the virtual filesystem (head-truncated; use
   `offset` / `limit` to page).
-- **`write`** — write or overwrite a file (creates parent directories).
-- **`edit`** — apply one or more exact search-and-replace edits to a file; all
+- **`bms_write`** — write or overwrite a file (creates parent directories).
+- **`bms_edit`** — apply one or more exact search-and-replace edits to a file; all
   edits are validated before any are written.
-- **`bash`** — run a command in the sandbox. MCP tools are also reachable as
+- **`bms_bash`** — run a command in the sandbox. MCP tools are also reachable as
   commands here.
 
 On a `boundless` session the same operations are exposed as `boundless_*` tools

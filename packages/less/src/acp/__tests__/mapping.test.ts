@@ -483,6 +483,31 @@ describe("messageToSessionUpdate", () => {
 		]);
 	});
 
+	it("replays an alert row as an agent_message_chunk, mirroring the live handleAlert path", () => {
+		// Live, an alert (inference timeout / non-retryable LLM error) is surfaced
+		// via AcpSession.handleAlert as an agent_message_chunk. On session/load the
+		// replay must emit the same shape -- otherwise the alert vanishes from a
+		// resumed transcript and two user turns that flanked it concatenate in the
+		// editor (Zed). Mirrors the contract: replay matches the live sequence.
+		expect(
+			messageToSessionUpdate({
+				...base,
+				role: "alert",
+				content: "Internal error: inference timed out after 300s",
+				tool_name: null,
+			}),
+		).toEqual([
+			{
+				sessionUpdate: "agent_message_chunk",
+				content: {
+					type: "text",
+					text: "[bound] Internal error: inference timed out after 300s",
+				},
+				messageId: "m1",
+			},
+		]);
+	});
+
 	it("derives tool_call name + id from the tool_use block inside content", () => {
 		// Real row shape: tool_name column is EMPTY on tool_call rows; the id and
 		// name live in the tool_use block of the persisted LlmContentBlock[] JSON.
@@ -644,7 +669,10 @@ describe("messageToSessionUpdate", () => {
 	});
 
 	it("returns no updates for internal roles", () => {
-		for (const role of ["system", "developer", "alert", "purge"] as const) {
+		// 'alert' is deliberately NOT here: it replays as an agent_message_chunk
+		// (see the dedicated test above) so a resumed transcript keeps the error
+		// in place. These three are genuine context plumbing with no client form.
+		for (const role of ["system", "developer", "purge"] as const) {
 			expect(messageToSessionUpdate({ ...base, role, content: "x", tool_name: null })).toEqual([]);
 		}
 	});

@@ -1,10 +1,10 @@
 # Sandbox Reference
 
-The **sandbox** is the environment your file tools (`read`, `write`, `edit`) and
-`bash` act on. It is a *virtual filesystem* (VFS) backed by the database, not the
+The **sandbox** is the environment your file tools (`bms_read`, `bms_write`, `bms_edit`) and
+`bms_bash` act on. It is a *virtual filesystem* (VFS) backed by the database, not the
 host's real disk. Understanding what is and is not in the sandbox saves you from
 two recurring mistakes: looking for host config inside it (it is not there — see
-`config.md`), and expecting a `write` to be queryable in the `files` table on the
+`config.md`), and expecting a `bms_write` to be queryable in the `files` table on the
 same turn (the snapshot is deferred — see below).
 
 ## What the VFS is
@@ -25,10 +25,10 @@ syscall.
 ## The deferred-snapshot gotcha
 
 The `files` table is populated by an **end-of-agent-loop snapshot**, not on every
-individual `write`. Mid-loop, after you `write` a file, querying `files` for that
+individual `bms_write`. Mid-loop, after you `bms_write` a file, querying `files` for that
 path may show the *old* content or no row yet. The write is real and a subsequent
-`read` sees it; only the synced catalog lags until the loop ends. Do not "verify"
-a write by querying `files` in the same turn and conclude it failed — `read` the
+`bms_read` sees it; only the synced catalog lags until the loop ends. Do not "verify"
+a write by querying `files` in the same turn and conclude it failed — `bms_read` the
 path instead.
 
 ## Overlay mounts — reading real codebases
@@ -54,11 +54,11 @@ Over-cap output is **middle-cut** with a marker:
 If a result looks like it is missing a chunk, grep for that marker — it is the cap
 firing, not a bug. The fix is to narrow scope (`head`, `grep`, a tighter path, a
 `LIMIT`), not to retry the same broad command. Per-tool caps (line-aware for
-`read`, row-aware for `query`) run first; the 256 KiB cap is the final backstop.
+`bms_read`, row-aware for `query`) run first; the 256 KiB cap is the final backstop.
 
 ## Network access from the sandbox
 
-`bash` runs in a sandbox whose outbound network is gated by a URL filter
+`bms_bash` runs in a sandbox whose outbound network is gated by a URL filter
 (allowlist of prefixes). Do not assume arbitrary `curl`/`fetch` works — a given
 deployment's sandbox may have no HTTP client at all, or only an allowlisted set of
 destinations. If you need to fetch something, confirm the path exists before
@@ -77,18 +77,22 @@ being told.
 When the current thread is a **boundless** terminal session, you also have
 `boundless_read` / `boundless_write` / `boundless_edit` / `boundless_bash`. These
 act on the operator's **real local working directory**, NOT the VFS. They are a
-different filesystem entirely:
+different filesystem entirely. The two environments have names so you can keep them
+straight:
 
-- `read` / `write` / `edit` / `bash` → the sandbox VFS (synced, database-backed).
-- `boundless_*` → the host's actual disk in the boundless cwd (not synced).
+- **Bound Main Station** — the sandbox VFS (synced, database-backed), reached through
+  `bms_read` / `bms_write` / `bms_edit` / `bms_bash`.
+- **Boundless Satellite Station** — the boundless host's actual disk in the boundless
+  cwd (not synced), reached through `boundless_*`.
 
 Mixing them up is a common error: editing a real repo file requires `boundless_edit`,
-while `edit` would (silently, harmlessly) write into the VFS instead. The
-`boundless_copy` tool moves bytes between the two filesystems without round-tripping
-through your context.
+while `bms_edit` would (silently, harmlessly) write into the VFS instead. The
+`boundless_copy` tool moves bytes between the two stations without round-tripping
+through your context — its `source`/`target` take `"main"` (the VFS) or `"satellite"`
+(the host disk).
 
 ## What is NOT in the sandbox
 
 Host configuration. The `config/` directory lives on the host's real disk and is
 loaded into `AppContext.config` at startup behind strict Zod schemas — it is not a
-VFS path and `read`/`bash` cannot reach it. See `config.md`.
+VFS path and `bms_read`/`bms_bash` cannot reach it. See `config.md`.

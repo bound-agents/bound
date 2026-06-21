@@ -100,8 +100,8 @@ OPTIONS:
 EXAMPLES:
   boundctl set-hub primary-host
   boundctl set-hub primary-host --wait
-  boundctl set-persona --file config/persona.md
-  cat persona.md | boundctl set-persona
+  boundctl set-persona --file my-persona.md
+  cat my-persona.md | boundctl set-persona
   boundctl stop
   boundctl resume
   boundctl restore --before "2024-01-01T12:00:00Z" --preview

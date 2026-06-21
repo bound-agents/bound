@@ -23,9 +23,9 @@ describe("tool registry", () => {
 	}
 
 	describe("createToolRegistry", () => {
-		it("registers the sandbox (bash) tool first", () => {
+		it("registers the sandbox (bms_bash) tool first", () => {
 			const registry = createToolRegistry(undefined, undefined, [], logger);
-			const bashTool = getTool(registry, "bash");
+			const bashTool = getTool(registry, "bms_bash");
 			expect(bashTool.kind).toBe("sandbox");
 		});
 
@@ -99,9 +99,9 @@ describe("tool registry", () => {
 			const builtInTools = createBuiltInTools(fs);
 
 			const registry = createToolRegistry(builtInTools, undefined, [], logger);
-			expect(registry.has("read")).toBe(true);
-			expect(registry.has("write")).toBe(true);
-			const readTool = getTool(registry, "read");
+			expect(registry.has("bms_read")).toBe(true);
+			expect(registry.has("bms_write")).toBe(true);
+			const readTool = getTool(registry, "bms_read");
 			expect(readTool.kind).toBe("builtin");
 			expect(readTool.execute).toBeDefined();
 		});
@@ -132,11 +132,11 @@ describe("tool registry", () => {
 				}
 			>([
 				[
-					"read", // duplicate with a built-in tool
+					"bms_read", // duplicate with a built-in tool
 					{
 						type: "function",
 						function: {
-							name: "read",
+							name: "bms_read",
 							description: "Duplicate registration",
 							parameters: { type: "object", properties: {} },
 						},
@@ -146,8 +146,8 @@ describe("tool registry", () => {
 
 			const registry = createToolRegistry(builtInTools, clientTools, [], loggerWithWarnings as any);
 
-			// Client tools register before built-in tools, so client "read" wins and is skipped
-			const tool = getTool(registry, "read");
+			// Client tools register before built-in tools, so client "bms_read" wins and is skipped
+			const tool = getTool(registry, "bms_read");
 			expect(tool.kind).toBe("client");
 
 			// Warning should have been logged
@@ -187,15 +187,15 @@ describe("tool registry", () => {
 			const registry = createToolRegistry(builtInTools, clientTools, [], logger);
 
 			// Tools should be present
-			expect(registry.has("bash")).toBe(true);
+			expect(registry.has("bms_bash")).toBe(true);
 			expect(registry.has("client_tool")).toBe(true);
-			expect(registry.has("read")).toBe(true);
-			expect(registry.has("write")).toBe(true);
+			expect(registry.has("bms_read")).toBe(true);
+			expect(registry.has("bms_write")).toBe(true);
 
 			// Verify kinds
-			expect(getTool(registry, "bash").kind).toBe("sandbox");
+			expect(getTool(registry, "bms_bash").kind).toBe("sandbox");
 			expect(getTool(registry, "client_tool").kind).toBe("client");
-			expect(getTool(registry, "read").kind).toBe("builtin");
+			expect(getTool(registry, "bms_read").kind).toBe("builtin");
 		});
 	});
 
@@ -206,7 +206,7 @@ describe("tool registry", () => {
 			const builtInTools = createBuiltInTools(fs);
 
 			const registry = createToolRegistry(builtInTools, undefined, [], logger);
-			const tool = getTool(registry, "read");
+			const tool = getTool(registry, "bms_read");
 			expect(tool.kind).toBe("builtin");
 			expect(tool.execute).toBeDefined();
 

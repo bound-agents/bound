@@ -73,6 +73,30 @@ describe("buildToolSet", () => {
 		expect(properties.limit).toBeDefined();
 	});
 
+	it("shell tool exposes optional timeout + cwd params, command required", () => {
+		const { tools } = buildToolSet("/tmp", "localhost");
+
+		const shellTool = tools.find((t) => t.function.name === SHELL_TOOL_NAME);
+		expect(shellTool).toBeDefined();
+		if (!shellTool) return;
+
+		const params = shellTool.function.parameters as {
+			required: string[];
+			properties: Record<string, { type?: string }>;
+		};
+		expect(params.required).toContain("command");
+		expect(params.required).not.toContain("timeout");
+		expect(params.required).not.toContain("cwd");
+		expect(params.properties.timeout?.type).toBe("number");
+		// Dedicated working-directory override (defaults to the session cwd), so
+		// directory changes go through the param instead of an inline `cd`.
+		expect(params.properties.cwd?.type).toBe("string");
+
+		const description = shellTool.function.description;
+		expect(description).toContain("cwd");
+		expect(description).not.toContain("do not prefix commands with a `cd`");
+	});
+
 	it("has correct boundless_write parameters", () => {
 		const { tools } = buildToolSet("/tmp", "localhost");
 
@@ -760,6 +784,31 @@ describe("buildSystemPromptAddition", () => {
 		// Host/cwd/tools sections still render identically.
 		expect(prompt).toContain("Host: example.com");
 		expect(prompt).toContain("boundless_read");
+	});
+
+	it("tells the ACP agent how to cite a linkable file location", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [], {
+			surface: {
+				type: "acp",
+				clientInfo: {
+					name: "test",
+					version: "0.0.0",
+				},
+			},
+		});
+
+		// The editor linkifies a bare `path:line`; brackets or a line range
+		// defeat it (the failure that motivated documenting this).
+		expect(prompt).toContain("path:line");
+		expect(prompt.toLowerCase()).toContain("clickable");
+		expect(prompt).toContain("bracket");
+	});
+
+	it("omits the citation guidance on the terminal surface", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
+
+		// Linkification is an editor behavior; the plain terminal line stays bare.
+		expect(prompt).not.toContain("path:line");
 	});
 });
 

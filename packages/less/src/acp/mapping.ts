@@ -47,6 +47,29 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
  * an exact name. MCP tools carry the `boundless_mcp_` prefix and are treated as
  * generic "other" since their behavior is opaque.
  */
+/**
+ * Marker prefixing daemon-originated notices when they ride the ACP transcript.
+ * Alerts (inference timeouts, non-retryable LLM errors, fatal loop / task
+ * errors, plus informational notices like a same-tier model fallback or a
+ * content-filter stop) render as `agent_message_chunk` text — the only
+ * persistent, visible in-transcript vehicle ACP offers — so without a marker
+ * they read as the model's own words.
+ *
+ * Severity-neutral on purpose: an alert row carries no severity field, and the
+ * session/load replay path keys only on `role === "alert"`, so it must
+ * reconstruct one label for an error and an informational notice alike. Names
+ * the daemon as speaker rather than asserting a severity it can't recover.
+ * ASCII so it survives every editor/terminal that renders the transcript.
+ */
+export const ACP_DAEMON_NOTICE_PREFIX = "[bound] ";
+
+/** Prefix daemon-notice text for the ACP transcript. Used by the live path
+ * (`handleAlert`, stream-error) and session/load replay so a resumed transcript
+ * shows the same labeled notice the editor saw live. */
+export function formatDaemonNotice(text: string): string {
+	return `${ACP_DAEMON_NOTICE_PREFIX}${text}`;
+}
+
 export function toolNameToKind(toolName: string): ToolKind {
 	if (toolName === "boundless_read") return "read";
 	if (toolName === "boundless_write" || toolName === "boundless_edit") return "edit";
@@ -95,7 +118,9 @@ function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd:
 		return filePath ? [absolutePath(cwd, filePath)] : [];
 	}
 
-	if (toolName === "boundless_copy" && args.target === "host") {
+	// "satellite" is the #180 name for the real host disk; "host" is the legacy
+	// spelling that may still appear in replayed history from older threads.
+	if (toolName === "boundless_copy" && (args.target === "satellite" || args.target === "host")) {
 		const targetPath = typeof args.target_path === "string" ? args.target_path : "";
 		return targetPath ? [absolutePath(cwd, targetPath)] : [];
 	}
@@ -190,8 +215,9 @@ export function toolCallLocations(
 	) {
 		pushHostPath(args.file_path, followAlongLine(toolName, args, cwd));
 	} else if (toolName === "boundless_copy") {
-		if (args.source === "host") pushHostPath(args.source_path);
-		if (args.target === "host") pushHostPath(args.target_path);
+		// Accept both the #180 "satellite" name and the legacy "host" spelling.
+		if (args.source === "satellite" || args.source === "host") pushHostPath(args.source_path);
+		if (args.target === "satellite" || args.target === "host") pushHostPath(args.target_path);
 	}
 
 	return locations;
@@ -526,6 +552,24 @@ export function messageToSessionUpdate(
 				{
 					sessionUpdate: "agent_message_chunk",
 					content: { type: "text", text: message.content },
+					messageId: message.id,
+				},
+			];
+		case "alert":
+			// Daemon alerts (inference timeouts, non-retryable LLM errors, fatal
+			// loop/task errors, plus informational notices like a same-tier model
+			// fallback or a content-filter stop) are surfaced live by
+			// AcpSession.handleAlert as an agent_message_chunk. Replay must mirror
+			// that so a resumed transcript keeps the alert in place — otherwise it
+			// vanishes and two user turns that flanked it concatenate in the editor
+			// (Zed). Both paths run the text through formatDaemonNotice so the line
+			// reads as the daemon speaking, not the model. Live prepends "\n\n" to
+			// separate the alert from an open streaming run; on replay each row is
+			// its own message, so the marked text rides clean.
+			return [
+				{
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: formatDaemonNotice(message.content) },
 					messageId: message.id,
 				},
 			];

@@ -4,10 +4,32 @@
 
 import type { ContentBlock, LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
-import { formatTimestamp } from "../context-assembly";
+import { formatInstant } from "../context-assembly";
 
 /** Hard cap on the number of injected `Model switched` developer messages. */
 export const MODEL_SWITCH_CAP = 3;
+
+/** Tag name for the per-user-message metadata envelope (kebab-case, matching
+ * the R-VC31 volatile-context envelope convention). */
+const USER_MESSAGE_TAG = "user-message";
+
+/**
+ * Builds the attribute string for a user message's `<user-message>` envelope
+ * (leading space included, or "" when no attributes apply).
+ *
+ * Every attribute MUST derive only from immutable message columns so the
+ * rendered envelope stays a pure function of the row — preserving the
+ * byte-stable annotation rule (N7) that anchors the message-level cachePoint.
+ * Today that's the send time (`created_at` + the once-written `tz_offset`);
+ * additional immutable fields slot in here as new attributes.
+ */
+function buildUserMessageAttributes(m: Message): string {
+	const attrs: string[] = [];
+	if (m.created_at) {
+		attrs.push(`sent="${formatInstant(m.created_at, readTzOffsetMinutes(m.metadata))}"`);
+	}
+	return attrs.length > 0 ? ` ${attrs.join(" ")}` : "";
+}
 
 /**
  * Reads the sender's UTC offset (minutes, east-of-UTC positive) from a user
@@ -119,28 +141,38 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 			}
 		}
 
-		// Timestamp-annotate user messages. Always — independent of nowMs —
-		// so the wire bytes are byte-stable across the agent loop's lifetime.
+		// Wrap user messages in an XML metadata envelope. Always — independent
+		// of nowMs — so the wire bytes are byte-stable across the agent loop's
+		// lifetime.
 		//
-		// History: the rule was previously age-gated (≥60s only), to avoid
-		// prefixing the user's just-sent message. But that introduced a
-		// one-time byte transition exactly 60s into the conversation:
-		// before 60s the wire showed `<user content>`, after 60s it showed
-		// `[May 26, 15:53] <user content>`. For autonomous tasks (single
-		// user_1 followed by long inner loops), the 60s cliff routinely
-		// fired mid-conversation, breaking the message-level cachePoint
-		// that anchored on user_1. Live regression on thread `6fff1513-...`
-		// 2026-05-26: cumulative cache stuck at the system-anchor floor
-		// because user_1's wire bytes shifted by +16 chars at the cliff.
+		// History: the predecessor was a bare timestamp prefix (`[May 26,
+		// 15:53] <content>`), itself once age-gated (≥60s only). The age gate
+		// introduced a one-time byte transition exactly 60s into the
+		// conversation that thrashed the message-level cachePoint anchored on
+		// user_1 (live regression on thread `6fff1513-...` 2026-05-26).
+		// Annotating always — and deriving every envelope attribute purely
+		// from immutable columns (`created_at` + the once-written `tz_offset`)
+		// — keeps the wire bytes a pure function of the row, so the cachePoint
+		// holds. The model already sees the time via the volatile tail;
+		// carrying it on the message is redundant-but-stable, strictly better
+		// than redundant-and-time-varying.
 		//
-		// Annotating always is byte-stable: the prefix is a pure function
-		// of `created_at`, which is immutable per Invariant #1. The model
-		// already sees the timestamp via the volatile-tail context; adding
-		// it to the user message is redundant-but-stable, which is
-		// strictly better than redundant-and-time-varying.
-		if (m.role === "user" && m.created_at && typeof annotatedContent === "string") {
-			const ts = formatTimestamp(m.created_at, readTzOffsetMinutes(m.metadata));
-			annotatedContent = `${ts} ${annotatedContent}`;
+		// The envelope wraps BOTH content forms (Invariant #10): a plain
+		// string is wrapped in open/close tags; a ContentBlock[] (e.g. an image
+		// message) is bracketed by leading + trailing text blocks so non-text
+		// blocks survive intact between the tags — which also gives vision
+		// messages a send time they previously lacked.
+		if (m.role === "user" && m.created_at) {
+			const attrs = buildUserMessageAttributes(m);
+			if (typeof annotatedContent === "string") {
+				annotatedContent = `<${USER_MESSAGE_TAG}${attrs}>\n${annotatedContent}\n</${USER_MESSAGE_TAG}>`;
+			} else if (Array.isArray(annotatedContent)) {
+				annotatedContent = [
+					{ type: "text", text: `<${USER_MESSAGE_TAG}${attrs}>` },
+					...annotatedContent,
+					{ type: "text", text: `</${USER_MESSAGE_TAG}>` },
+				] as ContentBlock[];
+			}
 		}
 
 		const msg: LLMMessage = {

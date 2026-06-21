@@ -1,13 +1,10 @@
 /**
- * Sandbox subsystem: ClusterFs creation, command registry, VFS hydration, persona loading.
+ * Sandbox subsystem: ClusterFs creation, command registry, VFS hydration.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { generateRemoteMCPProxyCommands } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
-import { insertRow } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
 import {
 	type ClusterFsResult,
@@ -16,7 +13,7 @@ import {
 	createSandbox,
 	hydrateWorkspace,
 } from "@bound/sandbox";
-import { PERSONA_CLUSTER_CONFIG_KEY, formatError } from "@bound/shared";
+import { formatError } from "@bound/shared";
 
 export interface SandboxResult {
 	sandbox: Awaited<ReturnType<typeof createSandbox>> | null;
@@ -36,7 +33,6 @@ export async function initSandbox(
 	mcpClientsMap: Map<string, MCPClient>,
 	mcpCommands: CommandDefinition[],
 	mcpServerNames: Set<string>,
-	configDir: string,
 ): Promise<SandboxResult> {
 	// 9. Sandbox setup
 	appContext.logger.info("Setting up sandbox...");
@@ -95,48 +91,6 @@ export async function initSandbox(
 		appContext.logger.info("[sandbox] Sandbox ready");
 	} catch (error) {
 		appContext.logger.warn("[sandbox] Failed to create sandbox", { error: formatError(error) });
-	}
-
-	// 10. Persona seed (one-time migration of config/persona.md into cluster_config).
-	// The persona used to be read off disk per assembly, which diverged silently
-	// across the cluster — a relayed turn assembled on a peer used that peer's file.
-	// It now lives as a single synced LWW row (PERSONA_CLUSTER_CONFIG_KEY). Seed it
-	// from the file once if the row is absent; thereafter the row is source of truth
-	// and the file is inert. Edits flow through `boundctl set-persona` / the web UI.
-	appContext.logger.info("Checking persona...");
-	{
-		const existing = appContext.db
-			.query("SELECT value FROM cluster_config WHERE key = ?")
-			.get(PERSONA_CLUSTER_CONFIG_KEY) as { value: string } | null;
-		if (existing) {
-			appContext.logger.info("[persona] Using synced persona from cluster_config");
-		} else {
-			const personaPath = resolve(configDir, "persona.md");
-			if (existsSync(personaPath)) {
-				try {
-					const content = readFileSync(personaPath, "utf-8");
-					insertRow(
-						appContext.db,
-						"cluster_config",
-						{
-							key: PERSONA_CLUSTER_CONFIG_KEY,
-							value: content,
-							modified_at: new Date().toISOString(),
-						},
-						appContext.siteId,
-					);
-					appContext.logger.info(
-						`[persona] Seeded persona into cluster_config from persona.md (${content.length} chars)`,
-					);
-				} catch (error) {
-					appContext.logger.warn("[persona] Failed to seed persona.md into cluster_config:", {
-						error: formatError(error),
-					});
-				}
-			} else {
-				appContext.logger.info("[persona] No persona configured");
-			}
-		}
 	}
 
 	return { sandbox, clusterFsObj, commandContext };
