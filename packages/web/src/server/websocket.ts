@@ -394,6 +394,7 @@ export function createWebSocketHandler(
 		// affinity target here.
 		for (const threadId of conn.subscriptions) {
 			if (conn.clientTools.size > 0) {
+				evictOtherToolBearingSessions(conn, threadId);
 				recordClientSession(conn, threadId);
 			} else {
 				clearClientSession(conn, threadId);
@@ -416,6 +417,7 @@ export function createWebSocketHandler(
 		// subscription is just a viewport; pinning inference to that host would
 		// mask the actual boundless session on another spoke.
 		if (conn.clientTools.size > 0) {
+			evictOtherToolBearingSessions(conn, msg.thread_id);
 			recordClientSession(conn, msg.thread_id);
 		}
 
@@ -440,6 +442,55 @@ export function createWebSocketHandler(
 
 		// Clean up systemPromptAddition for this thread (AC2.5)
 		conn.threadSystemPromptAdditions.delete(msg.thread_id);
+	}
+
+	/**
+	 * Enforce single-tool-bearing-session-per-thread (issue #189).
+	 *
+	 * The affinity + dispatch model assumes one tool provider per thread:
+	 * `recordClientSession` writes one `client_sessions` row per
+	 * (connection, thread), and `getConnectionForTool` first-matches by
+	 * `clients` insertion order. Two tool-bearing connections on the same
+	 * thread make both indeterminate — two affinity rows compete for
+	 * cross-spoke routing, and a duplicate tool name resolves to whichever
+	 * connection was inserted first. (The old `clientTools.size > 0` guard
+	 * assumed a plain web UI never registers tools; that is not a durable
+	 * invariant.)
+	 *
+	 * Most-recent-wins: when `keep` becomes a tool provider on `threadId`,
+	 * evict every *other* tool-bearing connection from that thread. Eviction
+	 * drops the older connection's subscription to this thread (which also
+	 * stops its tools merging via `getClientToolsForThread`, since that gates
+	 * on `subscriptions`), clears its affinity row and per-thread system
+	 * prompt addition, and sends a `session:evicted` notice so the client can
+	 * resubscribe read-only or surface the takeover. The older connection
+	 * keeps its tools and any other thread subscriptions untouched.
+	 *
+	 * In-flight client tool calls the evicted connection had claimed are
+	 * re-delivered to `keep` by the `redeliverPendingToolCalls` pass that
+	 * follows configure/subscribe (it re-sends entries not claimed by the
+	 * receiving connection), so no call is stranded.
+	 */
+	function evictOtherToolBearingSessions(keep: ClientConnection, threadId: string): void {
+		for (const [ws, other] of clients) {
+			if (other === keep) continue;
+			if (!other.subscriptions.has(threadId)) continue;
+			if (other.clientTools.size === 0) continue;
+
+			other.subscriptions.delete(threadId);
+			other.threadSystemPromptAdditions.delete(threadId);
+			clearClientSession(other, threadId);
+
+			if (ws.readyState === 1) {
+				ws.send(
+					JSON.stringify({
+						type: "session:evicted",
+						thread_id: threadId,
+						reason: "superseded_by_new_tool_session",
+					}),
+				);
+			}
+		}
 	}
 
 	/**
