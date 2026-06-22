@@ -1858,6 +1858,37 @@ export class AgentLoop {
 						}
 					}
 
+					// Persist partial response chunks so the next turn has context of
+					// what was generated before the stream failed (#174). Without this,
+					// a relay timeout or failover-exhaustion discards everything the
+					// stream earned, leaving a gap the agent must infer through.
+					if (chunks.length > 0) {
+						try {
+							const partial = this.parseResponseChunks(chunks);
+							if (partial.textContent.length > 0) {
+								const MAX_PARTIAL_CHARS = 2000;
+								const truncated =
+									partial.textContent.length > MAX_PARTIAL_CHARS
+										? `${partial.textContent.slice(0, MAX_PARTIAL_CHARS)}... [truncated]`
+										: partial.textContent;
+								const partialId = insertThreadMessage(
+									this.ctx.db,
+									{
+										threadId: this.config.threadId,
+										role: "developer",
+										content: `[Partial response - stream failed before completion] ${truncated}`,
+										hostOrigin: this.ctx.siteId,
+									},
+									this.ctx.siteId,
+								);
+								this.broadcastMessage(partialId);
+								this.messagesCreated++;
+							}
+						} catch {
+							// Don't let partial-chunk persistence mask the original error
+						}
+					}
+
 					this.transition("ERROR_PERSIST");
 					const errorMsg = formatError(error);
 					this.ctx.logger.error("[agent-loop] LLM call failed (non-retryable)", {
