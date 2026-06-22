@@ -66,6 +66,7 @@ export function buildStaticSystemParts(params: BuildStaticSystemPartsParams): st
 
 	parts.push(
 		buildOrientationBlock(
+			params.db,
 			params.commandRegistry,
 			params.hostName,
 			params.siteId,
@@ -82,6 +83,7 @@ export function buildStaticSystemParts(params: BuildStaticSystemPartsParams): st
 }
 
 function buildOrientationBlock(
+	db: Database,
 	registry: ReadonlyArray<CommandRegistryEntry>,
 	hostName: string | undefined,
 	siteId: string | undefined,
@@ -114,7 +116,116 @@ function buildOrientationBlock(
 	const site = siteId || "unknown";
 	const roleSuffix = topologyRole ? `, role: ${topologyRole}` : "";
 	lines.push(`### Host Identity\nHost: ${host} (site ${site}${roleSuffix})`);
+
+	const capabilities = buildHostCapabilitiesBlock(db, siteId);
+	if (capabilities !== null) {
+		lines.push("", capabilities);
+	}
 	return lines.join("\n");
+}
+
+/**
+ * Render a `### Host Capabilities` overview for the current host, sourced from
+ * its row in the synced `hosts` table. Grounds host self-assessment ("can this
+ * host serve inference locally? which connectors does it carry?") in declared
+ * topology rather than inference from whether a given test/relay happened to
+ * reach a peer.
+ *
+ * Returns `null` (block omitted) when `siteId` is undefined or no matching
+ * `hosts` row exists — matching the graceful-degradation posture of the schema
+ * block on a partial test DB.
+ *
+ * Cache stability (R-VC25): this block rides the system-level cache breakpoint,
+ * so it reads ONLY the slow-moving capability columns (`models`,
+ * `mcp_servers`, `platforms`) and deliberately NOT `online_at`, which flaps on
+ * every heartbeat. Topology shifts only when a host's configured capability set
+ * changes — the same posture `loadClusterModels` takes for the `<stable-context>`
+ * model topology. All lists are bytewise-sorted for locale-independent
+ * determinism.
+ */
+function buildHostCapabilitiesBlock(db: Database, siteId: string | undefined): string | null {
+	if (!siteId) return null;
+
+	let row: { models: string | null; mcp_servers: string | null; platforms: string | null } | null;
+	try {
+		row = db
+			.prepare("SELECT models, mcp_servers, platforms FROM hosts WHERE site_id = ? AND deleted = 0")
+			.get(siteId) as {
+			models: string | null;
+			mcp_servers: string | null;
+			platforms: string | null;
+		} | null;
+	} catch {
+		// Non-fatal — synthetic test DB missing the hosts table.
+		return null;
+	}
+	if (!row) return null;
+
+	const models = parseModelNames(row.models);
+	const servers = parseStringList(row.mcp_servers);
+	const platforms = parseStringList(row.platforms);
+
+	const lines: string[] = ["### Host Capabilities"];
+	lines.push(
+		models.length > 0
+			? `Local inference backends: ${models.join(", ")}`
+			: "Local inference backends: none (inference routes to cluster peers)",
+	);
+	if (servers.length > 0) {
+		lines.push(`MCP servers: ${servers.join(", ")}`);
+	}
+	if (platforms.length > 0) {
+		lines.push(`Platform connectors: ${platforms.join(", ")}`);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Parse the `hosts.models` JSON column into a bytewise-sorted, de-duplicated
+ * list of model ids. The column is either `string[]` (logical aliases) or
+ * `{ id: string }[]`; mirrors the entry-shape handling in
+ * `stable-prefix/collect.ts`'s `loadClusterModels`.
+ */
+function parseModelNames(raw: string | null): string[] {
+	if (!raw) return [];
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(parsed)) return [];
+	const names = new Set<string>();
+	for (const entry of parsed) {
+		const name =
+			typeof entry === "string"
+				? entry
+				: entry && typeof entry === "object" && "id" in entry
+					? String((entry as { id: unknown }).id)
+					: null;
+		if (name) names.add(name);
+	}
+	return [...names].sort(compareBytewise);
+}
+
+/**
+ * Parse a `hosts` JSON column holding a `string[]` (`mcp_servers`,
+ * `platforms`) into a bytewise-sorted, de-duplicated list.
+ */
+function parseStringList(raw: string | null): string[] {
+	if (!raw) return [];
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(parsed)) return [];
+	const values = new Set<string>();
+	for (const entry of parsed) {
+		if (typeof entry === "string" && entry.length > 0) values.add(entry);
+	}
+	return [...values].sort(compareBytewise);
 }
 
 function buildSchemaBlock(db: Database): string | null {

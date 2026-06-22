@@ -29,6 +29,27 @@ function freshDb(): Database {
 	return db;
 }
 
+/**
+ * Seed a `hosts` row directly. Raw SQL is fine in tests — the outbox
+ * invariant governs production code paths, not fixture setup.
+ */
+function seedHost(
+	db: Database,
+	siteId: string,
+	opts: { models?: string | null; mcpServers?: string | null; platforms?: string | null } = {},
+): void {
+	db.prepare(
+		"INSERT INTO hosts (site_id, host_name, models, mcp_servers, platforms, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, 0)",
+	).run(
+		siteId,
+		"seed-host",
+		opts.models ?? null,
+		opts.mcpServers ?? null,
+		opts.platforms ?? null,
+		"2026-01-01T00:00:00.000Z",
+	);
+}
+
 const cmdName = fc
 	.string({ minLength: 1, maxLength: 16 })
 	.filter((s) => /^[a-z][a-z0-9_-]*$/.test(s));
@@ -254,5 +275,132 @@ describe("buildStaticSystemParts — property tests", () => {
 		const c = buildStaticSystemParts(args).join("\n\n");
 		if (a !== b || b !== c) throw new Error("cache-stability regression");
 		db.close();
+	});
+
+	it("Y9: host capabilities — local backends, MCP servers, platforms render from the hosts row", () => {
+		const db = freshDb();
+		seedHost(db, "site-X", {
+			models: JSON.stringify([
+				{ id: "opus", tier: 1 },
+				{ id: "haiku", tier: 3 },
+				{ id: "gpt-5.5", tier: 1 },
+			]),
+			mcpServers: JSON.stringify(["github", "atproto", "pdf"]),
+			platforms: JSON.stringify(["discord"]),
+		});
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("### Host Capabilities")) {
+			throw new Error("capabilities block missing");
+		}
+		// Bytewise-sorted model ids.
+		if (!orientation.includes("Local inference backends: gpt-5.5, haiku, opus")) {
+			throw new Error("local backends not rendered sorted");
+		}
+		if (!orientation.includes("MCP servers: atproto, github, pdf")) {
+			throw new Error("mcp servers not rendered sorted");
+		}
+		if (!orientation.includes("Platform connectors: discord")) {
+			throw new Error("platform connectors not rendered");
+		}
+	});
+
+	it("Y10: backendless host (models=[]) renders the explicit routes-to-peers line", () => {
+		const db = freshDb();
+		seedHost(db, "site-hub", { models: "[]", mcpServers: "[]", platforms: "[]" });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "hub-host",
+			siteId: "site-hub",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes("Local inference backends: none (inference routes to cluster peers)")
+		) {
+			throw new Error("backendless line not rendered");
+		}
+		// Empty server/platform lists are omitted entirely (no dangling label).
+		if (orientation.includes("MCP servers:")) throw new Error("empty MCP line should be omitted");
+		if (orientation.includes("Platform connectors:")) {
+			throw new Error("empty platforms line should be omitted");
+		}
+	});
+
+	it("Y11: capabilities block omitted when no matching hosts row exists", () => {
+		const db = freshDb();
+		// No seedHost — empty hosts table.
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-Y",
+			siteId: "site-Y",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (orientation.includes("### Host Capabilities")) {
+			throw new Error("capabilities block should be omitted with no hosts row");
+		}
+		// Host Identity still renders.
+		if (!orientation.includes("### Host Identity")) throw new Error("host identity regression");
+	});
+
+	it("Y12: capabilities block omitted when siteId is undefined", () => {
+		const db = freshDb();
+		seedHost(db, "site-Z", { models: JSON.stringify(["opus"]) });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: undefined,
+			siteId: undefined,
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (orientation.includes("### Host Capabilities")) {
+			throw new Error("capabilities block should be omitted without a siteId");
+		}
+	});
+
+	it("Y13: capabilities render is order-independent (bytewise determinism)", () => {
+		const dbForward = freshDb();
+		seedHost(dbForward, "site-D", {
+			models: JSON.stringify([{ id: "sonnet" }, { id: "opus" }, { id: "haiku" }]),
+			mcpServers: JSON.stringify(["zeta", "alpha", "mu"]),
+		});
+		const forward = buildStaticSystemParts({
+			db: dbForward,
+			persona: null,
+			commandRegistry: [],
+			hostName: "h",
+			siteId: "site-D",
+		}).join("\n\n");
+		dbForward.close();
+
+		const dbReversed = freshDb();
+		seedHost(dbReversed, "site-D", {
+			models: JSON.stringify([{ id: "haiku" }, { id: "opus" }, { id: "sonnet" }]),
+			mcpServers: JSON.stringify(["mu", "alpha", "zeta"]),
+		});
+		const reversed = buildStaticSystemParts({
+			db: dbReversed,
+			persona: null,
+			commandRegistry: [],
+			hostName: "h",
+			siteId: "site-D",
+		}).join("\n\n");
+		dbReversed.close();
+
+		if (forward !== reversed) throw new Error("capabilities render is input-order-sensitive");
 	});
 });
