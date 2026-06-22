@@ -1,4 +1,4 @@
-import { formatError } from "@bound/shared";
+import { HLC_ZERO, formatError, parseHlc } from "@bound/shared";
 import { z } from "zod";
 import { getClientSessions } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types.js";
@@ -32,6 +32,20 @@ function relativeTime(iso: string | null): string {
 	const hours = Math.floor(minutes / 60);
 	if (hours < 24) return `${hours}h ago`;
 	return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * Relative age from an HLC's physical-time prefix. Used for `last_received` on
+ * the sync mesh — the only signal that reflects whether a peer is actually
+ * feeding us data. `last_sync_at` is bumped by our OWN outbound sends
+ * (peer-cursor.ts), so it reads fresh even when inbound replication has stalled;
+ * a one-directional stall is only legible through inbound age.
+ */
+function relativeTimeFromHlc(hlc: string | null): string {
+	if (!hlc || hlc === HLC_ZERO) return "never";
+	const [ts] = parseHlc(hlc);
+	if (Number.isNaN(new Date(ts).getTime())) return "never";
+	return relativeTime(ts);
 }
 
 function lookupStats<T>(map: Map<string, T>, host: HostRow): T | undefined {
@@ -84,8 +98,13 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 
 				// Sync state by peer
 				const syncStates = ctx.db
-					.prepare("SELECT peer_site_id, sync_errors, last_sync_at FROM sync_state")
-					.all() as { peer_site_id: string; sync_errors: number; last_sync_at: string | null }[];
+					.prepare("SELECT peer_site_id, sync_errors, last_sync_at, last_received FROM sync_state")
+					.all() as {
+					peer_site_id: string;
+					sync_errors: number;
+					last_sync_at: string | null;
+					last_received: string | null;
+				}[];
 				const syncByPeer = new Map(syncStates.map((s) => [s.peer_site_id, s]));
 
 				// Task stats by claimed_by
@@ -209,7 +228,7 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 						const peerHost = hosts.find((h) => h.site_id === sync.peer_site_id);
 						const peerName = peerHost?.host_name ?? sync.peer_site_id;
 						lines.push(
-							`  ${localName} ↔ ${peerName} (${sync.sync_errors} errors, last ${relativeTime(sync.last_sync_at)})`,
+							`  ${localName} ↔ ${peerName} (${sync.sync_errors} errors, inbound ${relativeTimeFromHlc(sync.last_received)}, activity ${relativeTime(sync.last_sync_at)})`,
 						);
 					}
 					lines.push("");
