@@ -132,6 +132,7 @@ export async function createWebServer(
 	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
+	let reapInterval: ReturnType<typeof setInterval> | null = null;
 
 	return {
 		async start(): Promise<void> {
@@ -151,10 +152,29 @@ export async function createWebServer(
 				websocket: wsHandler,
 			});
 
+			// Reap sessions orphaned by an unclean shutdown — a killed process
+			// or crashed host never fires WebSocket `close`, so `deleted = 0`
+			// rows accumulate and the thread-list badge shows stale sessions.
+			const startupReaped = wsHandler.reapStaleSessions();
+			if (startupReaped > 0) {
+				logger.info("Reaped orphaned client sessions on startup", {
+					count: startupReaped,
+				});
+			}
+
+			// Periodic reaper for dropped TCP connections that never fire close.
+			reapInterval = setInterval(() => {
+				const reaped = wsHandler.reapStaleSessions();
+				if (reaped > 0) {
+					logger.debug("Reaped stale client sessions", { count: reaped });
+				}
+			}, 60_000);
+
 			logger.info("Web server listening", { host, port, url: `http://${host}:${port}` });
 		},
 
 		async stop(): Promise<void> {
+			if (reapInterval) clearInterval(reapInterval);
 			wsHandler.cleanup();
 			if (server) {
 				server.stop(true);
