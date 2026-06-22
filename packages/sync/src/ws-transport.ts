@@ -633,6 +633,21 @@ export class WsTransport {
 			// The hub's own agent loop can write relay outbox entries (e.g., inference
 			// requests targeting a spoke). These must be routed just like entries
 			// received from a spoke via handleRelaySend.
+			//
+			// BUT only the hub's OWN entries (source_site_id === this hub) get routed
+			// here. Forwarded entries (source_site_id is some spoke) are written to the
+			// hub outbox purely for durability by handleRelaySend's response/async
+			// branch (#174) — they have ALREADY been delivered inline with the correct
+			// source. Re-routing one would re-enter handleRelaySend with sourceSiteId =
+			// this hub, rewriting the relay source to the hub itself; the target would
+			// then address every response frame (stream_chunk, stream_end, error) back
+			// to the hub instead of the original requester, the hub would file them in
+			// its own relay_inbox, and the requester would poll forever. The durable row
+			// stays delivered=0 until the target acks (or drainRelayOutbox re-sends on
+			// reconnect) — which is exactly the durability guarantee we want to keep.
+			if (entry.source_site_id !== this.config.siteId) {
+				return;
+			}
 			this.config.logger?.info("WsTransport: hub routing outbox entry", {
 				kind: entry.kind,
 				targetSiteId: entry.target_site_id,
