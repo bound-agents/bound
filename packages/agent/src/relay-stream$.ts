@@ -47,7 +47,20 @@ export interface RelayStreamDeps {
 
 export interface RelayStreamOptions {
 	pollIntervalMs?: number;
+	/**
+	 * Per-chunk inactivity timeout: max gap allowed *between* chunks once the
+	 * stream is live. Heartbeats emitted by the source during extended thinking
+	 * count as chunks and reset this, so it stays generous.
+	 */
 	perHostTimeoutMs?: number;
+	/**
+	 * First-chunk timeout: max wait for the *first* signal (chunk or heartbeat)
+	 * from a target. A dead/restarted spoke sends nothing, so a tight value here
+	 * fails the concatMap over to the next eligible host (source redispatch)
+	 * fast, instead of stalling for the full per-chunk timeout. A live target
+	 * heartbeats within ~1s, so this rarely false-fires.
+	 */
+	firstChunkTimeoutMs?: number;
 	scheduler?: SchedulerLike;
 }
 
@@ -190,6 +203,7 @@ export function createRelayStream$(
 ): Observable<StreamChunk> {
 	const pollIntervalMs = options?.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const perHostTimeoutMs = options?.perHostTimeoutMs ?? 300_000;
+	const firstChunkTimeoutMs = options?.firstChunkTimeoutMs ?? Math.min(perHostTimeoutMs, 60_000);
 	const timeoutOccurred = { value: false };
 
 	return from(eligibleHosts).pipe(
@@ -248,7 +262,7 @@ export function createRelayStream$(
 					if (err) return throwError(() => new Error(err));
 					return from(s.chunksToEmit);
 				}),
-				timeout({ first: perHostTimeoutMs, each: perHostTimeoutMs }),
+				timeout({ first: firstChunkTimeoutMs, each: perHostTimeoutMs }),
 				takeUntil(aborted$),
 				catchError((err) => {
 					if (err instanceof TimeoutError) {

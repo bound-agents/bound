@@ -590,6 +590,15 @@ export class AgentLoop {
 		return this._inferenceTimeoutMs;
 	}
 
+	// First-chunk timeout for relay streaming. A dead/restarted spoke never
+	// emits even a heartbeat, so the relay stream should fail over to the next
+	// eligible host (source redispatch) well before the full per-chunk
+	// inference timeout elapses. Capped at 60s but never above the per-chunk
+	// timeout, so a tighter inference_timeout_ms config still bounds it.
+	private get firstChunkTimeoutMs(): number {
+		return Math.min(this.inferenceTimeoutMs, 60_000);
+	}
+
 	// Acquires a backend for loop-end summary extraction through cluster-wide
 	// resolution rather than a local-only tryGetBackend lookup. A local
 	// resolution runs extraction in-process exactly as before; a remote
@@ -1558,7 +1567,10 @@ export class AgentLoop {
 										resolution.hosts,
 										aborted$,
 										relayMetadataRef,
-										{ perHostTimeoutMs: this.inferenceTimeoutMs },
+										{
+											perHostTimeoutMs: this.inferenceTimeoutMs,
+											firstChunkTimeoutMs: this.firstChunkTimeoutMs,
+										},
 									).pipe(
 										tap((chunk) => {
 											if (chunk.type !== "heartbeat") {
