@@ -252,6 +252,68 @@ describe("hostinfo tool", () => {
 		expect(result).toContain("inbound never");
 	});
 
+	it("marks the hub node on a spoke (sync_state peer) and names it in the header", async () => {
+		const now = new Date().toISOString();
+		// Local node is this spoke; the hub is the peer it syncs to.
+		db.prepare(
+			`INSERT INTO hosts (site_id, host_name, version, modified_at, deleted, mcp_servers, mcp_tools, models, platforms)
+			 VALUES (?, 'this-spoke', '1.0.0', ?, 0, '[]', '[]', '[]', '{}')`,
+		).run(siteId, now);
+		db.prepare(
+			`INSERT INTO hosts (site_id, host_name, version, modified_at, deleted, mcp_servers, mcp_tools, models, platforms)
+			 VALUES (?, 'the-hub', '1.0.0', ?, 0, '[]', '[]', '[]', '{}')`,
+		).run("hub-site", now);
+		db.prepare(
+			"INSERT INTO sync_state (peer_site_id, last_received, last_sent, sync_errors, last_sync_at) VALUES (?, ?, ?, 0, ?)",
+		).run("hub-site", now, now, now);
+
+		const toolCtx: ToolContext = {
+			db,
+			siteId,
+			eventBus: { emit: () => {} } as any,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+			topologyRole: "spoke",
+		};
+		const tool = createHostinfoTool(toolCtx);
+		const result = (await tool.execute({})) as string;
+
+		expect(result).toContain("Hub: the-hub (hub-site)");
+		// The hub node carries the (hub) tag; the local spoke does not.
+		expect(result).toMatch(/Host: the-hub \(hub\)/);
+		expect(result).toMatch(/Host: this-spoke \(local\)/);
+	});
+
+	it("does not misidentify a spoke peer as the hub when this node IS the hub", async () => {
+		const now = new Date().toISOString();
+		// Local node is the hub; sync_state holds a cursor row per connected spoke.
+		db.prepare(
+			`INSERT INTO hosts (site_id, host_name, version, modified_at, deleted, mcp_servers, mcp_tools, models, platforms)
+			 VALUES (?, 'this-hub', '1.0.0', ?, 0, '[]', '[]', '[]', '{}')`,
+		).run(siteId, now);
+		db.prepare(
+			`INSERT INTO hosts (site_id, host_name, version, modified_at, deleted, mcp_servers, mcp_tools, models, platforms)
+			 VALUES (?, 'a-spoke', '1.0.0', ?, 0, '[]', '[]', '[]', '{}')`,
+		).run("spoke-site", now);
+		db.prepare(
+			"INSERT INTO sync_state (peer_site_id, last_received, last_sent, sync_errors, last_sync_at) VALUES (?, ?, ?, 0, ?)",
+		).run("spoke-site", now, now, now);
+
+		const toolCtx: ToolContext = {
+			db,
+			siteId,
+			eventBus: { emit: () => {} } as any,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+			topologyRole: "hub",
+		};
+		const tool = createHostinfoTool(toolCtx);
+		const result = (await tool.execute({})) as string;
+
+		// The local hub is the hub — NOT the spoke peer.
+		expect(result).toContain("Hub: this-hub");
+		expect(result).toMatch(/Host: this-hub \(local, hub\)/);
+		expect(result).not.toMatch(/Host: a-spoke \([^)]*hub/);
+	});
+
 	it("tool definition has correct shape", () => {
 		const toolCtx: ToolContext = {
 			db,

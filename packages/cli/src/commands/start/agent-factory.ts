@@ -269,6 +269,11 @@ export function createAgentLoopFactory(
 							.pinned_size_cap,
 					}
 				: undefined;
+		// Topology role: spoke when a hub URL is configured, hub otherwise
+		// (mirrors agent-loop's topologyRole derivation for the orientation block).
+		const syncResult = appContext.optionalConfig.sync;
+		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
+		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
 		const toolCtx: ToolContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -279,6 +284,7 @@ export function createAgentLoopFactory(
 			modelRouter,
 			fs: clusterFsObj?.fs,
 			memoryLimits,
+			topologyRole,
 		};
 		const agentTools = createAgentTools(toolCtx);
 

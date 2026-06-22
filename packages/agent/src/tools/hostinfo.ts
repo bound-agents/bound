@@ -1,6 +1,7 @@
 import { HLC_ZERO, formatError, parseHlc } from "@bound/shared";
 import { z } from "zod";
 import { getClientSessions } from "../delegation.js";
+import { resolveHubSiteId } from "../topology.js";
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema.js";
 
@@ -107,6 +108,11 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				}[];
 				const syncByPeer = new Map(syncStates.map((s) => [s.peer_site_id, s]));
 
+				// Which node carries the hub role. Gated on topologyRole because an
+				// ungated sync_state read makes a hub misidentify one of its spokes
+				// as the hub (see resolveHubSiteId).
+				const hubSiteId = resolveHubSiteId(ctx.db, ctx.topologyRole, localSiteId);
+
 				// Task stats by claimed_by
 				const taskStats = ctx.db
 					.prepare(
@@ -197,6 +203,10 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				if (onlineCount > 0) statusParts.push(`${onlineCount} online`);
 				if (staleCount > 0) statusParts.push(`${staleCount} stale`);
 				lines.push(`═══ Cluster: ${hosts.length} nodes, ${statusParts.join(", ")} ═══`);
+				if (hubSiteId) {
+					const hubName = hosts.find((h) => h.site_id === hubSiteId)?.host_name;
+					lines.push(`Hub: ${hubName ? `${hubName} (${hubSiteId})` : hubSiteId}`);
+				}
 				lines.push("");
 
 				// Model distribution
@@ -275,11 +285,16 @@ export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
 				// --- Per-node details ---
 				for (const host of hosts) {
 					const isLocal = host.site_id === localSiteId;
+					const isHub = hubSiteId !== undefined && host.site_id === hubSiteId;
 					const staleSec = (Date.now() - new Date(host.modified_at).getTime()) / 1000;
 					const status = staleSec < STALE_THRESHOLD_S ? "ONLINE" : "STALE";
 
+					const tags = [isLocal ? "local" : null, isHub ? "hub" : null].filter(
+						(t): t is string => t !== null,
+					);
+					const tagSuffix = tags.length > 0 ? ` (${tags.join(", ")})` : "";
 					lines.push(
-						`Host: ${host.host_name}${isLocal ? " (local)" : ""} — ${status} (${relativeTime(host.modified_at)})`,
+						`Host: ${host.host_name}${tagSuffix} — ${status} (${relativeTime(host.modified_at)})`,
 					);
 					lines.push(`  site_id:     ${host.site_id}`);
 
