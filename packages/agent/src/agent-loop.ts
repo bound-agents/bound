@@ -210,6 +210,23 @@ export const MAX_CONSECUTIVE_ERROR_TOOL_CALLS = 12;
 export const ERROR_SIGNATURE_NUDGE_AT = 5;
 
 /**
+ * Hard abort for consecutive turns where every tool call errors with a
+ * cross-tool routing suggestion (e.g. calling `connector` with `action: "activate"`,
+ * which belongs to `skill`). When `suggestCorrectTool` knows the correct tool, the
+ * model is not just stuck — it is ignoring explicit corrective guidance. The
+ * 2026-06-22 connector-vs-skill spin reached the generic 12-turn error breaker
+ * despite the correct tool being named from turn 1. This fuse is intentionally
+ * short because the fix is already known and the model is not recovering.
+ */
+export const MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS = 3;
+
+const ROUTING_SUGGESTION_MARKER = /is valid for the "[^"]+" tool, not "[^"]+"\. Call /;
+
+function containsRoutingSuggestion(content: string): boolean {
+	return ROUTING_SUGGESTION_MARKER.test(content);
+}
+
+/**
  * Excerpt a tool error for inclusion in a loop-guard nudge/abort notice. Keeps
  * the head (where validation errors enumerate the valid options) and caps the
  * length so a large error body can't bloat the developer message.
@@ -643,6 +660,11 @@ export class AgentLoop {
 		let consecutiveErrorSignature = 0;
 		let lastErrorSignature: string | null = null;
 		let errorNudgeInjected = false;
+		// Circuit breaker state for MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS guardrail.
+		// A stricter fuse for cross-tool routing loops where suggestCorrectTool has
+		// already named the correct tool — the model is ignoring known-good guidance.
+		let consecutiveRoutingErrorSignature = 0;
+		let lastRoutingErrorSignature: string | null = null;
 
 		this.ctx.logger.info("[agent-loop] Starting", {
 			threadId: this.config.threadId,
@@ -2478,6 +2500,25 @@ export class AgentLoop {
 						errorNudgeInjected = false;
 					}
 
+					// Routing-error circuit breaker (MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS).
+					// A stricter fuse for cross-tool routing loops where suggestCorrectTool
+					// has already named the correct tool. Only counts turns where EVERY
+					// errored tool result contains a routing suggestion.
+					const turnRoutingErrorSignature =
+						toolResults.length > 0 &&
+						toolResults.every((r) => r.exitCode !== 0 && containsRoutingSuggestion(r.content))
+							? toolResults.map((r) => `${r.toolCall.name}\u0000${r.content}`).join("\u0001")
+							: null;
+					if (
+						turnRoutingErrorSignature !== null &&
+						turnRoutingErrorSignature === lastRoutingErrorSignature
+					) {
+						consecutiveRoutingErrorSignature++;
+					} else {
+						consecutiveRoutingErrorSignature = turnRoutingErrorSignature !== null ? 1 : 0;
+						lastRoutingErrorSignature = turnRoutingErrorSignature;
+					}
+
 					if (this.sandbox.writeFile) {
 						for (const result of toolResults) {
 							if (result.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
@@ -2646,6 +2687,36 @@ export class AgentLoop {
 					// tool_result rows are persisted (so a nudge/abort notice lands
 					// AFTER the result it refers to, not before). The signature and
 					// counter were computed up in TOOL_EXECUTE on the raw content.
+					if (consecutiveRoutingErrorSignature >= MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS) {
+						const lastResult = toolResults[toolResults.length - 1];
+						const errToolNames = [...new Set(toolResults.map((r) => r.toolCall.name))].join(", ");
+						this.ctx.logger.error(
+							"[agent-loop] Aborting: consecutive cross-tool routing-error loop",
+							{
+								threadId: this.config.threadId,
+								taskId: this.config.taskId ?? null,
+								toolNames: errToolNames,
+								consecutiveTurns: consecutiveRoutingErrorSignature,
+								threshold: MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
+								turn: turnCount,
+							},
+						);
+						const noticeId = insertThreadMessage(
+							this.ctx.db,
+							{
+								threadId: this.config.threadId,
+								role: "developer",
+								content: `[Agent loop aborted] The "${errToolNames}" tool returned a cross-tool routing error ${consecutiveRoutingErrorSignature} turns in a row. The error already states which tool you should call instead. Stop and call the correct tool. Last error: ${truncateForNudge(lastResult?.content ?? "")}`,
+								hostOrigin: this.ctx.siteId,
+							},
+							this.ctx.siteId,
+						);
+						this.broadcastMessage(noticeId);
+						this.messagesCreated++;
+						continueLoop = false;
+						break;
+					}
+
 					if (consecutiveErrorSignature >= MAX_CONSECUTIVE_ERROR_TOOL_CALLS) {
 						const lastResult = toolResults[toolResults.length - 1];
 						const errToolNames = [...new Set(toolResults.map((r) => r.toolCall.name))].join(", ");
