@@ -7,6 +7,7 @@ import { deriveSiteId, ensureKeypair, exportPublicKey, generateKeypair } from ".
 import { KeyManager } from "../key-manager.js";
 import { WsSyncClient } from "../ws-client.js";
 import { WsMessageType, encodeFrame } from "../ws-frames.js";
+import { createWsTestCluster } from "./test-harness.js";
 
 describe("WsSyncClient", () => {
 	let hubKeypair: { publicKey: CryptoKey; privateKey: CryptoKey };
@@ -667,5 +668,37 @@ describe("WsSyncClient", () => {
 			expect(spokeClient).toBeTruthy();
 			expect(typeof spokeClient.connected).toBe("boolean");
 		});
+	});
+
+	describe("receive-side liveness watchdog", () => {
+		it("forces reconnect when no frames arrive within receiveTimeoutMs", async () => {
+			const testRunId = randomBytes(4).toString("hex");
+			const cluster = await createWsTestCluster({
+				spokeCount: 1,
+				basePort: 0,
+				testRunId,
+			});
+
+			try {
+				const spoke = cluster.spokes[0];
+				let disconnectCount = 0;
+				spoke.wsClient.onDisconnected = () => {
+					disconnectCount++;
+				};
+
+				// Set a short liveness timeout. After the initial snapshot drain
+				// settles and the hub has no more changelog entries to push, no
+				// frames arrive. The watchdog should tear down the zombie socket.
+				spoke.wsClient.updateReceiveTimeout(300);
+
+				// 300ms timeout + interval check alignment — 800ms is enough to
+				// catch the disconnection without waiting for the 1s reconnect.
+				await new Promise((r) => setTimeout(r, 800));
+
+				expect(disconnectCount).toBeGreaterThanOrEqual(1);
+			} finally {
+				await cluster.cleanup();
+			}
+		}, 10000);
 	});
 });
