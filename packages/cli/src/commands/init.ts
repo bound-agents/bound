@@ -64,7 +64,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 		// proxies LLM calls to spokes that have inference backends configured.
 		// No provider/model selection needed.
 	} else if (args.ollama) {
-		// Ollama preset â same as the default; kept explicit so `--ollama` stays documented.
+		// Ollama preset - same as the default; kept explicit so `--ollama` stays documented.
 		provider = "openai-compatible";
 		baseUrl = "http://localhost:11434/v1";
 		apiKey = "ollama";
@@ -74,10 +74,10 @@ export async function runInit(args: InitArgs): Promise<void> {
 		provider = "bedrock";
 		region = args.region || "us-east-1";
 		model = "anthropic.claude-3-5-sonnet-20241022-v2:0";
-		apiKey = undefined; // override the default Ollama placeholder â Bedrock auths via AWS SigV4
+		apiKey = undefined; // override the default Ollama placeholder - Bedrock auths via AWS SigV4
 	} else if (args.anthropic) {
 		// Anthropic direct preset (issue #176). Talks to the Anthropic API
-		// directly via the @ai-sdk/anthropic driver â no AWS account or Bedrock
+		// directly via the @ai-sdk/anthropic driver - no AWS account or Bedrock
 		// setup required, just an API key. base_url is left unset so the driver
 		// uses the default Anthropic endpoint.
 		provider = "anthropic";
@@ -176,13 +176,13 @@ Hub initialized successfully!
 
 Created:
   - ${configDir}/allowlist.json
-  - ${configDir}/model_backends.json (empty â hub relays inference to spokes)
+  - ${configDir}/model_backends.json (empty - hub relays inference to spokes)
 
 Operator: ${operatorName}
 
 Next steps:
   1. Configure keyring.json with spoke public keys
-  2. Configure sync.json with this hub's URL (or leave blank â hub doesn't point to another hub)
+  2. Configure sync.json with this hub's URL (or leave blank - hub doesn't point to another hub)
   3. Set BIND_HOST=0.0.0.0 so spokes can reach this host
   4. Run: bound start
   5. On each spoke: set sync.hub to this host's URL and add this hub to keyring.json
