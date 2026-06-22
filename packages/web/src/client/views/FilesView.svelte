@@ -1,4 +1,5 @@
 <script lang="ts">
+import { Folder } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 import FilePreviewModal from "../components/FilePreviewModal.svelte";
@@ -211,9 +212,7 @@ function iconFor(name: string): string {
 								>
 									<span class="icon-cell">
 										{#if node.type === "dir"}
-											<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-												<path d="M2 4h4l1.5 2h6.5v7H2z" />
-											</svg>
+											<Folder size={14} />
 										{:else}
 											<svg
 												width="14"

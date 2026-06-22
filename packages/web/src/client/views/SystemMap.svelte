@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { ThreadListEntry } from "@bound/client";
+import { Search } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import MemoryGraph from "../components/MemoryGraph.svelte";
@@ -218,17 +219,7 @@ onDestroy(() => {
 				fullWidth={true}
 			>
 				{#snippet icon()}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 16 16"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="1.8"
-					>
-						<circle cx="7" cy="7" r="5" />
-						<path d="M11 11l3.5 3.5" />
-					</svg>
+					<Search size={12} />
 				{/snippet}
 			</TextInput>
 		</div>
