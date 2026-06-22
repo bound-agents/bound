@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
-import { unlinkSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
