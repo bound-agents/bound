@@ -772,43 +772,45 @@ export class WsTransport {
 				continue;
 			}
 
-			// Forward to another spoke
+			// Forward to another spoke.
+			// Sync-dispatch kinds (tool_call, platform_request, etc): the source is
+			// actively polling for a response. Forward immediately when connected, or
+			// fast-fail when offline — buffering would silently absorb the request and
+			// let the source time out (~15s).
+			// Response/async kinds (stream_chunk, stream_end, error): ALWAYS buffer to
+			// the hub's outbox first, then forward if connected. The buffered entry
+			// (delivered=0) is the durability guarantee — if the forward frame is lost
+			// on a flapping connection, the target's next reconnect drains and re-sends
+			// it. The spoke's idempotent relay_inbox insert makes duplicate delivery a
+			// no-op. Without buffering, a lost frame on a flapping link is unrecoverable:
+			// the hub already ACKed the source, and nothing was saved to re-send (#174).
+			const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
 			const targetPeer = this.peerConnections.get(entry.target_site_id);
-			if (targetPeer) {
-				// Spoke is connected: send immediately
-				const inboxEntry: RelayInboxEntry = {
-					id: entry.id,
-					source_site_id: sourceSiteId,
-					kind: entry.kind as RelayKind,
-					ref_id: entry.ref_id ?? entry.id,
-					idempotency_key: entry.idempotency_key,
-					stream_id: entry.stream_id,
-					payload: JSON.stringify(entry.payload),
-					expires_at: entry.expires_at,
-					received_at: new Date().toISOString(),
-					processed: 0,
-					trace_context: entry.trace_context ?? null,
-				};
 
-				this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
-			} else {
-				// Spoke is NOT connected. Behavior depends on dispatch mode:
-				// - sync-dispatch kinds (tool_call, platform_request, etc): the source is
-				//   actively polling for a response. Buffering would silently absorb the
-				//   request and let the source time out (~15s). Instead, fast-fail with a
-				//   structured retriable=true error so the caller sees a clear signal and
-				//   higher layers can decide whether to retry. See bound_issue:relay-hub-
-				//   silent-buffer-on-offline-target.
-				// - async/response kinds: buffer for delivery on reconnect (existing
-				//   fire-and-forget semantics).
-				const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
-				if (kindMeta?.dispatch === "sync") {
+			if (kindMeta?.dispatch === "sync") {
+				if (targetPeer) {
+					const inboxEntry: RelayInboxEntry = {
+						id: entry.id,
+						source_site_id: sourceSiteId,
+						kind: entry.kind as RelayKind,
+						ref_id: entry.ref_id ?? entry.id,
+						idempotency_key: entry.idempotency_key,
+						stream_id: entry.stream_id,
+						payload: JSON.stringify(entry.payload),
+						expires_at: entry.expires_at,
+						received_at: new Date().toISOString(),
+						processed: 0,
+						trace_context: entry.trace_context ?? null,
+					};
+					this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
+				} else {
+					// Hub fast-fail: the request never left the hub, so the target tool
+					// DEFINITELY did not execute. Lets the agent loop retry safely even
+					// for non-idempotent tools. See bound_issue:relay-hub-silent-buffer-
+					// on-offline-target.
 					const errorPayload: ErrorPayload = {
 						error: `Target host ${entry.target_site_id} is not currently connected`,
 						retriable: true,
-						// Hub fast-fail: the request never left the hub, so the target
-						// tool DEFINITELY did not execute. Lets the agent loop retry
-						// safely even for non-idempotent tools.
 						definitely_not_executed: true,
 					};
 					const errorInboxEntry: RelayInboxEntry = {
@@ -833,21 +835,44 @@ export class WsTransport {
 						target: entry.target_site_id,
 						source: sourceSiteId,
 					});
-				} else {
-					// Async/response kinds: write to hub's own outbox for delivery on reconnect
-					writeOutbox(this.config.db, {
+				}
+			} else {
+				// Response/async kinds: buffer to hub's outbox for durability, then
+				// forward if connected. The entry stays delivered=0 until the target's
+				// next drainRelayInbox marks it (on reconnect) or the TTL pruner reaps
+				// it (on stable connections). This guarantees recovery for frames lost
+				// mid-flight on a flapping link (#174).
+				writeOutbox(this.config.db, {
+					id: entry.id,
+					source_site_id: sourceSiteId,
+					target_site_id: entry.target_site_id,
+					kind: entry.kind as RelayKind,
+					ref_id: entry.ref_id ?? entry.id,
+					idempotency_key: entry.idempotency_key,
+					stream_id: entry.stream_id,
+					payload: JSON.stringify(entry.payload),
+					created_at: new Date().toISOString(),
+					expires_at: entry.expires_at,
+					trace_context: entry.trace_context ?? null,
+				});
+
+				if (targetPeer) {
+					// Target connected: forward optimistically. The buffered entry
+					// (delivered=0) acts as a fallback if this frame is lost.
+					const inboxEntry: RelayInboxEntry = {
 						id: entry.id,
 						source_site_id: sourceSiteId,
-						target_site_id: entry.target_site_id,
 						kind: entry.kind as RelayKind,
 						ref_id: entry.ref_id ?? entry.id,
 						idempotency_key: entry.idempotency_key,
 						stream_id: entry.stream_id,
 						payload: JSON.stringify(entry.payload),
-						created_at: new Date().toISOString(),
 						expires_at: entry.expires_at,
+						received_at: new Date().toISOString(),
+						processed: 0,
 						trace_context: entry.trace_context ?? null,
-					});
+					};
+					this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
 				}
 			}
 
