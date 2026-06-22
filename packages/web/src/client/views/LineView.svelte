@@ -47,9 +47,10 @@ let pendingFile = $state<File | null>(null);
 let thread = $state<ThreadDetail | null>(null);
 let panelMode = $state<"context" | "debugger">("context");
 
-// Streaming state: accumulates partial text from the agent while it's generating.
-// Cleared when the full persisted message arrives via message:created.
+// Streaming state: accumulates partial text and reasoning from the agent while
+// it's generating. Cleared when the full persisted message arrives via message:created.
 let streamingText = $state("");
+let streamingReasoning = $state("");
 
 // A selected-turn range emitted by the debugger's turn scrubber. When set, the
 // conversation dims other turns and scrolls the selected one into view.
@@ -129,6 +130,7 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			// streaming means the turn progressed past the streaming phase.
 			if (msg.role !== "user") {
 				streamingText = "";
+				streamingReasoning = "";
 			}
 		}
 	}
@@ -139,10 +141,11 @@ async function pollMessages(): Promise<void> {
 		const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
 		// If poll discovers new non-user messages, clear streaming text —
 		// the persisted content supersedes the streaming preview.
-		if (streamingText && latest.length > messages.length) {
+		if ((streamingText || streamingReasoning) && latest.length > messages.length) {
 			const newMessages = latest.slice(messages.length);
 			if (newMessages.some((m) => m.role !== "user")) {
 				streamingText = "";
+				streamingReasoning = "";
 			}
 		}
 		messages = latest;
@@ -184,16 +187,23 @@ function handleThreadStatus(data: unknown): void {
 	if (waiting && !status.active) waiting = false;
 	// Clear streaming text when the agent goes idle — defense-in-depth for
 	// cases where message:created arrives late or is dropped entirely.
-	if (!status.active && streamingText) {
+	if (!status.active && (streamingText || streamingReasoning)) {
 		streamingText = "";
+		streamingReasoning = "";
 	}
 }
 
 function handleStreamChunk(data: unknown): void {
-	const evt = data as { thread_id?: string; chunk?: { type?: string; content?: string } };
+	const evt = data as {
+		thread_id?: string;
+		chunk?: { type?: string; content?: string; redacted_data?: string };
+	};
 	if (evt.thread_id !== threadId) return;
 	if (evt.chunk?.type === "text" && evt.chunk.content) {
 		streamingText += evt.chunk.content;
+	}
+	if (evt.chunk?.type === "thinking" && evt.chunk.content) {
+		streamingReasoning += evt.chunk.content;
 	}
 }
 
@@ -417,6 +427,7 @@ function turnPreview(content: string): string {
 				{messages}
 				{waiting}
 				{streamingText}
+				{streamingReasoning}
 				turnRange={panelMode === "debugger" ? turnRange : null}
 					scrollRequest={panelMode === "context" ? scrollRequest : null}
 				threadColor={thread?.color ?? 0}
