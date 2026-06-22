@@ -178,6 +178,20 @@ function typeLetter(type: string): string {
 		50% { opacity: 0.25; }
 	}
 
+	/* Phone: the 6-column board is ~620px wide. Let it scroll horizontally
+	   inside the board card rather than stretching the page past the viewport. */
+	@media (max-width: 640px) {
+		.board {
+			padding: 18px 16px 14px;
+			overflow-x: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+		.columns,
+		.row {
+			min-width: 600px;
+		}
+	}
+
 	.columns {
 		display: grid;
 		grid-template-columns: 80px 60px 1fr 140px 100px 130px;

@@ -370,6 +370,13 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 	.task-list {
 		border: 1px solid var(--rule-soft);
 		background: var(--paper);
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.task-list-header,
+	.task-row {
+		min-width: 880px;
 	}
 
 	.task-list-header {

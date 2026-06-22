@@ -439,4 +439,30 @@ function iconFor(name: string): string {
 		color: var(--ink-4);
 		font-style: italic;
 	}
+
+	/* Phone: stack the tree over the listing (the 260px sidebar + table can't
+	   share ~390px), cap the tree height, and let the 5-column file table scroll
+	   horizontally inside the content area instead of widening the page. */
+	@media (max-width: 640px) {
+		.files-browser {
+			grid-template-columns: 1fr;
+			min-height: 0;
+		}
+		.tree-sidebar {
+			border-right: none;
+			border-bottom: 1px solid var(--rule-soft);
+			max-height: 200px;
+		}
+		.content-area {
+			overflow-x: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+		.listing-header,
+		.listing .row {
+			min-width: 460px;
+		}
+		.breadcrumbs {
+			padding: 12px 14px;
+		}
+	}
 </style>

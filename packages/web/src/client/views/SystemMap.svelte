@@ -334,4 +334,16 @@ onDestroy(() => {
 			max-height: 50vh;
 		}
 	}
+
+	@media (max-width: 640px) {
+		.panel-header {
+			padding: 14px 14px 10px;
+		}
+		.panel-title {
+			font-size: 21px;
+		}
+		.thread-panel {
+			max-height: 45vh;
+		}
+	}
 </style>

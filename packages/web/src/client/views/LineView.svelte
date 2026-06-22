@@ -1020,4 +1020,30 @@ function turnPreview(content: string): string {
 			max-height: 40vh;
 		}
 	}
+
+	@media (max-width: 640px) {
+		.back-btn {
+			padding: 0 12px;
+		}
+		.title-block {
+			padding: 12px 14px;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+		.title {
+			font-size: 19px;
+		}
+		.input-wrap {
+			padding: 10px 14px 14px;
+		}
+		.dispatch {
+			padding: 0 16px;
+		}
+		.right-panel {
+			max-height: 50vh;
+		}
+		.panel-body {
+			padding: 16px 14px;
+		}
+	}
 </style>
