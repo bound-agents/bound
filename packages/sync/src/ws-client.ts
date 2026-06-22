@@ -47,6 +47,11 @@ export interface WsClientConfig {
 	reconnectMaxInterval?: number; // seconds, default 60
 	backpressureLimit?: number; // bytes, default 2097152
 	backfillIntervalSeconds?: number; // 0 = disabled, default 300
+	/** Receive-side liveness timeout in ms. If no frame is received from the
+	 *  hub within this window, the connection is torn down and reconnected.
+	 *  0 = disabled, default 300000 (5 min). The hub heartbeat writes every
+	 *  ~2 min, so 5 min of silence means 2+ missed cycles = stuck drain. */
+	receiveTimeoutMs?: number;
 	/** If true, sends RESEED_REQUEST to the hub after connecting. */
 	reseed?: boolean;
 }
@@ -77,6 +82,12 @@ export class WsSyncClient {
 	 *  alive. Application-level frames from the spoke do not reset the
 	 *  server-side idle timer in uWebSockets/Bun. */
 	private heartbeatTimer: Timer | null = null;
+
+	/** Receive-side liveness: last wall-clock time we got a frame from the hub.
+	 *  If this goes stale, the changelog drain from hub→spoke is stuck even
+	 *  though the TCP connection (kept alive by pings) looks fine. */
+	private lastReceivedAt = 0;
+	private livenessTimer: Timer | null = null;
 
 	onMessage: ((data: Uint8Array) => void) | null = null;
 	onConnected: (() => void) | null = null;
@@ -174,6 +185,7 @@ export class WsSyncClient {
 	close(): void {
 		this.stopped = true;
 		this.stopBackfillTimer();
+		this.stopLivenessTimer();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
@@ -279,6 +291,7 @@ export class WsSyncClient {
 		}
 
 		this.startBackfillTimer();
+		this.startLivenessTimer();
 		this.onConnected?.();
 	}
 
@@ -308,6 +321,9 @@ export class WsSyncClient {
 		}
 
 		if (data) {
+			// Receive-side liveness: any inbound frame proves the hub→spoke path is alive.
+			this.lastReceivedAt = Date.now();
+
 			this.config.logger?.debug("WsSyncClient: received binary frame", { size: data.length });
 
 			// Decode frame and dispatch to WsTransport handlers
@@ -399,6 +415,7 @@ export class WsSyncClient {
 		this.config.logger?.debug("WsSyncClient: connection closed");
 		this.ws = null;
 		this.stopBackfillTimer();
+		this.stopLivenessTimer();
 
 		// Reset snapshot state — a reconnection starts a fresh seeding session.
 		this.snapshotHlc = null;
@@ -536,12 +553,66 @@ export class WsSyncClient {
 		}
 	}
 
+	/**
+	 * Receive-side liveness watchdog. The hub sends application-level frames
+	 * (heartbeat changelog entries, changelog pushes, relay deliveries)
+	 * roughly every 2 min. If nothing arrives within the timeout window, the
+	 * hub→spoke drain is stuck even though pings keep the TCP socket alive.
+	 * Tearing down the connection forces a reconnect + fresh drain.
+	 */
+	private startLivenessTimer(): void {
+		this.stopLivenessTimer();
+		const timeoutMs = this.config.receiveTimeoutMs ?? 300_000;
+		if (timeoutMs <= 0) return;
+		// Check at half the timeout interval so we catch a stale connection
+		// within one half-life of the threshold.
+		const checkInterval = Math.min(timeoutMs / 2, 60_000);
+		this.lastReceivedAt = Date.now();
+		this.livenessTimer = setInterval(() => {
+			if (!this.connected) return;
+			const idleMs = Date.now() - this.lastReceivedAt;
+			if (idleMs >= timeoutMs) {
+				this.config.logger?.warn(
+					"WsSyncClient: receive-side liveness timeout — forcing reconnect",
+					{
+						idleMs,
+						timeoutMs,
+					},
+				);
+				this.stopLivenessTimer();
+				if (this.ws) {
+					try {
+						this.ws.close();
+					} catch {
+						// best effort — handleClose will fire regardless
+					}
+				}
+			}
+		}, checkInterval);
+	}
+
+	private stopLivenessTimer(): void {
+		if (this.livenessTimer) {
+			clearInterval(this.livenessTimer);
+			this.livenessTimer = null;
+		}
+	}
+
 	updateBackfillInterval(seconds?: number): void {
 		if (seconds !== undefined) {
 			this.config.backfillIntervalSeconds = seconds;
 		}
 		if (this.connected) {
 			this.startBackfillTimer();
+		}
+	}
+
+	updateReceiveTimeout(ms?: number): void {
+		if (ms !== undefined) {
+			this.config.receiveTimeoutMs = ms;
+		}
+		if (this.connected) {
+			this.startLivenessTimer();
 		}
 	}
 

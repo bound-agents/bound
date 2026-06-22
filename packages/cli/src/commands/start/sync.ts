@@ -85,6 +85,7 @@ export async function initSync(
 						const reconnectMaxInterval = wsConfig.reconnect_max_interval;
 						const backpressureLimit = wsConfig.backpressure_limit;
 						const backfillIntervalSeconds = wsConfig.backfill_interval;
+						const receiveTimeoutMs = wsConfig.receive_timeout_ms;
 
 						const wsClientInstance = new WsSyncClient({
 							hubUrl,
@@ -97,6 +98,7 @@ export async function initSync(
 							reconnectMaxInterval,
 							backpressureLimit,
 							backfillIntervalSeconds,
+							receiveTimeoutMs,
 							reseed,
 						});
 
