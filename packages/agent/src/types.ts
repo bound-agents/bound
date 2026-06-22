@@ -257,4 +257,11 @@ export interface ToolContext {
 	 * ToolContext construction sites that do not wire config.
 	 */
 	memoryLimits?: { pinnedCountCap: number; pinnedSizeCap: number };
+	/**
+	 * Cluster topology role of this host (`"hub"` / `"spoke"`), or undefined when
+	 * sync is not configured. Lets `hostinfo` name which node is the hub —
+	 * resolution is gated on this (see `resolveHubSiteId`), because an ungated
+	 * `sync_state` read misidentifies the hub as one of its own spokes.
+	 */
+	topologyRole?: import("./topology.js").TopologyRole;
 }

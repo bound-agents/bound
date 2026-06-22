@@ -7,6 +7,7 @@ import type { Database } from "bun:sqlite";
 import { getSyncedTableSchemas } from "@bound/core";
 import type { CommandRegistryEntry } from "@bound/shared";
 import { compareBytewise } from "@bound/shared";
+import { resolveHubSiteId } from "../topology.js";
 
 export const ENVIRONMENT_PARAGRAPH =
 	"**Environment.** You run inside **bound**, a persistent, model-agnostic personal agent " +
@@ -115,13 +116,51 @@ function buildOrientationBlock(
 	const host = hostName || "unknown";
 	const site = siteId || "unknown";
 	const roleSuffix = topologyRole ? `, role: ${topologyRole}` : "";
-	lines.push(`### Host Identity\nHost: ${host} (site ${site}${roleSuffix})`);
+	const identityLines = ["### Host Identity", `Host: ${host} (site ${site}${roleSuffix})`];
+	const hubLine = resolveClusterHubLine(db, siteId, topologyRole);
+	if (hubLine !== null) identityLines.push(hubLine);
+	lines.push(identityLines.join("\n"));
 
 	const capabilities = buildHostCapabilitiesBlock(db, siteId);
 	if (capabilities !== null) {
 		lines.push("", capabilities);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Resolve the `Cluster hub:` line that names which node carries the hub role —
+ * the answer to "where does sync converge / who do spokes connect to". The
+ * hub's site_id is resolved by {@link resolveHubSiteId} (gated on
+ * `topologyRole`); this formats it for the orientation block.
+ *
+ * Cache stability (R-VC25): the underlying resolution reads ONLY the slow-moving
+ * `sync_state.peer_site_id` plus the hub's `host_name`, never the flapping
+ * `last_received` / `online_at` columns, so this line stays byte-stable across
+ * cold rebuilds. Returns `null` (line omitted) when the role is unknown or the
+ * hub cannot be resolved.
+ */
+function resolveClusterHubLine(
+	db: Database,
+	siteId: string | undefined,
+	topologyRole: "hub" | "spoke" | undefined,
+): string | null {
+	if (!topologyRole) return null;
+	if (topologyRole === "hub") return "Cluster hub: this host";
+
+	const hubSiteId = resolveHubSiteId(db, topologyRole, siteId);
+	if (!hubSiteId) return "Cluster hub: unknown (no sync peer yet)";
+
+	try {
+		const hubHost = db
+			.prepare("SELECT host_name FROM hosts WHERE site_id = ? AND deleted = 0")
+			.get(hubSiteId) as { host_name: string } | null;
+		return hubHost
+			? `Cluster hub: ${hubHost.host_name} (site ${hubSiteId})`
+			: `Cluster hub: site ${hubSiteId}`;
+	} catch {
+		return null;
+	}
 }
 
 /**

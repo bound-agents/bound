@@ -50,6 +50,21 @@ function seedHost(
 	);
 }
 
+/**
+ * Seed a `sync_state` peer cursor row. On a spoke the only peer is the hub,
+ * so this is how a spoke's DB encodes "which node is my hub".
+ */
+function seedSyncPeer(db: Database, peerSiteId: string): void {
+	db.prepare(
+		"INSERT INTO sync_state (peer_site_id, last_received, last_sent, sync_errors, last_sync_at) VALUES (?, ?, ?, 0, ?)",
+	).run(
+		peerSiteId,
+		"2026-01-01T00:00:00.000Z",
+		"2026-01-01T00:00:00.000Z",
+		"2026-01-01T00:00:00.000Z",
+	);
+}
+
 const cmdName = fc
 	.string({ minLength: 1, maxLength: 16 })
 	.filter((s) => /^[a-z][a-z0-9_-]*$/.test(s));
@@ -254,6 +269,67 @@ describe("buildStaticSystemParts — property tests", () => {
 			)
 		) {
 			throw new Error("topologyRole not rendered inline on Host line");
+		}
+		db.close();
+	});
+
+	it("Y8b: spoke names its hub from the sync_state peer (host_name + site)", () => {
+		const db = freshDb();
+		const hubSite = "6873167c1d2e3f405162738495a6b7c8";
+		seedHost(db, hubSite); // host_name "seed-host"
+		seedSyncPeer(db, hubSite);
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "7cf34dd659c0",
+			siteId: "110ef7e107b038db961083b2b1b0ad83",
+			topologyRole: "spoke",
+		}).find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes(`Cluster hub: seed-host (site ${hubSite})`)) {
+			throw new Error(`hub not named from sync peer; got:\n${orientation}`);
+		}
+		db.close();
+	});
+
+	it("Y8c: hub node renders 'this host' rather than naming a spoke peer", () => {
+		// A hub holds a sync_state cursor row per connected spoke (seedNewPeer).
+		// The role gate must keep an ungated `sync_state LIMIT 1` read from
+		// surfacing one of those spokes as the hub.
+		const db = freshDb();
+		seedSyncPeer(db, "spoke-aaaa1111222233334444555566667777");
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "box-001",
+			siteId: "6873167c1d2e3f405162738495a6b7c8",
+			topologyRole: "hub",
+		}).find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("Cluster hub: this host")) {
+			throw new Error(`hub did not self-identify; got:\n${orientation}`);
+		}
+		if (orientation.includes("spoke-aaaa")) {
+			throw new Error("hub misidentified a spoke peer as the hub");
+		}
+		db.close();
+	});
+
+	it("Y8d: no Cluster hub line when topologyRole is undefined", () => {
+		const db = freshDb();
+		seedSyncPeer(db, "6873167c1d2e3f405162738495a6b7c8");
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "7cf34dd659c0",
+			siteId: "110ef7e107b038db961083b2b1b0ad83",
+		}).find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (orientation.includes("Cluster hub:")) {
+			throw new Error("Cluster hub line should be absent when role is undefined");
 		}
 		db.close();
 	});
