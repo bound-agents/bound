@@ -563,7 +563,7 @@ export function MessageBlock({
 		};
 
 		return (
-			<StripeBox color="blue" width={stripeWidth}>
+			<StripeBox color="cyan" width={stripeWidth}>
 				<Box flexDirection="column" paddingLeft={2}>
 					<Text>
 						<Text color={indicatorColor} bold>
