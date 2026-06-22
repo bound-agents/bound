@@ -269,6 +269,61 @@ describe("annotateMessages — property tests", () => {
 		}
 	});
 
+	it('N10: user message carries a from="..." attribute when metadata stamps a user_name', () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hello there", {
+					created_at: created,
+					metadata: JSON.stringify({ tz_offset: -420, user_name: "Kara" }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content;
+		if (typeof content !== "string") throw new Error("expected string content");
+		if (!/^<user-message from="Kara" sent="[^"]+">\n/.test(content)) {
+			throw new Error(`missing from attribute on envelope: ${content}`);
+		}
+	});
+
+	it("N10b: no from attribute when metadata has no user_name (old rows unchanged)", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		// Both a null-metadata row and a tz-only row must render byte-identically
+		// to the pre-feature envelope so existing threads keep their cachePoint.
+		for (const metadata of [null, JSON.stringify({ tz_offset: -420 })]) {
+			const out = annotateMessages({
+				messages: [msg("user", "u1", "hello there", { created_at: created, metadata })],
+				nowMs: NOW_MS,
+			});
+			const content = out[0].content;
+			if (typeof content !== "string") throw new Error("expected string content");
+			if (content.includes(" from=")) {
+				throw new Error(`unexpected from attribute for metadata=${metadata}: ${content}`);
+			}
+			if (!/^<user-message sent="[^"]+">\n/.test(content)) {
+				throw new Error(`envelope shape changed for metadata=${metadata}: ${content}`);
+			}
+		}
+	});
+
+	it("N10c: a user_name with XML-significant characters is escaped in the attribute", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hi", {
+					created_at: created,
+					metadata: JSON.stringify({ user_name: 'A&B <"x">' }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content as string;
+		if (!content.includes('from="A&amp;B &lt;&quot;x&quot;&gt;"')) {
+			throw new Error(`user_name not escaped: ${content}`);
+		}
+	});
+
 	it("N7b (property): annotation is independent of nowMs for any user message", () => {
 		fc.assert(
 			fc.property(

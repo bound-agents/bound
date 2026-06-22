@@ -25,10 +25,48 @@ const USER_MESSAGE_TAG = "user-message";
  */
 function buildUserMessageAttributes(m: Message): string {
 	const attrs: string[] = [];
+	// `from` first so the envelope reads "<user-message from="Kara" sent="...">".
+	// Stamped once into metadata at insert (like tz_offset), so it stays an
+	// immutable input — old rows without a stamped name render no `from` and
+	// keep their pre-feature bytes (no retroactive cachePoint invalidation).
+	const from = readUserName(m.metadata);
+	if (from) {
+		attrs.push(`from="${escapeXmlAttr(from)}"`);
+	}
 	if (m.created_at) {
 		attrs.push(`sent="${formatInstant(m.created_at, readTzOffsetMinutes(m.metadata))}"`);
 	}
 	return attrs.length > 0 ? ` ${attrs.join(" ")}` : "";
+}
+
+/**
+ * Reads the sender's display name from a user message's metadata bag, if the
+ * intake site stamped one at send time (`user_name`). Returns undefined when
+ * absent or not a non-empty string. Like `tz_offset`, written once at insert
+ * and never mutated, so the rendered attribute stays a pure function of the row.
+ */
+function readUserName(metadata: string | null): string | undefined {
+	if (!metadata) return undefined;
+	try {
+		const parsed = JSON.parse(metadata) as Record<string, unknown>;
+		const v = parsed.user_name;
+		return typeof v === "string" && v.length > 0 ? v : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Escapes a string for use inside a double-quoted XML attribute value. A
+ * user-controlled display name can carry `&`, `<`, `>`, or `"`; left raw they
+ * would break the `<user-message>` envelope the model parses.
+ */
+function escapeXmlAttr(s: string): string {
+	return s
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
 }
 
 /**
