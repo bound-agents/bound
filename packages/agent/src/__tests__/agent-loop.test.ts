@@ -11,12 +11,16 @@ import { ModelRouter } from "@bound/llm";
 import type { EventMap } from "@bound/shared";
 import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { z } from "zod";
 import {
 	AgentLoop,
 	ERROR_SIGNATURE_NUDGE_AT,
 	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
 	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
+	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
 } from "../agent-loop";
+import { zodToToolParams } from "../tools/tool-schema";
+import type { RegisteredTool } from "../types";
 import { VALID_TRANSITIONS } from "../types";
 
 // Mock LLM Backend that returns configurable responses
@@ -2748,6 +2752,106 @@ describe("AgentLoop", () => {
 				.all(threadId) as Array<{ content: string }>;
 			expect(nudges.length).toBe(1);
 			expect(ERROR_SIGNATURE_NUDGE_AT).toBeLessThan(MAX_CONSECUTIVE_ERROR_TOOL_CALLS);
+		});
+
+		it("aborts cross-tool routing-error loops earlier than the generic error breaker", async () => {
+			const mockBackend = new MockLLMBackend();
+			// Reproduces the 2026-06-22 connector-vs-skill spin: the model calls
+			// `connector` with `action: "activate"` (a `skill` action) over and over.
+			// suggestCorrectTool names `skill` from turn 1, but the model ignores it.
+			// The routing-error fuse must abort at MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS
+			// instead of letting the loop run to the generic 12-turn breaker.
+			const overshoot = MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS + 3;
+			for (let i = 0; i < overshoot; i++) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "tool_use_start" as const, id: `rerr-${i}`, name: "connector" };
+					yield {
+						type: "tool_use_args" as const,
+						id: `rerr-${i}`,
+						partial_json: JSON.stringify({ action: "activate" }),
+					};
+					yield { type: "tool_use_end" as const, id: `rerr-${i}` };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
+				});
+			}
+
+			const toolRegistry = new Map<string, RegisteredTool>([
+				[
+					"connector",
+					{
+						kind: "builtin",
+						toolDefinition: {
+							type: "function",
+							function: {
+								name: "connector",
+								description: "Platform connector dispatcher",
+								parameters: zodToToolParams(
+									z.object({
+										action: z.enum(["list", "channels", "attach", "detach"]),
+									}),
+								),
+							},
+						},
+						execute: async () =>
+							`Error: invalid parameters for "connector": action: Invalid option.`,
+					},
+				],
+				[
+					"skill",
+					{
+						kind: "builtin",
+						toolDefinition: {
+							type: "function",
+							function: {
+								name: "skill",
+								description: "Skill manager",
+								parameters: zodToToolParams(
+									z.object({
+										action: z.enum(["activate", "deactivate"]),
+									}),
+								),
+							},
+						},
+						execute: async () => "ok",
+					},
+				],
+			]);
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+
+			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+				toolRegistry,
+			});
+
+			await agentLoop.run();
+
+			// The routing-error fuse short-circuits at its threshold, well before
+			// the generic 12-turn error breaker.
+			expect(mockBackend.getCallCount()).toBe(MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS);
+			expect(MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS).toBeLessThan(
+				MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
+			);
+
+			const aborts = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%cross-tool routing%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(aborts.length).toBe(1);
+			expect(aborts[0].content).toContain("Agent loop aborted");
+			expect(aborts[0].content).toContain("skill");
 		});
 
 		it("does NOT abort when the error differs each turn (progress through distinct failures)", async () => {
