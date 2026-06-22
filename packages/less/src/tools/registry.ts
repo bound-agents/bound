@@ -56,7 +56,8 @@ export function buildToolSet(
 					properties: {
 						file_path: {
 							type: "string",
-							description: "Path to file to read (relative to cwd if not absolute)",
+							description:
+								"Path to file to read (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
 						offset: {
 							type: "number",
@@ -81,7 +82,8 @@ export function buildToolSet(
 					properties: {
 						file_path: {
 							type: "string",
-							description: "Path to file to write (relative to cwd if not absolute)",
+							description:
+								"Path to file to write (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
 						content: {
 							type: "string",
@@ -102,7 +104,8 @@ export function buildToolSet(
 					properties: {
 						file_path: {
 							type: "string",
-							description: "Path to file to edit (relative to cwd if not absolute)",
+							description:
+								"Path to file to edit (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
 						old_string: {
 							type: "string",
@@ -136,7 +139,7 @@ export function buildToolSet(
 						cwd: {
 							type: "string",
 							description:
-								"Working directory for this command (defaults to the working directory shown in your context). Relative paths resolve against it; writes stay confined to the working directory regardless. Use this instead of a leading `cd`.",
+								"Working directory for this command (defaults to the working directory shown in your context). Relative paths resolve against it and are preferred — e.g. a worktree or subdirectory under the working dir; writes stay confined to the working directory regardless. Use this instead of a leading `cd`.",
 						},
 					},
 				},
@@ -161,7 +164,7 @@ export function buildToolSet(
 						source_path: {
 							type: "string",
 							description:
-								"Path on the source environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute.",
+								"Path on the source environment. Satellite paths may be relative to the boundless cwd (preferred); main (VFS) paths must be absolute.",
 						},
 						target: {
 							type: "string",
@@ -172,7 +175,7 @@ export function buildToolSet(
 						target_path: {
 							type: "string",
 							description:
-								"Path on the target environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute. Parent directories are created on the satellite side.",
+								"Path on the target environment. Satellite paths may be relative to the boundless cwd (preferred); main (VFS) paths must be absolute. Parent directories are created on the satellite side.",
 						},
 					},
 				},
@@ -196,7 +199,7 @@ export function buildToolSet(
 						path: {
 							type: "string",
 							description:
-								"Optional subdirectory to scope the search to (relative to cwd if not absolute). Defaults to the whole working directory.",
+								"Optional subdirectory to scope the search to (relative to cwd if not absolute; prefer a relative path). Defaults to the whole working directory.",
 						},
 						case_insensitive: {
 							type: "boolean",
