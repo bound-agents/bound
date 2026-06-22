@@ -189,8 +189,8 @@ function buildHostCapabilitiesBlock(db: Database, siteId: string | undefined): s
 	);
 	lines.push(
 		otherInferenceHosts > 0
-			? `Other hosts serving inference: ${otherInferenceHosts}`
-			: "Other hosts serving inference: none (this host is the cluster's only inference provider)",
+			? `Other hosts with inference backends configured: ${otherInferenceHosts} (declared topology, not live reachability — run hostinfo for online/stale status)`
+			: "Other hosts with inference backends configured: none (this host is the only declared inference provider — run hostinfo for live status)",
 	);
 	if (servers.length > 0) {
 		lines.push(`MCP servers: ${servers.join(", ")}`);
