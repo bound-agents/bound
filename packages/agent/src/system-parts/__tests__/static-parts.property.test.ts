@@ -403,4 +403,69 @@ describe("buildStaticSystemParts — property tests", () => {
 
 		if (forward !== reversed) throw new Error("capabilities render is input-order-sensitive");
 	});
+
+	it("Y14: cluster inference count — counts other hosts with non-empty models", () => {
+		const db = freshDb();
+		seedHost(db, "site-self", { models: JSON.stringify(["opus"]) });
+		seedHost(db, "site-peer-1", { models: JSON.stringify([{ id: "sonnet" }]) });
+		seedHost(db, "site-peer-2", { models: JSON.stringify(["haiku", "gpt-5.5"]) });
+		seedHost(db, "site-backendless", { models: "[]" }); // must NOT count
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "self",
+			siteId: "site-self",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("Other hosts serving inference: 2")) {
+			throw new Error("cluster inference count wrong (backendless peer should not count)");
+		}
+	});
+
+	it("Y15: sole inference provider — renders the explicit none line", () => {
+		const db = freshDb();
+		seedHost(db, "site-only", { models: JSON.stringify(["opus"]) });
+		seedHost(db, "site-other", { models: "[]" }); // backendless peer
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "only",
+			siteId: "site-only",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes(
+				"Other hosts serving inference: none (this host is the cluster's only inference provider)",
+			)
+		) {
+			throw new Error("sole-provider line not rendered");
+		}
+	});
+
+	it("Y16: backendless host with inference peers — both lines render together", () => {
+		const db = freshDb();
+		seedHost(db, "site-hub", { models: "[]" });
+		seedHost(db, "site-worker", { models: JSON.stringify(["opus"]) });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "hub",
+			siteId: "site-hub",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes("Local inference backends: none (inference routes to cluster peers)")
+		) {
+			throw new Error("backendless line missing");
+		}
+		if (!orientation.includes("Other hosts serving inference: 1")) {
+			throw new Error("peer count missing — 'routes to cluster peers' has no number behind it");
+		}
+	});
 });
