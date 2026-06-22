@@ -8,6 +8,7 @@ import {
 } from "../lib/message-grouping";
 import McpAppPanel from "./McpAppPanel.svelte";
 import MessageBubble from "./MessageBubble.svelte";
+import ReasoningBlock from "./ReasoningBlock.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
 
 interface Message {
@@ -36,6 +37,7 @@ interface Props {
 	messages: Message[];
 	waiting?: boolean;
 	streamingText?: string;
+	streamingReasoning?: string;
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
 	scrollRequest?: ScrollRequest | null;
@@ -49,6 +51,7 @@ const {
 	messages,
 	waiting = false,
 	streamingText = "",
+	streamingReasoning = "",
 	emptyText = null,
 	turnRange = null,
 	scrollRequest = null,
@@ -337,13 +340,16 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 					></div>
 				</div>
 				<div class="row-content">
+					{#if streamingReasoning}
+						<ReasoningBlock text={streamingReasoning} {lineColor} />
+					{/if}
 					{#if streamingText}
 						<MessageBubble
 							role="assistant"
 							content={streamingText}
 							{threadColor}
 						/>
-					{:else}
+					{:else if !streamingReasoning}
 						<div class="role-label">Agent</div>
 						<div class="thinking-caption">
 							<span>Thinking</span>
