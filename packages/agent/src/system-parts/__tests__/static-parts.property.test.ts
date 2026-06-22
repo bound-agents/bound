@@ -419,7 +419,7 @@ describe("buildStaticSystemParts — property tests", () => {
 		}).find((p) => p.startsWith("## Orientation"));
 		db.close();
 		if (!orientation) throw new Error("orientation missing");
-		if (!orientation.includes("Other hosts serving inference: 2")) {
+		if (!orientation.includes("Other hosts with inference backends configured: 2")) {
 			throw new Error("cluster inference count wrong (backendless peer should not count)");
 		}
 	});
@@ -439,7 +439,7 @@ describe("buildStaticSystemParts — property tests", () => {
 		if (!orientation) throw new Error("orientation missing");
 		if (
 			!orientation.includes(
-				"Other hosts serving inference: none (this host is the cluster's only inference provider)",
+				"Other hosts with inference backends configured: none (this host is the only declared inference provider — run hostinfo for live status)",
 			)
 		) {
 			throw new Error("sole-provider line not rendered");
@@ -464,7 +464,7 @@ describe("buildStaticSystemParts — property tests", () => {
 		) {
 			throw new Error("backendless line missing");
 		}
-		if (!orientation.includes("Other hosts serving inference: 1")) {
+		if (!orientation.includes("Other hosts with inference backends configured: 1")) {
 			throw new Error("peer count missing — 'routes to cluster peers' has no number behind it");
 		}
 	});
