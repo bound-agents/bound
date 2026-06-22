@@ -142,34 +142,55 @@ function buildOrientationBlock(
  * changes — the same posture `loadClusterModels` takes for the `<stable-context>`
  * model topology. All lists are bytewise-sorted for locale-independent
  * determinism.
+ *
+ * The cluster-inference count answers the resilience question the local-backend
+ * line raises ("if this host can't serve inference, who can?") — it counts
+ * OTHER hosts whose `models` set is non-empty, so a backendless host's
+ * "routes to cluster peers" line has a number behind it.
  */
 function buildHostCapabilitiesBlock(db: Database, siteId: string | undefined): string | null {
 	if (!siteId) return null;
 
-	let row: { models: string | null; mcp_servers: string | null; platforms: string | null } | null;
+	let rows: Array<{
+		site_id: string;
+		models: string | null;
+		mcp_servers: string | null;
+		platforms: string | null;
+	}>;
 	try {
-		row = db
-			.prepare("SELECT models, mcp_servers, platforms FROM hosts WHERE site_id = ? AND deleted = 0")
-			.get(siteId) as {
+		rows = db
+			.prepare("SELECT site_id, models, mcp_servers, platforms FROM hosts WHERE deleted = 0")
+			.all() as Array<{
+			site_id: string;
 			models: string | null;
 			mcp_servers: string | null;
 			platforms: string | null;
-		} | null;
+		}>;
 	} catch {
 		// Non-fatal — synthetic test DB missing the hosts table.
 		return null;
 	}
+
+	const row = rows.find((r) => r.site_id === siteId);
 	if (!row) return null;
 
 	const models = parseModelNames(row.models);
 	const servers = parseStringList(row.mcp_servers);
 	const platforms = parseStringList(row.platforms);
+	const otherInferenceHosts = rows.filter(
+		(r) => r.site_id !== siteId && parseModelNames(r.models).length > 0,
+	).length;
 
 	const lines: string[] = ["### Host Capabilities"];
 	lines.push(
 		models.length > 0
 			? `Local inference backends: ${models.join(", ")}`
 			: "Local inference backends: none (inference routes to cluster peers)",
+	);
+	lines.push(
+		otherInferenceHosts > 0
+			? `Other hosts serving inference: ${otherInferenceHosts}`
+			: "Other hosts serving inference: none (this host is the cluster's only inference provider)",
 	);
 	if (servers.length > 0) {
 		lines.push(`MCP servers: ${servers.join(", ")}`);
