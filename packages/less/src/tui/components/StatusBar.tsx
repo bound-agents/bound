@@ -1,7 +1,7 @@
-import { homedir } from "node:os";
 import type { ConnectionState } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
+import { tildifyPath } from "../util/path";
 import { Badge } from "./Badge";
 
 export interface StatusBarProps {
@@ -21,14 +21,14 @@ export interface StatusBarProps {
  *   instead of just the leaf (`less`), which would be ambiguous across repos.
  */
 export function shortCwd(cwd: string): string {
-	const home = homedir();
-	let display = cwd;
-	if (home && (cwd === home || cwd.startsWith(`${home}/`))) {
-		display = cwd === home ? "~" : `~${cwd.slice(home.length)}`;
-	}
-	const parts = display.split("/").filter(Boolean);
+	const display = tildifyPath(cwd);
+	// Split on either separator so a Windows path (`C:\Users\alice\repo\pkg`)
+	// collapses to its last two segments just like a POSIX one. Rejoin with the
+	// separator the path actually uses, so the label stays native.
+	const sep = display.includes("\\") && !display.includes("/") ? "\\" : "/";
+	const parts = display.split(/[/\\]/).filter(Boolean);
 	if (parts.length <= 2) return display;
-	return parts.slice(-2).join("/");
+	return parts.slice(-2).join(sep);
 }
 
 /**
