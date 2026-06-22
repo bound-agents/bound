@@ -288,6 +288,76 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
+	describe("message:send sender-identity metadata", () => {
+		it("stamps user_id, user_name, and tz_offset onto the user message metadata bag", async () => {
+			const { applySchema, createDatabase, insertRow } = await import("@bound/core");
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"users",
+				{ id: "user-kara", display_name: "Kara", first_seen_at: now, modified_at: now, deleted: 0 },
+				"site-a",
+			);
+			insertRow(
+				db,
+				"threads",
+				{
+					id: "thread-1",
+					user_id: "user-kara",
+					interface: "web",
+					host_origin: "site-a",
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				"site-a",
+			);
+
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "site-a",
+				defaultUserId: "user-kara",
+				hostOrigin: "site-a",
+			});
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+			testHandler.message(
+				mockWs,
+				JSON.stringify({ type: "thread:subscribe", thread_id: "thread-1" }),
+			);
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "thread-1",
+					content: "hello there",
+					tz_offset: -420,
+				}),
+			);
+			// handleMessageSend is async — let the insert flush.
+			await new Promise((r) => setTimeout(r, 20));
+
+			const row = db
+				.query(
+					"SELECT metadata FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0",
+				)
+				.get("thread-1") as { metadata: string | null } | null;
+			expect(row).not.toBeNull();
+			const bag = JSON.parse(row?.metadata ?? "{}") as Record<string, unknown>;
+			expect(bag.user_id).toBe("user-kara");
+			expect(bag.user_name).toBe("Kara");
+			expect(bag.tz_offset).toBe(-420);
+
+			testHandler.cleanup();
+			db.close();
+		});
+	});
+
 	describe("WS message schemas - tool:result", () => {
 		it("should accept valid tool:result", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;

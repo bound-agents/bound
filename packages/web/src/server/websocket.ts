@@ -718,12 +718,26 @@ export function createWebSocketHandler(
 			const messageId = randomUUID();
 			const now = new Date().toISOString();
 
-			// Stamp the sender's UTC offset (minutes) onto the message metadata bag
-			// when the client supplied one, so Stage-5 annotation can render the
-			// timestamp prefix in the sender's local wall-clock. Written once at
-			// insert and never mutated — keeps the annotation byte-stable.
-			const tzMetadata =
-				typeof msg.tz_offset === "number" ? JSON.stringify({ tz_offset: msg.tz_offset }) : null;
+			// Stamp the sender's metadata bag once at insert — never mutated, so
+			// Stage-5 annotation stays byte-stable. Two fields ride here today:
+			//   - tz_offset: the client's UTC offset (minutes) when supplied, so
+			//     the timestamp prefix renders in the sender's local wall-clock.
+			//   - user_id / user_name: the sending user's identity, so the
+			//     <user-message> envelope can attribute the message (useful in
+			//     multi-user threads). The display name is frozen at send time.
+			const senderName = defaultUserId
+				? (
+						db
+							.query("SELECT display_name FROM users WHERE id = ? AND deleted = 0")
+							.get(defaultUserId) as { display_name: string } | null
+					)?.display_name
+				: undefined;
+			const metadataBag: Record<string, unknown> = {};
+			if (typeof msg.tz_offset === "number") metadataBag.tz_offset = msg.tz_offset;
+			if (defaultUserId) metadataBag.user_id = defaultUserId;
+			if (senderName) metadataBag.user_name = senderName;
+			const messageMetadata =
+				Object.keys(metadataBag).length > 0 ? JSON.stringify(metadataBag) : null;
 
 			insertRow(
 				db,
@@ -740,7 +754,7 @@ export function createWebSocketHandler(
 					host_origin: hostOrigin,
 					deleted: 0,
 					exit_code: null,
-					metadata: tzMetadata,
+					metadata: messageMetadata,
 				},
 				siteId,
 			);
