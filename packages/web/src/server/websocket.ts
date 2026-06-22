@@ -27,6 +27,7 @@ import type {
 } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
+import { reapStaleClientSessions } from "./client-session-reaper";
 import { storeFile } from "./routes/files";
 
 // Zod schemas for all client→server message types
@@ -200,6 +201,7 @@ export function createWebSocketHandler(
 	config: WebSocketHandlerConfig | TypedEventEmitter,
 ): WebSocketConfig & {
 	cleanup: () => void;
+	reapStaleSessions: () => number;
 	registry: ConnectionRegistry;
 	emitToolCancel: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -1436,6 +1438,21 @@ export function createWebSocketHandler(
 			eventBus.off("status:forward", handleStatusForward);
 			eventBus.off("stream:chunk", handleStreamChunk);
 			clients.clear();
+		},
+
+		/**
+		 * Soft-delete client_sessions rows for connections that are no longer
+		 * live. Called on startup (to reap sessions orphaned by an unclean
+		 * restart) and periodically (to catch dropped TCP connections that
+		 * never fired `close`). Returns the count of reaped rows.
+		 */
+		reapStaleSessions(): number {
+			if (!db || !siteId) return 0;
+			const liveConnectionIds = new Set<string>();
+			for (const conn of clients.values()) {
+				liveConnectionIds.add(conn.connectionId);
+			}
+			return reapStaleClientSessions(db, siteId, liveConnectionIds).length;
 		},
 
 		registry,
