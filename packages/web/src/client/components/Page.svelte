@@ -15,7 +15,7 @@ let { children, pad = "28px 36px", flush = false }: Props = $props();
 	{#if flush}
 		{@render children()}
 	{:else}
-		<div class="page-inner" style="padding: {pad}">
+		<div class="page-inner" style="--page-pad: {pad}">
 			{@render children()}
 		</div>
 	{/if}
@@ -33,5 +33,12 @@ let { children, pad = "28px 36px", flush = false }: Props = $props();
 	.page-inner {
 		max-width: 1280px;
 		margin: 0 auto;
+		padding: var(--page-pad, 28px 36px);
+	}
+
+	@media (max-width: 640px) {
+		.page-inner {
+			padding: 18px 14px;
+		}
 	}
 </style>

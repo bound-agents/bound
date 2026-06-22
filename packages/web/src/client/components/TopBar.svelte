@@ -267,4 +267,41 @@ onDestroy(() => {
 		color: var(--ink);
 		text-align: right;
 	}
+
+	/* Phone: the brand + 8 nav tabs + clock can't share one row at ~390px without
+	   overflowing the viewport. Wrap the bar, drop the nav to its own full-width
+	   row as a horizontally-scrollable strip (a platform departure ticker), and
+	   shed the clock to give the tabs the width. */
+	@media (max-width: 640px) {
+		.top-bar {
+			flex-wrap: wrap;
+		}
+
+		.brand {
+			padding: 12px 16px;
+			font-size: 16px;
+		}
+
+		.nav-links {
+			order: 3;
+			flex-basis: 100%;
+			overflow-x: auto;
+			border-top: 1px solid var(--rule-faint);
+			-webkit-overflow-scrolling: touch;
+			scrollbar-width: none;
+		}
+
+		.nav-links::-webkit-scrollbar {
+			display: none;
+		}
+
+		.nav-btn {
+			flex: 0 0 auto;
+			padding: 12px 14px;
+		}
+
+		.clock {
+			display: none;
+		}
+	}
 </style>

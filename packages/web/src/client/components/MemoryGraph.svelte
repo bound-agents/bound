@@ -756,6 +756,20 @@ const hoveredCount = $derived(
 		grid-template-columns: 1fr 300px;
 	}
 
+	/* Phone: a 300px detail panel beside the graph leaves almost nothing for the
+	   canvas at ~390px. Stack the panel below the graph instead. */
+	@media (max-width: 640px) {
+		.canvas.with-panel {
+			grid-template-columns: 1fr;
+			grid-template-rows: 1fr auto;
+		}
+		.detail-panel {
+			border-left: none;
+			border-top: 1px solid var(--rule-soft);
+			max-height: 45%;
+		}
+	}
+
 	.svg-wrap {
 		position: relative;
 		min-width: 0;
