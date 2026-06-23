@@ -11,7 +11,13 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase, updateRowIf } from "@bound/core";
+import {
+	applyMetricsSchema,
+	applySchema,
+	createDatabase,
+	findTaskById,
+	updateRowIf,
+} from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -117,7 +123,7 @@ describe("rescheduleHeartbeat", () => {
 	}
 
 	function getTask(taskId: string): any {
-		return db.query("SELECT * FROM tasks WHERE id = ?").get(taskId);
+		return findTaskById(db, taskId);
 	}
 
 	// AC1.1: Clock alignment - 30min interval at 14:17 should give 14:30

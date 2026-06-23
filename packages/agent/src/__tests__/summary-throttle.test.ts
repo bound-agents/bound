@@ -50,7 +50,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applySchema, createDatabase, findThreadSummaryStateById } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 
@@ -148,7 +148,7 @@ function insertMessage(
 }
 
 function getSummary(threadId: string): { summary: string | null; summary_through: string | null } {
-	return db.prepare("SELECT summary, summary_through FROM threads WHERE id = ?").get(threadId) as {
+	return findThreadSummaryStateById(db, threadId) as {
 		summary: string | null;
 		summary_through: string | null;
 	};

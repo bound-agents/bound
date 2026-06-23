@@ -13,7 +13,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, findTaskById } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { DEFAULT_HEARTBEAT_INTERVAL_MS, seedHeartbeat } from "../task-resolution";
@@ -48,7 +48,7 @@ describe("seedHeartbeat", () => {
 
 	function getHeartbeatTask(): any {
 		const expectedId = deterministicUUID(BOUND_NAMESPACE, "heartbeat");
-		return db.query("SELECT * FROM tasks WHERE id = ?").get(expectedId);
+		return findTaskById(db, expectedId);
 	}
 
 	function countHeartbeatTasks(): number {
