@@ -132,6 +132,13 @@ export type ReseedRequestPayload = {
 export type ConsistencyRequestPayload = {
 	tables: string[];
 	request_id?: string;
+	/**
+	 * Resume cursor: tells the hub to start streaming from this position
+	 * instead of (0, 0). Used when a consistency exchange is interrupted by
+	 * a connection drop and the spoke reconnects to continue where it left off.
+	 */
+	resume_table_index?: number;
+	resume_offset?: number;
 };
 
 export type ConsistencyResponsePayload = {
