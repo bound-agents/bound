@@ -28,16 +28,12 @@ function seedMemory(overrides: Partial<SemanticMemory> & Pick<SemanticMemory, "i
 	insertRow(db, "semantic_memory", row, SITE_ID);
 }
 
-// memory_edges carries a nullable `context` column added via ALTER TABLE that
-// is absent from the `MemoryEdge` type; seed it through a cast so we can drive
-// the via_context / context projections.
+// memory_edges carries a nullable `context` column (added via ALTER TABLE);
+// seed it explicitly to drive the via_context / context projections.
 function seedEdge(
-	overrides: Partial<MemoryEdge> &
-		Pick<MemoryEdge, "id" | "source_key" | "target_key"> & {
-			context?: string | null;
-		},
+	overrides: Partial<MemoryEdge> & Pick<MemoryEdge, "id" | "source_key" | "target_key">,
 ): void {
-	const row = {
+	const row: MemoryEdge = {
 		id: overrides.id,
 		source_key: overrides.source_key,
 		target_key: overrides.target_key,
@@ -48,7 +44,7 @@ function seedEdge(
 		modified_at: overrides.modified_at ?? TS,
 		deleted: overrides.deleted ?? 0,
 	};
-	insertRow(db, "memory_edges", row as unknown as MemoryEdge, SITE_ID);
+	insertRow(db, "memory_edges", row, SITE_ID);
 }
 
 beforeEach(() => {

@@ -63,7 +63,14 @@ export async function runSetPersona(args: SetPersonaArgs): Promise<void> {
 			.get(PERSONA_CLUSTER_CONFIG_KEY);
 
 		if (existing) {
-			updateRow(db, "cluster_config", PERSONA_CLUSTER_CONFIG_KEY, { value: content }, siteId);
+			// deleted: 0 un-tombstones if the key was previously soft-deleted.
+			updateRow(
+				db,
+				"cluster_config",
+				PERSONA_CLUSTER_CONFIG_KEY,
+				{ value: content, deleted: 0 },
+				siteId,
+			);
 		} else {
 			insertRow(
 				db,
@@ -72,6 +79,7 @@ export async function runSetPersona(args: SetPersonaArgs): Promise<void> {
 					key: PERSONA_CLUSTER_CONFIG_KEY,
 					value: content,
 					modified_at: new Date().toISOString(),
+					deleted: 0,
 				},
 				siteId,
 			);

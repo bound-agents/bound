@@ -1,9 +1,10 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ClusterConfigEntry } from "@bound/shared";
-import { applyMetricsSchema, applySchema, insertRow, updateRow } from "../../index";
+import { applyMetricsSchema, applySchema, insertRow, softDelete, updateRow } from "../../index";
 import {
 	findClusterConfigKeyByKey,
+	findClusterConfigKeyByKeyIncludingDeleted,
 	findClusterConfigValueByKey,
 	findClusterConfigValueWithModifiedAtByKey,
 } from "../cluster-config";
@@ -12,8 +13,8 @@ const SITE_ID = "site-aaaa";
 
 let db: Database;
 
-function seedConfig(entry: ClusterConfigEntry): void {
-	insertRow(db, "cluster_config", entry, SITE_ID);
+function seedConfig(entry: Omit<ClusterConfigEntry, "deleted"> & { deleted?: number }): void {
+	insertRow(db, "cluster_config", { deleted: 0, ...entry }, SITE_ID);
 }
 
 beforeEach(() => {
@@ -133,5 +134,43 @@ describe("findClusterConfigKeyByKey", () => {
 		const row = findClusterConfigKeyByKey(db, "emergency_stop");
 
 		expect(row).toBeNull();
+	});
+});
+
+describe("soft-delete semantics", () => {
+	it("live-read finders exclude a soft-deleted row", () => {
+		seedConfig({ key: "emergency_stop", value: "1", modified_at: "2026-01-01T00:00:00.000Z" });
+		softDelete(db, "cluster_config", "emergency_stop", SITE_ID);
+
+		// All three live-read finders must treat a tombstone as absent.
+		expect(findClusterConfigValueByKey(db, "emergency_stop")).toBeNull();
+		expect(findClusterConfigValueWithModifiedAtByKey(db, "emergency_stop")).toBeNull();
+		expect(findClusterConfigKeyByKey(db, "emergency_stop")).toBeNull();
+	});
+
+	it("the include-deleted probe still sees a soft-deleted row", () => {
+		seedConfig({ key: "emergency_stop", value: "1", modified_at: "2026-01-01T00:00:00.000Z" });
+		softDelete(db, "cluster_config", "emergency_stop", SITE_ID);
+
+		// The write path relies on this to detect the tombstone and UPDATE rather
+		// than INSERT (which would collide on the `key` PK).
+		expect(findClusterConfigKeyByKeyIncludingDeleted(db, "emergency_stop")).toEqual({
+			key: "emergency_stop",
+		});
+	});
+
+	it("re-setting a soft-deleted key via UPDATE+deleted=0 un-tombstones it without a UNIQUE collision", () => {
+		seedConfig({ key: "emergency_stop", value: "first", modified_at: "2026-01-01T00:00:00.000Z" });
+		softDelete(db, "cluster_config", "emergency_stop", SITE_ID);
+
+		// Simulate the writer's upsert path: probe ignoring deleted -> row exists ->
+		// UPDATE with deleted: 0. This must NOT throw a UNIQUE constraint error and
+		// must bring the row back live with the new value.
+		expect(findClusterConfigKeyByKeyIncludingDeleted(db, "emergency_stop")).not.toBeNull();
+		expect(() => {
+			updateRow(db, "cluster_config", "emergency_stop", { value: "second", deleted: 0 }, SITE_ID);
+		}).not.toThrow();
+
+		expect(findClusterConfigValueByKey(db, "emergency_stop")).toEqual({ value: "second" });
 	});
 });

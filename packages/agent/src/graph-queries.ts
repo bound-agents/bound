@@ -75,7 +75,7 @@ export function upsertEdge(
 				target_key: targetKey,
 				relation,
 				weight,
-				...(context !== undefined && { context }),
+				context: context ?? null,
 				created_at: now,
 				modified_at: now,
 				deleted: 0,
