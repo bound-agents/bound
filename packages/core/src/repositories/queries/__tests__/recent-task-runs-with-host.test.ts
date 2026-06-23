@@ -8,18 +8,20 @@ const SITE_ID = "site-test";
 const TS = "2026-01-01T00:00:00.000Z";
 
 /**
- * Seed a `tasks` row. Only the columns the schema declares are written (the
- * `Task` type carries `origin_thread_id` which the schema lacks, so it is
- * omitted via a cast through unknown). Nullable columns default to null.
+ * Seed a `tasks` row with every column the `Task` type declares. `origin_thread_id`
+ * and `system_prompt_addition` are added to the table via ALTER TABLE migrations in
+ * applySchema (schema.ts), so a freshly-built test DB has them. Nullable columns
+ * default to null.
  */
 function seedTask(db: Database, overrides: Partial<Task> & { id: string }): void {
-	const base = {
+	const base: Task = {
 		id: overrides.id,
 		type: "cron",
 		status: "pending",
 		trigger_spec: "0 * * * *",
 		payload: null,
 		thread_id: null,
+		origin_thread_id: null,
 		claimed_by: null,
 		claimed_at: null,
 		lease_id: null,
@@ -47,7 +49,7 @@ function seedTask(db: Database, overrides: Partial<Task> & { id: string }): void
 		deleted: 0,
 		...overrides,
 	};
-	insertRow(db, "tasks", base as unknown as Task, SITE_ID);
+	insertRow(db, "tasks", base, SITE_ID);
 }
 
 /**

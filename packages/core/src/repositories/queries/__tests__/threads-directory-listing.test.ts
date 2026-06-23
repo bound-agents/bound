@@ -8,11 +8,12 @@ const SITE_ID = "site-test";
 const USER = "user-1";
 
 /**
- * Seed a `threads` row. Nullable columns (incl. the post-CREATE `model_hint`
- * column) default to null when not overridden.
+ * Seed a `threads` row. `model_hint` is a real column in the test DB — added by
+ * an `ALTER TABLE` migration that `applySchema` runs after the `CREATE TABLE` —
+ * so the typed `Thread` seed inserts cleanly. Nullable columns default to null.
  */
 function seedThread(db: Database, overrides: Partial<Thread> & { id: string }): void {
-	const base = {
+	const base: Thread = {
 		id: overrides.id,
 		user_id: USER,
 		interface: "web",
@@ -27,20 +28,22 @@ function seedThread(db: Database, overrides: Partial<Thread> & { id: string }): 
 		last_message_at: "2026-01-01T00:00:00.000Z",
 		modified_at: "2026-01-01T00:00:00.000Z",
 		deleted: 0,
+		model_hint: null,
 		...overrides,
 	};
-	insertRow(db, "threads", base as unknown as Thread, SITE_ID);
+	insertRow(db, "threads", base, SITE_ID);
 }
 
 /**
- * Seed a `messages` row. The schema stops at `deleted` (no `exit_code` /
- * `metadata`), so those `Message` fields are omitted.
+ * Seed a `messages` row. `exit_code` and `metadata` are real columns in the
+ * test DB — `applySchema` adds them via `ALTER TABLE` after the `CREATE TABLE` —
+ * so the typed `Message` seed inserts cleanly. Nullable columns default to null.
  */
 function seedMessage(
 	db: Database,
 	overrides: Partial<Message> & { id: string; thread_id: string },
 ): void {
-	const base = {
+	const base: Message = {
 		id: overrides.id,
 		thread_id: overrides.thread_id,
 		role: "user",
@@ -51,9 +54,11 @@ function seedMessage(
 		modified_at: null,
 		host_origin: SITE_ID,
 		deleted: 0,
+		exit_code: null,
+		metadata: null,
 		...overrides,
 	};
-	insertRow(db, "messages", base as unknown as Message, SITE_ID);
+	insertRow(db, "messages", base, SITE_ID);
 }
 
 /**
@@ -64,7 +69,7 @@ function seedTurn(
 	db: Database,
 	overrides: Partial<Turn> & { id: string; thread_id: string; model_id: string },
 ): void {
-	const base = {
+	const base: Turn = {
 		id: overrides.id,
 		thread_id: overrides.thread_id,
 		task_id: null,
@@ -82,22 +87,22 @@ function seedTurn(
 		context_debug: null,
 		host_origin: null,
 		modified_at: null,
-		deleted: 0,
 		...overrides,
 	};
-	insertRow(db, "turns", base as unknown as Turn, SITE_ID);
+	insertRow(db, "turns", base, SITE_ID);
 }
 
 /**
- * Seed a `tasks` row. The schema declares neither `origin_thread_id`,
- * `lease_id`'s siblings nor `system_prompt_addition`, so those `Task` fields are
- * omitted to keep the STRICT INSERT honest.
+ * Seed a `tasks` row. `origin_thread_id` and `system_prompt_addition` are real
+ * columns in the test DB — `applySchema` adds them via `ALTER TABLE` after the
+ * `CREATE TABLE` — so the typed `Task` seed inserts cleanly. Nullable columns
+ * default to null.
  */
 function seedTask(
 	db: Database,
 	overrides: Partial<Task> & { id: string; thread_id: string; status: Task["status"] },
 ): void {
-	const base = {
+	const base: Task = {
 		id: overrides.id,
 		type: "deferred",
 		status: overrides.status,
@@ -106,6 +111,7 @@ function seedTask(
 		created_at: "2026-01-01T00:00:00.000Z",
 		created_by: null,
 		thread_id: overrides.thread_id,
+		origin_thread_id: null,
 		claimed_by: null,
 		claimed_at: null,
 		lease_id: null,
@@ -123,6 +129,7 @@ function seedTask(
 		consecutive_failures: 0,
 		event_depth: 0,
 		no_quiescence: 0,
+		system_prompt_addition: null,
 		heartbeat_at: null,
 		result: null,
 		error: null,
@@ -130,18 +137,20 @@ function seedTask(
 		deleted: 0,
 		...overrides,
 	};
-	insertRow(db, "tasks", base as unknown as Task, SITE_ID);
+	insertRow(db, "tasks", base, SITE_ID);
 }
 
 /**
- * Seed a `hosts` row. The schema declares a `commit_hash` column not present on
- * the `Host` type; we leave it unset (it is nullable). PK is `site_id`.
+ * Seed a `hosts` row. PK is `site_id`. The test DB carries a `commit_hash`
+ * column (added by an `ALTER TABLE` migration) that the `Host` type omits; it
+ * is nullable, so the typed seed simply leaves it unset and the DB defaults it
+ * to null.
  */
 function seedHost(
 	db: Database,
 	overrides: Partial<Host> & { site_id: string; host_name: string },
 ): void {
-	const base = {
+	const base: Host = {
 		site_id: overrides.site_id,
 		host_name: overrides.host_name,
 		version: null,
@@ -155,10 +164,9 @@ function seedHost(
 		online_at: null,
 		modified_at: "2026-01-01T00:00:00.000Z",
 		platforms: null,
-		deleted: 0,
 		...overrides,
 	};
-	insertRow(db, "hosts", base as unknown as Host, SITE_ID);
+	insertRow(db, "hosts", base, SITE_ID);
 }
 
 /**
@@ -173,7 +181,7 @@ function seedClientSession(
 	},
 ): void {
 	const id = overrides.id ?? `${overrides.connection_id}::${overrides.thread_id}`;
-	const base = {
+	const base: ClientSession = {
 		id,
 		connection_id: overrides.connection_id,
 		thread_id: overrides.thread_id,
@@ -183,7 +191,7 @@ function seedClientSession(
 		modified_at: "2026-01-01T00:00:00.000Z",
 		...overrides,
 	};
-	insertRow(db, "client_sessions", base as unknown as ClientSession, SITE_ID);
+	insertRow(db, "client_sessions", base, SITE_ID);
 }
 
 /**

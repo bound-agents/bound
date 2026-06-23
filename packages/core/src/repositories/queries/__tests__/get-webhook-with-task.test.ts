@@ -12,18 +12,20 @@ import {
 const SITE_ID = "site-test";
 
 /**
- * Seed a `tasks` row. Only the columns the schema actually declares are written
- * (the `Task` type carries an `origin_thread_id` field that the schema does not,
- * so it must be omitted or the INSERT fails). Nullable columns default to null.
+ * Seed a `tasks` row with every column the `Task` type declares. `origin_thread_id`
+ * and `system_prompt_addition` are added to the table via ALTER TABLE migrations in
+ * applySchema (schema.ts), so a freshly-built test DB has them. Nullable columns
+ * default to null.
  */
 function seedTask(db: Database, overrides: Partial<Task> & { id: string }): void {
-	const base = {
+	const base: Task = {
 		id: overrides.id,
 		type: "event",
 		status: "pending",
 		trigger_spec: "webhook",
 		payload: null,
 		thread_id: null,
+		origin_thread_id: null,
 		claimed_by: null,
 		claimed_at: null,
 		lease_id: null,
@@ -51,9 +53,7 @@ function seedTask(db: Database, overrides: Partial<Task> & { id: string }): void
 		deleted: 0,
 		...overrides,
 	};
-	// Cast through unknown: the literal omits `origin_thread_id` from the Task
-	// type on purpose (no such column in the schema).
-	insertRow(db, "tasks", base as unknown as Task, SITE_ID);
+	insertRow(db, "tasks", base, SITE_ID);
 }
 
 function seedWebhook(
