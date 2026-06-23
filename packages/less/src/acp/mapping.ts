@@ -11,6 +11,12 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+// Canonical shell-tool-name predicate lives in ../tools/shell, co-located with
+// the names resolveShell mints. Imported for internal use and re-exported so
+// existing acp consumers keep importing it from mapping.
+import { isShellToolName } from "../tools/shell";
+
+export { isShellToolName };
 import type {
 	ContentBlock as AcpContentBlock,
 	PermissionOption,
@@ -78,10 +84,6 @@ export function toolNameToKind(toolName: string): ToolKind {
 	if (isShellToolName(toolName)) return "execute";
 	if (toolName.startsWith("boundless_mcp_")) return "other";
 	return "other";
-}
-
-export function isShellToolName(toolName: string): boolean {
-	return /^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName);
 }
 
 export function toolCallTitle(toolName: string, args: Record<string, unknown>): string {

@@ -2,6 +2,7 @@ import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
+import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tildifyPath, tildifyText } from "../util/path";
 import { wrapLinesAtWidth } from "../util/wrap";
@@ -26,8 +27,15 @@ function displayToolName(name: string): string {
 
 /** Summarize tool arguments for display, showing the most relevant arg value. */
 function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
-	// For common tools, show the primary argument
-	if (toolName.endsWith("_bash") && typeof input.command === "string") {
+	// For common tools, show the primary argument. The shell tool is named for
+	// its shell (boundless_bash / _pwsh / _cmd via resolveShell), so match the
+	// canonical predicate, not a bare `_bash` suffix — which missed PowerShell
+	// and cmd.exe. The extra `_bash` suffix keeps the VFS sandbox shell
+	// (bms_bash), which the predicate's `boundless_`-anchor doesn't cover.
+	if (
+		(isShellToolName(toolName) || toolName.endsWith("_bash")) &&
+		typeof input.command === "string"
+	) {
 		const cmd = input.command;
 		return cmd.length > 80 ? `${cmd.slice(0, 77)}...` : cmd;
 	}
