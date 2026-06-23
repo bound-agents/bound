@@ -14,6 +14,7 @@ export {
 	updateRow,
 	updateRowIf,
 	softDelete,
+	dangerouslyExecuteRawWrite,
 	insertMessage,
 	readMessageMetadata,
 	writeMessageMetadata,
@@ -127,3 +128,5 @@ export {
 	normalizeRelationValue,
 } from "./memory-relations";
 export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";
+// Read repository layer (synced-table SELECT helpers). Writes go through change-log.ts.
+export * from "./repositories";

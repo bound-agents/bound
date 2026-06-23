@@ -1,4 +1,17 @@
 import type { Database } from "bun:sqlite";
+import {
+	countActiveMemory,
+	findActiveSkillIdAndRootByName,
+	findActiveTaskPayloadById,
+	findClusterConfigValueByKey,
+	findFileContentByPathActive,
+	findTaskClaimedAtById,
+	findThreadSummaryById,
+	listActiveSkillNameDescriptions,
+	listLiveMessageProjectionByThreadNewestFirst,
+	listLiveMessageProjectionByThreadSince,
+	listMemoryDeltaKeysSince,
+} from "@bound/core";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type {
 	CommandRegistryEntry,
@@ -355,14 +368,7 @@ function loadVolatileSectionInputs(args: {
 		maxPinned,
 	);
 
-	const allDeltaKeys = db
-		.prepare(
-			`SELECT DISTINCT key FROM semantic_memory
-			 WHERE modified_at > ?
-			   AND deleted = 0
-			   AND key NOT LIKE '_internal.%'`,
-		)
-		.all(baseline) as Array<{ key: string }>;
+	const allDeltaKeys = listMemoryDeltaKeysSince(db, baseline);
 	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
 
 	return {
@@ -721,14 +727,7 @@ export function buildVolatileContext(params: {
 	);
 
 	// Compute delta-key set from R-MV1 baseline + delta query
-	const allDeltaKeys = params.db
-		.prepare(
-			`SELECT DISTINCT key FROM semantic_memory
-			 WHERE modified_at > ?
-			   AND deleted = 0
-			   AND key NOT LIKE '_internal.%'`,
-		)
-		.all(enrichmentBaseline) as Array<{ key: string }>;
+	const allDeltaKeys = listMemoryDeltaKeysSince(params.db, enrichmentBaseline);
 	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
 
 	// Load inputs for renderers
@@ -778,11 +777,7 @@ export function buildVolatileContext(params: {
 	);
 
 	// Query total memory count for VolatileContext return
-	const totalMemCount = (
-		params.db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
-			c: number;
-		}
-	).c;
+	const totalMemCount = countActiveMemory(params.db);
 
 	// Render the three sections using the shared composer.
 	// Stable side: WK bodies + DA titles. Varying side: WK update markers +
@@ -840,11 +835,7 @@ export function buildVolatileContext(params: {
 	// has (empty skill index produces no lines).
 	let activeSkills: Array<{ name: string; description: string }> = [];
 	try {
-		activeSkills = params.db
-			.query(
-				"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
-			)
-			.all() as Array<{ name: string; description: string }>;
+		activeSkills = listActiveSkillNameDescriptions(params.db);
 
 		if (activeSkills.length > 0) {
 			const skillIndexLines = renderSkillIndex(activeSkills).split("\n");
@@ -1015,9 +1006,7 @@ export function estimateContentLength(content: string | ContentBlock[]): number 
  * configDir-keyed cache.
  */
 function loadPersona(db: Database): string | null {
-	const row = db
-		.query("SELECT value FROM cluster_config WHERE key = ?")
-		.get(PERSONA_CLUSTER_CONFIG_KEY) as { value: string } | null;
+	const row = findClusterConfigValueByKey(db, PERSONA_CLUSTER_CONFIG_KEY);
 	return row?.value ?? null;
 }
 
@@ -1156,25 +1145,20 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	const MESSAGE_LOAD_HARD_CEILING = 100_000;
 	const messages: Message[] = [];
 	if (!noHistory) {
-		const query = db.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT ?",
+		const rows = listLiveMessageProjectionByThreadNewestFirst(
+			db,
+			threadId,
+			MESSAGE_LOAD_HARD_CEILING,
 		);
-		const rows = query.all(threadId, MESSAGE_LOAD_HARD_CEILING) as Message[];
 		rows.reverse();
 		messages.push(...rows);
 	} else if (params.taskId) {
 		// noHistory tasks still need the current run's injected messages (wakeup +
 		// synthetic tool_call/tool_result). Load messages created at or after the
 		// task's claimed_at timestamp to capture exactly this run's setup.
-		const task = db.query("SELECT claimed_at FROM tasks WHERE id = ?").get(params.taskId) as {
-			claimed_at: string | null;
-		} | null;
+		const task = findTaskClaimedAtById(db, params.taskId);
 		if (task?.claimed_at) {
-			const rows = db
-				.query(
-					"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at >= ? ORDER BY created_at ASC, rowid ASC",
-				)
-				.all(threadId, task.claimed_at) as Message[];
+			const rows = listLiveMessageProjectionByThreadSince(db, threadId, task.claimed_at);
 			messages.push(...rows);
 		}
 	}
@@ -1230,9 +1214,7 @@ Original output was too large for the context window. If you need the full conte
 		// mutate underneath the provider's cache.
 		const compactionBoundary = computeCompactionBoundary(messages, recentWindow);
 
-		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
-			summary: string | null;
-		} | null;
+		const thread = findThreadSummaryById(db, threadId);
 		if (thread?.summary) {
 			messages.unshift({
 				id: "__compaction_summary__",
@@ -1377,9 +1359,7 @@ Original output was too large for the context window. If you need the full conte
 	// Must be outside the !noHistory guard so it works when noHistory = true
 	if (params.taskId) {
 		try {
-			const taskRow = db
-				.query("SELECT payload FROM tasks WHERE id = ? AND deleted = 0")
-				.get(params.taskId) as { payload: string | null } | null;
+			const taskRow = findActiveTaskPayloadById(db, params.taskId);
 
 			if (taskRow?.payload) {
 				let taskPayload: unknown;
@@ -1397,21 +1377,13 @@ Original output was too large for the context window. If you need the full conte
 				) {
 					const skillName = (taskPayload as Record<string, unknown>).skill as string;
 
-					const skillRow = db
-						.query(
-							"SELECT id, skill_root FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
-						)
-						.get(skillName) as { id: string; skill_root: string | null } | null;
+					const skillRow = findActiveSkillIdAndRootByName(db, skillName);
 
 					if (skillRow) {
 						const skillMdPath = skillRow.skill_root
 							? `${skillRow.skill_root}/SKILL.md`
 							: `skills/${skillName}/SKILL.md`;
-						const skillMdRow = db
-							.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-							.get(skillMdPath) as {
-							content: string;
-						} | null;
+						const skillMdRow = findFileContentByPathActive(db, skillMdPath);
 
 						if (skillMdRow?.content) {
 							systemParts.push(skillMdRow.content);
@@ -1533,9 +1505,7 @@ Original output was too large for the context window. If you need the full conte
 		// tool-loop / keyword-barren-user turns (R-VC30).
 		const assistantMessageText = extractAssistantSeedText(messages);
 		// Query thread summary for broader keyword seeding
-		const threadRow = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
-			summary: string | null;
-		} | null;
+		const threadRow = findThreadSummaryById(db, threadId);
 		const threadSummary = threadRow?.summary ?? undefined;
 
 		const volatileCtx = buildVolatileContext({
@@ -1712,11 +1682,7 @@ Original output was too large for the context window. If you need the full conte
 		const varyingTailLines: string[] = [];
 
 		if (renderedEnrichmentLines.length > 0) {
-			totalMemCount = (
-				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
-					c: number;
-				}
-			).c;
+			totalMemCount = countActiveMemory(db);
 
 			if (nhStable.length > 0) {
 				systemParts.push(nhStable.join("\n"));
@@ -2081,9 +2047,7 @@ Original output was too large for the context window. If you need the full conte
 			// recency preservation, monotonicity, determinism, graceful degradation,
 			// and chronological ordering — see
 			// `progressive-fidelity/__tests__/tier-allocation.property.test.ts`.
-			const threadRow = params.db
-				.prepare("SELECT summary FROM threads WHERE id = ?")
-				.get(params.threadId) as { summary: string | null } | null;
+			const threadRow = findThreadSummaryById(params.db, params.threadId);
 
 			const tieredResult = tieredHistoryTruncation({
 				historyMessages,

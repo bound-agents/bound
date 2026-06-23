@@ -1,4 +1,10 @@
-import { getSiteId } from "@bound/core";
+import {
+	findLiveMessageByIdAndThread,
+	findLiveThreadById,
+	getSiteId,
+	listLiveMessagesByThreadNewestFirst,
+	listMessagesByThread,
+} from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { redactMessage, redactThread } from "@bound/agent";
@@ -13,7 +19,7 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 			const { threadId } = c.req.param();
 			const limitParam = c.req.query("limit");
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
+			const thread = findLiveThreadById(db, threadId);
 
 			if (!thread) {
 				return c.json(
@@ -28,28 +34,9 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 			if (limitParam) {
 				const limit = Math.max(1, Math.min(Number.parseInt(limitParam, 10) || 1000, 10000));
 				// Fetch the newest N messages, then return in chronological order
-				messages = db
-					.query(
-						`
-					SELECT * FROM (
-						SELECT * FROM messages
-						WHERE thread_id = ? AND deleted = 0
-						ORDER BY created_at DESC
-						LIMIT ?
-					) sub ORDER BY created_at ASC
-				`,
-					)
-					.all(threadId, limit) as Message[];
+				messages = listLiveMessagesByThreadNewestFirst(db, threadId, limit);
 			} else {
-				messages = db
-					.query(
-						`
-					SELECT * FROM messages
-					WHERE thread_id = ? AND deleted = 0
-					ORDER BY created_at ASC
-				`,
-					)
-					.all(threadId) as Message[];
+				messages = listMessagesByThread(db, threadId);
 			}
 
 			return c.json(messages);
@@ -78,15 +65,13 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 		try {
 			const { threadId, messageId } = c.req.param();
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
+			const thread = findLiveThreadById(db, threadId);
 
 			if (!thread) {
 				return c.json({ error: "Thread not found" }, 404);
 			}
 
-			const message = db
-				.query("SELECT * FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
-				.get(messageId, threadId);
+			const message = findLiveMessageByIdAndThread(db, messageId, threadId);
 
 			if (!message) {
 				return c.json({ error: "Message not found" }, 404);
@@ -110,7 +95,7 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 		try {
 			const { threadId } = c.req.param();
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
+			const thread = findLiveThreadById(db, threadId);
 
 			if (!thread) {
 				return c.json({ error: "Thread not found" }, 404);

@@ -1,10 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
-	cleanLineNumber,
-	extractAuditSection,
+	collectChokepointInfo,
 	findTableInLine,
-	hasToDoLink,
-	isExemptionDocumented,
+	isChokepointSanctioned,
 	shouldSkipLine,
 } from "../validate-outbox-invariant";
 
@@ -15,9 +13,11 @@ describe("validate-outbox-invariant", () => {
 			expect(shouldSkipLine(line)).toBe(true);
 		});
 
-		it("should skip lines with outbox-exempt annotation", () => {
+		it("should NOT skip lines with the legacy outbox-exempt annotation", () => {
+			// The audit-table + // outbox-exempt mechanism was replaced by the
+			// dangerouslyExecuteRawWrite chokepoint; the marker is no longer honored.
 			const line = "// outbox-exempt: per-host hint";
-			expect(shouldSkipLine(line)).toBe(true);
+			expect(shouldSkipLine(line)).toBe(false);
 		});
 
 		it("should not skip lines without either annotation", () => {
@@ -53,137 +53,99 @@ describe("validate-outbox-invariant", () => {
 		});
 	});
 
-	describe("extractAuditSection", () => {
-		it("should extract audit section from CONTRIBUTING.md", () => {
-			const contributing =
-				"# Test\n### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category |\n|-----------|-------------|----------|\n| test.ts:1 | tasks | (a) justified |\n\n### Next Section";
-			const section = extractAuditSection(contributing);
-			expect(section).toContain("| File:Line");
-			expect(section).toContain("test.ts:1");
-			expect(section).not.toContain("### Next Section");
+	describe("collectChokepointInfo", () => {
+		it("records the argument window of a chokepoint call", () => {
+			const lines = [
+				"dangerouslyExecuteRawWrite(db, {",
+				'  sql: "UPDATE tasks SET no_history = 1 WHERE type = ?",',
+				'  reason: "migration",',
+				"});",
+			];
+			const info = collectChokepointInfo(lines);
+			expect(info.windows.length).toBe(1);
+			expect(info.windows[0][0]).toBe(0);
 		});
 
-		it("should return empty string if audit section not found", () => {
-			const contributing = "# Test\nNo audit section here";
-			const section = extractAuditSection(contributing);
-			expect(section).toBe("");
+		it("captures a named constant passed as the sql argument", () => {
+			const lines = [
+				"dangerouslyExecuteRawWrite(db, {",
+				"  sql: STALE_TASK_RESET_SQL,",
+				'  reason: "crash recovery",',
+				"});",
+			];
+			const info = collectChokepointInfo(lines);
+			expect(info.sqlIdentifiers.has("STALE_TASK_RESET_SQL")).toBe(true);
+		});
+
+		it("captures the `sql` object-shorthand identifier", () => {
+			const lines = ["dangerouslyExecuteRawWrite(db, {", "  sql,", '  reason: "hint",', "});"];
+			const info = collectChokepointInfo(lines);
+			expect(info.sqlIdentifiers.has("sql")).toBe(true);
+		});
+
+		it("returns empty info when no chokepoint calls are present", () => {
+			const lines = ['db.run("UPDATE tasks SET status = ? WHERE id = ?");'];
+			const info = collectChokepointInfo(lines);
+			expect(info.windows.length).toBe(0);
+			expect(info.sqlIdentifiers.size).toBe(0);
 		});
 	});
 
-	describe("cleanLineNumber", () => {
-		it("should parse plain line number", () => {
-			expect(cleanLineNumber("123")).toBe(123);
-		});
-
-		it("should strip (REWRITTEN) marker", () => {
-			expect(cleanLineNumber("123 (REWRITTEN)")).toBe(123);
-		});
-
-		it("should strip (REMOVED) marker", () => {
-			expect(cleanLineNumber("456 (REMOVED)")).toBe(456);
-		});
-
-		it("should handle whitespace around markers", () => {
-			expect(cleanLineNumber("789  (REWRITTEN)  ")).toBe(789);
-		});
-	});
-
-	describe("isExemptionDocumented", () => {
-		it("should return true for non-synced tables (category c)", () => {
-			const contributing =
-				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category |\n\n### Next";
-			// non_synced_table is not in SYNCED_TABLES list
-			expect(isExemptionDocumented("test.ts", 1, "non_synced_table", contributing)).toBe(true);
-		});
-
-		it("should return true for exact file:line match with table substring", () => {
-			const contributing =
-				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts:10 | semantic_memory | (a) justified | Test entry |\n\n### Next";
-			expect(isExemptionDocumented("test.ts", 10, "semantic_memory", contributing)).toBe(true);
-		});
-
-		it("should return false for file:line match without table substring", () => {
-			const contributing =
-				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts:10 | tasks | (a) justified | Test entry |\n\n### Next";
-			expect(isExemptionDocumented("test.ts", 10, "semantic_memory", contributing)).toBe(false);
-		});
-
-		it("should return true for file-only match (any line in that file)", () => {
-			const contributing =
-				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts | semantic_memory | (a) justified | Test entry |\n\n### Next";
-			expect(isExemptionDocumented("test.ts", 999, "semantic_memory", contributing)).toBe(true);
-		});
-
-		it("should return false for synced table without documentation", () => {
-			const contributing =
-				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category |\n\n### Next";
-			expect(isExemptionDocumented("undocumented.ts", 50, "tasks", contributing)).toBe(false);
-		});
-
-		it("should handle line number with (REWRITTEN) marker in audit table", () => {
-			const contributing =
-				"### Audit Disposition Table for `outbox-exempt` Annotations\n\n| File:Line | Write target | Category | Disposition |\n| test.ts:15 (REWRITTEN) | tasks | (b) fixed | Test entry |\n\n### Next";
-			expect(isExemptionDocumented("test.ts", 15, "tasks", contributing)).toBe(true);
-		});
-	});
-
-	describe("hasToDoLink", () => {
-		it("should find TODO on the same line", () => {
-			const lines = ["const x = 5; // TODO: fix this"];
-			expect(hasToDoLink(lines, 0)).toBe(true);
-		});
-
-		it("should find TODO within 5 lines before", () => {
+	describe("isChokepointSanctioned", () => {
+		it("does NOT sanction a genuine raw bypass", () => {
 			const lines = [
-				"// TODO: this will be fixed later",
-				"line 2",
-				"line 3",
-				"line 4",
-				"line 5",
-				"const x = 5;", // index 5
+				"function f(db) {",
+				'  db.run("UPDATE tasks SET status = ? WHERE id = ?", [s, id]);',
+				"}",
 			];
-			expect(hasToDoLink(lines, 5)).toBe(true);
+			const info = collectChokepointInfo(lines);
+			expect(isChokepointSanctioned(lines, 1, info)).toBe(false);
 		});
 
-		it("should find TODO within 5 lines after", () => {
+		it("sanctions an inline sql literal inside the call window", () => {
 			const lines = [
-				"const x = 5;", // index 0
-				"line 2",
-				"line 3",
-				"line 4",
-				"line 5",
-				"// TODO: fix this later",
+				"dangerouslyExecuteRawWrite(db, {",
+				'  sql: "UPDATE tasks SET no_history = 1 WHERE type = ?",',
+				'  reason: "migration",',
+				"});",
 			];
-			expect(hasToDoLink(lines, 0)).toBe(true);
+			const info = collectChokepointInfo(lines);
+			expect(isChokepointSanctioned(lines, 1, info)).toBe(true);
 		});
 
-		it("should not find TODO beyond 5 lines away", () => {
+		it("sanctions a named-constant definition referenced by a chokepoint call", () => {
 			const lines = [
-				"const x = 5;", // index 0
-				"line 2",
-				"line 3",
-				"line 4",
-				"line 5",
-				"line 6",
-				"line 7",
-				"// TODO: too far away",
+				"const STALE_SQL = \"UPDATE tasks SET status = 'pending' WHERE claimed_by = ?\";",
+				"// elsewhere in the file",
+				"dangerouslyExecuteRawWrite(db, {",
+				"  sql: STALE_SQL,",
+				"  params: [siteId],",
+				'  reason: "crash recovery",',
+				"});",
 			];
-			expect(hasToDoLink(lines, 0)).toBe(false);
+			const info = collectChokepointInfo(lines);
+			expect(isChokepointSanctioned(lines, 0, info)).toBe(true);
 		});
 
-		it("should return false when no TODO found", () => {
-			const lines = ["line 1", "line 2", "line 3"];
-			expect(hasToDoLink(lines, 1)).toBe(false);
+		it("sanctions a local `const sql` consumed via object shorthand", () => {
+			const lines = [
+				"const sql = `UPDATE semantic_memory SET last_accessed_at = ? WHERE id = ?`;",
+				"dangerouslyExecuteRawWrite(db, {",
+				"  sql,",
+				'  reason: "hint",',
+				"});",
+			];
+			const info = collectChokepointInfo(lines);
+			expect(isChokepointSanctioned(lines, 0, info)).toBe(true);
 		});
 
-		it("should handle boundary case at start of file", () => {
-			const lines = ["const x = 5;", "// TODO: fix", "line 3"];
-			expect(hasToDoLink(lines, 0)).toBe(true);
-		});
-
-		it("should handle boundary case at end of file", () => {
-			const lines = ["line 1", "// TODO: fix", "const x = 5;"];
-			expect(hasToDoLink(lines, 2)).toBe(true);
+		it("does NOT sanction an unrelated const far from any chokepoint call", () => {
+			const lines = [
+				'const OTHER_SQL = "DELETE FROM tasks WHERE id = ?";',
+				"db.run(OTHER_SQL, [id]);",
+			];
+			const info = collectChokepointInfo(lines);
+			expect(isChokepointSanctioned(lines, 0, info)).toBe(false);
 		});
 	});
 });

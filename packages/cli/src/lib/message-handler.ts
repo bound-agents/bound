@@ -8,6 +8,7 @@
 import type { AgentLoopResult, HandleMessageTracker } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import type { AgentLoop } from "@bound/agent";
+import { findThreadModelHintById } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
 
@@ -68,9 +69,7 @@ export function resolveThreadModel(
 	threadId: string,
 	nodeDefault: string,
 ): string {
-	const row = db.query("SELECT model_hint FROM threads WHERE id = ?").get(threadId) as {
-		model_hint: string | null;
-	} | null;
+	const row = findThreadModelHintById(db, threadId);
 	return row?.model_hint ?? nodeDefault;
 }
 

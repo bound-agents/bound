@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { dangerouslyExecuteRawWrite } from "@bound/core";
 import { v5 as uuidv5 } from "uuid";
 
 export interface ScanResult {
@@ -124,10 +125,12 @@ export function scanOverlayIndex(
 						siteId,
 					);
 				} else {
-					db.prepare(
-						"INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)", // outbox-exempt: outbox not provided (backward compat)
-						// TODO: follow-up RFC — overlay_index writes should route through insertRow/updateRow/softDelete
-					).run(id, siteId, entry.path, stat.size, contentHash, now);
+					dangerouslyExecuteRawWrite(db, {
+						sql: "INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+						params: [id, siteId, entry.path, stat.size, contentHash, now],
+						reason:
+							"overlay_index scan without an injected outbox (backward compat); local index rebuilt from filesystem on every scan",
+					});
 				}
 				created++;
 			} else if (existing.content_hash !== contentHash) {
@@ -145,10 +148,12 @@ export function scanOverlayIndex(
 						siteId,
 					);
 				} else {
-					db.prepare(
-						"UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?", // outbox-exempt: outbox not provided (backward compat)
-						// TODO: follow-up RFC — overlay_index writes should route through insertRow/updateRow/softDelete
-					).run(stat.size, contentHash, now, id);
+					dangerouslyExecuteRawWrite(db, {
+						sql: "UPDATE overlay_index SET size_bytes = ?, content_hash = ?, indexed_at = ? WHERE id = ?",
+						params: [stat.size, contentHash, now, id],
+						reason:
+							"overlay_index scan without an injected outbox (backward compat); local index rebuilt from filesystem on every scan",
+					});
 				}
 				updated++;
 			}
@@ -166,10 +171,12 @@ export function scanOverlayIndex(
 				outbox.softDelete(db, "overlay_index", entry.id, siteId);
 			} else {
 				const now = new Date().toISOString();
-				db.prepare(
-					"UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?", // outbox-exempt: outbox not provided (backward compat)
-					// TODO: follow-up RFC — overlay_index writes should route through insertRow/updateRow/softDelete
-				).run(now, entry.id);
+				dangerouslyExecuteRawWrite(db, {
+					sql: "UPDATE overlay_index SET deleted = 1, indexed_at = ? WHERE id = ?",
+					params: [now, entry.id],
+					reason:
+						"overlay_index tombstone without an injected outbox (backward compat); local index rebuilt from filesystem on every scan",
+				});
 			}
 			tombstoned++;
 		}

@@ -1,6 +1,34 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { getPkColumn, insertRow, updateRow } from "@bound/core";
+import {
+	countEligibleMemoryDelta,
+	countLiveAssistantMessagesByThread,
+	countLiveMessagesByThread,
+	countMemoryByKeyPrefix,
+	dangerouslyExecuteRawWrite,
+	findLatestLiveUserMessageCreatedAtByThread,
+	findMemoryIdByKeyIncludingDeleted,
+	findTaskRunTimestampsById,
+	findThreadCreatedAtById,
+	findThreadSummaryStateById,
+	getPkColumn,
+	getThreadUserDisplayName,
+	insertRow,
+	listAppliedAdvisoriesResolvedSince,
+	listDetailMemoryAccessOrder,
+	listFileModificationNotices,
+	listMemorySourceInfoByKeys,
+	listMessageRoleContentByThreadSince,
+	listPinnedMemoryWithSource,
+	listRecencyMemoryWithSource,
+	listRecentTaskRunsWithHost,
+	listRecentThreadsWithMessages,
+	listSummarizesParentsByChildKeys,
+	listSummaryChildrenForStaleness,
+	listSummaryChildrenWithSource,
+	listSummaryMemoryWithSource,
+	updateRow,
+} from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
 import type {
 	CrossThreadSource,
@@ -167,9 +195,7 @@ export async function extractSummaryAndMemories(
 ): Promise<Result<ExtractionResult, Error>> {
 	try {
 		// Get thread state — read existing summary for rolling synthesis
-		const thread = db
-			.prepare("SELECT summary, summary_through FROM threads WHERE id = ?")
-			.get(threadId) as { summary: string | null; summary_through: string | null } | undefined;
+		const thread = findThreadSummaryStateById(db, threadId);
 
 		if (!thread) {
 			return {
@@ -181,11 +207,7 @@ export async function extractSummaryAndMemories(
 		const summaryThrough = thread.summary_through || "1970-01-01T00:00:00Z";
 
 		// Get messages after summary_through with role for delta formatting
-		const messages = db
-			.prepare(
-				"SELECT role, content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at",
-			)
-			.all(threadId, summaryThrough) as Array<{ role: string; content: string }>;
+		const messages = listMessageRoleContentByThreadSince(db, threadId, summaryThrough);
 
 		if (messages.length === 0) {
 			return {
@@ -237,11 +259,7 @@ export async function extractSummaryAndMemories(
 		// Resolve the user's display name so the summary references them by name
 		// instead of "you" (which is meaningless in cross-thread digests or when
 		// a different agent instance reads the summary).
-		const threadMeta = db
-			.prepare(
-				"SELECT u.display_name FROM threads t JOIN users u ON t.user_id = u.id WHERE t.id = ?",
-			)
-			.get(threadId) as { display_name: string } | null;
+		const threadMeta = getThreadUserDisplayName(db, threadId);
 		const userName = threadMeta?.display_name;
 		const userClause = userName ? ` The user in this conversation is named ${userName}.` : "";
 
@@ -316,10 +334,8 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		// Extract key facts as memories by asking the LLM for a bullet-point list.
 		// Skip if seed facts already exist — regenerating them wastes LLM calls and
 		// produces ~1260 redundant updateRow operations per day across active threads.
-		const existingFacts = db
-			.prepare("SELECT COUNT(*) as count FROM semantic_memory WHERE key LIKE ? AND deleted = 0")
-			.get(`thread_${threadId}_fact_%`) as { count: number };
-		if (existingFacts.count > 0) {
+		const existingFactsCount = countMemoryByKeyPrefix(db, `thread_${threadId}_fact_%`);
+		if (existingFactsCount > 0) {
 			return {
 				ok: true,
 				value: { summaryGenerated: summary.length > 0, memoriesExtracted: 0 },
@@ -337,13 +353,7 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		// model never reasoned about anything — inference errored
 		// before producing any real assistant turn. Skip extraction
 		// rather than persist confabulation as memory.
-		const assistantTurnCount = (
-			db
-				.prepare(
-					"SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0",
-				)
-				.get(threadId) as { count: number }
-		).count;
+		const assistantTurnCount = countLiveAssistantMessagesByThread(db, threadId);
 		if (assistantTurnCount === 0) {
 			return {
 				ok: true,
@@ -383,9 +393,7 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 			const memId = randomUUID();
 			const key = `thread_${threadId}_fact_${i}`;
 			// Check for existing entry (including soft-deleted) to avoid UNIQUE violations
-			const existing = db.prepare("SELECT id FROM semantic_memory WHERE key = ?").get(key) as
-				| { id: string }
-				| undefined;
+			const existing = findMemoryIdByKeyIncludingDeleted(db, key);
 			if (existing) {
 				updateRow(
 					db,
@@ -456,18 +464,7 @@ export function buildCrossThreadDigest(
 ): CrossThreadDigestResult {
 	try {
 		// Get recent threads for user, including the summary field for continuity
-		const hasMessages = "AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)";
-		const sql = excludeThreadId
-			? `SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND id != ? AND deleted = 0 ${hasMessages} ORDER BY last_message_at DESC LIMIT 5`
-			: `SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ${hasMessages} ORDER BY last_message_at DESC LIMIT 5`;
-		const params = excludeThreadId ? [userId, excludeThreadId] : [userId];
-		const threads = db.prepare(sql).all(...params) as Array<{
-			id: string;
-			title: string | null;
-			color: number;
-			last_message_at: string;
-			summary: string | null;
-		}>;
+		const threads = listRecentThreadsWithMessages(db, userId, excludeThreadId);
 
 		if (threads.length === 0) {
 			return { text: "No recent activity.", sources: [], entries: [] };
@@ -490,19 +487,15 @@ export function buildCrossThreadDigest(
 
 		for (const thread of threads) {
 			const title = thread.title || "(untitled)";
-			const messageCount = db
-				.prepare("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
-				.get(thread.id) as { count: number };
+			const messageCount = countLiveMessagesByThread(db, thread.id);
 
-			lines.push(
-				`- ${title}: ${messageCount.count} messages (last updated ${thread.last_message_at})`,
-			);
+			lines.push(`- ${title}: ${messageCount} messages (last updated ${thread.last_message_at})`);
 
 			// Populate structured entry for Live State
 			const sessions = sessionsByThread.get(thread.id);
 			entries.push({
 				title,
-				messageCount: messageCount.count,
+				messageCount,
 				lastUpdatedAt: thread.last_message_at,
 				...(sessions && sessions.length > 0 ? { sessions } : {}),
 			});
@@ -516,7 +509,7 @@ export function buildCrossThreadDigest(
 					threadId: thread.id,
 					title,
 					color: thread.color,
-					messageCount: messageCount.count,
+					messageCount,
 					lastMessageAt: thread.last_message_at,
 				});
 			}
@@ -644,28 +637,20 @@ export function computeBaseline(
 
 	if (noHistory) {
 		if (taskId) {
-			const row = db
-				.prepare("SELECT last_run_at, created_at FROM tasks WHERE id = ?")
-				.get(taskId) as { last_run_at: string | null; created_at: string } | null;
+			const row = findTaskRunTimestampsById(db, taskId);
 			if (row === null) return EPOCH;
 			return row.last_run_at ?? row.created_at;
 		}
 		return EPOCH;
 	}
 
-	const threadRow = db.prepare("SELECT created_at FROM threads WHERE id = ?").get(threadId) as {
-		created_at: string;
-	} | null;
+	const threadRow = findThreadCreatedAtById(db, threadId);
 	if (threadRow === null) return EPOCH;
 
 	// Anchor to the most-recent user-role message; fall back to
 	// thread.created_at when the thread has never had a user turn
 	// (autonomous webhook/scheduler threads).
-	const userRow = db
-		.prepare(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId) as { created_at: string } | null;
+	const userRow = findLatestLiveUserMessageCreatedAtByThread(db, threadId);
 	const anchor = userRow?.created_at ?? threadRow.created_at;
 
 	// MAX(anchor, floor): pick the LATER of the two so dormant threads
@@ -823,16 +808,7 @@ export function buildParentSummaryMap(
 	const result = new Map<string, string>();
 	const keys = Array.from(detailKeys);
 	if (keys.length === 0) return result;
-	const placeholders = keys.map(() => "?").join(",");
-	const rows = db
-		.prepare(
-			`SELECT e.target_key AS child, e.source_key AS parent
-			 FROM memory_edges e
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.target_key IN (${placeholders})`,
-		)
-		.all(...keys) as Array<{ child: string; parent: string }>;
+	const rows = listSummarizesParentsByChildKeys(db, keys);
 	for (const r of rows) {
 		// If multiple summaries claim the same child, the first-seen wins. The spec is
 		// silent on multi-parent semantics; the data model conventionally has one summary
@@ -853,24 +829,10 @@ export function buildStaleChildrenMap(
 	const result = new Map<string, StageEntry[]>();
 	if (summaries.length === 0) return result;
 	const summaryKeyToModifiedAt = new Map(summaries.map((s) => [s.key, s.modifiedAt ?? ""]));
-	const placeholders = summaries.map(() => "?").join(",");
-	const rows = db
-		.prepare(
-			`SELECT e.source_key AS parent, e.target_key AS child_key,
-					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
-			 FROM memory_edges e
-			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.source_key IN (${placeholders})`,
-		)
-		.all(...summaries.map((s) => s.key)) as Array<{
-		parent: string;
-		child_key: string;
-		child_value: string;
-		child_modified_at: string;
-		tier: string;
-	}>;
+	const rows = listSummaryChildrenForStaleness(
+		db,
+		summaries.map((s) => s.key),
+	);
 	for (const r of rows) {
 		const parentModifiedAt = summaryKeyToModifiedAt.get(r.parent) ?? "";
 		// R-HM7 staleness: child.modified_at > summary.modified_at.
@@ -1422,51 +1384,16 @@ export function buildVolatileEnrichment(
 			...l3.entries.map((e) => e.key),
 		]);
 
-		const countMore = db
-			.prepare(
-				`SELECT COUNT(*) AS cnt FROM semantic_memory m
-				 WHERE m.deleted = 0
-				   AND m.modified_at > ?
-				   AND m.key NOT LIKE '_internal.%'
-				   AND (
-				     m.tier NOT IN ('detail', 'pinned', 'summary')
-				     OR (m.tier = 'detail' AND NOT EXISTS (
-				       SELECT 1 FROM memory_edges e
-				       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-				     ))
-				   )`,
-			)
-			.get(baseline) as { cnt: number };
+		const countMore = countEligibleMemoryDelta(db, baseline);
 
-		if (countMore.cnt > allExcluded.size) {
+		if (countMore !== null && countMore.cnt > allExcluded.size) {
 			const moreCount = countMore.cnt - allExcluded.size;
 			memoryDeltaLines.push(`... and ${moreCount} more (query semantic_memory for full list)`);
 		}
 	}
 
 	// Task digest query — fetch maxTasks+1 to detect overflow
-	const taskRows = db
-		.prepare(
-			`SELECT t.id, t.type, t.trigger_spec, t.last_run_at, t.run_count, t.consecutive_failures, t.claimed_by,
-			        h.host_name
-			 FROM   tasks t
-			 LEFT JOIN hosts h ON t.claimed_by = h.site_id AND h.deleted = 0
-			 WHERE  t.last_run_at > ?
-			   AND  t.last_run_at IS NOT NULL
-			   AND  t.deleted = 0
-			 ORDER  BY t.last_run_at DESC
-			 LIMIT  ?`,
-		)
-		.all(baseline, maxTasks + 1) as Array<{
-		id: string;
-		type: string;
-		trigger_spec: string;
-		last_run_at: string;
-		run_count: number;
-		consecutive_failures: number;
-		claimed_by: string | null;
-		host_name: string | null;
-	}>;
+	const taskRows = listRecentTaskRunsWithHost(db, baseline, maxTasks + 1);
 
 	const hasMoreTasks = taskRows.length > maxTasks;
 	const visibleTaskRows = hasMoreTasks ? taskRows.slice(0, maxTasks) : taskRows;
@@ -1509,29 +1436,7 @@ export function buildVolatileEnrichment(
  * auto-pin.
  */
 export function loadPinnedEntries(db: Database): StageResult {
-	const rows = db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
-			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.deleted = 0
-			   AND m.tier = 'pinned'
-			 ORDER BY m.key ASC`,
-		)
-		.all() as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-		tier: string;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-	}>;
+	const rows = listPinnedMemoryWithSource(db);
 
 	const entries: StageEntry[] = rows.map((r) => ({
 		key: r.key,
@@ -1557,28 +1462,7 @@ export function loadPinnedEntries(db: Database): StageResult {
  */
 export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): StageResult {
 	// Load all summary entries not already in exclusion set
-	const summaries = db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
-			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.tier = 'summary' AND m.deleted = 0
-			 ORDER BY m.modified_at DESC, m.key ASC`,
-		)
-		.all() as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-		tier: string;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-	}>;
+	const summaries = listSummaryMemoryWithSource(db);
 
 	const entries: StageEntry[] = [];
 	const newExclusion = new Set(excludeKeys);
@@ -1600,29 +1484,7 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 		newExclusion.add(summary.key);
 
 		// Find all children via outgoing summarizes edges
-		const children = db
-			.prepare(
-				`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-				        t_src.trigger_spec AS task_name,
-				        th_src.id          AS thread_id,
-				        th_src.title       AS thread_title
-				 FROM memory_edges e
-				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-				 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
-				 ORDER BY m.key ASC`,
-			)
-			.all(summary.key) as Array<{
-			key: string;
-			value: string;
-			source: string | null;
-			modified_at: string;
-			tier: string;
-			task_name: string | null;
-			thread_id: string | null;
-			thread_title: string | null;
-		}>;
+		const children = listSummaryChildrenWithSource(db, summary.key);
 
 		for (const child of children) {
 			// ALL children go into exclusion set — stale or not
@@ -1682,24 +1544,7 @@ export function loadGraphEntries(
 
 	if (graphResults.length > 0) {
 		const keys = graphResults.map((r) => r.key);
-		const placeholders = keys.map(() => "?").join(",");
-		const sourceInfoRows = db
-			.prepare(
-				`SELECT m.key,
-				        t_src.trigger_spec AS task_name,
-				        th_src.id          AS thread_id,
-				        th_src.title       AS thread_title
-				 FROM semantic_memory m
-				 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-				 WHERE m.key IN (${placeholders})`,
-			)
-			.all(...keys) as Array<{
-			key: string;
-			task_name: string | null;
-			thread_id: string | null;
-			thread_title: string | null;
-		}>;
+		const sourceInfoRows = listMemorySourceInfoByKeys(db, keys);
 
 		for (const row of sourceInfoRows) {
 			sourceInfoMap.set(row.key, {
@@ -1760,38 +1605,7 @@ export function loadRecencyEntries(
 	// Query recent entries, excluding pinned/summary/detail tiers
 	// (same filter as L2 — orphaned details also pass through)
 	// Include deleted entries (deleted=1) so they can be rendered with [forgotten] tag
-	const rows = db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier, m.deleted,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
-			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.modified_at > ?
-			   AND m.key NOT LIKE '_internal.%'
-			   AND (
-			     m.tier NOT IN ('detail', 'pinned', 'summary')
-			     OR (m.tier = 'detail' AND NOT EXISTS (
-			       SELECT 1 FROM memory_edges e
-			       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-			     ))
-			   )
-			 ORDER BY m.modified_at DESC
-			 LIMIT ?`,
-		)
-		.all(baseline, maxSlots + excludeKeys.size) as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-		tier: string;
-		deleted: number;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-	}>;
+	const rows = listRecencyMemoryWithSource(db, baseline, maxSlots + excludeKeys.size);
 
 	const entries: StageEntry[] = [];
 	const newExclusion = new Set(excludeKeys);
@@ -1829,11 +1643,7 @@ export function loadRecencyEntries(
  * Verifies R-MV5 (delta reads must not update last_accessed_at) by being a pure SELECT.
  */
 export function loadDetailEntries(db: Database): DetailRetrievalResult {
-	const rows = db
-		.prepare(
-			"SELECT id, key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
-		)
-		.all() as Array<{ id: string; key: string; last_accessed_at: string | null }>;
+	const rows = listDetailMemoryAccessOrder(db);
 
 	return {
 		entries: rows.map((r) => ({
@@ -1909,17 +1719,22 @@ export function bumpRenderedDetailEntries(
 	const nowIso = new Date(nowMs).toISOString();
 	const cutoff = new Date(nowMs - debounceMs).toISOString();
 	const pk = getPkColumn("semantic_memory");
-	// Compile the prepared statement ONCE outside the loop. SQLite
-	// re-binds parameters cheaply but compilation per-iteration would
-	// turn a ~200-row bump into ~200× the work it needs to do.
-	const sql = `UPDATE semantic_memory SET last_accessed_at = ? WHERE ${pk} = ? AND deleted = 0`; // outbox-exempt: per-host relevance hint, see JSDoc on bumpRenderedDetailEntries
-	const stmt = db.prepare(sql);
+	// Constant SQL string per call: bun:sqlite caches the compiled statement by
+	// SQL text internally, so routing each bump through the chokepoint does not
+	// re-compile per iteration — the prepare-once perf intent is preserved while
+	// keeping every outbox bypass funneled through the single sanctioned seam.
+	const sql = `UPDATE semantic_memory SET last_accessed_at = ? WHERE ${pk} = ? AND deleted = 0`;
 	for (const entry of entries) {
 		if (entry.last_accessed_at !== null && entry.last_accessed_at >= cutoff) {
 			continue;
 		}
 		try {
-			stmt.run(nowIso, entry.id);
+			dangerouslyExecuteRawWrite(db, {
+				sql,
+				params: [nowIso, entry.id],
+				reason:
+					"per-host relevance hint (semantic_memory.last_accessed_at); routing through the outbox would advance modified_at and cascade into stale-child detection — see JSDoc on bumpRenderedDetailEntries",
+			});
 		} catch {
 			// Non-fatal — bumping is a relevance hint, not a correctness gate.
 		}
@@ -2172,11 +1987,7 @@ export function loadAppliedAdvisoriesForLiveState(
 	nowMs: number,
 ): LiveStateAdvisory[] {
 	const cutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
-	const rows = db
-		.prepare(
-			"SELECT title, resolved_at FROM advisories WHERE status = 'applied' AND deleted = 0 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
-		)
-		.all(cutoff) as Array<{ title: string; resolved_at: string }>;
+	const rows = listAppliedAdvisoriesResolvedSince(db, cutoff);
 	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
 }
 
@@ -2208,26 +2019,12 @@ export function loadFileModificationsForLiveState(
 		// agree and undefined never reaches the binder.
 		const localSite = localSiteId ?? "";
 		const localHost = localHostName ?? "";
-		const rows = db
-			.query(
-				`SELECT sm.key AS key, sm.value AS thread_id, t.title AS thread_title,
-				        t.host_origin AS host_origin, h.host_name AS host_name
-				 FROM semantic_memory sm
-				 LEFT JOIN threads t ON t.id = sm.value
-				 LEFT JOIN hosts h ON h.site_id = t.host_origin AND h.deleted = 0
-				 WHERE sm.key LIKE '_internal.file_thread.%' AND sm.deleted = 0
-				   AND sm.value != ?
-				 ORDER BY (CASE WHEN t.host_origin IN (?, ?) THEN 0 ELSE 1 END) ASC,
-				          sm.modified_at DESC
-				 LIMIT ?`,
-			)
-			.all(currentThreadId, localSite, localHost, FILE_NOTIF_CAP) as Array<{
-			key: string;
-			thread_id: string;
-			thread_title: string | null;
-			host_origin: string | null;
-			host_name: string | null;
-		}>;
+		const rows = listFileModificationNotices(db, {
+			currentThreadId,
+			localSite,
+			localHost,
+			limit: FILE_NOTIF_CAP,
+		});
 
 		return rows.map((r): LiveStateFileEntry => {
 			const rawPath = r.key.replace("_internal.file_thread.", "");

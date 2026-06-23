@@ -16,7 +16,11 @@ connector_handles, webhooks, turns, client_sessions
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
 
-Two narrow, documented exceptions to this rule, plus the exhaustive audit disposition table the CI gate cross-checks against, are in the [appendix](#section-a-documented-narrow-exceptions-to-invariant-1-outbox-pattern) at the end of this document.
+**Reads** are centralized separately: synced-table `SELECT`s live in the repository layer (`packages/core/src/repositories/`, exported from `@bound/core`), not inlined across feature code. A second CI gate (`scripts/validate-read-centralization.ts`) ratchets the count of inline `db.query(...)` / `db.prepare(...)` reads down against a checked-in baseline. Reads of non-synced tables (`change_log`, `sync_state`, `host_meta`, the relay/dispatch queues, `sqlite_master`, PRAGMAs, FTS5 virtual tables) and arbitrary/dynamic SQL (the `query` tool, `restore`) stay raw and are excluded from that gate.
+
+**The single sanctioned bypass.** A write that intentionally skips the changelog (a per-host hint, local-only instrumentation, a crash-recovery reset, or a one-time startup migration — none of which carry a cross-host correctness invariant) MUST route through `dangerouslyExecuteRawWrite(db, { sql, params, reason })` from `@bound/core`. This is the only call the outbox CI gate permits as a bypass; the deliberately-alarming name and the mandatory `reason` keep every bypass greppable and self-documenting. The former per-line `// outbox-exempt` annotation + audit-table mechanism was replaced by this chokepoint. (`// outbox-routed` still marks raw writes that DO sync via an explicit `createChangeLogEntry` in the same transaction — scheduler CAS transitions, cluster_config CLI commands.)
+
+The narrow set of changelog-exempt writes is documented in the [appendix](#section-a-documented-narrow-exceptions-to-invariant-1-outbox-pattern) at the end of this document.
 
 ### 2. Soft deletes only
 
@@ -132,47 +136,26 @@ hosts ignore. Do not extend this list without writing down the same justificatio
   makes this safe: each booting host only resets its own claims. Peer hosts handle
   peer-claimed stale rows via R-LR2's host-liveness eviction (Phase 4).
 
-The PR review gate (R-LR6) blocks new `// outbox-exempt` annotations on synced-table writes
-unless the new exemption is added to this list with the same justification format, OR the
-write is on a non-synced table (category c below), OR the annotation is `// outbox-routed`
-(asserting an explicit `createChangeLogEntry` follow-up in the same transaction).
+New changelog-exempt writes MUST route through `dangerouslyExecuteRawWrite` (see invariant #1)
+and SHOULD be added to the table below. The chokepoint's mandatory `reason` argument carries the
+per-call justification; this table is the human-readable index of where the bypasses live.
 
-### Audit Disposition Table for `outbox-exempt` Annotations
+### Changelog-exempt writes (routed through `dangerouslyExecuteRawWrite`)
 
-This table is an exhaustive snapshot of every `outbox-exempt` annotation in the repo as of
-2026-05-26 (RFC `2026-05-26-task-lifecycle-resilience.md` close). Categories per R-LR12:
-- **(a) justified-and-documented exception** — listed in the section above
-- **(b) fixed by this RFC** — annotation removed or rewritten by R-LR1, R-LR3, R-LR5, or R-LR11
-- **(c) non-synced table** — write target is NOT in `SyncedTableName`
-- **(d) known-deferred** — synced-table write not fixed by this RFC; recorded with TODO link
-- **(e) comment-only** — text mentioning "outbox-exempt" that's not an active annotation
+Every intentional outbox bypass now funnels through the single `dangerouslyExecuteRawWrite`
+chokepoint, which the CI gate at `scripts/validate-outbox-invariant.ts` recognizes as the sole
+sanctioned escape (the former per-line `// outbox-exempt` annotation + audit-table cross-check was
+retired). Each call below skips the changelog because the write is a per-host signal with no
+cross-host correctness invariant.
 
-The CI gate at `scripts/validate-outbox-invariant.ts` cross-checks new annotations against
-this table.
+| Call site | Write target | Why changelog-exempt |
+|-----------|-------------|----------------------|
+| `packages/agent/src/summary-extraction.ts` (`bumpRenderedDetailEntries`) | semantic_memory.last_accessed_at | Per-host relevance hint; routing through `updateRow` would advance `modified_at` and cascade into stale-child detection (see Section A). |
+| `packages/cli/src/commands/start/bootstrap.ts` (`STALE_TASK_RESET_SQL` execution) | tasks (status, lease_id, claimed_by, claimed_at) | Per-host crash recovery scoped to `claimed_by = ?siteId` (see Section A). |
+| `packages/core/src/relay-metrics.ts` (`recordTurnRelayMetrics`, no-siteId branch) | turns.relay_target, turns.relay_latency_ms | Local-only instrumentation columns on a synced table; per-host relay metrics are not synced. |
+| `packages/sandbox/src/overlay-scanner.ts` (INSERT, UPDATE, soft-delete) | overlay_index | Local index rebuilt from the filesystem on every scan when no outbox is injected (backward-compat path; the outbox-injected path uses `insertRow`/`updateRow`/`softDelete`). |
+| `packages/agent/src/task-resolution.ts` (heartbeat migration) | tasks.no_history | One-time, idempotent, self-converging startup migration of a per-host semantic flag. |
 
-| File:Line | Write target | Category | Disposition |
-|-----------|-------------|----------|-------------|
-| packages/agent/src/summary-extraction.ts:1915 | semantic_memory.last_accessed_at | (a) justified | Per-host relevance hint; see Section A above. |
-| packages/agent/src/scheduler.ts:549 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed timer-driven heartbeat refresh through outbox. |
-| packages/agent/src/scheduler.ts:1226 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed activity-driven heartbeat refresh through outbox. |
-| packages/agent/src/scheduler.ts:311 (REMOVED) | tasks.next_run_at, tasks.status | (b) fixed | R-LR11 routed rescheduleHeartbeat through outbox. |
-| packages/agent/src/scheduler.ts:915 (REWRITTEN) | tasks (status, claimed_by, claimed_at) | (b) fixed | R-LR5 rewrote to outbox-routed annotation; explicit createChangeLogEntry follows. |
-| packages/agent/src/scheduler.ts:1005 (REWRITTEN) | tasks (status, lease_id, heartbeat_at) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/agent/src/scheduler.ts:1343 (REWRITTEN) | tasks (running → failed, model-validation) | (b) fixed | R-LR5 rewrote to outbox-routed annotation; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1517 (REWRITTEN) | tasks (running → failed, soft-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1673 (REWRITTEN) | tasks (running → failed, hard-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1796 (REWRITTEN) | tasks (post-eviction reclaim) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:62 | tasks (status, lease_id, claimed_by, claimed_at) | (a) justified | Per-host crash recovery scoped to claimed_by = ?siteId; see Section A above. |
-| packages/cli/src/commands/start/bootstrap.ts:368 (REWRITTEN) | hosts (registration) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:391 (REWRITTEN) | hosts (INSERT) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/platforms/src/leader-election.ts:73 (REWRITTEN) | cluster_config (leader election) | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/drain.ts:42, 46, 83, 87, 101 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/set-hub.ts:125, 129 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/config-reload.ts:69, 73 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/stop-resume.ts:33, 37, 66 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/core/src/relay-metrics.ts:48 | turns.relay_target, turns.relay_latency_ms | (d) known-deferred | Synced-table write not fixed by this RFC. `turns` is synced; these columns are local-only instrumentation. TODO: follow-up RFC to either route through outbox or formalize as a Section A exception. |
-| packages/sandbox/src/overlay-scanner.ts:128, 149, 170 | overlay_index (INSERT, UPDATE, soft-delete) | (d) known-deferred | `overlay_index` IS synced. Annotation says "outbox not provided (backward compat)". TODO: follow-up RFC to convert these to `insertRow`/`updateRow`/`softDelete`. |
-| packages/agent/src/task-resolution.ts:428 | tasks.no_history | (d) known-deferred | Active legacy migration that runs on startup. TODO: follow-up RFC to route through outbox or formalize as a Section A exception. |
-| packages/agent/scripts/agent-harness/driver.ts:51 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/scripts/agent-harness/driver.ts:225 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/src/validation/run-stable-prefix-drift-validation.ts:244 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
+Scheduler CAS task transitions, host registration, and cluster_config CLI commands are NOT in this
+table: they DO sync, via raw SQL paired with an explicit `createChangeLogEntry` in the same
+transaction, marked `// outbox-routed`.
