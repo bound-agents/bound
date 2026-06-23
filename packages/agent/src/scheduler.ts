@@ -912,9 +912,10 @@ export class Scheduler {
 		if (!this.running) return;
 
 		try {
-			// Check for emergency stop
+			// Check for emergency stop. deleted = 0 so a cleared (soft-deleted) flag
+			// does not keep halting the scheduler.
 			const emergencyStop = this.ctx.db
-				.query("SELECT value FROM cluster_config WHERE key = 'emergency_stop'")
+				.query("SELECT value FROM cluster_config WHERE key = 'emergency_stop' AND deleted = 0")
 				.get() as { value: string } | undefined;
 
 			if (emergencyStop) {

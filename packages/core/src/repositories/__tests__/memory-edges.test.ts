@@ -19,12 +19,9 @@ const SITE_ID = "site-test";
 const TS = "2026-01-01T00:00:00.000Z";
 
 /** Seed a memory_edges row through the trusted outbox write path. */
-function seedEdge(
-	db: Database,
-	overrides: Partial<MemoryEdge> & { context?: string | null } = {},
-): string {
+function seedEdge(db: Database, overrides: Partial<MemoryEdge> = {}): string {
 	const id = overrides.id ?? `edge-${Math.random().toString(36).slice(2)}`;
-	const row = {
+	const row: MemoryEdge = {
 		id,
 		source_key: "src",
 		target_key: "tgt",
@@ -32,10 +29,11 @@ function seedEdge(
 		weight: 1.0,
 		created_at: TS,
 		modified_at: TS,
+		context: null,
 		deleted: 0,
 		...overrides,
 	};
-	insertRow(db, "memory_edges", row as unknown as MemoryEdge, SITE_ID);
+	insertRow(db, "memory_edges", row, SITE_ID);
 	return id;
 }
 

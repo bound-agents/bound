@@ -35,7 +35,9 @@ export class PlatformLeaderElection {
 	async start(): Promise<void> {
 		const leaderKey = `platform_leader:${this.connector.platform}`;
 		const existing = this.db
-			.query<{ value: string }, [string]>("SELECT value FROM cluster_config WHERE key = ? LIMIT 1")
+			.query<{ value: string }, [string]>(
+				"SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1",
+			)
 			.get(leaderKey);
 
 		if (!existing || existing.value === this.siteId) {
@@ -69,14 +71,17 @@ export class PlatformLeaderElection {
 		// cluster_config uses `key` as its PK (not `id`), so insertRow/updateRow cannot be used.
 		// Follow the pattern from packages/cli/src/commands/set-hub.ts.
 		this.db.transaction(() => {
+			// ON CONFLICT resets deleted = 0 so re-claiming a previously soft-deleted
+			// leader key un-tombstones it (otherwise the live-filtered read can't see it).
 			this.db.run(
-				"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at", // outbox-routed: explicit createChangeLogEntry follows the INSERT...CONFLICT in this transaction (cluster_config leader election)
+				"INSERT INTO cluster_config (key, value, modified_at, deleted) VALUES (?, ?, ?, 0) ON CONFLICT(key) DO UPDATE SET value = excluded.value, modified_at = excluded.modified_at, deleted = 0", // outbox-routed: explicit createChangeLogEntry follows the INSERT...CONFLICT in this transaction (cluster_config leader election)
 				[leaderKey, this.siteId, now],
 			);
 			createChangeLogEntry(this.db, "cluster_config", leaderKey, this.siteId, {
 				key: leaderKey,
 				value: this.siteId,
 				modified_at: now,
+				deleted: 0,
 			});
 		})();
 
@@ -92,7 +97,7 @@ export class PlatformLeaderElection {
 			// Read current leader's modified_at from hosts table
 			const row = this.db
 				.query<{ modified_at: string }, [string]>(
-					"SELECT h.modified_at FROM cluster_config cc JOIN hosts h ON h.site_id = cc.value WHERE cc.key = ? AND h.deleted = 0 LIMIT 1",
+					"SELECT h.modified_at FROM cluster_config cc JOIN hosts h ON h.site_id = cc.value WHERE cc.key = ? AND cc.deleted = 0 AND h.deleted = 0 LIMIT 1",
 				)
 				.get(leaderKey);
 

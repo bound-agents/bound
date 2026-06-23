@@ -42,16 +42,26 @@ export type SyncedTableName =
 
 export type ReducerType = "lww" | "append-only";
 
-export interface User {
+/**
+ * Base shape for every synced-table row. All synced tables soft-delete:
+ * `deleted = 0` is live, `deleted = 1` is tombstoned (invariant #2 — physical
+ * DELETE is forbidden on synced tables). Stored as INTEGER; bun:sqlite reads it
+ * back as `number`, so the type is `number` rather than a `0 | 1` literal union
+ * to avoid casts at every read boundary.
+ */
+export interface SoftDeletable {
+	deleted: number;
+}
+
+export interface User extends SoftDeletable {
 	id: string;
 	display_name: string;
 	platform_ids: string | null;
 	first_seen_at: string;
 	modified_at: string;
-	deleted: number;
 }
 
-export interface Thread {
+export interface Thread extends SoftDeletable {
 	id: string;
 	user_id: string;
 	interface: string;
@@ -65,11 +75,10 @@ export interface Thread {
 	created_at: string;
 	last_message_at: string;
 	modified_at: string;
-	deleted: number;
 	model_hint: string | null;
 }
 
-export interface Message {
+export interface Message extends SoftDeletable {
 	id: string;
 	thread_id: string;
 	role: MessageRole;
@@ -79,12 +88,11 @@ export interface Message {
 	created_at: string;
 	modified_at: string | null;
 	host_origin: string;
-	deleted: number;
 	exit_code: number | null;
 	metadata: string | null;
 }
 
-export interface SemanticMemory {
+export interface SemanticMemory extends SoftDeletable {
 	id: string;
 	key: string;
 	value: string;
@@ -93,10 +101,9 @@ export interface SemanticMemory {
 	modified_at: string;
 	last_accessed_at: string | null;
 	tier: MemoryTier;
-	deleted: number;
 }
 
-export interface Task {
+export interface Task extends SoftDeletable {
 	id: string;
 	type: TaskType;
 	status: TaskStatus;
@@ -128,10 +135,9 @@ export interface Task {
 	created_at: string;
 	created_by: string | null;
 	modified_at: string;
-	deleted: number;
 }
 
-export interface Webhook {
+export interface Webhook extends SoftDeletable {
 	id: string;
 	name: string;
 	secret: string;
@@ -140,13 +146,12 @@ export interface Webhook {
 	task_id: string;
 	thread_id: string;
 	created_at: string;
-	deleted: number;
 	modified_at: string;
 }
 
 export type SignatureFormat = "github" | "stripe" | "slack" | "raw";
 
-export interface AgentFile {
+export interface AgentFile extends SoftDeletable {
 	id: string;
 	path: string;
 	content: string | null;
@@ -154,12 +159,11 @@ export interface AgentFile {
 	size_bytes: number;
 	created_at: string;
 	modified_at: string;
-	deleted: number;
 	created_by: string | null;
 	host_origin: string | null;
 }
 
-export interface Host {
+export interface Host extends SoftDeletable {
 	site_id: string;
 	host_name: string;
 	version: string | null;
@@ -173,6 +177,7 @@ export interface Host {
 	online_at: string | null;
 	modified_at: string;
 	platforms: string | null;
+	commit_hash: string | null;
 }
 
 /**
@@ -197,17 +202,17 @@ export interface HostModelEntry {
 	};
 }
 
-export interface OverlayIndexEntry {
+export interface OverlayIndexEntry extends SoftDeletable {
 	id: string;
 	site_id: string;
 	path: string;
 	size_bytes: number;
 	content_hash: string | null;
 	indexed_at: string;
-	deleted: number;
+	modified_at: string | null;
 }
 
-export interface ClusterConfigEntry {
+export interface ClusterConfigEntry extends SoftDeletable {
 	key: string;
 	value: string;
 	modified_at: string;
@@ -235,7 +240,7 @@ export interface HostMeta {
 	value: string;
 }
 
-export interface Advisory {
+export interface Advisory extends SoftDeletable {
 	id: string;
 	type: AdvisoryType;
 	status: AdvisoryStatus;
@@ -251,10 +256,9 @@ export interface Advisory {
 	/** Thread the advisory originated from (null for advisories with no source thread). #93 */
 	thread_id: string | null;
 	modified_at: string;
-	deleted: number;
 }
 
-export interface Skill {
+export interface Skill extends SoftDeletable {
 	id: string;
 	name: string;
 	description: string;
@@ -271,7 +275,6 @@ export interface Skill {
 	retired_by: string | null;
 	retired_reason: string | null;
 	modified_at: string;
-	deleted: number;
 }
 
 export interface SkillFileEntry {
@@ -287,7 +290,7 @@ export type ImportSkillResult =
 	| { ok: true; skillId: string; name: string }
 	| { ok: false; error: string };
 
-export interface MemoryEdge {
+export interface MemoryEdge extends SoftDeletable {
 	id: string;
 	source_key: string;
 	target_key: string;
@@ -295,10 +298,11 @@ export interface MemoryEdge {
 	weight: number;
 	created_at: string;
 	modified_at: string;
-	deleted: number;
+	/** Optional free-text context for the edge (added via ALTER TABLE migration). */
+	context: string | null;
 }
 
-export interface ConnectorHandleRow {
+export interface ConnectorHandleRow extends SoftDeletable {
 	id: string;
 	server_name: string;
 	event_name: string;
@@ -307,7 +311,6 @@ export interface ConnectorHandleRow {
 	cursor: string | null;
 	task_id: string | null;
 	created_at: string; // ISO 8601
-	deleted: number; // 0 | 1
 	modified_at: string; // ISO 8601
 }
 
@@ -318,17 +321,16 @@ export interface ConnectorHandleRow {
  * supply the thread's client tools (issue #91, invariant #21). One row per
  * (connection_id, thread_id) subscription; `id` is `${connection_id}::${thread_id}`.
  */
-export interface ClientSession {
+export interface ClientSession extends SoftDeletable {
 	id: string;
 	connection_id: string;
 	thread_id: string;
 	site_id: string;
 	created_at: string; // ISO 8601
-	deleted: number; // 0 | 1
 	modified_at: string; // ISO 8601
 }
 
-export interface Turn {
+export interface Turn extends SoftDeletable {
 	id: string;
 	thread_id: string | null;
 	task_id: string | null;
