@@ -1,6 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
+import {
+	findFileContentByPathActive,
+	findFileIdContentByPathActive,
+	findOverlayContentHashByPathActive,
+	insertRow,
+	listFilePathContentByPrefixActive,
+	listWorkspaceFiles,
+	listWorkspaceFilesModifiedSince,
+	updateRow,
+} from "@bound/core";
 import { type IFileSystem, InMemoryFs, MountableFs, OverlayFs } from "just-bash";
 
 /**
@@ -153,12 +162,12 @@ function autoCacheFile(db: Database, siteId: string, path: string, content: stri
 	const now = new Date().toISOString();
 
 	// Check if already cached with the same hash
-	const existing = db
-		.query("SELECT id, content FROM files WHERE path = ? AND deleted = 0")
-		.get(path) as { id: string; content: string } | null;
+	const existing = findFileIdContentByPathActive(db, path);
 
 	if (existing) {
-		const existingHash = createHash("sha256").update(existing.content).digest("hex");
+		const existingHash = createHash("sha256")
+			.update(existing.content ?? "")
+			.digest("hex");
 		if (existingHash === contentHash) {
 			// Content unchanged, skip update
 			return;
@@ -201,24 +210,22 @@ function autoCacheFile(db: Database, siteId: string, path: string, content: stri
  * Returns null if the path is not found in both the files table and overlay index.
  */
 function checkFileStaleness(db: Database, path: string): StalenessResult | null {
-	const cachedFile = db
-		.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-		.get(path) as { content: string } | null;
+	const cachedFile = findFileContentByPathActive(db, path);
 
 	if (!cachedFile) {
 		return null;
 	}
 
 	// Look up overlay index entry by path
-	const indexEntry = db
-		.query("SELECT content_hash FROM overlay_index WHERE path = ? AND deleted = 0")
-		.get(path) as { content_hash: string } | null;
+	const indexEntry = findOverlayContentHashByPathActive(db, path);
 
 	if (!indexEntry || !indexEntry.content_hash) {
 		return null;
 	}
 
-	const cachedHash = createHash("sha256").update(cachedFile.content).digest("hex");
+	const cachedHash = createHash("sha256")
+		.update(cachedFile.content ?? "")
+		.digest("hex");
 	const indexHash = indexEntry.content_hash;
 
 	return {
@@ -372,16 +379,7 @@ function decodeFileContent(content: string | null, isBinary: number): string {
 }
 
 export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<void> {
-	const query = db.prepare(`
-		SELECT path, content, is_binary FROM files
-		WHERE deleted = 0 AND path NOT LIKE '/mnt/%'
-	`);
-
-	for (const row of query.all() as Array<{
-		path: string;
-		content: string | null;
-		is_binary: number;
-	}>) {
+	for (const row of listWorkspaceFiles(db)) {
 		await fs.writeFile(row.path, decodeFileContent(row.content, row.is_binary));
 	}
 }
@@ -413,16 +411,7 @@ export async function rehydrateWorkspaceIncremental(
 	sinceIso: string,
 ): Promise<string> {
 	const cursor = new Date().toISOString();
-	const query = db.prepare(`
-		SELECT path, content, is_binary FROM files
-		WHERE deleted = 0 AND path NOT LIKE '/mnt/%' AND modified_at > ?
-	`);
-
-	for (const row of query.all(sinceIso) as Array<{
-		path: string;
-		content: string | null;
-		is_binary: number;
-	}>) {
+	for (const row of listWorkspaceFilesModifiedSince(db, sinceIso)) {
 		await fs.writeFile(row.path, decodeFileContent(row.content, row.is_binary));
 	}
 
@@ -458,13 +447,8 @@ export async function hydrateRemoteCache(
 	db: Database,
 	hostName: string,
 ): Promise<void> {
-	const query = db.prepare(`
-		SELECT path, content FROM files
-		WHERE path LIKE ? AND deleted = 0
-	`);
-
 	const pattern = `/mnt/${hostName}/%`;
-	for (const row of query.all(pattern) as Array<{ path: string; content: string }>) {
-		await fs.writeFile(row.path, row.content);
+	for (const row of listFilePathContentByPrefixActive(db, pattern)) {
+		await fs.writeFile(row.path, row.content ?? "");
 	}
 }

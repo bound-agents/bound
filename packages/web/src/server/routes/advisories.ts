@@ -1,6 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { applyAdvisory, approveAdvisory, deferAdvisory, dismissAdvisory } from "@bound/agent";
-import type { Advisory } from "@bound/shared";
+import {
+	countProposedAdvisories,
+	findActiveAdvisoryById,
+	findAdvisoryById,
+	listActiveAdvisories,
+	listAdvisoriesByStatus,
+} from "@bound/core";
 import { Hono } from "hono";
 
 export function createAdvisoriesRoutes(db: Database): Hono {
@@ -17,19 +23,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 		try {
 			const status = c.req.query("status");
 
-			let query = "SELECT * FROM advisories WHERE deleted = 0";
-			const params: string[] = [];
-
-			if (status) {
-				query += " AND status = ?";
-				params.push(status);
-			} else {
-				query += " AND status NOT IN ('applied', 'dismissed')";
-			}
-
-			query += " ORDER BY proposed_at DESC";
-
-			const advisories = db.query(query).all(...params) as Advisory[];
+			const advisories = status ? listAdvisoriesByStatus(db, status) : listActiveAdvisories(db);
 
 			return c.json(advisories);
 		} catch (error) {
@@ -46,10 +40,8 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 
 	app.get("/count", (c) => {
 		try {
-			const row = db
-				.query("SELECT COUNT(*) as count FROM advisories WHERE deleted = 0 AND status = 'proposed'")
-				.get() as { count: number };
-			return c.json({ count: row.count });
+			const count = countProposedAdvisories(db);
+			return c.json({ count });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -65,9 +57,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 	app.post("/:id/approve", (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -95,7 +85,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -112,9 +102,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 	app.post("/:id/dismiss", (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -142,7 +130,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -159,9 +147,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 	app.post("/:id/defer", (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -191,7 +177,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -208,9 +194,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 	app.post("/:id/apply", (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -238,7 +222,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

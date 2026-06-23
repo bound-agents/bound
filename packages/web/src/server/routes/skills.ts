@@ -1,7 +1,16 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { importSkillFromFiles, parseFrontmatter } from "@bound/agent";
-import { updateRow } from "@bound/core";
+import {
+	findFileContentByPathActive,
+	findSkillById,
+	findSkillByIdIncludingDeleted,
+	listFileIdPathSizeByPrefixActive,
+	listFilePathContentByPrefixActive,
+	listSkills,
+	listSkillsByStatus,
+	updateRow,
+} from "@bound/core";
 import type { Skill, SkillFileEntry } from "@bound/shared";
 import { unzipSync } from "fflate";
 import { Hono } from "hono";
@@ -21,15 +30,7 @@ export function createSkillsRoutes(db: Database): Hono {
 		try {
 			const status = c.req.query("status");
 
-			let query = "SELECT * FROM skills WHERE deleted = 0";
-			const params: string[] = [];
-
-			if (status) {
-				query += " AND status = ?";
-				params.push(status);
-			}
-
-			const skills = db.query(query).all(...params) as Skill[];
+			const skills = status ? listSkillsByStatus(db, status) : listSkills(db);
 
 			return c.json(skills);
 		} catch (error) {
@@ -50,9 +51,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			const { id } = c.req.param();
 
 			// Query skill row
-			const skill = db
-				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
-				.get(id) as Skill | null;
+			const skill = findSkillById(db, id);
 
 			if (!skill) {
 				return c.json({ error: "Skill not found" }, 404);
@@ -65,15 +64,11 @@ export function createSkillsRoutes(db: Database): Hono {
 
 			// Query files for this skill
 			const pattern = `${skillRoot}/%`;
-			const files = db
-				.query("SELECT id, path, size_bytes FROM files WHERE path LIKE ? AND deleted = 0")
-				.all(pattern) as Array<{ id: string; path: string; size_bytes: number }>;
+			const files = listFileIdPathSizeByPrefixActive(db, pattern);
 
 			// Find SKILL.md content
 			const skillMdPath = `${skillRoot}/SKILL.md`;
-			const skillMdRow = db
-				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-				.get(skillMdPath) as { content: string } | null;
+			const skillMdRow = findFileContentByPathActive(db, skillMdPath);
 
 			const skillMdContent = skillMdRow?.content ?? "";
 
@@ -223,7 +218,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			}
 
 			// Query the created skill
-			const skill = db.query("SELECT * FROM skills WHERE id = ?").get(result.skillId) as Skill;
+			const skill = findSkillByIdIncludingDeleted(db, result.skillId) as Skill;
 
 			return c.json({ skill }, 201);
 		} catch (error) {
@@ -244,9 +239,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			const { id } = c.req.param();
 			const siteId = getSiteId();
 
-			const skill = db
-				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
-				.get(id) as Skill | null;
+			const skill = findSkillById(db, id);
 
 			if (!skill) {
 				return c.json({ error: "Skill not found" }, 404);
@@ -262,11 +255,9 @@ export function createSkillsRoutes(db: Database): Hono {
 			// Load existing SKILL.md to extract current body if not provided
 			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
 			const skillMdPath = `${skillRoot}/SKILL.md`;
-			const skillMdRow = db
-				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-				.get(skillMdPath) as { content: string } | null;
+			const skillMdRow = findFileContentByPathActive(db, skillMdPath);
 
-			const parsed = skillMdRow ? parseFrontmatter(skillMdRow.content) : null;
+			const parsed = skillMdRow ? parseFrontmatter(skillMdRow.content ?? "") : null;
 			const currentBody = parsed?.body ?? "";
 
 			// Merge new values over existing
@@ -319,7 +310,7 @@ export function createSkillsRoutes(db: Database): Hono {
 				siteId,
 			);
 
-			const updated = db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill;
+			const updated = findSkillByIdIncludingDeleted(db, id) as Skill;
 			return c.json({ skill: updated }, 200);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -334,9 +325,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			const siteId = getSiteId();
 
 			// Query skill
-			const skill = db
-				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
-				.get(id) as Skill | null;
+			const skill = findSkillById(db, id);
 
 			if (!skill) {
 				return c.json({ error: "Skill not found" }, 404);
@@ -365,7 +354,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			);
 
 			// Query updated skill
-			const updated = db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill;
+			const updated = findSkillByIdIncludingDeleted(db, id) as Skill;
 
 			return c.json({ skill: updated }, 200);
 		} catch (error) {
@@ -387,9 +376,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			const siteId = getSiteId();
 
 			// Query skill
-			const skill = db
-				.query("SELECT * FROM skills WHERE id = ? AND deleted = 0")
-				.get(id) as Skill | null;
+			const skill = findSkillById(db, id);
 
 			if (!skill) {
 				return c.json({ error: "Skill not found" }, 404);
@@ -399,9 +386,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			// ("skills/{name}") and new absolute paths ("/home/user/skills/{name}").
 			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
 			const pattern = `${skillRoot}/%`;
-			const files = db
-				.query("SELECT path, content FROM files WHERE path LIKE ? AND deleted = 0")
-				.all(pattern) as Array<{ path: string; content: string }>;
+			const files = listFilePathContentByPrefixActive(db, pattern);
 
 			if (files.length === 0) {
 				return c.json(
@@ -415,7 +400,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			// Convert to SkillFileEntry[], stripping the skill_root prefix
 			const skillFiles: SkillFileEntry[] = files.map((f) => ({
 				path: f.path.replace(`${skillRoot}/`, ""),
-				content: f.content,
+				content: f.content ?? "",
 			}));
 
 			// Re-import the skill via importSkillFromFiles
@@ -442,7 +427,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			}
 
 			// Query updated skill
-			const updated = db.query("SELECT * FROM skills WHERE id = ?").get(id) as Skill;
+			const updated = findSkillByIdIncludingDeleted(db, id) as Skill;
 
 			return c.json({ skill: updated }, 200);
 		} catch (error) {

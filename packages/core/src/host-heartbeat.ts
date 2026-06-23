@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { updateRow } from "./change-log.js";
+import { findHostSiteIdById } from "./repositories/index.js";
 
 /**
  * Host-heartbeat refresh cadence. Bumps `hosts.modified_at` via outbox-routed `updateRow`
@@ -39,9 +40,7 @@ export function startHostHeartbeat(
 		try {
 			const ts = new Date().toISOString();
 			// Only update if the host row exists
-			const existing = db.query("SELECT site_id FROM hosts WHERE site_id = ?").get(siteId) as {
-				site_id: string;
-			} | null;
+			const existing = findHostSiteIdById(db, siteId);
 			if (!existing) return;
 
 			updateRow(db, "hosts", siteId, { modified_at: ts }, siteId);

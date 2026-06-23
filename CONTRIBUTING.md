@@ -155,11 +155,12 @@ Accumulated the hard way — check here before writing a bug report. The list be
 2. Add the name to `SyncedTableName` and `TABLE_REDUCER_MAP` in `packages/shared/src/types.ts`.
 3. If its primary key is not `id`, add an entry to `TABLE_PK_COLUMN` in `packages/core/src/change-log.ts`.
 4. Decide the reducer (`lww` or `append-only`) — wiring lives in `packages/sync/src/reducers.ts`, keyed off `TABLE_REDUCER_MAP`.
-5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL.
-6. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
-7. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
-8. Add the table to `SYNCED_TABLE_NAMES` in `packages/core/src/schema-introspection.ts` so `getSyncedTableSchemas()` exposes its columns in the agent's stable-prefix `## Database Schema` block. Tables not listed there are invisible to the `query` command's schema hint.
-9. Add the table to `SNAPSHOT_TABLE_ORDER` in `packages/sync/src/ws-transport.ts` — this list controls the order in which tables are seeded to new spoke nodes joining the cluster. Omission here causes silent data loss on new spokes (that table's data will never appear in snapshots).
+5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL. A write that must intentionally skip the changelog (per-host hint, local-only metric, crash recovery, one-time migration) goes through `dangerouslyExecuteRawWrite(db, { sql, params, reason })` — the single bypass the outbox CI gate permits.
+6. Put reads in the repository layer (`packages/core/src/repositories/`): a per-table module for single-table finders, `repositories/queries/` for cross-table JOINs. Don't inline `db.query(...)` in feature code — `scripts/validate-read-centralization.ts` ratchets inline reads down against a baseline. (Reads of non-synced tables / arbitrary SQL stay raw and are excluded from the gate.)
+7. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
+8. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
+9. Add the table to `SYNCED_TABLE_NAMES` in `packages/core/src/schema-introspection.ts` so `getSyncedTableSchemas()` exposes its columns in the agent's stable-prefix `## Database Schema` block. Tables not listed there are invisible to the `query` command's schema hint.
+10. Add the table to `SNAPSHOT_TABLE_ORDER` in `packages/sync/src/ws-transport.ts` — this list controls the order in which tables are seeded to new spoke nodes joining the cluster. Omission here causes silent data loss on new spokes (that table's data will never appear in snapshots).
 
 ### Adding a config field
 

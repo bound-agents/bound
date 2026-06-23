@@ -1,4 +1,4 @@
-import { insertRow, updateRow } from "@bound/core";
+import { findTaskExistenceById, insertRow, updateRow } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import { randomUUID } from "@bound/shared";
 import { z } from "zod";
@@ -244,10 +244,7 @@ function handleUpdate(input: TaskInput, ctx: ToolContext): string {
 	}
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
-	const existing = ctx.db.prepare("SELECT id, deleted FROM tasks WHERE id = ?").get(taskId) as {
-		id: string;
-		deleted: number;
-	} | null;
+	const existing = findTaskExistenceById(ctx.db, taskId);
 	if (!existing || existing.deleted === 1) {
 		return `Error: task '${taskId}' not found`;
 	}

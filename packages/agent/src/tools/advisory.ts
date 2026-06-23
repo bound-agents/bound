@@ -1,3 +1,8 @@
+import {
+	findAdvisoryIdsByPrefix,
+	listActiveAdvisorySummaries,
+	listAdvisorySummariesByStatus,
+} from "@bound/core";
 import { z } from "zod";
 import {
 	applyAdvisory,
@@ -17,9 +22,7 @@ function resolveAdvisoryId(
 	prefix: string,
 ): { ok: true; id: string } | { ok: false; error: string } {
 	const trimmed = prefix.trim();
-	const rows = db
-		.prepare("SELECT id FROM advisories WHERE id LIKE ? AND deleted = 0 LIMIT 2")
-		.all(`${trimmed}%`) as Array<{ id: string }>;
+	const rows = findAdvisoryIdsByPrefix(db, trimmed);
 	if (rows.length === 0) {
 		return { ok: false, error: `No advisory found matching "${trimmed}"` };
 	}
@@ -105,30 +108,9 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 
 				// List advisories
 				if (input.list) {
-					let query = "SELECT id, type, status, title, detail FROM advisories WHERE deleted = 0";
-
-					if (input.list_status) {
-						query += " AND status = ?";
-					} else {
-						query += " AND status NOT IN ('applied', 'dismissed')";
-					}
-					query += " ORDER BY proposed_at DESC LIMIT 20";
-
 					const rows = input.list_status
-						? (ctx.db.prepare(query).all(input.list_status) as Array<{
-								id: string;
-								type: string;
-								status: string;
-								title: string;
-								detail: string;
-							}>)
-						: (ctx.db.prepare(query).all() as Array<{
-								id: string;
-								type: string;
-								status: string;
-								title: string;
-								detail: string;
-							}>);
+						? listAdvisorySummariesByStatus(ctx.db, input.list_status)
+						: listActiveAdvisorySummaries(ctx.db);
 
 					if (rows.length === 0) {
 						return "No advisories found.";

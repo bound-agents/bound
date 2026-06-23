@@ -2,10 +2,15 @@ import { createRelayOutboxEntry } from "@bound/agent";
 import {
 	cancelClientToolCalls,
 	compareAllTables,
+	countRunningTasks,
 	countUnsyncableLocalOnly,
+	findHostSiteIdAndNameById,
+	findLiveThreadById,
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
+	listHostsOrderedByName,
+	listRemoteHostModelLiveness,
 	writeOutbox,
 } from "@bound/core";
 
@@ -58,14 +63,12 @@ export function createStatusRoutes(
 	app.get("/", (c) => {
 		try {
 			const uptime = process.uptime();
-			const activeLoops = db
-				.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'running' AND deleted = 0")
-				.get() as { count: number };
+			const activeLoops = countRunningTasks(db);
 
 			const status = {
 				host_info: {
 					uptime_seconds: Math.floor(uptime),
-					active_loops: activeLoops.count,
+					active_loops: activeLoops?.count ?? 0,
 				},
 			};
 
@@ -84,9 +87,7 @@ export function createStatusRoutes(
 
 	app.get("/network", (c) => {
 		try {
-			const hosts = db
-				.query("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC")
-				.all() as Array<Record<string, unknown>>;
+			const hosts = listHostsOrderedByName(db);
 
 			const syncState = db.query("SELECT * FROM sync_state").all() as Array<
 				Record<string, unknown>
@@ -101,9 +102,7 @@ export function createStatusRoutes(
 				peer_site_id: string;
 			} | null;
 			const hubSiteId = peerRow?.peer_site_id ?? localSiteId;
-			const hubHostRow = db
-				.query("SELECT site_id, host_name FROM hosts WHERE site_id = ? AND deleted = 0")
-				.get(hubSiteId) as { site_id: string; host_name: string } | null;
+			const hubHostRow = findHostSiteIdAndNameById(db, hubSiteId);
 			if (hubHostRow) {
 				hub = { siteId: hubHostRow.site_id, hostName: hubHostRow.host_name };
 			}
@@ -143,18 +142,7 @@ export function createStatusRoutes(
 
 		// AC5.1: Query remote models from hosts table
 		// Exclude local host by site_id (unique key) not host_name (not guaranteed unique)
-		const remoteHosts = db
-			.query(
-				`SELECT host_name, models, online_at, modified_at
-				 FROM hosts
-				 WHERE deleted = 0 AND models IS NOT NULL AND site_id != ?`,
-			)
-			.all(siteId) as Array<{
-			host_name: string;
-			models: string;
-			online_at: string | null;
-			modified_at: string | null;
-		}>;
+		const remoteHosts = listRemoteHostModelLiveness(db, siteId);
 
 		const remoteModels: ClusterModelInfo[] = [];
 		for (const host of remoteHosts) {
@@ -198,7 +186,7 @@ export function createStatusRoutes(
 		try {
 			const { threadId } = c.req.param();
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
+			const thread = findLiveThreadById(db, threadId);
 
 			if (!thread) {
 				return c.json(

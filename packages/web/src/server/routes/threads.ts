@@ -1,29 +1,28 @@
-import { getSiteId } from "@bound/core";
+import {
+	countThreadsDirectory,
+	findLatestThreadColorExcludingInterfaces,
+	findLiveThreadById,
+	findRunningTaskIdForThread,
+	findThreadById,
+	getAttachedSessionHosts,
+	getSiteId,
+	insertRow,
+	listContextDebugTurnsByThread,
+	listThreadsDirectory,
+} from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
 import type { StatusForwardPayload, Thread } from "@bound/shared";
 import { NON_USER_FACING_INTERFACES, createLogger } from "@bound/shared";
 import { Hono } from "hono";
 
 const logger = createLogger("@bound/web", "threads-routes");
 
-function getAttachedSessionHosts(db: Database, threadId: string): string[] {
-	const rows = db
-		.query(`
-			SELECT label
-			FROM (
-				SELECT COALESCE(h.host_name, cs.site_id) as label
-				FROM client_sessions cs
-				LEFT JOIN hosts h ON h.site_id = cs.site_id AND h.deleted = 0
-				WHERE cs.thread_id = ? AND cs.deleted = 0
-				GROUP BY cs.site_id, label
-				ORDER BY label ASC
-			)
-		`)
-		.all(threadId) as Array<{ label: string }>;
-	return rows.map((row) => row.label).filter((label): label is string => typeof label === "string");
+function getAttachedSessionHostLabels(db: Database, threadId: string): string[] {
+	return getAttachedSessionHosts(db, threadId)
+		.map((row) => row.label)
+		.filter((label): label is string => typeof label === "string");
 }
 
 export function createThreadsRoutes(
@@ -75,61 +74,13 @@ export function createThreadsRoutes(
 				limit = parsed;
 			}
 
-			// Build SQL conditionally so we don't pay for the LIMIT/cursor
-			// branches when callers pass neither.
-			const cursorClause = hasCursor
-				? "AND (t.last_message_at < ? OR (t.last_message_at = ? AND t.id < ?))"
-				: "";
-			const limitClause = limit !== null ? "LIMIT ?" : "";
-			const sql = `
-				SELECT t.*,
-					(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND m.deleted = 0) as messageCount,
-					(SELECT tu.model_id FROM turns tu WHERE tu.thread_id = t.id ORDER BY tu.created_at DESC LIMIT 1) as lastModel,
-					(
-						SELECT COALESCE(json_group_array(label), '[]')
-						FROM (
-							SELECT COALESCE(h.host_name, cs.site_id) as label
-							FROM client_sessions cs
-							LEFT JOIN hosts h ON h.site_id = cs.site_id AND h.deleted = 0
-							WHERE cs.thread_id = t.id AND cs.deleted = 0
-							GROUP BY cs.site_id, label
-							ORDER BY label ASC
-						)
-					) as attachedSessionHostsJson,
-					EXISTS(
-						SELECT 1 FROM tasks
-						WHERE thread_id = t.id AND status = 'running' AND deleted = 0
-					) as hasRunningTask
-				FROM threads t
-				WHERE t.deleted = 0 AND t.user_id = ?
-					AND (
-						? = 1
-						OR EXISTS(
-							SELECT 1 FROM messages m
-							WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
-						)
-					)
-					${cursorClause}
-				ORDER BY t.last_message_at DESC, t.id DESC
-				${limitClause}
-			`;
-			const params: Array<string | number> = [webUserId, includeEmpty ? 1 : 0];
-			if (hasCursor) {
-				// SAFETY: hasCursor implies both beforeTs and beforeId are non-null strings.
-				params.push(beforeTs as string, beforeTs as string, beforeId as string);
-			}
-			if (limit !== null) {
-				params.push(limit);
-			}
-
-			const threads = db.query(sql).all(...params) as Array<
-				Thread & {
-					messageCount: number;
-					lastModel: string | null;
-					attachedSessionHostsJson: string | null;
-					hasRunningTask: number;
-				}
-			>;
+			const threads = listThreadsDirectory(db, {
+				userId: webUserId,
+				includeEmpty,
+				beforeTs,
+				beforeId,
+				limit,
+			});
 
 			// Decorate each thread with `active` using the same logic as the
 			// per-thread /status endpoint: local loop, running task, or a
@@ -162,20 +113,10 @@ export function createThreadsRoutes(
 			// the cursor/limit window, exposed via X-Total-Count so the UI can
 			// render an accurate "N threads" total even while paginating. The
 			// JSON body stays a bare array, preserving the existing contract.
-			const totalRow = db
-				.query(`
-					SELECT COUNT(*) as total
-					FROM threads t
-					WHERE t.deleted = 0 AND t.user_id = ?
-						AND (
-							? = 1
-							OR EXISTS(
-								SELECT 1 FROM messages m
-								WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
-							)
-						)
-				`)
-				.get(webUserId, includeEmpty ? 1 : 0) as { total: number } | null;
+			const totalRow = countThreadsDirectory(db, {
+				userId: webUserId,
+				includeEmpty,
+			});
 			c.header("X-Total-Count", String(totalRow?.total ?? enriched.length));
 
 			return c.json(enriched);
@@ -235,12 +176,7 @@ export function createThreadsRoutes(
 			// from the lookup prevents the user-visible cycle from being pinned
 			// to a single color by bursts of system thread creates that all
 			// hardcode color: 0.
-			const exclusionPlaceholders = NON_USER_FACING_INTERFACES.map(() => "?").join(", ");
-			const lastThread = db
-				.query(
-					`SELECT color FROM threads WHERE deleted = 0 AND interface NOT IN (${exclusionPlaceholders}) ORDER BY created_at DESC LIMIT 1`,
-				)
-				.get(...NON_USER_FACING_INTERFACES) as { color: number } | null;
+			const lastThread = findLatestThreadColorExcludingInterfaces(db, NON_USER_FACING_INTERFACES);
 			const nextColor = lastThread !== null ? (lastThread.color + 1) % 10 : 0;
 
 			insertRow(
@@ -266,7 +202,7 @@ export function createThreadsRoutes(
 				siteId,
 			);
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ?").get(threadId) as Thread;
+			const thread = findThreadById(db, threadId) as Thread;
 
 			return c.json(thread, 201);
 		} catch (error) {
@@ -284,9 +220,7 @@ export function createThreadsRoutes(
 	app.get("/:id", (c) => {
 		try {
 			const { id } = c.req.param();
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(id) as
-				| Thread
-				| undefined;
+			const thread = findLiveThreadById(db, id);
 
 			if (!thread) {
 				return c.json(
@@ -299,7 +233,7 @@ export function createThreadsRoutes(
 
 			return c.json({
 				...thread,
-				attachedSessionHosts: getAttachedSessionHosts(db, id),
+				attachedSessionHosts: getAttachedSessionHostLabels(db, id),
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -317,9 +251,7 @@ export function createThreadsRoutes(
 		try {
 			const { id } = c.req.param();
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(id) as
-				| Thread
-				| undefined;
+			const thread = findLiveThreadById(db, id);
 
 			if (!thread) {
 				return c.json(
@@ -333,11 +265,7 @@ export function createThreadsRoutes(
 			// Check for forwarded status (delegated loops)
 			const forwarded = statusForwardCache?.get(id);
 
-			const runningTask = db
-				.query(
-					"SELECT id FROM tasks WHERE thread_id = ? AND status = 'running' AND deleted = 0 LIMIT 1",
-				)
-				.get(id) as { id: string } | null;
+			const runningTask = findRunningTaskIdForThread(db, id);
 
 			const localLoopActive = activeLoops?.has(id) ?? false;
 			const isActive =
@@ -369,24 +297,7 @@ export function createThreadsRoutes(
 		try {
 			const { id } = c.req.param();
 
-			const rows = db
-				.query(
-					`SELECT id, model_id, tokens_in, tokens_out, tokens_cache_read,
-					        tokens_cache_write, context_debug, created_at
-					 FROM turns
-					 WHERE thread_id = ? AND context_debug IS NOT NULL
-					 ORDER BY created_at ASC`,
-				)
-				.all(id) as Array<{
-				id: number;
-				model_id: string;
-				tokens_in: number;
-				tokens_out: number;
-				tokens_cache_read: number | null;
-				tokens_cache_write: number | null;
-				context_debug: string;
-				created_at: string;
-			}>;
+			const rows = listContextDebugTurnsByThread(db, id);
 
 			const result = rows
 				.map((row) => {
@@ -398,7 +309,7 @@ export function createThreadsRoutes(
 							tokens_out: row.tokens_out,
 							tokens_cache_read: row.tokens_cache_read,
 							tokens_cache_write: row.tokens_cache_write,
-							context_debug: JSON.parse(row.context_debug),
+							context_debug: JSON.parse(row.context_debug ?? ""),
 							created_at: row.created_at,
 						};
 					} catch {

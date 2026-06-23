@@ -7,6 +7,7 @@ import type {
 	ModelRouter,
 } from "@bound/llm";
 
+import { listAllHostModels, listRemoteHostModels, listRemoteHostsWithModels } from "@bound/core";
 import type { HostModelEntry } from "@bound/shared";
 
 import { type EligibleHost, findAnyRemoteModel, findEligibleHostsByModel } from "./relay-router";
@@ -76,9 +77,7 @@ export function resolveModelTier(
 	if (localTier !== null) return localTier;
 
 	// Fall back to hosts table (remote models)
-	const rows = db
-		.query("SELECT models FROM hosts WHERE deleted = 0 AND site_id != ?")
-		.all(localSiteId) as Array<{ models: string | null }>;
+	const rows = listRemoteHostModels(db, localSiteId);
 
 	let bestTier: number | null = null;
 	for (const row of rows) {
@@ -138,19 +137,7 @@ export function resolveSameTierFallback(
 	}
 
 	// Fall back to remote hosts with a same-tier, different model
-	const rows = db
-		.query(
-			`SELECT site_id, host_name, sync_url, models, online_at, modified_at
-			 FROM hosts WHERE deleted = 0 AND site_id != ?`,
-		)
-		.all(localSiteId) as Array<{
-		site_id: string;
-		host_name: string;
-		sync_url: string | null;
-		models: string | null;
-		online_at: string | null;
-		modified_at: string | null;
-	}>;
+	const rows = listRemoteHostsWithModels(db, localSiteId);
 
 	const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 	const remoteHosts: Array<EligibleHost & { modelId: string }> = [];
@@ -362,9 +349,7 @@ function isModelRegisteredInCluster(
 	if (modelRouter.listBackends().some((b) => b.id === modelId)) return true;
 
 	// Any host's advertised models, staleness-ignored, all sites included.
-	const rows = db.query("SELECT models FROM hosts WHERE deleted = 0").all() as Array<{
-		models: string | null;
-	}>;
+	const rows = listAllHostModels(db);
 	for (const row of rows) {
 		if (!row.models) continue;
 		let rawModels: unknown;

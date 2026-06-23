@@ -1,6 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
-import { insertRow, softDelete, updateRow } from "@bound/core";
+import {
+	findWebhookDeletedFlagById,
+	findWebhookIdAndTaskIdByName,
+	findWebhookIdByName,
+	findWebhookIdsByName,
+	insertRow,
+	listWebhooksForCli,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 
@@ -34,9 +43,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	}
 
 	// Check for existing non-deleted webhook
-	const existing = db
-		.prepare("SELECT id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string } | null;
+	const existing = findWebhookIdByName(db, name);
 
 	if (existing) {
 		throw new Error(`Webhook '${name}' already exists.`);
@@ -121,9 +128,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	// updateRow so the deterministic-id property holds. (Mirrors the web
 	// route's POST handler; see #59.)
 	const webhookId = deterministicUUID(BOUND_NAMESPACE, `webhook:${name}`);
-	const priorRow = db.prepare("SELECT deleted FROM webhooks WHERE id = ?").get(webhookId) as {
-		deleted: number;
-	} | null;
+	const priorRow = findWebhookDeletedFlagById(db, webhookId);
 
 	if (priorRow) {
 		// Existing row must be soft-deleted at this point — the active
@@ -181,27 +186,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 // ---------------------------------------------------------------------------
 
 export function webhookList(db: Database): void {
-	const rows = db
-		.prepare(
-			`SELECT w.name AS name,
-			        w.signature_format AS signature_format,
-			        w.description AS description,
-			        w.created_at AS created_at,
-			        t.model_hint AS model_hint,
-			        t.no_history AS no_history
-			 FROM webhooks w
-			 LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0
-			 WHERE w.deleted = 0
-			 ORDER BY w.created_at DESC`,
-		)
-		.all() as Array<{
-		name: string;
-		signature_format: string;
-		description: string | null;
-		created_at: string;
-		model_hint: string | null;
-		no_history: number | null;
-	}>;
+	const rows = listWebhooksForCli(db);
 
 	if (rows.length === 0) {
 		console.log("No webhooks found.");
@@ -229,9 +214,7 @@ export function webhookList(db: Database): void {
 // ---------------------------------------------------------------------------
 
 export function webhookDelete(db: Database, siteId: string, name: string): void {
-	const webhook = db
-		.prepare("SELECT id, task_id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; task_id: string } | null;
+	const webhook = findWebhookIdAndTaskIdByName(db, name);
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);
@@ -289,9 +272,7 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 		throw new Error("--name is required");
 	}
 
-	const webhook = db
-		.prepare("SELECT id, task_id, thread_id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; task_id: string; thread_id: string } | null;
+	const webhook = findWebhookIdsByName(db, name);
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);
@@ -354,9 +335,7 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 // ---------------------------------------------------------------------------
 
 export function webhookRotateSecret(db: Database, siteId: string, name: string): void {
-	const webhook = db
-		.prepare("SELECT id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string } | null;
+	const webhook = findWebhookIdByName(db, name);
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);

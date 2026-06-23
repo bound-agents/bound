@@ -1,9 +1,16 @@
 import type { Database } from "bun:sqlite";
 import {
 	InvalidRelationError,
+	findActiveEdgeIdById,
+	findEdgeDeletedStateById,
 	insertRow,
 	isCanonicalRelation,
+	listActiveEdgeIdsBySourceAndTarget,
+	listActiveEdgeIdsReferencingKey,
+	listIncomingNeighbors,
+	listOutgoingNeighbors,
 	softDelete,
+	traverseMemoryGraph,
 	updateRow,
 } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
@@ -42,10 +49,7 @@ export function upsertEdge(
 	const now = new Date().toISOString();
 
 	// Check for existing edge (including soft-deleted) by deterministic ID
-	const existing = db.prepare("SELECT id, deleted FROM memory_edges WHERE id = ?").get(id) as {
-		id: string;
-		deleted: number;
-	} | null;
+	const existing = findEdgeDeletedStateById(db, id);
 
 	if (existing) {
 		// Update existing (active or soft-deleted) — restores if deleted
@@ -98,9 +102,7 @@ export function removeEdges(
 	if (relation) {
 		// Delete specific edge by triple
 		const id = edgeId(sourceKey, targetKey, relation);
-		const existing = db
-			.prepare("SELECT id FROM memory_edges WHERE id = ? AND deleted = 0")
-			.get(id) as { id: string } | null;
+		const existing = findActiveEdgeIdById(db, id);
 		if (existing) {
 			softDelete(db, "memory_edges", id, siteId);
 			return 1;
@@ -110,9 +112,7 @@ export function removeEdges(
 
 	// Delete all edges between the two keys (source->target direction only,
 	// matching the design: disconnect <src> <tgt>)
-	const edges = db
-		.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND deleted = 0")
-		.all(sourceKey, targetKey) as Array<{ id: string }>;
+	const edges = listActiveEdgeIdsBySourceAndTarget(db, sourceKey, targetKey);
 
 	for (const edge of edges) {
 		softDelete(db, "memory_edges", edge.id, siteId);
@@ -126,9 +126,7 @@ export function removeEdges(
  * Used when a memory entry is forgotten — prevents dangling edges.
  */
 export function cascadeDeleteEdges(db: Database, memoryKey: string, siteId: string): number {
-	const edges = db
-		.prepare("SELECT id FROM memory_edges WHERE (source_key = ? OR target_key = ?) AND deleted = 0")
-		.all(memoryKey, memoryKey) as Array<{ id: string }>;
+	const edges = listActiveEdgeIdsReferencingKey(db, memoryKey);
 
 	for (const edge of edges) {
 		softDelete(db, "memory_edges", edge.id, siteId);
@@ -177,39 +175,7 @@ export function traverseGraph(
 	const effectiveDepth = Math.min(Math.max(depth, 1), MAX_DEPTH);
 	const relationParam = relation ?? null;
 
-	const rows = db
-		.prepare(
-			`WITH RECURSIVE reachable(key, depth, path, via_relation, via_weight, via_context) AS (
-				SELECT ?, 0, '/' || ? || '/', NULL, NULL, NULL
-				UNION ALL
-				SELECT e.target_key, r.depth + 1,
-					   r.path || e.target_key || '/',
-					   e.relation, e.weight, e.context
-				FROM memory_edges e
-				JOIN reachable r ON e.source_key = r.key
-				WHERE r.depth < ?
-				  AND e.deleted = 0
-				  AND INSTR(r.path, '/' || e.target_key || '/') = 0
-				  AND (? IS NULL OR e.relation = ?)
-			)
-			SELECT r.key, r.depth, r.via_relation, r.via_weight, r.via_context,
-				   m.value, m.modified_at, m.source, m.tier
-			FROM reachable r
-			JOIN semantic_memory m ON m.key = r.key AND m.deleted = 0
-			WHERE r.depth > 0
-			ORDER BY r.depth ASC, m.modified_at DESC`,
-		)
-		.all(startKey, startKey, effectiveDepth, relationParam, relationParam) as Array<{
-		key: string;
-		depth: number;
-		via_relation: string | null;
-		via_weight: number | null;
-		via_context: string | null;
-		value: string;
-		modified_at: string;
-		source: string | null;
-		tier: string;
-	}>;
+	const rows = traverseMemoryGraph(db, startKey, effectiveDepth, relationParam);
 
 	// Deduplicate results by key, keeping the shallowest depth version
 	const seenKeys = new Map<string, TraversalResult>();
@@ -248,21 +214,7 @@ export function getNeighbors(
 	const results: NeighborResult[] = [];
 
 	if (direction === "out" || direction === "both") {
-		const outEdges = db
-			.prepare(
-				`SELECT e.target_key AS key, e.relation, e.weight, e.context, m.value
-				 FROM memory_edges e
-				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-				 WHERE e.source_key = ? AND e.deleted = 0
-				 ORDER BY e.weight DESC, m.modified_at DESC`,
-			)
-			.all(key) as Array<{
-			key: string;
-			relation: string;
-			weight: number;
-			context: string | null;
-			value: string;
-		}>;
+		const outEdges = listOutgoingNeighbors(db, key);
 
 		for (const e of outEdges) {
 			results.push({
@@ -277,21 +229,7 @@ export function getNeighbors(
 	}
 
 	if (direction === "in" || direction === "both") {
-		const inEdges = db
-			.prepare(
-				`SELECT e.source_key AS key, e.relation, e.weight, e.context, m.value
-				 FROM memory_edges e
-				 JOIN semantic_memory m ON m.key = e.source_key AND m.deleted = 0
-				 WHERE e.target_key = ? AND e.deleted = 0
-				 ORDER BY e.weight DESC, m.modified_at DESC`,
-			)
-			.all(key) as Array<{
-			key: string;
-			relation: string;
-			weight: number;
-			context: string | null;
-			value: string;
-		}>;
+		const inEdges = listIncomingNeighbors(db, key);
 
 		for (const e of inEdges) {
 			results.push({

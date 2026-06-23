@@ -19,6 +19,7 @@ import { seedBundledSkills } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	createAppContext,
+	dangerouslyExecuteRawWrite,
 	insertRow,
 	normalizeEdgeRelations,
 	resetProcessing,
@@ -51,15 +52,12 @@ const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
  * and test in lockstep prevents the divergence that previously hid a syntax
  * error in this string.
  *
- * Kept on a single source line on purpose: the outbox-invariant validator
- * (`scripts/validate-outbox-invariant.ts`) only exempts the line containing the
- * `// outbox-exempt` marker, so the marker must sit on the same line as the
- * `UPDATE tasks` keyword. Splitting across lines via a template literal would
- * either leak `//` into the SQL string (the bug this constant was extracted to
- * prevent) or move the keyword onto an unmarked line that re-trips the validator.
+ * Executed via dangerouslyExecuteRawWrite (the sanctioned outbox-bypass seam),
+ * so this constant no longer needs to keep the `UPDATE tasks` keyword on a
+ * marked single line — the validator now only permits the chokepoint call.
  */
 export const STALE_TASK_RESET_SQL =
-	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ?"; // outbox-exempt: crash recovery, scoped to booting host (R-LR10)
+	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ?";
 
 /**
  * Crash-recovery scan for threads whose last meaningful message is a tool_call
@@ -422,7 +420,12 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			.all(appContext.siteId) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
-			appContext.db.query(STALE_TASK_RESET_SQL).run(appContext.siteId);
+			dangerouslyExecuteRawWrite(appContext.db, {
+				sql: STALE_TASK_RESET_SQL,
+				params: [appContext.siteId],
+				reason:
+					"crash recovery scoped to the booting host (claimed_by = ?siteId); resets only this host's own stale claims, no cross-host invariant (R-LR10)",
+			});
 			appContext.logger.info(
 				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
 			);

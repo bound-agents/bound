@@ -309,6 +309,40 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 	}
 }
 
+/**
+ * The single sanctioned escape hatch for raw SQL writes that intentionally
+ * bypass the change-log outbox (invariant #1).
+ *
+ * This does NOT emit a change-log row. Every caller is, by definition, writing
+ * a per-host signal with no cross-host correctness invariant: per-host relevance
+ * hints (semantic_memory.last_accessed_at), local-only instrumentation columns
+ * (turns.relay_target), crash-recovery resets scoped to the booting host, or
+ * one-time startup migrations. Routing these through insertRow/updateRow would
+ * advance modified_at and cascade into stale-child detection or generate
+ * change-log volume for a signal other hosts ignore.
+ *
+ * The deliberately alarming name and the mandatory `reason` are the point: this
+ * is the only call the outbox CI guard (scripts/validate-outbox-invariant.ts)
+ * permits as a bypass, so every intentional bypass is funneled through one
+ * greppable, self-documenting seam instead of scattered // outbox-exempt
+ * annotations. If a write needs to sync, use insertRow/updateRow/softDelete
+ * instead — NOT this.
+ *
+ * `reason` must explain why this write is changelog-exempt; it is recorded at
+ * the call site for auditability and is not otherwise consumed.
+ */
+export function dangerouslyExecuteRawWrite(
+	db: Database,
+	opts: { sql: string; params?: SqlBinding[]; reason: string },
+): void {
+	if (!opts.reason || opts.reason.trim().length === 0) {
+		throw new Error(
+			"dangerouslyExecuteRawWrite: a non-empty `reason` is required to document why this write bypasses the outbox.",
+		);
+	}
+	db.run(opts.sql, opts.params ?? []);
+}
+
 export function insertMessage(
 	db: Database,
 	params: {

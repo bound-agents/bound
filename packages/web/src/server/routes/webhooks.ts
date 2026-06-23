@@ -1,11 +1,25 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { getSiteId, insertRow, softDelete, updateRow } from "@bound/core";
+import {
+	findWebhookDeletedFlagById,
+	findWebhookIdById,
+	findWebhookIdByName,
+	findWebhookIdsById,
+	findWebhookNameById,
+	findWebhookTaskIdById,
+	getSiteId,
+	getWebhookWithTaskById,
+	insertRow,
+	listHostSyncTargets,
+	listWebhooksWithTask,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 import { Hono } from "hono";
-import { type ClusterHostRow, buildWebhookUrls } from "../webhook-urls";
+import { buildWebhookUrls } from "../webhook-urls";
 
 export interface WebhooksRoutesConfig {
 	/** Sync server bind host (process.env.BIND_HOST). */
@@ -60,9 +74,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 	// GET / — List webhooks (AC5.2)
 	app.get("/", (c) => {
 		try {
-			const rows = db
-				.prepare(`${WEBHOOK_SELECT} WHERE w.deleted = 0 ORDER BY w.created_at DESC`)
-				.all() as Array<Record<string, unknown>>;
+			const rows = listWebhooksWithTask(db) as unknown as Array<Record<string, unknown>>;
 
 			return c.json(rows.map((r) => shapeWebhook(r)));
 		} catch (error) {
@@ -82,9 +94,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		try {
 			const id = c.req.param("id");
 
-			const webhook = db
-				.prepare(`${WEBHOOK_SELECT} WHERE w.id = ? AND w.deleted = 0`)
-				.get(id) as Record<string, unknown> | null;
+			const webhook = getWebhookWithTaskById(db, id) as Record<string, unknown> | null;
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -109,9 +119,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const id = c.req.param("id");
 
 			// Look up by id to get the webhook's name (delivery URLs use name).
-			const webhook = db
-				.prepare("SELECT name FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { name: string } | null;
+			const webhook = findWebhookNameById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -119,9 +127,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 
 			// Non-deleted hosts. Rows with null/empty sync_url are filtered
 			// inside the helper.
-			const clusterHosts = db
-				.prepare("SELECT site_id, host_name, sync_url FROM hosts WHERE deleted = 0")
-				.all() as ClusterHostRow[];
+			const clusterHosts = listHostSyncTargets(db);
 
 			const urls = buildWebhookUrls({
 				name: webhook.name,
@@ -181,9 +187,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			}
 
 			// Check for existing non-deleted webhook
-			const existing = db
-				.prepare("SELECT id FROM webhooks WHERE name = ? AND deleted = 0")
-				.get(name) as { id: string } | null;
+			const existing = findWebhookIdByName(db, name);
 
 			if (existing) {
 				return c.json({ error: `Webhook '${name}' already exists` }, 400);
@@ -267,9 +271,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			// with deleted=1 — insert would fail on the PK. Restore it in
 			// place via updateRow so the deterministic-id property holds.
 			const webhookId = deterministicUUID(BOUND_NAMESPACE, `webhook:${name}`);
-			const priorRow = db.prepare("SELECT deleted FROM webhooks WHERE id = ?").get(webhookId) as {
-				deleted: number;
-			} | null;
+			const priorRow = findWebhookDeletedFlagById(db, webhookId);
 
 			if (priorRow) {
 				// Existing row must be soft-deleted at this point — the active
@@ -339,9 +341,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const siteId = resolveSiteId();
 
 			// Look up webhook by id
-			const webhook = db
-				.prepare("SELECT id, task_id, thread_id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { id: string; task_id: string; thread_id: string } | null;
+			const webhook = findWebhookIdsById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -461,9 +461,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const siteId = resolveSiteId();
 
 			// Look up webhook
-			const webhook = db
-				.prepare("SELECT task_id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { task_id: string } | null;
+			const webhook = findWebhookTaskIdById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -495,9 +493,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const siteId = resolveSiteId();
 
 			// Look up webhook
-			const webhook = db
-				.prepare("SELECT id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { id: string } | null;
+			const webhook = findWebhookIdById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);

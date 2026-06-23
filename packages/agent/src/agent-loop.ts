@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import {
 	enqueueClientToolCall,
+	findLatestLiveMessageCreatedAtByThread,
+	findMessageById,
 	insertRow,
+	listLiveMessageDeltaByThreadSince,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
@@ -572,7 +575,7 @@ export class AgentLoop {
 
 	/** Broadcast a persisted message to WS clients without re-triggering the agent loop. */
 	private broadcastMessage(messageId: string): void {
-		const message = this.ctx.db.prepare("SELECT * FROM messages WHERE id = ?").get(messageId);
+		const message = findMessageById(this.ctx.db, messageId);
 		if (message) {
 			this.ctx.eventBus.emit("message:broadcast", {
 				message: message as EventMap["message:broadcast"]["message"],
@@ -882,22 +885,11 @@ export class AgentLoop {
 
 					// 1. Fetch delta messages from DB (created after lastMessageCreatedAt)
 					const deltaFetchSpan = getTracer().startSpan("context.warm.delta-fetch");
-					const deltaRows = this.ctx.db
-						.query(
-							"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at > ? ORDER BY created_at ASC, rowid ASC",
-						)
-						.all(this.config.threadId, cached.lastMessageCreatedAt) as Array<{
-						id: string;
-						thread_id: string;
-						role: string;
-						content: string;
-						model_id: string | null;
-						tool_name: string | null;
-						created_at: string;
-						modified_at: string | null;
-						host_origin: string;
-						deleted: number;
-					}>;
+					const deltaRows = listLiveMessageDeltaByThreadSince(
+						this.ctx.db,
+						this.config.threadId,
+						cached.lastMessageCreatedAt,
+					);
 
 					// 2. Convert and sanitize delta messages
 					const deltaMessages = convertDeltaMessages(deltaRows);
@@ -1120,11 +1112,10 @@ export class AgentLoop {
 							usedWarmPath = true;
 
 							// 7. Query latest message created_at for next turn
-							const newLastRow = this.ctx.db
-								.query(
-									"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-								)
-								.get(this.config.threadId) as { created_at: string } | null;
+							const newLastRow = findLatestLiveMessageCreatedAtByThread(
+								this.ctx.db,
+								this.config.threadId,
+							);
 
 							// 8. Update stored state.
 							// Spread-copy so later mutations of `llmMessages` (e.g. the
@@ -1340,11 +1331,7 @@ export class AgentLoop {
 				contextDebug.measuredInflation = measuredInflation;
 
 				// Query last message created_at for delta queries
-				const lastRow = this.ctx.db
-					.query(
-						"SELECT created_at FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-					)
-					.get(this.config.threadId) as { created_at: string } | null;
+				const lastRow = findLatestLiveMessageCreatedAtByThread(this.ctx.db, this.config.threadId);
 				const lastMessageCreatedAt = lastRow?.created_at ?? new Date().toISOString();
 
 				// Store state for potential warm-path reuse on next turn

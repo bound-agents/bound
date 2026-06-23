@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { updateRow } from "./change-log.js";
+import { dangerouslyExecuteRawWrite, updateRow } from "./change-log.js";
 
 export interface RelayCycleEntry {
 	direction: "outbound" | "inbound";
@@ -44,10 +44,12 @@ export function recordTurnRelayMetrics(
 			siteId,
 		);
 	} else {
-		db.run(
-			"UPDATE turns SET relay_target = ?, relay_latency_ms = ? WHERE id = ?", // outbox-exempt: siteId not provided (local-only)
-			[relayTarget, relayLatencyMs, turnId],
-		);
+		dangerouslyExecuteRawWrite(db, {
+			sql: "UPDATE turns SET relay_target = ?, relay_latency_ms = ? WHERE id = ?",
+			params: [relayTarget, relayLatencyMs, turnId],
+			reason:
+				"local-only instrumentation columns (turns.relay_target/relay_latency_ms); no siteId provided, per-host metrics not synced",
+		});
 	}
 }
 

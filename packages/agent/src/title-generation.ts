@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { updateRow } from "@bound/core";
+import {
+	findFirstMessageContentByThreadAndRole,
+	findThreadTitleById,
+	updateRow,
+} from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { Result } from "@bound/shared";
-import type { Message, Thread } from "@bound/shared";
 
 /**
  * Extract a human-readable title from a JSON task payload.
@@ -42,9 +45,7 @@ export async function generateThreadTitle(
 ): Promise<Result<string, Error>> {
 	try {
 		// Check if thread already has a title (at-most-once guarantee)
-		const thread = db.prepare("SELECT title FROM threads WHERE id = ?").get(threadId) as
-			| Pick<Thread, "title">
-			| undefined;
+		const thread = findThreadTitleById(db, threadId);
 
 		if (thread?.title) {
 			// Title already exists, return early
@@ -52,18 +53,10 @@ export async function generateThreadTitle(
 		}
 
 		// Get the first user message
-		const firstUserMessage = db
-			.prepare(
-				"SELECT content FROM messages WHERE thread_id = ? AND role IN ('user') ORDER BY created_at LIMIT 1",
-			)
-			.get(threadId) as Pick<Message, "content"> | undefined;
+		const firstUserMessage = findFirstMessageContentByThreadAndRole(db, threadId, "user");
 
 		// Get the first assistant response
-		const firstAssistantMessage = db
-			.prepare(
-				"SELECT content FROM messages WHERE thread_id = ? AND role IN ('assistant') ORDER BY created_at LIMIT 1",
-			)
-			.get(threadId) as Pick<Message, "content"> | undefined;
+		const firstAssistantMessage = findFirstMessageContentByThreadAndRole(db, threadId, "assistant");
 
 		if (!firstUserMessage) {
 			return {
@@ -123,11 +116,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 	} catch (error) {
 		// Fallback per spec R-E17: on failure, use first 50 chars of user's first message
 		try {
-			const fallbackMsg = db
-				.prepare(
-					"SELECT content FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at LIMIT 1",
-				)
-				.get(threadId) as Pick<Message, "content"> | null;
+			const fallbackMsg = findFirstMessageContentByThreadAndRole(db, threadId, "user");
 
 			if (fallbackMsg) {
 				const fallbackTitle =
