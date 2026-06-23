@@ -190,13 +190,15 @@ const FULL_SCHEMA = `
 		size_bytes INTEGER NOT NULL,
 		content_hash TEXT NOT NULL,
 		indexed_at TEXT NOT NULL,
-		deleted INTEGER NOT NULL DEFAULT 0
+		deleted INTEGER NOT NULL DEFAULT 0,
+		modified_at TEXT
 	);
 
 	CREATE TABLE cluster_config (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
-		modified_at TEXT NOT NULL
+		modified_at TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE host_meta (

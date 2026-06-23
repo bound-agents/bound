@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { createChangeLogEntry, getSiteId } from "@bound/core";
+import { getSiteId, insertRow, updateRow } from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
 	hostName: string;
@@ -116,24 +116,20 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 
 		// Record the timestamp when hub is set (used for polling)
 		const hubChangeTimestamp = new Date().toISOString();
-		// Step 3: Set hub
+		// Step 3: Set hub. Probe ignoring `deleted` so a previously soft-deleted
+		// key is un-tombstoned via UPDATE rather than colliding on INSERT.
 		const hubKey = "cluster_hub";
 		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
-		const setHubTx = db.transaction(() => {
-			if (existingHub) {
-				db.query(
-					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config set-hub command)
-				).run(args.hostName, hubChangeTimestamp, hubKey);
-			} else {
-				db.query(
-					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config set-hub command)
-				).run(hubKey, args.hostName, hubChangeTimestamp);
-			}
-			// Write change_log entry
-			const rowData = { key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp };
-			createChangeLogEntry(db, "cluster_config", hubKey, siteId, rowData);
-		});
-		setHubTx();
+		if (existingHub) {
+			updateRow(db, "cluster_config", hubKey, { value: args.hostName, deleted: 0 }, siteId);
+		} else {
+			insertRow(
+				db,
+				"cluster_config",
+				{ key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp, deleted: 0 },
+				siteId,
+			);
+		}
 		console.log("Cluster hub set successfully.");
 
 		// Step 4: Clear drain flag

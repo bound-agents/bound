@@ -257,12 +257,19 @@ describe("boundctl commands", () => {
 			expect(hubEntry).not.toBeNull();
 			expect(hubEntry?.value).toBe("new-hub-host");
 
-			// Verify emergency_stop was cleared
-			const stopEntry = db2
-				.query("SELECT * FROM cluster_config WHERE key = 'emergency_stop'")
-				.get();
+			// Verify emergency_stop was cleared. cluster_config now soft-deletes
+			// (invariant #2): the row persists with deleted=1 so the cleared state
+			// replicates, and live reads (filtered deleted=0) see nothing.
+			const stopRow = db2
+				.query("SELECT deleted FROM cluster_config WHERE key = 'emergency_stop'")
+				.get() as { deleted: number } | null;
+			expect(stopRow).not.toBeNull();
+			expect(stopRow?.deleted).toBe(1);
 
-			expect(stopEntry).toBeNull();
+			const liveStop = db2
+				.query("SELECT * FROM cluster_config WHERE key = 'emergency_stop' AND deleted = 0")
+				.get();
+			expect(liveStop).toBeNull();
 
 			db2.close();
 		});

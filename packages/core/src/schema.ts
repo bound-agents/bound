@@ -710,6 +710,26 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
+	// deleted column on cluster_config — brings it under the soft-delete invariant
+	// (invariant #2). Existing rows default to live (0). Writers soft-delete via
+	// the standard UPDATE-deleted=1 path; live reads filter deleted = 0.
+	try {
+		db.run("ALTER TABLE cluster_config ADD COLUMN deleted INTEGER DEFAULT 0");
+	} catch {
+		/* already exists */
+	}
+
+	// modified_at column on overlay_index — required so the shared softDelete()
+	// helper (which writes modified_at = ?) works uniformly. Nullable because
+	// SQLite cannot add a NOT NULL column to a populated table without a default;
+	// existing rows get NULL (the LWW reducer skips the timestamp compare on null),
+	// and all new rows / tombstones write modified_at explicitly.
+	try {
+		db.run("ALTER TABLE overlay_index ADD COLUMN modified_at TEXT");
+	} catch {
+		/* already exists */
+	}
+
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_memory_modified ON semantic_memory(modified_at DESC)
 	`);

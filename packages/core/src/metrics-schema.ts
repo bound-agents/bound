@@ -193,6 +193,7 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		relay_target: null,
 		relay_latency_ms: null,
 		context_debug: null,
+		deleted: 0,
 	};
 
 	if (siteId) {

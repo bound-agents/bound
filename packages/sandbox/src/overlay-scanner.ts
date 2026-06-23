@@ -120,14 +120,15 @@ export function scanOverlayIndex(
 							size_bytes: stat.size,
 							content_hash: contentHash,
 							indexed_at: now,
+							modified_at: now,
 							deleted: 0,
 						},
 						siteId,
 					);
 				} else {
 					dangerouslyExecuteRawWrite(db, {
-						sql: "INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
-						params: [id, siteId, entry.path, stat.size, contentHash, now],
+						sql: "INSERT OR IGNORE INTO overlay_index (id, site_id, path, size_bytes, content_hash, indexed_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+						params: [id, siteId, entry.path, stat.size, contentHash, now, now],
 						reason:
 							"overlay_index scan without an injected outbox (backward compat); local index rebuilt from filesystem on every scan",
 					});

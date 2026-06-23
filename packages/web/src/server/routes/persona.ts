@@ -18,7 +18,7 @@ export function createPersonaRoutes(db: Database): Hono {
 	app.get("/", (c) => {
 		try {
 			const row = db
-				.query("SELECT value, modified_at FROM cluster_config WHERE key = ?")
+				.query("SELECT value, modified_at FROM cluster_config WHERE key = ? AND deleted = 0")
 				.get(PERSONA_CLUSTER_CONFIG_KEY) as { value: string; modified_at: string } | null;
 			return c.json({
 				persona: row?.value ?? "",
@@ -60,12 +60,20 @@ export function createPersonaRoutes(db: Database): Hono {
 
 		try {
 			const siteId = getSiteId(db);
+			// Probe ignoring `deleted`: a soft-deleted persona row still holds the
+			// `key` PK, so re-setting must UPDATE (un-tombstone) not INSERT.
 			const existing = db
 				.query("SELECT key FROM cluster_config WHERE key = ?")
 				.get(PERSONA_CLUSTER_CONFIG_KEY);
 
 			if (existing) {
-				updateRow(db, "cluster_config", PERSONA_CLUSTER_CONFIG_KEY, { value: persona }, siteId);
+				updateRow(
+					db,
+					"cluster_config",
+					PERSONA_CLUSTER_CONFIG_KEY,
+					{ value: persona, deleted: 0 },
+					siteId,
+				);
 			} else {
 				insertRow(
 					db,
@@ -74,6 +82,7 @@ export function createPersonaRoutes(db: Database): Hono {
 						key: PERSONA_CLUSTER_CONFIG_KEY,
 						value: persona,
 						modified_at: new Date().toISOString(),
+						deleted: 0,
 					},
 					siteId,
 				);
