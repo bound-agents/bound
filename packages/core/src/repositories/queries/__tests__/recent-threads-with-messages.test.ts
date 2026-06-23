@@ -11,12 +11,13 @@ const SITE_ID = "site-test";
 const USER = "user-1";
 
 /**
- * Seed a `threads` row. Only columns the schema actually declares are written —
- * the `Thread` type carries a `model_hint` field that the schema does NOT, so it
- * is omitted (writing it would fail the INSERT). Nullable columns default to null.
+ * Seed a `threads` row. `model_hint` is a real column in the test DB — it is
+ * added by an `ALTER TABLE` migration that `applySchema` runs after the
+ * `CREATE TABLE`, so the typed `Thread` seed inserts cleanly. Nullable columns
+ * default to null.
  */
 function seedThread(db: Database, overrides: Partial<Thread> & { id: string }): void {
-	const base = {
+	const base: Thread = {
 		id: overrides.id,
 		user_id: USER,
 		interface: "web",
@@ -31,20 +32,22 @@ function seedThread(db: Database, overrides: Partial<Thread> & { id: string }): 
 		last_message_at: "2026-01-01T00:00:00.000Z",
 		modified_at: "2026-01-01T00:00:00.000Z",
 		deleted: 0,
+		model_hint: null,
 		...overrides,
 	};
-	insertRow(db, "threads", base as unknown as Thread, SITE_ID);
+	insertRow(db, "threads", base, SITE_ID);
 }
 
 /**
- * Seed a `messages` row. The schema declares columns only through `deleted` (no
- * `exit_code` / `metadata`), so those `Message` fields are omitted.
+ * Seed a `messages` row. `exit_code` and `metadata` are real columns in the
+ * test DB — `applySchema` adds them via `ALTER TABLE` after the `CREATE TABLE`,
+ * so the typed `Message` seed inserts cleanly. Nullable columns default to null.
  */
 function seedMessage(
 	db: Database,
 	overrides: Partial<Message> & { id: string; thread_id: string },
 ): void {
-	const base = {
+	const base: Message = {
 		id: overrides.id,
 		thread_id: overrides.thread_id,
 		role: "user",
@@ -55,9 +58,11 @@ function seedMessage(
 		modified_at: null,
 		host_origin: SITE_ID,
 		deleted: 0,
+		exit_code: null,
+		metadata: null,
 		...overrides,
 	};
-	insertRow(db, "messages", base as unknown as Message, SITE_ID);
+	insertRow(db, "messages", base, SITE_ID);
 }
 
 describe("recent-threads-with-messages finder", () => {
