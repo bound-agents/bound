@@ -1616,7 +1616,12 @@ export class WsTransport {
 
 	handleConsistencyRequest(
 		peerSiteId: string,
-		payload: { tables: string[]; request_id?: string },
+		payload: {
+			tables: string[];
+			request_id?: string;
+			resume_table_index?: number;
+			resume_offset?: number;
+		},
 	): void {
 		if (!this.config.isHub) return;
 
@@ -1651,7 +1656,16 @@ export class WsTransport {
 			tableCount: tables.length,
 		});
 
-		this.streamConsistencyPages(peerSiteId, tables, 0, 0, payload.request_id);
+		const resumeTable = payload.resume_table_index ?? 0;
+		const resumeOffset = payload.resume_offset ?? 0;
+		if (resumeTable > 0 || resumeOffset > 0) {
+			this.config.logger?.debug("[consistency] Resuming from cursor", {
+				peerSiteId,
+				tableIndex: resumeTable,
+				offset: resumeOffset,
+			});
+		}
+		this.streamConsistencyPages(peerSiteId, tables, resumeTable, resumeOffset, payload.request_id);
 	}
 
 	private pendingConsistencyStream = new Map<
@@ -1718,6 +1732,8 @@ export class WsTransport {
 				table_count: tables.length,
 				all_done: allDone,
 				request_id: requestId,
+				next_table_index: allDone ? undefined : nextTableIndex,
+				next_offset: allDone ? undefined : nextOffset,
 			},
 			peer.symmetricKey,
 		);
@@ -1774,6 +1790,18 @@ export class WsTransport {
 
 	// ── Spoke-side: request + collect ────────────────────────────────────
 
+	/**
+	 * Resume state for the consistency exchange. When the connection drops
+	 * mid-stream and the 5-minute timeout fires, we save the accumulated data
+	 * and the last-seen position so the next request can resume from there
+	 * instead of restarting from table 0, offset 0. Without this, an unstable
+	 * connection makes the all-or-nothing exchange impossible to complete.
+	 */
+	private consistencyResumeState: {
+		cursor: { tableIndex: number; offset: number };
+		data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
+	} | null = null;
+
 	private pendingConsistencyRequests = new Map<
 		string,
 		{
@@ -1783,6 +1811,7 @@ export class WsTransport {
 			reject: (err: Error) => void;
 			data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
 			timer: Timer;
+			cursor: { tableIndex: number; offset: number };
 		}
 	>();
 
@@ -1794,28 +1823,55 @@ export class WsTransport {
 			return Promise.reject(new Error("Not connected to hub"));
 		}
 
+		const resume = this.consistencyResumeState;
+		const initialData = resume?.data ?? new Map();
+		const resumeTableIndex = resume?.cursor.tableIndex ?? 0;
+		const resumeOffset = resume?.cursor.offset ?? 0;
+
 		const requestId = `cr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+		const framePayload: {
+			tables: string[];
+			request_id: string;
+			resume_table_index?: number;
+			resume_offset?: number;
+		} = { tables, request_id: requestId };
+		if (resumeTableIndex > 0 || resumeOffset > 0) {
+			framePayload.resume_table_index = resumeTableIndex;
+			framePayload.resume_offset = resumeOffset;
+		}
 		const frame = encodeFrame(
 			WsMessageType.CONSISTENCY_REQUEST,
-			{ tables, request_id: requestId },
+			framePayload,
 			hubPeer.symmetricKey,
 		);
 		if (!hubPeer.sendFrame(frame)) {
 			return Promise.reject(new Error("Failed to send consistency request"));
 		}
 
-		this.config.logger?.debug("[consistency] Request sent", { requestId });
+		this.config.logger?.debug("[consistency] Request sent", {
+			requestId,
+			resumeTableIndex,
+			resumeOffset,
+		});
 
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
+				const req = this.pendingConsistencyRequests.get(requestId);
+				if (req) {
+					this.consistencyResumeState = {
+						cursor: { ...req.cursor },
+						data: req.data,
+					};
+				}
 				this.pendingConsistencyRequests.delete(requestId);
 				reject(new Error("Consistency check timed out (5m)"));
 			}, 300_000);
 			this.pendingConsistencyRequests.set(requestId, {
 				resolve,
 				reject,
-				data: new Map(),
+				data: initialData,
 				timer,
+				cursor: { tableIndex: resumeTableIndex, offset: resumeOffset },
 			});
 		});
 	}
@@ -1830,11 +1886,19 @@ export class WsTransport {
 		table_count?: number;
 		all_done?: boolean;
 		request_id?: string;
+		next_table_index?: number;
+		next_offset?: number;
 	}): void {
 		const rid = payload.request_id;
 		if (!rid) return;
 		const req = this.pendingConsistencyRequests.get(rid);
 		if (!req) return;
+
+		// Track the cursor so that if this exchange times out, we can resume
+		// from where the hub left off rather than restarting from scratch.
+		if (typeof payload.next_table_index === "number" && typeof payload.next_offset === "number") {
+			req.cursor = { tableIndex: payload.next_table_index, offset: payload.next_offset };
+		}
 
 		const existing = req.data.get(payload.table);
 		if (existing) {
@@ -1873,6 +1937,7 @@ export class WsTransport {
 		});
 		clearTimeout(req.timer);
 		this.pendingConsistencyRequests.delete(requestId);
+		this.consistencyResumeState = null;
 		req.resolve(req.data);
 	}
 
