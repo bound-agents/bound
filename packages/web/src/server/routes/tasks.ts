@@ -1,4 +1,11 @@
-import { getSiteId } from "@bound/core";
+import {
+	findActiveTaskById,
+	findMaxTurnCreatedAtByThreadAndTask,
+	findTaskById,
+	getSiteId,
+	listActiveTasks,
+	listHostSiteIdAndName,
+} from "@bound/core";
 
 import type { Database } from "bun:sqlite";
 import { updateRow } from "@bound/core";
@@ -16,10 +23,7 @@ interface TaskWithComputed extends Task {
 // Build the site_id -> host_name lookup once per request so enrichment can
 // resolve the claiming host's friendly name.
 function buildHostMap(db: Database): Map<string, string> {
-	const hosts = db.query("SELECT site_id, host_name FROM hosts WHERE deleted = 0").all() as Array<{
-		site_id: string;
-		host_name: string;
-	}>;
+	const hosts = listHostSiteIdAndName(db);
 	return new Map(hosts.map((h) => [h.site_id, h.host_name]));
 }
 
@@ -33,11 +37,7 @@ function enrichTask(task: Task, hostMap: Map<string, string>, db: Database): Tas
 
 	let lastDurationMs: number | null = null;
 	if (task.claimed_at && task.thread_id) {
-		const lastTurnRow = db
-			.query(
-				"SELECT MAX(created_at) as last_turn_at FROM turns WHERE thread_id = ? AND task_id = ?",
-			)
-			.get(task.thread_id, task.id) as { last_turn_at: string | null } | null;
+		const lastTurnRow = findMaxTurnCreatedAtByThreadAndTask(db, task.thread_id, task.id);
 
 		if (lastTurnRow?.last_turn_at) {
 			const claimedTime = Date.parse(task.claimed_at);
@@ -56,17 +56,7 @@ export function createTasksRoutes(db: Database): Hono {
 		try {
 			const status = c.req.query("status");
 
-			let query = "SELECT * FROM tasks WHERE deleted = 0";
-			const params: string[] = [];
-
-			if (status) {
-				query += " AND status = ?";
-				params.push(status);
-			}
-
-			query += " ORDER BY created_at DESC";
-
-			const tasks = db.query(query).all(...params) as Task[];
+			const tasks = listActiveTasks(db, status);
 			const hostMap = buildHostMap(db);
 			const enrichedTasks: TaskWithComputed[] = tasks.map((task) => enrichTask(task, hostMap, db));
 
@@ -86,9 +76,7 @@ export function createTasksRoutes(db: Database): Hono {
 	app.get("/:id", (c) => {
 		try {
 			const { id } = c.req.param();
-			const task = db
-				.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0")
-				.get(id) as Task | null;
+			const task = findActiveTaskById(db, id);
 
 			if (!task) {
 				return c.json({ error: "Task not found" }, 404);
@@ -104,9 +92,7 @@ export function createTasksRoutes(db: Database): Hono {
 	app.post("/:id/cancel", (c) => {
 		try {
 			const { id } = c.req.param();
-			const task = db
-				.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0")
-				.get(id) as Task | null;
+			const task = findActiveTaskById(db, id);
 
 			if (!task) {
 				return c.json({ error: "Task not found" }, 404);
@@ -125,7 +111,7 @@ export function createTasksRoutes(db: Database): Hono {
 
 			updateRow(db, "tasks", id, { status: "cancelled" }, siteId);
 
-			const updated = db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Task;
+			const updated = findTaskById(db, id) as Task;
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -146,9 +132,7 @@ export function createTasksRoutes(db: Database): Hono {
 	app.patch("/:id", async (c) => {
 		try {
 			const { id } = c.req.param();
-			const task = db
-				.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0")
-				.get(id) as Task | null;
+			const task = findActiveTaskById(db, id);
 
 			if (!task) {
 				return c.json({ error: "Task not found" }, 404);
@@ -198,7 +182,7 @@ export function createTasksRoutes(db: Database): Hono {
 			const siteId = getSiteId(db);
 			updateRow(db, "tasks", id, updates, siteId);
 
-			const updated = db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Task;
+			const updated = findTaskById(db, id) as Task;
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

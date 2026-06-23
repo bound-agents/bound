@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { insertRow } from "@bound/core";
+import {
+	dangerouslyExecuteRawWrite,
+	findTaskClaimById,
+	findTaskIdAndStatusById,
+	findTaskIdById,
+	insertRow,
+	listHostsWithLiveness,
+} from "@bound/core";
 import type { Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
@@ -180,14 +187,7 @@ export function shouldDispatchHere(
 	}
 
 	const cutoff = Date.now() - staleMs;
-	const rows = db
-		.query("SELECT site_id, host_name, modified_at, online_at FROM hosts WHERE deleted = 0")
-		.all() as Array<{
-		site_id: string;
-		host_name: string | null;
-		modified_at: string | null;
-		online_at: string | null;
-	}>;
+	const rows = listHostsWithLiveness(db);
 
 	const candidates: FiringCandidateHost[] = [];
 	const seen = new Set<string>();
@@ -369,9 +369,7 @@ export function isDependencySatisfied(db: Database, task: Task): boolean {
 	}
 
 	for (const depId of dependencyIds) {
-		const depTask = db.query("SELECT id, status FROM tasks WHERE id = ?").get(depId) as
-			| { id: string; status: string }
-			| undefined;
+		const depTask = findTaskIdAndStatusById(db, depId);
 
 		if (!depTask) {
 			// Dependency not found - consider it failed
@@ -432,14 +430,7 @@ export function verifyLeaseStillHeld(
 				deleted: number;
 			} | null;
 	  } {
-	const row = db
-		.query("SELECT claimed_by, lease_id, status, deleted FROM tasks WHERE id = ?")
-		.get(taskId) as {
-		claimed_by: string | null;
-		lease_id: string | null;
-		status: string;
-		deleted: number;
-	} | null;
+	const row = findTaskClaimById(db, taskId);
 	if (!row) {
 		return { held: false, reason: "row_missing", actual: null };
 	}
@@ -524,9 +515,7 @@ export function seedHeartbeat(db: Database, siteId: string): void {
 	const modelHint = null;
 
 	// Check if heartbeat task already exists (idempotent)
-	const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(id) as {
-		id: string;
-	} | null;
+	const existing = findTaskIdById(db, id);
 
 	if (!existing) {
 		insertRow(
@@ -574,8 +563,9 @@ export function seedHeartbeat(db: Database, siteId: string): void {
 	// history — it receives volatile enrichment (standing instructions, task digest,
 	// thread activity) which provides all necessary context. Loading history on a
 	// long-running heartbeat thread wastes tokens on stale self-referential output.
-	db.prepare(
-		"UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0", // outbox-exempt: legacy migration
-		// TODO: follow-up RFC — route through insertRow/updateRow or formalize as semantic exception
-	).run();
+	dangerouslyExecuteRawWrite(db, {
+		sql: "UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0",
+		reason:
+			"one-time startup migration of a per-host semantic flag (heartbeat tasks don't load history); idempotent and self-converging, no cross-host write needed",
+	});
 }

@@ -1,6 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
+import {
+	findFileContentByIdActive,
+	findFirstLiveUserMessageByThreadSince,
+	findLatestLiveAssistantMessageCreatedAtByThread,
+	insertRow,
+	listRecentLiveMessageContentByThread,
+} from "@bound/core";
 import {
 	type CapabilityRequirements,
 	type ContentBlock,
@@ -102,21 +108,11 @@ export function findPendingUserMessage(
 	db: Database,
 	threadId: string,
 ): { id: string; content: string; role: "user" } | null {
-	const lastAssistant = db
-		.prepare<{ created_at: string }, [string]>(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId);
+	const lastAssistant = findLatestLiveAssistantMessageCreatedAtByThread(db, threadId);
 
 	const cutoff = lastAssistant?.created_at ?? "1970-01-01T00:00:00.000Z";
 
-	return (
-		(db
-			.prepare<{ id: string; content: string; role: "user" }, [string, string]>(
-				"SELECT id, content, role FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 AND created_at > ? ORDER BY created_at ASC LIMIT 1",
-			)
-			.get(threadId, cutoff) as { id: string; content: string; role: "user" } | null) ?? null
-	);
+	return findFirstLiveUserMessageByThreadSince(db, threadId, cutoff);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,13 +287,7 @@ export function deriveCapabilityRequirements(
 	}
 
 	try {
-		const recentMsgs = db
-			.query(
-				`SELECT content FROM messages
-				 WHERE thread_id = ? AND deleted = 0
-				 ORDER BY created_at DESC LIMIT 5`,
-			)
-			.all(threadId) as Array<{ content: string }>;
+		const recentMsgs = listRecentLiveMessageContentByThread(db, threadId, 5);
 
 		const hasImageBlock = recentMsgs.some((m) => {
 			try {
@@ -840,9 +830,7 @@ export function resolveToolAnnotations(
  */
 export function createFileRefResolver(db: Database): (fileId: string) => string | null {
 	return (fileId: string) => {
-		const row = db.query("SELECT content FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
-			content: string | null;
-		} | null;
+		const row = findFileContentByIdActive(db, fileId);
 		return row?.content ?? null;
 	};
 }

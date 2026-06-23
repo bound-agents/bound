@@ -4,9 +4,17 @@
  * insertRow/updateRow/softDelete from @bound/core. Direct SQL mutations
  * (INSERT INTO, UPDATE, DELETE FROM) on synced tables are flagged as violations.
  *
- * Lines containing "// outbox-exempt" are cross-checked against the audit
- * disposition table in docs/invariants.md (invariant #1 appendix).
- * Lines containing "// outbox-routed" are skipped (explicit createChangeLogEntry pattern).
+ * Two sanctioned escapes:
+ *  - "// outbox-routed": an explicit createChangeLogEntry follows the raw SQL in
+ *    the same transaction (scheduler CAS task transitions, cluster_config CLI
+ *    commands). The write DOES sync — the changelog row is emitted by hand.
+ *  - dangerouslyExecuteRawWrite(db, { sql, params, reason }): the single
+ *    sanctioned changelog-EXEMPT bypass. The SQL is allowed when it flows into a
+ *    dangerouslyExecuteRawWrite call (inline literal, local `const sql`, or a
+ *    named constant passed as the `sql` argument). This replaces the former
+ *    per-line "// outbox-exempt" annotation + docs/invariants.md audit-table
+ *    cross-check: every intentional bypass now funnels through one greppable
+ *    seam whose mandatory `reason` self-documents why it skips the changelog.
  *
  * Run: bun run scripts/validate-outbox-invariant.ts
  * Wired into: bun check (pre-commit hook)
@@ -46,12 +54,19 @@ const EXCLUDED_PATHS = [
 
 const SQL_MUTATION_PATTERN = /["'`]\s*(INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM)\s+/i;
 
+const CHOKEPOINT_CALL_PATTERN = /dangerouslyExecuteRawWrite\s*\(/;
+
+// How many lines below a chokepoint call its argument object can span. The
+// call site is `dangerouslyExecuteRawWrite(db, { sql, params, reason })` — a
+// generous window covers multi-line reason strings without reaching unrelated code.
+const CHOKEPOINT_WINDOW = 10;
+
 export function shouldExclude(filePath: string): boolean {
 	return EXCLUDED_PATHS.some((exc) => path.normalize(filePath).includes(path.normalize(exc)));
 }
 
 export function shouldSkipLine(line: string): boolean {
-	return line.includes("// outbox-routed") || line.includes("// outbox-exempt");
+	return line.includes("// outbox-routed");
 }
 
 export function findTableInLine(line: string): string | null {
@@ -76,73 +91,62 @@ interface Violation {
 	text: string;
 }
 
-export function extractAuditSection(content: string): string {
-	const match = content.match(
-		/### Audit Disposition Table for `outbox-exempt` Annotations([\s\S]*?)(?=###|\z)/,
-	);
-	return match ? match[1] : "";
+export interface ChokepointInfo {
+	/** Inclusive [start, end] line-index ranges spanned by each chokepoint call's arguments. */
+	windows: Array<[number, number]>;
+	/** Identifier names passed as the `sql` argument to a chokepoint call (incl. `sql` shorthand). */
+	sqlIdentifiers: Set<string>;
 }
 
-export function cleanLineNumber(linePart: string): number {
-	// Strip trailing (REWRITTEN) or (REMOVED) markers before parsing
-	return Number.parseInt(linePart.replace(/\s*\(.*?\)\s*$/, ""));
-}
+/**
+ * Scan a file for every dangerouslyExecuteRawWrite call. Records the argument
+ * window of each (so inline `sql:` literals are recognized) and the set of
+ * identifier names handed to the call as its `sql` argument (so a SQL string
+ * assigned to a named constant elsewhere — e.g. STALE_TASK_RESET_SQL, or a
+ * local `const sql` passed via object shorthand — is recognized too).
+ */
+export function collectChokepointInfo(lines: string[]): ChokepointInfo {
+	const windows: Array<[number, number]> = [];
+	const sqlIdentifiers = new Set<string>();
 
-export function isExemptionDocumented(
-	filePath: string,
-	lineNumber: number,
-	table: string,
-	contributing: string,
-): boolean {
-	const auditSection = extractAuditSection(contributing);
-	if (!auditSection) return false;
+	for (let i = 0; i < lines.length; i++) {
+		if (!CHOKEPOINT_CALL_PATTERN.test(lines[i])) continue;
 
-	// Check if the table is NOT in SYNCED_TABLES (category c)
-	if (!SYNCED_TABLES.includes(table)) {
-		return true;
-	}
+		const start = i;
+		const end = Math.min(lines.length - 1, i + CHOKEPOINT_WINDOW);
+		windows.push([start, end]);
 
-	// Glob uses OS-native separators; CONTRIBUTING.md always uses "/".
-	// Normalise before comparison so the check works on Windows too.
-	const normalizedPath = filePath.replace(/\\/g, "/");
-
-	// Parse audit table rows (very basic markdown table parsing)
-	const lines = auditSection.split("\n");
-	for (const line of lines) {
-		if (!line.includes("|")) continue;
-
-		const cells = line.split("|").map((c) => c.trim());
-		if (cells.length < 3) continue;
-
-		const fileLoc = cells[1]; // File:Line or File
-		const tableMatch = cells[2]; // Table write target
-
-		if (!fileLoc || !tableMatch) continue;
-
-		// Try to match file:line exactly
-		if (fileLoc.includes(":")) {
-			const [matchFile, matchLineStr] = fileLoc.split(":");
-			const matchLine = cleanLineNumber(matchLineStr);
-			if (
-				normalizedPath.endsWith(matchFile.trim()) &&
-				matchLine === lineNumber &&
-				tableMatch.includes(table)
-			) {
-				return true;
-			}
-		} else if (normalizedPath.endsWith(fileLoc.trim()) && tableMatch.includes(table)) {
-			// Match by file path only
-			return true;
+		for (let j = start; j <= end; j++) {
+			// `sql: SOME_CONSTANT` — named-constant reference
+			const named = lines[j].match(/\bsql\s*:\s*([A-Za-z_$][\w$]*)/);
+			if (named) sqlIdentifiers.add(named[1]);
+			// `sql,` / `sql` on its own line — object shorthand for a local `const sql`
+			if (/^\s*sql\s*,?\s*$/.test(lines[j])) sqlIdentifiers.add("sql");
 		}
 	}
 
-	return false;
+	return { windows, sqlIdentifiers };
 }
 
-export function hasToDoLink(lines: string[], centerIndex: number): boolean {
-	return lines
-		.slice(Math.max(0, centerIndex - 5), Math.min(lines.length, centerIndex + 6))
-		.some((l) => l.includes("TODO"));
+/**
+ * Returns true when a flagged SQL-mutation line is sanctioned because it flows
+ * into a dangerouslyExecuteRawWrite call:
+ *  - Case A: the line sits inside a chokepoint call's argument window (inline literal).
+ *  - Case B: the line defines a const/let/var whose name is passed as the call's `sql`.
+ */
+export function isChokepointSanctioned(
+	lines: string[],
+	index: number,
+	info: ChokepointInfo,
+): boolean {
+	for (const [start, end] of info.windows) {
+		if (index >= start && index <= end) return true;
+	}
+
+	const def = lines[index].match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/);
+	if (def && info.sqlIdentifiers.has(def[1])) return true;
+
+	return false;
 }
 
 export async function main() {
@@ -150,53 +154,26 @@ export async function main() {
 	const glob = new Glob("packages/*/src/**/*.ts");
 	const violations: Violation[] = [];
 
-	// Read the invariants doc once (holds the audit disposition table)
-	let contributing = "";
-	try {
-		contributing = readFileSync(resolve(root, "docs/invariants.md"), "utf-8");
-	} catch {
-		console.warn("Warning: Could not read docs/invariants.md for cross-check validation");
-	}
-
 	for await (const relPath of glob.scan({ cwd: root })) {
 		if (shouldExclude(relPath)) continue;
 
 		const fullPath = resolve(root, relPath);
 		const content = readFileSync(fullPath, "utf-8");
 		const lines = content.split("\n");
+		const chokepointInfo = collectChokepointInfo(lines);
 
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 
-			// Skip outbox-routed and outbox-exempt lines (both are permitted)
-			if (shouldSkipLine(line)) {
-				// If it's outbox-exempt, validate it
-				if (line.includes("// outbox-exempt")) {
-					const table = findTableInLine(line);
-					if (!table) continue;
-
-					// Check for TODO link (category d validation)
-					const hasTodoLink = hasToDoLink(lines, i);
-
-					// Check if documented in CONTRIBUTING.md
-					const isDocumented = isExemptionDocumented(relPath, i + 1, table, contributing);
-
-					if (!isDocumented && !hasTodoLink) {
-						violations.push({
-							file: relPath,
-							line: i + 1,
-							table,
-							text: line.trim().slice(0, 100),
-						});
-					}
-				}
-				continue;
-			}
+			// Explicit createChangeLogEntry-in-transaction escape.
+			if (shouldSkipLine(line)) continue;
 
 			const table = findTableInLine(line);
 			if (!table) continue;
 
-			// No annotation: violation
+			// Sanctioned changelog-exempt bypass via the single chokepoint.
+			if (isChokepointSanctioned(lines, i, chokepointInfo)) continue;
+
 			violations.push({
 				file: relPath,
 				line: i + 1,
@@ -219,10 +196,13 @@ export async function main() {
 		console.error(`    ${v.text}`);
 	}
 	console.error(
-		"\nFix: use insertRow/updateRow/softDelete from @bound/core, or add '// outbox-exempt' with CONTRIBUTING.md entry.",
+		"\nFix: use insertRow/updateRow/softDelete from @bound/core for writes that must sync.",
 	);
 	console.error(
-		"Or use '// outbox-routed' if explicit createChangeLogEntry follows in the transaction.",
+		"For an intentional changelog-exempt bypass, route the write through dangerouslyExecuteRawWrite(db, { sql, params, reason }).",
+	);
+	console.error(
+		"Or use '// outbox-routed' if an explicit createChangeLogEntry follows in the same transaction.",
 	);
 	process.exit(1);
 }

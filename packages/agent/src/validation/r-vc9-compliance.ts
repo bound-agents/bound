@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { listMemoryValues, listSummarizesChildrenKeyValue } from "@bound/core";
 
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}(:\d{2}(:\d{2}(\.\d+)?)?Z?)?)?$/;
 const MIN_TOKEN_LENGTH = 3;
@@ -53,9 +54,7 @@ export function extractSlugTokens(key: string): string[] {
  * distinct entries containing the token.
  */
 export function buildTokenFrequencyTable(db: Database): Map<string, number> {
-	const rows = db.prepare("SELECT value FROM semantic_memory WHERE deleted = 0").all() as Array<{
-		value: string;
-	}>;
+	const rows = listMemoryValues(db);
 	const freq = new Map<string, number>();
 	for (const row of rows) {
 		const seenInThisEntry = new Set<string>();
@@ -118,14 +117,7 @@ export interface Vc9bCheckResult {
 
 export function checkR_VC9b(db: Database, parentKey: string, parentValue: string): Vc9bCheckResult {
 	const lowerGloss = parentValue.toLowerCase();
-	const children = db
-		.prepare(
-			`SELECT m.key AS key, m.value AS value
-             FROM memory_edges e
-             JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-             WHERE e.relation = 'summarizes' AND e.deleted = 0 AND e.source_key = ?`,
-		)
-		.all(parentKey) as Array<{ key: string; value: string }>;
+	const children = listSummarizesChildrenKeyValue(db, parentKey);
 	const failing: string[] = [];
 	let satisfied = 0;
 	let evaluable = 0;

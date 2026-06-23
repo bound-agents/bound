@@ -5,8 +5,16 @@ import {
 	acknowledgeClientToolCall,
 	enqueueToolResult,
 	expireClientToolCallsForConnection,
+	findClientSessionIdById,
+	findFileByIdActive,
+	findLiveClientSessionIdById,
+	findLiveThreadById,
+	findLiveThreadIdById,
+	findMessageById,
+	findUserDisplayNameById,
 	getPendingClientToolCalls,
 	insertRow,
+	listClientSessionIdsByConnectionId,
 	softDelete,
 	updateClaimedBy,
 	updateRow,
@@ -504,9 +512,7 @@ export function createWebSocketHandler(
 		if (!db || !siteId) return;
 		const id = `${conn.connectionId}::${threadId}`;
 		const now = new Date().toISOString();
-		const existing = db.query("SELECT id FROM client_sessions WHERE id = ?").get(id) as {
-			id: string;
-		} | null;
+		const existing = findClientSessionIdById(db, id);
 		if (existing) {
 			updateRow(db, "client_sessions", id, { site_id: siteId, deleted: 0 }, siteId);
 			return;
@@ -531,9 +537,7 @@ export function createWebSocketHandler(
 	function clearClientSession(conn: ClientConnection, threadId: string): void {
 		if (!db || !siteId) return;
 		const id = `${conn.connectionId}::${threadId}`;
-		const existing = db
-			.query("SELECT id FROM client_sessions WHERE id = ? AND deleted = 0")
-			.get(id) as { id: string } | null;
+		const existing = findLiveClientSessionIdById(db, id);
 		if (existing) {
 			softDelete(db, "client_sessions", id, siteId);
 		}
@@ -542,9 +546,7 @@ export function createWebSocketHandler(
 	/** Soft-delete all client_sessions rows held by a connection (on disconnect). */
 	function clearAllClientSessions(conn: ClientConnection): void {
 		if (!db || !siteId) return;
-		const rows = db
-			.query("SELECT id FROM client_sessions WHERE connection_id = ? AND deleted = 0")
-			.all(conn.connectionId) as Array<{ id: string }>;
+		const rows = listClientSessionIdsByConnectionId(db, conn.connectionId);
 		for (const { id } of rows) {
 			softDelete(db, "client_sessions", id, siteId);
 		}
@@ -610,9 +612,7 @@ export function createWebSocketHandler(
 			}
 
 			// Verify thread exists
-			const thread = db
-				.query("SELECT * FROM threads WHERE id = ? AND deleted = 0")
-				.get(msg.thread_id);
+			const thread = findLiveThreadById(db, msg.thread_id);
 			if (!thread) {
 				conn.ws.send(
 					JSON.stringify({
@@ -632,10 +632,7 @@ export function createWebSocketHandler(
 			const fileAttachmentText = (): string[] => {
 				const lines: string[] = [];
 				for (const fileId of fileIds) {
-					const file = db.query("SELECT * FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
-						path: string;
-						size_bytes: number;
-					} | null;
+					const file = findFileByIdActive(db, fileId);
 					if (!file) continue;
 					const name = file.path.split("/").pop() ?? file.path;
 					lines.push(formatFileAttachment(name, file.path, file.size_bytes));
@@ -726,11 +723,7 @@ export function createWebSocketHandler(
 			//     <user-message> envelope can attribute the message (useful in
 			//     multi-user threads). The display name is frozen at send time.
 			const senderName = defaultUserId
-				? (
-						db
-							.query("SELECT display_name FROM users WHERE id = ? AND deleted = 0")
-							.get(defaultUserId) as { display_name: string } | null
-					)?.display_name
+				? findUserDisplayNameById(db, defaultUserId)?.display_name
 				: undefined;
 			const metadataBag: Record<string, unknown> = {};
 			if (typeof msg.tz_offset === "number") metadataBag.tz_offset = msg.tz_offset;
@@ -774,7 +767,7 @@ export function createWebSocketHandler(
 			}
 
 			// Retrieve the persisted message
-			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
+			const message = findMessageById(db, messageId) as Message;
 
 			// Emit message:created event to trigger agent loop
 			eventBus.emit("message:created", {
@@ -838,9 +831,7 @@ export function createWebSocketHandler(
 				return;
 			}
 
-			const thread = db
-				.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
-				.get(msg.thread_id);
+			const thread = findLiveThreadIdById(db, msg.thread_id);
 			if (!thread) {
 				conn.ws.send(
 					JSON.stringify({
@@ -1061,7 +1052,7 @@ export function createWebSocketHandler(
 			);
 
 			// Emit an event to trigger handleThread (re-emit the message so subscribed clients see it)
-			const message = db.query("SELECT * FROM messages WHERE id = ?").get(messageId) as Message;
+			const message = findMessageById(db, messageId) as Message;
 			eventBus.emit("message:created", {
 				message,
 				thread_id: msg.thread_id,
