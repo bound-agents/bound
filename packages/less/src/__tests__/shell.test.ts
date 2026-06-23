@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { resolveShell } from "../tools/shell";
+import { isShellToolName, resolveShell } from "../tools/shell";
 
 describe("resolveShell — auto-detect (no override)", () => {
 	it("defaults to POSIX sh on linux", () => {
@@ -114,5 +114,28 @@ describe("resolveShell — explicit override", () => {
 
 	it("throws a fatal error when a bare override is not found on PATH", () => {
 		expect(() => resolveShell("notashell", { which: () => null })).toThrow(/configured shell/i);
+	});
+});
+
+describe("isShellToolName", () => {
+	it("recognizes every name classifyShell can mint", () => {
+		expect(isShellToolName("boundless_bash")).toBe(true);
+		expect(isShellToolName("boundless_pwsh")).toBe(true);
+		expect(isShellToolName("boundless_cmd")).toBe(true);
+	});
+
+	it("recognizes the defensively-accepted POSIX aliases", () => {
+		expect(isShellToolName("boundless_sh")).toBe(true);
+		expect(isShellToolName("boundless_zsh")).toBe(true);
+		expect(isShellToolName("boundless_powershell")).toBe(true);
+	});
+
+	it("rejects non-shell boundless tools and unrelated names", () => {
+		expect(isShellToolName("boundless_read")).toBe(false);
+		expect(isShellToolName("boundless_write")).toBe(false);
+		expect(isShellToolName("boundless_mcp_github")).toBe(false);
+		expect(isShellToolName("bms_bash")).toBe(false);
+		expect(isShellToolName("bash")).toBe(false);
+		expect(isShellToolName("boundless_bash_extra")).toBe(false);
 	});
 });

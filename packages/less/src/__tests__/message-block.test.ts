@@ -176,6 +176,46 @@ describe("MessageBlock", () => {
 			// Should show the command argument in some readable way
 			expect(frame).toContain("echo hello");
 		});
+
+		it("summarizes non-bash shell commands (pwsh/cmd) as a bare command line", async () => {
+			// resolveShell mints boundless_pwsh / boundless_cmd for PowerShell and
+			// cmd.exe; the summary must render the command line directly, not fall
+			// through to the generic `command=...` key=value branch.
+			const content = JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_pwsh01",
+					name: "boundless_pwsh",
+					input: { command: "Get-ChildItem -Recurse" },
+				},
+				{
+					type: "tool_use",
+					id: "tooluse_cmd001",
+					name: "boundless_cmd",
+					input: { command: "dir /s" },
+				},
+			]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-1",
+						role: "tool_call",
+						content,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 120,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("Get-ChildItem -Recurse");
+			expect(frame).toContain("dir /s");
+			// Not the generic key=value fallback.
+			expect(frame).not.toContain("command=");
+		});
 	});
 
 	describe("alert rendering", () => {
