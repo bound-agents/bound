@@ -1,5 +1,7 @@
 # Bound
 
+**Warning: Bound is still very experimental and has approximately negative stability guarantees. You are free to play with it, but I do not currently advise relying on it unless you want to fork it for your own needs. I would like for it to have positive stability guarantees and be something people can rely on eventually. -Kara**
+
 Bound is a personal agent that maintains state across multiple hosts. Messages, memory, files, and tasks replicate between a laptop and a cloud VM over an encrypted sync protocol, so every interface sees the same agent with the same context. Model selection is cluster-wide — inference is routed to the right backend and host automatically, with fallback. The scheduler runs tasks on cron schedules, time delays, or events; tasks can depend on one another and, in a cluster, run on exactly one host. The agent accumulates a knowledge graph across sessions that surfaces in context automatically.
 
 ![](docs/assets/promo_chat.png)
