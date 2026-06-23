@@ -926,3 +926,13 @@ export interface CommandRegistryEntry {
 	readonly name: string;
 	readonly description: string;
 }
+
+/**
+ * Name of the sandbox shell tool — the one that runs commands inside the
+ * database-backed VFS and dispatches MCP server commands. Single source of
+ * truth so the agent-factory registration and the orientation prose that names
+ * it (see `buildOrientationBlock` in `packages/agent`) never drift apart. NOT
+ * `boundless_bash`, which a boundless session surfaces separately and which
+ * targets the host's real working directory rather than the sandbox.
+ */
+export const SANDBOX_BASH_TOOL_NAME = "bms_bash";

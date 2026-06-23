@@ -6,7 +6,7 @@
 import type { Database } from "bun:sqlite";
 import { getSyncedTableSchemas } from "@bound/core";
 import type { CommandRegistryEntry } from "@bound/shared";
-import { compareBytewise } from "@bound/shared";
+import { SANDBOX_BASH_TOOL_NAME, compareBytewise } from "@bound/shared";
 import { resolveHubSiteId } from "../topology.js";
 
 export const ENVIRONMENT_PARAGRAPH =
@@ -105,7 +105,7 @@ function buildOrientationBlock(
 			"### Additional MCP Commands",
 			commandList,
 			"",
-			"These are MCP server commands dispatched through the bash tool. Run `<server-name> --help` for details.",
+			`These are MCP server commands dispatched through the \`${SANDBOX_BASH_TOOL_NAME}\` sandbox shell — NOT \`boundless_bash\`, which a boundless session surfaces separately and which targets the host's real working directory. Run \`<server-name> --help\` for details.`,
 			"",
 		);
 	}
@@ -233,6 +233,9 @@ function buildHostCapabilitiesBlock(db: Database, siteId: string | undefined): s
 	);
 	if (servers.length > 0) {
 		lines.push(`MCP servers: ${servers.join(", ")}`);
+		lines.push(
+			`  ↳ Reach these as commands through the \`${SANDBOX_BASH_TOOL_NAME}\` sandbox shell (e.g. \`${servers[0]} --help\`) — see the Additional MCP Commands section. \`boundless_bash\`, when present, runs on the host disk and cannot reach them.`,
+		);
 	}
 	if (platforms.length > 0) {
 		lines.push(`Platform connectors: ${platforms.join(", ")}`);
