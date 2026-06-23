@@ -388,6 +388,74 @@ describe("buildStaticSystemParts — property tests", () => {
 		}
 	});
 
+	it("Y9c: MCP servers line carries the bms_bash access note (not boundless_bash)", () => {
+		const db = freshDb();
+		seedHost(db, "site-X", {
+			mcpServers: JSON.stringify(["github", "atproto", "pdf"]),
+		});
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		// The access note names the sandbox shell explicitly so the two shells
+		// available on a boundless session are not confused.
+		if (!orientation.includes("bms_bash")) {
+			throw new Error("MCP servers access note should name bms_bash");
+		}
+		if (!orientation.includes("boundless_bash")) {
+			throw new Error("MCP servers access note should contrast with boundless_bash");
+		}
+		// The example uses the first (bytewise-sorted) server name.
+		if (!orientation.includes("atproto --help")) {
+			throw new Error("access note should show a concrete <server> --help example");
+		}
+	});
+
+	it("Y9d: no MCP servers → no access note (no dangling bms_bash line)", () => {
+		const db = freshDb();
+		seedHost(db, "site-X", { mcpServers: "[]" });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		// The access note is gated on the servers line; absent servers, the
+		// Host Capabilities block must not mention the sandbox shell.
+		const capStart = orientation.indexOf("### Host Capabilities");
+		const capBlock = orientation.slice(capStart);
+		if (capBlock.includes("bms_bash")) {
+			throw new Error("access note should be omitted when there are no MCP servers");
+		}
+	});
+
+	it("Y9e: Additional MCP Commands footer names bms_bash, not the generic 'bash tool'", () => {
+		const db = freshDb();
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [{ name: "github", description: "GitHub MCP server" }],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("`bms_bash` sandbox shell")) {
+			throw new Error("MCP commands footer should name the bms_bash sandbox shell");
+		}
+		if (orientation.includes("dispatched through the bash tool")) {
+			throw new Error("the generic 'bash tool' phrasing should be gone");
+		}
+	});
+
 	it("Y10: backendless host (models=[]) renders the explicit routes-to-peers line", () => {
 		const db = freshDb();
 		seedHost(db, "site-hub", { models: "[]", mcpServers: "[]", platforms: "[]" });
