@@ -1101,6 +1101,40 @@ describe("WsTransport", () => {
 				.get("relay-1") as Record<string, unknown> | null;
 			expect(outboxEntry?.delivered).toBe(1);
 		});
+
+		it("hub-side relay ack only marks entries targeted to the acking spoke", () => {
+			const hubTransport = new WsTransport({
+				db,
+				siteId: "hub",
+				eventBus,
+				isHub: true,
+			});
+			const now = new Date().toISOString();
+			const expiresAt = new Date(Date.now() + 60000).toISOString();
+
+			db.run(
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+				["relay-to-a", "hub", "spoke-a", "stream_chunk", "{}", now, expiresAt],
+			);
+			db.run(
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+				["relay-to-b", "hub", "spoke-b", "stream_chunk", "{}", now, expiresAt],
+			);
+
+			hubTransport.handleRelayAck("spoke-a", { ids: ["relay-to-a", "relay-to-b"] });
+
+			const toA = db.query("SELECT delivered FROM relay_outbox WHERE id = ?").get("relay-to-a") as {
+				delivered: number;
+			} | null;
+			const toB = db.query("SELECT delivered FROM relay_outbox WHERE id = ?").get("relay-to-b") as {
+				delivered: number;
+			} | null;
+
+			expect(toA?.delivered).toBe(1);
+			expect(toB?.delivered).toBe(0);
+		});
 	});
 });
 
