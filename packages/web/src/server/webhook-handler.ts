@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertInbox } from "@bound/core";
+import { findWebhookByName, insertInbox } from "@bound/core";
 import type { TypedEventEmitter, Webhook } from "@bound/shared";
 import { validateWebhookSignature } from "./webhook-hmac.js";
+
+export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 
 export interface WebhookHandlerDeps {
 	db: Database;
@@ -32,6 +34,50 @@ function extractDeliveryId(headers: Headers): string | null {
 	return null;
 }
 
+async function readRequestBodyLimited(request: Request): Promise<
+	| {
+			ok: true;
+			body: Buffer;
+	  }
+	| {
+			ok: false;
+			status: 400 | 413;
+	  }
+> {
+	const contentLength = request.headers.get("content-length");
+	if (contentLength && /^\d+$/.test(contentLength)) {
+		const declaredLength = Number.parseInt(contentLength, 10);
+		if (declaredLength > MAX_WEBHOOK_BODY_BYTES) {
+			return { ok: false, status: 413 };
+		}
+	}
+
+	if (!request.body) {
+		return { ok: true, body: Buffer.alloc(0) };
+	}
+
+	const reader = request.body.getReader();
+	const chunks: Buffer[] = [];
+	let total = 0;
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > MAX_WEBHOOK_BODY_BYTES) {
+				await reader.cancel();
+				return { ok: false, status: 413 };
+			}
+			chunks.push(Buffer.from(value));
+		}
+	} catch {
+		return { ok: false, status: 400 };
+	}
+
+	return { ok: true, body: Buffer.concat(chunks, total) };
+}
+
 /**
  * Handles incoming webhook POST requests.
  * Validates signature, writes relay_inbox entry, emits events for scheduler triggering,
@@ -47,27 +93,24 @@ export async function handleWebhookRequest(
 		return new Response("Not found", { status: 404 });
 	}
 
-	// Read raw body bytes (must happen before any other processing)
-	let rawBody: Buffer;
-	try {
-		const arrayBuffer = await request.arrayBuffer();
-		rawBody = Buffer.from(arrayBuffer);
-	} catch {
-		return new Response("", { status: 400 });
+	// Look up webhook in database
+	const webhook = findWebhookByName(deps.db, name) as Webhook | null;
+
+	if (!webhook) {
+		return new Response("", { status: 404 });
 	}
+
+	// Read raw body bytes after webhook lookup so unknown names cannot force
+	// memory work, and cap streaming reads before HMAC validation.
+	const readResult = await readRequestBodyLimited(request);
+	if (!readResult.ok) {
+		return new Response("", { status: readResult.status });
+	}
+	const rawBody = readResult.body;
 
 	// Reject empty body
 	if (rawBody.length === 0) {
 		return new Response("", { status: 400 });
-	}
-
-	// Look up webhook in database
-	const webhook = deps.db
-		.prepare("SELECT * FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as Webhook | null;
-
-	if (!webhook) {
-		return new Response("", { status: 404 });
 	}
 
 	// Validate signature
