@@ -160,7 +160,10 @@ export async function handleWebhookRequest(
 		trace_context: null,
 	};
 
-	insertInbox(deps.db, inboxEntry);
+	const inserted = insertInbox(deps.db, inboxEntry);
+	if (!inserted) {
+		return new Response("", { status: 202 });
+	}
 
 	// Emit connector:event to trigger scheduler
 	if (deps.eventBus) {
