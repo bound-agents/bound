@@ -98,6 +98,15 @@ export function markDelivered(db: Database, ids: string[]): void {
 	db.run(`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders})`, ids);
 }
 
+export function markDeliveredForTarget(db: Database, ids: string[], targetSiteId: string): void {
+	if (ids.length === 0) return;
+	const placeholders = ids.map(() => "?").join(", ");
+	db.run(
+		`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders}) AND target_site_id = ?`,
+		[...ids, targetSiteId],
+	);
+}
+
 export function readUnprocessed(db: Database): RelayInboxEntry[] {
 	return db
 		.query("SELECT * FROM relay_inbox WHERE processed = 0 ORDER BY received_at ASC")

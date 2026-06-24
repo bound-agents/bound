@@ -74,6 +74,7 @@ export {
 	writeOutbox,
 	readUndelivered,
 	markDelivered,
+	markDeliveredForTarget,
 	readUnprocessed,
 	insertInbox,
 	markProcessed,

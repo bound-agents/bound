@@ -8,6 +8,7 @@ import {
 	hashRow,
 	insertInbox,
 	markDelivered,
+	markDeliveredForTarget,
 	mergeDiffEntries,
 	mergeDiffPks,
 	readUndelivered,
@@ -950,7 +951,11 @@ export class WsTransport {
 			return;
 		}
 
-		markDelivered(this.config.db, payload.ids);
+		if (this.config.isHub) {
+			markDeliveredForTarget(this.config.db, payload.ids, sourceSiteId);
+		} else {
+			markDelivered(this.config.db, payload.ids);
+		}
 
 		this.config.logger?.debug("WsTransport relay_ack received", {
 			sourceSiteId,
