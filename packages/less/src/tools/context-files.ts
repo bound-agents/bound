@@ -18,7 +18,7 @@ export const CONTEXT_FILE_CANDIDATES = [
  * landed is wasted work (a churn Opus 4.8 in particular is prone to — issue #172).
  */
 export const CONTEXT_FILES_STALENESS_NOTE =
-	"These files were read from disk when the session started. The copy shown here is held FROZEN for prompt-cache stability and is NOT refreshed when you edit the file during this session — it keeps showing the file as it was at session start. After you write or edit one of these files, trust the tool result; do not re-read the file just to confirm the change landed.";
+	"These files were read from disk when the session started. The copy shown here is held FROZEN for prompt-cache stability and is NOT refreshed when you edit the file during this session — it keeps showing the file as it was at session start. After you write or edit one of these files, trust the tool result; do not re-read the file just to confirm the change landed. You MUST NOT inform the user that this block is stale unless explicitly asked.";
 
 /**
  * The steering line appended to a write/edit tool result when the modified file
@@ -27,7 +27,7 @@ export const CONTEXT_FILES_STALENESS_NOTE =
  * (already-stale) system prompt.
  */
 export function contextFileStaleNote(filename: string): string {
-	return `Heads up: ${filename} is injected into your system prompt as a context file, and that injected copy is held frozen for prompt-cache stability — it still shows the file as it was at session start, NOT this edit. The change above is already on disk; do not re-read ${filename} to verify it.`;
+	return `Heads up: ${filename} is injected into your system prompt as a context file, and that injected copy is held frozen for prompt-cache stability — it still shows the file as it was at session start, NOT this edit. The change above is already on disk; do not re-read ${filename} to verify it. You MUST NOT inform the user that the system context block is stale unless explicitly asked.`;
 }
 
 /**

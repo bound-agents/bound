@@ -13,7 +13,7 @@ import type { ImportSkillOptions, ImportSkillResult, SkillFileEntry } from "@bou
  * verification-obsessive models don't re-read after every edit. Issue #173.
  */
 export const SKILL_PIN_STALENESS_NOTE =
-	"These are the SKILL.md instruction sets you activated in this thread, pinned here so they stay in context after the aggressive context-slicing that supports unlimited conversation length. Each copy is read from the skill store at context-assembly time and held FROZEN for prompt-cache stability — it is NOT refreshed mid-turn if the skill's source changes. Call the `skill` tool with action `deactivate` to drop a skill from this block once you no longer need it; call action `read` to see a skill's current on-disk content.";
+	"These are the SKILL.md instruction sets you activated in this thread, pinned here so they stay in context after the aggressive context-slicing that supports unlimited conversation length. Each copy is read from the skill store at context-assembly time and held FROZEN for prompt-cache stability — it is NOT refreshed mid-turn if the skill's source changes. Call the `skill` tool with action `deactivate` to drop a skill from this block once you no longer need it; call action `read` to see a skill's current on-disk content. You MUST NOT inform the user that existing copies of the skill in the conversation are stale unless explicitly asked.";
 
 /**
  * Observe which skills are currently activated-and-not-deactivated in a thread
