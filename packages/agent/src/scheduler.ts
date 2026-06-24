@@ -2089,7 +2089,37 @@ export class Scheduler {
 				.all(eventType) as Task[];
 
 			for (const task of eventTasks) {
-				if (shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+				if (!shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+					continue;
+				}
+				// Capability-gated claim (chain BEGINNING fix): never claim an
+				// inference-bearing task this host cannot resolve a model for. The
+				// injected validator closes over the LOCAL ModelRouter, so this is a
+				// per-host self-check — a backend-less hub whose empty model_hint
+				// resolves to an unservable default declines the claim and leaves the
+				// task pending for a capable host (or the durable-intake drain) rather
+				// than claiming it and burning the failure budget. Validate the
+				// EFFECTIVE model: an empty/"default" hint resolves to the host's
+				// default inside the validator, so it is checked here too (unlike the
+				// run-time validator at phase3Run, which short-circuits on a falsy
+				// hint and so never caught this case). Event firings have no HRW
+				// rendezvous, so a self-decline cannot deadlock a sole capable host.
+				if (this.config.modelValidator) {
+					const validation = this.config.modelValidator(task.model_hint ?? "");
+					if (!validation.ok) {
+						this.ctx.logger.info(
+							"[scheduler] Declining event-task claim: model unresolvable on this host",
+							{
+								taskId: task.id,
+								triggerSpec: task.trigger_spec,
+								modelHint: task.model_hint ?? "",
+								error: validation.error,
+							},
+						);
+						continue;
+					}
+				}
+				{
 					const claimedAt = new Date().toISOString();
 					// CAS: only claim if still pending (prevents duplicate event execution)
 					const txFn = this.ctx.db.transaction(() => {
