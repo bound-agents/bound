@@ -10,7 +10,13 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 /**
  * Minimal harness: just a TextInput that displays submitted value.
  */
-function TestHarness({ disabled = false }: { disabled?: boolean }) {
+function TestHarness({
+	disabled = false,
+	hasFocus = true,
+}: {
+	disabled?: boolean;
+	hasFocus?: boolean;
+}) {
 	const [submitted, setSubmitted] = useState<string | null>(null);
 
 	return React.createElement(
@@ -20,6 +26,7 @@ function TestHarness({ disabled = false }: { disabled?: boolean }) {
 			onSubmit: (val: string) => setSubmitted(val),
 			placeholder: "type here",
 			disabled,
+			hasFocus,
 		}),
 		submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
 	);
@@ -42,6 +49,38 @@ describe("TextInput", () => {
 
 		const frame = lastFrame();
 		expect(frame).toContain("hi");
+	});
+
+	it("does not capture keystrokes when it lacks focus (modal steals focus)", async () => {
+		// A dismissable banner mounted above the input closes on 'x'. ink
+		// broadcasts the keypress to every active handler, so without the
+		// hasFocus gate the 'x' would also land as a character here.
+		const { lastFrame, stdin } = render(React.createElement(TestHarness, { hasFocus: false }));
+		await tick();
+
+		stdin.write("x");
+		await tick();
+
+		const frame = lastFrame();
+		expect(frame).not.toContain("x");
+	});
+
+	it("resumes capturing keystrokes once focus returns", async () => {
+		const { lastFrame, stdin, rerender } = render(
+			React.createElement(TestHarness, { hasFocus: false }),
+		);
+		await tick();
+
+		stdin.write("a");
+		await tick();
+		expect(lastFrame()).not.toContain("a");
+
+		rerender(React.createElement(TestHarness, { hasFocus: true }));
+		await tick();
+
+		stdin.write("b");
+		await tick();
+		expect(lastFrame()).toContain("b");
 	});
 
 	it("does not append character when ctrl key is held (Ctrl-C)", async () => {

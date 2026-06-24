@@ -291,6 +291,14 @@ export function ChatView({
 				? "red"
 				: "yellow";
 
+	// A dismissable banner captures 'x' to close (see Banner). While one is
+	// mounted it must steal focus from the chat input — ink broadcasts every
+	// keypress to all active handlers, so without this the dismiss 'x' lands in
+	// the banner AND as a literal character in the input. Both the connection/
+	// info/error banner and the slash-command error banner are dismissable.
+	const overlayCapturingInput =
+		(bannerMessage != null && bannerType != null) || commandError != null;
+
 	/**
 	 * Parse and handle slash commands.
 	 */
@@ -466,6 +474,7 @@ export function ChatView({
 								disabled={connectionState !== "connected"}
 								columns={inputColumns}
 								controllerRef={chatInputRef}
+								hasFocus={!overlayCapturingInput}
 							/>
 						</Box>
 					</Box>

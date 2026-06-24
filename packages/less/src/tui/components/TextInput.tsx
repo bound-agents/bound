@@ -32,6 +32,14 @@ export interface TextInputProps {
 	 *  chat view is suppressed (a picker/modal is open), so a null ref naturally
 	 *  means "input not focused" and the single-press clear becomes a no-op. */
 	controllerRef?: React.MutableRefObject<ChatInputController | null>;
+	/** Whether the input currently holds keyboard focus. Defaults to true. Set
+	 *  false while a key-capturing overlay is mounted above the input (e.g. a
+	 *  dismissable banner that closes on 'x') so the overlay steals focus —
+	 *  otherwise ink delivers the keypress to BOTH handlers and the dismiss key
+	 *  also lands as a character in the input. Suppresses both keystroke capture
+	 *  and the imperative clear; distinct from `disabled` (connection state),
+	 *  which also dims the rendered value. */
+	hasFocus?: boolean;
 }
 
 /**
@@ -228,6 +236,7 @@ export function TextInput({
 	disabled = false,
 	columns,
 	controllerRef,
+	hasFocus = true,
 }: TextInputProps): React.ReactElement {
 	// Combine value + cursor position in a single state atom so that
 	// rapid-fire keystrokes (which all close over the same render's state)
@@ -248,13 +257,16 @@ export function TextInput({
 	valueRef.current = value;
 	const disabledRef = useRef(disabled);
 	disabledRef.current = disabled;
+	const hasFocusRef = useRef(hasFocus);
+	hasFocusRef.current = hasFocus;
 
 	// Single-press Ctrl-C clear. Returns true only when it cleared non-empty
-	// content on a focused (enabled) input; the caller treats that as the press
-	// being consumed. Stable identity (no deps) so the registration effect below
-	// runs once per mount.
+	// content on a focused, enabled input; the caller treats that as the press
+	// being consumed. A modal capturing input above us (hasFocus=false) makes
+	// this a no-op so the input never edits itself while it lacks focus. Stable
+	// identity (no deps) so the registration effect below runs once per mount.
 	const clear = useCallback((): boolean => {
-		if (disabledRef.current) return false;
+		if (disabledRef.current || !hasFocusRef.current) return false;
 		if (valueRef.current.length === 0) return false;
 		setState({ value: "", pos: 0 });
 		return true;
@@ -421,7 +433,7 @@ export function TextInput({
 				}));
 			}
 		},
-		{ isActive: !disabled },
+		{ isActive: !disabled && hasFocus },
 	);
 
 	// Render the value with the cursor drawn ON TOP OF the grapheme cluster
