@@ -1,4 +1,4 @@
-import { updateRow } from "@bound/core";
+import { findTaskInfraBinding, updateRow } from "@bound/core";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
@@ -47,11 +47,25 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 						return `No tasks found matching payload: ${payloadMatch}`;
 					}
 
-					for (const task of tasks) {
+					// Skip tasks a live webhook / connector binding still points at — same
+					// foreign-key guard as the single-task path, applied silently here the
+					// way heartbeats are excluded above.
+					const cancellable = tasks.filter((t) => !findTaskInfraBinding(ctx.db, t.id));
+					const skipped = tasks.length - cancellable.length;
+
+					if (cancellable.length === 0) {
+						return `No cancellable tasks matching payload: ${payloadMatch} (${skipped} skipped — bound to a live webhook or connector handle)`;
+					}
+
+					for (const task of cancellable) {
 						updateRow(ctx.db, "tasks", task.id, { status: "cancelled" }, ctx.siteId);
 					}
 
-					return `Cancelled ${tasks.length} tasks matching payload: ${payloadMatch}`;
+					const suffix =
+						skipped > 0
+							? ` (${skipped} skipped — bound to a live webhook or connector handle)`
+							: "";
+					return `Cancelled ${cancellable.length} tasks matching payload: ${payloadMatch}${suffix}`;
 				}
 
 				if (!taskId) {
@@ -72,6 +86,24 @@ export function createCancelTool(ctx: ToolContext): RegisteredTool {
 				// just leaves the task in a wedged state until the healer fires.
 				if (existing.type === "heartbeat") {
 					return "Error: Cannot cancel heartbeat tasks (uncancellable by design)";
+				}
+
+				// Webhook handlers and connector subscriptions own a backing event
+				// task (webhooks.task_id / connector_handles.task_id). Those tasks
+				// share type "event" with ordinary --on tasks, so the guard keys off
+				// the live binding rather than the type — the application-level
+				// equivalent of a foreign-key constraint (#20: synced tables carry no
+				// FK clauses). Cancelling the task out from under a live binding
+				// orphans it and silently darks the event stream; the sanctioned
+				// teardown (webhook deregister / connector detach) soft-deletes the
+				// binding first, which releases the task for normal cancellation.
+				const binding = findTaskInfraBinding(ctx.db, taskId);
+				if (binding) {
+					const release =
+						binding.kind === "webhook"
+							? "delete the webhook to retire its task"
+							: "detach the connector handle to retire its task";
+					return `Error: Cannot cancel task ${taskId}: it backs ${binding.kind} '${binding.label}' (${release}; uncancellable while the binding is live)`;
 				}
 
 				// Update task status to cancelled

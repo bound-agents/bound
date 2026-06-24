@@ -41,6 +41,7 @@ export * from "./queries/attached-session-hosts";
 export * from "./queries/client-sessions-with-host";
 export * from "./queries/evictable-running-tasks";
 export * from "./queries/file-modification-notices";
+export * from "./queries/find-task-infra-binding";
 export * from "./queries/get-webhook-with-task";
 export * from "./queries/leader-host-liveness";
 export * from "./queries/memory-graph-neighbors";
