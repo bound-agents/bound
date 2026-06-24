@@ -644,6 +644,65 @@ describe("handleWebhookRequest", () => {
 		expect(entry.idempotency_key).toBe(`github-${deliveryId}`);
 	});
 
+	test("security: duplicate delivery does not emit a second scheduler event", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "test_webhook";
+		const taskId = randomUUID();
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "github",
+				description: "Test webhook",
+				task_id: taskId,
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		let eventCount = 0;
+		eventBus.on("connector:event", () => {
+			eventCount++;
+		});
+
+		const body = Buffer.from('{"action":"opened"}');
+		const expectedHmac = createHmac("sha256", webhookSecret).update(body).digest("hex");
+		const deliveryId = "12345-67890-unique";
+		const makeRequest = () =>
+			new Request("http://localhost:3000/webhook/test_webhook", {
+				method: "POST",
+				headers: {
+					"X-Hub-Signature-256": `sha256=${expectedHmac}`,
+					"X-GitHub-Delivery": deliveryId,
+					"Content-Type": "application/json",
+				},
+				body,
+			});
+
+		const response1 = await handleWebhookRequest(makeRequest(), webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+		const response2 = await handleWebhookRequest(makeRequest(), webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+
+		expect(response1.status).toBe(202);
+		expect(response2.status).toBe(202);
+		expect(eventCount).toBe(1);
+	});
+
 	test("AC3.4: Request without delivery header gets unique ID (no dedup)", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
