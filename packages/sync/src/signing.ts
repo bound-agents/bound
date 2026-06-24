@@ -89,8 +89,17 @@ export async function verifyRequest(
 		});
 	}
 
-	// Check timestamp freshness
+	// Check timestamp freshness. Guard against an unparseable timestamp:
+	// new Date("garbage").getTime() is NaN, and `NaN > TOLERANCE` is false,
+	// which would skip the staleness branch and treat the request as fresh
+	// (fail-open). Treat non-finite remote time as stale so the gate fails closed.
 	const remoteTime = new Date(timestamp).getTime();
+	if (!Number.isFinite(remoteTime)) {
+		return err({
+			code: "stale_timestamp",
+			message: "X-Timestamp is not a valid date",
+		});
+	}
 	const localTime = new Date().getTime();
 	const timeDiff = Math.abs(localTime - remoteTime);
 	if (timeDiff > TIMESTAMP_TOLERANCE_MS) {
