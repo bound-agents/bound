@@ -8,10 +8,11 @@ import {
 	generateRemoteMCPProxyCommands,
 	updateHostMCPInfo,
 } from "@bound/agent";
+import type { MCPServerConfig, Tool } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import { type CommandContext, type CommandDefinition, createDefineCommands } from "@bound/sandbox";
-import { type McpConfig, formatError } from "@bound/shared";
+import { type Logger, type McpConfig, formatError } from "@bound/shared";
 
 export interface McpResult {
 	mcpClientsMap: Map<string, MCPClient>;
@@ -51,42 +52,84 @@ export function buildMcpToolDefinitions(serverNames: Set<string>): ToolDefinitio
 	return definitions;
 }
 
+type McpClientFactory = (serverCfg: MCPServerConfig) => MCPClient;
+
+interface ConnectedMcpServer {
+	serverCfg: MCPServerConfig;
+	client: MCPClient;
+	tools: Tool[];
+}
+
+interface FailedMcpServer {
+	serverCfg: MCPServerConfig;
+	error: unknown;
+}
+
+type McpConnectionAttempt = ({ ok: true } & ConnectedMcpServer) | ({ ok: false } & FailedMcpServer);
+
+async function connectMcpServer(
+	serverCfg: MCPServerConfig,
+	createClient: McpClientFactory,
+): Promise<McpConnectionAttempt> {
+	let client: MCPClient | null = null;
+	try {
+		client = createClient(serverCfg);
+		await client.connect();
+		const tools = await client.listTools();
+		return { ok: true, serverCfg, client, tools };
+	} catch (error) {
+		if (client?.isConnected()) {
+			try {
+				await client.disconnect();
+			} catch {
+				// Best-effort cleanup after a partial startup failure.
+			}
+		}
+		return { ok: false, serverCfg, error };
+	}
+}
+
+/**
+ * Connect configured MCP servers concurrently and return connected clients in config order.
+ */
+export async function connectConfiguredMcpServers(
+	serverConfigs: MCPServerConfig[],
+	logger: Logger,
+	createClient: McpClientFactory = (serverCfg) => new MCPClient(serverCfg),
+): Promise<Map<string, MCPClient>> {
+	const mcpClientsMap = new Map<string, MCPClient>();
+	const attempts = await Promise.all(
+		serverConfigs.map((serverCfg) => connectMcpServer(serverCfg, createClient)),
+	);
+
+	for (const attempt of attempts) {
+		if (attempt.ok) {
+			mcpClientsMap.set(attempt.serverCfg.name, attempt.client);
+			logger.info(
+				`[mcp] Connected to server: ${attempt.serverCfg.name} (${attempt.serverCfg.transport}), tools: ${attempt.tools.map((t) => t.name).join(", ") || "(none)"}`,
+			);
+		} else {
+			logger.warn(`[mcp] Failed to connect to ${attempt.serverCfg.name}`, {
+				error: formatError(attempt.error),
+			});
+		}
+	}
+
+	return mcpClientsMap;
+}
+
 export async function initMcp(appContext: AppContext): Promise<McpResult> {
 	// 8. MCP connections — build a named Map so the agent loop can look up clients by server name
 	appContext.logger.info("Initializing MCP servers...");
-	const mcpClientsMap = new Map<string, MCPClient>();
+	let mcpClientsMap = new Map<string, MCPClient>();
 	{
 		const mcpResult = appContext.optionalConfig.mcp;
 		if (mcpResult?.ok) {
-			const mcpConfig = mcpResult.value as {
-				servers: Array<{
-					name: string;
-					command?: string;
-					args?: string[];
-					url?: string;
-					transport: "stdio" | "http";
-					allow_tools?: string[];
-					confirm?: string[];
-				}>;
-			};
+			const mcpConfig = mcpResult.value as McpConfig;
 
 			appContext.logger.info(`[mcp] Found ${mcpConfig.servers.length} server(s) in config`);
 
-			for (const serverCfg of mcpConfig.servers) {
-				try {
-					const client = new MCPClient(serverCfg);
-					await client.connect();
-					mcpClientsMap.set(serverCfg.name, client);
-					const tools = await client.listTools();
-					appContext.logger.info(
-						`[mcp] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
-					);
-				} catch (error) {
-					appContext.logger.warn(`[mcp] Failed to connect to ${serverCfg.name}`, {
-						error: formatError(error),
-					});
-				}
-			}
+			mcpClientsMap = await connectConfiguredMcpServers(mcpConfig.servers, appContext.logger);
 		} else {
 			appContext.logger.info("[mcp] No MCP servers configured");
 		}
@@ -265,34 +308,36 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 		}
 	}
 
-	// Phase 2: Connect new and changed servers
-	for (const serverCfg of [...diff.added, ...diff.changed]) {
-		try {
-			const client = new MCPClient(serverCfg);
-			await client.connect();
-			mcpClientsMap.set(serverCfg.name, client);
-			mcpServerNames.add(serverCfg.name);
+	// Phase 2: Connect new and changed servers concurrently
+	const serversToConnect = [...diff.added, ...diff.changed];
+	const addedNames = new Set(diff.added.map((serverCfg) => serverCfg.name));
+	const connectionAttempts = await Promise.all(
+		serversToConnect.map((serverCfg) => connectMcpServer(serverCfg, (cfg) => new MCPClient(cfg))),
+	);
+	for (const attempt of connectionAttempts) {
+		if (attempt.ok) {
+			mcpClientsMap.set(attempt.serverCfg.name, attempt.client);
+			mcpServerNames.add(attempt.serverCfg.name);
 
-			const tools = await client.listTools();
 			logger.info(
-				`[mcp-reload] Connected to server: ${serverCfg.name} (${serverCfg.transport}), tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
+				`[mcp-reload] Connected to server: ${attempt.serverCfg.name} (${attempt.serverCfg.transport}), tools: ${attempt.tools.map((t) => t.name).join(", ") || "(none)"}`,
 			);
 
 			// Update confirm gates
-			if (serverCfg.confirm && serverCfg.confirm.length > 0) {
-				confirmGates.set(serverCfg.name, serverCfg.confirm);
+			if (attempt.serverCfg.confirm && attempt.serverCfg.confirm.length > 0) {
+				confirmGates.set(attempt.serverCfg.name, attempt.serverCfg.confirm);
 			}
 
-			if (diff.added.includes(serverCfg)) {
-				result.added.push(serverCfg.name);
+			if (addedNames.has(attempt.serverCfg.name)) {
+				result.added.push(attempt.serverCfg.name);
 			} else {
-				result.changed.push(serverCfg.name);
+				result.changed.push(attempt.serverCfg.name);
 			}
-		} catch (error) {
-			logger.warn(`[mcp-reload] Failed to connect to ${serverCfg.name}`, {
-				error: formatError(error),
+		} else {
+			logger.warn(`[mcp-reload] Failed to connect to ${attempt.serverCfg.name}`, {
+				error: formatError(attempt.error),
 			});
-			result.failed.push(serverCfg.name);
+			result.failed.push(attempt.serverCfg.name);
 		}
 	}
 
