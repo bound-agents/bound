@@ -263,10 +263,15 @@ export class RelayProcessor {
 				// for any webhook_intake left undrained by a dark handler — turning a
 				// silent multi-hour outage into something the operator can act on.
 				try {
-					const { advisoriesRaised } = reconcileStaleWebhookIntake(this.db, this.siteId);
-					if (advisoriesRaised > 0) {
-						this.logger.warn("[relay] Raised dead-letter advisory for undrained webhook intake", {
+					const { advisoriesRaised, deadLettered } = reconcileStaleWebhookIntake(
+						this.db,
+						this.siteId,
+						{ logger: this.logger },
+					);
+					if (advisoriesRaised > 0 || deadLettered > 0) {
+						this.logger.warn("[relay] Webhook intake reconcile acted", {
 							advisoriesRaised,
+							deadLettered,
 						});
 					}
 				} catch (error) {
