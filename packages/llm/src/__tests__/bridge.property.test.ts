@@ -50,7 +50,7 @@
 
 import { describe, it } from "bun:test";
 import fc from "fast-check";
-import { ANTHROPIC_ENVELOPE, toModelMessages } from "../ai-sdk-bridge";
+import { ANTHROPIC_ENVELOPE, toModelMessages } from "../bridge";
 import type { LLMMessage } from "../types";
 
 const safeText = fc.string({ minLength: 0, maxLength: 50 }).filter((s) => !/[\n\r]/.test(s));

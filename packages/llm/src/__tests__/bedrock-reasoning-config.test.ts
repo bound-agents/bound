@@ -21,7 +21,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { buildReasoningConfig } from "../bedrock-driver";
+import { buildReasoningConfig } from "../drivers/bedrock";
 
 describe("buildReasoningConfig — Anthropic models", () => {
 	it("keeps budgetTokens for enabled thinking on Anthropic", () => {

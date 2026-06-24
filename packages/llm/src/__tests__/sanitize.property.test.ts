@@ -28,9 +28,9 @@
  *      the strict regex within the length cap pass through
  *      unchanged. This is the "lossless on the wire" promise.
  *
- *   S6 sanitizeToolName never empty — for any non-empty input that
+ *   S6 sanitizeToolNameForEnvelope never empty — for any input that
  *      sanitizes to empty (e.g. `<<<`), output is `"unknown"` (the
- *      legacy fallback).
+ *      fallback).
  *
  *   S7 Bedrock-permissive envelope preserves dot/colon — the
  *      `[a-zA-Z0-9_.:-]` charset must survive the round-trip so
@@ -47,8 +47,7 @@ import {
 	MAX_TOOL_USE_ID_LENGTH,
 	sanitizeToolNameForEnvelope,
 	sanitizeToolUseId,
-} from "../ai-sdk-bridge";
-import { sanitizeToolName } from "../stream-utils";
+} from "../bridge";
 
 const ANTHROPIC_LEGAL = /^[a-zA-Z0-9_-]+$/;
 const BEDROCK_LEGAL = /^[a-zA-Z0-9_.:-]+$/;
@@ -109,17 +108,7 @@ describe("sanitizeToolUseId / sanitizeToolName — property tests", () => {
 		);
 	});
 
-	it("S6: sanitizeToolName never empty — pure-illegal input falls back to 'unknown'", () => {
-		fc.assert(
-			fc.property(fc.string({ maxLength: 200 }), (input) => {
-				const out = sanitizeToolName(input);
-				return out.length > 0;
-			}),
-			{ numRuns: 200 },
-		);
-	});
-
-	it("S6 (envelope variant): sanitizeToolNameForEnvelope never empty", () => {
+	it("S6: sanitizeToolNameForEnvelope never empty — pure-illegal input falls back to 'unknown'", () => {
 		fc.assert(
 			fc.property(fc.string({ maxLength: 200 }), (input) => {
 				const out = sanitizeToolNameForEnvelope(input, ANTHROPIC_ENVELOPE);

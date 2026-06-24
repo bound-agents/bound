@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Logger } from "@bound/shared";
-import { mapProviderStream, resolveProviderFetch, runProviderStream } from "../driver-utils";
+import { mapProviderStream, resolveProviderFetch, runProviderStream } from "../drivers/shared";
 import { LLMError, type StreamChunk } from "../types";
 
 async function collect(iterable: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {

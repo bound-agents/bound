@@ -18,13 +18,13 @@ export type {
 
 export { LLMError } from "./types";
 
-export { BedrockDriver } from "./bedrock-driver";
+export { BedrockDriver } from "./drivers/bedrock";
 
-export { BedrockMantleDriver } from "./bedrock-mantle-driver";
+export { BedrockMantleDriver } from "./drivers/bedrock-mantle";
 
-export { OpenAICompatibleDriver } from "./openai-compatible-driver";
+export { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 
-export { OpenCodeGoDriver } from "./opencode-go-driver";
+export { OpenCodeGoDriver } from "./drivers/opencode-go";
 
 export {
 	createModelRouter,
@@ -34,20 +34,11 @@ export {
 	type PoolEntry,
 } from "./model-router";
 
-export { withRetry, type RetryConfig } from "./retry";
 export {
 	markAwsCredentialCacheStale,
 	consumeAwsCredentialCacheBust,
 	resolveAwsCredentials,
-} from "./aws-credential-cache";
-export {
-	parseStreamLines,
-	extractTextFromBlocks,
-	SSE_DATA_PREFIX,
-	SSE_DONE_SENTINEL,
-} from "./stream-utils";
-
-export { wrapFetchError, checkHttpError } from "./error-utils";
+} from "./drivers/aws-credential-cache";
 
 export { sniffImageMediaType, correctMediaType } from "./image-utils";
 

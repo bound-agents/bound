@@ -40,7 +40,7 @@ import {
 	buildBedrockSystemMessage,
 	hasBedrockMessageCachePoint,
 	shouldEnableSystemCachePoint,
-} from "../bedrock-driver";
+} from "../drivers/bedrock";
 
 describe("Bedrock chat() — system anchor independence from message-level marker", () => {
 	// Regression sentry for the live thread `a191e01f-…` 2026-05-25 issue:

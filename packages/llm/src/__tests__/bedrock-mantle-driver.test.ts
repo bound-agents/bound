@@ -4,7 +4,7 @@ import {
 	buildMantleOpenAIOptions,
 	deriveMantleBaseUrl,
 	withEmptyRetry,
-} from "../bedrock-mantle-driver";
+} from "../drivers/bedrock-mantle";
 import type { StreamChunk } from "../types";
 
 const doneChunk = (outputTokens: number): StreamChunk => ({
