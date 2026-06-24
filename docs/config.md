@@ -19,7 +19,6 @@ this is where the per-field detail lives.
 | [`keyring.json`](#keyringjson) | No | Per-host identity keys (auto-populated) |
 | [`mcp.json`](#mcpjson) | No | MCP server connections |
 | [`overlay.json`](#overlayjson) | No | Codebase mount points |
-| [`cron_schedules.json`](#cron_schedulesjson) | — | Removed — use the `task` tool for recurring tasks |
 | [`memory.json`](#memoryjson) | No | Pinned-memory caps |
 
 ---
