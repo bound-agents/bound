@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
 	ActionBar,
 	Banner,
+	type ChatInputController,
 	MessageBlock,
 	SessionHeader,
 	Spinner,
@@ -183,6 +184,12 @@ export interface ChatViewProps {
 	onBannerDismiss: () => void;
 	onSendMessage: (message: string) => void;
 	/**
+	 * Ref into which the chat input publishes its {@link ChatInputController}
+	 * while focused. The cancel handler calls it so a single Ctrl-C clears a
+	 * non-empty input before arming the exit sequence.
+	 */
+	chatInputRef?: React.MutableRefObject<ChatInputController | null>;
+	/**
 	 * When false, the dynamic interactive area (input, status bar, action bar,
 	 * banners) is suppressed while `<Static>` remains mounted. This preserves
 	 * the Static high-water mark across view transitions (e.g. opening the
@@ -221,6 +228,7 @@ export function ChatView({
 	onClear,
 	onBannerDismiss,
 	onSendMessage,
+	chatInputRef,
 	active = true,
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
@@ -457,6 +465,7 @@ export function ChatView({
 								onSubmit={handleSubmit}
 								disabled={connectionState !== "connected"}
 								columns={inputColumns}
+								controllerRef={chatInputRef}
 							/>
 						</Box>
 					</Box>

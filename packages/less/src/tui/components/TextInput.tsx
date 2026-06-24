@@ -1,6 +1,22 @@
 import { Box, Text, useInput, useStdin } from "ink";
 import type React from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+/**
+ * Imperative handle a parent registers to drive the input from outside the
+ * keystroke path — currently just the single-press Ctrl-C clear (CC/Codex
+ * convention). The cancel state machine calls `clear()` before arming its
+ * exit sequence; see CancelStateMachine.onCtrlC.
+ */
+export interface ChatInputController {
+	/**
+	 * Clear the input iff it is focused (enabled) and non-empty. Returns true
+	 * when it actually cleared content — the caller treats a true return as the
+	 * press being consumed. Returns false on an empty or disabled input so the
+	 * caller's own handling (exit dance, turn cancel) proceeds unchanged.
+	 */
+	clear: () => boolean;
+}
 
 export interface TextInputProps {
 	onSubmit: (value: string) => void;
@@ -11,6 +27,11 @@ export interface TextInputProps {
 	 *  wrapping. This ensures Ink's logical line count matches the physical
 	 *  row count, preventing ghost lines when the input height changes. */
 	columns?: number;
+	/** When provided, the component publishes a {@link ChatInputController} into
+	 *  this ref while mounted and nulls it on unmount. Unmount happens when the
+	 *  chat view is suppressed (a picker/modal is open), so a null ref naturally
+	 *  means "input not focused" and the single-press clear becomes a no-op. */
+	controllerRef?: React.MutableRefObject<ChatInputController | null>;
 }
 
 /**
@@ -206,6 +227,7 @@ export function TextInput({
 	placeholder = "",
 	disabled = false,
 	columns,
+	controllerRef,
 }: TextInputProps): React.ReactElement {
 	// Combine value + cursor position in a single state atom so that
 	// rapid-fire keystrokes (which all close over the same render's state)
@@ -218,6 +240,36 @@ export function TextInput({
 		pos: 0,
 	});
 	const { value, pos } = state;
+
+	// Mirror the live value/disabled into refs so the imperative clear (called
+	// from the cancel state machine, outside React's render/closure path) reads
+	// current state rather than a stale capture.
+	const valueRef = useRef(value);
+	valueRef.current = value;
+	const disabledRef = useRef(disabled);
+	disabledRef.current = disabled;
+
+	// Single-press Ctrl-C clear. Returns true only when it cleared non-empty
+	// content on a focused (enabled) input; the caller treats that as the press
+	// being consumed. Stable identity (no deps) so the registration effect below
+	// runs once per mount.
+	const clear = useCallback((): boolean => {
+		if (disabledRef.current) return false;
+		if (valueRef.current.length === 0) return false;
+		setState({ value: "", pos: 0 });
+		return true;
+	}, []);
+
+	// Publish the controller while mounted; null it on unmount. The chat input
+	// only mounts while the chat view is active (a picker/modal unmounts it), so
+	// a null controller naturally encodes "input not focused".
+	useEffect(() => {
+		if (!controllerRef) return;
+		controllerRef.current = { clear };
+		return () => {
+			controllerRef.current = null;
+		};
+	}, [controllerRef, clear]);
 
 	// ink maps BOTH 0x7F (the byte the Unix Backspace key sends) and the
 	// xterm forward-delete escape sequence (ESC[3~) to key.delete=true with

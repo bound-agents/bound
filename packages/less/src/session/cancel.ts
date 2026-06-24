@@ -9,6 +9,11 @@ export interface CancelDeps {
 	gracefulExit: () => Promise<void>;
 	dismissModal: () => boolean; // returns true if modal was open and dismissed
 	showHint: (message: string) => void;
+	// Clears the chat input when it is focused and non-empty. Returns true if it
+	// actually cleared content (the press is then consumed and does not count
+	// toward the two-press exit sequence). Optional: callers that have no chat
+	// input wired (tests, headless) omit it and the press falls through.
+	clearChatInput?: () => boolean;
 }
 
 /**
@@ -68,6 +73,17 @@ export class CancelStateMachine {
 		// AC7.11: Transition in flight - defer and return
 		if (this.transitionInFlight) {
 			this.deferredCtrlC = true;
+			return;
+		}
+
+		// Single-press input clear (CC/Codex convention): when the chat input is
+		// focused and has content, the first Ctrl-C clears it instead of arming
+		// the exit sequence. clearChatInput returns false when the input is empty
+		// or not focused (e.g. a picker is open, input disabled), so an empty box
+		// falls through to the existing cancel/exit behavior unchanged — including
+		// the first-press turn cancel below. A cleared press is consumed: it does
+		// not advance lastCtrlCTime, so it never counts toward the two-press exit.
+		if (this.deps.clearChatInput?.()) {
 			return;
 		}
 
