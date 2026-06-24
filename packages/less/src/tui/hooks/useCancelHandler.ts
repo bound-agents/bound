@@ -9,6 +9,7 @@ export interface UseCancelHandlerOptions {
 	abortAll: () => void;
 	dismissModal: () => boolean;
 	showHint: (message: string) => void;
+	clearChatInput?: () => boolean;
 	onGracefulExit?: () => Promise<void>;
 }
 
@@ -27,6 +28,7 @@ export function useCancelHandler({
 	abortAll,
 	dismissModal,
 	showHint,
+	clearChatInput,
 	onGracefulExit,
 }: UseCancelHandlerOptions): UseCancelHandlerResult {
 	const { exit } = useApp();
@@ -49,6 +51,7 @@ export function useCancelHandler({
 			},
 			dismissModal,
 			showHint,
+			clearChatInput,
 		});
 	}
 

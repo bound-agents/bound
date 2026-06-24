@@ -2,7 +2,7 @@ import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
 import { Box } from "ink";
 import type React from "react";
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
@@ -10,6 +10,7 @@ import { transitionThread } from "../session/transition";
 import type { ResolvedSandboxConfig } from "../tools/sandbox";
 import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
+import type { ChatInputController } from "./components";
 import { useCancelHandler } from "./hooks/useCancelHandler";
 import { useConnectionState } from "./hooks/useConnectionState";
 import { useMcpServers } from "./hooks/useMcpServers";
@@ -136,6 +137,11 @@ export function App({
 	// Ctrl-C hint state
 	const [ctrlCHint, setCtrlCHint] = useState<string | null>(null);
 
+	// The chat input publishes its imperative clear handle here while focused.
+	// A single Ctrl-C clears a non-empty input before the exit sequence arms
+	// (CC/Codex convention); see CancelStateMachine.onCtrlC.
+	const chatInputRef = useRef<ChatInputController | null>(null);
+
 	const dismissModal = useCallback(() => {
 		if (state.view !== "chat") {
 			dispatch({ type: "SET_VIEW", view: "chat" });
@@ -156,6 +162,7 @@ export function App({
 		abortAll,
 		dismissModal,
 		showHint,
+		clearChatInput: () => chatInputRef.current?.clear() ?? false,
 	});
 
 	// Keep modal state in sync
