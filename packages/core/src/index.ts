@@ -82,6 +82,8 @@ export {
 	readInboxByRefId,
 	readInboxByStreamId,
 	readUnprocessedInboxByRefId,
+	findStaleUnprocessedIntake,
+	type StaleIntakeGroup,
 	PayloadTooLargeError,
 	setRelayOutboxEventBus,
 } from "./relay";
