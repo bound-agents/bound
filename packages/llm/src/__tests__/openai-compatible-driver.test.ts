@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { OpenAICompatibleDriver } from "../openai-compatible-driver";
+import { OpenAICompatibleDriver } from "../drivers/openai-compatible";
 import type { ChatParams, StreamChunk } from "../types";
 
 // A minimal OpenAI-compatible /chat/completions SSE body: one content delta,

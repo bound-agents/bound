@@ -1,15 +1,15 @@
 /**
  * Amazon Bedrock driver — thin shim onto `@ai-sdk/amazon-bedrock`.
  *
- * Replaced the hand-rolled Converse-API wrapper (bedrock-driver.ts + bedrock/
- * folder, ~2000 lines) on 2026-04-25. The AI SDK handles:
+ * Replaced the hand-rolled Converse-API wrapper (~2000 lines) on 2026-04-25.
+ * The AI SDK handles:
  *   - Converse API envelope + event-stream decoding
  *   - SigV4 signing / AWS_BEARER_TOKEN_BEDROCK fallback
  *   - Retry and error shape normalization
  *   - Opus 4.7 reasoning-behavior quirks (patched in @ai-sdk/amazon-bedrock@3.0.97)
  *
  * We keep ownership of:
- *   - Message shape → ModelMessage conversion (ai-sdk-bridge.ts)
+ *   - Message shape → ModelMessage conversion (../bridge)
  *   - Cache breakpoint placement policy (cache-stable-prefix is still ours;
  *     the driver just forwards the markers via providerOptions.bedrock.cachePoint)
  *   - Stream chunk shape translation back to our StreamChunk type
@@ -26,10 +26,10 @@ import {
 	BEDROCK_PERMISSIVE_ENVELOPE,
 	toModelMessages,
 	toToolSet,
-} from "./ai-sdk-bridge";
+} from "../bridge";
+import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-import { resolveProviderFetch, runProviderStream } from "./driver-utils";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
+import { resolveProviderFetch, runProviderStream } from "./shared";
 
 interface BedrockReasoningConfig {
 	type?: "enabled" | "disabled" | "adaptive";

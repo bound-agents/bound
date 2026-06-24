@@ -1,7 +1,7 @@
 import type { Logger } from "@bound/shared";
-import { type MapChunksOptions, mapChunks, mapError } from "./ai-sdk-bridge";
-import { createLoggingFetch } from "./fetch-logger";
-import type { StreamChunk } from "./types";
+import { type MapChunksOptions, mapChunks, mapError } from "../bridge";
+import { createLoggingFetch } from "../fetch-logger";
+import type { StreamChunk } from "../types";
 
 export interface ProviderFetchConfig {
 	fetch?: typeof fetch;

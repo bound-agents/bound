@@ -35,11 +35,11 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "./ai-sdk-bridge";
+import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-import { mapProviderStream, resolveProviderFetch } from "./driver-utils";
+import { mapProviderStream, resolveProviderFetch } from "./shared";
 import { createSigV4Fetch } from "./sigv4-fetch";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
 
 /** SigV4 service name for the Bedrock mantle endpoint. */
 const MANTLE_SIGV4_SERVICE = "bedrock";

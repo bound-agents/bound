@@ -1,8 +1,8 @@
 import type { Logger } from "@bound/shared";
-import { BedrockDriver } from "./bedrock-driver";
-import { BedrockMantleDriver } from "./bedrock-mantle-driver";
-import { OpenAICompatibleDriver } from "./openai-compatible-driver";
-import { OpenCodeGoDriver } from "./opencode-go-driver";
+import { BedrockDriver } from "./drivers/bedrock";
+import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
+import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
+import { OpenCodeGoDriver } from "./drivers/opencode-go";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -399,7 +399,7 @@ export class ModelRouter {
 	 * Live regression that motivated this defaulting: thread
 	 * `33212d49-…` 2026-05-25 ran with cr=0 across most of its turns
 	 * because Sonnet's config didn't explicitly set `cacheTtl`. The
-	 * bedrock-driver's `shouldEnableSystemCachePoint` gate disabled the
+	 * Bedrock driver's `shouldEnableSystemCachePoint` gate disabled the
 	 * system anchor when both `cache_ttl` was undefined AND the
 	 * message-level marker wasn't placed — both layers failed silently,
 	 * caching was completely off.

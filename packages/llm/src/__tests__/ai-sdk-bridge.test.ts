@@ -18,7 +18,7 @@ import {
 	sanitizeToolUseId,
 	toModelMessages,
 	toToolSet,
-} from "../ai-sdk-bridge";
+} from "../bridge";
 import type { LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 
@@ -1590,10 +1590,9 @@ describe("toModelMessages — tool_use.name sanitization (cross-provider portabi
 	// provider streams a malformed tool_use (Kimi/Moonshot template-token
 	// leakage on the OpenAI-compatible path), the persisted ContentBlock has a
 	// `name` field that violates Anthropic's `^[a-zA-Z0-9_-]+$` regex AND
-	// Bedrock's 64-char `[a-zA-Z0-9_-]{1,64}` validation. The bridge applies
-	// the same sanitizeToolName transform that stream-utils.ts exports and
-	// that the streaming-boundary path in mapChunks uses, so the wire form is
-	// always within every provider's accepted charset and length cap.
+	// Bedrock's 64-char `[a-zA-Z0-9_-]{1,64}` validation. toModelMessages applies
+	// `sanitizeToolNameForEnvelope` at the read boundary, so the wire form is
+	// always within the target envelope's accepted charset and length cap.
 
 	it("sanitizes illegal characters in tool_use.name on a tool_call message", () => {
 		const out = toModelMessages([

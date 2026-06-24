@@ -11,7 +11,7 @@ import {
 	consumeAwsCredentialCacheBust,
 	markAwsCredentialCacheStale,
 	resolveAwsCredentials,
-} from "../aws-credential-cache";
+} from "../drivers/aws-credential-cache";
 
 // Drain any pending bust left by a prior test so the flag starts clean.
 beforeEach(() => {

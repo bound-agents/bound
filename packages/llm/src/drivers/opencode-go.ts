@@ -2,14 +2,9 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import {
-	ANTHROPIC_ENVELOPE,
-	PERMISSIVE_ENVELOPE,
-	toModelMessages,
-	toToolSet,
-} from "./ai-sdk-bridge";
-import { mapProviderStream, resolveProviderFetch } from "./driver-utils";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
+import { ANTHROPIC_ENVELOPE, PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import { mapProviderStream, resolveProviderFetch } from "./shared";
 
 const DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 const PROVIDER_NAME = "opencode-go";

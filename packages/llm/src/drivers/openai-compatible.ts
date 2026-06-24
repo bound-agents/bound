@@ -17,9 +17,9 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "./ai-sdk-bridge";
-import { resolveProviderFetch, runProviderStream } from "./driver-utils";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "./types";
+import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import { resolveProviderFetch, runProviderStream } from "./shared";
 
 export class OpenAICompatibleDriver implements LLMBackend {
 	private provider: ReturnType<typeof createOpenAICompatible>;
