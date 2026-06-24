@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
 import { insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import { handleWebhookRequest } from "../webhook-handler.js";
+import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "../webhook-handler.js";
 
 describe("handleWebhookRequest", () => {
 	let db: Database;
@@ -116,6 +116,73 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(404);
 		const text = await response.text();
 		expect(text).toBe("");
+	});
+
+	test("security: unknown webhook name is rejected before reading the request body", async () => {
+		const body = new ReadableStream({
+			pull(controller) {
+				controller.error(new Error("body should not be consumed for unknown webhook"));
+			},
+		});
+		const request = new Request("http://localhost:3000/webhook/nonexistent", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, "nonexistent", {
+			db,
+			siteId,
+		});
+
+		expect(response.status).toBe(404);
+	});
+
+	test("security: webhook requests over the body limit return 413 before body read", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "test_webhook";
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "github",
+				description: "Test webhook",
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const body = new ReadableStream({
+			pull(controller) {
+				controller.error(new Error("oversized body should not be consumed"));
+			},
+		});
+		const request = new Request("http://localhost:3000/webhook/test_webhook", {
+			method: "POST",
+			headers: {
+				"Content-Length": String(MAX_WEBHOOK_BODY_BYTES + 1),
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, webhookName, {
+			db,
+			siteId,
+		});
+
+		expect(response.status).toBe(413);
 	});
 
 	// ──────────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { MountableFs } from "just-bash";
 import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
-import { handleWebhookRequest } from "./webhook-handler.js";
+import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "./webhook-handler.js";
 import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
 
@@ -230,7 +230,7 @@ export async function createSyncServer(
 			server = Bun.serve({
 				port,
 				hostname: host,
-				maxRequestBodySize: 128 * 1024 * 1024, // 128 MB — chunked push keeps payloads well under this
+				maxRequestBodySize: MAX_WEBHOOK_BODY_BYTES,
 				fetch(request: Request, bunServer) {
 					const url = new URL(request.url);
 					if (url.pathname === "/sync/ws" && request.headers.get("upgrade") === "websocket") {
