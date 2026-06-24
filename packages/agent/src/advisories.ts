@@ -164,3 +164,20 @@ export function getPendingAdvisories(db: Database): Advisory[] {
 
 	return advisories;
 }
+
+/**
+ * True if a non-soft-deleted advisory with this exact title already exists, in
+ * ANY status. Used to dedup the webhook dead-letter sweep: the prior reconciler
+ * deduped only against `getPendingAdvisories` (proposed + due-deferred), so the
+ * moment an operator *applied* the advisory it dropped out of that set and the
+ * next sweep re-raised it — an apply-then-reraise churn loop. These advisories
+ * describe a persistent infra condition, so an existing one in any active or
+ * acknowledged state should suppress a re-raise; the operator can delete it to
+ * force a fresh signal.
+ */
+export function hasAdvisoryWithTitle(db: Database, title: string): boolean {
+	const row = db
+		.prepare("SELECT 1 FROM advisories WHERE deleted = 0 AND title = ? LIMIT 1")
+		.get(title);
+	return row !== null;
+}
