@@ -77,6 +77,7 @@ import { formatMcpHelp } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
+import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -255,6 +256,21 @@ export class RelayProcessor {
 					pruneRelayTables(this.db);
 				} catch (error) {
 					this.logger.error("Relay table prune failed", { error });
+				}
+				// Catch-of-last-resort for the webhook intake pipeline. Runs against
+				// the LOCAL relay_inbox (invariant #3), so it sees intake on the host
+				// that received the POST. Raises a deduplicated dead-letter advisory
+				// for any webhook_intake left undrained by a dark handler — turning a
+				// silent multi-hour outage into something the operator can act on.
+				try {
+					const { advisoriesRaised } = reconcileStaleWebhookIntake(this.db, this.siteId);
+					if (advisoriesRaised > 0) {
+						this.logger.warn("[relay] Raised dead-letter advisory for undrained webhook intake", {
+							advisoriesRaised,
+						});
+					}
+				} catch (error) {
+					this.logger.error("Webhook intake reconcile failed", { error });
 				}
 			}),
 		);
