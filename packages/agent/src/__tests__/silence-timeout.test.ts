@@ -229,4 +229,70 @@ describe("withSilenceTimeout", () => {
 			expect(SILENCE_HEARTBEAT_INTERVAL_MS).toBeLessThan(60_000);
 		});
 	});
+
+	// AC.12 — finalization forwarding. Consumer early-break must cancel the
+	// wrapped inner stream so the driver's own finally (e.g. semaphore release)
+	// fires. Also covers the idempotency / no-hang properties.
+	describe("finalization forwarding to inner iterator", () => {
+		function sentinelSource(opts?: { returnThrowsOnSecondCall?: boolean }) {
+			const state = { returnCalls: 0, itemsYielded: 0 };
+			let returnCalls = 0;
+			const source: AsyncIterable<string> = {
+				[Symbol.asyncIterator]() {
+					let i = 0;
+					const items = ["a", "b", "c"];
+					return {
+						async next(): Promise<IteratorResult<string>> {
+							if (i >= items.length) return { done: true, value: undefined };
+							const value = items[i++];
+							state.itemsYielded++;
+							return { done: false, value };
+						},
+						async return(value?: unknown): Promise<IteratorResult<string>> {
+							returnCalls++;
+							state.returnCalls = returnCalls;
+							if (opts?.returnThrowsOnSecondCall && returnCalls >= 2) {
+								throw new Error("return called twice");
+							}
+							return { done: true, value: value as string };
+						},
+					};
+				},
+			};
+			return { source, state };
+		}
+
+		it("forwards return() to the inner iterator on consumer early-break", async () => {
+			const { source, state } = sentinelSource();
+			for await (const _ of withSilenceTimeout(source, 1000)) {
+				break; // consumer early-break after the first chunk
+			}
+			expect(state.returnCalls).toBe(1);
+		});
+
+		it("calls return() at most once on normal completion and yields all items without hanging", async () => {
+			const { source, state } = sentinelSource();
+			const collected: string[] = [];
+			for await (const item of withSilenceTimeout(source, 1000)) {
+				collected.push(item);
+			}
+			expect(collected).toEqual(["a", "b", "c"]);
+			// Normal completion finalizes via result.done — the finally must NOT
+			// double-invoke return().
+			expect(state.returnCalls).toBeLessThanOrEqual(1);
+		});
+
+		it("does not surface an error when the inner return() throws on a second invocation (idempotent-safe)", async () => {
+			const { source } = sentinelSource({ returnThrowsOnSecondCall: true });
+			// Break to trigger the forward; the forward catches any throw. A
+			// second return() (were it to happen) throws, but must not surface.
+			await expect(
+				(async () => {
+					for await (const _ of withSilenceTimeout(source, 1000)) {
+						break;
+					}
+				})(),
+			).resolves.toBeUndefined();
+		});
+	});
 });

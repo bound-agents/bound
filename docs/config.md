@@ -61,21 +61,21 @@ must be `""`.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `id` | string (non-empty) | — | Logical alias you route to (e.g. `"opus"`). Distinct from `model`. |
-| `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`. |
-| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the mantle model id (e.g. `openai.gpt-5.4`). |
-| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region`). |
-| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
+| `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`, `umans`. |
+| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the mantle model id (e.g. `openai.gpt-5.4`). **Omitted for `umans`** (the model lineup is fetched at runtime — see below). |
+| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region`) and `umans` (default `https://api.code.umans.ai`). |
+| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`, `umans`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
 | `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
-| `context_window` | int > 0 | — | Token budget bound for context assembly. |
-| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. |
+| `context_window` | int > 0 | — | Token budget bound for context assembly. **Omitted for `umans`** (fetched per-model). |
+| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. **Omitted for `umans`** (derived per-model from price rank). |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
-| `effort` | enum | absent | Reasoning depth: `low`, `medium`, `high`, `xhigh`, `max`. Replaces `budget_tokens` on Opus 4.7; `xhigh` recommended for agentic work, `max` is Opus-tier only. |
+| `effort` | string (non-empty) | absent | Reasoning depth — **free-form, provider-validated**. The canonical Anthropic/Bedrock-Converse set is `low`, `medium`, `high`, `xhigh`, `max` (`xhigh` recommended for agentic work, `max` Opus-tier only); other providers advertise their own levels (umans forwards this as a top-level `reasoning_effort` and validates against the model's `reasoning.levels`). The schema only requires a non-empty string; each driver maps/drops it. |
 | `max_output_tokens` | int > 0 | absent | Per-backend cap on output tokens. Use when a model rejects the 16384 default (e.g. Nova Pro caps at 10000). Applied as `min(this, default)`, so lowering is always safe. |
 | `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. `1h` is extended TTL (Bedrock: Claude Opus/Sonnet/Haiku 4.5+ only); silently falls back to `5m` where unsupported. |
 | `cache_warming` | cache-warming block | absent | Per-backend cache-warming (see below). Absent means this backend is never warmed. |
@@ -107,6 +107,50 @@ cache-read instead of a cache-write. Off by default.
 
 The poke *window* is not configured — it is derived per-thread from that thread's backend
 `cache_ttl` (a poke fires only when the cache would otherwise lapse before the next scan).
+
+### umans.ai (self-configuring)
+
+`umans` is **config-light**: a backend entry carries only `provider`, `id`, `api_key`, and
+`default`. Everything else — the full model lineup, per-model context windows, max-output,
+pricing, capabilities, tiers, and the account concurrency limit — is fetched from umans at
+runtime. Do **not** set `model`, `context_window`, `tier`, `capabilities`, or any
+`price_per_m_*` on a umans row; the schema rejects them (they would be ignored or
+overwritten). A minimal entry:
+
+```json
+{ "backends": [{ "id": "umans", "provider": "umans", "api_key": "sk-…" }], "default": "umans" }
+```
+
+Behavior:
+
+- **`default` must be the namespace `id` (`"umans"`), not a concrete model id.** The
+  concrete umans model ids don't exist at startup, so naming one as `default` crashes
+  `bound start` (the default-existence check). Point `default` at the namespace; it is
+  automatically redirected to a concrete model once the lineup lands.
+- **Auto-expansion (one entry → N models).** On the first successful fetch the single
+  namespace entry materializes one independently selectable + cluster-advertised backend
+  per umans model id (`umans-coder`, `umans-flash`, …). Per-model tiers are derived by
+  ranking the lineup by input price (cheapest → tier 5, dearest → tier 1).
+- **Anthropic route + caching.** umans is routed through its Anthropic Messages API
+  (`POST /v1/messages`), so prompt-cache breakpoints and cached-token usage surface in the
+  debugger. `prompt_caching` is reported `true`.
+- **Reasoning effort.** umans takes a top-level `reasoning_effort` on the Anthropic route
+  (a umans extension — not native Anthropic). The driver injects it per turn: a per-call
+  `effort` wins (validated against the model's advertised `reasoning.levels`, falling back
+  to its `default_level` if the requested level isn't supported); otherwise the model's
+  fetched `reasoning.default_level` is sent; if neither is set, nothing is sent and umans
+  applies its own default. The `effort` vocabulary is **free-form** (each provider
+  advertises its own levels) — it is no longer restricted to the Anthropic
+  `low/medium/high/xhigh/max` set.
+- **Concurrency throttle.** An in-process semaphore sized from the account's `/v1/usage`
+  concurrency limit queues in-flight requests; a server-side priority pause
+  (`boxed_until`) is surfaced as a 429 so the router backs off.
+- **Readiness.** A umans model is invisible / unselectable until its first successful
+  fetch (typically sub-second); until then it resolves `transient-unavailable` (retryable).
+  If umans is persistently unreachable the models never appear — check connectivity and
+  the API key. This is intentional: bound never runs a turn on guessed pricing/limits.
+
+Set up with `bound init --umans` (reads `UMANS_API_KEY`).
 
 ---
 

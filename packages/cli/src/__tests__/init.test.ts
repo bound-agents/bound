@@ -171,4 +171,29 @@ describe("bound init", () => {
 		expect(modelBackends.backends[0].base_url).toBe("https://opencode.ai/zen/go/v1");
 		expect(modelBackends.backends[0].api_key).toBe("test-key");
 	});
+
+	it("creates a config-light umans preset with --umans (AC.15)", async () => {
+		process.env.UMANS_API_KEY = "sk-umans-test";
+
+		await runInit({
+			umans: true,
+			configDir: tempDir,
+		});
+
+		const modelBackendsPath = join(tempDir, "model_backends.json");
+		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
+
+		const b = modelBackends.backends[0];
+		expect(b.provider).toBe("umans");
+		expect(b.id).toBe("umans");
+		expect(b.api_key).toBe("sk-umans-test");
+		expect(modelBackends.default).toBe("umans");
+		// Config-light: NO model/tier/context_window/base_url/pricing.
+		expect(b.model).toBeUndefined();
+		expect(b.tier).toBeUndefined();
+		expect(b.context_window).toBeUndefined();
+		expect(b.base_url).toBeUndefined();
+		expect(b.price_per_m_input).toBeUndefined();
+		process.env.UMANS_API_KEY = undefined;
+	});
 });

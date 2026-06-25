@@ -53,7 +53,10 @@ export const inferenceRequestPayloadSchema = z.object({
 			}),
 		])
 		.optional(),
-	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+	// Free-form, provider-validated (see ChatParams.effort) — forwarded verbatim
+	// over the relay so a hub-delegated turn carries whatever level the caller
+	// chose; the executing host's driver validates/maps it.
+	effort: z.string().min(1).optional(),
 	cache_ttl: z.enum(["5m", "1h"]).optional(),
 	messages_file_ref: z.string().optional(),
 });

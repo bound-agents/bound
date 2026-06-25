@@ -344,6 +344,13 @@ export function buildReasoningConfig(
 	}
 	// Non-Anthropic thinking-related fields are dropped intentionally —
 	// sending them triggers AI SDK "unsupported feature" warnings.
-	if (params.effort) config.maxReasoningEffort = params.effort;
+	// `effort` is a free-form string (provider-validated), so only forward it to
+	// Bedrock's Converse `maxReasoningEffort` when it is one of the values that
+	// field actually accepts — a foreign level (e.g. a umans-only one) must not
+	// reach Bedrock.
+	const BEDROCK_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+	if (params.effort && (BEDROCK_EFFORTS as readonly string[]).includes(params.effort)) {
+		config.maxReasoningEffort = params.effort as (typeof BEDROCK_EFFORTS)[number];
+	}
 	return Object.keys(config).length > 0 ? config : undefined;
 }

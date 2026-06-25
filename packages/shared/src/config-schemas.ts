@@ -78,10 +78,13 @@ const thinkingConfigSchema = z.union([
 
 // `effort` is a top-level output_config knob on the Claude API. It
 // replaces `budget_tokens` as the depth control on Opus 4.7 and is
-// recommended alongside adaptive thinking on Opus 4.6. Valid levels:
-// low | medium | high | xhigh | max. `xhigh` is new on 4.7 and the
-// recommended default for coding/agentic work; `max` is Opus-tier only.
-const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
+// recommended alongside adaptive thinking on Opus 4.6. FREE-FORM: the accepted
+// vocabulary is provider-specific and validated per-driver, not by the schema.
+// The canonical Anthropic/Bedrock-Converse set is low | medium | high | xhigh |
+// max (`xhigh` recommended for coding/agentic work; `max` Opus-tier only), but
+// other providers (e.g. umans) advertise their own `reasoning.levels` — so the
+// schema only requires a non-empty string and leaves validation to the driver.
+const effortSchema = z.string().min(1);
 
 // Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
 // cache hot on active threads so the next real message lands on a cache-read
@@ -137,14 +140,22 @@ const modelBackendSchema = z
 			"cerebras",
 			"zai",
 			"opencode-go",
+			"umans",
 		]),
-		model: z.string().min(1),
+		// `model`, `context_window`, and `tier` are REQUIRED for every provider
+		// EXCEPT `umans`, which is config-light + self-configuring: a umans
+		// entry is a NAMESPACE that fetches its full model lineup (ids, context
+		// windows, pricing, tiers) at runtime, so it carries only
+		// provider + id + api_key + default. The object-level refinements below
+		// enforce "required unless umans" and "reject authoritative fields on
+		// umans". See the model-router umans case + UmansDriver readiness.
+		model: z.string().min(1).optional(),
 		base_url: z.string().url().optional(),
 		api_key: z.string().optional(),
 		region: z.string().optional(),
 		profile: z.string().optional(),
-		context_window: z.number().int().positive(),
-		tier: z.number().int().min(1).max(5),
+		context_window: z.number().int().positive().optional(),
+		tier: z.number().int().min(1).max(5).optional(),
 		price_per_m_input: z.number().min(0).default(0),
 		price_per_m_output: z.number().min(0).default(0),
 		price_per_m_cache_write: z.number().min(0).optional(),
@@ -240,14 +251,53 @@ export const modelBackendsSchema = z
 					b.provider === "cerebras" ||
 					b.provider === "anthropic" ||
 					b.provider === "zai" ||
-					b.provider === "opencode-go"
+					b.provider === "opencode-go" ||
+					b.provider === "umans"
 				) {
 					return b.api_key !== undefined;
 				}
 				return true;
 			});
 		},
-		{ message: "cerebras, anthropic, zai, and opencode-go providers require api_key" },
+		{ message: "cerebras, anthropic, zai, opencode-go, and umans providers require api_key" },
+	)
+	.refine(
+		(data) => {
+			// `model`, `context_window`, and `tier` are required for every
+			// provider EXCEPT umans (which fetches its lineup at runtime).
+			return data.backends.every((b) => {
+				if (b.provider === "umans") return true;
+				return b.model !== undefined && b.context_window !== undefined && b.tier !== undefined;
+			});
+		},
+		{
+			message:
+				"model, context_window, and tier are required for all providers except umans (which is self-configuring)",
+		},
+	)
+	.refine(
+		(data) => {
+			// umans rows are authoritatively fetched/derived: reject operator-set
+			// model / tier / context_window / capabilities / pricing. (price_per_m_*
+			// have a default of 0, so we only reject non-zero / explicitly-set
+			// values — a defaulted 0 is indistinguishable and harmless.)
+			return data.backends.every((b) => {
+				if (b.provider !== "umans") return true;
+				if (b.model !== undefined) return false;
+				if (b.tier !== undefined) return false;
+				if (b.context_window !== undefined) return false;
+				if (b.capabilities !== undefined) return false;
+				if (b.price_per_m_input !== 0) return false;
+				if (b.price_per_m_output !== 0) return false;
+				if (b.price_per_m_cache_write !== undefined) return false;
+				if (b.price_per_m_cache_read !== undefined) return false;
+				return true;
+			});
+		},
+		{
+			message:
+				"umans backends must not set model, tier, context_window, capabilities, or pricing — these are fetched/derived at runtime",
+		},
 	);
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;

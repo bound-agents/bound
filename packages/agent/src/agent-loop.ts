@@ -3560,44 +3560,67 @@ export async function* withSilenceTimeout<T>(
 	heartbeatIntervalMs: number = SILENCE_HEARTBEAT_INTERVAL_MS,
 ): AsyncGenerator<T> {
 	const iterator = source[Symbol.asyncIterator]();
-
-	while (true) {
-		const nextChunkPromise = iterator.next();
-		let timerId: ReturnType<typeof setTimeout> | null = null;
-		let heartbeatId: ReturnType<typeof setInterval> | null = null;
-		const timeoutPromise = new Promise<never>((_, reject) => {
-			timerId = setTimeout(() => {
-				reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
-			}, timeoutMs);
-		});
-		if (onHeartbeat) {
-			heartbeatId = setInterval(() => {
-				try {
-					onHeartbeat();
-				} catch {
-					// Heartbeat callbacks should never break the stream.
-				}
-			}, heartbeatIntervalMs);
-		}
-
-		let result: IteratorResult<T>;
-		try {
-			result = await Promise.race([nextChunkPromise, timeoutPromise]);
-			if (timerId) clearTimeout(timerId);
-			if (heartbeatId) clearInterval(heartbeatId);
-		} catch (err) {
-			if (timerId) clearTimeout(timerId);
-			if (heartbeatId) clearInterval(heartbeatId);
-			if (typeof iterator.return === "function") {
-				await iterator.return(undefined).catch(() => {});
+	// Tracks whether the inner iterator has already been finalized — either by
+	// running to completion (`result.done`) or via an explicit `.return()` in
+	// the catch path. The `finally` below forwards finalization to the inner
+	// iterator on the *consumer early-break* path (when this generator's
+	// `.return()` is invoked because a `for await … break` short-circuits the
+	// outer loop). Without it, breaking out of `withSilenceTimeout` leaves the
+	// wrapped driver stream paused at its `yield` forever, so the driver's
+	// `finally` (e.g. the umans semaphore release) never runs and resources
+	// leak. The flag keeps the forward idempotent with the catch-path return.
+	let innerFinalized = false;
+	try {
+		while (true) {
+			const nextChunkPromise = iterator.next();
+			let timerId: ReturnType<typeof setTimeout> | null = null;
+			let heartbeatId: ReturnType<typeof setInterval> | null = null;
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				timerId = setTimeout(() => {
+					reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
+				}, timeoutMs);
+			});
+			if (onHeartbeat) {
+				heartbeatId = setInterval(() => {
+					try {
+						onHeartbeat();
+					} catch {
+						// Heartbeat callbacks should never break the stream.
+					}
+				}, heartbeatIntervalMs);
 			}
-			throw err;
-		}
 
-		if (result.done) {
-			return;
-		}
+			let result: IteratorResult<T>;
+			try {
+				result = await Promise.race([nextChunkPromise, timeoutPromise]);
+				if (timerId) clearTimeout(timerId);
+				if (heartbeatId) clearInterval(heartbeatId);
+			} catch (err) {
+				if (timerId) clearTimeout(timerId);
+				if (heartbeatId) clearInterval(heartbeatId);
+				innerFinalized = true;
+				if (typeof iterator.return === "function") {
+					await iterator.return(undefined).catch(() => {});
+				}
+				throw err;
+			}
 
-		yield result.value;
+			if (result.done) {
+				innerFinalized = true;
+				return;
+			}
+
+			yield result.value;
+		}
+	} finally {
+		// Consumer early-break (or throw) path: the consumer's `break` triggers
+		// this generator's `.return()`, which runs this `finally`. Forward it to
+		// the inner iterator so the upstream driver stream is cancelled and its
+		// own `finally` fires. Idempotent: skipped when the inner iterator was
+		// already finalized (normal completion or the catch-path return above),
+		// so a `.return()` that itself throws on a second call cannot surface.
+		if (!innerFinalized && typeof iterator.return === "function") {
+			await iterator.return(undefined).catch(() => {});
+		}
 	}
 }
