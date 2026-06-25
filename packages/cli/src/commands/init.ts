@@ -11,6 +11,7 @@ export interface InitArgs {
 	cerebras?: boolean;
 	zai?: boolean;
 	opencodeGo?: boolean;
+	umans?: boolean;
 	/** Hub-only mode: no local inference backends; the node relays inference to spokes. */
 	hub?: boolean;
 	region?: string;
@@ -45,12 +46,17 @@ export async function runInit(args: InitArgs): Promise<void> {
 	// OpenAI-compatible API at /v1 and ignores the bearer token, but the driver requires a
 	// non-empty api_key, so we write a placeholder. The bare `init` (no preset flag) lands on
 	// these defaults too, so the zero-flag path produces a config that actually starts.
-	let provider: "openai-compatible" | "bedrock" | "cerebras" | "zai" | "opencode-go" =
+	let provider: "openai-compatible" | "bedrock" | "cerebras" | "zai" | "opencode-go" | "umans" =
 		"openai-compatible";
 	let baseUrl = "http://localhost:11434/v1";
 	let apiKey: string | undefined = "ollama";
 	let region: string | undefined;
 	let model = "llama3";
+	// umans is config-light + self-configuring: the namespace entry carries only
+	// provider + id + api_key + default; the full model lineup (ids, context
+	// windows, pricing, tiers) is fetched at runtime. We take a dedicated
+	// config-write branch for it below.
+	let isUmans = false;
 
 	// Determine configuration mode
 	if (args.hub) {
@@ -99,6 +105,17 @@ export async function runInit(args: InitArgs): Promise<void> {
 		if (!apiKey) {
 			console.log("OPENCODE_API_KEY not found in environment.");
 		}
+	} else if (args.umans) {
+		// umans preset — config-light + self-configuring. The full model lineup,
+		// pricing, context windows, tiers, and concurrency limit are fetched at
+		// runtime, so the config carries only provider + id + api_key + default.
+		provider = "umans";
+		isUmans = true;
+		apiKey = process.env.UMANS_API_KEY;
+
+		if (!apiKey) {
+			console.log("UMANS_API_KEY not found in environment.");
+		}
 	}
 
 	// Generate deterministic UUID for operator
@@ -119,6 +136,15 @@ export async function runInit(args: InitArgs): Promise<void> {
 	if (args.hub) {
 		// Hub-only: no inference backends. Inference is relayed to spokes.
 		modelBackendsConfig = { backends: [], default: "" };
+	} else if (isUmans) {
+		// Config-light umans namespace. NO model/tier/context_window/base_url/
+		// pricing — all fetched/derived at runtime. `default` MUST be the
+		// namespace id ("umans"), not a concrete model id: a concrete id does
+		// not exist at startup and would crash the default-existence check.
+		// biome-ignore lint/suspicious/noExplicitAny: config is dynamic
+		const umansBackend: any = { id: "umans", provider: "umans" };
+		if (apiKey) umansBackend.api_key = apiKey;
+		modelBackendsConfig = { backends: [umansBackend], default: "umans" };
 	} else {
 		// biome-ignore lint/suspicious/noExplicitAny: config is dynamic
 		const backendConfig: any = {
@@ -178,7 +204,7 @@ Created:
 
 Operator: ${operatorName}
 Provider: ${provider}
-Model: ${model}
+${isUmans ? "Model: (self-configuring — lineup fetched at runtime)" : `Model: ${model}`}
 
 Next steps:
   1. Review the config files

@@ -191,6 +191,65 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
+		// --- umans (config-light, self-configuring) ---
+
+		it("accepts a config-light umans namespace (provider+id+api_key only) (AC.1)", () => {
+			const config = {
+				backends: [{ id: "umans", provider: "umans", api_key: "sk-test" }],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects a umans namespace missing api_key, naming umans (AC.2)", () => {
+			const config = {
+				backends: [{ id: "umans", provider: "umans" }],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(JSON.stringify(result.error.issues)).toContain("umans");
+			}
+		});
+
+		it("rejects a umans row that sets model/tier/context_window (AC.2)", () => {
+			const config = {
+				backends: [
+					{
+						id: "umans",
+						provider: "umans",
+						api_key: "sk-test",
+						model: "umans-coder",
+						tier: 3,
+						context_window: 200000,
+					},
+				],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects a umans row that sets pricing (AC.2)", () => {
+			const config = {
+				backends: [{ id: "umans", provider: "umans", api_key: "sk-test", price_per_m_input: 3 }],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("still rejects a NON-umans row that omits model/context_window/tier (AC.2)", () => {
+			const config = {
+				backends: [{ id: "x", provider: "cerebras", api_key: "k", base_url: "https://x/v1" }],
+				default: "x",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
 		it("rejects negative context_window", () => {
 			const config = {
 				backends: [
@@ -506,7 +565,11 @@ describe("Config schemas", () => {
 				});
 			}
 
-			it("rejects unknown effort values", () => {
+			it("accepts a free-form effort value (provider-validated, not schema-validated)", () => {
+				// effort is now free-form: the canonical Anthropic set is no
+				// longer enforced by the schema because other providers (umans)
+				// advertise their own reasoning.levels. A provider-specific level
+				// must pass schema validation; the driver validates it.
 				const config = {
 					backends: [
 						{
@@ -517,7 +580,28 @@ describe("Config schemas", () => {
 							context_window: 200000,
 							tier: 1,
 							thinking: { type: "adaptive" },
-							effort: "extreme",
+							effort: "ultra",
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].effort).toBe("ultra");
+			});
+
+			it("rejects an empty-string effort", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							effort: "",
 						},
 					],
 					default: "opus",

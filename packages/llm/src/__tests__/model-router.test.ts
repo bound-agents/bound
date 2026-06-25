@@ -2,9 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { ModelRouter, PooledBackend, createModelRouter } from "../model-router";
 import type {
 	BackendCapabilities,
+	BackendReadiness,
 	ChatParams,
 	LLMBackend,
 	ModelBackendsConfig,
+	ModelDescriptor,
+	ModelRegistrar,
 	StreamChunk,
 } from "../types";
 import { LLMError } from "../types";
@@ -1432,5 +1435,200 @@ describe("ModelRouter.reload — in-place config swap", () => {
 
 		expect(router.getDefaultId()).toBe(before.defaultId);
 		expect(router.listBackends().map((b) => b.id)).toEqual(before.ids);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Generic readiness contract (umans is the first implementer). These tests use
+// a PROVIDER-NEUTRAL stub readiness backend to prove the router path has no
+// umans-specific branching (AC.20), plus the umans factory case (AC.1).
+// ---------------------------------------------------------------------------
+
+const READY_CAPS: BackendCapabilities = {
+	streaming: true,
+	tool_use: true,
+	system_prompt: true,
+	prompt_caching: true,
+	vision: false,
+	extended_thinking: false,
+	max_context: 100000,
+};
+
+/** Provider-neutral readiness backend stub — not umans. */
+class StubReadinessBackend implements LLMBackend {
+	readiness: BackendReadiness;
+	private capturedRegistrar?: ModelRegistrar;
+	private disposed = false;
+	private ready = false;
+	registerCalls = 0;
+
+	constructor(
+		private namespaceId: string,
+		private models: ModelDescriptor[],
+		private deferred = false,
+	) {
+		this.readiness = {
+			isReady: () => this.ready,
+			dispose: () => {
+				this.disposed = true;
+			},
+			start: (registrar) => {
+				this.capturedRegistrar = registrar;
+				if (!this.deferred) this.fire();
+			},
+		};
+	}
+
+	/** Manually trigger expansion (for deferred backends). */
+	fire(): void {
+		if (this.disposed || !this.capturedRegistrar) return;
+		this.ready = true;
+		this.registerCalls++;
+		this.capturedRegistrar.register(
+			this.namespaceId,
+			this.models.map((descriptor) => ({
+				descriptor,
+				backend: new MockBackend(descriptor.id),
+			})),
+		);
+	}
+
+	// biome-ignore lint/correctness/useYield: a namespace stub never yields — it throws.
+	async *chat(): AsyncGenerator<never> {
+		throw new LLMError("stub namespace not invokable", "stub");
+	}
+	capabilities() {
+		return { ...READY_CAPS, max_context: 0 };
+	}
+}
+
+describe("ModelRouter generic readiness (AC.20)", () => {
+	function descriptor(id: string, tier: number): ModelDescriptor {
+		return {
+			id,
+			capabilities: { ...READY_CAPS },
+			tier,
+			pricing: { inputPerM: 1, outputPerM: 2 },
+			maxOutputTokens: 8192,
+		};
+	}
+
+	it("excludes a not-ready readiness backend from listEligible/listBackends and isNotReady", () => {
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
+		const backends = new Map<string, LLMBackend>([["ns", stub]]);
+		const router = new ModelRouter(backends, "ns");
+
+		expect(router.isNotReady("ns")).toBe(true);
+		expect(router.listBackends().map((b) => b.id)).not.toContain("ns");
+		expect(router.listEligible().map((b) => b.id)).not.toContain("ns");
+		expect(router.getReadinessBackends().map((r) => r.id)).toEqual(["ns"]);
+	});
+
+	it("expands via the registrar path: adds backends, clears not-ready, removes placeholder, redirects default", () => {
+		const models = [descriptor("m-a", 5), descriptor("m-b", 3)];
+		const stub = new StubReadinessBackend("ns", models, true);
+		const backends = new Map<string, LLMBackend>([["ns", stub]]);
+		const router = new ModelRouter(backends, "ns");
+
+		// Build a registrar that drives the router primitives (the real
+		// CLI-layer registrar does the same + config writes).
+		const registrar: ModelRegistrar = {
+			register(_providerId, entries) {
+				for (const { descriptor: d, backend } of entries) {
+					router.addDynamicBackend(d.id, backend, d.capabilities, d.tier);
+				}
+				router.redirectDefault("ns", entries[0].descriptor.id);
+				router.removeBackend("ns");
+			},
+		};
+		stub.readiness.start(registrar);
+		stub.fire();
+
+		expect(router.isNotReady("m-a")).toBe(false);
+		expect(
+			router
+				.listBackends()
+				.map((b) => b.id)
+				.sort(),
+		).toEqual(["m-a", "m-b"]);
+		expect(router.tryGetBackend("ns")).toBeNull();
+		expect(router.getDefaultId()).toBe("m-a");
+		expect(router.getBackendTier("m-a")).toBe(5);
+		expect(router.getBackendTier("m-b")).toBe(3);
+	});
+
+	it("disposes superseded readiness backends on reload (AC.5)", () => {
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
+		let disposed = false;
+		// Wrap dispose to observe it.
+		const origDispose = stub.readiness.dispose;
+		stub.readiness.dispose = () => {
+			disposed = true;
+			origDispose();
+		};
+		const backends = new Map<string, LLMBackend>([["ns", stub]]);
+		const router = new ModelRouter(backends, "ns");
+
+		// Reload to a config WITHOUT the readiness backend.
+		router.reload({
+			backends: [
+				{
+					id: "x",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "y",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 8192,
+				},
+			],
+			default: "x",
+		});
+
+		expect(disposed).toBe(true);
+		// A late fire() from the disposed stub must NOT register into the router.
+		const registrar: ModelRegistrar = {
+			register() {
+				router.addDynamicBackend("m-a", new MockBackend("m-a"), READY_CAPS, 3);
+			},
+		};
+		stub.readiness.start(registrar);
+		stub.fire(); // no-op: disposed
+		expect(router.tryGetBackend("m-a")).toBeNull();
+	});
+});
+
+describe("ModelRouter umans factory case (AC.1)", () => {
+	it("builds a not-ready umans namespace backend with readiness from a config-light entry", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "umans",
+					provider: "umans",
+					model: "",
+					apiKey: "sk-test",
+				} as unknown as ModelBackendsConfig["backends"][number],
+			],
+			default: "umans",
+		});
+		// The namespace exists but is not-ready (excluded from selection).
+		expect(router.isNotReady("umans")).toBe(true);
+		expect(router.tryGetBackend("umans")?.readiness).toBeDefined();
+		expect(router.listBackends().map((b) => b.id)).not.toContain("umans");
+		expect(router.getReadinessBackends().map((r) => r.id)).toEqual(["umans"]);
+	});
+
+	it("throws when a umans backend is missing api_key", () => {
+		expect(() =>
+			createModelRouter({
+				backends: [
+					{
+						id: "umans",
+						provider: "umans",
+						model: "",
+					} as unknown as ModelBackendsConfig["backends"][number],
+				],
+				default: "umans",
+			}),
+		).toThrow(/umans/i);
 	});
 });

@@ -3,6 +3,7 @@ import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
 import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 import { OpenCodeGoDriver } from "./drivers/opencode-go";
+import { UmansDriver, createUmansAccount } from "./drivers/umans";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -140,6 +141,15 @@ export class ModelRouter {
 	private rateLimits: Map<string, number>; // backendId → expiry timestamp (ms)
 	private tiers: Map<string, number>; // backendId → tier number
 	private backendConfigs: Map<string, BackendConfig>; // backendId → raw config
+	/**
+	 * Generic readiness gate (parallel to rateLimits): ids of backends whose
+	 * `readiness` exists and `isReady() === false`. A not-ready backend is
+	 * excluded from `listEligible`/`listBackends` and `resolveModel` defers to
+	 * it as `transient-unavailable`. Seeded from any backend exposing
+	 * `readiness`; cleared per concrete id by `clearNotReady` on expansion.
+	 * Provider-agnostic — umans is merely the first `readiness` implementer.
+	 */
+	private notReady: Set<string>;
 
 	constructor(
 		backends: Map<string, LLMBackend>,
@@ -147,6 +157,7 @@ export class ModelRouter {
 		effectiveCaps?: Map<string, BackendCapabilities>,
 		tiers?: Map<string, number>,
 		backendConfigs?: Map<string, BackendConfig>,
+		notReady?: Set<string>,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -156,6 +167,13 @@ export class ModelRouter {
 		this.rateLimits = new Map();
 		this.tiers = tiers ?? new Map();
 		this.backendConfigs = backendConfigs ?? new Map();
+		this.notReady =
+			notReady ??
+			new Set(
+				Array.from(backends.entries())
+					.filter(([, b]) => b.readiness && !b.readiness.isReady())
+					.map(([id]) => id),
+			);
 	}
 
 	/**
@@ -174,12 +192,26 @@ export class ModelRouter {
 	 */
 	reload(config: ModelBackendsConfig): void {
 		const next = buildRouterState(config);
+		// Dispose readiness on superseded backends BEFORE reassigning so an
+		// in-flight lineup fetch holding the OLD registrar (bound to the same
+		// live router) cannot register stale models / clobber the re-seeded
+		// not-ready set after reload. Capture the prior backends first.
+		const prior = this.backends;
+		for (const backend of prior.values()) {
+			backend.readiness?.dispose();
+		}
 		this.backends = next.backends;
 		this.defaultId = next.defaultId;
 		this.effectiveCaps = next.effectiveCaps;
 		this.tiers = next.tiers;
 		this.backendConfigs = next.backendConfigs;
 		this.rateLimits = new Map();
+		// Re-seed not-ready from the freshly-constructed readiness backends.
+		this.notReady = new Set(
+			Array.from(next.backends.entries())
+				.filter(([, b]) => b.readiness && !b.readiness.isReady())
+				.map(([id]) => id),
+		);
 	}
 
 	getBackend(modelId?: string): LLMBackend {
@@ -200,25 +232,33 @@ export class ModelRouter {
 		return backend;
 	}
 
-	/** Returns BackendInfo list with EFFECTIVE capabilities (driver baseline merged with config overrides). */
+	/**
+	 * Returns BackendInfo list with EFFECTIVE capabilities (driver baseline
+	 * merged with config overrides). Not-ready backends (readiness present and
+	 * not yet ready) are EXCLUDED so `advertiseLocalModels` doesn't publish a
+	 * placeholder/namespace id, and so capability resolution never sees the
+	 * conservative placeholder caps.
+	 */
 	listBackends(): BackendInfo[] {
-		return Array.from(this.backends.keys()).map((id) => {
-			const effectiveCap = this.effectiveCaps.get(id);
-			const backend = this.backends.get(id);
-			return {
-				id,
-				capabilities: effectiveCap ??
-					backend?.capabilities() ?? {
-						streaming: true,
-						tool_use: true,
-						system_prompt: true,
-						prompt_caching: false,
-						vision: false,
-						extended_thinking: false,
-						max_context: 0,
-					},
-			};
-		});
+		return Array.from(this.backends.keys())
+			.filter((id) => !this.isNotReady(id))
+			.map((id) => {
+				const effectiveCap = this.effectiveCaps.get(id);
+				const backend = this.backends.get(id);
+				return {
+					id,
+					capabilities: effectiveCap ??
+						backend?.capabilities() ?? {
+							streaming: true,
+							tool_use: true,
+							system_prompt: true,
+							prompt_caching: false,
+							vision: false,
+							extended_thinking: false,
+							max_context: 0,
+						},
+				};
+			});
 	}
 
 	/** Returns the default backend ID. */
@@ -250,6 +290,7 @@ export class ModelRouter {
 		const result: BackendInfo[] = [];
 		for (const id of this.backends.keys()) {
 			if (this.isRateLimited(id)) continue;
+			if (this.isNotReady(id)) continue;
 
 			const caps = this.effectiveCaps.get(id);
 			if (!caps) continue;
@@ -289,6 +330,75 @@ export class ModelRouter {
 			return false;
 		}
 		return true;
+	}
+
+	/**
+	 * Returns true if the backend exists in the router but is not yet ready
+	 * (a `readiness`-bearing backend whose lineup fetch hasn't landed). Such a
+	 * backend is excluded from selection and `resolveModel` defers to it as
+	 * `transient-unavailable`. Provider-agnostic.
+	 */
+	isNotReady(id: string): boolean {
+		return this.notReady.has(id);
+	}
+
+	// --- Provider-agnostic dynamic-backend primitives (used by the CLI-layer
+	// registrar in inference.ts). The router never writes appContext.config —
+	// the registrar owns the shared-config pricing-row writes (package boundary).
+
+	/**
+	 * Add (or replace) a concrete model backend at runtime — e.g. when a
+	 * dynamic provider's lineup fetch resolves and materializes one backend per
+	 * model id. Sets the backend, its effective caps, and its tier; clears any
+	 * not-ready flag for the id.
+	 */
+	addDynamicBackend(
+		id: string,
+		backend: LLMBackend,
+		caps: BackendCapabilities,
+		tier?: number,
+	): void {
+		this.backends.set(id, backend);
+		this.effectiveCaps.set(id, caps);
+		if (typeof tier === "number") this.tiers.set(id, tier);
+		this.notReady.delete(id);
+	}
+
+	/** Remove a backend (e.g. the namespace placeholder after expansion). */
+	removeBackend(id: string): void {
+		this.backends.delete(id);
+		this.effectiveCaps.delete(id);
+		this.tiers.delete(id);
+		this.notReady.delete(id);
+		this.rateLimits.delete(id);
+	}
+
+	/** Clear the not-ready flag for an id (it has become selectable). */
+	clearNotReady(id: string): void {
+		this.notReady.delete(id);
+	}
+
+	/**
+	 * Redirect the default backend id if it currently points at `fromId` (e.g.
+	 * the namespace placeholder) — repoint it at a concrete expanded id. No-op
+	 * if the default isn't `fromId`.
+	 */
+	redirectDefault(fromId: string, toId: string): void {
+		if (this.defaultId === fromId) this.defaultId = toId;
+	}
+
+	/**
+	 * Returns the readiness-bearing backends currently registered (id + backend),
+	 * for the wiring helper to call `readiness.start(registrar)`. Provider-
+	 * agnostic — no `instanceof` checks. Pooled backends never expose
+	 * `readiness`, so they are naturally skipped.
+	 */
+	getReadinessBackends(): Array<{ id: string; backend: LLMBackend }> {
+		const out: Array<{ id: string; backend: LLMBackend }> = [];
+		for (const [id, backend] of this.backends) {
+			if (backend.readiness) out.push({ id, backend });
+		}
+		return out;
 	}
 
 	/**
@@ -356,9 +466,9 @@ export class ModelRouter {
 
 	/**
 	 * Returns the `effort` level configured for a backend, or undefined if
-	 * unset. Effort is a top-level output_config knob on the Claude API
-	 * (low | medium | high | xhigh | max) and replaces `budget_tokens` as
-	 * the depth control on Opus 4.7.
+	 * unset. A free-form, provider-validated reasoning-depth string (canonical
+	 * Anthropic/Bedrock-Converse set: low | medium | high | xhigh | max; other
+	 * providers advertise their own levels). See `ChatParams.effort`.
 	 */
 	getEffort(backendId: string): ChatParams["effort"] | undefined {
 		const config = this.backendConfigs.get(backendId);
@@ -535,6 +645,34 @@ function createBackendFromConfig(
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
 			});
+		}
+
+		case "umans": {
+			const apiKey = config.apiKey as string | undefined;
+			if (!apiKey) {
+				throw new Error("umans driver requires apiKey in config");
+			}
+			// Build the shared per-account state (provider, semaphore, usage
+			// cache, injectable fetchers) and the not-ready NAMESPACE/lineup
+			// driver registered under the config id. The fetch is NOT started
+			// here — wireBackendReadiness calls readiness.start(registrar)
+			// after construction so the registrar is bound first.
+			const account = createUmansAccount({
+				apiKey,
+				baseUrl: config.baseUrl,
+				logger,
+				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
+				// Optional test-injectable fetchers, threaded via the BackendConfig
+				// index signature. Production config never sets these.
+				metadataFetch: config.metadataFetch as
+					| Parameters<typeof createUmansAccount>[0]["metadataFetch"]
+					| undefined,
+				usageFetch: config.usageFetch as
+					| Parameters<typeof createUmansAccount>[0]["usageFetch"]
+					| undefined,
+			});
+			return new UmansDriver({ account, namespaceId: config.id, logger });
 		}
 
 		case "bedrock-mantle": {

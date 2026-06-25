@@ -1312,3 +1312,82 @@ describe("resolveSameTierFallback — remote hosts", () => {
 		}
 	});
 });
+
+// AC.3 — readiness gate. A not-ready (self-configuring) backend must NOT
+// resolve `kind:"local"` even when it is the default and even with no
+// requirements; it resolves `transient-unavailable` (retryable), not
+// `capability-mismatch`. After expansion the concrete model resolves local.
+describe("resolveModel readiness gate (AC.3)", () => {
+	function readinessBackend(ready: boolean) {
+		return {
+			id: "umans",
+			readiness: {
+				isReady: () => ready,
+				start: () => {},
+				dispose: () => {},
+			},
+			chat: async function* () {},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: true,
+				vision: false,
+				extended_thinking: false,
+				max_context: 0,
+			}),
+		};
+	}
+
+	it("defers a not-ready default with NO requirements to transient-unavailable (not kind:local)", () => {
+		const backends = new Map([["umans", readinessBackend(false)]]);
+		const router = new ModelRouter(backends, "umans");
+		const resolution = resolveModel(undefined, router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.reason).toBe("transient-unavailable");
+		}
+	});
+
+	it("defers a not-ready default WITH requirements to transient-unavailable (not capability-mismatch)", () => {
+		const backends = new Map([["umans", readinessBackend(false)]]);
+		const router = new ModelRouter(backends, "umans");
+		const resolution = resolveModel(undefined, router, db, "local-site", { tool_use: true });
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.reason).toBe("transient-unavailable");
+		}
+	});
+
+	it("resolves a concrete model id local once the readiness backend is ready and expanded", () => {
+		// Simulate post-expansion: a concrete backend is registered, the
+		// namespace removed, not-ready cleared.
+		const concrete = {
+			id: "umans-coder",
+			chat: async function* () {},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: true,
+				vision: false,
+				extended_thinking: false,
+				max_context: 200000,
+			}),
+		};
+		const backends = new Map([["umans", readinessBackend(false)]]);
+		const router = new ModelRouter(backends, "umans");
+		router.addDynamicBackend("umans-coder", concrete, concrete.capabilities(), 5);
+		router.redirectDefault("umans", "umans-coder");
+		router.removeBackend("umans");
+
+		const resolution = resolveModel("umans-coder", router, db, "local-site");
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") {
+			expect(resolution.modelId).toBe("umans-coder");
+		}
+		// The default now resolves to the concrete model too.
+		const def = resolveModel(undefined, router, db, "local-site");
+		expect(def.kind).toBe("local");
+	});
+});

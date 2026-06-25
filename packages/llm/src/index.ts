@@ -1,5 +1,8 @@
 export type {
 	LLMBackend,
+	BackendReadiness,
+	ModelDescriptor,
+	ModelRegistrar,
 	ChatParams,
 	LLMMessage,
 	ContentBlock,
@@ -25,6 +28,18 @@ export { BedrockMantleDriver } from "./drivers/bedrock-mantle";
 export { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 
 export { OpenCodeGoDriver } from "./drivers/opencode-go";
+
+export { UmansDriver, type UmansAccount } from "./drivers/umans";
+
+export {
+	fetchUmansModelMetadata,
+	fetchUmansUsage,
+	deriveUmansTiers,
+	UMANS_ANTHROPIC_BASE,
+	UMANS_OPENAI_BASE,
+	type UmansModelMeta,
+	type UmansUsage,
+} from "./umans-metadata";
 
 export {
 	createModelRouter,

@@ -1,6 +1,85 @@
 export interface LLMBackend {
 	chat(params: ChatParams): AsyncIterable<StreamChunk>;
 	capabilities(): BackendCapabilities;
+	/**
+	 * Optional, provider-neutral self-configuration contract. Present only on
+	 * drivers that resolve their model lineup asynchronously (e.g. fetch model
+	 * metadata + pricing + limits from the provider at runtime). Absent → the
+	 * backend is fully ready at construction (today's synchronous behavior for
+	 * all built-in drivers).
+	 *
+	 * A backend exposing `readiness` registers a not-ready placeholder under
+	 * its config `id` at construction; the router excludes it from selection
+	 * (`notReady` set) and `resolveModel` defers requests to it as
+	 * `transient-unavailable` until the driver calls `registrar.register(...)`.
+	 * The wiring layer calls `readiness.start(registrar)` after construction;
+	 * the driver fetches its lineup (with retry) and, on success, describes its
+	 * models via the registrar — which materializes one router backend per
+	 * model id. No umans-specific symbol leaks into the router or CLI.
+	 */
+	readiness?: BackendReadiness;
+}
+
+/**
+ * Async self-configuration handle for a dynamic, multi-model provider. See
+ * `LLMBackend.readiness`.
+ */
+export interface BackendReadiness {
+	/** True once `register(...)` has run (models materialized). */
+	isReady(): boolean;
+	/**
+	 * Kick off the background lineup fetch. The wiring layer calls this after
+	 * construction, passing a registrar bound to the live config + router. The
+	 * driver must not start fetching in its constructor (the registrar isn't
+	 * available there) and must gate any `register` call behind the disposed
+	 * flag so a fetch that resolves after `dispose()` is a no-op.
+	 */
+	start(registrar: ModelRegistrar): void;
+	/**
+	 * Mark this readiness handle superseded. Cancels any in-flight fetch and
+	 * prevents future `register` calls. Called by the router on `reload()` for
+	 * backends being replaced, so a stale fetch can't register into the live
+	 * router.
+	 */
+	dispose(): void;
+}
+
+/**
+ * Provider-neutral per-model metadata a dynamic driver supplies to the
+ * registrar. Carries no provider-specific fields — the same shape would
+ * describe any future async/multi-model provider.
+ */
+export interface ModelDescriptor {
+	id: string;
+	capabilities: BackendCapabilities;
+	tier?: number;
+	pricing?: {
+		inputPerM: number;
+		outputPerM: number;
+		cacheReadPerM?: number;
+		cacheWritePerM?: number;
+	};
+	maxOutputTokens?: number;
+}
+
+/**
+ * Callback handed to a dynamic driver via `readiness.start(registrar)`. The
+ * driver only *describes* its models (`ModelDescriptor`) and supplies each
+ * model's per-model `LLMBackend`. The registrar implementation (constructed in
+ * the CLI layer, where the shared config + router are in scope) owns the
+ * shared-config pricing-row writes, the router-primitive calls, advertisement,
+ * and not-ready clearing — keeping `@bound/llm` free of any `@bound/core`
+ * dependency.
+ *
+ * `register` is idempotent per `providerId`: a second call (e.g. after a
+ * config reload + re-expansion) replaces the prior set registered under that
+ * id rather than accumulating duplicates.
+ */
+export interface ModelRegistrar {
+	register(
+		providerId: string,
+		models: Array<{ descriptor: ModelDescriptor; backend: LLMBackend }>,
+	): void;
 }
 
 export interface ChatParams {
@@ -37,17 +116,19 @@ export interface ChatParams {
 		| { type: "enabled"; budget_tokens: number }
 		| { type: "adaptive"; display?: "omitted" | "summarized" };
 	/**
-	 * `output_config.effort` — controls thinking depth and overall token
-	 * spend. Replaces `budget_tokens` as the depth lever on Opus 4.7 and
-	 * is recommended alongside adaptive thinking on Opus 4.6. Levels:
+	 * Reasoning-depth / token-spend lever. A FREE-FORM string: the accepted
+	 * vocabulary is provider-specific and validated per-driver, not by this
+	 * type. The canonical Anthropic/Bedrock-Converse values are:
 	 *  - `low` / `medium` — scoped work, lower cost
 	 *  - `high` — recommended minimum for intelligence-sensitive tasks
-	 *  - `xhigh` — new on 4.7; sweet spot for coding/agentic workloads
-	 *  - `max` — Opus-tier only; ceiling, can over-think on small tasks
-	 *
-	 * Supported by Anthropic (direct) and Bedrock (Converse API) backends.
+	 *  - `xhigh` — sweet spot for coding/agentic workloads (Opus 4.7)
+	 *  - `max` — Opus-tier ceiling
+	 * Other providers advertise their own levels (e.g. umans reports
+	 * `reasoning.levels` per model and forwards this as a top-level
+	 * `reasoning_effort`). Each driver validates/maps the value against what
+	 * its provider accepts; unknown values are dropped, not sent blindly.
 	 */
-	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	effort?: string;
 	signal?: AbortSignal;
 	/**
 	 * Resolves a `file_ref` source (image or document) to inline base64
@@ -358,7 +439,8 @@ export interface InferenceRequestPayload {
 	thinking?:
 		| { type: "enabled"; budget_tokens: number }
 		| { type: "adaptive"; display?: "omitted" | "summarized" };
-	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	// Free-form, provider-validated; see ChatParams.effort.
+	effort?: string;
 	cache_ttl?: "5m" | "1h";
 	timeout_ms: number;
 	messages_file_ref?: string; // Set when messages are written to synced file (large prompt path)

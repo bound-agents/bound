@@ -13,7 +13,12 @@ import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
-import { advertiseLocalModels, initInference, toRouterConfig } from "./inference.js";
+import {
+	advertiseLocalModels,
+	initInference,
+	toRouterConfig,
+	wireBackendReadiness,
+} from "./inference.js";
 import { initMcp, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
@@ -146,6 +151,11 @@ export async function runStart(args: StartArgs): Promise<void> {
 			try {
 				modelRouter.reload(toRouterConfig(newConfig));
 				advertiseLocalModels(appContext, modelRouter, newConfig);
+				// Re-kick self-configuring backends after reload. `reload()`
+				// disposed the superseded readiness handles and re-seeded
+				// not-ready; this re-`start()`s the fresh ones with a registrar
+				// bound to the now-current config object.
+				wireBackendReadiness(appContext, modelRouter);
 				appContext.logger.info("[sighup] Model router reloaded", {
 					backends: modelRouter.listBackends().map((b) => b.id),
 					default: modelRouter.getDefaultId(),

@@ -225,6 +225,25 @@ export function resolveModel(
 ): ModelResolution {
 	const effectiveModelId = !modelId || modelId === "default" ? modelRouter.getDefaultId() : modelId;
 
+	// Phase 0: Readiness gate. A backend exposing async self-configuration
+	// (`readiness`) registers a not-ready placeholder/namespace id until its
+	// lineup fetch lands. `tryGetBackend` is NOT readiness-gated, so without
+	// this short-circuit a not-ready umans default/named model would resolve
+	// `kind:"local"` and run a real turn on guessed pricing/limits — the exact
+	// thing gating must prevent. Placing the gate at the TOP (before the
+	// requirements branch) also covers no-requirements callers like
+	// `acquireSummaryBackend`. The resolution is retryable: a sub-second warmup
+	// later resolves locally. Provider-agnostic — no umans names.
+	if (effectiveModelId && modelRouter.isNotReady(effectiveModelId)) {
+		const earliestRecovery = modelRouter.getEarliestCapableRecovery(requirements);
+		return {
+			kind: "error",
+			error: `Model "${effectiveModelId}" is not ready yet (self-configuring backend warming up)`,
+			reason: "transient-unavailable",
+			...(earliestRecovery !== null ? { earliestRecovery } : {}),
+		};
+	}
+
 	// Phase 1: Identify — check local backends first
 	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
 
