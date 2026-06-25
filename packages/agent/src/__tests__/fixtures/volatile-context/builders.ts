@@ -269,6 +269,8 @@ export function makeAppliedAdvisory(
 			resolved_at: resolvedAt,
 			created_by: null,
 			thread_id: null,
+			resolved_by: null,
+			resolution_note: null,
 			modified_at: now,
 			deleted: 0,
 		},

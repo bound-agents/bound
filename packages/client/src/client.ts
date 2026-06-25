@@ -700,20 +700,36 @@ export class BoundClient {
 		return this.fetchJson("/api/advisories/count");
 	}
 
-	async approveAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/approve`, { method: "POST" });
+	async approveAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/approve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
-	async dismissAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/dismiss`, { method: "POST" });
+	async dismissAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/dismiss`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
-	async deferAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/defer`, { method: "POST" });
+	async deferAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/defer`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
-	async applyAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/apply`, { method: "POST" });
+	async applyAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/apply`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
 	// ---- Webhooks ----

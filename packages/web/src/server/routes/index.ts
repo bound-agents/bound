@@ -117,7 +117,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			requestConsistency,
 		),
 		tasks: createTasksRoutes(db),
-		advisories: createAdvisoriesRoutes(db),
+		advisories: createAdvisoriesRoutes(db, operatorUserId),
 		mcp: createMcpRoutes(db),
 		mcpApps: createMcpAppsRoutes(db, mcpConfig ?? null),
 		webhooks: createWebhooksRoutes(db, {

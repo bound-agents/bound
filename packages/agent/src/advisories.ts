@@ -3,6 +3,18 @@ import { randomUUID } from "node:crypto";
 import { insertRow, softDelete, updateRow } from "@bound/core";
 import type { Advisory, Result } from "@bound/shared";
 
+/**
+ * Provenance recorded on every advisory state transition (#192). `by` is the
+ * actor that made the change — the literal `"agent"` when the change came
+ * through the `advisory` tool, or an operator user id on the web path. `note`
+ * is the required rationale/outcome, so a later reader (usually the agent
+ * itself) has context for why an advisory was approved/dismissed/applied.
+ */
+export interface AdvisoryResolution {
+	note: string;
+	by: string;
+}
+
 export function createAdvisory(
 	db: Database,
 	advisory: Omit<
@@ -15,6 +27,8 @@ export function createAdvisory(
 		| "resolved_at"
 		| "deleted"
 		| "thread_id"
+		| "resolved_by"
+		| "resolution_note"
 	>,
 	siteId: string,
 	threadId?: string | null,
@@ -40,6 +54,8 @@ export function createAdvisory(
 			modified_at: now,
 			created_by: siteId,
 			thread_id: threadId ?? null,
+			resolved_by: null,
+			resolution_note: null,
 			deleted: 0,
 		},
 		siteId,
@@ -51,11 +67,23 @@ export function createAdvisory(
 export function approveAdvisory(
 	db: Database,
 	advisoryId: string,
+	resolution: AdvisoryResolution,
 	siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		updateRow(db, "advisories", advisoryId, { status: "approved", resolved_at: now }, siteId);
+		updateRow(
+			db,
+			"advisories",
+			advisoryId,
+			{
+				status: "approved",
+				resolved_at: now,
+				resolved_by: resolution.by,
+				resolution_note: resolution.note,
+			},
+			siteId,
+		);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
@@ -68,11 +96,23 @@ export function approveAdvisory(
 export function dismissAdvisory(
 	db: Database,
 	advisoryId: string,
+	resolution: AdvisoryResolution,
 	siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		updateRow(db, "advisories", advisoryId, { status: "dismissed", resolved_at: now }, siteId);
+		updateRow(
+			db,
+			"advisories",
+			advisoryId,
+			{
+				status: "dismissed",
+				resolved_at: now,
+				resolved_by: resolution.by,
+				resolution_note: resolution.note,
+			},
+			siteId,
+		);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {
@@ -86,6 +126,7 @@ export function deferAdvisory(
 	db: Database,
 	advisoryId: string,
 	deferUntil: string,
+	resolution: AdvisoryResolution,
 	siteId: string,
 ): Result<void, Error> {
 	try {
@@ -93,7 +134,12 @@ export function deferAdvisory(
 			db,
 			"advisories",
 			advisoryId,
-			{ status: "deferred", defer_until: deferUntil },
+			{
+				status: "deferred",
+				defer_until: deferUntil,
+				resolved_by: resolution.by,
+				resolution_note: resolution.note,
+			},
 			siteId,
 		);
 		return { ok: true, value: undefined };
@@ -108,11 +154,23 @@ export function deferAdvisory(
 export function applyAdvisory(
 	db: Database,
 	advisoryId: string,
+	resolution: AdvisoryResolution,
 	siteId: string,
 ): Result<void, Error> {
 	try {
 		const now = new Date().toISOString();
-		updateRow(db, "advisories", advisoryId, { status: "applied", resolved_at: now }, siteId);
+		updateRow(
+			db,
+			"advisories",
+			advisoryId,
+			{
+				status: "applied",
+				resolved_at: now,
+				resolved_by: resolution.by,
+				resolution_note: resolution.note,
+			},
+			siteId,
+		);
 		return { ok: true, value: undefined };
 	} catch (error) {
 		return {

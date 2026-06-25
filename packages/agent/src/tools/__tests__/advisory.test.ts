@@ -108,6 +108,7 @@ describe("advisory tool", () => {
 		// Approve it
 		const approveResult = await tool.execute({
 			approve: prefix,
+			note: "verified against the source thread",
 		});
 		expect(approveResult).toContain("approved");
 		expect(approveResult).not.toContain("Error");
@@ -129,8 +130,8 @@ describe("advisory tool", () => {
 		const advisoryId = match?.[1];
 		const prefix = advisoryId.slice(0, 8);
 
-		await tool.execute({ approve: prefix });
-		const applyResult = await tool.execute({ apply: prefix });
+		await tool.execute({ approve: prefix, note: "ok" });
+		const applyResult = await tool.execute({ apply: prefix, note: "redeployed hub" });
 
 		expect(applyResult).toContain("applied");
 		expect(applyResult).not.toContain("Error");
@@ -151,7 +152,7 @@ describe("advisory tool", () => {
 		const advisoryId = match?.[1];
 		const prefix = advisoryId.slice(0, 8);
 
-		const dismissResult = await tool.execute({ dismiss: prefix });
+		const dismissResult = await tool.execute({ dismiss: prefix, note: "false positive" });
 		expect(dismissResult).toContain("dismissed");
 		expect(dismissResult).not.toContain("Error");
 
@@ -172,6 +173,7 @@ describe("advisory tool", () => {
 
 		const deferResult = await tool.execute({
 			defer: prefix,
+			note: "snooze until after release",
 		});
 		expect(deferResult).toContain("deferred");
 		expect(deferResult).not.toContain("Error");
@@ -218,6 +220,7 @@ describe("advisory tool", () => {
 		if (commonPrefix.length > 0) {
 			const result = await tool.execute({
 				approve: commonPrefix,
+				note: "ok",
 			});
 			expect(result).toContain("Error");
 			expect(result.toLowerCase()).toContain("ambiguous");
@@ -229,9 +232,43 @@ describe("advisory tool", () => {
 
 		const result = await tool.execute({
 			approve: "nonexistent-prefix",
+			note: "ok",
 		});
 		expect(result).toContain("Error");
 		expect(result).toContain("No advisory found");
+	});
+
+	it("requires a note for state transitions and stamps resolved_by=agent (#192)", async () => {
+		const tool = createAdvisoryTool(ctx);
+
+		const createResult = await tool.execute({
+			title: "Needs a note",
+			detail: "details",
+		});
+		const advisoryId = createResult.match(/Advisory created: ([a-f0-9-]+)/)?.[1];
+		const prefix = advisoryId?.slice(0, 8);
+
+		// No note → rejected, status unchanged.
+		const noNote = await tool.execute({ approve: prefix });
+		expect(noNote).toContain("Error");
+		expect(noNote.toLowerCase()).toContain("note");
+		const stillProposed = db
+			.prepare("SELECT status FROM advisories WHERE id = ?")
+			.get(advisoryId) as any;
+		expect(stillProposed.status).toBe("proposed");
+
+		// Whitespace-only note is treated as missing.
+		const blankNote = await tool.execute({ approve: prefix, note: "   " });
+		expect(blankNote).toContain("Error");
+
+		// With a note → succeeds and stamps provenance.
+		const ok = await tool.execute({ approve: prefix, note: "verified, merging" });
+		expect(ok).not.toContain("Error");
+		const row = db
+			.prepare("SELECT resolution_note, resolved_by FROM advisories WHERE id = ?")
+			.get(advisoryId) as any;
+		expect(row.resolution_note).toBe("verified, merging");
+		expect(row.resolved_by).toBe("agent");
 	});
 
 	it("errors when no params provided", async () => {
@@ -253,7 +290,7 @@ describe("advisory tool", () => {
 		const advisoryId = match?.[1];
 		const prefix = advisoryId.slice(0, 8);
 
-		await tool.execute({ approve: prefix });
+		await tool.execute({ approve: prefix, note: "ok" });
 
 		// Create another (will be proposed)
 		await tool.execute({
