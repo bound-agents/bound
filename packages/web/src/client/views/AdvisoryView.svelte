@@ -72,17 +72,20 @@ onDestroy(() => {
 });
 
 async function performAction(id: string, action: string): Promise<void> {
+	// #192: every state change carries a note recording why/what was done.
+	const note = window.prompt(`Add a note for "${action}" (required):`)?.trim();
+	if (!note) return;
 	actionInProgress = `${id}:${action}`;
 	try {
-		const actionMap: Record<string, (id: string) => Promise<unknown>> = {
-			approve: (id) => client.approveAdvisory(id),
-			dismiss: (id) => client.dismissAdvisory(id),
-			defer: (id) => client.deferAdvisory(id),
-			apply: (id) => client.applyAdvisory(id),
+		const actionMap: Record<string, (id: string, note: string) => Promise<unknown>> = {
+			approve: (id, note) => client.approveAdvisory(id, note),
+			dismiss: (id, note) => client.dismissAdvisory(id, note),
+			defer: (id, note) => client.deferAdvisory(id, note),
+			apply: (id, note) => client.applyAdvisory(id, note),
 		};
 		const fn = actionMap[action];
 		if (fn) {
-			await fn(id);
+			await fn(id, note);
 			await loadAdvisories();
 		}
 	} catch (error) {

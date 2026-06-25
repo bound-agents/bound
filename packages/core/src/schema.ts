@@ -343,6 +343,8 @@ export function applySchema(db: Database): void {
 			resolved_at TEXT,
 			created_by  TEXT,
 			thread_id   TEXT,
+			resolved_by      TEXT,
+			resolution_note  TEXT,
 			modified_at TEXT NOT NULL,
 			deleted     INTEGER DEFAULT 0
 		) STRICT
@@ -619,6 +621,21 @@ export function applySchema(db: Database): void {
 	// databases gain the column on next startup; existing rows default to NULL.
 	try {
 		db.run("ALTER TABLE advisories ADD COLUMN thread_id TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// #192: record advisory outcome provenance. `resolved_by` stamps the actor
+	// that changed state ("agent" for the advisory tool, an operator user id for
+	// the web path); `resolution_note` carries the required rationale/outcome for
+	// the transition. Idempotent — older rows default to NULL.
+	try {
+		db.run("ALTER TABLE advisories ADD COLUMN resolved_by TEXT");
+	} catch {
+		/* already exists */
+	}
+	try {
+		db.run("ALTER TABLE advisories ADD COLUMN resolution_note TEXT");
 	} catch {
 		/* already exists */
 	}

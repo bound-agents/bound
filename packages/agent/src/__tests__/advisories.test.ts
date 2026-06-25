@@ -63,12 +63,85 @@ describe("Advisories", () => {
 		// Clear changelog from create
 		db.prepare("DELETE FROM change_log WHERE row_id = ?").run(advisoryId);
 
-		approveAdvisory(db, advisoryId, siteId);
+		approveAdvisory(db, advisoryId, { note: "verified, merging", by: "agent" }, siteId);
 
 		const changelogEntries = db
 			.prepare("SELECT * FROM change_log WHERE table_name = 'advisories' AND row_id = ?")
 			.all(advisoryId);
 		expect(changelogEntries.length).toBeGreaterThanOrEqual(1);
+	});
+
+	function seed(): string {
+		return createAdvisory(
+			db,
+			{
+				type: "cost",
+				title: "Seed",
+				detail: "Detail",
+				action: "Action",
+				impact: "low",
+				evidence: "Evidence",
+			},
+			siteId,
+		);
+	}
+
+	it("stamps resolution_note + resolved_by + resolved_at on approve (#192)", () => {
+		const id = seed();
+		const res = approveAdvisory(db, id, { note: "verified, merging", by: "agent" }, siteId);
+		expect(res.ok).toBe(true);
+		const row = db
+			.prepare(
+				"SELECT status, resolution_note, resolved_by, resolved_at FROM advisories WHERE id = ?",
+			)
+			.get(id) as Advisory;
+		expect(row.status).toBe("approved");
+		expect(row.resolution_note).toBe("verified, merging");
+		expect(row.resolved_by).toBe("agent");
+		expect(row.resolved_at).not.toBeNull();
+	});
+
+	it("stamps resolution_note + resolved_by on dismiss (#192)", () => {
+		const id = seed();
+		dismissAdvisory(
+			db,
+			id,
+			{ note: "false positive — substr collision", by: "operator-7" },
+			siteId,
+		);
+		const row = db
+			.prepare("SELECT status, resolution_note, resolved_by FROM advisories WHERE id = ?")
+			.get(id) as Advisory;
+		expect(row.status).toBe("dismissed");
+		expect(row.resolution_note).toBe("false positive — substr collision");
+		expect(row.resolved_by).toBe("operator-7");
+	});
+
+	it("stamps resolution_note + resolved_by on apply (#192)", () => {
+		const id = seed();
+		approveAdvisory(db, id, { note: "ok", by: "agent" }, siteId);
+		applyAdvisory(db, id, { note: "redeployed hub at v0.0.190", by: "operator-7" }, siteId);
+		const row = db
+			.prepare("SELECT status, resolution_note, resolved_by FROM advisories WHERE id = ?")
+			.get(id) as Advisory;
+		expect(row.status).toBe("applied");
+		expect(row.resolution_note).toBe("redeployed hub at v0.0.190");
+		expect(row.resolved_by).toBe("operator-7");
+	});
+
+	it("stamps resolution_note + resolved_by on defer (#192)", () => {
+		const id = seed();
+		const until = new Date(Date.now() + 3600_000).toISOString();
+		deferAdvisory(db, id, until, { note: "snooze until after the release", by: "agent" }, siteId);
+		const row = db
+			.prepare(
+				"SELECT status, defer_until, resolution_note, resolved_by FROM advisories WHERE id = ?",
+			)
+			.get(id) as Advisory;
+		expect(row.status).toBe("deferred");
+		expect(row.defer_until).toBe(until);
+		expect(row.resolution_note).toBe("snooze until after the release");
+		expect(row.resolved_by).toBe("agent");
 	});
 
 	it("should create an advisory", () => {
@@ -145,7 +218,7 @@ describe("Advisories", () => {
 			siteId,
 		);
 
-		const result = approveAdvisory(db, id, siteId);
+		const result = approveAdvisory(db, id, { note: "ok", by: "agent" }, siteId);
 		expect(result.ok).toBe(true);
 
 		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
@@ -167,7 +240,7 @@ describe("Advisories", () => {
 			siteId,
 		);
 
-		const result = dismissAdvisory(db, id, siteId);
+		const result = dismissAdvisory(db, id, { note: "ok", by: "agent" }, siteId);
 		expect(result.ok).toBe(true);
 
 		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
@@ -190,7 +263,7 @@ describe("Advisories", () => {
 		);
 
 		const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-		const result = deferAdvisory(db, id, futureDate, siteId);
+		const result = deferAdvisory(db, id, futureDate, { note: "ok", by: "agent" }, siteId);
 		expect(result.ok).toBe(true);
 
 		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
@@ -212,7 +285,7 @@ describe("Advisories", () => {
 			siteId,
 		);
 
-		const result = applyAdvisory(db, id, siteId);
+		const result = applyAdvisory(db, id, { note: "ok", by: "agent" }, siteId);
 		expect(result.ok).toBe(true);
 
 		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
@@ -247,7 +320,7 @@ describe("Advisories", () => {
 			siteId,
 		);
 
-		approveAdvisory(db, id1, siteId);
+		approveAdvisory(db, id1, { note: "ok", by: "agent" }, siteId);
 
 		const pending = getPendingAdvisories(db);
 
@@ -282,7 +355,7 @@ describe("Advisories", () => {
 			siteId,
 		);
 
-		dismissAdvisory(db, id1, siteId);
+		dismissAdvisory(db, id1, { note: "ok", by: "agent" }, siteId);
 
 		const pending = getPendingAdvisories(db);
 
@@ -317,7 +390,7 @@ describe("Advisories", () => {
 			siteId,
 		);
 
-		applyAdvisory(db, id1, siteId);
+		applyAdvisory(db, id1, { note: "ok", by: "agent" }, siteId);
 
 		const pending = getPendingAdvisories(db);
 
@@ -340,7 +413,7 @@ describe("Advisories", () => {
 		);
 
 		const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-		deferAdvisory(db, id, futureDate, siteId);
+		deferAdvisory(db, id, futureDate, { note: "ok", by: "agent" }, siteId);
 
 		const pending = getPendingAdvisories(db);
 

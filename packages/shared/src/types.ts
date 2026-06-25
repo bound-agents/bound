@@ -255,6 +255,10 @@ export interface Advisory extends SoftDeletable {
 	created_by: string | null;
 	/** Thread the advisory originated from (null for advisories with no source thread). #93 */
 	thread_id: string | null;
+	/** Actor that last changed the advisory's state: "agent" or an operator user id. #192 */
+	resolved_by: string | null;
+	/** Rationale / outcome recorded at the state transition. #192 */
+	resolution_note: string | null;
 	modified_at: string;
 }
 

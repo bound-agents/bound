@@ -47,6 +47,12 @@ const advisorySchema = z.object({
 	dismiss: z.string().optional().describe("Advisory ID prefix to dismiss"),
 	defer: z.string().optional().describe("Advisory ID prefix to defer"),
 	defer_until: z.string().optional().describe("ISO date to defer until (default: 24h from now)"),
+	note: z
+		.string()
+		.optional()
+		.describe(
+			"Rationale / outcome for a state change (required for approve/apply/dismiss/defer). Recorded as provenance so a later reader knows why the advisory was resolved.",
+		),
 });
 
 export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
@@ -122,13 +128,27 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 					return lines.join("\n\n");
 				}
 
+				// State transitions (approve/apply/dismiss/defer) require a note
+				// recording why/what was done — #192 provenance. The acting party
+				// on this surface is always the agent.
+				const isTransition =
+					typeof input.approve === "string" ||
+					typeof input.apply === "string" ||
+					typeof input.dismiss === "string" ||
+					typeof input.defer === "string";
+				const note = input.note?.trim();
+				if (isTransition && !note) {
+					return "Error: a `note` is required when changing an advisory's state — record why it's being approved/applied/dismissed/deferred.";
+				}
+				const resolution = { note: note ?? "", by: "agent" };
+
 				// Approve advisory
 				if (input.approve) {
 					const resolved = resolveAdvisoryId(ctx.db, input.approve);
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
-					const result = approveAdvisory(ctx.db, resolved.id, ctx.siteId);
+					const result = approveAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
 					if (!result.ok) {
 						return `Error: Failed to approve advisory: ${result.error.message}`;
 					}
@@ -141,7 +161,7 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
-					const result = applyAdvisory(ctx.db, resolved.id, ctx.siteId);
+					const result = applyAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
 					if (!result.ok) {
 						return `Error: Failed to apply advisory: ${result.error.message}`;
 					}
@@ -154,7 +174,7 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 					if (!resolved.ok) {
 						return `Error: ${resolved.error}`;
 					}
-					const result = dismissAdvisory(ctx.db, resolved.id, ctx.siteId);
+					const result = dismissAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
 					if (!result.ok) {
 						return `Error: Failed to dismiss advisory: ${result.error.message}`;
 					}
@@ -168,7 +188,7 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 						return `Error: ${resolved.error}`;
 					}
 					const deferDate = input.defer_until || new Date(Date.now() + 24 * 3600_000).toISOString();
-					const result = deferAdvisory(ctx.db, resolved.id, deferDate, ctx.siteId);
+					const result = deferAdvisory(ctx.db, resolved.id, deferDate, resolution, ctx.siteId);
 					if (!result.ok) {
 						return `Error: Failed to defer advisory: ${result.error.message}`;
 					}
