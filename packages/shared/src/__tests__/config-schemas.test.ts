@@ -632,11 +632,12 @@ describe("Config schemas", () => {
 
 		describe("max_output_tokens field", () => {
 			// Per-backend cap on the response-side `maxOutputTokens` parameter.
-			// Some Bedrock models reject the default DEFAULT_MAX_OUTPUT_TOKENS
-			// (16_384) with "max_tokens exceeds model limit of 10000" — notably
+			// Some Bedrock models reject an explicit maxTokens above their
+			// ceiling with "max_tokens exceeds model limit of 10000" — notably
 			// Nova Pro (10k cap). This field lets operators pin a lower cap per
 			// backend without touching code. The agent-loop takes
-			// `min(backend.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`.
+			// `min(backend.max_output_tokens, configuredMax)`, and when neither
+			// is set, omits max_tokens entirely.
 			it("accepts a positive integer max_output_tokens", () => {
 				const config = {
 					backends: [

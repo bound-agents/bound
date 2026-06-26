@@ -251,23 +251,31 @@ export function getResolvedModelId(resolution: ModelResolution | null, fallback?
 /**
  * Reconciles the agent-loop default `max_tokens` budget with a per-backend
  * cap configured in `model_backends.json#max_output_tokens`. Returns
- * `min(defaultMax, cap)` when `cap` is a positive integer, otherwise
- * returns `defaultMax` unchanged.
+ * `min(defaultMax, cap)` when both are positive integers. When `defaultMax`
+ * is `undefined` and `cap` is set, returns `cap`. When both are `undefined`,
+ * returns `undefined` so the provider uses its own default.
  *
- * Exists because some Bedrock models reject the default
- * `DEFAULT_MAX_OUTPUT_TOKENS` (16_384) with
- * `max_tokens exceeds model limit of N` — notably Nova Pro (N=10_000).
- * The backend cap is treated as an upper bound only: if an operator
- * misconfigures a cap above the default, the default still wins so the
- * per-turn budget can never be raised behind the loop's back.
+ * Exists because some Bedrock models reject an explicit `maxTokens` above
+ * their ceiling with `max_tokens exceeds model limit of N` — notably
+ * Nova Pro (N=10_000). The backend cap is treated as an upper bound only:
+ * if an operator sets a cap above the configured default, the default
+ * still wins so the per-turn budget can never be raised behind the loop's back.
  *
  * Exported so both the agent-loop (local path) and the relay-processor
  * (receiver side) can reuse a single definition — defence-in-depth against
- * stale requester payloads that still carry the old default.
+ * stale requester payloads that still carry an explicit max_tokens.
  */
-export function clampMaxOutputTokens(defaultMax: number, cap: number | undefined): number {
-	if (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0) return defaultMax;
-	return Math.min(defaultMax, Math.floor(cap));
+export function clampMaxOutputTokens(
+	defaultMax: number | undefined,
+	cap: number | undefined,
+): number | undefined {
+	const hasDefault =
+		typeof defaultMax === "number" && Number.isFinite(defaultMax) && defaultMax > 0;
+	const hasCap = typeof cap === "number" && Number.isFinite(cap) && cap > 0;
+	if (hasDefault && hasCap) return Math.min(defaultMax, Math.floor(cap));
+	if (hasDefault) return defaultMax;
+	if (hasCap) return Math.floor(cap);
+	return undefined;
 }
 
 // ---------------------------------------------------------------------------

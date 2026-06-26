@@ -2,8 +2,8 @@
  * Regression tests for `max_output_tokens` propagation through resolveModel.
  *
  * Background: some Bedrock models cap the response-side `maxOutputTokens`
- * parameter below the agent-loop default (DEFAULT_MAX_OUTPUT_TOKENS =
- * 16_384). Notably, Nova Pro rejects anything above 10_000 with:
+ * parameter below what the provider would default to. Notably, Nova Pro
+ * rejects anything above 10_000 with:
  *
  *   ValidationException: max_tokens exceeds model limit of 10000
  *

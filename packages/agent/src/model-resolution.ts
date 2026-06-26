@@ -24,7 +24,7 @@ export type ModelResolution =
 			// Top-level output_config.effort — depth control for Opus 4.7.
 			effort?: ChatParams["effort"];
 			// Per-backend cap on `maxOutputTokens`. When set, the agent-loop
-			// takes `min(maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS)` so
+			// takes `min(maxOutputTokens, configuredMax)` so
 			// backends with tight limits (e.g. Nova Pro = 10_000) don't 400
 			// with "max_tokens exceeds model limit of N".
 			maxOutputTokens?: number;

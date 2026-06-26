@@ -164,10 +164,11 @@ const modelBackendSchema = z
 		thinking: thinkingConfigSchema.optional(),
 		effort: effortSchema.optional(),
 		// Per-backend cap on `maxOutputTokens` forwarded to the provider.
-		// Some Bedrock models reject DEFAULT_MAX_OUTPUT_TOKENS (16_384) with
-		// "max_tokens exceeds model limit of N" — e.g. Nova Pro caps at 10_000.
-		// The agent-loop takes `min(max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`
-		// at call time so lowering it is always safe.
+		// Some Bedrock models reject an explicit maxTokens above their ceiling
+		// with "max_tokens exceeds model limit of N" — e.g. Nova Pro caps at 10_000.
+		// The agent-loop takes `min(max_output_tokens, configuredMax)` at call
+		// time, and when neither is set, omits max_tokens entirely so the
+		// provider uses its own default.
 		max_output_tokens: z.number().int().positive().optional(),
 		// Prompt cache TTL hint forwarded to the provider's cache breakpoint.
 		// Bedrock supports "5m" (default) and "1h" (extended, only for Claude
