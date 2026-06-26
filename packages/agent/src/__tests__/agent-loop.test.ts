@@ -3093,6 +3093,53 @@ describe("AgentLoop", () => {
 				// 1 initial + 2 retries = 3 total calls
 				expect(mockBackend.getCallCount()).toBe(3);
 			});
+
+			it("records finishReason 'length' into context_debug when a final response is truncated", async () => {
+				// The silent case: text already streamed, then the output-token
+				// ceiling is hit. The thinking-retry guard does NOT fire (it
+				// requires no text), so the truncated response persists — this
+				// is what reaches the user as "streaming interrupted". The finish
+				// reason must be queryable from turns.context_debug afterward.
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: "A long partial answer that got cut off" };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 17000,
+							output_tokens: 4096,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "length" as const,
+					};
+				});
+
+				const agentLoop = new AgentLoop(
+					makeCtx(),
+					createMockSandbox(),
+					createMockRouter(mockBackend),
+					{
+						threadId,
+						userId: "test-user",
+					},
+				);
+
+				await agentLoop.run();
+
+				// No retry: a single backend call, response persisted as-is.
+				expect(mockBackend.getCallCount()).toBe(1);
+
+				const turn = db
+					.query(
+						"SELECT context_debug FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+					)
+					.get(threadId) as { context_debug: string | null };
+				expect(turn?.context_debug).toBeTruthy();
+				const debug = JSON.parse(turn.context_debug as string);
+				expect(debug.finishReason).toBe("length");
+			});
 		});
 	});
 });
