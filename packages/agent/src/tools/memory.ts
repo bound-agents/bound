@@ -70,7 +70,10 @@ type MemoryInput = z.infer<typeof memorySchema>;
  * standing instructions are the canonical case; add future system keys here.
  * Issue #101.
  */
-const SYSTEM_MEMORY_KEYS = new Set<string>(["_heartbeat_instructions", "_consolidation_instructions"]);
+const SYSTEM_MEMORY_KEYS = new Set<string>([
+	"_heartbeat_instructions",
+	"_consolidation_instructions",
+]);
 
 /**
  * Count the pinned, non-system, live memory entries currently stored. This is

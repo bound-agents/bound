@@ -22,10 +22,7 @@ const DEFAULT_CONSOLIDATION_INSTRUCTIONS = `Read the consolidation candidates be
  */
 export const DEFAULT_CONSOLIDATION_INTERVAL_MS = 14_400_000; // 4 hours
 
-export function buildConsolidationContext(
-	db: Database,
-	lastRunAt: string | null,
-): string {
+export function buildConsolidationContext(db: Database): string {
 	const instructions = loadConsolidationInstructions(db);
 	const candidateSection = buildCandidateSection(db);
 	const staleSection = buildStaleSummarySection(db);
@@ -155,9 +152,7 @@ interface TierCount {
 
 function buildPressureSection(db: Database): string {
 	const rows = db
-		.prepare(
-			"SELECT tier, COUNT(*) AS n FROM semantic_memory WHERE deleted=0 GROUP BY tier",
-		)
+		.prepare("SELECT tier, COUNT(*) AS n FROM semantic_memory WHERE deleted=0 GROUP BY tier")
 		.all() as TierCount[];
 
 	const parts = rows.map((r) => `${r.tier}=${r.n}`).join(", ");

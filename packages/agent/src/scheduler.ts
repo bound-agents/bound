@@ -15,8 +15,8 @@ import type { Task } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
-import { buildEventWakeupContent } from "./event-payload";
 import { buildConsolidationContext } from "./consolidation-context";
+import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import {
 	computeFiringKey,
@@ -1390,7 +1390,7 @@ export class Scheduler {
 						logger: this.ctx.logger,
 					});
 				} else if (task.type === "consolidation") {
-					taskContent = buildConsolidationContext(this.ctx.db, task.last_run_at);
+					taskContent = buildConsolidationContext(this.ctx.db);
 				} else if (task.type === "event") {
 					// Event tasks (e.g. webhook-triggered) carry their dynamic
 					// payload in relay_inbox keyed by thread_id, written at
@@ -1630,7 +1630,11 @@ export class Scheduler {
 							// neither the pending sweep nor healStuckTasks revives it. Heartbeats
 							// are NEVER parked (they must always re-arm), so the type guard routes
 							// them to rescheduleHeartbeat below regardless of permanence.
-							if (validation.permanent && task.type !== "heartbeat" && task.type !== "consolidation") {
+							if (
+								validation.permanent &&
+								task.type !== "heartbeat" &&
+								task.type !== "consolidation"
+							) {
 								parkTask(this.ctx.db, task, this.ctx.logger, errorMsg, this.ctx.siteId, leaseId);
 							} else {
 								// Retryable (transient model unavailability) or heartbeat: reschedule

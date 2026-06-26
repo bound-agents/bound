@@ -34,16 +34,36 @@ describe("cleanupStaleFiles", () => {
 		const old = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
 		const recent = new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString();
 
-		insertRow(db, "files", {
-			id: randomUUID(), path: "/home/user/.tool-results/old.txt",
-			content: "x", is_binary: 0, size_bytes: 1,
-			created_at: old, modified_at: old, deleted: 0,
-		}, siteId);
-		insertRow(db, "files", {
-			id: randomUUID(), path: "/home/user/.tool-results/recent.txt",
-			content: "y", is_binary: 0, size_bytes: 1,
-			created_at: recent, modified_at: recent, deleted: 0,
-		}, siteId);
+		insertRow(
+			db,
+			"files",
+			{
+				id: randomUUID(),
+				path: "/home/user/.tool-results/old.txt",
+				content: "x",
+				is_binary: 0,
+				size_bytes: 1,
+				created_at: old,
+				modified_at: old,
+				deleted: 0,
+			},
+			siteId,
+		);
+		insertRow(
+			db,
+			"files",
+			{
+				id: randomUUID(),
+				path: "/home/user/.tool-results/recent.txt",
+				content: "y",
+				is_binary: 0,
+				size_bytes: 1,
+				created_at: recent,
+				modified_at: recent,
+				deleted: 0,
+			},
+			siteId,
+		);
 
 		const { pruned } = cleanupStaleFiles(db, siteId);
 		expect(pruned).toBe(1);
@@ -57,11 +77,21 @@ describe("cleanupStaleFiles", () => {
 	it("soft-deletes /tmp files older than 48h", () => {
 		const old = new Date(Date.now() - 50 * 60 * 60 * 1000).toISOString();
 
-		insertRow(db, "files", {
-			id: randomUUID(), path: "/tmp/old-cache.txt",
-			content: "x", is_binary: 0, size_bytes: 1,
-			created_at: old, modified_at: old, deleted: 0,
-		}, siteId);
+		insertRow(
+			db,
+			"files",
+			{
+				id: randomUUID(),
+				path: "/tmp/old-cache.txt",
+				content: "x",
+				is_binary: 0,
+				size_bytes: 1,
+				created_at: old,
+				modified_at: old,
+				deleted: 0,
+			},
+			siteId,
+		);
 
 		const { pruned } = cleanupStaleFiles(db, siteId);
 		expect(pruned).toBe(1);
@@ -70,11 +100,21 @@ describe("cleanupStaleFiles", () => {
 	it("does not touch workspace files regardless of age", () => {
 		const old = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
 
-		insertRow(db, "files", {
-			id: randomUUID(), path: "/home/user/notes.md",
-			content: "x", is_binary: 0, size_bytes: 1,
-			created_at: old, modified_at: old, deleted: 0,
-		}, siteId);
+		insertRow(
+			db,
+			"files",
+			{
+				id: randomUUID(),
+				path: "/home/user/notes.md",
+				content: "x",
+				is_binary: 0,
+				size_bytes: 1,
+				created_at: old,
+				modified_at: old,
+				deleted: 0,
+			},
+			siteId,
+		);
 
 		const { pruned } = cleanupStaleFiles(db, siteId);
 		expect(pruned).toBe(0);
@@ -83,11 +123,21 @@ describe("cleanupStaleFiles", () => {
 	it("does not touch files younger than 48h", () => {
 		const recent = new Date(Date.now() - 47 * 60 * 60 * 1000).toISOString();
 
-		insertRow(db, "files", {
-			id: randomUUID(), path: "/tmp/recent.txt",
-			content: "x", is_binary: 0, size_bytes: 1,
-			created_at: recent, modified_at: recent, deleted: 0,
-		}, siteId);
+		insertRow(
+			db,
+			"files",
+			{
+				id: randomUUID(),
+				path: "/tmp/recent.txt",
+				content: "x",
+				is_binary: 0,
+				size_bytes: 1,
+				created_at: recent,
+				modified_at: recent,
+				deleted: 0,
+			},
+			siteId,
+		);
 
 		const { pruned } = cleanupStaleFiles(db, siteId);
 		expect(pruned).toBe(0);
@@ -96,11 +146,21 @@ describe("cleanupStaleFiles", () => {
 	it("skips already-deleted files", () => {
 		const old = new Date(Date.now() - 50 * 60 * 60 * 1000).toISOString();
 
-		insertRow(db, "files", {
-			id: randomUUID(), path: "/tmp/already-deleted.txt",
-			content: "x", is_binary: 0, size_bytes: 1,
-			created_at: old, modified_at: old, deleted: 0,
-		}, siteId);
+		insertRow(
+			db,
+			"files",
+			{
+				id: randomUUID(),
+				path: "/tmp/already-deleted.txt",
+				content: "x",
+				is_binary: 0,
+				size_bytes: 1,
+				created_at: old,
+				modified_at: old,
+				deleted: 0,
+			},
+			siteId,
+		);
 		// Soft-delete it
 		db.prepare("UPDATE files SET deleted = 1 WHERE path = ?").run("/tmp/already-deleted.txt");
 
