@@ -183,6 +183,17 @@ describe("memory tool", () => {
 			expect(result).toContain("No memories matched");
 		});
 
+		it("should stamp each result with its modification date", async () => {
+			const tool = createMemoryTool(ctx);
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "searchable",
+			});
+
+			expect(result).toContain("search_test");
+			expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
+		});
+
 		it("should error when query is missing", async () => {
 			const tool = createMemoryTool(ctx);
 			const result = await getExecute(tool)({
@@ -438,6 +449,18 @@ describe("memory tool", () => {
 			expect(result).toContain("start");
 		});
 
+		it("should stamp each traversed entry with its modification date", async () => {
+			const tool = createMemoryTool(ctx);
+			const result = await getExecute(tool)({
+				action: "traverse",
+				key: "start",
+				depth: 2,
+			});
+
+			expect(result).toContain("level1");
+			expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
+		});
+
 		it("should error when key is missing", async () => {
 			const tool = createMemoryTool(ctx);
 			const result = await getExecute(tool)({
@@ -489,6 +512,17 @@ describe("memory tool", () => {
 
 			expect(result).toContain("Neighbors of");
 			expect(result).toContain("center");
+		});
+
+		it("should stamp each neighbor with its modification date", async () => {
+			const tool = createMemoryTool(ctx);
+			const result = await getExecute(tool)({
+				action: "neighbors",
+				key: "center",
+			});
+
+			expect(result).toContain("neighbor1");
+			expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
 		});
 
 		it("should error when key is missing", async () => {

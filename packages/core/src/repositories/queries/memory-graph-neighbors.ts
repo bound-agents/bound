@@ -75,6 +75,7 @@ export interface GraphNeighborRow {
 	weight: number;
 	context: string | null;
 	value: string;
+	modified_at: string;
 }
 
 /**
@@ -85,7 +86,7 @@ export interface GraphNeighborRow {
 export function listOutgoingNeighbors(db: Database, key: string): GraphNeighborRow[] {
 	return db
 		.prepare(
-			`SELECT e.target_key AS key, e.relation, e.weight, e.context, m.value
+			`SELECT e.target_key AS key, e.relation, e.weight, e.context, m.value, m.modified_at
 			 FROM memory_edges e
 			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
 			 WHERE e.source_key = ? AND e.deleted = 0
@@ -102,7 +103,7 @@ export function listOutgoingNeighbors(db: Database, key: string): GraphNeighborR
 export function listIncomingNeighbors(db: Database, key: string): GraphNeighborRow[] {
 	return db
 		.prepare(
-			`SELECT e.source_key AS key, e.relation, e.weight, e.context, m.value
+			`SELECT e.source_key AS key, e.relation, e.weight, e.context, m.value, m.modified_at
 			 FROM memory_edges e
 			 JOIN semantic_memory m ON m.key = e.source_key AND m.deleted = 0
 			 WHERE e.target_key = ? AND e.deleted = 0
