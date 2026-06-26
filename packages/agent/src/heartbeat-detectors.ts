@@ -82,9 +82,7 @@ function detectCostSpikes(db: Database, selfTaskId?: string): DetectorResult {
 		)
 		.all(cutoff) as CostSpike[];
 
-	const filtered = selfTaskId
-		? rows.filter((r) => r.task_id !== selfTaskId)
-		: rows;
+	const filtered = selfTaskId ? rows.filter((r) => r.task_id !== selfTaskId) : rows;
 
 	if (filtered.length === 0) return { heading: "Cost spikes", body: null };
 
@@ -192,9 +190,7 @@ interface TierCount {
 
 function detectMemoryPressure(db: Database): DetectorResult {
 	const rows = db
-		.prepare(
-			"SELECT tier, COUNT(*) AS n FROM semantic_memory WHERE deleted=0 GROUP BY tier",
-		)
+		.prepare("SELECT tier, COUNT(*) AS n FROM semantic_memory WHERE deleted=0 GROUP BY tier")
 		.all() as TierCount[];
 
 	const counts = new Map<string, number>();
@@ -232,7 +228,5 @@ export function buildDetectorSection(db: Database, selfTaskId?: string): string 
 
 	if (findings.length === 0) return null;
 
-	return findings
-		.map((r) => `### ${r.heading}\n${r.body}`)
-		.join("\n\n");
+	return findings.map((r) => `### ${r.heading}\n${r.body}`).join("\n\n");
 }
