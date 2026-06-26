@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { pruneResolvedAdvisories } from "./advisories";
 import { cleanupStaleFiles } from "./cleanup-stale-files";
+import { buildDetectorSection } from "./heartbeat-detectors";
 import {
 	runOutboxAuditValidation,
 	shouldRunOutboxAuditValidation,
@@ -125,6 +126,7 @@ export function buildHeartbeatContext(
 	const advisorySection = buildAdvisorySection(db, lastRunAt);
 	const taskSection = buildTaskSection(db, lastRunAt);
 	const threadSection = buildThreadSection(db, lastRunAt);
+	const detectorSection = buildDetectorSection(db);
 
 	return `You are running a scheduled heartbeat check.
 
@@ -135,6 +137,9 @@ ${instructions}
 
 ## Advisories
 ${advisorySection}
+
+## Anomaly Detection
+${detectorSection ?? "No anomalies detected."}
 
 ## Recent Tasks
 ${taskSection}
