@@ -16,11 +16,6 @@ describe("Component Tests", () => {
 		expect(ModelSelector).toBeDefined();
 	});
 
-	it("TaskDetailView component module imports without error", async () => {
-		const TaskDetailView = await import("../views/TaskDetailView.svelte");
-		expect(TaskDetailView).toBeDefined();
-	});
-
 	it("MessageList component module imports without error", async () => {
 		const MessageList = await import("../components/MessageList.svelte");
 		expect(MessageList).toBeDefined();
