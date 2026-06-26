@@ -256,9 +256,10 @@ describe("listOutgoingNeighbors", () => {
 			weight: 0.9,
 			context: "ctx-ab",
 			value: "b-value",
+			modified_at: TS,
 		});
 		expect(Object.keys(rows[0]).sort()).toEqual(
-			["key", "relation", "weight", "context", "value"].sort(),
+			["key", "relation", "weight", "context", "value", "modified_at"].sort(),
 		);
 	});
 
@@ -351,6 +352,7 @@ describe("listIncomingNeighbors", () => {
 			weight: 0.42,
 			context: "ctx-ab",
 			value: "a-value",
+			modified_at: TS,
 		});
 	});
 

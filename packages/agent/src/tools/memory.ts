@@ -55,6 +55,20 @@ const memorySchema = z.object({
 type MemoryInput = z.infer<typeof memorySchema>;
 
 /**
+ * Render the modification timestamp of a memory entry as a bare `YYYY-MM-DD`
+ * calendar date for read-path output. Absolute (not relative) because tool
+ * results are persisted into message history — a relative "Xd ago" would
+ * freeze stale, while the calendar date stays correct as a point-in-time
+ * record. `modified_at` is written as `new Date().toISOString()`, so the
+ * leading 10 chars are the date; anything malformed falls back to the raw
+ * string rather than a misleading slice.
+ */
+function modDate(iso: string | null | undefined): string {
+	if (!iso) return "undated";
+	return /^\d{4}-\d{2}-\d{2}/.test(iso) ? iso.slice(0, 10) : iso;
+}
+
+/**
  * Resolve the tier for a memory entry from an optional explicit-tier
  * argument. Pure function: explicit tier wins, else `"default"`.
  *
@@ -313,7 +327,7 @@ function handleSearch(args: MemoryInput, ctx: ToolContext): string {
 
 		const lines = results.map(
 			(r) =>
-				`- ${r.key}: ${r.value.substring(0, 100)}${r.value.length > 100 ? "..." : ""} [${r.source || "unknown"}]`,
+				`- ${r.key}: ${r.value.substring(0, 100)}${r.value.length > 100 ? "..." : ""} [${r.source || "unknown"}, mod ${modDate(r.modified_at)}]`,
 		);
 		return `Found ${results.length} memories:\n${lines.join("\n")}`;
 	} catch {
@@ -427,7 +441,7 @@ function handleTraverse(args: MemoryInput, ctx: ToolContext): string {
 
 	const lines = results.map((r) => {
 		const ctxSuffix = r.viaContext ? ` (${r.viaContext})` : "";
-		return `${"  ".repeat(r.depth)}${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [depth ${r.depth}, ${r.viaRelation}${ctxSuffix}]`;
+		return `${"  ".repeat(r.depth)}${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [depth ${r.depth}, ${r.viaRelation}${ctxSuffix}, mod ${modDate(r.modifiedAt)}]`;
 	});
 	return `Graph traversal from ${key} (depth=${Math.min(depth, 3)}, ${results.length} entries):\n${lines.join("\n")}`;
 }
@@ -448,7 +462,7 @@ function handleNeighbors(args: MemoryInput, ctx: ToolContext): string {
 
 	const lines = results.map((r) => {
 		const ctxSuffix = r.context ? ` (${r.context})` : "";
-		return `  ${r.direction === "out" ? "-->" : "<--"} ${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [${r.relation}, w=${r.weight}${ctxSuffix}]`;
+		return `  ${r.direction === "out" ? "-->" : "<--"} ${r.key}: ${r.value.substring(0, 80)}${r.value.length > 80 ? "..." : ""} [${r.relation}, w=${r.weight}, mod ${modDate(r.modifiedAt)}${ctxSuffix}]`;
 	});
 	return `Neighbors of ${key} (${results.length} connections):\n${lines.join("\n")}`;
 }

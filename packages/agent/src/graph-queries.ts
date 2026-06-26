@@ -154,6 +154,7 @@ export interface NeighborResult {
 	weight: number;
 	direction: "out" | "in";
 	context: string | null;
+	modifiedAt: string;
 }
 
 const MAX_DEPTH = 3;
@@ -224,6 +225,7 @@ export function getNeighbors(
 				weight: e.weight,
 				direction: "out",
 				context: e.context,
+				modifiedAt: e.modified_at,
 			});
 		}
 	}
@@ -239,6 +241,7 @@ export function getNeighbors(
 				weight: e.weight,
 				direction: "in",
 				context: e.context,
+				modifiedAt: e.modified_at,
 			});
 		}
 	}
