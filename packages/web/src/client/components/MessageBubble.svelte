@@ -2,6 +2,7 @@
 import { renderMarkdown } from "../lib/markdown";
 import { mermaid } from "../lib/mermaid";
 import { getLineColor } from "../lib/metro-lines";
+import ReasoningBlock from "./ReasoningBlock.svelte";
 
 interface Props {
 	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
@@ -55,7 +56,12 @@ interface ImageBlock {
 	src: string;
 	alt: string;
 }
-type DisplayBlock = TextBlock | ImageBlock;
+interface ThinkingBlock {
+	kind: "thinking";
+	text: string;
+	redacted?: boolean;
+}
+type DisplayBlock = TextBlock | ImageBlock | ThinkingBlock;
 
 const displayBlocks = $derived.by((): DisplayBlock[] => {
 	if (role !== "user" && role !== "assistant") return [{ kind: "text", text: content }];
@@ -65,6 +71,12 @@ const displayBlocks = $derived.by((): DisplayBlock[] => {
 		if (!Array.isArray(parsed) || parsed.length === 0) return [{ kind: "text", text: content }];
 		return parsed
 			.map((b: Record<string, unknown>): DisplayBlock | null => {
+				if (b.type === "thinking") {
+					const text = typeof b.thinking === "string" ? b.thinking : "";
+					const redacted = b.redacted_data != null || b.reasoning_encrypted_content != null;
+					if (!text && !redacted) return null;
+					return { kind: "thinking", text, redacted };
+				}
 				if (b.type === "text" && typeof b.text === "string" && b.text) {
 					return { kind: "text", text: b.text };
 				}
@@ -147,7 +159,9 @@ $effect(() => {
 			{/if}
 		</div>
 		{#each displayBlocks as block, i}
-			{#if block.kind === "image"}
+			{#if block.kind === "thinking"}
+				<ReasoningBlock text={block.text} redacted={block.redacted} {lineColor} />
+			{:else if block.kind === "image"}
 				<div class="content-image">
 					<img src={block.src} alt={block.alt} loading="lazy" />
 					{#if block.alt && block.alt !== "image"}

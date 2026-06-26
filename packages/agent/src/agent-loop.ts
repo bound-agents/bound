@@ -102,6 +102,8 @@ export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
 /** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+/** Max retries when the output token limit is hit during thinking (finishReason "length"). */
+export const MAX_LENGTH_RETRIES = 2;
 
 /**
  * Token count threshold above which `fastApproxContentTokens` falls back
@@ -1381,6 +1383,8 @@ export class AgentLoop {
 			}
 			let continueLoop = true;
 			let transportRetries = 0;
+			let outputTokenOverride: number | null = null;
+			let lengthRetries = 0;
 
 			while (continueLoop) {
 				// Reset the inactivity timeout at the start of each turn.
@@ -1495,7 +1499,8 @@ export class AgentLoop {
 								messages: llmMessages,
 								tools: mergedTools,
 								system: systemPrompt || undefined,
-								max_tokens: this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+								max_tokens:
+									outputTokenOverride ?? this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
 								temperature: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
 								// cache_ttl is omitted on the remote-dispatch payload — the
@@ -1634,7 +1639,9 @@ export class AgentLoop {
 											system: systemPrompt || undefined,
 											tools: mergedTools,
 											max_tokens: clampMaxOutputTokens(
-												this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+												outputTokenOverride ??
+													this.config.maxOutputTokens ??
+													DEFAULT_MAX_OUTPUT_TOKENS,
 												resolution.maxOutputTokens,
 											),
 											thinking: resolution.thinkingConfig,
@@ -2857,6 +2864,37 @@ export class AgentLoop {
 					continue;
 				}
 
+				// If the model exhausted its output token budget during
+				// thinking (finishReason "length", no text, no tool calls,
+				// only thinking content), retry with a larger budget
+				// instead of silently exiting with an empty response.
+				if (
+					parsed.finishReason === "length" &&
+					parsed.toolCalls.length === 0 &&
+					!parsed.textContent &&
+					(parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent) &&
+					lengthRetries < MAX_LENGTH_RETRIES
+				) {
+					lengthRetries++;
+					const prevMax =
+						outputTokenOverride ?? this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+					outputTokenOverride = Math.min(prevMax * 2, 65_536);
+					this.ctx.logger.warn(
+						"[agent-loop] Output token limit hit during thinking, retrying with larger budget",
+						{
+							threadId: this.config.threadId,
+							taskId: this.config.taskId ?? null,
+							finishReason: parsed.finishReason,
+							previousMaxTokens: prevMax,
+							newMaxTokens: outputTokenOverride,
+							retry: lengthRetries,
+							maxRetries: MAX_LENGTH_RETRIES,
+						},
+					);
+					turnSpan.end();
+					continue;
+				}
+
 				// No tool calls — persist final response and exit
 				this.transition("RESPONSE_PERSIST");
 				const responsePersistSpan = getTracer().startSpan(
@@ -2864,7 +2902,34 @@ export class AgentLoop {
 					{},
 					turnCtx,
 				);
-				const assistantContent = parsed.textContent || "";
+				// Build assistant content. When thinking is present,
+				// persist as ContentBlock[] JSON (mirroring TOOL_PERSIST)
+				// so the web UI can render the reasoning and context
+				// assembly round-trips the signed thinking block.
+				let assistantContent: string;
+				if (parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent) {
+					const blocks: ContentBlock[] = [];
+					const thinkingBlock: ContentBlock = {
+						type: "thinking",
+						thinking: parsed.thinking ?? "",
+					};
+					if (parsed.thinkingSignature) {
+						thinkingBlock.signature = parsed.thinkingSignature;
+					}
+					if (parsed.thinkingRedactedData) {
+						thinkingBlock.redacted_data = parsed.thinkingRedactedData;
+					}
+					if (parsed.thinkingEncryptedContent) {
+						thinkingBlock.reasoning_encrypted_content = parsed.thinkingEncryptedContent;
+					}
+					blocks.push(thinkingBlock);
+					if (parsed.textContent) {
+						blocks.push({ type: "text", text: parsed.textContent });
+					}
+					assistantContent = JSON.stringify(blocks);
+				} else {
+					assistantContent = parsed.textContent || "";
+				}
 
 				if (assistantContent) {
 					const assistantMsgId = insertThreadMessage(

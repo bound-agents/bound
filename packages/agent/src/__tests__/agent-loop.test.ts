@@ -2914,5 +2914,185 @@ describe("AgentLoop", () => {
 				.all(threadId) as Array<{ content: string }>;
 			expect(aborts.length).toBe(0);
 		});
+
+		describe("thinking persistence on final response", () => {
+			it("persists thinking blocks as ContentBlock[] JSON in RESPONSE_PERSIST", async () => {
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "Let me reason about this." };
+					yield { type: "text" as const, content: "The answer is 42." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 20,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				await agentLoop.run();
+
+				const msgs = db
+					.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ role: string; content: string }>;
+
+				expect(msgs.length).toBe(1);
+				const blocks = JSON.parse(msgs[0].content);
+				expect(Array.isArray(blocks)).toBe(true);
+				expect(blocks.length).toBe(2);
+				expect(blocks[0].type).toBe("thinking");
+				expect(blocks[0].thinking).toBe("Let me reason about this.");
+				expect(blocks[1].type).toBe("text");
+				expect(blocks[1].text).toBe("The answer is 42.");
+			});
+
+			it("persists thinking-only responses (no text content)", async () => {
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "Deep in thought..." };
+					yield { type: "text" as const, content: "" };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 20,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				await agentLoop.run();
+
+				const msgs = db
+					.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ role: string; content: string }>;
+
+				expect(msgs.length).toBe(1);
+				const blocks = JSON.parse(msgs[0].content);
+				expect(blocks[0].type).toBe("thinking");
+				expect(blocks[0].thinking).toBe("Deep in thought...");
+			});
+		});
+
+		describe("output token limit during thinking", () => {
+			it("retries with a larger budget when finishReason is 'length' during thinking", async () => {
+				const mockBackend = new MockLLMBackend();
+				// First call: thinking only, hit length limit
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "I need to think about..." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 16384,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "length" as const,
+					};
+				});
+				// Second call: thinking + text, succeeds
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "Now I have enough budget to finish." };
+					yield { type: "text" as const, content: "Here is the answer." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 100,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				const result = await agentLoop.run();
+
+				// Should have called the backend twice (retry + success)
+				expect(mockBackend.getCallCount()).toBe(2);
+				expect(result.error).toBeUndefined();
+
+				// Final persisted message should have thinking + text from the retry
+				const msgs = db
+					.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ role: string; content: string }>;
+
+				expect(msgs.length).toBe(1);
+				const blocks = JSON.parse(msgs[0].content);
+				expect(blocks[0].type).toBe("thinking");
+				expect(blocks[0].thinking).toBe("Now I have enough budget to finish.");
+				expect(blocks[1].type).toBe("text");
+				expect(blocks[1].text).toBe("Here is the answer.");
+			});
+
+			it("does not retry indefinitely — gives up after MAX_LENGTH_RETRIES", async () => {
+				const mockBackend = new MockLLMBackend();
+				// All calls hit length limit
+				for (let i = 0; i < 5; i++) {
+					mockBackend.pushResponse(async function* () {
+						yield { type: "thinking" as const, content: `Attempt ${i}` };
+						yield {
+							type: "done" as const,
+							usage: {
+								input_tokens: 10,
+								output_tokens: 16384,
+								cache_write_tokens: null,
+								cache_read_tokens: null,
+								estimated: false,
+							},
+							finish_reason: "length" as const,
+						};
+					});
+				}
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				await agentLoop.run();
+
+				// Should retry MAX_LENGTH_RETRIES times, then exit
+				// 1 initial + 2 retries = 3 total calls
+				expect(mockBackend.getCallCount()).toBe(3);
+			});
+		});
 	});
 });
