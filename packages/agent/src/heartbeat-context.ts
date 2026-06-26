@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { pruneResolvedAdvisories } from "./advisories";
+import { cleanupStaleFiles } from "./cleanup-stale-files";
 import {
 	runOutboxAuditValidation,
 	shouldRunOutboxAuditValidation,
@@ -24,6 +25,13 @@ export function buildHeartbeatContext(
 		const { pruned } = pruneResolvedAdvisories(db, options.siteId);
 		if (pruned > 0) {
 			options.logger?.info(`[heartbeat] Pruned ${pruned} resolved advisories`);
+		}
+
+		// Cleanup: soft-delete stale ephemeral files (/tmp, .tool-results) older
+		// than 48h. Purely mechanical — no agent involvement needed.
+		const { pruned: filesPruned } = cleanupStaleFiles(db, options.siteId);
+		if (filesPruned > 0) {
+			options.logger?.info(`[heartbeat] Pruned ${filesPruned} stale files`);
 		}
 	}
 

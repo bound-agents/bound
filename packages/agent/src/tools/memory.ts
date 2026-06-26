@@ -129,10 +129,19 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 	// Demotion (was pinned, now not) is always allowed — skip every cap so an
 	// over-budget setup can shrink toward compliance.
 	const isDemotion = wasPinned && !willBePinned;
+	const isSystemKey = SYSTEM_MEMORY_KEYS.has(key);
+	// System-key size cap: applies regardless of tier, not just when pinned.
+	// System keys (e.g. _heartbeat_instructions) are agent-editable standing
+	// instructions that must not grow unbounded. Same cap value as pinned.
+	// A shorter value passes naturally, so shrinking is always allowed.
+	if (isSystemKey && value.length > sizeCap) {
+		return `Error: memory "${key}" is ${value.length} characters, over the per-entry cap of ${sizeCap}. Rewrite it more concisely to fit.`;
+	}
 	if (willBePinned && !isDemotion) {
-		const isSystemKey = SYSTEM_MEMORY_KEYS.has(key);
 		// SIZE cap: applies to every pinned write, system keys included.
-		if (value.length > sizeCap) {
+		// (System keys are already checked above regardless of tier; this
+		// covers non-system pinned entries.)
+		if (!isSystemKey && value.length > sizeCap) {
 			return `Error: pinned memory "${key}" is ${value.length} characters, over the per-entry cap of ${sizeCap}. Rewrite it more concisely to fit, or store it at a lower tier (omit tier or pass a non-pinned tier). The size cap applies only to pinned entries.`;
 		}
 		// COUNT cap: only on count-increasing writes (a new pinned entry or a
