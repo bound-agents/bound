@@ -8,6 +8,7 @@ import {
 	generateThreadTitle,
 	resolveModel,
 	resolveModelTier,
+	seedConsolidation,
 	seedHeartbeat,
 } from "@bound/agent";
 import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
@@ -72,6 +73,15 @@ export function initScheduler(
 		appContext.logger.info("[scheduler] Heartbeat task seeded");
 	} catch (error) {
 		appContext.logger.warn("[scheduler] Failed to seed heartbeat", {
+			error: formatError(error),
+		});
+	}
+
+	try {
+		seedConsolidation(appContext.db, appContext.siteId);
+		appContext.logger.info("[scheduler] Consolidation task seeded");
+	} catch (error) {
+		appContext.logger.warn("[scheduler] Failed to seed consolidation", {
 			error: formatError(error),
 		});
 	}

@@ -16,6 +16,7 @@ import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { createAdvisory } from "./advisories";
 import type { AgentLoop } from "./agent-loop";
 import { buildEventWakeupContent } from "./event-payload";
+import { buildConsolidationContext } from "./consolidation-context";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import {
 	computeFiringKey,
@@ -515,7 +516,10 @@ export function computeHeartbeatNextRunAt(task: Task, lastUserInteractionAt: Dat
 		return new Date().toISOString();
 	}
 
-	const multiplier = computeQuiescenceMultiplier(lastUserInteractionAt);
+	// Consolidation runs on a fixed 4h schedule — idle time is ideal for
+	// memory maintenance, so quiescence stretching provides no benefit.
+	const multiplier =
+		task.type === "consolidation" ? 1 : computeQuiescenceMultiplier(lastUserInteractionAt);
 
 	const now = Date.now();
 	const effectiveInterval = intervalMs * multiplier;
@@ -539,7 +543,7 @@ export function rescheduleHeartbeat(
 	siteId: string,
 	lastUserInteractionAt: Date,
 ): void {
-	if (task.type !== "heartbeat") return;
+	if (task.type !== "heartbeat" && task.type !== "consolidation") return;
 
 	const specResult = parseJsonUntyped(task.trigger_spec, "heartbeat trigger_spec");
 	if (!specResult.ok) {
@@ -656,6 +660,7 @@ export function healStuckTasks(
 					recovered++;
 					break;
 				case "heartbeat":
+				case "consolidation":
 					rescheduleHeartbeat(db, task, logger, "stuck-row healer", siteId, lastUserInteractionAt);
 					// NOTE: rescheduleHeartbeat updates next_run_at + status + (optionally) error via outbox.
 					// It does NOT clear claim metadata; that is left to the next phase1 claim CAS, which
@@ -1012,7 +1017,8 @@ export class Scheduler {
 								break;
 							}
 
-							case "heartbeat": {
+							case "heartbeat":
+							case "consolidation": {
 								nextRunAtIso = computeHeartbeatNextRunAt(task, this.lastUserInteractionAt);
 								break;
 							}
@@ -1383,6 +1389,8 @@ export class Scheduler {
 						siteId: this.ctx.siteId,
 						logger: this.ctx.logger,
 					});
+				} else if (task.type === "consolidation") {
+					taskContent = buildConsolidationContext(this.ctx.db, task.last_run_at);
 				} else if (task.type === "event") {
 					// Event tasks (e.g. webhook-triggered) carry their dynamic
 					// payload in relay_inbox keyed by thread_id, written at
@@ -1622,7 +1630,7 @@ export class Scheduler {
 							// neither the pending sweep nor healStuckTasks revives it. Heartbeats
 							// are NEVER parked (they must always re-arm), so the type guard routes
 							// them to rescheduleHeartbeat below regardless of permanence.
-							if (validation.permanent && task.type !== "heartbeat") {
+							if (validation.permanent && task.type !== "heartbeat" && task.type !== "consolidation") {
 								parkTask(this.ctx.db, task, this.ctx.logger, errorMsg, this.ctx.siteId, leaseId);
 							} else {
 								// Retryable (transient model unavailability) or heartbeat: reschedule
