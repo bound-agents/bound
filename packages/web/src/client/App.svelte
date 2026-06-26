@@ -2,7 +2,7 @@
 import { onMount } from "svelte";
 import TopBar from "./components/TopBar.svelte";
 import { initMcpApps } from "./lib/mcp-apps-bootstrap";
-import { parseLineRoute, parseTaskRoute } from "./lib/route-utils";
+import { parseLineRoute } from "./lib/route-utils";
 import AdvisoryView from "./views/AdvisoryView.svelte";
 import ConnectionsView from "./views/ConnectionsView.svelte";
 import FilesView from "./views/FilesView.svelte";
@@ -11,7 +11,6 @@ import MetricsView from "./views/MetricsView.svelte";
 import NetworkStatus from "./views/NetworkStatus.svelte";
 import PersonaView from "./views/PersonaView.svelte";
 import SystemMap from "./views/SystemMap.svelte";
-import TaskDetailView from "./views/TaskDetailView.svelte";
 import Timetable from "./views/Timetable.svelte";
 
 // Legacy routes that moved under the consolidated Connections tab. Normalized
@@ -48,7 +47,6 @@ function screenLabel(r: string): string {
 	if (r === "/" || r === "") return "01 System Map";
 	if (r.startsWith("/line/")) return "02 Line";
 	if (r === "/timetable") return "03 Timetable";
-	if (r.startsWith("/task/")) return "03 Task";
 	if (r === "/network") return "04 Network";
 	if (r === "/advisories") return "05 Advisories";
 	if (r === "/files") return "06 Files";
@@ -76,11 +74,6 @@ function screenLabel(r: string): string {
 				{/key}
 			{:else if route === "/timetable"}
 				<Timetable />
-			{:else if route.startsWith("/task/")}
-				{@const taskRoute = parseTaskRoute(route)}
-				{#key taskRoute.taskId}
-					<TaskDetailView taskId={taskRoute.taskId} />
-				{/key}
 			{:else if route === "/network"}
 				<NetworkStatus />
 			{:else if route === "/advisories"}
