@@ -128,6 +128,8 @@ export {
 // Export task resolution
 export {
 	seedHeartbeat,
+	seedConsolidation,
+	DEFAULT_CONSOLIDATION_INTERVAL_MS,
 	computeNextRunAt,
 	canRunHere,
 	isDependencySatisfied,

@@ -569,3 +569,68 @@ export function seedHeartbeat(db: Database, siteId: string): void {
 			"one-time startup migration of a per-host semantic flag (heartbeat tasks don't load history); idempotent and self-converging, no cross-host write needed",
 	});
 }
+
+/**
+ * Default consolidation cadence. Like the heartbeat, this is a system-managed,
+ * uncancellable task seeded once per install. 4-hour interval.
+ */
+export const DEFAULT_CONSOLIDATION_INTERVAL_MS = 14_400_000; // 4 hours
+
+export function seedConsolidation(db: Database, siteId: string): void {
+	const id = deterministicUUID(BOUND_NAMESPACE, "consolidation");
+	const now = new Date();
+	const intervalMs = DEFAULT_CONSOLIDATION_INTERVAL_MS;
+	const nextBoundary = Math.ceil(now.getTime() / intervalMs) * intervalMs;
+	const nextRunAt = new Date(nextBoundary).toISOString();
+	const triggerSpec = JSON.stringify({ type: "consolidation", interval_ms: intervalMs });
+
+	const existing = findTaskIdById(db, id);
+
+	if (!existing) {
+		insertRow(
+			db,
+			"tasks",
+			{
+				id,
+				type: "consolidation",
+				status: "pending",
+				trigger_spec: triggerSpec,
+				payload: null,
+				created_at: now.toISOString(),
+				created_by: "system",
+				thread_id: null,
+				origin_thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: nextRunAt,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: null,
+				model_hint: null,
+				no_history: 1,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				alert_threshold: 5,
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				system_prompt_addition: null,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				modified_at: now.toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+	}
+
+	dangerouslyExecuteRawWrite(db, {
+		sql: "UPDATE tasks SET no_history = 1 WHERE type = 'consolidation' AND no_history = 0",
+		reason:
+			"one-time startup migration of a per-host semantic flag (consolidation tasks don't load history); idempotent and self-converging, no cross-host write needed",
+	});
+}
