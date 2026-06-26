@@ -1194,4 +1194,28 @@ describe("memory tool — pinned caps (issue #101)", () => {
 		const eleventh = await store(ctx, "dp10", "x", "pinned");
 		expect(eleventh).toContain("count cap reached (10/10)");
 	});
+
+	it("size-caps system keys at default tier (not just pinned)", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 20 });
+		const tooBig = await store(ctx, "_heartbeat_instructions", "a".repeat(21));
+		expect(tooBig).toContain("over the per-entry cap of 20");
+		expect(tierOf("_heartbeat_instructions")).toBeNull();
+	});
+
+	it("allows system key under the size cap at default tier", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 20 });
+		const ok = await store(ctx, "_heartbeat_instructions", "short enough");
+		expect(ok).toContain("Memory saved");
+		expect(tierOf("_heartbeat_instructions")).toBe("default");
+	});
+
+	it("allows shrinking a system key under a tighter cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 100 });
+		// Store a large entry first (under cap)
+		await store(ctx, "_heartbeat_instructions", "a".repeat(90));
+		// Now shrink it under a tighter cap — should succeed
+		const ctx2 = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 20 });
+		const result = await store(ctx2, "_heartbeat_instructions", "short");
+		expect(result).toContain("Memory saved");
+	});
 });
