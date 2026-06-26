@@ -96,6 +96,56 @@ describe("turns-observability — UUID primary key migration", () => {
 		expect(JSON.parse(row.context_debug as string).totalEstimated).toBe(1000);
 	});
 
+	it("round-trips finishReason and maxOutputTokens through context_debug", () => {
+		applyMetricsSchema(db);
+
+		const turnId = recordTurn(db, {
+			model_id: "opus",
+			tokens_in: 17000,
+			tokens_out: 4096,
+			created_at: "2026-06-26T22:08:13.970Z",
+		});
+
+		// A turn that hit the output-token ceiling: finishReason "length",
+		// and maxOutputTokens absent (the provider default was used — the
+		// exact diagnostic signature of the 4096 Bedrock-default truncation).
+		const debug: ContextDebugInfo = {
+			contextWindow: 200000,
+			totalEstimated: 18912,
+			model: "opus",
+			sections: [{ name: "system", tokens: 500 }],
+			budgetPressure: false,
+			truncated: 0,
+			finishReason: "length",
+		};
+
+		recordContextDebug(db, turnId, debug);
+
+		const row = db.query("SELECT context_debug FROM turns WHERE id = ?").get(turnId) as {
+			context_debug: string | null;
+		};
+		const parsed = JSON.parse(row.context_debug as string);
+		expect(parsed.finishReason).toBe("length");
+		// maxOutputTokens omitted in the fixture → absent after round-trip,
+		// which is itself the "provider default was used" signal.
+		expect(parsed.maxOutputTokens).toBeUndefined();
+
+		// And a turn with an explicit budget records it.
+		const turnId2 = recordTurn(db, {
+			model_id: "opus",
+			tokens_in: 100,
+			tokens_out: 200,
+			created_at: "2026-06-26T22:09:00.000Z",
+		});
+		recordContextDebug(db, turnId2, { ...debug, finishReason: "stop", maxOutputTokens: 32768 });
+		const row2 = db.query("SELECT context_debug FROM turns WHERE id = ?").get(turnId2) as {
+			context_debug: string | null;
+		};
+		const parsed2 = JSON.parse(row2.context_debug as string);
+		expect(parsed2.finishReason).toBe("stop");
+		expect(parsed2.maxOutputTokens).toBe(32768);
+	});
+
 	it("migrates an existing legacy-INTEGER-id turns table without data loss", () => {
 		// Simulate a DB created by a pre-migration version of bound.
 		db.run(`

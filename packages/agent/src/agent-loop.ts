@@ -2148,6 +2148,22 @@ export class AgentLoop {
 					);
 				}
 
+				// Stamp the response's finish reason and the effective output-token
+				// budget onto the turn's debug snapshot so truncation is queryable
+				// from `turns.context_debug` instead of requiring a log grep. A
+				// `finishReason: "length"` row with an absent `maxOutputTokens` is
+				// the exact signature of a provider-default truncation (Bedrock
+				// Converse defaults to 4096 when max_tokens is omitted).
+				if (this.lastContextDebug) {
+					if (parsed.finishReason) {
+						this.lastContextDebug.finishReason = parsed.finishReason;
+					}
+					const effectiveMaxOutputTokens = outputTokenOverride ?? this.config.maxOutputTokens;
+					if (typeof effectiveMaxOutputTokens === "number") {
+						this.lastContextDebug.maxOutputTokens = effectiveMaxOutputTokens;
+					}
+				}
+
 				if (currentTurnId !== null && this.lastContextDebug) {
 					try {
 						recordContextDebug(this.ctx.db, currentTurnId, this.lastContextDebug, this.ctx.siteId);
@@ -2891,6 +2907,28 @@ export class AgentLoop {
 				}
 
 				// No tool calls — persist final response and exit
+				// If the response was cut off at the output-token ceiling
+				// (finishReason "length" with text already emitted), the
+				// retry guard above did NOT fire — it only catches the
+				// thinking-only case. Surface it: a truncated final response
+				// is what reaches the user as "streaming interrupted", and it
+				// otherwise persists silently with no log line.
+				if (parsed.finishReason === "length") {
+					this.ctx.logger.warn(
+						"[agent-loop] Final response truncated at output-token limit (finishReason=length)",
+						{
+							threadId: this.config.threadId,
+							taskId: this.config.taskId ?? null,
+							model: resolvedModelId,
+							outputTokens: parsed.usage.outputTokens,
+							maxOutputTokens: outputTokenOverride ?? this.config.maxOutputTokens ?? null,
+							hadText: Boolean(parsed.textContent),
+							hadThinking: Boolean(
+								parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent,
+							),
+						},
+					);
+				}
 				this.transition("RESPONSE_PERSIST");
 				const responsePersistSpan = getTracer().startSpan(
 					"agent-loop.response-persist",

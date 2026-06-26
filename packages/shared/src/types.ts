@@ -732,6 +732,32 @@ export interface ContextDebugInfo {
 	sections: ContextSection[];
 	budgetPressure: boolean;
 	truncated: number;
+	/**
+	 * The LLM-reported finish reason for this turn's response: `"stop"`,
+	 * `"length"`, `"tool-calls"`, `"content-filter"`, etc. Recorded so
+	 * output-token truncation is queryable from `turns.context_debug`
+	 * (`json_extract(context_debug,'$.finishReason')`) instead of requiring
+	 * a log grep. A `"length"` value means the model hit its output-token
+	 * ceiling and the response was cut off — the signature of the
+	 * "streaming interrupted" symptom.
+	 *
+	 * Optional so older `context_debug` rows (pre-2026-06-26) still parse,
+	 * and absent on assembly-only snapshots not yet correlated with a
+	 * response.
+	 */
+	finishReason?: string;
+	/**
+	 * The effective `max_tokens` budget sent to the provider for this turn
+	 * (`outputTokenOverride ?? config.maxOutputTokens`). `undefined` /
+	 * absent means no budget was configured and the request OMITTED
+	 * `max_tokens`, so the provider applied its own default — which for
+	 * Bedrock Converse is 4096, low enough to truncate large
+	 * thinking+text turns. Recording it lets a `finishReason: "length"`
+	 * row be read together with the budget that produced it.
+	 *
+	 * Optional so older `context_debug` rows (pre-2026-06-26) still parse.
+	 */
+	maxOutputTokens?: number;
 	crossThreadSources?: CrossThreadSource[];
 	/**
 	 * R-VC27 relevant-memory selection injected into this turn's volatile tail,
