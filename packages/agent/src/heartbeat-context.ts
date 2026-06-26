@@ -129,6 +129,8 @@ export function buildHeartbeatContext(
 	return `You are running a scheduled heartbeat check.
 
 ## Standing Instructions
+These are your self-maintained response policies for heartbeat findings. You can update them via the memory tool (key: \`_heartbeat_instructions\`). Constraints: (1) each instruction must be a detection check or a response rule — never work generation. "Read N entries and synthesize" is a task, not a heartbeat instruction. (2) Each check must state a sunset condition: when can it be removed? (3) The total instruction set is capped at 2000 characters; additions require pruning. A healthy heartbeat trends towards fewer instructions, not more. If there's doubt about whether something belongs here, make it a new cron task instead.
+
 ${instructions}
 
 ## Advisories
