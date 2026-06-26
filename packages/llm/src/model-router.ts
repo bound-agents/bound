@@ -479,9 +479,9 @@ export class ModelRouter {
 
 	/**
 	 * Returns the per-backend `maxOutputTokens` cap, or undefined if unset.
-	 * The agent-loop clamps its default (DEFAULT_MAX_OUTPUT_TOKENS) via
-	 * `min(cap, default)` so Bedrock models with tight output limits (e.g.
-	 * Nova Pro's 10_000 cap) don't 400 with "max_tokens exceeds model limit".
+	 * When set, the agent-loop clamps via `min(cap, configuredMax)` so
+	 * Bedrock models with tight output limits (e.g. Nova Pro's 10_000 cap)
+	 * don't 400 with "max_tokens exceeds model limit".
 	 */
 	getMaxOutputTokens(backendId: string): number | undefined {
 		const config = this.backendConfigs.get(backendId);

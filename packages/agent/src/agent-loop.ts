@@ -100,8 +100,6 @@ import { compactStoredMessagesInPlace, computeRecentWindow } from "./warm-compac
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
-/** Default max output tokens. Bedrock defaults to 4096 if unset, which truncates large tool calls. */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 /** Max retries when the output token limit is hit during thinking (finishReason "length"). */
 export const MAX_LENGTH_RETRIES = 2;
 
@@ -1499,8 +1497,7 @@ export class AgentLoop {
 								messages: llmMessages,
 								tools: mergedTools,
 								system: systemPrompt || undefined,
-								max_tokens:
-									outputTokenOverride ?? this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+								max_tokens: outputTokenOverride ?? this.config.maxOutputTokens,
 								temperature: undefined,
 								timeout_ms: this.inferenceTimeoutMs,
 								// cache_ttl is omitted on the remote-dispatch payload — the
@@ -1639,9 +1636,7 @@ export class AgentLoop {
 											system: systemPrompt || undefined,
 											tools: mergedTools,
 											max_tokens: clampMaxOutputTokens(
-												outputTokenOverride ??
-													this.config.maxOutputTokens ??
-													DEFAULT_MAX_OUTPUT_TOKENS,
+												outputTokenOverride ?? this.config.maxOutputTokens,
 												resolution.maxOutputTokens,
 											),
 											thinking: resolution.thinkingConfig,
@@ -2876,9 +2871,9 @@ export class AgentLoop {
 					lengthRetries < MAX_LENGTH_RETRIES
 				) {
 					lengthRetries++;
-					const prevMax =
-						outputTokenOverride ?? this.config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
-					outputTokenOverride = Math.min(prevMax * 2, 65_536);
+					const prevMax: number | undefined =
+						outputTokenOverride ?? this.config.maxOutputTokens ?? undefined;
+					outputTokenOverride = prevMax ? Math.min(prevMax * 2, 65_536) : 32_768;
 					this.ctx.logger.warn(
 						"[agent-loop] Output token limit hit during thinking, retrying with larger budget",
 						{

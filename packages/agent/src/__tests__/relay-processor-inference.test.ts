@@ -959,11 +959,11 @@ describe("RelayProcessor - executeInference", () => {
 	it("clamps payload.max_tokens to the local backend's maxOutputTokens cap", async () => {
 		// Defense-in-depth: a stale requester binary (or a hub routing
 		// decision made against a peer's old capability record) can still
-		// send DEFAULT_MAX_OUTPUT_TOKENS (16_384) for a model whose
-		// provider rejects it with "max_tokens exceeds model limit of N".
-		// The receiver-side clamp takes min(payload.max_tokens, localCap)
-		// so Nova Pro's 10_000 ceiling is honored regardless of what the
-		// requester sent.
+		// send an explicit max_tokens (e.g. 16_384 from a pre-fix build)
+		// for a model whose provider rejects it with "max_tokens exceeds
+		// model limit of N". The receiver-side clamp takes
+		// min(payload.max_tokens, localCap) so Nova Pro's 10_000 ceiling
+		// is honored regardless of what the requester sent.
 		const mockBackend = new MockBackend();
 		mockBackend.setTextResponse("ok");
 

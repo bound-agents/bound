@@ -72,8 +72,8 @@ describe("toRouterConfig", () => {
 	});
 
 	it("propagates `max_output_tokens` so router.getMaxOutputTokens() returns it", () => {
-		// Nova Pro caps at 10_000; without this hand-off the default
-		// DEFAULT_MAX_OUTPUT_TOKENS (16_384) lands at Bedrock and triggers
+		// Nova Pro caps at 10_000; without this hand-off an explicit
+		// max_tokens above the ceiling lands at Bedrock and triggers
 		// "max_tokens exceeds model limit of 10000". Locking in the
 		// snake_case → camelCase copy here prevents silent regressions.
 		const cfg: SharedModelBackendsConfig = {

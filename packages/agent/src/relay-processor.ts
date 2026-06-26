@@ -70,7 +70,7 @@ import {
 	clampMaxOutputTokens,
 	createFileRefResolver,
 } from "./agent-loop-utils.js";
-import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
+import { AgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import { formatMcpHelp } from "./mcp-bridge.js";
@@ -1444,15 +1444,14 @@ export class RelayProcessor {
 				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
 			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
 			// Defense-in-depth: clamp the requester's max_tokens to this host's
-			// per-backend cap. Without this, a pre-fix requester binary (or a
+			// per-backend cap. Without this, a stale requester binary (or a
 			// hub routing decision made against a peer's stale capability
-			// record) can still send DEFAULT_MAX_OUTPUT_TOKENS for a model
+			// record) can still send an explicit max_tokens for a model
 			// whose provider rejects it — e.g. Nova Pro's 10_000 ceiling.
+			// When both the requester value and the local cap are absent,
+			// max_tokens is omitted entirely so the provider uses its own default.
 			const localMaxOutputTokens = this.modelRouter.getMaxOutputTokens(payload.model);
-			const effectiveMaxTokens = clampMaxOutputTokens(
-				payload.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-				localMaxOutputTokens,
-			);
+			const effectiveMaxTokens = clampMaxOutputTokens(payload.max_tokens, localMaxOutputTokens);
 			const chatStream = backend.chat({
 				messages,
 				tools: payload.tools,

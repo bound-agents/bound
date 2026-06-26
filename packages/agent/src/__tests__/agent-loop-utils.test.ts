@@ -706,25 +706,25 @@ describe("convertDeltaMessages", () => {
 // clampMaxOutputTokens
 // ---------------------------------------------------------------------------
 describe("clampMaxOutputTokens", () => {
-	// This pure helper is the single point that reconciles the agent-loop's
-	// DEFAULT_MAX_OUTPUT_TOKENS (16_384) with per-backend caps like Nova Pro's
-	// 10_000 ceiling. Both agent-loop (local path) and relay-processor
-	// (receiver side) must go through it so a misconfigured payload can never
-	// slip a too-high value past the provider.
+	// This pure helper reconciles a configured max_tokens with per-backend
+	// caps like Nova Pro's 10_000 ceiling. Both agent-loop (local path) and
+	// relay-processor (receiver side) go through it so a misconfigured payload
+	// can never slip a too-high value past the provider. When both inputs are
+	// undefined, returns undefined so the provider uses its own default.
 	it("returns the default when no cap is configured", () => {
 		expect(clampMaxOutputTokens(16384, undefined)).toBe(16384);
 	});
 
 	it("returns the cap when it is smaller than the default", () => {
-		// Nova Pro case: default 16_384, backend cap 10_000 → clamp to 10_000
+		// Nova Pro case: configured 16_384, backend cap 10_000 → clamp to 10_000
 		expect(clampMaxOutputTokens(16384, 10000)).toBe(10000);
 	});
 
 	it("returns the default when the cap is larger (cap is an upper bound, not a floor)", () => {
-		// If an operator mistakenly sets max_output_tokens higher than
-		// DEFAULT_MAX_OUTPUT_TOKENS, the default still wins — we treat the
-		// backend cap as "at most this", never "at least this", so we never
-		// raise the per-turn budget beyond what the loop expects.
+		// If an operator mistakenly sets max_output_tokens higher than the
+		// configured default, the default still wins — we treat the backend
+		// cap as "at most this", never "at least this", so we never raise the
+		// per-turn budget beyond what the loop expects.
 		expect(clampMaxOutputTokens(16384, 32000)).toBe(16384);
 	});
 
@@ -737,6 +737,22 @@ describe("clampMaxOutputTokens", () => {
 		// through with 0 or a negative value we fall back to the default.
 		expect(clampMaxOutputTokens(16384, 0)).toBe(16384);
 		expect(clampMaxOutputTokens(16384, -500)).toBe(16384);
+	});
+
+	it("returns undefined when both default and cap are absent", () => {
+		// When no per-thread maxOutputTokens is configured and no backend
+		// cap is set, omit max_tokens entirely so the provider uses its
+		// own default (e.g. Bedrock Converse defaults to the model maximum).
+		expect(clampMaxOutputTokens(undefined, undefined)).toBeUndefined();
+	});
+
+	it("returns the cap when only the cap is set (no configured default)", () => {
+		// No per-thread config, but backend has a cap — honor it.
+		expect(clampMaxOutputTokens(undefined, 10000)).toBe(10000);
+	});
+
+	it("returns the default when only the default is set (no backend cap)", () => {
+		expect(clampMaxOutputTokens(16384, undefined)).toBe(16384);
 	});
 });
 
