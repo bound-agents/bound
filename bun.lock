@@ -20,6 +20,7 @@
       "dependencies": {
         "@bound/core": "workspace:*",
         "@bound/llm": "workspace:*",
+        "@bound/loop": "workspace:*",
         "@bound/platforms": "workspace:*",
         "@bound/sandbox": "workspace:*",
         "@bound/shared": "workspace:*",
@@ -30,6 +31,7 @@
         "zod": "^4.0.0",
       },
       "devDependencies": {
+        "@opentelemetry/context-async-hooks": "^2.7.1",
         "@opentelemetry/resources": "^1.30.0",
         "@opentelemetry/sdk-trace-base": "^1.30.0",
         "@opentelemetry/semantic-conventions": "^1.28.0",
@@ -129,6 +131,16 @@
       },
       "devDependencies": {
         "fast-check": "^4.8.0",
+      },
+    },
+    "packages/loop": {
+      "name": "@bound/loop",
+      "version": "0.0.1",
+      "dependencies": {
+        "@bound/llm": "workspace:*",
+        "@bound/sandbox": "workspace:*",
+        "@bound/shared": "workspace:*",
+        "@opentelemetry/api": "^1.9.0",
       },
     },
     "packages/platforms": {
@@ -360,6 +372,8 @@
     "@bound/less": ["@bound/less@workspace:packages/less"],
 
     "@bound/llm": ["@bound/llm@workspace:packages/llm"],
+
+    "@bound/loop": ["@bound/loop@workspace:packages/loop"],
 
     "@bound/platforms": ["@bound/platforms@workspace:packages/platforms"],
 
