@@ -1414,7 +1414,12 @@ export class AgentLoop extends ModularAgentLoop {
 					this.broadcastMessage(partialId);
 					this.messagesCreated++;
 				}
-			} catch {}
+			} catch (persistError) {
+				this.ctx.logger.warn("[agent-loop] Failed to persist partial response after stream error", {
+					error: persistError instanceof Error ? persistError.message : String(persistError),
+					threadId: this.config.threadId,
+				});
+			}
 		}
 		this.setPhase("ERROR_PERSIST");
 		this.ctx.logger.error("[agent-loop] LLM call failed (non-retryable)", {
@@ -1717,7 +1722,13 @@ export class AgentLoop extends ModularAgentLoop {
 					? setInterval(() => {
 							try {
 								this.config.onActivity?.();
-							} catch {}
+							} catch (activityError) {
+								this.ctx.logger.debug("[agent-loop] onActivity heartbeat callback threw", {
+									error:
+										activityError instanceof Error ? activityError.message : String(activityError),
+									threadId: this.config.threadId,
+								});
+							}
 						}, SILENCE_HEARTBEAT_INTERVAL_MS)
 					: null;
 				try {
@@ -1852,7 +1863,17 @@ export class AgentLoop extends ModularAgentLoop {
 							originalLength,
 							result.toolCall.name,
 						);
-					} catch {}
+					} catch (offloadError) {
+						this.ctx.logger.warn(
+							"[agent-loop] Failed to offload large tool result; retaining inline content",
+							{
+								error: offloadError instanceof Error ? offloadError.message : String(offloadError),
+								toolName: result.toolCall.name,
+								toolCallId: result.toolCall.id,
+								contentLength: result.result.content.length,
+							},
+						);
+					}
 				}
 			}
 		}
