@@ -275,36 +275,9 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ---
 
-## AC5: MCP Server
+## AC5: Svelte Web UI
 
-### AC5.1 -- `bound-mcp` sends messages via WS and detects completion via `thread:status` event
-
-**Automated: Unit test (with mocked BoundClient)**
-- Phase/Task: P6/T1
-- File: `packages/mcp-server/src/__tests__/handler.test.ts`
-- Test: Mock `BoundClient`. Invoke the MCP handler with a chat message. Assert:
-  - `client.connect()` was called during startup.
-  - `client.subscribe(threadId)` was called before sending.
-  - `client.sendMessage(threadId, message)` was called (WS, fire-and-forget).
-  - A `thread:status` event listener was registered via `client.on("thread:status", ...)`.
-  - When the listener receives `{ thread_id: threadId, active: false }`, the handler fetches `client.listMessages(threadId)` via HTTP and returns the response.
-  - Event listener is cleaned up after completion.
-- Additional case: Timeout -- if `thread:status` event does not arrive within `MAX_POLL_MS`, handler returns an error.
-
----
-
-### AC5.2 -- `bound-mcp` does not expose a tools parameter
-
-**Automated: Unit test**
-- Phase/Task: P6/T1
-- File: `packages/mcp-server/src/__tests__/handler.test.ts`
-- Test: Mock `BoundClient`. Invoke the MCP handler. Assert `client.configureTools()` is never called. Inspect the MCP tool schema definition for `bound_chat` and assert no `tools` parameter exists.
-
----
-
-## AC6: Svelte Web UI
-
-### AC6.1 -- Web UI uses single `BoundClient` (no separate `BoundSocket`)
+### AC5.1 -- Web UI uses single `BoundClient` (no separate `BoundSocket`)
 
 **Human verification**
 - Phase/Task: P7/T1
@@ -338,10 +311,10 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ---
 
-### AC6.3 -- Event listeners use updated names (`task:updated`, `file:updated`)
+### AC5.3 -- Event listeners use updated names (`task:updated`, `file:updated`)
 
 **Human verification**
-- Phase/Task: P7/T1
+- Phase/Task: P6/T1
 - Justification: Codebase search for old event names.
 - Steps:
   1. Run `grep -r "task_update" packages/web/src/client/` and assert zero matches.
@@ -351,9 +324,9 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ---
 
-## AC7: Cross-Cutting Recovery
+## AC6: Cross-Cutting Recovery
 
-### AC7.1 -- Orphan from non-live conn re-delivered; live-conn close reaps its own claimed calls
+### AC6.1 -- Orphan from non-live conn re-delivered; live-conn close reaps its own claimed calls
 
 > Behavior split superseded the original "client disconnect + reconnect re-delivers" model on 2026-06-03 (commits `1c0027f6` + `e921a9cc`). See phase_08.md Architecture note.
 
@@ -372,7 +345,7 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ---
 
-### AC7.2 -- `claimed_by` updated to new `connectionId` on reconnect
+### AC6.2 -- `claimed_by` updated to new `connectionId` on reconnect
 
 **Automated: Unit test**
 - Phase/Task: P8/T4, P1/T3
@@ -381,7 +354,7 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ---
 
-### AC7.3 -- `tool:result` for expired entry receives error with `code: "tool_call_expired"`
+### AC6.3 -- `tool:result` for expired entry receives error with `code: "tool_call_expired"`
 
 **Automated: Unit test**
 - Phase/Task: P3/T4, P8/T4
@@ -390,7 +363,7 @@ Maps each acceptance criterion to automated tests and/or human verification step
 
 ---
 
-### AC7.4 -- Bootstrap recovery distinguishes `client_tool_call` from interrupted server tool calls
+### AC6.4 -- Bootstrap recovery distinguishes `client_tool_call` from interrupted server tool calls
 
 **Automated: Integration test**
 - Phase/Task: P1/T4, P8/T2
@@ -413,13 +386,12 @@ Maps each acceptance criterion to automated tests and/or human verification step
 | `packages/web/src/server/__tests__/messages.test.ts` | web | AC1.2 |
 | `packages/web/src/server/__tests__/status.test.ts` | web | AC4.5 |
 | `packages/client/src/__tests__/client.test.ts` | client | AC2.1, AC2.2, AC2.3, AC2.4, AC2.5 |
-| `packages/mcp-server/src/__tests__/handler.test.ts` | mcp-server | AC5.1, AC5.2 |
 | `e2e/chat.spec.ts` (if created) | e2e | AC6.2 |
 
 ## Human Verification Index
 
 | AC | Phase/Task | Verification Approach | Justification |
 |----|------------|----------------------|---------------|
-| AC6.1 | P7/T1 | Codebase search for `BoundSocket` references; typecheck; build | Svelte components lack unit tests; verification is a static analysis pass |
-| AC6.2 | P7/T2 | Manual browser test: send message, confirm WS frames in DevTools, no HTTP POST | Requires running server + UI interaction; Playwright e2e can supplement if available |
-| AC6.3 | P7/T1 | Codebase search for old event names (`task_update`, `file_update`) | Static analysis; no runtime behavior to test beyond build success |
+| AC5.1 | P6/T1 | Codebase search for `BoundSocket` references; typecheck; build | Svelte components lack unit tests; verification is a static analysis pass |
+| AC5.2 | P6/T2 | Manual browser test: send message, confirm WS frames in DevTools, no HTTP POST | Requires running server + UI interaction; Playwright e2e can supplement if available |
+| AC5.3 | P6/T1 | Codebase search for old event names (`task_update`, `file_update`) | Static analysis; no runtime behavior to test beyond build success |

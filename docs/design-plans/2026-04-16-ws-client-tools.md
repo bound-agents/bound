@@ -12,8 +12,7 @@ Rather than holding the agent loop in memory while waiting for a client response
 2. **BoundClient merges BoundSocket** into a single client class with WS-native message sending, event subscription, and client-side tool support
 3. **Client-side tool registration** allows clients to declare tool definitions per-connection that the agent can invoke, with the client executing tools and returning results over the same WS connection
 4. **Persistent tool call queue** (DB-backed) enables the agent loop to yield while waiting for client tool results, surviving server restarts and supporting long-running tools
-5. **MCP server (bound-mcp)** uses the unified WS client internally, buffering events for synchronous MCP response
-6. **Svelte web UI** updated to use the new unified client instead of separate BoundClient + BoundSocket
+5. **Svelte web UI** updated to use the new unified client instead of separate BoundClient + BoundSocket
 
 ## Acceptance Criteria
 
@@ -46,20 +45,16 @@ Rather than holding the agent loop in memory while waiting for a client response
 - **ws-client-tools.AC4.4 Success:** Stale entries (no reconnect within TTL) are expired; interruption notice injected, thread unblocked
 - **ws-client-tools.AC4.5 Success:** Thread cancel expires pending client tool calls and unblocks the thread
 
-### ws-client-tools.AC5: MCP Server
-- **ws-client-tools.AC5.1 Success:** `bound-mcp` sends messages via WS and detects completion via `thread:status` event
-- **ws-client-tools.AC5.2 Success:** `bound-mcp` does not expose a tools parameter
+### ws-client-tools.AC5: Svelte Web UI
+- **ws-client-tools.AC5.1 Success:** Web UI uses single `BoundClient` (no separate `BoundSocket`)
+- **ws-client-tools.AC5.2 Success:** Message sending works over WS; UI renders responses via `message:created` events
+- **ws-client-tools.AC5.3 Success:** Event listeners use updated names (`task:updated`, `file:updated`)
 
-### ws-client-tools.AC6: Svelte Web UI
-- **ws-client-tools.AC6.1 Success:** Web UI uses single `BoundClient` (no separate `BoundSocket`)
-- **ws-client-tools.AC6.2 Success:** Message sending works over WS; UI renders responses via `message:created` events
-- **ws-client-tools.AC6.3 Success:** Event listeners use updated names (`task:updated`, `file:updated`)
-
-### ws-client-tools.AC7: Cross-Cutting Recovery
-- **ws-client-tools.AC7.1 Success:** Client disconnect + reconnect re-delivers pending tool calls matched by tool name
-- **ws-client-tools.AC7.2 Success:** `claimed_by` updated to new connection_id on reconnect
-- **ws-client-tools.AC7.3 Failure:** `tool:result` for expired entry receives `error` with `code: "tool_call_expired"`
-- **ws-client-tools.AC7.4 Success:** Bootstrap recovery distinguishes `client_tool_call` entries from interrupted server tool calls
+### ws-client-tools.AC6: Cross-Cutting Recovery
+- **ws-client-tools.AC6.1 Success:** Client disconnect + reconnect re-delivers pending tool calls matched by tool name
+- **ws-client-tools.AC6.2 Success:** `claimed_by` updated to new connection_id on reconnect
+- **ws-client-tools.AC6.3 Failure:** `tool:result` for expired entry receives `error` with `code: "tool_call_expired"`
+- **ws-client-tools.AC6.4 Success:** Bootstrap recovery distinguishes `client_tool_call` entries from interrupted server tool calls
 
 ## Glossary
 
@@ -74,7 +69,6 @@ Rather than holding the agent loop in memory while waiting for a client response
 - **ThreadExecutor / claimPending**: The server-side mechanism that ensures only one agent loop runs per thread at a time. This design extends `claimPending()` to also skip threads with unresolved client tool calls.
 - **connection_id**: A per-connection identifier assigned on WebSocket connect. Used to route pending tool calls to the correct connection and updated on reconnect.
 - **DNS-rebinding protection**: A server-side check that rejects requests whose `Host` header does not resolve to loopback, preventing cross-origin requests to the local server via a victim's browser.
-- **MCP (Model Context Protocol)**: An open protocol for exposing tools and resources to LLM-based agents. The `bound-mcp` binary implements this protocol as a standalone stdio server.
 
 ## Architecture
 
@@ -204,7 +198,6 @@ Updated event type names: `task_update` → `task:updated`, `file_update` → `f
 
 ### MCP Server
 
-The MCP server (`bound-mcp`) switches from HTTP POST + polling to the unified WS client. It does not expose a tools parameter — the execution model doesn't support passing functions over MCP. It connects via WS, sends messages, waits for `thread:status` (active=false) to detect completion, then fetches the final response via HTTP `listMessages()`.
 
 ### Svelte Web UI
 
@@ -320,21 +313,7 @@ This design follows several established patterns in the codebase:
 <!-- END_PHASE_5 -->
 
 <!-- START_PHASE_6 -->
-### Phase 6: MCP Server Migration
-
-**Goal:** Migrate `bound-mcp` from HTTP POST + polling to unified WS client.
-
-**Components:**
-- Handler in `packages/mcp-server/src/handler.ts` — use `BoundClient.connect()`, `sendMessage()` over WS, wait for `thread:status` event instead of polling, fetch final response via `listMessages()` HTTP
-- No tools parameter exposed — MCP execution model doesn't support function arguments
-
-**Dependencies:** Phase 5 (unified BoundClient)
-
-**Done when:** MCP server sends messages over WS, detects completion via `thread:status` event, returns final assistant response. Covers `ws-client-tools.AC5.1`–`ws-client-tools.AC5.2`.
-<!-- END_PHASE_6 -->
-
-<!-- START_PHASE_7 -->
-### Phase 7: Svelte Web UI Migration
+### Phase 6: Svelte Web UI Migration
 
 **Goal:** Update web UI to use unified `BoundClient` instead of separate `BoundClient` + `BoundSocket`.
 
@@ -347,8 +326,8 @@ This design follows several established patterns in the codebase:
 
 **Dependencies:** Phase 5 (unified BoundClient)
 
-**Done when:** Web UI uses single BoundClient, all event names updated, message sending works over WS. Covers `ws-client-tools.AC6.1`–`ws-client-tools.AC6.3`.
-<!-- END_PHASE_7 -->
+**Done when:** Web UI uses single BoundClient, all event names updated, message sending works over WS. Covers `ws-client-tools.AC5.1`–`ws-client-tools.AC5.3`.
+<!-- END_PHASE_6 -->
 
 <!-- START_PHASE_8 -->
 ### Phase 8: Recovery & Cleanup

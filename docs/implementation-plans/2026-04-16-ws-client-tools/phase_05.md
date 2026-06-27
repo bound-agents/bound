@@ -159,7 +159,7 @@ Add the following to `BoundClient` (currently lines 49-273), incorporating the W
 8. **Message sending (BREAKING CHANGE):**
    - Modify `sendMessage(threadId, content, options?)` — Change from HTTP POST to WS `message:send`. Fire-and-forget (no return value). The created message arrives via `message:created` event.
    - Return type changes from `Promise<Message>` to `void`
-   - This is a breaking change to the `@bound/client` public API. All known consumers (bound-mcp in Phase 6, Svelte UI in Phase 7) are migrated in subsequent phases. External consumers of `@bound/client` will need to update their code.
+   - This is a breaking change to the `@bound/client` public API. All known consumers (Svelte UI in Phase 6) are migrated in subsequent phases. External consumers of `@bound/client` will need to update their code.
 
 9. **Delete `socket.ts`** — After all WS logic is in client.ts, remove the file.
 

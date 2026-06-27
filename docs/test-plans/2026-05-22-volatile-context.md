@@ -114,7 +114,7 @@ Expected:
 
 Purpose: Validates the renderer is interface-agnostic.
 
-Steps: Send a turn from each of: web UI, Discord connector, MCP `bound_chat`, scheduled task. For each, capture the developer message.
+Steps: Send a turn from each of: web UI, Discord connector, scheduled task. For each, capture the developer message.
 
 Expected: All four contexts contain the same three section headers in fixed order with their footers; subsystem entries differ in content but never in structure.
 

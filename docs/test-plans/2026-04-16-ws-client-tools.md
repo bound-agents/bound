@@ -112,4 +112,3 @@ grep -r "file:updated" packages/web/src/client/
 | `packages/web/src/server/__tests__/routes.integration.test.ts` | 34 | AC4.5 |
 | `packages/web/src/__tests__/messages-route.test.ts` | 4 | AC1.2 |
 | `packages/client/src/__tests__/client.test.ts` | 13 | AC2.1, AC2.2, AC2.3, AC2.4, AC2.5 |
-| `packages/mcp-server/src/__tests__/handler.test.ts` | 17 | AC5.1, AC5.2 |

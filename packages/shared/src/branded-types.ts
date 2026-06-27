@@ -81,7 +81,7 @@ export type SQLBoolean = 0 | 1;
 export type PlatformId = "discord" | "discord-interaction" | "webhook-stub";
 
 /** Thread interface type. */
-export type InterfaceType = "web" | "mcp" | "discord" | "discord-interaction";
+export type InterfaceType = "web" | "discord" | "discord-interaction";
 
 // ---------------------------------------------------------------------------
 // Validated constructors — use at trust boundaries (user input, API calls)

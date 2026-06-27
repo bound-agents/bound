@@ -3,7 +3,6 @@
  * Ed25519 keypair, user seeding, host registration, and crash recovery.
  */
 
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
 	copyFileSync,
@@ -112,32 +111,6 @@ export interface BootstrapResult {
 	appContext: AppContext;
 	keypair: Awaited<ReturnType<typeof ensureKeypair>>;
 	configDir: string;
-}
-
-/**
- * Provision the mcp system user idempotently at startup.
- */
-export function ensureMcpUser(db: Database, siteId: string): void {
-	const now = new Date().toISOString();
-	const mcpUserId = deterministicUUID(BOUND_NAMESPACE, "mcp");
-	const existingMcpUser = db.query("SELECT id FROM users WHERE id = ?").get(mcpUserId) as {
-		id: string;
-	} | null;
-	if (!existingMcpUser) {
-		insertRow(
-			db,
-			"users",
-			{
-				id: mcpUserId,
-				display_name: "mcp",
-				platform_ids: null,
-				first_seen_at: now,
-				modified_at: now,
-				deleted: 0,
-			},
-			siteId,
-		);
-	}
 }
 
 export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
@@ -326,9 +299,6 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			}
 		}
 	}
-
-	// 5.1 Provision mcp system user (idempotent)
-	ensureMcpUser(appContext.db, appContext.siteId);
 
 	// 5.5. Bundled-skill seeding (skill-authoring, bound-reference, …)
 	try {

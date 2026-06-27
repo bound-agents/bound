@@ -34,7 +34,6 @@ export type {
 	ContextDebugInfo,
 	ContextDebugTurn,
 	CacheMarker,
-	CreateMcpThreadResult,
 	ApiErrorBody,
 	BoundClientEvents,
 	ConnectionState,

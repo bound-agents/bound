@@ -182,7 +182,7 @@ When the target author is not in the users table, the trust signal reads `(unrec
 
 The filing flow closely follows `DiscordConnector.onMessage()` (`packages/platforms/src/connectors/discord.ts:215-374`): allowlist check → `findOrCreateUser()` → `findOrCreateThread()` → `insertRow("messages", ...)` → `writeOutbox("intake", ...)` → `sync:trigger`. The interaction handler reuses this exact sequence with different inputs (interaction metadata instead of DM message).
 
-Response polling follows the `bound-mcp` pattern in `packages/mcp-server/src/handler.ts:24-43`: poll thread status at 500ms intervals, 5 minute timeout, then read the last assistant message. The interaction connector adapts this to poll the local DB directly (since it's on the same host as the platform leader) rather than going through HTTP.
+Response polling polls thread status at 500ms intervals with a 5 minute timeout, then reads the last assistant message. The interaction connector polls the local DB directly (since it's on the same host as the platform leader) rather than going through HTTP.
 
 The two-connector-from-one-config pattern is new. Currently `createConnector()` returns a single `PlatformConnector` per config entry. This design extends the registry to support spawning multiple connectors from one entry, with one shared leader election (since both connectors share a gateway connection and must be on the same host).
 
@@ -246,7 +246,7 @@ Thread `interface` field routing is also new. Currently `platform:deliver` match
 **Goal:** After writing the intake relay, poll the local DB for the agent's response and deliver it via the interaction's ephemeral channel.
 
 **Components:**
-- Polling loop in the interaction handler (adapted from `packages/mcp-server/src/handler.ts` pattern) — query messages table for `role = 'assistant'` on the interaction's thread with `created_at` after the filed user message, 500ms interval, 5 minute timeout
+- Polling loop in the interaction handler — query messages table for `role = 'assistant'` on the interaction's thread with `created_at` after the filed user message, 500ms interval, 5 minute timeout
 - On success: call `deliver(threadId, messageId, content)` which calls `editReply`
 - On timeout: call `editReply` with a timeout error message
 - Content truncation at Discord's 2000-character limit for editReply

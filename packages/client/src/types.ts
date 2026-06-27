@@ -285,12 +285,6 @@ export interface ContextDebugTurn {
 	created_at: string;
 }
 
-// ---- MCP ----
-
-export interface CreateMcpThreadResult {
-	thread_id: string;
-}
-
 // ---- Webhooks ----
 
 export interface WebhookListEntry {
