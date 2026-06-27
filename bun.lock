@@ -142,6 +142,9 @@
         "@bound/shared": "workspace:*",
         "@opentelemetry/api": "^1.9.0",
       },
+      "devDependencies": {
+        "fast-check": "^4.8.0",
+      },
     },
     "packages/platforms": {
       "name": "@bound/platforms",
