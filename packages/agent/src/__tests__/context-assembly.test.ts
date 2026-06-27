@@ -100,8 +100,6 @@ describe("Context Assembly Pipeline", () => {
 			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("boundless");
-			// Mentions the bound-mcp proxy so the agent knows about that path too
-			expect(result.systemPrompt).toContain("bound-mcp");
 			// Points the agent at the volatile context for the per-turn platform tag
 			expect(result.systemPrompt).toContain("volatile context");
 		});

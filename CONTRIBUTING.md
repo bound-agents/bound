@@ -51,7 +51,7 @@ bun run build
 
 ## Repo Layout
 
-12 packages in a Bun workspace monorepo. Detailed dependency graph and per-package responsibilities live in [docs/design/architecture.md](docs/design/architecture.md).
+11 packages in a Bun workspace monorepo. Detailed dependency graph and per-package responsibilities live in [docs/design/architecture.md](docs/design/architecture.md).
 
 Top-level:
 
@@ -66,9 +66,8 @@ packages/
   platforms/    MCP-based platform connectors (Discord), connector handles, connector tool
   web/          Hono API + Svelte 5 SPA
   client/       BoundClient (HTTP + WS) for external consumers
-  mcp-server/   Standalone stdio MCP server (bound-mcp)
   less/         Terminal coding agent client (boundless)
-  cli/          bound/boundctl/bound-mcp/boundless binaries
+  cli/          bound/boundctl/boundless binaries
 ```
 
 For design rationale per package, see `docs/design/` — seven topic files covering core infrastructure, sync protocol, agent system, sandboxing, inference backends, web+platforms, and the top-level architecture overview.
@@ -136,7 +135,6 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [`bun test packages/cli` prints init stdout — check the exit code](docs/gotchas.md#bun-test-cli-prints-init-stdout)
 - [Mixed positional + flag arg parsing](docs/gotchas.md#mixed-positional-and-flag-arg-parsing)
 - [`loopContextStorage` (AsyncLocalStorage) scope](docs/gotchas.md#loopcontextstorage-scope-asynclocalstorage)
-- [`bound-mcp` polling can return stale turns](docs/gotchas.md#bound-mcp-polling-can-return-stale-turns)
 - [bound CLI config and data dirs](docs/gotchas.md#bound-cli-config-and-data-dirs)
 - [Stale binaries](docs/gotchas.md#stale-binaries)
 - [Universal 256 KiB tool-result cap](docs/gotchas.md#universal-256-kib-tool-result-cap)
