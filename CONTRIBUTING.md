@@ -51,7 +51,7 @@ bun run build
 
 ## Repo Layout
 
-11 packages in a Bun workspace monorepo. Detailed dependency graph and per-package responsibilities live in [docs/design/architecture.md](docs/design/architecture.md).
+12 packages in a Bun workspace monorepo. Detailed dependency graph and per-package responsibilities live in [docs/design/architecture.md](docs/design/architecture.md).
 
 Top-level:
 
@@ -62,7 +62,8 @@ packages/
   sync/         Ed25519 WS sync, XChaCha20 encryption, LWW/append reducers
   sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), command framework
   llm/          Driver shims (Bedrock, OpenAI-compatible) over Vercel AI SDK
-  agent/        Agent loop, 8-stage context pipeline, commands, scheduler, MCP bridge
+  loop/         Reusable loop contracts, stream parsing, retry/timeout utilities
+  agent/        Main-agent context pipeline, commands, scheduler, MCP bridge
   platforms/    MCP-based platform connectors (Discord), connector handles, connector tool
   web/          Hono API + Svelte 5 SPA
   client/       BoundClient (HTTP + WS) for external consumers

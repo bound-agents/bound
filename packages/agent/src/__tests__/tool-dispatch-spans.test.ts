@@ -9,7 +9,8 @@ import type { AppContext, EventBusImpl } from "@bound/core";
 import type { LLMBackend, RegisteredTool, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { trace } from "@opentelemetry/api";
+import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
 	BasicTracerProvider,
 	InMemorySpanExporter,
@@ -152,11 +153,15 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 			userId,
 		);
 
-		// Set up OTEL tracing
+		// Set up OTEL tracing. Register the async-hooks context manager so
+		// context.active() propagates across awaits, mirroring production
+		// (telemetry.ts). Without it the loop.turn span isn't visible as the
+		// ambient parent when tool spans are created.
 		exporter = new InMemorySpanExporter();
 		provider = new BasicTracerProvider();
 		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
 		trace.setGlobalTracerProvider(provider);
+		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 	});
 
 	beforeEach(() => {
@@ -615,7 +620,7 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 		expect(toolSpan?.status?.message).toContain("Unexpected exception");
 	});
 
-	it("should parent tool.execute span under agent-loop.tool-execute", async () => {
+	it("should parent tool.execute span under loop.turn", async () => {
 		insertRow(
 			db,
 			"threads",
@@ -681,13 +686,15 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 		await loop.run();
 
 		const spans = exporter.getFinishedSpans();
-		const toolExecuteSpan = spans.find((s) => s.name === "agent-loop.tool-execute");
+		const turnSpan = spans.find((s) => s.name === "loop.turn");
 		const toolSpan = spans.find((s) => s.name === "tool.execute");
 
-		expect(toolExecuteSpan).toBeDefined();
+		expect(turnSpan).toBeDefined();
 		expect(toolSpan).toBeDefined();
-		// tool.execute should be a child of agent-loop.tool-execute
-		expect(toolSpan?.parentSpanId).toBe(toolExecuteSpan?.spanContext().spanId);
+		// tool.execute should nest under the turn span (loop.turn). The discrete
+		// agent-loop.tool-execute phase span was removed when the loop core moved
+		// to @bound/loop; the turn span is now the dispatch parent.
+		expect(toolSpan?.parentSpanId).toBe(turnSpan?.spanContext().spanId);
 	});
 
 	it("should record tool.input_size and tool.output_size attributes", async () => {
@@ -772,7 +779,7 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 		expect(toolSpan?.attributes?.["tool.output_size"] as number).toBeGreaterThan(0);
 	});
 
-	it("should create agent-loop.tool-persist span after tool execution", async () => {
+	it("should keep the tool round-trip within a single loop.turn span", async () => {
 		insertRow(
 			db,
 			"threads",
@@ -838,12 +845,16 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 		await loop.run();
 
 		const spans = exporter.getFinishedSpans();
-		const toolPersistSpan = spans.find((s) => s.name === "agent-loop.tool-persist");
-		const turnSpan = spans.find((s) => s.name === "agent-loop.turn");
+		const turnSpan = spans.find((s) => s.name === "loop.turn");
+		const toolSpan = spans.find((s) => s.name === "tool.execute");
 
-		expect(toolPersistSpan).toBeDefined();
+		// The discrete agent-loop.tool-persist phase span was removed when the loop
+		// core moved to @bound/loop (persistence is now inline). The surviving
+		// contract: the whole tool round-trip — execute then persist — happens
+		// inside one loop.turn span, with tool.execute nested under it.
 		expect(turnSpan).toBeDefined();
-		// tool-persist should be a child of the turn
-		expect(toolPersistSpan?.parentSpanId).toBe(turnSpan?.spanContext().spanId);
+		expect(toolSpan).toBeDefined();
+		expect(toolSpan?.parentSpanId).toBe(turnSpan?.spanContext().spanId);
+		expect(turnSpan?.status?.code).toBe(1); // turn completed OK
 	});
 });

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bound is a distributed, model-agnostic personal agent system built as a Bun monorepo with 10 packages. All state lives in a SQLite database that replicates across hosts via an event-sourced sync protocol.
+Bound is a distributed, model-agnostic personal agent system built as a Bun monorepo with 12 packages. All state lives in a SQLite database that replicates across hosts via an event-sourced sync protocol.
 
 ```
                          +------------------+
@@ -14,15 +14,20 @@ Bound is a distributed, model-agnostic personal agent system built as a Bun mono
               |                   |                   |
      +--------v--------+ +-------v--------+ +--------v--------+
      |  @bound/web     | | @bound/platforms | |  @bound/agent   |
-     |  Hono + Svelte  | | connector fwk  | |  Loop + Sched   |
+     |  Hono + Svelte  | | connector fwk  | | Sched + tools   |
      +--------+--------+ +-------+--------+ +----+-------+----+
               |                   |               |       |
               +-------------------+-------+-------+       |
                                           |               |
                                  +--------v--------+  +---v-----------+
-                                 |  @bound/sandbox | |  @bound/llm    |
-                                 |  ClusterFs/Bash | |  4 LLM drivers |
+                                 |  @bound/sandbox | |  @bound/loop   |
+                                 |  ClusterFs/Bash | | loop contracts |
                                  +--------+--------+ +---+------------+
+                                          |               |
+                                          |          +----v-----------+
+                                          |          |  @bound/llm    |
+                                          |          |  4 LLM drivers |
+                                          |          +----+-----------+
                                           |               |
                               +-----------v---------------v-----------+
                               |            @bound/core                 |
@@ -48,14 +53,14 @@ shared  <--  core  <--  sync
   |           |
   +----+------+----------+
        |      |          |
-    sandbox  llm       agent  <--  web
-       ^      ^          ^         ^
-       |      |          |         |
-       +------+----------+---------+
-                         |
-                      platforms
-                         |
-                        cli  (imports all)
+    sandbox  llm       loop  <--  agent  <--  web
+       ^      ^          ^          ^         ^
+       |      |          |          |         |
+       +------+----------+----------+---------+
+                              |
+                           platforms
+                              |
+                             cli  (imports all)
 ```
 
 ## Data Flow
