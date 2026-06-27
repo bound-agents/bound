@@ -65,7 +65,9 @@ export class PooledBackend implements LLMBackend {
 			prompt_caching: caps.some((c) => c.prompt_caching),
 			vision: caps.some((c) => c.vision),
 			extended_thinking: caps.some((c) => c.extended_thinking),
-			max_context: Math.max(...caps.map((c) => c.max_context)),
+			max_context: caps.some((c) => c.max_context !== undefined)
+				? Math.max(...caps.map((c) => c.max_context ?? Number.NEGATIVE_INFINITY))
+				: undefined,
 		};
 	}
 
