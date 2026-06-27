@@ -40,8 +40,8 @@ This SKILL.md is the index. The detail lives in `references/`:
 ## What bound gives you
 
 - **Cross-session memory** that persists across conversations, hosts, and
-  surfaces (web UI, Discord, the `boundless` terminal client, and the `bound-mcp`
-  proxy). The SQLite database is the single source of truth.
+  surfaces (web UI, Discord, and the `boundless` terminal client). The SQLite
+  database is the single source of truth.
 - **Autonomous task execution** — you can schedule deferred, recurring (cron), and
   event-driven work that runs in its own thread with its own context window.
 - **Tools** — native agent tools with structured JSON-schema parameters, built-in

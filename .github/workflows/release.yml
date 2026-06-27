@@ -48,7 +48,7 @@ jobs:
       - name: Stage binaries for Docker
         run: |
           mkdir -p binaries/${{ matrix.arch }}
-          cp dist/bound dist/boundctl dist/bound-mcp binaries/${{ matrix.arch }}/
+          cp dist/bound dist/boundctl binaries/${{ matrix.arch }}/
 
       # Build and push per-platform Docker image (native, no QEMU)
       - uses: docker/setup-buildx-action@v3
@@ -80,7 +80,7 @@ jobs:
       # Upload binaries for GitHub release
       - name: Rename binaries for release
         run: |
-          for bin in bound boundctl bound-mcp; do
+          for bin in bound boundctl; do
             cp dist/$bin dist/${bin}-${{ matrix.target }}
           done
 

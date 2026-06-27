@@ -38,10 +38,6 @@ In `commands.ts`: only affects MCP bridge commands (the only commands still disp
 
 `loopContextStorage` is exported from `@bound/sandbox`. Commands running inside the agent loop see `threadId` / `taskId` in context automatically. Commands invoked outside (e.g., boundctl) don't.
 
-### bound-mcp polling can return stale turns
-
-`polaris.bound_chat()` may return a prior turn's content if the new turn hasn't completed by poll time. The DB is ground truth — check the `messages` table directly when debugging.
-
 ### bound CLI config and data dirs
 
 The bound CLI config dir defaults to `./config` (relative to cwd) and data to `./data`. Use `--config-dir` / `--data-dir` to override, or run from the directory where your config lives.
@@ -52,7 +48,7 @@ The bound CLI config dir defaults to `./config` (relative to cwd) and data to `.
 
 ### Universal 256 KiB tool-result cap
 
-Every tool result, regardless of `kind`, is bounded by `capToolResultContent` (from `@bound/shared/strings.ts`, `MAX_TOOL_RESULT_BYTES = 256 * 1024`) at two boundaries — the agent-loop dispatch return (covers platform/sandbox/builtin and the legacy fallback) and `handleToolResult` in `packages/web/src/server/websocket.ts` (covers WS-deferred client tools from boundless / bound-mcp / external `BoundClient` consumers). Truncation is middle-cut with the marker `[truncated N bytes from middle; tool result exceeded 262144-byte cap — re-run with a narrower scope or pipe through head/grep]`; the marker's byte width is subtracted from the half-budgets so the function is idempotent and the output is guaranteed ≤ cap. If a tool result looks like it's missing a chunk, grep for the marker — that's the cap firing, not a bug. Per-tool caps still run first; this is a backstop, not the primary ceiling.
+Every tool result, regardless of `kind`, is bounded by `capToolResultContent` (from `@bound/shared/strings.ts`, `MAX_TOOL_RESULT_BYTES = 256 * 1024`) at two boundaries — the agent-loop dispatch return (covers platform/sandbox/builtin and the legacy fallback) and `handleToolResult` in `packages/web/src/server/websocket.ts` (covers WS-deferred client tools from boundless / external `BoundClient` consumers). Truncation is middle-cut with the marker `[truncated N bytes from middle; tool result exceeded 262144-byte cap — re-run with a narrower scope or pipe through head/grep]`; the marker's byte width is subtracted from the half-budgets so the function is idempotent and the output is guaranteed ≤ cap. If a tool result looks like it's missing a chunk, grep for the marker — that's the cap firing, not a bug. Per-tool caps still run first; this is a backstop, not the primary ceiling.
 
 ### Oversized bash output offloads to a file
 

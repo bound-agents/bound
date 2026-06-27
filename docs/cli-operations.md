@@ -679,11 +679,10 @@ Output: Static files in `packages/web/dist/`
 ```
 bun build --compile packages/cli/src/bound.ts --outfile dist/bound
 bun build --compile packages/cli/src/boundctl.ts --outfile dist/boundctl
-bun build --compile packages/mcp-server/src/server.ts --outfile dist/bound-mcp
 bun build --compile packages/less/src/boundless.tsx --outfile dist/boundless
 ```
 
-Four standalone executables are produced: `bound`, `boundctl`, `bound-mcp`, and `boundless`. Each contains:
+Three standalone executables are produced: `bound`, `boundctl`, and `boundless`. Each contains:
 - The CLI / server code and all compiled dependencies
 - Web assets including the Svelte SPA (embedded in `bound`)
 - The Bun runtime
@@ -703,13 +702,11 @@ Building Bound...
 1. Building web UI...
 2. Compiling bound binary...
 3. Compiling boundctl binary...
-4. Compiling bound-mcp binary...
-5. Compiling boundless binary...
+4. Compiling boundless binary...
 
 --- Build summary ---
   dist/bound (45.23 MB)
   dist/boundctl (38.10 MB)
-  dist/bound-mcp (32.05 MB)
   dist/boundless (72.84 MB)
 ```
 

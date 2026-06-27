@@ -2,7 +2,7 @@
 
 Last verified: 2026-05-25
 
-OpenTelemetry distributed tracing across all binaries (`bound`, `boundless`, `bound-mcp`, `boundctl`) and the relay protocol. Opt-in via `OTEL_ENABLED=1`; when unset, `@opentelemetry/api` returns no-op spans (zero overhead). When enabled, the OTLP HTTP exporter sends to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
+OpenTelemetry distributed tracing across all binaries (`bound`, `boundless`, `boundctl`) and the relay protocol. Opt-in via `OTEL_ENABLED=1`; when unset, `@opentelemetry/api` returns no-op spans (zero overhead). When enabled, the OTLP HTTP exporter sends to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
 
 ## Bootstrap
 

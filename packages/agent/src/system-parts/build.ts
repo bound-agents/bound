@@ -21,10 +21,8 @@ export const ENVIRONMENT_PARAGRAPH =
 	"over WebSocket and renders your responses in an Ink-based TUI. Boundless provides its " +
 	"own filesystem tools (`boundless_read`, `boundless_write`, `boundless_edit`, " +
 	"`boundless_bash`) scoped to the user's local working directory; those tools are only " +
-	"present when the current thread is a boundless thread. You may also be invoked " +
-	"indirectly through `bound-mcp`, a stdio MCP proxy that forwards a single `bound_chat` " +
-	"tool call into a bound thread. Which surface originated the current turn is noted in " +
-	"the volatile context that follows this prompt.";
+	"present when the current thread is a boundless thread. Which surface originated the " +
+	"current turn is noted in the volatile context that follows this prompt.";
 
 export const CONCURRENCY_PARAGRAPH =
 	"**Concurrency model.** Each conversation is a *thread*, and bound can run many threads " +

@@ -278,17 +278,8 @@ async function build() {
 		console.log("Use 'bun packages/cli/src/boundctl.ts' to run directly");
 	}
 
-	// Step 5: Compile bound-mcp (MCP stdio server)
-	console.log("\n5. Compiling bound-mcp binary...");
-	try {
-		await compileBinary("packages/mcp-server/src/server.ts", "dist/bound-mcp");
-	} catch (e) {
-		console.error("bound-mcp compilation failed:", e instanceof Error ? e.message : e);
-		console.log("Use 'bun packages/mcp-server/src/server.ts' to run directly");
-	}
-
-	// Step 6: Compile boundless (terminal client)
-	console.log("\n6. Compiling boundless binary...");
+	// Step 5: Compile boundless (terminal client)
+	console.log("\n5. Compiling boundless binary...");
 	try {
 		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
 			stubNodePty: true,
@@ -303,7 +294,7 @@ async function build() {
 	// Bun.compile appends ".exe" on Windows, so the summary check must
 	// look for the platform-correct file name.
 	const binaryExt = process.platform === "win32" ? ".exe" : "";
-	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp", "dist/boundless"]) {
+	for (const binary of ["dist/bound", "dist/boundctl", "dist/boundless"]) {
 		const binaryPath = binary + binaryExt;
 		if (existsSync(binaryPath)) {
 			const sizeMB = (statSync(binaryPath).size / (1024 * 1024)).toFixed(2);
