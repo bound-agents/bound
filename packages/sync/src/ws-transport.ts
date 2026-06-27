@@ -32,6 +32,7 @@ import {
 	applySnapshotRows,
 	getPkColumn,
 	replayEvents,
+	validateTableName,
 } from "./reducers.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
 import type {
@@ -2164,6 +2165,26 @@ export class WsTransport {
 
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) return;
+
+		for (const { table } of payload.tables) {
+			if (!validateTableName(table)) {
+				this.config.logger?.warn("[row-pull] Rejecting request for invalid table", {
+					peerSiteId,
+					requestId: payload.request_id,
+					table,
+				});
+				const frame = encodeFrame(
+					WsMessageType.ERROR,
+					{
+						code: "invalid_table",
+						message: "Row pull requested an unknown table",
+					},
+					peer.symmetricKey,
+				);
+				peer.sendFrame(frame);
+				return;
+			}
+		}
 
 		const totalPks = payload.tables.reduce((sum, t) => sum + t.pks.length, 0);
 		this.config.logger?.info("[row-pull] Request received", {

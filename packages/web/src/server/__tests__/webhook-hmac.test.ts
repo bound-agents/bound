@@ -76,13 +76,18 @@ describe("validateWebhookSignature", () => {
 		const format: SignatureFormat = "raw";
 		const secret = "test_secret";
 		const body = Buffer.from("raw payload data");
+		const timestamp = Math.floor(Date.now() / 1000).toString();
 
 		// Compute expected HMAC
-		const expectedHmac = createHmac("sha256", secret).update(body).digest("hex");
+		const expectedHmac = createHmac("sha256", secret)
+			.update(`${timestamp}.`)
+			.update(body)
+			.digest("hex");
 
 		// Build headers
 		const headers = new Headers({
 			"X-Webhook-Signature": expectedHmac,
+			"X-Webhook-Timestamp": timestamp,
 		});
 
 		const result = validateWebhookSignature(format, secret, headers, body);
@@ -142,9 +147,49 @@ describe("validateWebhookSignature", () => {
 		const secret = "test_secret";
 		const body = Buffer.from("raw payload data");
 		const wrongHmac = "0000000000000000000000000000000000000000000000000000000000000000";
+		const timestamp = Math.floor(Date.now() / 1000).toString();
 
 		const headers = new Headers({
 			"X-Webhook-Signature": wrongHmac,
+			"X-Webhook-Timestamp": timestamp,
+		});
+
+		const result = validateWebhookSignature(format, secret, headers, body);
+		expect(result.valid).toBe(false);
+	});
+
+	test("Raw format returns invalid when timestamp is stale", () => {
+		const format: SignatureFormat = "raw";
+		const secret = "test_secret";
+		const body = Buffer.from("raw payload data");
+		const staleTimestamp = Math.floor((Date.now() - 6 * 60 * 1000) / 1000).toString();
+		const hmac = createHmac("sha256", secret)
+			.update(`${staleTimestamp}.`)
+			.update(body)
+			.digest("hex");
+
+		const headers = new Headers({
+			"X-Webhook-Signature": hmac,
+			"X-Webhook-Timestamp": staleTimestamp,
+		});
+
+		const result = validateWebhookSignature(format, secret, headers, body);
+		expect(result.valid).toBe(false);
+	});
+
+	test("Raw format returns invalid when timestamp header is missing", () => {
+		// An old-style raw request — body-only HMAC, no X-Webhook-Timestamp, the
+		// exact shape a sender used before replay protection was added — must now
+		// be rejected. Signing over the body alone (not `${timestamp}.${body}`)
+		// makes this fail if the timestamp requirement is ever reverted: a
+		// regression back to body-only signing would accept this request.
+		const format: SignatureFormat = "raw";
+		const secret = "test_secret";
+		const body = Buffer.from("raw payload data");
+		const bodyOnlyHmac = createHmac("sha256", secret).update(body).digest("hex");
+
+		const headers = new Headers({
+			"X-Webhook-Signature": bodyOnlyHmac,
 		});
 
 		const result = validateWebhookSignature(format, secret, headers, body);

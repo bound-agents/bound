@@ -167,7 +167,9 @@ export async function createWebApp(
 	app.use("*", async (c, next) => {
 		const host = c.req.header("host");
 		if (host) {
-			const hostName = host.split(":")[0];
+			const hostName = host.startsWith("[")
+				? host.slice(0, host.indexOf("]") + 1)
+				: host.split(":")[0];
 			const allowedHosts = ["localhost", "127.0.0.1", "[::1]"];
 			if (!allowedHosts.includes(hostName)) {
 				return c.json({ error: "Invalid Host header" }, 400);
