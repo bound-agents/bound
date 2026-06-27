@@ -33,10 +33,21 @@ export type ModelResolution =
 			cacheTtl?: ChatParams["cache_ttl"];
 			// Context window in tokens, from the backend's capabilities.
 			// Populated at resolution time so consumers (prepareFrame, etc.)
-			// don't need a separate getEffectiveCapabilities() call.
-			max_context?: number;
+			// don't need a separate getEffectiveCapabilities() call. Required:
+			// a resolution that can't determine the window is a `kind: "error"`,
+			// never a live resolution carrying a guessed default.
+			max_context: number;
 	  }
-	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
+	| {
+			kind: "remote";
+			hosts: EligibleHost[];
+			modelId: string;
+			reResolved?: boolean;
+			// Context window for the chosen remote host, in tokens. Required for
+			// the same reason as the local variant: skew (a host that synced caps
+			// without max_context) routes to `kind: "error"` rather than defaulting.
+			max_context: number;
+	  }
 	| {
 			kind: "error";
 			error: string;
@@ -106,6 +117,36 @@ export function resolveModelTier(
 }
 
 /**
+ * Builds a `kind: "local"` resolution, or `null` when the backend advertises
+ * no context window. A ready local backend always has one — config requires
+ * `context_window` for non-umans backends, umans fetches it at warmup, and the
+ * not-ready gate keeps self-configuring placeholders out of resolution — so
+ * `null` here means a genuine misconfiguration. Callers surface it as
+ * `kind: "error"` (or skip the candidate) rather than dispatching a real turn
+ * on a guessed window.
+ */
+function buildLocalResolution(
+	modelRouter: ModelRouter,
+	backend: LLMBackend,
+	modelId: string,
+	reResolved: boolean,
+): Extract<ModelResolution, { kind: "local" }> | null {
+	const max_context = modelRouter.getEffectiveCapabilities(modelId)?.max_context;
+	if (max_context === undefined) return null;
+	return {
+		kind: "local",
+		backend,
+		modelId,
+		...(reResolved ? { reResolved: true } : {}),
+		thinkingConfig: modelRouter.getThinkingConfig(modelId),
+		effort: modelRouter.getEffort(modelId),
+		maxOutputTokens: modelRouter.getMaxOutputTokens(modelId),
+		cacheTtl: modelRouter.getCacheTtl(modelId),
+		max_context,
+	};
+}
+
+/**
  * Attempts to find a same-tier fallback when the originally-requested model
  * is unavailable. Checks local backends first, then remote hosts.
  * Returns a ModelResolution if a cost-equivalent alternative exists,
@@ -127,17 +168,10 @@ export function resolveSameTierFallback(
 	if (localAlt) {
 		const backend = modelRouter.tryGetBackend(localAlt.id);
 		if (backend) {
-			return {
-				kind: "local",
-				backend,
-				modelId: localAlt.id,
-				reResolved: true,
-				thinkingConfig: modelRouter.getThinkingConfig(localAlt.id),
-				effort: modelRouter.getEffort(localAlt.id),
-				maxOutputTokens: modelRouter.getMaxOutputTokens(localAlt.id),
-				cacheTtl: modelRouter.getCacheTtl(localAlt.id),
-				max_context: modelRouter.getEffectiveCapabilities(localAlt.id)?.max_context,
-			};
+			const localResolution = buildLocalResolution(modelRouter, backend, localAlt.id, true);
+			// A fallback candidate that advertises no context window is not viable;
+			// fall through to remote rather than dispatch on a guessed default.
+			if (localResolution) return localResolution;
 		}
 	}
 
@@ -175,6 +209,11 @@ export function resolveSameTierFallback(
 				if (requirements.prompt_caching && !caps.prompt_caching) continue;
 			}
 
+			// A same-tier fallback host that advertises no context window is not
+			// viable — the loop couldn't budget against it. Skip it rather than
+			// carry it to a guessed default.
+			if (hostEntry.capabilities?.max_context === undefined) continue;
+
 			remoteHosts.push({
 				site_id: row.site_id,
 				host_name: row.host_name,
@@ -182,6 +221,7 @@ export function resolveSameTierFallback(
 				online_at: row.online_at,
 				modified_at: row.modified_at,
 				tier: hostEntry.tier,
+				capabilities: hostEntry.capabilities,
 				modelId: hostEntry.id,
 			});
 		}
@@ -200,11 +240,16 @@ export function resolveSameTierFallback(
 	});
 
 	const best = remoteHosts[0];
+	const max_context = best.capabilities?.max_context;
+	// Defensive: the collection loop skips hosts without a window, so this is
+	// non-null here. The guard keeps the type honest without a non-null assertion.
+	if (max_context === undefined) return null;
 	return {
 		kind: "remote",
 		hosts: remoteHosts.map(({ modelId: _, ...host }) => host),
 		modelId: best.modelId,
 		reResolved: true,
+		max_context,
 	};
 }
 
@@ -267,17 +312,10 @@ export function resolveModel(
 					const altBackend = modelRouter.tryGetBackend(altId);
 					if (altBackend) {
 						// Phase 3: Dispatch (re-routed local)
-						return {
-							kind: "local",
-							backend: altBackend,
-							modelId: altId,
-							reResolved: true,
-							thinkingConfig: modelRouter.getThinkingConfig(altId),
-							effort: modelRouter.getEffort(altId),
-							maxOutputTokens: modelRouter.getMaxOutputTokens(altId),
-							cacheTtl: modelRouter.getCacheTtl(altId),
-							max_context: modelRouter.getEffectiveCapabilities(altId)?.max_context,
-						};
+						const altResolution = buildLocalResolution(modelRouter, altBackend, altId, true);
+						// No advertised window → not a viable alternative; fall through
+						// to the transient/capability error paths below.
+						if (altResolution) return altResolution;
 					}
 				}
 
@@ -306,15 +344,19 @@ export function resolveModel(
 		}
 
 		// Phase 3: Dispatch (local, qualification passed)
+		const localResolution = buildLocalResolution(
+			modelRouter,
+			localBackend,
+			effectiveModelId,
+			false,
+		);
+		if (localResolution) return localResolution;
+		// A ready local backend that advertises no context window is a
+		// misconfiguration — surface it rather than dispatch on a guessed window.
 		return {
-			kind: "local",
-			backend: localBackend,
-			modelId: effectiveModelId,
-			thinkingConfig: modelRouter.getThinkingConfig(effectiveModelId),
-			effort: modelRouter.getEffort(effectiveModelId),
-			maxOutputTokens: modelRouter.getMaxOutputTokens(effectiveModelId),
-			cacheTtl: modelRouter.getCacheTtl(effectiveModelId),
-			max_context: modelRouter.getEffectiveCapabilities(effectiveModelId)?.max_context,
+			kind: "error",
+			error: `Model "${effectiveModelId}" resolved to a local backend that advertises no context window`,
+			reason: "transient-unavailable",
 		};
 	}
 
@@ -323,7 +365,15 @@ export function resolveModel(
 	if (!effectiveModelId) {
 		const anyRemote = findAnyRemoteModel(db, localSiteId);
 		if (anyRemote.ok) {
-			return { kind: "remote", hosts: anyRemote.hosts, modelId: anyRemote.modelId };
+			const max_context = anyRemote.hosts[0]?.capabilities?.max_context;
+			if (max_context === undefined) {
+				return {
+					kind: "error",
+					error: `Remote model "${anyRemote.modelId}" resolved but the host advertises no context window`,
+					reason: "transient-unavailable",
+				};
+			}
+			return { kind: "remote", hosts: anyRemote.hosts, modelId: anyRemote.modelId, max_context };
 		}
 		return {
 			kind: "error",
@@ -335,7 +385,15 @@ export function resolveModel(
 	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements);
 	if (remoteResult.ok) {
 		// Phase 2: Qualify (remote) — remote capability filtering via requirements parameter
-		return { kind: "remote", hosts: remoteResult.hosts, modelId: effectiveModelId };
+		const max_context = remoteResult.hosts[0]?.capabilities?.max_context;
+		if (max_context === undefined) {
+			return {
+				kind: "error",
+				error: `Model "${effectiveModelId}" resolved to a remote host that advertises no context window`,
+				reason: "transient-unavailable",
+			};
+		}
+		return { kind: "remote", hosts: remoteResult.hosts, modelId: effectiveModelId, max_context };
 	}
 
 	// Phase 3: Error (not found anywhere)

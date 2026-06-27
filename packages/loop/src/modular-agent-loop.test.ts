@@ -70,7 +70,7 @@ function makeExtensions(
 			},
 		},
 		modelRouter: {} as LoopExtensions["modelRouter"],
-		resolveModel: () => ({ kind: "local", modelId: "mock", backend }),
+		resolveModel: () => ({ kind: "local", modelId: "mock", backend, max_context: 200_000 }),
 		assembleContext: async () => ({
 			messages: [{ role: "user", content: "hello" }],
 			systemPrompt: "system",

@@ -59,6 +59,10 @@ export interface PreparedLoopFrame {
 	resolution: Exclude<LoopModelResolution, { kind: "error" }> & {
 		backend?: LoopModelResolution["backend"];
 		modelId: string;
+		// Required at the frame boundary: a resolution with an unknown context
+		// window never reaches a prepared frame — run() turns it into an error
+		// result first, so prepareFrame can budget against a real number.
+		max_context: number;
 	};
 	assembled: LoopContextAssemblyResult;
 	messages: LLMMessage[];
@@ -231,20 +235,25 @@ export class ModularAgentLoop {
 				loopSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
 				return this.result({ error });
 			}
+			if (resolution.max_context === undefined) {
+				// No advertised context window means the loop can't budget the
+				// frame. Surface it as an error rather than dispatch a turn on a
+				// guessed default — the same contract the agent resolution enforces.
+				const error = `Model "${resolution.modelId}" resolved but advertises no context window`;
+				await this.persistAlert(`Loop error: ${error}`);
+				loopSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
+				return this.result({ error });
+			}
 
+			const frameResolution = {
+				...resolution,
+				backend: resolution.backend,
+				modelId: resolution.modelId,
+				max_context: resolution.max_context,
+			};
 			const frame: PreparedLoopFrame = {
-				resolution: {
-					...resolution,
-					backend: resolution.backend,
-					modelId: resolution.modelId,
-				},
-				...(await this.prepareFrame({
-					resolution: {
-						...resolution,
-						backend: resolution.backend,
-						modelId: resolution.modelId,
-					},
-				})),
+				resolution: frameResolution,
+				...(await this.prepareFrame({ resolution: frameResolution })),
 			};
 			let currentDebug = frame.assembled.debug;
 			const maxTurns = this.loopOptions.maxTurns ?? DEFAULT_MAX_TURNS;
