@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { dangerouslyExecuteRawWrite } from "@bound/core";
+import type { Logger } from "@bound/shared";
 import { v5 as uuidv5 } from "uuid";
 
 export interface ScanResult {
@@ -46,7 +47,11 @@ function generateDeterministicId(_siteId: string, path: string): string {
 	return uuidv5(path, BOUND_NAMESPACE);
 }
 
-function walkDirectory(dir: string, prefix = ""): Array<{ path: string; fullPath: string }> {
+function walkDirectory(
+	dir: string,
+	prefix = "",
+	logger?: Logger,
+): Array<{ path: string; fullPath: string }> {
 	const entries: Array<{ path: string; fullPath: string }> = [];
 
 	try {
@@ -58,16 +63,28 @@ function walkDirectory(dir: string, prefix = ""): Array<{ path: string; fullPath
 			try {
 				const stat = statSync(fullPath);
 				if (stat.isDirectory()) {
-					entries.push(...walkDirectory(fullPath, relativePath));
+					entries.push(...walkDirectory(fullPath, relativePath, logger));
 				} else if (stat.isFile()) {
 					entries.push({ path: relativePath, fullPath });
 				}
-			} catch {}
+			} catch (entryError) {
+				// Expected: file deleted between readdir and stat (TOCTOU race).
+				// Unexpected: permission errors. Log so the latter is observable;
+				// best-effort scan still skips the entry either way.
+				logger?.debug("[overlay] Skipping unstatable entry during scan", {
+					path: fullPath,
+					error: entryError instanceof Error ? entryError.message : String(entryError),
+				});
+			}
 		}
-	} catch {
-		// Expected: directory deleted during scan (TOCTOU race)
-		// Unexpected: permission errors
-		// Silent skip is acceptable — overlay scanner is best-effort
+	} catch (dirError) {
+		// Expected: directory deleted during scan (TOCTOU race).
+		// Unexpected: permission errors. Log so the latter is observable;
+		// silent skip remains acceptable — overlay scanner is best-effort.
+		logger?.debug("[overlay] Skipping unreadable directory during scan", {
+			dir,
+			error: dirError instanceof Error ? dirError.message : String(dirError),
+		});
 	}
 
 	return entries;
@@ -78,6 +95,7 @@ export function scanOverlayIndex(
 	siteId: string,
 	overlayMounts: Record<string, string>,
 	outbox?: OverlayOutbox,
+	logger?: Logger,
 ): ScanResult {
 	let created = 0;
 	let updated = 0;
@@ -87,7 +105,7 @@ export function scanOverlayIndex(
 
 	// Scan each mounted directory
 	for (const [, mountPath] of Object.entries(overlayMounts)) {
-		const entries = walkDirectory(mountPath);
+		const entries = walkDirectory(mountPath, "", logger);
 
 		for (const entry of entries) {
 			scannedPaths.add(entry.path);
@@ -192,15 +210,16 @@ export function startOverlayScanLoop(
 	overlayMounts: Record<string, string>,
 	intervalMs: number = 5 * 60 * 1000,
 	outbox?: OverlayOutbox,
+	logger?: Logger,
 ): { stop: () => void } {
 	let stopped = false;
 
 	// Run initial scan immediately at startup
-	scanOverlayIndex(db, siteId, overlayMounts, outbox);
+	scanOverlayIndex(db, siteId, overlayMounts, outbox, logger);
 
 	const interval = setInterval(() => {
 		if (!stopped) {
-			scanOverlayIndex(db, siteId, overlayMounts, outbox);
+			scanOverlayIndex(db, siteId, overlayMounts, outbox, logger);
 		}
 	}, intervalMs);
 

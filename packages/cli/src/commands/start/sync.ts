@@ -164,6 +164,7 @@ export async function initSync(
 				overlayConfig.mounts,
 				undefined,
 				outboxAdapter,
+				appContext.logger,
 			);
 			appContext.logger.info(
 				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
