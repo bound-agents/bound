@@ -39,6 +39,10 @@ export interface LoopModelResolution {
 	modelId?: string;
 	backend?: LLMBackend;
 	error?: string;
+	// Context window for the resolved model, in tokens. When the base
+	// prepareFrame runs it uses this instead of a hardcoded fallback.
+	// undefined means "unknown" — the consumer applies its own default.
+	max_context?: number;
 }
 
 export interface LoopTurnMetrics {

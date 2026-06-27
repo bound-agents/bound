@@ -560,7 +560,7 @@ export class ModularAgentLoop {
 		const assembled = await this.assembleContext({
 			config: this.loopConfig,
 			modelId: input.resolution.modelId,
-			contextWindow: 200_000,
+			contextWindow: input.resolution.max_context ?? 200_000,
 			tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
 		});
 		return {
