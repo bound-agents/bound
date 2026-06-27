@@ -1066,3 +1066,33 @@ recordTurn(db, {
 const todaySpend = getDailySpend(db, "2026-03-23");
 console.log(`Today's spend: $${todaySpend.toFixed(4)}`);
 ```
+
+---
+
+### Virtual Filesystem Persistence
+
+The agent sandbox operates over a composable virtual filesystem abstraction that allows in-memory, overlay, and passthrough filesystem instances to be mounted at different path prefixes. The `@bound/sandbox` package's `createClusterFs` factory returns a `ClusterFsResult` object that wraps a `MountableFs` root and exposes optional computed methods for staleness checking and enumeration. The full state of the agent's in-memory filesystem survives process restarts through a snapshot-hydrate-persist pipeline backed by the `files` synced table.
+
+#### Scope and Exclusions
+
+Snapshot and hydration cover all paths stored in in-memory filesystem instances — specifically the root `InMemoryFs` (which holds paths like `/tmp/`, `/workspace/`, arbitrary agent-created directories) and the `/home/user/` mounted `InMemoryFs`. System pseudo-paths (`/dev/`, `/proc/`, `/bin/`, `/usr/`) are never created in those instances, so they are naturally excluded from enumeration. Overlay-managed paths (`/mnt/*`) live in separate `OverlayFs` instances and are explicitly excluded from the snapshot pipeline — they have their own hydration path and are never written to the `files` table by the general persistence layer.
+
+#### Path Enumeration
+
+`ClusterFsResult.getInMemoryPaths()` returns a flat list of all paths present in the tracked in-memory instances. The implementation queries only the InMemoryFs instances that `createClusterFs` holds by direct reference (the root and the `/home/user/` mount), concatenating their `getAllPaths()` output with the appropriate mount-point prefix. This is an explicit allowlist by direct reference, not a type-based filter or traversal of the full `MountableFs` tree — if a filesystem instance is not tracked in this list, its paths do not appear in the snapshot.
+
+#### Snapshot and Hydration
+
+`snapshotWorkspace(fs, options?)` accepts an optional `paths` parameter. When supplied, it iterates that explicit list rather than calling `getAllPaths()` on the full filesystem and filtering. The function returns a map of `path → { hash, size }`, which serves as the input to the diff-and-persist logic. `hydrateWorkspace(db, fs, siteId)` queries the `files` table with `WHERE deleted = 0 AND path NOT LIKE '/mnt/%'` and writes all matching rows back into the in-memory filesystem. The `/mnt/` exclusion ensures overlay-cached paths (which are already handled by `hydrateRemoteCache`) are not overwritten.
+
+#### Pre-Snapshot Hook
+
+The `BashLike` interface (defined in `@bound/agent`) includes an optional `capturePreSnapshot?: () => Promise<void>` method. The agent loop calls this hook at the `HYDRATE_FS` stage, before any tool execution begins, to record the pre-execution filesystem state. This enables the diff logic in `persistWorkspaceChanges` to detect exactly what changed during the loop and write only those deltas to the database.
+
+#### Size Limits
+
+Existing per-file (1 MB) and per-workspace (50 MB) size limits apply unchanged. Files exceeding the per-file limit are silently excluded from the snapshot. Workspaces exceeding the aggregate limit cause `persistWorkspaceChanges` to return an error, which the agent loop logs and surfaces to the user.
+
+#### Wiring in Production
+
+The CLI's `agentLoopFactory` closure constructs a per-invocation `loopSandbox` wrapper object that implements the `BashLike` interface. A closure-scoped `preSnapshot` variable holds the captured state. `capturePreSnapshot` calls `snapshotWorkspace(clusterFs, { paths: clusterFsObj.getInMemoryPaths() })` and stores the result. `persistFs` calls `snapshotWorkspace` again for the post-snapshot, diffs the two via `persistWorkspaceChanges`, resets `preSnapshot` to null, and returns `{ changes }`. Because `loopSandbox` is created fresh per `agentLoopFactory` invocation, concurrent agent loops have isolated snapshot state with no risk of cross-contamination.

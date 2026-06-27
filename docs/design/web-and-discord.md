@@ -535,6 +535,38 @@ After startup, the registry is wired into the `RelayProcessor` so the processor 
 
 **Platform tools:** `getPlatformTools(threadId, readFileFn?)` returns a single `discord_send_message` tool. The tool validates that `content` does not exceed 2000 characters, loads any requested file attachment paths (using `readFileFn` if provided, falling back to `node:fs/promises`), and calls `deliver()`. If any attachment path cannot be read, an error string is returned and no message is sent (fail-fast, no partial delivery).
 
+#### Discord "File for Later" Context-Menu Command
+
+The Discord platform integration includes a "File for Later" message context-menu command that allows users to save messages for future reference. When a user right-clicks any message and selects "File for Later," the invoking user receives an ephemeral response visible only to them. The agent processes the filed message through the standard intake pipeline, producing a natural language acknowledgment.
+
+The implementation shares a single Discord.js client between `DiscordConnector` (DM messages) and `DiscordInteractionConnector` (context-menu interactions) via a shared `DiscordClientManager`. Both connectors share one leader election and connect/disconnect together.
+
+**Registration:** The context-menu command is registered globally via `client.application.commands.create()` with `ApplicationCommandType.Message` when the connector calls `connect()`. Registration is idempotent; re-connecting does not duplicate the command.
+
+**Interaction flow:** When a user selects "File for Later," the interaction is acknowledged via `deferReply({ ephemeral: true })` as the first action. The invoking user is checked against the allowlist configured in `platforms.json` under `allowed_users`. Non-allowlisted users receive an ephemeral error reply and no message, thread, or relay is created. If the target message has empty content and no image attachments, the interaction replies with an error and the pipeline is not invoked.
+
+**Message pipeline reuse:** The interaction handler reuses the existing message pipeline. It calls `findOrCreateUser` with the invoking user's Discord ID, then `findOrCreateThread` with `interface='discord-interaction'`. A user message is persisted via `insertRow` with a filing prompt that includes the target message content, author metadata, channel name, server name, and timestamp. The filing prompt also includes a trust signal for the target message author: `(recognized -- bound user "<name>")` if the author is found in the users table via `json_extract(platform_ids, '$.discord')`, `(unrecognized)` if not found, or `(this bot)` if the target is the bot itself. An `intake` relay is written to `relay_outbox` targeting the hub, and `sync:trigger` is emitted.
+
+**Interaction token storage:** Interaction tokens are stored in an in-memory map (keyed by thread ID) with a 14-minute TTL, slightly shorter than Discord's 15-minute interaction window. Tokens are ephemeral; on process restart all pending tokens are lost. This is acceptable because the agent's response persists in the database.
+
+**Response polling and delivery:** After writing the intake relay, the interaction handler polls the messages table for an assistant response on the thread at a 500ms interval with a 5-minute timeout. When a response is found, `DiscordInteractionConnector.deliver()` is called, which looks up the stored interaction and calls `editReply` with the assistant content (truncated to 2000 characters if necessary). If the interaction token is expired or missing, a warning is logged and no exception is thrown. On timeout, `editReply` is called with a timeout error message.
+
+**Client management:** `DiscordClientManager` owns the Discord.js client instance and gateway lifecycle. It creates the client with combined intents (`DirectMessages`, `DirectMessageReactions`, `MessageContent`, `Guilds`). Both `DiscordConnector` and `DiscordInteractionConnector` register event handlers on the same client instance. On `disconnect()`, the client is destroyed and both connectors' handlers are cleaned up.
+
+**Registry integration:** A single `platform: "discord"` config entry in `platforms.json` creates both `DiscordConnector` and `DiscordInteractionConnector`, plus the shared `DiscordClientManager`. The registry routes `platform:deliver` events to the correct connector based on the thread's `interface` field — threads with `interface='discord'` route to `DiscordConnector.deliver()`, while `interface='discord-interaction'` routes to `DiscordInteractionConnector.deliver()`.
+
+#### Discord Delivery Verification and Retry
+
+A post-loop hook detects Discord assistant turns that finish without calling `discord_send_message` and enqueues a one-time retry nudge. The hook runs only on threads with `interface='discord'` or `interface='discord-interaction'`.
+
+**Detection logic:** After an agent loop completes on a Discord platform thread, `verifyDelivery` examines the most recent assistant turn. If the assistant message has no matching tool call, the check identifies a missing send. A tombstone mechanism prevents double-nudging: the check queries for existing `developer`-role messages with `metadata` containing the `discord_platform_delivery_retry` flag in the window since the most recent user message. If one exists, the nudge is not repeated.
+
+**Nudge injection:** When a missing send is detected and no tombstone exists, a `developer`-role message is inserted with content `[Delivery retry] ...` and `metadata` containing `discord_platform_delivery_retry`. The message is enqueued via `enqueueMessage` so the agent runs a follow-up turn with the nudge as developer context.
+
+**Scope and reset:** The retry budget is per-user-turn. A fresh user message un-silences the thread, resetting the tombstone window. The nudge respects intentional silence — if the agent chooses not to send on the retry turn, no further nudge is issued for that user message.
+
+**Hub-side hook:** For spoke nodes that delegate inference to a remote hub via relay, turns execute inside `RelayProcessor.runDelegatedLoop`. The delivery-check hook is wired on both the spoke-side (`server.ts:handleThread`) and the hub-side (`relay-processor.ts:runDelegatedLoop`), ensuring coverage for both local and delegated turns.
+
 ### Webhook Ingress
 
 The web server exposes `POST /hooks/:platform` for exclusive-delivery connectors. It emits `platform:webhook` on the eventBus with the raw body and headers; signature verification is delegated to each connector's `handleWebhookPayload()` implementation.

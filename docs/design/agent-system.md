@@ -1047,6 +1047,16 @@ Under the subcommand dispatch model, `mcp_tools` stores **server names** (e.g., 
 
 Call this after all clients have connected to keep the host record current.
 
+### Command Discovery and Help
+
+The orientation block (in the system prompt's `## Orientation` section) enumerates all available commands in the sandbox, auto-generated from the live `CommandDefinition` registry at sandbox boot. Built-in commands and MCP server-level commands appear together, sorted alphabetically. The registry is exposed via `getCommandRegistry()` exported from `packages/agent/src/commands/registry.ts`; context assembly renders it as `  <name> — <description>` lines with no hand-maintained constant. MCP commands are included automatically — one command per connected server (not per tool).
+
+Every registered sandbox command responds to `<cmd> --help` and `<cmd> -h`, intercepted at the dispatcher level by `createDefineCommands`. Built-in commands render usage from their `args` schema unless they provide a `helpText` override; subcommand-dispatched commands like `memory` and `advisory` supply custom help text enumerating their subcommands and argument signatures. MCP commands set `customHelp: true` to opt out of dispatcher interception and handle `--help` dynamically inside their handler, preserving the existing pattern that queries the live MCP client to list available subcommands. The interception fires only when `argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")`; additional arguments bypass the interception and pass through to normal parsing.
+
+Missing-argument errors in the dispatcher include a usage hint pointing to `<cmd> --help`. When a command invocation fails with `Missing required argument: X`, the stderr output includes the line `(run '<cmd> --help' for usage)` immediately below the error, so the agent knows where to find the complete argument signature.
+
+The `context` flag on MCP command `CommandDefinition` objects carries bespoke phrasing specific to subcommand dispatch, replacing the generic `context` field on individual tool commands. This allows MCP bridge commands to inject usage hints that reference the `subcommand` parameter explicitly (e.g., `"Call with subcommand='help' to list available tools."`).
+
 ### Access Commands
 
 `generateMCPCommands` also registers four fixed commands for browsing and invoking MCP capabilities:
@@ -1228,6 +1238,16 @@ const result = await extractSummaryAndMemories(db, threadId, llmBackend, siteId)
 - Calls the LLM with `max_tokens: 200` to produce a 2–3 sentence summary.
 - Stores the summary in `threads.summary` and updates `summary_through` to the current time.
 - Creates up to 3 `semantic_memory` rows for extracted facts (keyed as `thread_{threadId}_fact_{n}`).
+
+**Relay-backed extraction:**
+
+Summary extraction works on hosts with no local LLM backends by routing the summarization inference through the relay. At loop end, the agent loop acquires a summary backend through `resolveModel` (cluster-wide resolution) instead of `tryGetBackend` (local-only lookup). When the summary model resolves `kind: "local"`, extraction runs in-process exactly as before — the LLM is called directly via the local backend's `chat()` method. When the summary model resolves `kind: "remote"`, a relay-backed `LLMBackend` (from `packages/agent/src/relay-backend.ts`) wraps `createRelayStream$` so that `extractSummaryAndMemories` consumes the remote inference through the identical `chat()` interface. The relay-backed backend issues one relay inference per `chat()` call, writing an `InferenceRequestPayload` to the relay outbox and streaming the resulting `StreamChunk`s from the inbox. The signature of `extractSummaryAndMemories` is unchanged; existing callers and tests are unaffected.
+
+The summary model selection prefers the router's configured default (a cheap summary model on hosts with local backends) and falls back to the model the loop used in the current turn when no default resolves — the backendless case, where `getDefaultId()` returns an empty string. On hosts with local backends, the default resolves to a registered model (e.g., a haiku-tier model optimized for summarization cost), and extraction runs entirely in-process. On backendless hosts (hub-only spokes running boundless loops), the fallback selects the thread's own model, and extraction transparently delegates over the relay to a host with that model.
+
+**Self-healing on relay failure:**
+
+When a relay-backed extraction errors or times out, `summary_through` is NOT advanced. The next loop end re-attempts the summarization in full, retrying from the same high-water mark. This is the recovery property the local fire-and-forget path already relies on — no durable queue is needed. The extraction remains fire-and-forget off the loop's return; relay delegation does not block loop completion.
 
 **Cross-thread digest:**
 
