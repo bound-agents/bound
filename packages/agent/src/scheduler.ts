@@ -390,8 +390,8 @@ function retryDeferredTask(
  * 6a9d56aa, 1 real interaction → 29 wake-ups over 70min). The original
  * comment cited "AC4.6 periodic fallback" — that AC applies to the connector
  * **dispatcher** ("Periodic cron fallback wakes dispatcher even without
- * list_changed", per docs/test-plans/2026-05-08-mcp-platform-connectors-
- * test-requirements.md), not to per-event handler tasks. The two were conflated.
+ * list_changed"), not to per-event handler tasks. The two were conflated.
+ * (The dispatcher was later removed; see the MCP Platform Connectors RFC.)
  *
  * Failure path: 60s retry IF AND ONLY IF the relay_inbox still has unprocessed
  * envelopes for this task's thread. Capped at MAX_FAILURE_BACKOFFS to avoid

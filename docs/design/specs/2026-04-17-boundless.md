@@ -1,6 +1,6 @@
 # RFC: Boundless — Coding Agent Client
 
-**Supplements:** `docs/design-plans/2026-04-16-ws-client-tools.md`
+**Supplements:** `2026-04-16-client-tool-protocol.md`
 **Date:** 2026-04-17
 **Status:** Draft
 
@@ -84,7 +84,7 @@ A new `@bound/less` package is added to the bound monorepo, producing the `bound
 At the level of public surfaces and contracts:
 
 - A new interactive client binary is added to bound. It is a long-lived process that connects to a bound server and attaches to one thread at a time, with in-process transitions between threads.
-- The client-tool WebSocket protocol (originally documented in `docs/design-plans/2026-04-16-ws-client-tools.md`) gains three additive, backward-compatible extensions: an optional `systemPromptAddition` field on `session:configure`, a new server-to-client `tool:cancel` message type, and a widening of `tool:result.content` to admit `ContentBlock[]` in addition to `string`. Wire shapes are in §4.2; rationale is in §7.
+- The client-tool WebSocket protocol (specified in `2026-04-16-client-tool-protocol.md`) gains three additive, backward-compatible extensions: an optional `systemPromptAddition` field on `session:configure`, a new server-to-client `tool:cancel` message type, and a widening of `tool:result.content` to admit `ContentBlock[]` in addition to `string`. Wire shapes are in §4.2; rationale is in §7.
 - No database migrations and no changes to persisted schemas.
 
 ### 2.3 Behavioral Overview
@@ -498,7 +498,7 @@ No rotation in v1. Files grow unbounded. Operators who wish to cap log directory
 
 ### 6.1 Client-Tool WebSocket Protocol
 
-The protocol originally documented in `docs/design-plans/2026-04-16-ws-client-tools.md` gains three additive items. All three are backward compatible — clients and servers that do not use the new features behave identically.
+The protocol specified in `2026-04-16-client-tool-protocol.md` gains three additive items. All three are backward compatible — clients and servers that do not use the new features behave identically.
 
 - **`systemPromptAddition` on `session:configure`.** Optional field. Server stores the string per `(server-side-connection, threadId)` pair for every thread currently subscribed by that server-side connection at the time of the message, and appends it to the system prompt during LLM request assembly for those pairs. `thread:subscribe` after `session:configure` inherits the most recent string stored for the server-side connection; `thread:unsubscribe` clears the pair. Re-sending `session:configure` replaces the stored string for every currently-subscribed pair; omitting the field on resend clears it. See R-BL25 and §4.2.1 for the authoritative statement.
 - **`tool:cancel` message (server→client).** New type. Emitted on thread cancellation, dispatch_queue TTL expiry, or session reset with pending tool calls.
