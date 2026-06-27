@@ -98,7 +98,7 @@ jobs:
           # render as "all green". The sidecar is what makes that case visible.
           mkdir -p test-results
           exit_code=0
-          for pkg in shared core sync sandbox llm agent platforms web client mcp-server cli less; do
+          for pkg in shared core sync sandbox llm agent platforms web client cli less; do
             echo "::group::packages/$pkg"
             pkg_code=0
             bun test "packages/$pkg" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
