@@ -74,7 +74,7 @@ This document maps every acceptance criterion (AC1 through AC15) to either an au
 |----|-------------|-------------------|----------------------|
 | sync-encryption.AC4.4 | Nonce collision probability ~2^-97 after 2^48 messages | Mathematical property of 192-bit random nonces, not a runtime behavior | Verified by design: XChaCha20 uses 192-bit nonces with `crypto.getRandomValues()`. Birthday bound for collision is ~2^96 messages. No test needed. |
 | sync-encryption.AC11.2 | `BOUND_LOG_SYNC_PLAINTEXT=1` enables plaintext body logging with startup WARNING | Requires process-level env var and inspecting log output at runtime; unit testing env var reads is brittle and low-value | Start process with `BOUND_LOG_SYNC_PLAINTEXT=1`. Verify startup WARNING is logged. Send an encrypted sync request. Verify decrypted body appears in debug-level logs. Restart without the env var. Verify no plaintext bodies appear in logs. |
-| sync-encryption.AC13.4 | Binary compiles as `dist/boundcurl` alongside existing 3 binaries | Build output verification, not a behavioral test | Run `bun run build`. Verify `dist/boundcurl` exists and is executable. Verify `dist/bound`, `dist/boundctl`, `dist/bound-mcp` still exist. Verify `./dist/boundcurl --help` prints usage. |
+| sync-encryption.AC13.4 | Binary compiles as `dist/boundcurl` | Build output verification, not a behavioral test | Run `bun run build`. Verify `dist/boundcurl` exists and is executable. Verify `./dist/boundcurl --help` prints usage. |
 
 ---
 

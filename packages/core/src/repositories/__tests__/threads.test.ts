@@ -318,7 +318,7 @@ describe("threads repository", () => {
 				color: 99,
 				created_at: "2026-04-01T00:00:00.000Z",
 			});
-			expect(findLatestThreadColorExcludingInterfaces(db, ["scheduler", "mcp"])).toEqual({
+			expect(findLatestThreadColorExcludingInterfaces(db, ["scheduler", "webhook"])).toEqual({
 				color: 2,
 			});
 		});
@@ -366,11 +366,11 @@ describe("threads repository", () => {
 			});
 			seedThread(db, {
 				id: "s-drop",
-				interface: "mcp",
+				interface: "webhook",
 				color: 9,
 				created_at: "2026-02-01T00:00:00.000Z",
 			});
-			expect(findLatestThreadColorExcludingInterfaces(db, ["mcp"])).toEqual({ color: 8 });
+			expect(findLatestThreadColorExcludingInterfaces(db, ["webhook"])).toEqual({ color: 8 });
 		});
 
 		it("returns null when no live, non-excluded thread exists", () => {

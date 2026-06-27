@@ -138,7 +138,7 @@ describe("Cache Prediction", () => {
 			expect(selectCacheTtl("discord")).toBe("1h");
 			expect(selectCacheTtl("scheduler")).toBe("1h");
 			expect(selectCacheTtl("web")).toBe("1h");
-			expect(selectCacheTtl("mcp")).toBe("1h");
+			expect(selectCacheTtl("boundless")).toBe("1h");
 			expect(selectCacheTtl("discord-interaction")).toBe("1h");
 			expect(selectCacheTtl("unknown")).toBe("1h");
 		});

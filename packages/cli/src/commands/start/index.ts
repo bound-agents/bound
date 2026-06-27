@@ -3,7 +3,7 @@
  * in the required bootstrap order and wires them together.
  */
 
-export { type StartArgs, ensureMcpUser } from "./bootstrap.js";
+export type { StartArgs } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { HandleMessageTracker } from "@bound/agent";

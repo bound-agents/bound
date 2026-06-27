@@ -51,7 +51,7 @@
 | E2E.3 | Ask the agent to run `schedule --help` | Agent invokes the command dispatcher, receives formatted help output, and relays it. Output includes usage line, argument descriptions, and exit code 0 |
 | E2E.4 | Ask the agent to schedule a task: "schedule a task in 5 minutes with payload {\"test\": true}" | Agent successfully creates the task (verifies that normal `schedule` usage is unaffected by the `--help` interception) |
 | E2E.5 | Ask the agent to run `memory --help` | Agent receives the subcommand listing from `helpText`, not generic formatHelp output |
-| E2E.6 | If MCP servers are configured, ask the agent to run `<mcp-server-name> --help` | Agent receives dynamic subcommand enumeration from the MCP bridge handler (customHelp path), not the generic formatHelp |
+| E2E.6 | If MCP servers are configured, ask the agent to run `<mcp-server-name> --help` | Agent receives dynamic subcommand enumeration from the MCP bridge handler (customHelp path) |
 
 ## Human Verification Required
 

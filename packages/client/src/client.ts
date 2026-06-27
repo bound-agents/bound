@@ -19,7 +19,6 @@ import type {
 	CancelResult,
 	ConnectionState,
 	ContextDebugTurn,
-	CreateMcpThreadResult,
 	CreateThreadOptions,
 	CreateWebhookOptions,
 	FileListEntry,
@@ -509,10 +508,6 @@ export class BoundClient {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-	}
-
-	async createMcpThread(): Promise<CreateMcpThreadResult> {
-		return this.fetchJson("/api/mcp/threads", { method: "POST" });
 	}
 
 	async getThread(id: string): Promise<ThreadDetail> {

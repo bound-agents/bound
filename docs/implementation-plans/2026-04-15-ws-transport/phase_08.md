@@ -211,7 +211,6 @@ Update the following sections in `CLAUDE.md`:
    - Remove mentions of `sync-loop.ts`, `eager-push.ts`, `reachability.ts`
    - Remove mentions of `sync:trigger` event
    - Remove mentions of `boundcurl` binary (if referenced)
-   - Update the binaries list: `dist/bound`, `dist/boundctl`, `dist/bound-mcp` (remove `dist/boundcurl`)
 
 **Verification:**
 Read updated CLAUDE.md, verify no references to deleted HTTP sync infrastructure remain.

@@ -2,7 +2,7 @@
 
 **Goal:** Standalone diagnostic binary for authenticated, encrypted access to sync endpoints, with an offline decrypt mode for captured traffic inspection.
 
-**Architecture:** New `packages/cli/src/boundcurl.ts` entry point following the same lightweight pattern as `boundctl.ts`: load keypair via `ensureKeypair()`, load keyring from config dir, create one-shot `KeyManager` and `SyncTransport` for request mode. Two operating modes: (1) request mode sends encrypted requests and prints decrypted JSON responses, (2) decrypt mode decrypts stdin using a specified peer's shared secret. Compiled as the 4th binary alongside bound, boundctl, and bound-mcp.
+**Architecture:** New `packages/cli/src/boundcurl.ts` entry point following the same lightweight pattern as `boundctl.ts`: load keypair via `ensureKeypair()`, load keyring from config dir, create one-shot `KeyManager` and `SyncTransport` for request mode. Two operating modes: (1) request mode sends encrypted requests and prints decrypted JSON responses, (2) decrypt mode decrypts stdin using a specified peer's shared secret.
 
 **Tech Stack:** Existing CLI patterns (boundctl.ts), KeyManager + SyncTransport from earlier phases, bun build --compile
 
@@ -20,7 +20,7 @@ This phase implements and tests:
 - **sync-encryption.AC13.1 Success:** Request mode sends authenticated, encrypted request and prints decrypted JSON response
 - **sync-encryption.AC13.2 Success:** Decrypt mode with explicit --nonce decrypts stdin as ciphertext
 - **sync-encryption.AC13.3 Success:** Decrypt mode without --nonce interprets first 24 bytes of stdin as nonce, remainder as ciphertext
-- **sync-encryption.AC13.4 Success:** Binary compiles as dist/boundcurl alongside existing 3 binaries
+- **sync-encryption.AC13.4 Success:** Binary compiles as dist/boundcurl
 
 ---
 
@@ -253,10 +253,9 @@ Expected: No type errors.
 
 **Implementation:**
 
-In `scripts/build.ts`, add a 4th build step after the existing 3:
+In `scripts/build.ts`, add a build step for boundcurl:
 
 ```typescript
-// Add after the bound-mcp build step:
 try {
 	console.log("Building boundcurl...");
 	await Bun.build({
@@ -287,7 +286,7 @@ In `packages/cli/package.json`, add bin entry:
 **Verification:**
 
 Run: `bun run build`
-Expected: Build succeeds, `dist/boundcurl` binary is created alongside `dist/bound`, `dist/boundctl`, `dist/bound-mcp`.
+Expected: Build succeeds, `dist/boundcurl` binary is created.
 
 Run: `ls -la .worktrees/sync-encryption/dist/boundcurl`
 Expected: File exists and is executable.

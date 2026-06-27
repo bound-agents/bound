@@ -19,7 +19,7 @@
 | Step | Action | Expected |
 |------|--------|----------|
 | 1.1 | Run `bun run build` from project root | Build completes without errors |
-| 1.2 | Run `ls -la dist/` | Four binaries exist: `bound`, `boundctl`, `bound-mcp`, `boundcurl` |
+| 1.2 | Run `ls -la dist/` | Verify `boundcurl` binary exists |
 | 1.3 | Run `./dist/boundcurl --help` | Prints usage information showing request mode and decrypt mode |
 | 1.4 | Verify each binary is executable: `file dist/boundcurl` | Shows executable binary format |
 

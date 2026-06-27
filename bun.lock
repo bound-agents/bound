@@ -131,19 +131,6 @@
         "fast-check": "^4.8.0",
       },
     },
-    "packages/mcp-server": {
-      "name": "@bound/mcp-server",
-      "version": "0.0.1",
-      "bin": {
-        "bound-mcp": "src/server.ts",
-      },
-      "dependencies": {
-        "@bound/client": "workspace:*",
-        "@bound/shared": "workspace:*",
-        "@modelcontextprotocol/sdk": "^1.28.0",
-        "zod": "^4.0.0",
-      },
-    },
     "packages/platforms": {
       "name": "@bound/platforms",
       "version": "0.0.1",
@@ -373,8 +360,6 @@
     "@bound/less": ["@bound/less@workspace:packages/less"],
 
     "@bound/llm": ["@bound/llm@workspace:packages/llm"],
-
-    "@bound/mcp-server": ["@bound/mcp-server@workspace:packages/mcp-server"],
 
     "@bound/platforms": ["@bound/platforms@workspace:packages/platforms"],
 

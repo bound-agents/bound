@@ -2,7 +2,7 @@
 
 **Goal:** After writing the intake relay, poll the local DB for the agent's response and deliver it via the interaction's ephemeral channel.
 
-**Architecture:** After the filing flow (Phase 3) writes the intake relay and emits `sync:trigger`, the agent loop processes the message and writes an assistant response to the messages table. The interaction handler polls the local DB at 500ms intervals (adapted from the `bound-mcp` polling pattern in `packages/mcp-server/src/handler.ts:24-43`) looking for an assistant message on the interaction's thread with `created_at` after the filed user message. On success, it calls `deliver()` which uses `editReply`. On timeout (5 minutes), it sends a timeout error via `editReply`. The polling queries the local DB directly (not HTTP) since the interaction connector runs on the platform leader host.
+**Architecture:** After the filing flow (Phase 3) writes the intake relay and emits `sync:trigger`, the agent loop processes the message and writes an assistant response to the messages table. The interaction handler polls the local DB at 500ms intervals looking for an assistant message on the interaction's thread with `created_at` after the filed user message. On success, it calls `deliver()` which uses `editReply`. On timeout (5 minutes), it sends a timeout error via `editReply`. The polling queries the local DB directly (not HTTP) since the interaction connector runs on the platform leader host.
 
 **Tech Stack:** TypeScript, bun:sqlite, bun:test
 
@@ -35,7 +35,7 @@ Add polling constants and a `pollForResponse()` method to DiscordInteractionConn
 **Add constants near top of file (after existing constants):**
 
 ```typescript
-/** Polling interval for agent response. Matches bound-mcp pattern. */
+/** Polling interval for agent response. */
 const POLL_INTERVAL_MS = 500;
 
 /** Maximum time to wait for agent response. */
@@ -66,10 +66,9 @@ this.disconnecting = true;
 ```typescript
 /**
  * Poll the local DB for an assistant response on the thread.
- * Adapted from packages/mcp-server/src/handler.ts:24-43.
  *
- * Unlike bound-mcp which polls via HTTP, this queries the DB directly
- * since the interaction connector runs on the platform leader host.
+ * Queries the DB directly since the interaction connector runs on the
+ * platform leader host.
  *
  * Checks this.disconnecting to abort early on shutdown.
  */
@@ -117,7 +116,7 @@ private async pollForResponse(threadId: string, afterTimestamp: string): Promise
             return;
         }
 
-        // Wait before next poll (same pattern as bound-mcp handler.ts:42)
+        // Wait before next poll
         await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
 }

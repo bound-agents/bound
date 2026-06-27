@@ -120,7 +120,7 @@ git commit -m "chore: scaffold @bound/less workspace package"
 
 **Step 1: Add compilation step**
 
-After the Step 4 (bound-mcp) block in `scripts/build.ts`, add a Step 5 block that compiles `packages/less/src/boundless.tsx` to `dist/boundless` using the same `bun build --compile` pattern. The entrypoint file does not exist yet (it will be created in Phase 8), so the compilation will fail gracefully — that's expected and matches the existing pattern of non-fatal compilation errors.
+In `scripts/build.ts`, add a Step 5 block that compiles `packages/less/src/boundless.tsx` to `dist/boundless` using the same `bun build --compile` pattern. The entrypoint file does not exist yet (it will be created in Phase 8), so the compilation will fail gracefully — that's expected and matches the existing pattern of non-fatal compilation errors.
 
 Also update the summary `for...of` loop (line 63) to include `"dist/boundless"` in the array.
 

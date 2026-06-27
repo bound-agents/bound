@@ -83,7 +83,6 @@ All routes are mounted under `/api` and registered in `packages/web/src/server/r
 | GET | `/api/threads/:id` | Fetch a single thread by ID. |
 | GET | `/api/threads/:id/status` | Fetch the current agent status for a thread. |
 | GET | `/api/threads/:id/context-debug` | Fetch per-turn context-debug records for a thread (for the debug panel). |
-| POST | `/api/mcp/threads` | Create a thread owned by the deterministic `mcp` system user (interface `"mcp"`). Response `201`: `{ thread_id: string }`. |
 
 **GET /api/threads** — Optional query param `?include_empty=true` disables the default filter that hides threads with no user messages (evaluated via an `EXISTS` correlated subquery against `messages` with `role='user' AND deleted=0`). Response: `Thread[]`.
 
