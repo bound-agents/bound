@@ -31,6 +31,10 @@ export type ModelResolution =
 			// Cache TTL hint for the provider's cachePoint. "5m" or "1h".
 			// See ChatParams.cache_ttl for provider support details.
 			cacheTtl?: ChatParams["cache_ttl"];
+			// Context window in tokens, from the backend's capabilities.
+			// Populated at resolution time so consumers (prepareFrame, etc.)
+			// don't need a separate getEffectiveCapabilities() call.
+			max_context?: number;
 	  }
 	| { kind: "remote"; hosts: EligibleHost[]; modelId: string; reResolved?: boolean }
 	| {
@@ -132,6 +136,7 @@ export function resolveSameTierFallback(
 				effort: modelRouter.getEffort(localAlt.id),
 				maxOutputTokens: modelRouter.getMaxOutputTokens(localAlt.id),
 				cacheTtl: modelRouter.getCacheTtl(localAlt.id),
+				max_context: modelRouter.getEffectiveCapabilities(localAlt.id)?.max_context,
 			};
 		}
 	}
@@ -271,6 +276,7 @@ export function resolveModel(
 							effort: modelRouter.getEffort(altId),
 							maxOutputTokens: modelRouter.getMaxOutputTokens(altId),
 							cacheTtl: modelRouter.getCacheTtl(altId),
+							max_context: modelRouter.getEffectiveCapabilities(altId)?.max_context,
 						};
 					}
 				}
@@ -308,6 +314,7 @@ export function resolveModel(
 			effort: modelRouter.getEffort(effectiveModelId),
 			maxOutputTokens: modelRouter.getMaxOutputTokens(effectiveModelId),
 			cacheTtl: modelRouter.getCacheTtl(effectiveModelId),
+			max_context: modelRouter.getEffectiveCapabilities(effectiveModelId)?.max_context,
 		};
 	}
 
