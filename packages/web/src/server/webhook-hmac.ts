@@ -127,17 +127,34 @@ function validateRaw(secret: string, headers: Headers, rawBody: Buffer): HmacVal
 		return { valid: false };
 	}
 
+	const timestamp = headers.get("X-Webhook-Timestamp");
+	if (!timestamp || !isFreshUnixTimestamp(timestamp)) {
+		return { valid: false };
+	}
+
 	// Extract hex (must be exactly 64 chars for SHA256)
 	if (!/^[a-f0-9]{64}$/.test(headerValue)) {
 		return { valid: false };
 	}
 
 	const providedHex = headerValue;
-	const expectedHex = createHmac("sha256", secret).update(rawBody).digest("hex");
+	const expectedHex = createHmac("sha256", secret)
+		.update(`${timestamp}.`)
+		.update(rawBody)
+		.digest("hex");
 
 	return {
 		valid: constantTimeEqual(providedHex, expectedHex),
 	};
+}
+
+function isFreshUnixTimestamp(timestamp: string): boolean {
+	if (!/^\d+$/.test(timestamp)) {
+		return false;
+	}
+	const now = Math.floor(Date.now() / 1000);
+	const ts = Number.parseInt(timestamp, 10);
+	return Number.isFinite(ts) && Math.abs(now - ts) <= REPLAY_TOLERANCE_MS / 1000;
 }
 
 /**

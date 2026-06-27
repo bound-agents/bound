@@ -860,6 +860,7 @@ Standard AWS SDK environment variables:
 - `BIND_HOST`: Sync server bind host (default: `localhost`; set to `0.0.0.0` on hub hosts so spokes can connect)
 - `WEB_PORT`: Web UI port (default: `3001`)
 - `WEB_BIND_HOST`: Web UI bind host (default: `localhost`)
+- `BOUND_ALLOW_UNSAFE_WEB_BIND`: Set to `1` to permit binding the web server to a non-loopback host (e.g. `0.0.0.0` or a LAN address). The web server refuses to start on a non-loopback `WEB_BIND_HOST` without this override, because it exposes unauthenticated endpoints (`/api/sandbox/file` arbitrary cluster-FS read/write and `/ws` agent control) that assume a loopback-only trust boundary. Only set this if those endpoints are protected by an external network boundary.
 
 ---
 

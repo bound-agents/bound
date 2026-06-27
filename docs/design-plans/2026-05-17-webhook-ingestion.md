@@ -32,7 +32,7 @@ Specifically:
 ### webhook-ingestion.AC2: HTTP handler on port 3000
 - **webhook-ingestion.AC2.1 Success:** POST to `/webhook/:name` with valid signature writes a relay_inbox entry and returns 202
 - **webhook-ingestion.AC2.2 Failure:** POST to `/webhook/:name` where name doesn't exist returns 404
-- **webhook-ingestion.AC2.3 Failure:** POST with empty or unreadable body returns 400
+- **webhook-ingestion.AC2.3 Failure:** POST with empty or unreadable body returns 404 (uniform with unknown-name and bad-signature rejections to avoid a name-enumeration oracle)
 - **webhook-ingestion.AC2.4 Failure:** Non-POST methods to `/webhook/:name` return 404
 - **webhook-ingestion.AC2.5 Edge:** Raw body bytes are preserved exactly (not re-serialized) before HMAC validation
 - **webhook-ingestion.AC2.6 Edge:** Existing `/sync/ws` WebSocket endpoint continues to function alongside new HTTP route
