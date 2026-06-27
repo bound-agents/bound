@@ -22,6 +22,7 @@
 		{ "path": "packages/sync" },
 		{ "path": "packages/sandbox" },
 		{ "path": "packages/llm" },
+		{ "path": "packages/loop" },
 		{ "path": "packages/agent" },
 		{ "path": "packages/web" },
 		{ "path": "packages/platforms" },

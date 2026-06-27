@@ -7,13 +7,11 @@ import {
 	insertRow,
 	listRecentLiveMessageContentByThread,
 } from "@bound/core";
-import {
-	type CapabilityRequirements,
-	type ContentBlock,
-	LLMError,
-	type LLMMessage,
-	type StreamChunk,
-} from "@bound/llm";
+import type { CapabilityRequirements, ContentBlock, LLMMessage, StreamChunk } from "@bound/llm";
+// isTransientLLMError now lives in @bound/loop (error-classification.ts) so the
+// base loop and any extension agent share one definition. Re-exported here for
+// existing callers and tests that import it from this module.
+export { isTransientLLMError } from "@bound/loop";
 import { createLogger } from "@bound/shared";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
@@ -51,49 +49,6 @@ export function parseContentBlocks(content: string): string | ContentBlock[] {
 		// Not JSON — return as-is
 	}
 	return content;
-}
-
-/**
- * Determines whether an LLM error is a transient transport issue worth retrying.
- * Returns false for client errors (4xx except 429) — these indicate a malformed
- * request that will fail identically on retry.
- */
-export function isTransientLLMError(error: unknown): boolean {
-	const errMsg = error instanceof Error ? error.message : String(error);
-
-	// If we have a status code, use it as the primary signal.
-	// 4xx errors (except 429 rate-limit) are client errors — not transient.
-	if (error instanceof LLMError && error.statusCode !== undefined) {
-		if (error.statusCode === 429) return false; // handled separately by rate-limit logic
-		if (error.statusCode >= 400 && error.statusCode < 500) return false;
-		// 5xx is a server fault, not a client error — the textbook transient case.
-		// bedrock-mantle intermittently 500s mid-stream (server_error); the bridge
-		// throws it as a 5xx LLMError (commit eda6ce6b). Retry (with backoff at the
-		// call site) clears the intermittent blip — verified via probe (4/6 cold
-		// attempts succeeded). withEmptyRetry already proved instant no-backoff
-		// retry of this same fault does NOT clear it, so the retry path must wait.
-		if (error.statusCode >= 500) return true;
-	}
-
-	// Pattern-match on known transient transport error messages.
-	// "timed out" (two words) catches the runtime fetch transport's own
-	// ~300s ceiling, which fires below the AI SDK and wraps as a TimeoutError
-	// ("The operation timed out") with no HTTP status — a connection that
-	// times out with no response is transient. Deliberately NOT "timeout"
-	// (one word): message-handler's 35-min inactivity abort uses "LLM
-	// response timeout" and must surface as a genuine stall, not retry.
-	return (
-		errMsg.includes("http2") ||
-		errMsg.includes("ECONNRESET") ||
-		errMsg.includes("socket hang up") ||
-		// undici's message when the TCP socket drops mid-request without a
-		// response — fires on z.ai and other streaming endpoints that hold
-		// connections open for long completions. Distinct from "socket hang
-		// up" (node http) and ECONNRESET (raw TCP reset).
-		errMsg.includes("socket connection was closed") ||
-		errMsg.includes("timed out") ||
-		errMsg.includes("ETIMEDOUT")
-	);
 }
 
 /**

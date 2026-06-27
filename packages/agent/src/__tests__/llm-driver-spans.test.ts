@@ -9,7 +9,8 @@ import type { AppContext, EventBusImpl } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { trace } from "@opentelemetry/api";
+import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
 	BasicTracerProvider,
 	InMemorySpanExporter,
@@ -142,11 +143,15 @@ describe("LLM Driver Spans (OTEL)", () => {
 			userId,
 		);
 
-		// Set up OTEL tracing
+		// Set up OTEL tracing. Register the async-hooks context manager so
+		// context.active() propagates across awaits, mirroring production
+		// (telemetry.ts) — the llm-driver.chat span relies on the ambient
+		// loop.turn span as its parent.
 		exporter = new InMemorySpanExporter();
 		provider = new BasicTracerProvider();
 		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
 		trace.setGlobalTracerProvider(provider);
+		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 	});
 
 	beforeEach(() => {
@@ -197,7 +202,7 @@ describe("LLM Driver Spans (OTEL)", () => {
 		} as unknown as AppContext;
 	}
 
-	it("should create llm-driver.chat child span under agent-loop.llm-call", async () => {
+	it("should create llm-driver.chat child span under loop.turn", async () => {
 		// Create a test thread and user message
 		insertRow(
 			db,
@@ -256,13 +261,15 @@ describe("LLM Driver Spans (OTEL)", () => {
 
 		// Verify spans were created
 		const spans = exporter.getFinishedSpans();
-		const llmCallSpan = spans.find((s) => s.name === "agent-loop.llm-call");
+		const turnSpan = spans.find((s) => s.name === "loop.turn");
 		const driverSpan = spans.find((s) => s.name === "llm-driver.chat");
 
-		expect(llmCallSpan).toBeDefined();
+		expect(turnSpan).toBeDefined();
 		expect(driverSpan).toBeDefined();
-		// Verify parent-child nesting: driverSpan is child of llmCallSpan
-		expect(driverSpan?.parentSpanId).toBe(llmCallSpan?.spanContext().spanId);
+		// The discrete agent-loop.llm-call phase span was removed when the loop
+		// core moved to @bound/loop; the driver span now nests directly under the
+		// turn span (loop.turn) via the ambient turn context.
+		expect(driverSpan?.parentSpanId).toBe(turnSpan?.spanContext().spanId);
 	});
 
 	it("should record llm-driver.chat attributes (model, provider)", async () => {
