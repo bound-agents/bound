@@ -29,7 +29,7 @@ This phase implements and tests:
 ### webhook-ingestion.AC2: HTTP handler on port 3000
 - **webhook-ingestion.AC2.1 Success:** POST to `/webhook/:name` with valid signature writes a relay_inbox entry and returns 202
 - **webhook-ingestion.AC2.2 Failure:** POST to `/webhook/:name` where name doesn't exist returns 404
-- **webhook-ingestion.AC2.3 Failure:** POST with empty or unreadable body returns 400
+- **webhook-ingestion.AC2.3 Failure:** POST with empty or unreadable body returns 404 (uniform with unknown-name and bad-signature rejections to avoid a name-enumeration oracle)
 - **webhook-ingestion.AC2.4 Failure:** Non-POST methods to `/webhook/:name` return 404
 - **webhook-ingestion.AC2.5 Edge:** Raw body bytes are preserved exactly (not re-serialized) before HMAC validation
 - **webhook-ingestion.AC2.6 Edge:** Existing `/sync/ws` WebSocket endpoint continues to function alongside new HTTP route
@@ -152,9 +152,10 @@ export async function handleWebhookRequest(
 
 The handler returns:
 - `202 Accepted` (empty body) on success (AC2.1)
-- `404 Not found` (empty body) if webhook name not found (AC2.2)
-- `400 Bad Request` (empty body) if body is empty or unreadable (AC2.3)
-- `401 Unauthorized` (empty body) if signature validation fails (AC1.5)
+- `404 Not found` (empty body) for every rejection observable without the webhook
+  secret: unknown name (AC2.2), empty/oversized/unreadable body (AC2.3), and
+  failed signature validation (AC1.5). Uniform 404 prevents using the response
+  to enumerate valid webhook names.
 
 The structured envelope written as the relay_inbox payload content:
 ```typescript
@@ -201,7 +202,7 @@ Note: The `_db` parameter is already declared in `createSyncServer` (line 133) b
 Tests must verify each AC listed above:
 - webhook-ingestion.AC2.1: POST with valid signature → 202 + relay_inbox row exists
 - webhook-ingestion.AC2.2: POST to unknown webhook name → 404
-- webhook-ingestion.AC2.3: POST with empty body → 400
+- webhook-ingestion.AC2.3: POST with empty body → 404
 - webhook-ingestion.AC2.4: GET/PUT/DELETE to `/webhook/:name` → 404
 - webhook-ingestion.AC2.5: Body bytes passed to HMAC validator match what was sent (verify by checking the stored envelope body matches)
 - webhook-ingestion.AC2.6: WebSocket upgrade to `/sync/ws` still returns 101 (or verify the WS path is unchanged)

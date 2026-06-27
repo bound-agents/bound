@@ -25,7 +25,7 @@
 |-----------|------|-----------|----------|
 | AC2.1 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | POST `/webhook/:name` with valid signature writes a `relay_inbox` row (verified via DB query) and returns HTTP 202 with empty body |
 | AC2.2 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | POST `/webhook/nonexistent-name` where no matching webhook row exists returns HTTP 404 with empty body |
-| AC2.3 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | POST with empty body (Content-Length: 0 or no body) returns HTTP 400 |
+| AC2.3 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | POST with empty body (Content-Length: 0 or no body) returns HTTP 404 (uniform with unknown-name and bad-signature rejections to avoid a name-enumeration oracle) |
 | AC2.4 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | GET, PUT, DELETE to `/webhook/:name` return HTTP 404 |
 | AC2.5 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | Envelope body stored in relay_inbox matches the exact raw bytes sent in the request (send known UTF-8 body, verify stored envelope JSON `.body` field matches) |
 | AC2.6 | integration | `packages/web/src/server/__tests__/webhook-handler.test.ts` | Existing WebSocket upgrade path (`/sync/ws`) is unchanged; verify the route matching regex does not intercept `/sync/ws` requests (or run full test suite to confirm existing sync tests still pass) |

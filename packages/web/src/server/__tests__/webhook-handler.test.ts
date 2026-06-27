@@ -140,7 +140,7 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(404);
 	});
 
-	test("security: webhook requests over the body limit return 413 before body read", async () => {
+	test("security: webhook requests over the body limit return 404 before body read", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
 		const webhookName = "test_webhook";
@@ -182,13 +182,14 @@ describe("handleWebhookRequest", () => {
 			siteId,
 		});
 
-		expect(response.status).toBe(413);
+		expect(response.status).toBe(404);
 	});
 
 	// ──────────────────────────────────────────────────────────────────
-	// AC2.3: Empty body returns 400
+	// AC2.3: Empty body returns 404 (uniform with unknown-name / bad-signature
+	// to avoid a webhook-name enumeration oracle)
 	// ──────────────────────────────────────────────────────────────────
-	test("AC2.3: POST with empty body returns 400", async () => {
+	test("AC2.3: POST with empty body returns 404", async () => {
 		// Create a webhook row
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -227,7 +228,7 @@ describe("handleWebhookRequest", () => {
 			eventBus,
 		});
 
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(404);
 		const text = await response.text();
 		expect(text).toBe("");
 	});
@@ -341,7 +342,7 @@ describe("handleWebhookRequest", () => {
 	// ──────────────────────────────────────────────────────────────────
 	// AC1.5: Invalid signature returns 401
 	// ──────────────────────────────────────────────────────────────────
-	test("AC1.5: POST with invalid signature returns 401", async () => {
+	test("AC1.5: POST with invalid signature returns 404", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
 		const webhookName = "test_webhook";
@@ -382,7 +383,7 @@ describe("handleWebhookRequest", () => {
 			eventBus,
 		});
 
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(404);
 		const text = await response.text();
 		expect(text).toBe("");
 

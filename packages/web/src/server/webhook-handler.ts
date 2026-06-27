@@ -102,15 +102,22 @@ export async function handleWebhookRequest(
 
 	// Read raw body bytes after webhook lookup so unknown names cannot force
 	// memory work, and cap streaming reads before HMAC validation.
+	//
+	// Every rejection observable without the webhook secret returns 404 so the
+	// response cannot be used to distinguish a real webhook name from an unknown
+	// one (empty/oversized/unreadable body and bad signature all look identical
+	// to a non-existent name). Only a valid signature produces a non-404
+	// response. The body read still happens after the name lookup so unknown
+	// names short-circuit before any streaming work.
 	const readResult = await readRequestBodyLimited(request);
 	if (!readResult.ok) {
-		return new Response("", { status: readResult.status });
+		return new Response("", { status: 404 });
 	}
 	const rawBody = readResult.body;
 
 	// Reject empty body
 	if (rawBody.length === 0) {
-		return new Response("", { status: 400 });
+		return new Response("", { status: 404 });
 	}
 
 	// Validate signature
@@ -122,7 +129,7 @@ export async function handleWebhookRequest(
 	);
 
 	if (!validationResult.valid) {
-		return new Response("", { status: 401 });
+		return new Response("", { status: 404 });
 	}
 
 	// Build envelope with filtered headers

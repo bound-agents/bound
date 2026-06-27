@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { Hono } from "hono";
 import type { MountableFs } from "just-bash";
 
@@ -20,6 +21,19 @@ import type { MountableFs } from "just-bash";
 export function createSandboxRoutes(clusterFs: MountableFs | null): Hono {
 	const app = new Hono();
 
+	function validateSandboxPath(path: string): { ok: true } | { ok: false; error: string } {
+		if (!path.startsWith("/")) {
+			return { ok: false, error: "Path must be absolute" };
+		}
+		if (path.includes("\0")) {
+			return { ok: false, error: "Path contains an invalid byte" };
+		}
+		if (posix.normalize(path) !== path) {
+			return { ok: false, error: "Path must be normalized" };
+		}
+		return { ok: true };
+	}
+
 	app.get("/file", async (c) => {
 		if (!clusterFs) {
 			return c.json({ error: "Sandbox filesystem not available" }, 503);
@@ -27,6 +41,10 @@ export function createSandboxRoutes(clusterFs: MountableFs | null): Hono {
 		const path = c.req.query("path");
 		if (!path) {
 			return c.json({ error: "Missing required query parameter: path" }, 400);
+		}
+		const pathValidation = validateSandboxPath(path);
+		if (!pathValidation.ok) {
+			return c.json({ error: pathValidation.error }, 400);
 		}
 
 		try {
@@ -62,6 +80,10 @@ export function createSandboxRoutes(clusterFs: MountableFs | null): Hono {
 		const path = c.req.query("path");
 		if (!path) {
 			return c.json({ error: "Missing required query parameter: path" }, 400);
+		}
+		const pathValidation = validateSandboxPath(path);
+		if (!pathValidation.ok) {
+			return c.json({ error: pathValidation.error }, 400);
 		}
 
 		try {
