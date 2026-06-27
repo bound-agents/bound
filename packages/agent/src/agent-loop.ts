@@ -786,7 +786,7 @@ export class AgentLoop extends ModularAgentLoop {
 		const contextWindow =
 			(resolution.kind === "local"
 				? resolvedCaps?.max_context
-				: resolution.hosts[0]?.capabilities?.max_context) || 200_000;
+				: resolution.hosts[0]?.capabilities?.max_context) ?? 200_000;
 		const mergedTools = this.getMergedTools();
 		const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
 		const resolvedModelForDebug = getResolvedModelId(resolution, this.config.modelId);

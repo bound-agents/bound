@@ -32,7 +32,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
  */
 export interface UmansModelMeta {
 	id: string;
-	contextWindow: number;
+	contextWindow?: number;
 	maxCompletionTokens?: number;
 	supportsVision: boolean;
 	supportsTools: boolean;
@@ -329,7 +329,7 @@ export async function fetchUmansModelMetadata(
 		const price = priceByModel.get(id);
 		lineup.set(id, {
 			id,
-			contextWindow: caps.context_window ?? 0,
+			contextWindow: caps.context_window ?? undefined,
 			// Coerce explicit nulls (the umans wire's "unset" sentinel) to
 			// undefined to match the non-null UmansModelMeta field types.
 			maxCompletionTokens: caps.max_completion_tokens ?? undefined,

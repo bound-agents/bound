@@ -408,7 +408,6 @@ export class UmansDriver implements LLMBackend {
 			prompt_caching: true,
 			vision: false,
 			extended_thinking: false,
-			max_context: 0,
 		};
 		if (this.isNamespace) {
 			this.readiness = new UmansReadiness(

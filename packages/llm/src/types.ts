@@ -339,7 +339,7 @@ export interface BackendCapabilities {
 	prompt_caching: boolean;
 	vision: boolean;
 	extended_thinking: boolean;
-	max_context: number;
+	max_context?: number;
 }
 
 export interface ToolDefinition {

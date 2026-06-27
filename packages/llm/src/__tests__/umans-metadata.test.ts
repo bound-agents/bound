@@ -146,6 +146,35 @@ describe("fetchUmansModelMetadata", () => {
 		expect(coder?.supportsVision).toBe(true);
 	});
 
+	it("preserves undefined context_window as undefined (not 0) when API omits it", async () => {
+		// When the umans /v1/models/info endpoint doesn't report context_window
+		// for a model, the parsed metadata must carry undefined — NOT 0.
+		// A 0 sentinel is falsy, so `||` at the consumption site (agent-loop.ts)
+		// silently substitutes 200K, causing context-length errors on models
+		// whose real window is unknown.
+		const fetch = stubFetch({
+			"/models/info": {
+				body: {
+					"umans-noctx": {
+						capabilities: {
+							max_completion_tokens: 4096,
+							supports_tools: true,
+						},
+					},
+				},
+			},
+			"/models": {
+				body: { data: [{ id: "umans-noctx", pricing: { input: 0.5, output: 1.5 } }] },
+			},
+		});
+		const res = await fetchUmansModelMetadata("https://api.code.umans.ai/v1", { fetch });
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		const model = res.value.get("umans-noctx");
+		expect(model).toBeDefined();
+		expect(model?.contextWindow).toBeUndefined();
+	});
+
 	it("returns ok:false when no non-deprecated models remain", async () => {
 		const fetch = stubFetch({
 			"/models/info": { body: { "umans-legacy": MODELS_INFO["umans-legacy"] } },
