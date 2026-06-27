@@ -173,7 +173,7 @@ describe("summary-extraction relay integration", () => {
 				null,
 				null,
 				null,
-				JSON.stringify([REMOTE_MODEL]),
+				JSON.stringify([{ id: REMOTE_MODEL, capabilities: { max_context: 200000 } }]),
 				null,
 				now,
 				now,

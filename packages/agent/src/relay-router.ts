@@ -292,6 +292,8 @@ export function findAnyRemoteModel(
 			if (!modelId) continue;
 
 			const tier = entry && typeof entry === "object" ? ((entry as HostModelEntry).tier ?? 99) : 99;
+			const capabilities =
+				entry && typeof entry === "object" ? (entry as HostModelEntry).capabilities : undefined;
 
 			candidates.push({
 				site_id: row.site_id,
@@ -300,6 +302,7 @@ export function findAnyRemoteModel(
 				online_at: row.online_at,
 				modified_at: row.modified_at,
 				tier,
+				capabilities,
 				modelId,
 			});
 		}
@@ -333,6 +336,7 @@ export function findAnyRemoteModel(
 				online_at: best.online_at,
 				modified_at: best.modified_at,
 				tier: best.tier,
+				capabilities: best.capabilities,
 			},
 		],
 		modelId: best.modelId,
