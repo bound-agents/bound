@@ -124,7 +124,7 @@ describe("authenticateWsUpgrade", () => {
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
 				expect(result.error.status).toBe(401);
-				expect(result.error.body).toContain("Signature");
+				expect(result.error.body).toBe("Unauthorized");
 			}
 		});
 	});
@@ -159,8 +159,8 @@ describe("authenticateWsUpgrade", () => {
 
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
-				expect(result.error.status).toBe(403);
-				expect(result.error.body).toContain("not found");
+				expect(result.error.status).toBe(401);
+				expect(result.error.body).toBe("Unauthorized");
 			}
 		});
 	});
@@ -234,9 +234,49 @@ describe("authenticateWsUpgrade", () => {
 
 			expect(result.ok).toBe(false);
 			if (!result.ok) {
-				expect(result.error.status).toBe(403);
-				// Missing headers result in "unknown site" or "missing headers" error
-				expect(result.error.body).toMatch(/not found|Missing/);
+				expect(result.error.status).toBe(401);
+				expect(result.error.body).toBe("Unauthorized");
+			}
+		});
+	});
+
+	describe("Replay protection", () => {
+		it("rejects a reused valid upgrade signature within the freshness window", async () => {
+			const signatureHeaders = await signRequest(
+				spokeKeypair.privateKey,
+				spokeSiteId,
+				"GET",
+				"/sync/ws",
+				"",
+			);
+			const keyring: KeyringConfig = {
+				hosts: {
+					[spokeSiteId]: { public_key: spokePubKey, url: "http://localhost:3100" },
+				},
+			};
+
+			const first = await authenticateWsUpgrade(
+				new Request("http://localhost:3000/sync/ws", {
+					method: "GET",
+					headers: signatureHeaders,
+				}),
+				keyring,
+				keyManager,
+			);
+			const second = await authenticateWsUpgrade(
+				new Request("http://localhost:3000/sync/ws", {
+					method: "GET",
+					headers: signatureHeaders,
+				}),
+				keyring,
+				keyManager,
+			);
+
+			expect(first.ok).toBe(true);
+			expect(second.ok).toBe(false);
+			if (!second.ok) {
+				expect(second.error.status).toBe(401);
+				expect(second.error.body).toBe("Unauthorized");
 			}
 		});
 	});
@@ -493,7 +533,8 @@ describe("createWsHandlers", async () => {
 			const response = await handlers.handleUpgrade(request, mockServer);
 
 			if (response) {
-				expect(response.status).toBe(403);
+				expect(response.status).toBe(401);
+				expect(await response.text()).toBe("Unauthorized");
 			}
 		});
 

@@ -14,6 +14,34 @@ import type {
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
+const AUTH_FAILURE_BODY = "Unauthorized";
+const AUTH_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const seenUpgradeSignatures = new Map<string, number>();
+
+function pruneSeenUpgradeSignatures(now: number): void {
+	for (const [key, expiresAt] of seenUpgradeSignatures) {
+		if (expiresAt <= now) {
+			seenUpgradeSignatures.delete(key);
+		}
+	}
+}
+
+function markUpgradeSignatureSeen(headers: Record<string, string>): boolean {
+	const siteId = headers["x-site-id"];
+	const timestamp = headers["x-timestamp"];
+	const signature = headers["x-signature"];
+	if (!siteId || !timestamp || !signature) return false;
+
+	const now = Date.now();
+	pruneSeenUpgradeSignatures(now);
+	const key = `${siteId}:${timestamp}:${signature}`;
+	if (seenUpgradeSignatures.has(key)) {
+		return false;
+	}
+	seenUpgradeSignatures.set(key, now + AUTH_REPLAY_WINDOW_MS);
+	return true;
+}
+
 /**
  * Per-connection metadata attached to a WebSocket connection.
  * Contains authentication info and backpressure state for the sync protocol.
@@ -57,16 +85,12 @@ export async function authenticateWsUpgrade(
 	const verifyResult = await verifyRequest(keyring, method, path, headers, body);
 	if (!verifyResult.ok) {
 		const error = verifyResult.error;
-		let statusCode: 401 | 403 | 408;
+		let statusCode: 401 | 408;
 
-		if (error.code === "unknown_site") {
-			statusCode = 403;
-		} else if (error.code === "invalid_signature") {
-			statusCode = 401;
-		} else if (error.code === "stale_timestamp") {
+		if (error.code === "stale_timestamp") {
 			statusCode = 408;
 		} else {
-			statusCode = 401; // Fallback for unknown error codes
+			statusCode = 401;
 		}
 
 		logger?.warn("WS upgrade signature verification failed", {
@@ -74,18 +98,23 @@ export async function authenticateWsUpgrade(
 			message: error.message,
 		});
 
-		return err({ status: statusCode, body: error.message });
+		return err({ status: statusCode, body: AUTH_FAILURE_BODY });
 	}
 
 	const { siteId } = verifyResult.value;
+
+	if (!markUpgradeSignatureSeen(headers)) {
+		logger?.warn("WS upgrade replay rejected", { siteId });
+		return err({ status: 401, body: AUTH_FAILURE_BODY });
+	}
 
 	// Step 2: Look up symmetric key via KeyManager
 	const symmetricKey = keyManager.getSymmetricKey(siteId);
 	if (!symmetricKey) {
 		logger?.warn("WS upgrade: symmetric key not found", { siteId });
 		return err({
-			status: 403,
-			body: `Symmetric key not found for site ${siteId}`,
+			status: 401,
+			body: AUTH_FAILURE_BODY,
 		});
 	}
 
@@ -94,8 +123,8 @@ export async function authenticateWsUpgrade(
 	if (!fingerprint) {
 		logger?.warn("WS upgrade: fingerprint not found", { siteId });
 		return err({
-			status: 403,
-			body: `Fingerprint not found for site ${siteId}`,
+			status: 401,
+			body: AUTH_FAILURE_BODY,
 		});
 	}
 

@@ -53,7 +53,7 @@ export function getPkColumn(tableName: string): string {
 }
 
 // Validate table name - must be a known synced table
-function validateTableName(tableName: unknown): tableName is SyncedTableName {
+export function validateTableName(tableName: unknown): tableName is SyncedTableName {
 	const validTables = Object.keys(TABLE_REDUCER_MAP);
 	return typeof tableName === "string" && validTables.includes(tableName);
 }

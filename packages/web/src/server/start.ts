@@ -11,6 +11,8 @@ import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
 
 const logger = createLogger("@bound/web", "server-start");
+const LOOPBACK_BIND_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const UNSAFE_WEB_BIND_OVERRIDE = "BOUND_ALLOW_UNSAFE_WEB_BIND";
 
 export type { ModelsConfig, BackendPricing };
 
@@ -82,6 +84,38 @@ export interface WebServer {
 	) => void;
 }
 
+function extractHostName(hostHeader: string): string {
+	if (hostHeader.startsWith("[")) {
+		const end = hostHeader.indexOf("]");
+		return end === -1 ? hostHeader : hostHeader.slice(0, end + 1);
+	}
+	return hostHeader.split(":")[0];
+}
+
+function isLoopbackHost(host: string): boolean {
+	return LOOPBACK_BIND_HOSTS.has(host);
+}
+
+function hasValidLoopbackHostHeader(request: Request): boolean {
+	const host = request.headers.get("host");
+	if (!host) return true;
+	return isLoopbackHost(extractHostName(host));
+}
+
+function assertSafeWebBindHost(host: string): void {
+	if (isLoopbackHost(host)) return;
+	if (process.env[UNSAFE_WEB_BIND_OVERRIDE] === "1") {
+		logger.warn("Starting web server on a non-loopback host by explicit override", {
+			host,
+			override: UNSAFE_WEB_BIND_OVERRIDE,
+		});
+		return;
+	}
+	throw new Error(
+		`Refusing to bind unauthenticated web server to ${host}; set ${UNSAFE_WEB_BIND_OVERRIDE}=1 to override`,
+	);
+}
+
 /**
  * Create the web server: API routes, WebSocket, static assets, DNS-rebinding protection.
  * Binds to WEB_PORT (default 3001) on WEB_BIND_HOST (default localhost).
@@ -93,6 +127,7 @@ export async function createWebServer(
 ): Promise<WebServer> {
 	const port = config.port ?? 3001;
 	const host = config.host ?? "localhost";
+	assertSafeWebBindHost(host);
 
 	// Create WebSocket handler first to get emitToolCancel
 	const wsHandler = createWebSocketHandler({
@@ -142,6 +177,9 @@ export async function createWebServer(
 				fetch(request: Request, server) {
 					const url = new URL(request.url);
 					if (url.pathname === "/ws" && request.headers.get("upgrade") === "websocket") {
+						if (!hasValidLoopbackHostHeader(request)) {
+							return new Response("Invalid Host header", { status: 400 });
+						}
 						if (server.upgrade(request, { data: undefined })) {
 							return;
 						}
