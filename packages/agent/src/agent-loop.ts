@@ -112,8 +112,12 @@ import { isClientToolCallRequest } from "./types";
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
-/** Max retries when the output token limit is hit during thinking (finishReason "length"). */
-export const MAX_LENGTH_RETRIES = 2;
+/**
+ * Max retries for a degenerate turn — one producing no actionable output (no
+ * tool call and no text), whether truncated at the output-token limit
+ * (finishReason "length") or cut off by a dropped stream.
+ */
+export const MAX_DEGENERATE_RETRIES = 2;
 
 /**
  * Token count threshold above which `fastApproxContentTokens` falls back
@@ -556,7 +560,7 @@ export class AgentLoop extends ModularAgentLoop {
 		super(createBoundLoopExtensions(ctx, modelRouter, config), config, {
 			silenceTimeoutMs: SILENCE_TIMEOUT_MS,
 			maxTransientRetries: MAX_SILENCE_RETRIES,
-			lengthRetryMax: MAX_LENGTH_RETRIES,
+			degenerateRetryMax: MAX_DEGENERATE_RETRIES,
 		});
 	}
 
@@ -1582,9 +1586,44 @@ export class AgentLoop extends ModularAgentLoop {
 		this.prevCacheReadTokens =
 			cacheRead > 0 ? cacheRead : cacheWrite > 0 ? cacheWrite : this.prevCacheReadTokens;
 
-		// Length-retry (finishReason="length" on a thinking-only turn) is handled
-		// by the base loop's checkLengthRetry, evaluated after this hook returns.
+		// Degenerate-turn recovery (no tool call and no text, from either an
+		// output-token truncation or a dropped stream) is handled by the base
+		// loop's checkDegenerateRetry, evaluated after this hook returns. It calls
+		// notifyDegenerateTurn (overridden below) to persist the notification.
 		return { action: "continue" };
+	}
+
+	/**
+	 * Persist a developer-role notification telling the model its previous turn
+	 * produced no actionable output. checkDegenerateRetry then returns a
+	 * frame-rebuilding retry, so the next turn's context-assembly picks this
+	 * message up from the thread — the model reads it and responds (concisely, if
+	 * it was truncated) on the retry.
+	 */
+	protected override beforeFrameRebuild(): void {
+		// Drop the warm-path prompt-cache turn state so the rebuilt frame takes
+		// the cold path and recomputes cache-marker placement against the
+		// post-retry message set (which now includes the degenerate-turn
+		// notification), instead of reusing positions captured for the prior set.
+		this.clearCachedTurnState();
+	}
+
+	protected override notifyDegenerateTurn(parsed: ParsedResponse): void {
+		const wasTruncated = parsed.finishReason === "length";
+		const content = wasTruncated
+			? "[System] Your previous response was cut off at the output-token limit before " +
+				"producing any answer or tool call. Please respond again, more concisely, so the " +
+				"full response fits."
+			: "[System] Your previous response produced no answer or tool call (the inference " +
+				"stream ended early). Please respond to the last message now.";
+		try {
+			this.emitDeveloperNotice(content);
+		} catch (error) {
+			this.ctx.logger.warn("Failed to persist degenerate-turn notification", {
+				threadId: this.config.threadId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	protected override async handleFinalResponse(

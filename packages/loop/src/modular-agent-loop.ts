@@ -32,12 +32,12 @@ export interface ModularAgentLoopOptions {
 	silenceTimeoutMs?: number;
 	/** Max transient-error retries (with backoff) in the base handleModelError. */
 	maxTransientRetries?: number;
-	/** Max retries when finishReason="length" truncates a thinking-only turn. */
-	lengthRetryMax?: number;
-	/** Hard ceiling for the bumped output-token budget on length retry. */
-	lengthRetryCap?: number;
-	/** First bumped output-token budget when no prior max is known. */
-	lengthRetryStart?: number;
+	/**
+	 * Max retries for a degenerate turn — one that produced no actionable output
+	 * (no tool call and no text), whether the cause was output-budget truncation
+	 * (finishReason="length") or a dropped stream (finishReason="stop"/absent).
+	 */
+	degenerateRetryMax?: number;
 	/** Tool-call circuit-breaker thresholds (defaults from loop-guards). */
 	loopGuards?: Partial<LoopGuardThresholds>;
 }
@@ -45,9 +45,7 @@ export interface ModularAgentLoopOptions {
 const DEFAULT_MAX_TURNS = 16;
 const DEFAULT_SILENCE_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TRANSIENT_RETRIES = 3;
-const DEFAULT_LENGTH_RETRY_MAX = 2;
-const DEFAULT_LENGTH_RETRY_CAP = 65_536;
-const DEFAULT_LENGTH_RETRY_START = 32_768;
+const DEFAULT_DEGENERATE_RETRY_MAX = 2;
 
 /** Reason codes for a tripped loop-guard, surfaced to onLoopGuardTripped. */
 export type LoopGuardReason = "truncated" | "duplicate" | "identical-error" | "routing-error";
@@ -71,7 +69,10 @@ export interface PreparedLoopFrame {
 
 export type LoopTurnDecision =
 	| { action: "continue" }
-	| { action: "retry" }
+	// `rebuildFrame` re-runs prepareFrame before the retried turn so freshly
+	// persisted context (e.g. a degenerate-turn notification) is re-assembled
+	// into the message array. Omitted/false reuses the in-memory frame.
+	| { action: "retry"; rebuildFrame?: boolean }
 	| { action: "stop" }
 	| { action: "yield" }
 	| { action: "error"; error: string };
@@ -100,7 +101,7 @@ export interface LoopModelStream {
 
 type LoopDecisionOutcome =
 	| { action: "continue" }
-	| { action: "retry" }
+	| { action: "retry"; rebuildFrame?: boolean }
 	| { action: "return"; result: AgentLoopResult };
 
 interface LoopDecisionSpans {
@@ -166,8 +167,7 @@ export class ModularAgentLoop {
 
 	// Resilience state — reset per run() in resetResilienceState().
 	protected transportRetries = 0;
-	protected lengthRetries = 0;
-	protected outputTokenOverride: number | null = null;
+	protected degenerateRetries = 0;
 	protected consecutiveTruncatedTurns = 0;
 	protected lastTruncatedToolName: string | null = null;
 	protected consecutiveDuplicateToolCalls = 0;
@@ -198,8 +198,7 @@ export class ModularAgentLoop {
 	 */
 	protected resetResilienceState(): void {
 		this.transportRetries = 0;
-		this.lengthRetries = 0;
-		this.outputTokenOverride = null;
+		this.degenerateRetries = 0;
 		this.consecutiveTruncatedTurns = 0;
 		this.lastTruncatedToolName = null;
 		this.consecutiveDuplicateToolCalls = 0;
@@ -211,9 +210,15 @@ export class ModularAgentLoop {
 		this.lastRoutingErrorSignature = null;
 	}
 
-	/** Output-token budget for the next model call, honoring any length-retry bump. */
+	/**
+	 * Output-token budget for the next model call. A degenerate-turn retry
+	 * deliberately keeps this unchanged: the provider's true output ceiling is
+	 * unknown, so bumping it blindly risks a request-time "max_tokens exceeds
+	 * model limit" 400. The retry relies on a notification + the model's own
+	 * ability to produce a shorter, complete response instead.
+	 */
 	protected effectiveMaxOutputTokens(): number | undefined {
-		return this.outputTokenOverride ?? this.loopConfig.maxOutputTokens;
+		return this.loopConfig.maxOutputTokens;
 	}
 
 	async run(): Promise<AgentLoopResult> {
@@ -251,7 +256,7 @@ export class ModularAgentLoop {
 				modelId: resolution.modelId,
 				max_context: resolution.max_context,
 			};
-			const frame: PreparedLoopFrame = {
+			let frame: PreparedLoopFrame = {
 				resolution: frameResolution,
 				...(await this.prepareFrame({ resolution: frameResolution })),
 			};
@@ -268,6 +273,21 @@ export class ModularAgentLoop {
 					loopSpan,
 				});
 				if (turnOutcome.action === "retry") {
+					if (turnOutcome.rebuildFrame) {
+						// Re-assemble the frame so context written during this turn
+						// (e.g. a persisted degenerate-turn notification) is included
+						// in the retried request rather than relying on the stale
+						// in-memory message array. beforeFrameRebuild lets a subclass
+						// reset per-turn assembly caches first so the rebuild takes a
+						// clean path instead of reusing warm-cache state captured for
+						// the pre-retry message set.
+						await this.beforeFrameRebuild();
+						frame = {
+							resolution: frameResolution,
+							...(await this.prepareFrame({ resolution: frameResolution })),
+						};
+						currentDebug = frame.assembled.debug;
+					}
 					turn--;
 					continue;
 				}
@@ -384,12 +404,12 @@ export class ModularAgentLoop {
 				const parseDecision = await this.afterParse(parsed, frame, turn);
 				const turnId = await this.recordParsedTurn(parsed, frame, currentDebug, turnSpan);
 				const recordDecision = await this.afterRecord(parsed, frame, turnId, turn);
-				const lengthDecision = this.checkLengthRetry(parsed);
+				const degenerateDecision = this.checkDegenerateRetry(parsed);
 				const decision =
 					recordDecision.action !== "continue"
 						? recordDecision
-						: lengthDecision.action !== "continue"
-							? lengthDecision
+						: degenerateDecision.action !== "continue"
+							? degenerateDecision
 							: parseDecision;
 				const decisionOutcome = await this.applyTurnDecision(decision, { loopSpan, turnSpan });
 				if (decisionOutcome.action !== "continue") {
@@ -467,10 +487,23 @@ export class ModularAgentLoop {
 			taskId: this.loopConfig.taskId,
 			modelId: frame.resolution.modelId,
 			response: parsed,
-			// A mid-stream abort breaks collection before the done chunk, leaving a
-			// 0/0 parse. Recording that as success pollutes status='ok' metrics, so
-			// mark it aborted; afterParse still runs to emit any cancel notice.
-			status: this.shouldAbort() ? "aborted" : "success",
+			// Status is the turn's true outcome, not an optimistic default:
+			//  - abort: a mid-stream abort breaks collection before the done chunk,
+			//    leaving a 0/0 parse. afterParse still runs to emit any cancel notice.
+			//  - error: a TERMINAL degenerate turn — no tool call and no text (at
+			//    most thinking) WITH retries exhausted, so checkDegenerateRetry will
+			//    surface an error instead of retrying. Recording it as success would
+			//    be the silent-'ok' bug that let dropped streams read as completed.
+			//  - success: produced a tool call or text, OR a degenerate turn that
+			//    will still be retried — a transient blip the loop recovers from, so
+			//    it must not read as a terminal failure (otherwise introspect's
+			//    latest-status check and error_count count a recovered turn as a
+			//    hard error).
+			status: this.shouldAbort()
+				? "aborted"
+				: this.isTerminalDegenerateTurn(parsed)
+					? "error"
+					: "success",
 			contextDebug: currentDebug,
 		});
 		const thinkingChars = parsed.thinking?.length ?? 0;
@@ -519,7 +552,7 @@ export class ModularAgentLoop {
 			case "retry":
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.OK });
 				spans.turnSpan?.end();
-				return { action: "retry" };
+				return { action: "retry", rebuildFrame: decision.rebuildFrame };
 			case "yield":
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.OK });
 				spans.turnSpan?.end();
@@ -537,6 +570,15 @@ export class ModularAgentLoop {
 	}
 
 	protected beforeTurn(_turn: number, _frame: PreparedLoopFrame): Promise<void> | void {}
+
+	/**
+	 * Called immediately before a `rebuildFrame` retry re-runs prepareFrame.
+	 * Base is a no-op; subclasses that carry per-turn context-assembly caches
+	 * (e.g. the warm/cold prompt-cache turn state) override this to reset them so
+	 * the rebuild reflects the post-retry message set rather than reusing state
+	 * captured for the message set that produced the degenerate turn.
+	 */
+	protected beforeFrameRebuild(): Promise<void> | void {}
 
 	protected afterParse(
 		_parsed: ParsedResponse,
@@ -778,38 +820,103 @@ export class ModularAgentLoop {
 	}
 
 	/**
-	 * Length-retry mechanism: when a turn truncates at the output-token limit
-	 * (finishReason="length") having produced only thinking — no text, no tool
-	 * calls — the model never got to its answer. Bump the output-token budget and
-	 * retry, bounded by lengthRetryMax. Generic: pure token-budget math, no host
-	 * dependencies.
+	 * A turn is degenerate when the model emitted THINKING but then produced no
+	 * actionable output — no tool call and no text. Two distinct causes share
+	 * this symptom: an output-budget truncation (finishReason="length") and a
+	 * dropped inference stream (finishReason="stop" or absent, e.g. relay /
+	 * transport death). Both leave the model cut off mid-reasoning with nothing
+	 * the loop can act on.
+	 *
+	 * The thinking requirement is the discriminator that separates this failure
+	 * from a legitimate empty completion: a model that returns no thinking, no
+	 * text, and no tool call has deliberately ended (e.g. an empty-text turn
+	 * after a tool round-trip), which the loop treats as a clean stop. A
+	 * fully-empty completion (no thinking either) from a store:false provider is
+	 * handled at the driver layer (withEmptyRetry), not here.
+	 *
+	 * A `content-filter` finish is a deliberate safety termination, not a
+	 * truncation or dropped stream, so it is never degenerate — retrying would
+	 * re-prompt the model past its own safety stop. handleFinalResponse surfaces
+	 * it instead.
+	 *
+	 * Pure predicate over the parsed response — no host dependencies.
 	 */
-	protected checkLengthRetry(parsed: ParsedResponse): LoopTurnDecision {
-		const lengthRetryMax = this.loopOptions.lengthRetryMax ?? DEFAULT_LENGTH_RETRY_MAX;
-		const onlyThinking =
-			parsed.finishReason === "length" &&
-			parsed.toolCalls.length === 0 &&
-			!parsed.textContent &&
-			Boolean(parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent);
-		if (!onlyThinking || this.lengthRetries >= lengthRetryMax) {
+	protected isDegenerateTurn(parsed: ParsedResponse): boolean {
+		if (parsed.finishReason === "content-filter") {
+			return false;
+		}
+		const hadThinking = Boolean(
+			parsed.thinking || parsed.thinkingRedactedData || parsed.thinkingEncryptedContent,
+		);
+		return hadThinking && parsed.toolCalls.length === 0 && !parsed.textContent;
+	}
+
+	/**
+	 * A degenerate turn is TERMINAL when its retry budget is exhausted, i.e.
+	 * checkDegenerateRetry will surface an error instead of retrying. Used to
+	 * decide turn status at record time: an intermediate degenerate turn that
+	 * will be retried is a transient blip recorded as success, so a recovered
+	 * thread never leaves an "error" turn row for introspect / error_count to
+	 * misread as a hard failure. Mirrors the bound used in checkDegenerateRetry.
+	 */
+	protected isTerminalDegenerateTurn(parsed: ParsedResponse): boolean {
+		if (!this.isDegenerateTurn(parsed)) {
+			return false;
+		}
+		const degenerateRetryMax = this.loopOptions.degenerateRetryMax ?? DEFAULT_DEGENERATE_RETRY_MAX;
+		return this.degenerateRetries >= degenerateRetryMax;
+	}
+
+	/**
+	 * Degenerate-turn recovery: notify the model that its previous response
+	 * produced no actionable output and retry the SAME output-token budget,
+	 * bounded by degenerateRetryMax. We do NOT bump the budget — the provider's
+	 * real output ceiling is unknown, so doubling risks a request-time 400; the
+	 * model is instead asked (via the persisted notification) to respond, more
+	 * concisely if it was truncated. On exhaustion, returns { action: "error" }
+	 * so the loop surfaces a terminal failure rather than silently going IDLE.
+	 */
+	protected checkDegenerateRetry(parsed: ParsedResponse): LoopTurnDecision {
+		if (!this.isDegenerateTurn(parsed)) {
 			return { action: "continue" };
 		}
-		this.lengthRetries++;
-		const cap = this.loopOptions.lengthRetryCap ?? DEFAULT_LENGTH_RETRY_CAP;
-		const start = this.loopOptions.lengthRetryStart ?? DEFAULT_LENGTH_RETRY_START;
-		const prevMax = this.effectiveMaxOutputTokens();
-		this.outputTokenOverride = prevMax ? Math.min(prevMax * 2, cap) : start;
+		const degenerateRetryMax = this.loopOptions.degenerateRetryMax ?? DEFAULT_DEGENERATE_RETRY_MAX;
+		if (this.degenerateRetries >= degenerateRetryMax) {
+			this.loopExtensions.context.logger.warn(
+				"[loop] Degenerate turn (no actionable output) persisted after retries; surfacing error",
+				{
+					finishReason: parsed.finishReason ?? null,
+					retries: this.degenerateRetries,
+					maxRetries: degenerateRetryMax,
+				},
+			);
+			const retryWord = this.degenerateRetries === 1 ? "retry" : "retries";
+			return {
+				action: "error",
+				error: `Inference produced no actionable output (no text or tool call) after ${this.degenerateRetries} ${retryWord}.`,
+			};
+		}
+		this.degenerateRetries++;
 		this.loopExtensions.context.logger.warn(
-			"[loop] Output token limit hit during thinking, retrying with larger budget",
+			"[loop] Degenerate turn (no actionable output), notifying and retrying with same budget",
 			{
-				previousMaxTokens: prevMax ?? null,
-				newMaxTokens: this.outputTokenOverride,
-				retry: this.lengthRetries,
-				maxRetries: lengthRetryMax,
+				finishReason: parsed.finishReason ?? null,
+				retry: this.degenerateRetries,
+				maxRetries: degenerateRetryMax,
 			},
 		);
-		return { action: "retry" };
+		this.notifyDegenerateTurn(parsed);
+		return { action: "retry", rebuildFrame: true };
 	}
+
+	/**
+	 * Inject a notification, visible to the model on the retry, that the previous
+	 * turn produced no actionable output. The base implementation is a no-op
+	 * (the mock/test loop has no persistence semantics for this); production
+	 * subclasses persist a developer-role message that the next rebuilt frame
+	 * re-assembles into context.
+	 */
+	protected notifyDegenerateTurn(_parsed: ParsedResponse): void {}
 
 	protected async handleFinalResponse(
 		parsed: ParsedResponse,
