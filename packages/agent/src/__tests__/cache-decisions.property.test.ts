@@ -41,7 +41,7 @@
  *   F11 buildCacheMarkers capability-disabled returns empty array.
  */
 
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { LLMMessage, ToolDefinition } from "@bound/llm";
 import type { ContextSection } from "@bound/shared";
 import fc from "fast-check";
@@ -96,6 +96,31 @@ describe("computeToolFingerprint — property tests", () => {
 		);
 	});
 
+	it("F2b: param-key-order stability — same params in different key order, same hash", () => {
+		// A tool's `parameters` object built with its keys enumerated in a
+		// different order (e.g. an MCP schema re-parsed across turns) is the SAME
+		// logical tool set. The fingerprint must not flip, or the warm-path cache
+		// invalidates with a spurious "tool-change" and the cold path re-compacts
+		// history — the churn that forced repeated file re-reads in thread
+		// 64ccb200. Canonicalize before hashing.
+		fc.assert(
+			fc.property(
+				toolNameArb,
+				fc.uniqueArray(toolNameArb, { minLength: 2, maxLength: 6 }),
+				(toolName, paramKeys) => {
+					const forward: Record<string, unknown> = {};
+					for (const k of paramKeys) forward[k] = { type: "string" };
+					const reversed: Record<string, unknown> = {};
+					for (const k of [...paramKeys].reverse()) reversed[k] = { type: "string" };
+					const a = computeToolFingerprint([makeTool(toolName, { properties: forward })]);
+					const b = computeToolFingerprint([makeTool(toolName, { properties: reversed })]);
+					return a === b;
+				},
+			),
+			{ numRuns: 100 },
+		);
+	});
+
 	it("F3: sensitivity — adding a tool changes the hash", () => {
 		fc.assert(
 			fc.property(toolSetArb, toolNameArb, (tools, newName) => {
@@ -126,6 +151,22 @@ describe("computeToolFingerprint — property tests", () => {
 			),
 			{ numRuns: 50 },
 		);
+	});
+
+	it("F4b: never throws on a malformed entry (cache hint must degrade, not crash)", () => {
+		// The fingerprint is a cache-keying hint computed on every turn; a
+		// malformed tool entry (e.g. a registry tool missing its toolDefinition)
+		// must downgrade the hash, never throw and abort the agent loop.
+		const malformed = [
+			undefined,
+			{ type: "function" },
+			{ function: {} },
+			makeTool("ok"),
+		] as unknown as ToolDefinition[];
+		const fp = computeToolFingerprint(malformed);
+		// Only the valid "ok" tool contributes; result is a real hash, not a throw.
+		expect(HEX_16.test(fp)).toBe(true);
+		expect(computeToolFingerprint([undefined] as unknown as ToolDefinition[])).toBe("empty");
 	});
 });
 

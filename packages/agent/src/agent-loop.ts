@@ -796,7 +796,12 @@ export class AgentLoop extends ModularAgentLoop {
 		const { ratio: adaptiveTruncationRatio, inflation: measuredInflation } =
 			resolveAdaptiveTruncation(this.ctx.db, this.config.threadId, TRUNCATION_TARGET_RATIO);
 		const cacheState = predictCacheState(this.ctx.db, this.config.threadId, CACHE_TTL_MS[cacheTtl]);
-		const currentFingerprint = computeToolFingerprint(this.config.tools);
+		// Fingerprint the merged set the model actually receives — registry
+		// (built-ins + native agent tools) + client + platform + config extras —
+		// not the partial config.tools slice. Otherwise client/registry tool
+		// changes go undetected while the warm/cold decision keys off a set that
+		// doesn't match what was sent.
+		const currentFingerprint = computeToolFingerprint(mergedTools);
 		let cachePathReason: ContextDebugInfo["cachePathReason"] = this.config.noHistory
 			? "no-history"
 			: "no-stored-state";
