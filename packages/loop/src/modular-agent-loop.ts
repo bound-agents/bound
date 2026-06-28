@@ -211,11 +211,14 @@ export class ModularAgentLoop {
 	}
 
 	/**
-	 * Output-token budget for the next model call. A degenerate-turn retry
-	 * deliberately keeps this unchanged: the provider's true output ceiling is
-	 * unknown, so bumping it blindly risks a request-time "max_tokens exceeds
-	 * model limit" 400. The retry relies on a notification + the model's own
-	 * ability to produce a shorter, complete response instead.
+	 * Output-token budget for the next model call — the per-model cap resolved
+	 * upstream (clamped against the provider limit at the call site). A
+	 * degenerate-turn retry does NOT alter it: the request already carries the
+	 * model's full budget, so a length-truncation here means the model couldn't
+	 * finish even with its entire output allowance — an unanswerable turn that
+	 * retrying at the same (already-maximal) budget cannot fix, so the bounded
+	 * retry surfaces an error rather than bumping a budget the call-site clamp
+	 * would pin right back to the cap.
 	 */
 	protected effectiveMaxOutputTokens(): number | undefined {
 		return this.loopConfig.maxOutputTokens;

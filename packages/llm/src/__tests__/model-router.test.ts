@@ -1557,6 +1557,40 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		expect(router.getBackendTier("m-b")).toBe(3);
 	});
 
+	it("resolves getMaxOutputTokens for a dynamically-registered backend (per-model output budget)", () => {
+		// Regression: addDynamicBackend previously stored caps/tier but not the
+		// output budget, so getMaxOutputTokens returned undefined for dynamic
+		// (e.g. umans) models. The loop then sent no max_tokens and the provider
+		// applied a low default (~4096), truncating heavy reasoners mid-thinking.
+		// The descriptor's maxOutputTokens must reach backendConfigs.
+		const models = [descriptor("m-a", 5)]; // descriptor() sets maxOutputTokens: 8192
+		const stub = new StubReadinessBackend("ns", models, true);
+		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
+
+		const registrar: ModelRegistrar = {
+			register(_providerId, entries) {
+				for (const { descriptor: d, backend } of entries) {
+					router.addDynamicBackend(d.id, backend, d.capabilities, d.tier, d.maxOutputTokens);
+				}
+				router.redirectDefault("ns", entries[0].descriptor.id);
+				router.removeBackend("ns");
+			},
+		};
+		stub.readiness.start(registrar);
+		stub.fire();
+
+		expect(router.getMaxOutputTokens("m-a")).toBe(8192);
+	});
+
+	it("leaves getMaxOutputTokens undefined when a dynamic backend reports no budget", () => {
+		// A dynamic backend without a per-model output limit stays undefined —
+		// the caller (clampMaxOutputTokens) then omits max_tokens, unchanged.
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 5)], true);
+		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
+		router.addDynamicBackend("m-x", stub, { ...READY_CAPS }, 3, undefined);
+		expect(router.getMaxOutputTokens("m-x")).toBeUndefined();
+	});
+
 	it("disposes superseded readiness backends on reload (AC.5)", () => {
 		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
 		let disposed = false;
