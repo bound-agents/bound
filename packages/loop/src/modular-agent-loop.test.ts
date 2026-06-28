@@ -317,11 +317,16 @@ const toolTurn = (id: string, name: string, args: Record<string, unknown>): Stre
 	done(),
 ];
 
-const lengthThinkingTurn = (): StreamChunk[] => [
+// A turn that emitted ONLY thinking and then ended. `finishReason` distinguishes
+// the two degenerate causes that share the same no-actionable-output symptom:
+//   "length"  → model ran out of output budget mid-thinking.
+//   "stop"/null → stream dropped (e.g. relay/transport death) after thinking.
+// Both must be handled identically: notify the model and retry the SAME budget.
+const thinkingOnlyTurn = (finishReason: "length" | "stop" | null = "length"): StreamChunk[] => [
 	{ type: "thinking", content: "still reasoning" },
 	{
 		type: "done",
-		finish_reason: "length",
+		...(finishReason ? { finish_reason: finishReason } : {}),
 		usage: {
 			input_tokens: 10,
 			output_tokens: 5,
@@ -374,9 +379,14 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		expect(aborts).toHaveLength(1);
 	});
 
-	it("bumps the output-token budget and retries on a length-truncated thinking turn", async () => {
+	it("notifies and retries with the SAME budget on a length-truncated thinking turn", async () => {
+		// CONTRACT CHANGE (notify-and-retry): a thinking-only turn no longer blindly
+		// doubles max_tokens (we don't know the provider's real ceiling, so doubling
+		// risks a request-time 400). Instead we inject a developer notification and
+		// retry the SAME budget, relying on the model to produce a shorter, complete
+		// response. Unifies the finishReason="length" and stream-death cases.
 		const backend = new ScriptedBackend([
-			lengthThinkingTurn(),
+			thinkingOnlyTurn("length"),
 			[{ type: "text", content: "answer" }, done()],
 		]);
 		const { extensions, persisted } = makeExtensions(backend);
@@ -386,11 +396,84 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 
 		expect(result.error).toBeUndefined();
 		expect(backend.calls).toHaveLength(2);
-		// First call has no max_tokens (config sets none); after the length retry the
-		// base bumps to the default start budget for the second call.
-		expect(backend.calls[0].max_tokens).toBeUndefined();
-		expect(backend.calls[1].max_tokens).toBe(32_768);
+		// Budget is unchanged between the original call and the retry — no doubling.
+		expect(backend.calls[1].max_tokens).toBe(backend.calls[0].max_tokens);
 		expect(persisted.assistant).toHaveLength(1);
+	});
+
+	it("notifies and retries a thinking-only turn caused by a dropped stream (finishReason=stop)", async () => {
+		// The production bug: a relay/transport stream drops after the model emits
+		// only thinking. finishReason is "stop" (or absent), NOT "length", so the
+		// old length-gated retry never fired and the loop went silently IDLE.
+		const backend = new ScriptedBackend([
+			thinkingOnlyTurn("stop"),
+			[{ type: "text", content: "answer" }, done()],
+		]);
+		const { extensions, persisted } = makeExtensions(backend);
+
+		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(backend.calls).toHaveLength(2);
+		expect(backend.calls[1].max_tokens).toBe(backend.calls[0].max_tokens);
+		expect(persisted.assistant).toHaveLength(1);
+	});
+
+	it("surfaces an error (never silent ok/IDLE) after exhausting degenerate retries", async () => {
+		// A backend that ALWAYS returns thinking-only: the loop must bound its
+		// retries and then surface a terminal error rather than spinning forever or
+		// completing silently with a non-actionable turn.
+		const backend = new ScriptedBackend([thinkingOnlyTurn("stop")]);
+		const { extensions, persisted } = makeExtensions(backend);
+
+		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		// Bounded: original attempt + DEFAULT_DEGENERATE_RETRY_MAX (2) retries = 3 calls,
+		// not maxTurns (16) and not infinite.
+		expect(backend.calls.length).toBeLessThanOrEqual(3);
+		expect(result.error).toBeDefined();
+		// No assistant message persisted from a non-actionable turn.
+		expect(persisted.assistant).toHaveLength(0);
+		// Only the TERMINAL degenerate turn records as "error"; the intermediate
+		// attempts that were retried record as "success", so a thread that
+		// recovers never leaves an "error" turn row for introspect / error_count
+		// to misread as a hard failure.
+		const statuses = (persisted.turns as Array<{ status?: string }>).map((t) => t.status);
+		expect(statuses[statuses.length - 1]).toBe("error");
+		expect(statuses.slice(0, -1).every((s) => s === "success")).toBe(true);
+	});
+
+	it("does NOT retry a content-filter safety stop, even when thinking-only", async () => {
+		// A content-filter finish is a deliberate safety termination, not a
+		// truncation or dropped stream. Retrying would re-prompt the model past
+		// its own safety stop, so isDegenerateTurn must exclude it — the turn is
+		// accepted as final (one call, no retry).
+		const backend = new ScriptedBackend([
+			[
+				{ type: "thinking", content: "considering the request" },
+				{
+					type: "done",
+					finish_reason: "content-filter",
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_read_tokens: null,
+						cache_write_tokens: null,
+						estimated: false,
+					},
+				},
+			],
+		]);
+		const { extensions } = makeExtensions(backend);
+
+		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		expect(result.error).toBeUndefined();
+		// Single call — the safety stop was not retried.
+		expect(backend.calls).toHaveLength(1);
 	});
 
 	it("retries a transient transport fault and then succeeds", async () => {

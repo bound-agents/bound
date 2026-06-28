@@ -2958,16 +2958,36 @@ describe("AgentLoop", () => {
 				expect(blocks[1].text).toBe("The answer is 42.");
 			});
 
-			it("persists thinking-only responses (no text content)", async () => {
+			it("does NOT silently persist a thinking-only turn — notifies and retries", async () => {
+				// A turn that emits only thinking and then stops (no text, no tool
+				// call) is degenerate: the model was cut off mid-reasoning (dropped
+				// stream or output-budget truncation). The loop must NOT silently
+				// persist it as a final response (the old behavior, which let dropped
+				// streams masquerade as completed turns). Instead it injects a
+				// developer notification and retries; here the retry produces a real
+				// answer.
 				const mockBackend = new MockLLMBackend();
 				mockBackend.pushResponse(async function* () {
 					yield { type: "thinking" as const, content: "Deep in thought..." };
-					yield { type: "text" as const, content: "" };
 					yield {
 						type: "done" as const,
 						usage: {
 							input_tokens: 10,
 							output_tokens: 20,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: "The answer is 42." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 10,
 							cache_write_tokens: null,
 							cache_read_tokens: null,
 							estimated: false,
@@ -2984,21 +3004,31 @@ describe("AgentLoop", () => {
 					userId: "test-user",
 				});
 
-				await agentLoop.run();
+				const result = await agentLoop.run();
 
-				const msgs = db
-					.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'assistant'")
-					.all(threadId) as Array<{ role: string; content: string }>;
+				// The degenerate turn was retried, not accepted as final.
+				expect(mockBackend.getCallCount()).toBe(2);
+				expect(result.error).toBeUndefined();
 
-				expect(msgs.length).toBe(1);
-				const blocks = JSON.parse(msgs[0].content);
-				expect(blocks[0].type).toBe("thinking");
-				expect(blocks[0].thinking).toBe("Deep in thought...");
+				// A developer notification was persisted for the model to read.
+				const devMsgs = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'developer'")
+					.all(threadId) as Array<{ content: string }>;
+				expect(devMsgs.some((m) => m.content.includes("no answer or tool call"))).toBe(true);
+
+				// The final assistant message is the retry's real answer — no
+				// thinking-only sentinel persisted. A text-only response (no thinking)
+				// persists as a plain string, not a JSON content-block array.
+				const assistantMsgs = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ content: string }>;
+				expect(assistantMsgs.length).toBe(1);
+				expect(assistantMsgs[0].content).toBe("The answer is 42.");
 			});
 		});
 
 		describe("output token limit during thinking", () => {
-			it("retries with a larger budget when finishReason is 'length' during thinking", async () => {
+			it("notifies and retries when finishReason is 'length' during thinking", async () => {
 				const mockBackend = new MockLLMBackend();
 				// First call: thinking only, hit length limit
 				mockBackend.pushResponse(async function* () {
@@ -3059,7 +3089,7 @@ describe("AgentLoop", () => {
 				expect(blocks[1].text).toBe("Here is the answer.");
 			});
 
-			it("does not retry indefinitely — gives up after MAX_LENGTH_RETRIES", async () => {
+			it("does not retry indefinitely — gives up after MAX_DEGENERATE_RETRIES", async () => {
 				const mockBackend = new MockLLMBackend();
 				// All calls hit length limit
 				for (let i = 0; i < 5; i++) {
@@ -3089,7 +3119,7 @@ describe("AgentLoop", () => {
 
 				await agentLoop.run();
 
-				// Should retry MAX_LENGTH_RETRIES times, then exit
+				// Should retry MAX_DEGENERATE_RETRIES times, then exit
 				// 1 initial + 2 retries = 3 total calls
 				expect(mockBackend.getCallCount()).toBe(3);
 			});

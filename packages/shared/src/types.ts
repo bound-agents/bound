@@ -748,7 +748,7 @@ export interface ContextDebugInfo {
 	finishReason?: string;
 	/**
 	 * The effective `max_tokens` budget sent to the provider for this turn
-	 * (`outputTokenOverride ?? config.maxOutputTokens`). `undefined` /
+	 * (`config.maxOutputTokens`). `undefined` /
 	 * absent means no budget was configured and the request OMITTED
 	 * `max_tokens`, so the provider applied its own default — which for
 	 * Bedrock Converse is 4096, low enough to truncate large
