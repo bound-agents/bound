@@ -184,6 +184,14 @@ interface UmansDriverOptions {
 	 * server-side default applies).
 	 */
 	reasoningDefault?: string;
+	/**
+	 * This model's `max_completion_tokens` (from `/v1/models/info`). umans
+	 * treats it as an EXCLUSIVE ceiling — a request with `max_tokens` at or
+	 * above it is rejected ("reduce to less than N"). The driver clamps the
+	 * sent budget to `cap - 1` so a caller passing the full advertised capacity
+	 * (the common case after resolution) doesn't 400.
+	 */
+	maxCompletionTokens?: number;
 	logger?: Logger;
 }
 
@@ -374,6 +382,7 @@ class UmansReadiness implements BackendReadiness {
 				capabilities,
 				reasoningLevels: m.reasoningLevels,
 				reasoningDefault: m.reasoningDefault,
+				maxCompletionTokens: m.maxCompletionTokens,
 				logger: this.logger,
 			});
 			return { descriptor, backend };
@@ -392,6 +401,7 @@ export class UmansDriver implements LLMBackend {
 	private readonly logger?: Logger;
 	private readonly reasoningLevels?: string[];
 	private readonly reasoningDefault?: string;
+	private readonly maxCompletionTokens?: number;
 	/** Present ONLY on the lineup/namespace instance. */
 	readonly readiness?: BackendReadiness;
 	private readonly isNamespace: boolean;
@@ -402,6 +412,7 @@ export class UmansDriver implements LLMBackend {
 		this.logger = opts.logger ?? opts.account.logger;
 		this.reasoningLevels = opts.reasoningLevels;
 		this.reasoningDefault = opts.reasoningDefault;
+		this.maxCompletionTokens = opts.maxCompletionTokens;
 		this.isNamespace = opts.modelId === undefined;
 		this.caps = opts.capabilities ?? {
 			// Conservative placeholders for the namespace instance — it is
@@ -509,6 +520,15 @@ export class UmansDriver implements LLMBackend {
 			// surfaces as a degenerate turn for the loop to recover from. Catching
 			// it here is cheaper and transparent. The semaphore slot acquired
 			// above is held across retries (one logical call, one slot).
+			// umans rejects max_tokens >= the model's max_completion_tokens
+			// ("reduce to less than N"), so clamp the requested budget to
+			// cap - 1. A caller routinely passes the full advertised capacity
+			// (resolution sets maxOutputTokens to the model's ceiling), which
+			// would otherwise 400 the request before any tokens generate.
+			const sendMaxTokens =
+				params.max_tokens && this.maxCompletionTokens
+					? Math.min(params.max_tokens, this.maxCompletionTokens - 1)
+					: params.max_tokens;
 			const runAttempt = (): AsyncIterable<StreamChunk> =>
 				mapProviderStream({
 					providerName: PROVIDER_NAME,
@@ -518,7 +538,7 @@ export class UmansDriver implements LLMBackend {
 							messages,
 							...(params.system && { system: params.system }),
 							...(tools && { tools }),
-							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+							...(sendMaxTokens && { maxOutputTokens: sendMaxTokens }),
 							// Suppress temperature when a reasoning_effort is in play —
 							// reasoning turns typically reject an explicit temperature.
 							...(params.temperature !== undefined &&
