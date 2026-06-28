@@ -179,6 +179,7 @@ export function wireBackendReadiness(
 						backend,
 						descriptor.capabilities,
 						descriptor.tier,
+						descriptor.maxOutputTokens,
 					);
 					modelRouter.clearNotReady(descriptor.id);
 				}
