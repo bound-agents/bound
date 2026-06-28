@@ -359,10 +359,24 @@ export class ModelRouter {
 		backend: LLMBackend,
 		caps: BackendCapabilities,
 		tier?: number,
+		maxOutputTokens?: number,
 	): void {
 		this.backends.set(id, backend);
 		this.effectiveCaps.set(id, caps);
 		if (typeof tier === "number") this.tiers.set(id, tier);
+		// Record the per-model output budget so getMaxOutputTokens resolves it.
+		// Dynamic backends (e.g. umans models fetched at warmup) have no static
+		// config row in backendConfigs; without this the loop sends no max_tokens
+		// and the provider applies a low default (~4096), truncating heavy
+		// reasoners mid-thinking. Merge onto any existing config to avoid
+		// clobbering fields a prior registration set.
+		if (typeof maxOutputTokens === "number") {
+			const existing = this.backendConfigs.get(id);
+			this.backendConfigs.set(id, {
+				...(existing ?? { id, provider: "", model: id }),
+				maxOutputTokens,
+			} as BackendConfig);
+		}
 		this.notReady.delete(id);
 	}
 
