@@ -137,6 +137,77 @@ describe("UmansDriver cache reporting (AC.8)", () => {
 	});
 });
 
+// An Anthropic stream that ends with output_tokens=0 and NO content block —
+// the shape a dropped relay stream produces (the model emitted nothing before
+// the stream closed cleanly).
+function emptyAnthropicSse(): Response {
+	const events = [
+		`event: message_start\ndata: ${JSON.stringify({
+			type: "message_start",
+			message: {
+				id: "msg_empty",
+				type: "message",
+				role: "assistant",
+				model: "umans-coder",
+				content: [],
+				stop_reason: null,
+				usage: { input_tokens: 10, output_tokens: 0 },
+			},
+		})}\n\n`,
+		`event: message_delta\ndata: ${JSON.stringify({
+			type: "message_delta",
+			delta: { stop_reason: "end_turn" },
+			usage: { output_tokens: 0 },
+		})}\n\n`,
+		`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+	].join("");
+	return new Response(events, {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+describe("UmansDriver empty-completion retry (dropped-stream recovery)", () => {
+	it("re-issues when a stream ends empty (output_tokens=0, no content) then surfaces the retry", async () => {
+		// First attempt: empty (dropped stream). Second: a normal completion.
+		// The driver must swallow the empty turn and re-issue, so the consumer
+		// only ever sees the recovered content — never a silent empty turn that
+		// the agent loop would have to treat as degenerate.
+		let call = 0;
+		const fetch = (async () => {
+			call++;
+			return call === 1 ? emptyAnthropicSse() : anthropicSse();
+		}) as typeof fetch;
+		const d = perModelDriver({ fetch });
+		const chunks = await collect(d.chat(baseParams));
+
+		expect(call).toBe(2);
+		const text = chunks.find((c) => c.type === "text");
+		expect(text).toBeDefined();
+		const done = chunks.find((c) => c.type === "done");
+		expect(done).toBeDefined();
+		if (done?.type === "done") {
+			expect(done.usage.output_tokens).toBeGreaterThan(0);
+		}
+	});
+
+	it("gives up after the retry bound and surfaces the empty done rather than looping forever", async () => {
+		// Every attempt is empty: the driver must stop at the bound (original +
+		// 2 retries = 3 calls) and pass the empty done through, not spin.
+		let call = 0;
+		const fetch = (async () => {
+			call++;
+			return emptyAnthropicSse();
+		}) as typeof fetch;
+		const d = perModelDriver({ fetch });
+		const chunks = await collect(d.chat(baseParams));
+
+		expect(call).toBe(3);
+		const done = chunks.find((c) => c.type === "done");
+		expect(done).toBeDefined();
+	});
+});
+
 describe("UmansDriver namespace guard (AC.19)", () => {
 	it("throws a clear LLMError on first iteration when invoked without a modelId", async () => {
 		const account = createUmansAccount({ apiKey: "sk-test" });

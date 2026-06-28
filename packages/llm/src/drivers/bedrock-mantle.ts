@@ -38,25 +38,28 @@ import { streamText } from "ai";
 import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-import { mapProviderStream, resolveProviderFetch } from "./shared";
+import {
+	EMPTY_COMPLETION_MAX_RETRIES,
+	mapProviderStream,
+	resolveProviderFetch,
+	withEmptyRetry,
+} from "./shared";
 import { createSigV4Fetch } from "./sigv4-fetch";
+
+// Re-exported for the driver test suite; canonical definition lives in ./shared.
+export { withEmptyRetry } from "./shared";
 
 /** SigV4 service name for the Bedrock mantle endpoint. */
 const MANTLE_SIGV4_SERVICE = "bedrock";
 
 const PROVIDER_NAME = "bedrock-mantle";
 
-/**
- * How many times to re-issue a turn that came back empty (output_tokens=0,
- * no content). Mantle GPT-5.x intermittently returns such completions
- * (~12% observed at the bare endpoint under store:false); store:true — the
- * one lever that might reduce it — is forbidden by the zero-retention
- * requirement, so the driver retries instead. At ~12% independent, 2 retries
- * drives the user-visible empty rate to ~0.2%. An empty turn is a no-op
- * (yields only a `done` chunk), so retrying before yielding anything
- * substantive duplicates nothing.
- */
-const EMPTY_COMPLETION_MAX_RETRIES = 2;
+// Empty-completion retry bound. Mantle GPT-5.x intermittently returns empty
+// turns (~12% observed at the bare endpoint under store:false); store:true —
+// the one lever that might reduce it — is forbidden by the zero-retention
+// requirement, so the driver retries instead. At ~12% independent, 2 retries
+// drives the user-visible empty rate to ~0.2%. The retry mechanism is shared
+// across drivers; see withEmptyRetry.
 
 /**
  * Derives the region-scoped mantle Responses base URL. The native OpenAI
@@ -129,65 +132,6 @@ export function buildMantleOpenAIOptions(
 		forceReasoning: true,
 		...(reasoningEffort && { reasoningEffort }),
 	};
-}
-
-/**
- * Wraps a streaming attempt with a bounded retry for *empty* completions —
- * a turn that finishes with `output_tokens === 0` and emitted no content.
- * Mantle GPT-5.x returns these intermittently (~12% at the bare endpoint
- * under the required `store: false`; see `EMPTY_COMPLETION_MAX_RETRIES`).
- *
- * The retry is safe because an empty turn yields ONLY a terminal `done`
- * chunk (no `text` / `thinking` / `tool_use_*`), so discarding that `done`
- * and re-issuing duplicates nothing the consumer has seen. The moment any
- * substantive chunk is yielded, `sawContent` latches and the turn can no
- * longer be retried — content already on the wire cannot be un-yielded, so
- * a streamed turn whose usage happens to round to 0 is passed through as-is.
- * Errors are not retried: `mapChunks` throws on error events, which
- * propagates out to the driver's existing `mapError` path.
- */
-export async function* withEmptyRetry(
-	runAttempt: () => AsyncIterable<StreamChunk>,
-	opts: {
-		maxRetries: number;
-		isAborted: () => boolean;
-		onRetry?: (attempt: number) => void;
-	},
-): AsyncIterable<StreamChunk> {
-	for (let attempt = 0; ; attempt++) {
-		const isLastAttempt = attempt >= opts.maxRetries;
-		let sawContent = false;
-		let retrying = false;
-
-		for await (const chunk of runAttempt()) {
-			if (chunk.type === "done") {
-				const isEmpty = !sawContent && chunk.usage.output_tokens === 0;
-				if (isEmpty && !isLastAttempt && !opts.isAborted()) {
-					// Swallow this empty `done` and re-issue. Nothing substantive
-					// was yielded, so the consumer never sees the discarded turn.
-					opts.onRetry?.(attempt + 1);
-					retrying = true;
-					break;
-				}
-				yield chunk;
-				return;
-			}
-			if (
-				chunk.type === "text" ||
-				chunk.type === "thinking" ||
-				chunk.type === "tool_use_start" ||
-				chunk.type === "tool_use_args" ||
-				chunk.type === "tool_use_end"
-			) {
-				sawContent = true;
-			}
-			yield chunk;
-		}
-
-		// Stream ended without a `done` and we are not retrying (e.g. aborted
-		// mid-flight): nothing more to emit.
-		if (!retrying) return;
-	}
 }
 
 export class BedrockMantleDriver implements LLMBackend {

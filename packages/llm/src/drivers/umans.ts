@@ -47,7 +47,12 @@ import {
 	fetchUmansModelMetadata,
 	fetchUmansUsage,
 } from "../umans-metadata";
-import { mapProviderStream, resolveProviderFetch } from "./shared";
+import {
+	EMPTY_COMPLETION_MAX_RETRIES,
+	mapProviderStream,
+	resolveProviderFetch,
+	withEmptyRetry,
+} from "./shared";
 
 const PROVIDER_NAME = "umans";
 /** Pro-safe default until the lineup fetch sets the real account limit. */
@@ -497,31 +502,49 @@ export class UmansDriver implements LLMBackend {
 			// Heartbeat must be inside the try so a consumer break during it is
 			// covered by the finally.
 			yield { type: "heartbeat" };
-			yield* mapProviderStream({
-				providerName: PROVIDER_NAME,
-				stream: () =>
-					streamText({
-						model: provider.messages(modelId),
-						messages,
-						...(params.system && { system: params.system }),
-						...(tools && { tools }),
-						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-						// Suppress temperature when a reasoning_effort is in play —
-						// reasoning turns typically reject an explicit temperature.
-						...(params.temperature !== undefined &&
-							!reasoningEffort && {
-								temperature: params.temperature,
-							}),
-						abortSignal: params.signal,
-						providerOptions: {
-							anthropic: {
-								// reasoning_effort is injected on the wire by the
-								// per-call provider's fetch wrapper, not here.
-								sendReasoning: true,
-							} as Record<string, unknown> as never,
-						},
-					}).fullStream,
-				map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
+			// One streaming attempt — built fresh per retry so a re-issue is a
+			// clean new request, not a replayed stream. withEmptyRetry re-issues
+			// when a turn ends with output_tokens=0 and no content: the relay
+			// path can drop a stream before emitting any chunk, which otherwise
+			// surfaces as a degenerate turn for the loop to recover from. Catching
+			// it here is cheaper and transparent. The semaphore slot acquired
+			// above is held across retries (one logical call, one slot).
+			const runAttempt = (): AsyncIterable<StreamChunk> =>
+				mapProviderStream({
+					providerName: PROVIDER_NAME,
+					stream: () =>
+						streamText({
+							model: provider.messages(modelId),
+							messages,
+							...(params.system && { system: params.system }),
+							...(tools && { tools }),
+							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+							// Suppress temperature when a reasoning_effort is in play —
+							// reasoning turns typically reject an explicit temperature.
+							...(params.temperature !== undefined &&
+								!reasoningEffort && {
+									temperature: params.temperature,
+								}),
+							abortSignal: params.signal,
+							providerOptions: {
+								anthropic: {
+									// reasoning_effort is injected on the wire by the
+									// per-call provider's fetch wrapper, not here.
+									sendReasoning: true,
+								} as Record<string, unknown> as never,
+							},
+						}).fullStream,
+					map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
+				});
+
+			yield* withEmptyRetry(runAttempt, {
+				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+				isAborted: () => params.signal?.aborted ?? false,
+				onRetry: (attempt) =>
+					this.logger?.warn?.(
+						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+						{ model: modelId },
+					),
 			});
 		} finally {
 			params.signal?.removeEventListener("abort", onAbort);
