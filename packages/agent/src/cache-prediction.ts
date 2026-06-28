@@ -10,8 +10,17 @@ export type CacheState = "warm" | "cold";
  * - "cold": no recent turn, beyond TTL, or no cache activity
  *
  * @param ttlMs Cache TTL in milliseconds (e.g., 300_000 for 5m, 3_600_000 for 1h)
+ * @param nowMs Current time in epoch ms. Defaults to `Date.now()`. Injectable so
+ *   tests pin the clock instead of racing the wall clock against a seeded
+ *   `created_at` — a turn timestamped relative to `Date.now()` and then compared
+ *   against a later `Date.now()` can cross the TTL boundary under a slow run.
  */
-export function predictCacheState(db: Database, threadId: string, ttlMs: number): CacheState {
+export function predictCacheState(
+	db: Database,
+	threadId: string,
+	ttlMs: number,
+	nowMs: number = Date.now(),
+): CacheState {
 	type TurnRow = {
 		created_at: string;
 		tokens_cache_read: number | null;
@@ -43,7 +52,7 @@ export function predictCacheState(db: Database, threadId: string, ttlMs: number)
 
 	if (!hadCacheActivity) return "cold";
 
-	const msSinceTurn = Date.now() - new Date(row.created_at).getTime();
+	const msSinceTurn = nowMs - new Date(row.created_at).getTime();
 	return msSinceTurn < ttlMs ? "warm" : "cold";
 }
 

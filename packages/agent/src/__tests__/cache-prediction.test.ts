@@ -7,6 +7,13 @@ describe("Cache Prediction", () => {
 	let db: Database.Database;
 	const threadId = "test-thread-001";
 
+	// Fixed clock anchor: both the seeded `created_at` and the `nowMs` passed to
+	// predictCacheState derive from this, so the warm/cold boundary is a pure
+	// function of the offsets under test — never a race between a seeded
+	// timestamp and a later real `Date.now()`.
+	const NOW = 1_800_000_000_000; // arbitrary fixed epoch ms
+	const agoIso = (ms: number) => new Date(NOW - ms).toISOString();
+
 	beforeEach(() => {
 		db = new Database(":memory:");
 		applySchema(db);
@@ -19,12 +26,12 @@ describe("Cache Prediction", () => {
 
 	describe("predictCacheState", () => {
 		it("returns 'cold' when no turns exist for the thread", () => {
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("cold");
 		});
 
 		it("returns 'warm' when last turn had cache_write and is within TTL", () => {
-			const recentTime = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+			const recentTime = agoIso(60_000); // 1 min ago
 			recordTurn(db, {
 				thread_id: threadId,
 				model_id: "opus",
@@ -35,12 +42,12 @@ describe("Cache Prediction", () => {
 				created_at: recentTime,
 			});
 
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("warm");
 		});
 
 		it("returns 'warm' when last turn had cache_read and is within TTL", () => {
-			const recentTime = new Date(Date.now() - 2 * 60_000).toISOString(); // 2 min ago
+			const recentTime = agoIso(2 * 60_000); // 2 min ago
 			recordTurn(db, {
 				thread_id: threadId,
 				model_id: "opus",
@@ -51,12 +58,12 @@ describe("Cache Prediction", () => {
 				created_at: recentTime,
 			});
 
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("warm");
 		});
 
 		it("returns 'cold' when last turn is beyond TTL", () => {
-			const oldTime = new Date(Date.now() - 10 * 60_000).toISOString(); // 10 min ago
+			const oldTime = agoIso(10 * 60_000); // 10 min ago
 			recordTurn(db, {
 				thread_id: threadId,
 				model_id: "opus",
@@ -67,12 +74,12 @@ describe("Cache Prediction", () => {
 				created_at: oldTime,
 			});
 
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("cold");
 		});
 
 		it("returns 'cold' when last turn had no cache activity", () => {
-			const recentTime = new Date(Date.now() - 60_000).toISOString();
+			const recentTime = agoIso(60_000);
 			recordTurn(db, {
 				thread_id: threadId,
 				model_id: "opus",
@@ -83,12 +90,12 @@ describe("Cache Prediction", () => {
 				created_at: recentTime,
 			});
 
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("cold");
 		});
 
 		it("returns 'cold' when cache columns are NULL (e.g. Ollama)", () => {
-			const recentTime = new Date(Date.now() - 30_000).toISOString();
+			const recentTime = agoIso(30_000);
 			recordTurn(db, {
 				thread_id: threadId,
 				model_id: "llama3",
@@ -99,13 +106,32 @@ describe("Cache Prediction", () => {
 				created_at: recentTime,
 			});
 
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("cold");
 		});
 
+		it("is deterministic at the exact TTL boundary (injected clock, no wall-clock race)", () => {
+			const ttl = 5 * 60_000;
+			recordTurn(db, {
+				thread_id: threadId,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 200000,
+				tokens_cache_write: 500,
+				created_at: agoIso(ttl), // exactly TTL ago
+			});
+
+			// At exactly ttl elapsed, msSinceTurn === ttl, and the predicate is
+			// strict `< ttlMs`, so the boundary is cold. One ms inside is warm.
+			// With the injected clock these are exact, not timing-dependent.
+			expect(predictCacheState(db, threadId, ttl, NOW)).toBe("cold");
+			expect(predictCacheState(db, threadId, ttl, NOW - 1)).toBe("warm");
+		});
+
 		it("uses the most recent turn when multiple exist", () => {
-			const oldTime = new Date(Date.now() - 10 * 60_000).toISOString();
-			const recentTime = new Date(Date.now() - 60_000).toISOString();
+			const oldTime = agoIso(10 * 60_000);
+			const recentTime = agoIso(60_000);
 
 			// Old turn with cache activity (beyond TTL)
 			recordTurn(db, {
@@ -128,7 +154,7 @@ describe("Cache Prediction", () => {
 				created_at: recentTime,
 			});
 
-			const state = predictCacheState(db, threadId, 5 * 60_000);
+			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
 			expect(state).toBe("warm");
 		});
 	});
