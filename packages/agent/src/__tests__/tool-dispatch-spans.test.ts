@@ -257,12 +257,18 @@ describe("Tool Dispatch Spans (OTEL)", () => {
 		// Create a mock tool registry with a builtin tool
 		const toolRegistry = new Map<string, RegisteredTool>();
 		toolRegistry.set("query", {
-			name: "query",
 			kind: "builtin",
-			schema: {
-				type: "object",
-				properties: {
-					query: { type: "string" },
+			toolDefinition: {
+				type: "function",
+				function: {
+					name: "query",
+					description: "Run a query",
+					parameters: {
+						type: "object",
+						properties: {
+							query: { type: "string" },
+						},
+					},
 				},
 			},
 			execute: async (_input: Record<string, unknown>) => {
