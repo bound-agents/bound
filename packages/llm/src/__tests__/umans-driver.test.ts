@@ -59,6 +59,7 @@ function perModelDriver(opts?: {
 	semaphore?: Semaphore;
 	reasoningLevels?: string[];
 	reasoningDefault?: string;
+	maxCompletionTokens?: number;
 }): UmansDriver {
 	const account = createUmansAccount({
 		apiKey: "sk-test",
@@ -73,6 +74,7 @@ function perModelDriver(opts?: {
 		modelId: "umans-coder",
 		reasoningLevels: opts?.reasoningLevels,
 		reasoningDefault: opts?.reasoningDefault,
+		maxCompletionTokens: opts?.maxCompletionTokens,
 		capabilities: {
 			streaming: true,
 			tool_use: true,
@@ -134,6 +136,40 @@ describe("UmansDriver cache reporting (AC.8)", () => {
 		expect(body).toBeDefined();
 		expect(body).toContain("cache_control");
 		expect(body).toContain("ephemeral");
+	});
+});
+
+describe("UmansDriver max_tokens clamping (exclusive max_completion_tokens ceiling)", () => {
+	async function sentMaxTokens(
+		maxCompletionTokens: number | undefined,
+		requestedMaxTokens: number,
+	): Promise<number | undefined> {
+		let body: Record<string, unknown> | undefined;
+		const fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+			body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : undefined;
+			return anthropicSse();
+		}) as typeof fetch;
+		const d = perModelDriver({ fetch, maxCompletionTokens });
+		await collect(d.chat({ ...baseParams, max_tokens: requestedMaxTokens }));
+		return body?.max_tokens as number | undefined;
+	}
+
+	it("clamps a requested max_tokens at the ceiling down to cap - 1", async () => {
+		// umans rejects max_tokens >= max_completion_tokens; resolution routinely
+		// passes the full advertised capacity, so the driver must send cap - 1.
+		expect(await sentMaxTokens(131072, 131072)).toBe(131071);
+	});
+
+	it("clamps a requested max_tokens above the ceiling down to cap - 1", async () => {
+		expect(await sentMaxTokens(131072, 200000)).toBe(131071);
+	});
+
+	it("leaves a requested max_tokens below the ceiling unchanged", async () => {
+		expect(await sentMaxTokens(131072, 8000)).toBe(8000);
+	});
+
+	it("sends the requested value unchanged when the model reports no ceiling", async () => {
+		expect(await sentMaxTokens(undefined, 50000)).toBe(50000);
 	});
 });
 
