@@ -110,6 +110,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 
 		yield* runProviderStream({
 			providerName: this.providerName,
+			signal: params.signal,
 			stream: () =>
 				streamText({
 					model: this.provider.chatModel(modelId),
