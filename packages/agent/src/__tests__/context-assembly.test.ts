@@ -6129,7 +6129,10 @@ This skill reviews pull requests.`;
 					largeResultId,
 					localThreadId,
 					"tool_result",
-					"x".repeat(5000),
+					// Unique tokens so the result is ~8000 tokens — over the default
+					// 8000-window compaction budget (8000 * 0.85 = 6800), which the
+					// now budget-gated compaction requires to fire.
+					Array.from({ length: 8000 }, (_, k) => `tok${k}`).join(" "),
 					toolId,
 					now,
 					now,
@@ -6304,8 +6307,10 @@ This skill reviews pull requests.`;
 
 			// Content with emoji at position 199 — .slice(0, 200) would split the
 			// surrogate pair of the emoji (U+1F60E = 😎), producing an orphaned
-			// high surrogate \uD83D that is invalid JSON/UTF-8.
-			const contentWithEmoji = `${"x".repeat(199)}😎${"y".repeat(5000)}`;
+			// high surrogate \uD83D that is invalid JSON/UTF-8. The trailing body
+			// is unique tokens (~8000) so the result is over the default-window
+			// compaction budget, which the now budget-gated compaction requires.
+			const contentWithEmoji = `${"x".repeat(199)}😎 ${Array.from({ length: 8000 }, (_, k) => `tok${k}`).join(" ")}`;
 			const resultId = randomUUID();
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -6812,77 +6817,11 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		it("scales default recentWindow with contextWindow", () => {
-			// On small-context backends, 20 uncompacted messages can eat the
-			// entire budget. Default must shrink proportionally when no explicit
-			// compactRecentWindow is passed.
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const insertMsg = (role: string, content: string, toolName: string | null, idx: number) => {
-				const t = new Date(Date.now() + idx * 1000).toISOString();
-				db.run(
-					"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, role, content, toolName, t, t, "localhost", 0],
-				);
-			};
-			// 8 tool_call/tool_result pairs (16 msgs) with payloads above 500-char threshold
-			for (let i = 0; i < 8; i++) {
-				insertMsg(
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: `t_${i}`, name: "bash", input: {} }]),
-					null,
-					i * 2,
-				);
-				insertMsg("tool_result", "x".repeat(2000), `t_${i}`, i * 2 + 1);
-			}
-
-			// contextWindow=8000 → default recentWindow = floor(8000/2500) = 3
-			const smallWindow = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				contextWindow: 8000,
-			});
-
-			// Explicit recentWindow=20 — all 16 messages stay uncompacted
-			const explicit20 = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 20,
-			});
-
-			const countUncompacted = (msgs: typeof smallWindow.messages) =>
-				msgs.filter(
-					(m) =>
-						m.role === "tool_result" &&
-						typeof m.content === "string" &&
-						!m.content.startsWith("[Tool result truncated"),
-				).length;
-
-			// Small window: at most 3 uncompacted tool_results.
-			// Explicit wide window: all 8 uncompacted.
-			expect(countUncompacted(smallWindow.messages)).toBeLessThanOrEqual(3);
-			expect(countUncompacted(explicit20.messages)).toBe(8);
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		}, 15000);
+		// NOTE: recentWindow/boundary scaling of compaction is covered as a
+		// focused unit test in history-compaction/__tests__/compaction.property.test.ts
+		// (H8). Under budget-gating, an end-to-end assertion of recentWindow's
+		// effect overlaps with Stage-7 truncation in a fragile token band, so the
+		// deterministic unit test owns that contract instead.
 
 		it("loads the entire thread when budget allows; Stage 7 truncates if needed", () => {
 			// Stage 1's MESSAGE_LOAD_LIMIT (formerly 100, originally 500) was
