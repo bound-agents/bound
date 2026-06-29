@@ -40,27 +40,49 @@ export function computeCompactionBoundary(
 }
 
 /**
- * Replace `tool_result` content longer than
- * `COLD_COMPACTION_THRESHOLD` with a retrieval-pointer stub for
- * messages strictly before `boundary`.
+ * Replace `tool_result` content longer than `COLD_COMPACTION_THRESHOLD`
+ * with a retrieval-pointer stub for messages strictly before `boundary`,
+ * but ONLY under budget pressure and only as much as needed.
  *
- * **Mutates messages in place** — the caller owns the array and
- * expects compaction to be cheap. Idempotent: a second call on
- * already-stubbed messages is a no-op (the stub format starts with
- * `[Tool result truncated for inline display`, which is preserved).
+ * Budget gate (the fix for over-eager compaction): if the cold-assembly
+ * token estimate is already at or below `budgetTokens`, nothing is
+ * stubbed — stubbing a read result the model still needs, while the
+ * context is far from full, forces it to re-read and prevents it from
+ * accumulating enough to converge. Compaction is a budget-pressure
+ * mechanism, not an always-on one (mirrors stripThinkingBeforeBoundary).
  *
- * Returns the number of messages that were actually compacted, for
- * logging / metrics purposes.
+ * When over budget, stubs greedily OLDEST-first (lowest index), stopping
+ * as soon as the estimate falls back to budget. The most recent results
+ * (closest to the boundary — the model's freshest findings) are the last
+ * to be sacrificed.
+ *
+ * **Mutates messages in place.** Idempotent: a re-run stubs nothing more
+ * once under budget, and an already-stubbed result (short, prefixed with
+ * `[Tool result truncated for inline display`) is below threshold so it is
+ * never re-stubbed.
+ *
+ * Returns the number of messages actually compacted.
  */
-export function compactToolResultsBeforeBoundary(messages: Message[], boundary: number): number {
+export function compactToolResultsBeforeBoundary(
+	messages: Message[],
+	boundary: number,
+	budgetTokens: number,
+): number {
+	let estimate = 0;
+	for (const m of messages) estimate += countContentTokens(m.content);
+	if (estimate <= budgetTokens) return 0;
+
 	let compacted = 0;
 	const effectiveBoundary = Math.min(boundary, messages.length);
 	for (let i = 0; i < effectiveBoundary; i++) {
+		if (estimate <= budgetTokens) break;
 		const msg = messages[i];
 		if (msg.role === "tool_result" && msg.content.length > COLD_COMPACTION_THRESHOLD) {
+			const before = countContentTokens(msg.content);
 			const originalLength = msg.content.length;
 			const preview = safeSlice(msg.content, 0, 200).trimEnd();
 			msg.content = `[Tool result truncated for inline display — ${originalLength} chars stored. Full content: query SELECT content FROM messages WHERE id='${msg.id}']\n${preview}`;
+			estimate -= before - countContentTokens(msg.content);
 			compacted++;
 		}
 	}
