@@ -26,8 +26,8 @@
  *      never modified.
  */
 
-import { describe, it } from "bun:test";
-import type { Message } from "@bound/shared";
+import { describe, expect, it } from "bun:test";
+import { type Message, countContentTokens } from "@bound/shared";
 import fc from "fast-check";
 import { COLD_COMPACTION_THRESHOLD } from "../../warm-compaction";
 import {
@@ -168,9 +168,11 @@ describe("compactToolResultsBeforeBoundary — property tests", () => {
 				(msgs, boundary) => {
 					const a = msgs.map((m) => ({ ...m }));
 					const b = msgs.map((m) => ({ ...m }));
-					compactToolResultsBeforeBoundary(a, boundary);
-					compactToolResultsBeforeBoundary(b, boundary);
-					compactToolResultsBeforeBoundary(b, boundary); // second pass
+					// budget=0 forces over-budget so stubbing fires; idempotence is
+					// about re-running producing no further change.
+					compactToolResultsBeforeBoundary(a, boundary, 0);
+					compactToolResultsBeforeBoundary(b, boundary, 0);
+					compactToolResultsBeforeBoundary(b, boundary, 0); // second pass
 					return JSON.stringify(a) === JSON.stringify(b);
 				},
 			),
@@ -185,8 +187,8 @@ describe("compactToolResultsBeforeBoundary — property tests", () => {
 					.string({ minLength: 0, maxLength: COLD_COMPACTION_THRESHOLD })
 					.filter((s) => !/[\n\r]/.test(s)),
 				(content) => {
-					const msgs: Message[] = [msg("tool_result", "tr-short", content)];
-					compactToolResultsBeforeBoundary(msgs, 1);
+					const msgs: Message[] = [msg("tool_result", "tr-short", content), msg("user", "u", "x")];
+					compactToolResultsBeforeBoundary(msgs, 1, 0);
 					// Short tool_result should be unchanged.
 					return msgs[0].content === content;
 				},
@@ -195,16 +197,43 @@ describe("compactToolResultsBeforeBoundary — property tests", () => {
 		);
 	});
 
-	it("H6b: compaction threshold — long tool_results get stubbed", () => {
+	it("H6b: compaction threshold — long tool_results get stubbed when over budget", () => {
 		const longContent = "x".repeat(COLD_COMPACTION_THRESHOLD + 100);
-		const msgs: Message[] = [msg("tool_result", "tr-long", longContent)];
-		compactToolResultsBeforeBoundary(msgs, 1);
+		const msgs: Message[] = [msg("tool_result", "tr-long", longContent), msg("user", "u", "later")];
+		// budget=0 forces over-budget so stubbing fires.
+		compactToolResultsBeforeBoundary(msgs, 1, 0);
 		if (msgs[0].content === longContent) {
 			throw new Error("long tool_result was not stubbed");
 		}
 		if (!msgs[0].content.includes("[Tool result truncated for inline display")) {
 			throw new Error("stub format regression");
 		}
+	});
+
+	it("H6c: budget gate — long tool_results are PRESERVED when under budget", () => {
+		// The bug this guards: compaction destroyed read results at ~23% context
+		// fill, forcing the model to re-read and never converge. With headroom
+		// (estimate <= budget), nothing is stubbed.
+		const longContent = "x".repeat(COLD_COMPACTION_THRESHOLD + 5000);
+		const msgs: Message[] = [msg("tool_result", "tr-long", longContent), msg("user", "u", "later")];
+		const stubbed = compactToolResultsBeforeBoundary(msgs, 1, 1_000_000);
+		expect(stubbed).toBe(0);
+		expect(msgs[0].content).toBe(longContent);
+	});
+
+	it("H6d: greedy — stubs only enough to fall under budget, newest-first preserved", () => {
+		// Three large results before the boundary; a budget that needs only the
+		// oldest one or two reclaimed. The most recent read (the model's freshest
+		// finding) must survive. Budget is in TOKENS (what the gate measures).
+		const body = "y ".repeat(10_000); // ~10k tokens each, well over threshold
+		const big = (n: string) => msg("tool_result", n, body);
+		const msgs: Message[] = [big("oldest"), big("middle"), big("newest"), msg("user", "u", "x")];
+		const totalTokens = msgs.reduce((s, m) => s + countContentTokens(m.content), 0);
+		// Budget that requires reclaiming roughly one result's worth of tokens.
+		const stubbed = compactToolResultsBeforeBoundary(msgs, 3, Math.floor(totalTokens * 0.7));
+		expect(stubbed).toBeGreaterThan(0);
+		// The newest (closest to boundary) should be the last to be stubbed.
+		expect(msgs[2].content).toBe(body);
 	});
 
 	it("H7: pre-boundary scope — messages at index >= boundary are never modified", () => {
@@ -215,7 +244,7 @@ describe("compactToolResultsBeforeBoundary — property tests", () => {
 				(msgs, boundary) => {
 					const before = msgs.map((m) => ({ ...m }));
 					const after = msgs.map((m) => ({ ...m }));
-					compactToolResultsBeforeBoundary(after, boundary);
+					compactToolResultsBeforeBoundary(after, boundary, 0);
 					// Messages at index >= boundary must be byte-equal.
 					for (let i = boundary; i < msgs.length; i++) {
 						if (after[i].content !== before[i].content) return false;
@@ -225,6 +254,29 @@ describe("compactToolResultsBeforeBoundary — property tests", () => {
 			),
 			{ numRuns: 100 },
 		);
+	});
+
+	it("H7b: boundary scales which results compact (recent-window behavior)", () => {
+		// Replaces the former end-to-end "scales recentWindow" integration test.
+		// The boundary (derived from recentWindow upstream) gates how many of the
+		// oldest results are eligible: a narrow window (high boundary) exposes
+		// more results to compaction than a wide window (low/zero boundary).
+		const big = (n: string) => msg("tool_result", n, "y".repeat(COLD_COMPACTION_THRESHOLD + 2000));
+		const build = (): Message[] => [big("r0"), big("r1"), big("r2"), big("r3"), big("r4")];
+
+		// Wide window → boundary 0: nothing eligible, all preserved (budget=0
+		// forces over-budget, isolating the boundary's effect).
+		const wide = build();
+		expect(compactToolResultsBeforeBoundary(wide, 0, 0)).toBe(0);
+
+		// Narrow window → boundary 3: results 0..2 eligible, 3..4 protected.
+		const narrow = build();
+		const stubbed = compactToolResultsBeforeBoundary(narrow, 3, 0);
+		expect(stubbed).toBeGreaterThan(0);
+		expect(stubbed).toBeLessThanOrEqual(3);
+		// The protected tail (indices >= boundary) is untouched.
+		expect(narrow[3].content).toBe("y".repeat(COLD_COMPACTION_THRESHOLD + 2000));
+		expect(narrow[4].content).toBe("y".repeat(COLD_COMPACTION_THRESHOLD + 2000));
 	});
 });
 
