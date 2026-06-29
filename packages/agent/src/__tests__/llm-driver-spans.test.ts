@@ -16,7 +16,7 @@ import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 // Mock LLM Backend that returns configurable responses
 class MockLLMBackend implements LLMBackend {
@@ -251,7 +251,7 @@ describe("LLM Driver Spans (OTEL)", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -321,7 +321,7 @@ describe("LLM Driver Spans (OTEL)", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -386,7 +386,7 @@ describe("LLM Driver Spans (OTEL)", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -453,7 +453,7 @@ describe("LLM Driver Spans (OTEL)", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -522,7 +522,7 @@ describe("LLM Driver Spans (OTEL)", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",

@@ -7,7 +7,7 @@
  */
 import type { AgentLoopResult, HandleMessageTracker } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
-import type { AgentLoop } from "@bound/agent";
+import type { MainAgentLoop } from "@bound/agent";
 import { findThreadModelHintById } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
@@ -18,7 +18,7 @@ export interface RunLocalLoopParams {
 	userId: string;
 	modelId: string;
 	activeLoopAbortControllers: Map<string, AbortController>;
-	agentLoopFactory: (config: AgentLoopConfig) => AgentLoop;
+	agentLoopFactory: (config: AgentLoopConfig) => MainAgentLoop;
 	/** Override for the 5-minute LLM timeout (milliseconds). Defaults to 300_000. */
 	timeoutMs?: number;
 	/** Cooperative cancellation: checked at yield points in the agent loop. */

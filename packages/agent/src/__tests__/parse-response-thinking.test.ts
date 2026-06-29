@@ -7,7 +7,7 @@ import type { StreamChunk } from "@bound/llm";
  * - Thinking content is NOT included in textContent
  * - Usage is still extracted correctly
  *
- * Since parseResponseChunks is a private method on AgentLoop, we test the
+ * Since parseResponseChunks is a private method on MainAgentLoop, we test the
  * exported parseStreamChunks helper function instead.
  */
 let parseStreamChunks: any;

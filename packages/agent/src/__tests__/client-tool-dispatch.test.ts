@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { insertThreadMessage } from "../agent-loop-utils";
 import { type ClientToolCallRequest, isClientToolCallRequest } from "../types";
 
@@ -201,7 +201,7 @@ function createMockRouter(backend: LLMBackend): ModelRouter {
 	return new ModelRouter(backends, "claude-opus");
 }
 
-describe("Client tool dispatch in AgentLoop", () => {
+describe("Client tool dispatch in MainAgentLoop", () => {
 	let tmpDir: string;
 	let db: Database;
 	let threadId: string;
@@ -274,7 +274,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 		mockBackend.setToolThenTextResponse("tool-1", "list_files", { path: "/tmp" }, "Got files");
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(
+		const loop = new MainAgentLoop(
 			ctx,
 			{ exec: () => Promise.resolve({}) } as any,
 			createMockRouter(mockBackend),
@@ -329,7 +329,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 		const ctx = makeCtx();
 		const sandbox = { exec: undefined } as any;
 
-		const loop = new AgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			clientTools,
@@ -367,7 +367,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 			},
 		} as any;
 
-		const loop = new AgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			clientTools,
@@ -399,7 +399,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 			},
 		} as any;
 
-		const loop = new AgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			tools: [serverTool],
@@ -448,7 +448,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 
 		const ctx = makeCtx();
 		const userId = randomUUID();
-		const loop = new AgentLoop(
+		const loop = new MainAgentLoop(
 			ctx,
 			{ exec: () => Promise.resolve({}) } as any,
 			createMockRouter(mockBackend),
@@ -548,7 +548,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 
 		const ctx = makeCtx();
 		const userId = randomUUID();
-		const loop = new AgentLoop(
+		const loop = new MainAgentLoop(
 			ctx,
 			{
 				exec: async () => {
@@ -654,7 +654,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 		const userId = randomUUID();
 
 		// First run: LLM calls client tool, loop exits
-		const loop1 = new AgentLoop(
+		const loop1 = new MainAgentLoop(
 			ctx,
 			{ exec: () => Promise.resolve({}) } as any,
 			createMockRouter(mockBackend),
@@ -694,7 +694,7 @@ describe("Client tool dispatch in AgentLoop", () => {
 		enqueueToolResult(ctx.db, threadId, "call-1");
 
 		// Second run: LLM sees complete tool_call/tool_result pair and produces final response
-		const loop2 = new AgentLoop(
+		const loop2 = new MainAgentLoop(
 			ctx,
 			{ exec: () => Promise.resolve({}) } as any,
 			createMockRouter(mockBackend),

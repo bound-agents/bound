@@ -16,7 +16,7 @@ import { ModelRouter } from "@bound/llm";
 import type { LLMMessage } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { type CachedTurnState, computeToolFingerprint } from "../cached-turn-state";
 import { TRUNCATION_TARGET_RATIO } from "../context-assembly";
 
@@ -792,16 +792,21 @@ describe("warm-cold-path", () => {
 				};
 			});
 
-			// Shared store so warm-path state survives across AgentLoop instances
+			// Shared store so warm-path state survives across MainAgentLoop instances
 			const sharedStore = new InMemoryTurnStateStore();
 
 			// First invocation (cold path expected)
 			const pathLogs1: CachePathLog[] = [];
 			const ctx1 = makeCtx(pathLogs1, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 
 			const result1 = await agentLoop1.run();
 			expect(result1).toHaveProperty("messagesCreated");
@@ -829,15 +834,20 @@ describe("warm-cold-path", () => {
 				],
 			);
 
-			// Second invocation: FRESH AgentLoop instance (simulates client-tool defer + wakeup,
+			// Second invocation: FRESH MainAgentLoop instance (simulates client-tool defer + wakeup,
 			// or any other path that tears down the agent loop between turns).
 			// Warm path expected IF cached turn state survives instance teardown.
 			const pathLogs2: CachePathLog[] = [];
 			const ctx2 = makeCtx(pathLogs2, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 
 			const result2 = await agentLoop2.run();
 			expect(result2).toHaveProperty("messagesCreated");
@@ -847,7 +857,7 @@ describe("warm-cold-path", () => {
 
 			// THE ACTUAL ASSERTION: second invocation's first LLM call should take the warm path.
 			// If this fails with reason="no-stored-state", it confirms cached turn state
-			// is instance-scoped and cannot survive AgentLoop teardown.
+			// is instance-scoped and cannot survive MainAgentLoop teardown.
 			expect(pathLogs2.length).toBeGreaterThanOrEqual(1);
 			expect(pathLogs2[0]).toEqual({ path: "warm", reason: "warm-eligible" });
 		});
@@ -893,18 +903,28 @@ describe("warm-cold-path", () => {
 
 			// First run
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			await agentLoop1.run();
 
 			// Second run (should trigger reassembly if DB cache is invalidated)
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			const result2 = await agentLoop2.run();
 
 			expect(result2).toHaveProperty("messagesCreated");
@@ -975,20 +995,30 @@ describe("warm-cold-path", () => {
 
 			// First invocation with one tool
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-				tools: [tool1],
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+					tools: [tool1],
+				},
+			);
 			await agentLoop1.run();
 
 			// Second invocation with added tool (fingerprint changed)
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-				tools: [tool1, tool2],
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+					tools: [tool1, tool2],
+				},
+			);
 			const result2 = await agentLoop2.run();
 
 			expect(result2).toHaveProperty("messagesCreated");
@@ -1037,19 +1067,29 @@ describe("warm-cold-path", () => {
 
 			// First invocation: generates volatile context
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			const result1 = await agentLoop1.run();
 			expect(result1).toHaveProperty("messagesCreated");
 
 			// Second invocation: generates fresh volatile context (even if warm path)
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			const result2 = await agentLoop2.run();
 			expect(result2).toHaveProperty("messagesCreated");
 
@@ -1098,7 +1138,7 @@ describe("warm-cold-path", () => {
 
 			// First invocation: cold path, caches state
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const loop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop1 = new MainAgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1125,7 +1165,7 @@ describe("warm-cold-path", () => {
 
 			// Second invocation: should use warm path from cached state
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const loop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop2 = new MainAgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1228,7 +1268,7 @@ describe("warm-cold-path", () => {
 			// First invocation: cold path, populates cached turn state.
 			const pathLogs1: CachePathLog[] = [];
 			const ctx1 = makeCtx(pathLogs1, sharedStore);
-			const loop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop1 = new MainAgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1283,7 +1323,7 @@ describe("warm-cold-path", () => {
 			// reassembly rather than shipping an orphan to the backend.
 			const pathLogs2: CachePathLog[] = [];
 			const ctx2 = makeCtx(pathLogs2, sharedStore);
-			const loop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop2 = new MainAgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1516,7 +1556,7 @@ describe("warm-cold-path", () => {
 
 			const pathLogs: CachePathLog[] = [];
 			const ctx = makeCtx(pathLogs, sharedStore);
-			const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
