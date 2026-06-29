@@ -74,6 +74,11 @@ class MockLLMBackend implements LLMBackend {
 	private capturedMessages: ChatParams["messages"][] = [];
 	private callCount = 0;
 
+	// Per-instance context window so a test can force Stage 7 truncation with a
+	// modest amount of seeded history. Defaults to the large production-shape
+	// window so existing tests are unaffected.
+	constructor(private readonly maxContext = 200000) {}
+
 	pushResponse(gen: () => AsyncGenerator<StreamChunk>) {
 		this.responses.push(gen);
 		this.postHooks.push(null);
@@ -128,7 +133,7 @@ class MockLLMBackend implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: true,
 			vision: false,
-			max_context: 200000,
+			max_context: this.maxContext,
 		};
 	}
 }
@@ -733,7 +738,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		expect(allDevText).not.toContain("pinned-marker-content-WARM-PATH-DEV-TAIL");
 	});
 
-	it("preserves the Stage 1.7 compaction-summary developer when refreshing the volatile-tail (load-bearing)", async () => {
+	it("preserves a HEAD developer (telescope digest/marker) when refreshing the volatile-tail (load-bearing)", async () => {
 		// Live regression observed via the agent-harness on
 		// `production-shape` fixture (2026-05-26): between two consecutive
 		// inner-loop iterations of the same outer-turn, cumulative cache
@@ -742,26 +747,56 @@ describe("inner-loop temporal-frame coherence", () => {
 		//
 		// Root cause: `refreshVolatileTailForNextTurn` calls
 		// `llmMessages.findIndex((m) => m.role === "developer")`, which
-		// returns the FIRST developer. When `assembleContext` Stage 1.7
-		// prepended a compaction-summary developer at the head of
-		// llmMessages (because `thread.summary` is set), that's the one
-		// that gets overwritten — silently destroying the byte-stable
-		// summary content and leaving the actual TAIL volatile-tail
-		// stale.
+		// returns the FIRST developer. When a HEAD developer exists (the
+		// Stage 7 telescope prepends its ancient-marker / middle-digest at
+		// the head when truncation fires; historically Stage 1.7's
+		// compaction summary did the same), that's the one that gets
+		// overwritten — silently destroying the byte-stable head content and
+		// leaving the actual TAIL volatile-tail stale.
 		//
-		// The contract: `refreshVolatileTailForNextTurn` MUST replace
-		// the LAST developer (the volatile-tail), not the first. The
-		// HEAD compaction summary stays untouched so its byte-stable
-		// content keeps Bedrock's cache prefix matching turn-over-turn.
-		const summaryMarker = `STAGE-1.7-MARKER-${randomUUID()}`;
+		// The contract: `refreshVolatileTailForNextTurn` MUST replace the
+		// LAST developer (the volatile-tail), not the first. The HEAD
+		// telescope developer stays untouched so its byte-stable content
+		// keeps the provider's cache prefix matching turn-over-turn.
+		//
+		// A thread summary is set so the telescope's ancient marker carries
+		// it; the marker is the byte-stable HEAD developer this test pins.
+		const summaryMarker = `TELESCOPE-HEAD-MARKER-${randomUUID()}`;
 		seedThreadWithUserMessage(globalThreadId, "Run two bash commands", {
-			summary: `harness compaction summary body containing ${summaryMarker}`,
+			summary: `telescope ancient-marker summary body containing ${summaryMarker}`,
 		});
+
+		// Seed enough prior history that Stage 7 truncation fires (telescope
+		// engages) and emits a HEAD ancient/middle developer marker carrying
+		// the summary. Without truncation there is no head developer to guard.
+		{
+			const filler = "word ".repeat(400);
+			const base = new Date("2026-01-02T00:00:00Z").getTime();
+			for (let i = 0; i < 30; i++) {
+				globalDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						globalThreadId,
+						i % 2 === 0 ? "user" : "assistant",
+						filler,
+						null,
+						null,
+						new Date(base + i * 1000).toISOString(),
+						new Date(base + i * 1000).toISOString(),
+						"local",
+						0,
+					],
+				);
+			}
+		}
 
 		const advisoryTitle = `volatile-tail-mutation-${randomUUID()}`;
 		const advisoryId = randomUUID();
 
-		const mockBackend = new MockLLMBackend();
+		// Small context window so the ~12k tokens of seeded history above force
+		// Stage 7 truncation, making the telescope emit its HEAD ancient marker.
+		const mockBackend = new MockLLMBackend(6000);
 		// Inner loop turn 1: tool_use bash. Insert applied advisory
 		// after chunks consumed; refresh fires at the top of turn 2.
 		mockBackend.pushResponseWithPostHook(
@@ -842,8 +877,8 @@ describe("inner-loop temporal-frame coherence", () => {
 		const call1Devs = findAllDeveloperContents(calls[0]);
 		const call2Devs = findAllDeveloperContents(calls[1]);
 
-		// Sanity: call 1 carries TWO developers — the Stage 1.7 head
-		// summary AND the tail volatile-tail.
+		// Sanity: call 1 carries TWO developers — the telescope HEAD ancient
+		// marker (carrying the summary) AND the tail volatile-tail.
 		expect(call1Devs.length).toBeGreaterThanOrEqual(2);
 		expect(call1Devs.some((c) => c.includes(summaryMarker))).toBe(true);
 
@@ -853,7 +888,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 		// Load-bearing: the head summary marker must still be in call 2's
 		// developer messages. Without the fix, the refresh helper
-		// overwrites the head summary with the volatile-tail content,
+		// overwrites the head marker with the volatile-tail content,
 		// dropping the marker.
 		expect(call2Devs.some((c) => c.includes(summaryMarker))).toBe(true);
 
@@ -861,7 +896,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		// developer messages (so we know the refresh ran).
 		expect(call2Devs.some((c) => c.includes(advisoryTitle))).toBe(true);
 
-		// Stronger property: the head summary developer's content is
+		// Stronger property: the head telescope-marker developer's content is
 		// byte-equal between call 1 and call 2 — refresh must touch only
 		// the tail.
 		const call1Head = call1Devs.find((c) => c.includes(summaryMarker));

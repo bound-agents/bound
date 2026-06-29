@@ -1839,6 +1839,85 @@ describe("Context Assembly Pipeline", () => {
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
+		it("engages the telescope in the soft-target band (above 85% target, below effective budget)", () => {
+			// Consolidation: the telescope is the single history compressor and must
+			// engage at the soft truncation target (~85% of the window), not only at
+			// the near-100% effectiveBudget. This is the band where the removed
+			// Stage 1.7 compactor used to act — but Stage 1.7 mutated cached prefix
+			// bytes in place (cache bust); the telescope folds cache-stably. The gate
+			// firing here is what lets the telescope own that band.
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Band User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Band Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// 10000-token window: safetyMargin = max(512, 200) = 512 →
+			// effectiveBudget 9488; soft target = floor(10000*0.85)=8500. The total
+			// (history + system + tools + volatile) here lands in the (8500, 9488]
+			// band — above the soft target but below the old effectiveBudget gate.
+			// The old gate (totalTokens > effectiveBudget) would NOT fire; the new
+			// gate (> truncationTarget) must. Verified by the gate-comparison probe:
+			// 22 × ~300-token messages truncate under the soft-target gate but not
+			// under the old effectiveBudget gate.
+			const filler = "word ".repeat(300);
+			const msgCreated = (i: number) => new Date(nowBase.getTime() + i * 1000).toISOString();
+			for (let i = 0; i < 22; i++) {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						i % 2 === 0 ? "user" : "assistant",
+						filler,
+						null,
+						null,
+						msgCreated(i),
+						msgCreated(i),
+						"local",
+					],
+				);
+			}
+
+			const { debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 10000,
+			});
+
+			// The telescope engaged in the soft-target band — the old
+			// effectiveBudget gate would have skipped it, leaving the prefix-busting
+			// (now removed) Stage 1.7 as the only compressor.
+			expect(debug.truncated).toBeGreaterThan(0);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
 		it("truncation target never exceeds effective budget", () => {
 			// The post-truncation total must land ≤ effectiveBudget even when
 			// TRUNCATION_TARGET_RATIO is very close to (1 - safety ratio). With the current
@@ -6079,677 +6158,11 @@ This skill reviews pull requests.`;
 	});
 
 	describe("Tool result compaction (Stage 1.7)", () => {
-		it("should compact old tool results when compactToolResults is true", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, summary, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					localThreadId,
-					localUserId,
-					"discord",
-					"localhost",
-					now,
-					now,
-					now,
-					"We discussed testing strategies.",
-					0,
-				],
-			);
-
-			// Insert old turn: user → tool_call → tool_result (large) → assistant
-			const toolId = "tool_old_1";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "check status", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			const largeResultId = randomUUID();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					largeResultId,
-					localThreadId,
-					"tool_result",
-					// Unique tokens so the result is ~8000 tokens — over the default
-					// 8000-window compaction budget (8000 * 0.85 = 6800), which the
-					// now budget-gated compaction requires to fire.
-					Array.from({ length: 8000 }, (_, k) => `tok${k}`).join(" "),
-					toolId,
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "Status looks good", now, now, "localhost", 0],
-			);
-
-			// Insert recent turn: user → assistant
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"assistant",
-					"You're welcome!",
-					recentTime,
-					recentTime,
-					"localhost",
-					0,
-				],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			// Find the tool_result message in the assembled context
-			const toolResult = result.messages.find(
-				(m) =>
-					m.role === "tool_result" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Tool result truncated"),
-			);
-			expect(toolResult).toBeDefined();
-			expect((toolResult?.content as string).length).toBeLessThan(1000);
-			expect(toolResult?.content).toContain(largeResultId);
-
-			// Thread summary should be injected in developer message
-			const summaryMsg = result.messages.find(
-				(m) =>
-					m.role === "developer" &&
-					typeof m.content === "string" &&
-					m.content.includes("discussed testing"),
-			);
-			expect(summaryMsg).toBeDefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("should not compact when compactToolResults is false", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const toolId = "tool_warm_1";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "check status", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_result",
-					"x".repeat(5000),
-					toolId,
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "done", now, now, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: false,
-			});
-
-			// Tool result should be intact (not compacted)
-			const toolResult = result.messages.find(
-				(m) =>
-					m.role === "tool_result" &&
-					typeof m.content === "string" &&
-					m.content === "x".repeat(5000),
-			);
-			expect(toolResult).toBeDefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		}, 10000);
-
-		it("should not produce orphaned surrogates when truncating emoji at boundary", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const toolId = "tool_emoji_1";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "search repos", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-
-			// Content with emoji at position 199 — .slice(0, 200) would split the
-			// surrogate pair of the emoji (U+1F60E = 😎), producing an orphaned
-			// high surrogate \uD83D that is invalid JSON/UTF-8. The trailing body
-			// is unique tokens (~8000) so the result is over the default-window
-			// compaction budget, which the now budget-gated compaction requires.
-			const contentWithEmoji = `${"x".repeat(199)}😎 ${Array.from({ length: 8000 }, (_, k) => `tok${k}`).join(" ")}`;
-			const resultId = randomUUID();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					resultId,
-					localThreadId,
-					"tool_result",
-					contentWithEmoji,
-					toolId,
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "done", now, now, "localhost", 0],
-			);
-
-			// Recent message
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "ok", recentTime, recentTime, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			const toolResult = result.messages.find(
-				(m) =>
-					m.role === "tool_result" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Tool result truncated"),
-			);
-			expect(toolResult).toBeDefined();
-
-			// The compacted preview must not contain orphaned surrogates.
-			// Check by verifying JSON serialization succeeds (surrogates break JSON.stringify).
-			const content = toolResult?.content as string;
-			expect(() => {
-				const encoded = new TextEncoder().encode(JSON.stringify(content));
-				new TextDecoder("utf-8", { fatal: true }).decode(encoded);
-			}).not.toThrow();
-
-			// Also verify no lone surrogates directly
-			for (let i = 0; i < content.length; i++) {
-				const code = content.charCodeAt(i);
-				if (code >= 0xd800 && code <= 0xdfff) {
-					// If high surrogate, next must be low surrogate
-					if (code >= 0xd800 && code <= 0xdbff) {
-						const next = content.charCodeAt(i + 1);
-						expect(next).toBeGreaterThanOrEqual(0xdc00);
-						expect(next).toBeLessThanOrEqual(0xdfff);
-					}
-				}
-			}
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-		it("should NOT compact old assistant messages (prevents LLM mimicry)", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			// Insert old turn: user → assistant (large response)
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"user",
-					"explain the architecture in detail",
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			const oldAssistantId = randomUUID();
-			const longContent = "The architecture consists of several layers. ".repeat(100); // ~4500 chars
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[oldAssistantId, localThreadId, "assistant", longContent, now, now, "localhost", 0],
-			);
-
-			// Insert recent turn (within window)
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"assistant",
-					"You're welcome!",
-					recentTime,
-					recentTime,
-					"localhost",
-					0,
-				],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			// Old assistant message should NOT be compacted (LLM mimics the format)
-			const compactedAssistant = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Assistant response,"),
-			);
-			expect(compactedAssistant).toBeUndefined();
-
-			// Old assistant message should be preserved intact
-			const oldAssistant = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("The architecture consists of several layers"),
-			);
-			expect(oldAssistant).toBeDefined();
-
-			// User message should NOT be compacted (kept intact)
-			const userMsg = result.messages.find(
-				(m) =>
-					m.role === "user" &&
-					typeof m.content === "string" &&
-					m.content.includes("explain the architecture"),
-			);
-			expect(userMsg).toBeDefined();
-			// Annotation prefix prepended (N7 byte-stability invariant).
-			expect(userMsg?.content).toContain("explain the architecture in detail");
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("should not compact short assistant messages", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			// Insert old turn with short assistant response
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "status?", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "All good!", now, now, "localhost", 0],
-			);
-
-			// Recent turn
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "ok", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "bye", recentTime, recentTime, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			// Short assistant should NOT be compacted
-			const shortAssistant = result.messages.find(
-				(m) => m.role === "assistant" && typeof m.content === "string" && m.content === "All good!",
-			);
-			expect(shortAssistant).toBeDefined();
-
-			// No compacted assistant messages
-			const compacted = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Assistant response,"),
-			);
-			expect(compacted).toBeUndefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("preserves thinking blocks on old tool_call messages when under budget", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			// Old turn with thinking-block-carrying tool_call
-			const oldToolId = "tool_old_thinking";
-			const oldTime = new Date(Date.now() - 10000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "do a thing", oldTime, oldTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([
-						{ type: "thinking", thinking: "Let me carefully reason about this. ".repeat(100) },
-						{ type: "tool_use", id: oldToolId, name: "bash", input: { cmd: "ls" } },
-					]),
-					oldTime,
-					oldTime,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_result",
-					"ok",
-					oldToolId,
-					oldTime,
-					oldTime,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "done", oldTime, oldTime, "localhost", 0],
-			);
-
-			// Recent window messages (3 of them, so the boundary excludes the old turn)
-			for (let i = 0; i < 3; i++) {
-				const t = new Date(Date.now() + i * 1000).toISOString();
-				db.run(
-					"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, "user", `recent ${i}`, t, t, "localhost", 0],
-				);
-			}
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 3,
-			});
-
-			const compactedToolCall = result.messages.find(
-				(m) =>
-					m.role === "tool_call" && typeof m.content === "string" && m.content.includes(oldToolId),
-			);
-			expect(compactedToolCall).toBeDefined();
-			// The tool_use block must survive
-			expect(compactedToolCall?.content as string).toContain(oldToolId);
-			expect(compactedToolCall?.content as string).toContain("tool_use");
-			// Thinking is PRESERVED when context is under budget (85% threshold)
-			expect(compactedToolCall?.content as string).toContain('"type":"thinking"');
-			expect(compactedToolCall?.content as string).toContain("carefully reason");
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("does NOT strip thinking blocks from tool_calls inside the recent window", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const toolId = "tool_recent_thinking";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "ping", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([
-						{ type: "thinking", thinking: "Recent reasoning the model still needs" },
-						{ type: "tool_use", id: toolId, name: "bash", input: {} },
-					]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_result", "ok", toolId, now, now, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 20,
-			});
-
-			const toolCall = result.messages.find(
-				(m) =>
-					m.role === "tool_call" && typeof m.content === "string" && m.content.includes(toolId),
-			);
-			expect(toolCall).toBeDefined();
-			// Inside the recent window, thinking block must survive
-			expect(toolCall?.content as string).toContain("thinking");
-			expect(toolCall?.content as string).toContain("Recent reasoning");
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("handles non-JSON tool_call content without crashing", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date(Date.now() - 60000).toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const legacyContent = "legacy string format, not JSON";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "pre", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_call", legacyContent, now, now, "localhost", 0],
-			);
-			for (let i = 0; i < 5; i++) {
-				const t = new Date(Date.now() + i * 1000).toISOString();
-				db.run(
-					"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, "user", `recent ${i}`, t, t, "localhost", 0],
-				);
-			}
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 3,
-			});
-
-			const legacyMsg = result.messages.find(
-				(m) =>
-					m.role === "tool_call" && typeof m.content === "string" && m.content === legacyContent,
-			);
-			expect(legacyMsg).toBeDefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
+		// Stage 1.7 (in-place tool_result stubbing + thinking-strip) was removed;
+		// the Stage 7 telescope is the sole history compressor and folds the same
+		// region cache-stably. Its behavior is covered by the telescope property
+		// tests (progressive-fidelity/__tests__) and the soft-target-band gate test
+		// above. The remaining tests here exercise the shared truncation gate.
 
 		it("includes toolTokenEstimate in the truncation gate", () => {
 			// Budget gate must account for tool schemas, not just message content.

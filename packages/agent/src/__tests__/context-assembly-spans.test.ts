@@ -122,7 +122,6 @@ describe("Context Assembly OTEL Spans", () => {
 		const stageNames = [
 			"context.stage-1-message-retrieval",
 			"context.stage-1.5-retroactive-result-truncation",
-			"context.stage-1.7-history-compaction",
 			"context.stage-2-purge-substitution",
 			"context.stage-2.5-role-filtering",
 			"context.stage-3-tool-pair-sanitization",
