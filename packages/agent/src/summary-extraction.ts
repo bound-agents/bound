@@ -216,11 +216,11 @@ export async function extractSummaryAndMemories(
 			};
 		}
 
-		// Boundary-aware throttle. Skip regeneration when the compaction
-		// boundary (the index of the latest user message — see
-		// `history-compaction/compact.ts`) has NOT advanced past the
-		// current `summary_through`. In that regime nothing new has been
-		// compacted into stubs since the last summary, so the summary
+		// Boundary-aware throttle. Skip regeneration when the latest-user-message
+		// boundary (the same semantic anchor the Stage 7 telescope's recent tier
+		// and the cache-point placer use) has NOT advanced past the current
+		// `summary_through`. In that regime nothing new has been folded out of the
+		// recent window since the last summary, so the summary
 		// doesn't need to absorb anything new — and regenerating would
 		// only produce slightly different LLM output, mutating the bytes
 		// at the head of the wire request and breaking Bedrock's prefix

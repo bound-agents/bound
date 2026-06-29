@@ -6230,11 +6230,12 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		// NOTE: recentWindow/boundary scaling of compaction is covered as a
-		// focused unit test in history-compaction/__tests__/compaction.property.test.ts
-		// (H8). Under budget-gating, an end-to-end assertion of recentWindow's
-		// effect overlaps with Stage-7 truncation in a fragile token band, so the
-		// deterministic unit test owns that contract instead.
+		// NOTE: history compaction is now owned entirely by the Stage 7 telescope
+		// (Stage 1.7 and its history-compaction module were removed). Recent-tier
+		// sizing — the equivalent of the old recentWindow scaling — is covered by
+		// the telescope's P5 monotonicity property
+		// (progressive-fidelity/__tests__/tier-allocation.property.test.ts). The
+		// soft-target-band gate test above pins that the telescope engages at 85%.
 
 		it("loads the entire thread when budget allows; Stage 7 truncates if needed", () => {
 			// Stage 1's MESSAGE_LOAD_LIMIT (formerly 100, originally 500) was
