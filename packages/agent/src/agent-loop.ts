@@ -523,7 +523,6 @@ export class MainAgentLoop extends BoundAgentLoop {
 					relayInfo,
 					targetCapabilities: resolvedCaps ?? undefined,
 					toolTokenEstimate,
-					compactToolResults: true,
 					effectiveTruncationRatio: adaptiveTruncationRatio,
 					noHistory: this.config.noHistory,
 					systemPromptAddition: this.config.systemPromptAddition,

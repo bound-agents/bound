@@ -25,11 +25,6 @@ import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bo
 import { trace } from "@opentelemetry/api";
 import { annotateMessages } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
-import {
-	compactToolResultsBeforeBoundary,
-	computeCompactionBoundary,
-	stripThinkingBeforeBoundary,
-} from "./history-compaction";
 import { loadNotificationInputs, renderNotifications } from "./notifications";
 import {
 	ANCIENT_RATIO,
@@ -82,7 +77,6 @@ import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 import { collectThreadPinnedSkills } from "./tools/skill-utils";
 import { buildVaryingPrefix } from "./varying-prefix";
-import { computeRecentWindow } from "./warm-compaction";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -158,12 +152,6 @@ export interface ContextParams {
 	targetCapabilities?: BackendCapabilities;
 	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
 	toolTokenEstimate?: number;
-	/** When true, replaces old tool_result content (outside the recent window) with DB
-	 *  retrieval pointers and injects the thread summary. Reduces context size while
-	 *  keeping the compacted prefix deterministic and cache-friendly. */
-	compactToolResults?: boolean;
-	/** Number of recent messages to keep intact during compaction. Defaults to 20. */
-	compactRecentWindow?: number;
 	/** Optional system prompt addition from client connection. Appended to system suffix. */
 	systemPromptAddition?: string;
 	/**
@@ -181,8 +169,8 @@ export interface ContextParams {
 	 * supplies a per-thread adaptive value derived from the historical
 	 * tiktoken-vs-actual inflation ratio so threads with thinking-heavy
 	 * content (cl100k_base under-counts by 2x+) don't blow the configured
-	 * context window. Honored at both Stage 1.7 thinking-strip threshold
-	 * and Stage 7 truncation target.
+	 * context window. Honored at the Stage 7 telescope truncation target
+	 * (the gate and the tier soft-budget both scale by it).
 	 */
 	effectiveTruncationRatio?: number;
 	/**
@@ -1179,75 +1167,11 @@ Original output was too large for the context window. If you need the full conte
 	}
 	stage1_5Span.end();
 
-	// Stage 1.7: HISTORY_COMPACTION
-	// Replace old message content (outside the recent window) with DB retrieval
-	// pointers. The agent can re-fetch full content via "query" if needed. Compaction
-	// is deterministic (same message → same replacement), so the compacted prefix is
-	// cache-friendly: assembleContext runs once per loop invocation, and the compacted
-	// messages produce identical content across turns. This reduces context size
-	// dramatically (e.g., 190k → 40k) while preserving conversational structure.
-	// User messages and tool_call messages are kept intact; assistant and tool_result
-	// messages are replaced with compact stubs.
-	// Also injects the thread summary as a context anchor for compacted history.
-	// The recent window preserves the last N messages intact (no tool_result
-	// compaction, no thinking-block stripping). It's the agent's working memory
-	// for the current turn.
-	//
-	// A fixed default of 20 is too large for small-context backends: on a 49K
-	// window with dense tool-using threads, 20 uncompacted messages can easily
-	// consume 15-20K tokens (tool_result payloads are often multi-KB each).
-	// That leaves too little budget for system prompt + tools + compacted
-	// history + enrichment.
-	//
-	// Scale with contextWindow: allot roughly one message per 2.5K tokens of
-	// window, clamped to [4, 20]. So 49K → 19, 32K → 12, 16K → 6, 200K → 20
-	// (still capped at the historical default — larger windows don't need
-	// more recent working memory, they just tolerate it).
-	const stage1_7Span = getTracer().startSpan("context.stage-1.7-history-compaction");
-	if (params.compactToolResults && messages.length > 0) {
-		const recentWindow = params.compactRecentWindow ?? computeRecentWindow(contextWindow);
-
-		// Anchor the compaction boundary to the index of the LAST user
-		// message — see `history-compaction/index.ts` for the cache-
-		// stability rationale. The boundary stays put across LLM round-
-		// trips within a single user request so the prefix bytes don't
-		// mutate underneath the provider's cache.
-		const compactionBoundary = computeCompactionBoundary(messages, recentWindow);
-
-		const thread = findThreadSummaryById(db, threadId);
-		if (thread?.summary) {
-			messages.unshift({
-				id: "__compaction_summary__",
-				thread_id: threadId,
-				role: "developer",
-				content: `[Conversation context — ${compactionBoundary} earlier messages are compacted below as stubs. Use "query SELECT content FROM messages WHERE id='...'" to retrieve any specific message.]\n\n${thread.summary}`,
-				model_id: null,
-				tool_name: null,
-				created_at: messages[0]?.created_at ?? new Date().toISOString(),
-				modified_at: new Date().toISOString(),
-				host_origin: params.hostName ?? "localhost",
-				deleted: 0,
-			} as Message);
-		}
-
-		// The boundary shifts by 1 if we prepended the summary message
-		// (it was computed against the pre-prepend indices).
-		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
-
-		// Compaction primitives — see `history-compaction/`. Both are
-		// budget-driven: they fire only when the cold-assembly estimate exceeds
-		// the threshold, and only stub/strip enough to fall back under it. This
-		// prevents destroying read results (and reasoning) the model still needs
-		// while the context is far from full — the cause of re-read churn and
-		// investigate-without-converging loops.
-		//   - tool_result: stub oldest-first when over budget (heavier payloads)
-		//   - tool_call thinking: strip when still over budget after stubbing
-		//   - assistant / user: untouched
-		const compactionThreshold = Math.floor(contextWindow * effectiveTruncationRatio);
-		compactToolResultsBeforeBoundary(messages, adjustedBoundary, compactionThreshold);
-		stripThinkingBeforeBoundary(messages, adjustedBoundary, compactionThreshold);
-	}
-	stage1_7Span.end();
+	// History compaction is handled exclusively by the Stage 7 telescope
+	// (tieredHistoryTruncation), which folds old tool cycles cache-stably and
+	// fires at the soft target. The legacy Stage 1.7 in-place stubbing was
+	// removed: it mutated cached prefix bytes (busting the provider cache) and
+	// duplicated the telescope's middle-tier fold on the same message region.
 
 	// Stage 2: PURGE_SUBSTITUTION
 	// Replace purge-targeted messages with summary developer stubs.
@@ -1944,7 +1868,21 @@ Original output was too large for the context window. If you need the full conte
 	const safetyMargin = computeSafetyMargin(contextWindow);
 	const effectiveBudget = Math.max(0, contextWindow - safetyMargin);
 
-	if (totalTokens > effectiveBudget) {
+	// Gate on the SOFT target (truncationTarget, ~85%), not effectiveBudget
+	// (~100%). The telescope is the sole history compressor now — the legacy
+	// in-place Stage 1.7 stubbing was removed — so it must engage across the
+	// whole 85-100% band. In that band the old code leaned on Stage 1.7 to
+	// shrink tool_results, but that mutated cached prefix bytes and busted the
+	// provider cache every other inner-loop turn. The telescope folds the same
+	// region cache-stably (RECENT anchored to the latest user message, MIDDLE a
+	// byte-stable digest), so firing at the soft target shrinks context without
+	// thrashing the cache. truncationTarget is defined just inside this block;
+	// hoist it above the gate so the condition can reference it.
+	const truncationTarget = Math.min(
+		Math.floor(contextWindow * effectiveTruncationRatio),
+		effectiveBudget,
+	);
+	if (totalTokens > truncationTarget) {
 		// Truncate history from front — token-aware backward fill.
 		// Instead of keeping a hardcoded last-N messages, we fill from the end
 		// until we hit the remaining token budget. This ensures recent conversations
@@ -1962,13 +1900,8 @@ Original output was too large for the context window. If you need the full conte
 		// payload genuinely fits the configured window even when the estimator runs
 		// far below reality.
 		//
-		// The truncation target is clamped to effectiveBudget so that even if the
-		// supplied ratio is unusually permissive, the post-truncation payload still
-		// respects the safety margin.
-		const truncationTarget = Math.min(
-			Math.floor(contextWindow * effectiveTruncationRatio),
-			effectiveBudget,
-		);
+		// (truncationTarget is hoisted above the gate so the condition can
+		// reference it; the clamp-to-effectiveBudget rationale lives there.)
 
 		// The volatile varying tail (trailing developer message pushed by
 		// Stage 6 / Stage 5.5) must SURVIVE truncation: it carries Live State,
