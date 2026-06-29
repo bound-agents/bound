@@ -14,7 +14,7 @@ import {
 	maybePlaceCacheMarker,
 	refreshInnerLoopRollingMarker,
 } from "./cache-marker";
-import { CACHE_TTL_MS, predictCacheState, selectCacheTtl } from "./cache-prediction";
+import { selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
 	TRUNCATION_TARGET_RATIO,
@@ -298,7 +298,6 @@ export class MainAgentLoop extends BoundAgentLoop {
 		const cacheTtl = selectCacheTtl(threadInterface);
 		const { ratio: adaptiveTruncationRatio, inflation: measuredInflation } =
 			resolveAdaptiveTruncation(this.ctx.db, this.config.threadId, TRUNCATION_TARGET_RATIO);
-		const cacheState = predictCacheState(this.ctx.db, this.config.threadId, CACHE_TTL_MS[cacheTtl]);
 		// Fingerprint the merged set the model actually receives — registry
 		// (built-ins + native agent tools) + client + platform + config extras —
 		// not the partial config.tools slice. Otherwise client/registry tool
@@ -308,10 +307,20 @@ export class MainAgentLoop extends BoundAgentLoop {
 		let cachePathReason: ContextDebugInfo["cachePathReason"] = this.config.noHistory
 			? "no-history"
 			: "no-stored-state";
+		// Warm-path eligibility does NOT consult predictCacheState. That heuristic
+		// guesses warm/cold from the prior turn's cache-token counts, which is
+		// noisy on an active thread: it flipped to "cold" on turns where the
+		// provider prefix cache was in fact still warm, discarding usable cached
+		// state and forcing an expensive cold rebuild (observed live: 77 such
+		// false-cold turns in one thread). The TTL concern it nominally guarded —
+		// a thread idle past the prompt-cache lifetime — is already handled, and
+		// more precisely, by the turn-state store's own eviction (constructed at
+		// 55m, shorter than the 1h upstream cache TTL): an idle thread's state is
+		// evicted, so getCachedTurnState returns undefined and the path falls to
+		// "no-stored-state" cold. predictCacheState remains for cache-warm-poke.
 		const cachedForWarm = this.getCachedTurnState();
 		const isWarmPathEligible =
 			!this.config.noHistory &&
-			cacheState === "warm" &&
 			cachedForWarm !== undefined &&
 			cachedForWarm.toolFingerprint === currentFingerprint;
 
@@ -485,8 +494,6 @@ export class MainAgentLoop extends BoundAgentLoop {
 			cachedForWarm.toolFingerprint !== currentFingerprint
 		) {
 			cachePathReason = "tool-change";
-		} else if (cachedForWarm !== undefined && cacheState === "cold") {
-			cachePathReason = "cache-expired";
 		}
 
 		const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {

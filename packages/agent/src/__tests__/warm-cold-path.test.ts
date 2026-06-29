@@ -292,10 +292,13 @@ describe("warm-cold-path", () => {
 		});
 	});
 
-	describe("AC3.1: predictCacheState cold triggers full assembleContext rebuild", () => {
-		it("cold cache state forces cold path even with stored state", () => {
-			// isWarmPathEligible = (cacheState === "warm") && ...
-			// If cacheState === "cold", then isWarmPathEligible = false
+	describe("AC3.1: warm-path eligibility no longer consults predictCacheState", () => {
+		it("valid stored state + matching fingerprint is warm-eligible regardless of cache-state heuristic", () => {
+			// Contract change: the predictCacheState "cold" guess no longer forces
+			// a cold rebuild when usable cached state exists. The turn-state store's
+			// TTL eviction handles the idle-past-cache-lifetime case (state becomes
+			// undefined → cold via no-stored-state). isWarmPathEligible now depends
+			// only on having cached state with a matching tool fingerprint.
 			const cachedTurnState: CachedTurnState = {
 				messages: [{ role: "user", content: "test" }],
 				systemPrompt: "system",
@@ -304,22 +307,23 @@ describe("warm-cold-path", () => {
 				lastMessageCreatedAt: "2026-04-23T10:00:00Z",
 				toolFingerprint: "same_fp",
 			};
+			const currentFingerprint = "same_fp";
 
-			let coldPathExecuted = false;
+			const isWarmPathEligible =
+				cachedTurnState !== undefined && cachedTurnState.toolFingerprint === currentFingerprint;
 
-			// Simulate with cold cache state
-			const cacheState = "cold" as const;
+			expect(isWarmPathEligible).toBe(true);
+		});
+
+		it("evicted (undefined) stored state falls to the cold path", () => {
+			// The idle-thread case: store TTL evicted the entry, so warm-path
+			// eligibility fails on the undefined check and we cold-assemble.
+			const cachedTurnState: CachedTurnState | undefined = undefined;
 			const currentFingerprint = "same_fp";
 			const isWarmPathEligible =
-				cacheState === "warm" &&
 				cachedTurnState !== undefined &&
-				cachedTurnState.toolFingerprint === currentFingerprint;
-
-			if (!isWarmPathEligible) {
-				coldPathExecuted = true;
-			}
-
-			expect(coldPathExecuted).toBe(true);
+				(cachedTurnState as CachedTurnState).toolFingerprint === currentFingerprint;
+			expect(isWarmPathEligible).toBe(false);
 		});
 	});
 
@@ -859,6 +863,96 @@ describe("warm-cold-path", () => {
 			// If this fails with reason="no-stored-state", it confirms cached turn state
 			// is instance-scoped and cannot survive MainAgentLoop teardown.
 			expect(pathLogs2.length).toBeGreaterThanOrEqual(1);
+			expect(pathLogs2[0]).toEqual({ path: "warm", reason: "warm-eligible" });
+		});
+
+		it("AC3.1-regression: warm path is taken even when the prior turn reported ZERO cache activity", async () => {
+			// The bug: warm eligibility used to require predictCacheState === "warm",
+			// which keys off the prior turn's cache_read/write tokens. A prior turn
+			// reporting 0/0 (common on an active thread) made it guess "cold",
+			// discarding usable cached state and forcing an expensive cold rebuild.
+			// After the fix, warmth depends only on cached state + tool fingerprint,
+			// so zero prior cache activity no longer false-colds the next turn.
+			globalDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					globalThreadId,
+					globalUserId,
+					"web",
+					"local",
+					0,
+					"Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const mockBackend = new MockLLMBackend();
+			// Both turns report 0/0 cache tokens — the false-cold trigger.
+			const zeroCacheDone = {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: 0,
+					cache_read_tokens: 0,
+					estimated: false,
+				},
+			};
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Response 1" };
+				yield zeroCacheDone;
+			});
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Response 2" };
+				yield zeroCacheDone;
+			});
+
+			const sharedStore = new InMemoryTurnStateStore();
+
+			const pathLogs1: CachePathLog[] = [];
+			const agentLoop1 = new MainAgentLoop(
+				makeCtx(pathLogs1, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await agentLoop1.run();
+			expect(pathLogs1[0]?.path).toBe("cold"); // first turn always cold
+
+			// Follow-up user message.
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					"Follow up",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const pathLogs2: CachePathLog[] = [];
+			const agentLoop2 = new MainAgentLoop(
+				makeCtx(pathLogs2, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await agentLoop2.run();
+
+			// Despite zero cache activity on turn 1, turn 2 reuses the warm path.
 			expect(pathLogs2[0]).toEqual({ path: "warm", reason: "warm-eligible" });
 		});
 

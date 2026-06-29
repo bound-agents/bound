@@ -785,7 +785,13 @@ export interface ContextDebugInfo {
 	 *
 	 * Cold-side reasons:
 	 * - `"no-stored-state"` — first turn on this thread, or warm cache evicted.
-	 * - `"cache-expired"` — `predictCacheState()` returned `"cold"` (TTL elapsed).
+	 *   Also covers thread idle past the turn-state store TTL: eviction makes
+	 *   getCachedTurnState return undefined, so the long-idle case lands here.
+	 * - `"cache-expired"` — RETIRED. Previously set when `predictCacheState()`
+	 *   returned `"cold"` while cached state still existed. That heuristic gate
+	 *   was removed (it produced frequent false colds on active threads while
+	 *   the store TTL already handled idle eviction); no longer emitted. Kept in
+	 *   the union so historical `context_debug` rows still parse.
 	 * - `"tool-change"` — `computeToolFingerprint` mismatch with cached state.
 	 * - `"orphaned-tool-call"` — warm path detected an unanswered `tool_use`
 	 *   and bailed so Stage 3 sanitization could synthesize the missing
