@@ -316,7 +316,7 @@ describe("Title Generation", () => {
 		const result = await generateThreadTitle(db, threadId, mockBackend, siteId);
 
 		expect(result.ok).toBe(true);
-		expect(result.value).toBe("This is a long message that should be truncated to");
+		expect(result.value).toBe("This is a long message that should be truncated...");
 
 		// Verify changelog entry exists for fallback path
 		const changeLogEntry = db
@@ -327,5 +327,143 @@ describe("Title Generation", () => {
 		expect(changeLogEntry?.table_name).toBe("threads");
 		expect(changeLogEntry?.row_id).toBe(threadId);
 		expect(changeLogEntry?.site_id).toBe(siteId);
+	});
+
+	it("fallback truncates at word boundary, not mid-word", async () => {
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+
+		db.prepare(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+		).run(userId, "Test User", now, now);
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(
+			randomUUID(),
+			threadId,
+			"user",
+			"Can you figure out why the web UI says that the hub is offline",
+			now,
+			"localhost",
+		);
+
+		const mockBackend: LLMBackend = {
+			chat: async function* () {
+				yield undefined as never;
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8192,
+			}),
+		};
+
+		const result = await generateThreadTitle(db, threadId, mockBackend, siteId);
+
+		expect(result.ok).toBe(true);
+		// Should end at a word boundary with "...", not mid-word like "the hu..."
+		expect(result.value).toBe("Can you figure out why the web UI says that the...");
+	});
+
+	it("fallback strips newlines from user message content", async () => {
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+
+		db.prepare(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+		).run(userId, "Test User", now, now);
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(
+			randomUUID(),
+			threadId,
+			"user",
+			"I recently extracted the core agent loop to\n\n[res",
+			now,
+			"localhost",
+		);
+
+		const mockBackend: LLMBackend = {
+			chat: async function* () {
+				yield undefined as never;
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8192,
+			}),
+		};
+
+		const result = await generateThreadTitle(db, threadId, mockBackend, siteId);
+
+		expect(result.ok).toBe(true);
+		// Newlines must be collapsed to spaces, not preserved
+		expect(result.value).not.toContain("\n");
+		// Input is 43 chars after sanitization (under 50), so no truncation
+		expect(result.value).toBe("I recently extracted the core agent loop to [res");
+	});
+
+	it("prompt instructs model to describe the topic, not the response", async () => {
+		const userId = randomUUID();
+		const threadId = randomUUID();
+		const now = new Date().toISOString();
+
+		db.prepare(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES (?, ?, ?, ?)",
+		).run(userId, "Test User", now, now);
+		db.prepare(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(threadId, userId, "web", "localhost", now, now, now);
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(randomUUID(), threadId, "user", "What is the capital of France?", now, "localhost");
+		db.prepare(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin) VALUES (?, ?, ?, ?, ?, ?)",
+		).run(
+			randomUUID(),
+			threadId,
+			"assistant",
+			"I don't have access to geographic databases.",
+			now,
+			"localhost",
+		);
+
+		let capturedPrompt = "";
+		const mockBackend: LLMBackend = {
+			chat: async function* (params) {
+				capturedPrompt = params.messages[0].content as string;
+				yield { type: "text", content: "Capital of France" } as StreamChunk;
+				yield {
+					type: "done",
+					usage: { input_tokens: 10, output_tokens: 3 },
+				} as StreamChunk;
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8192,
+			}),
+		};
+
+		await generateThreadTitle(db, threadId, mockBackend, siteId);
+
+		expect(capturedPrompt).toContain("Describe what the user asked about, not the response");
 	});
 });
