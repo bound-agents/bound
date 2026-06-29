@@ -1234,13 +1234,18 @@ Original output was too large for the context window. If you need the full conte
 		// (it was computed against the pre-prepend indices).
 		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
 
-		// Compaction primitives — see `history-compaction/`:
-		//   - tool_result: stub if content > COLD_COMPACTION_THRESHOLD
-		//   - tool_call thinking: budget-driven strip when over threshold
+		// Compaction primitives — see `history-compaction/`. Both are
+		// budget-driven: they fire only when the cold-assembly estimate exceeds
+		// the threshold, and only stub/strip enough to fall back under it. This
+		// prevents destroying read results (and reasoning) the model still needs
+		// while the context is far from full — the cause of re-read churn and
+		// investigate-without-converging loops.
+		//   - tool_result: stub oldest-first when over budget (heavier payloads)
+		//   - tool_call thinking: strip when still over budget after stubbing
 		//   - assistant / user: untouched
-		compactToolResultsBeforeBoundary(messages, adjustedBoundary);
-		const thinkingThreshold = Math.floor(contextWindow * effectiveTruncationRatio);
-		stripThinkingBeforeBoundary(messages, adjustedBoundary, thinkingThreshold);
+		const compactionThreshold = Math.floor(contextWindow * effectiveTruncationRatio);
+		compactToolResultsBeforeBoundary(messages, adjustedBoundary, compactionThreshold);
+		stripThinkingBeforeBoundary(messages, adjustedBoundary, compactionThreshold);
 	}
 	stage1_7Span.end();
 
