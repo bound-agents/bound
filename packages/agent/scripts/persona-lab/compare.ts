@@ -3,7 +3,7 @@
  * persona-lab/compare.ts — fast persona-iteration harness.
  *
  * Workflow: edit persona.md, then run this. Get a side-by-side across models.
- * Each (model x prompt) case runs through the real AgentLoop, so production
+ * Each (model x prompt) case runs through the real MainAgentLoop, so production
  * retry / backoff / empty-completion handling is exercised on the actual code
  * path rather than a stripped driver.
  *

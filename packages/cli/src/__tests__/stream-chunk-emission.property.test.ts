@@ -22,7 +22,7 @@ import { describe, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { AgentLoopResult } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
-import type { AgentLoop } from "@bound/agent";
+import type { MainAgentLoop } from "@bound/agent";
 import type { WsStreamChunk } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import fc from "fast-check";
@@ -68,7 +68,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 
 				eventBus.on("stream:chunk", (data) => emitted.push(data));
 
-				const factory = (config: AgentLoopConfig): AgentLoop =>
+				const factory = (config: AgentLoopConfig): MainAgentLoop =>
 					({
 						run: async (): Promise<AgentLoopResult> => {
 							for (const chunk of chunks) {
@@ -76,7 +76,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 							}
 							return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 						},
-					}) as AgentLoop;
+					}) as MainAgentLoop;
 
 				await runLocalAgentLoop({
 					eventBus,
@@ -103,7 +103,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 
 				eventBus.on("stream:chunk", (data) => emitted.push(data));
 
-				const factory = (config: AgentLoopConfig): AgentLoop =>
+				const factory = (config: AgentLoopConfig): MainAgentLoop =>
 					({
 						run: async (): Promise<AgentLoopResult> => {
 							for (const chunk of chunks) {
@@ -111,7 +111,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 							}
 							return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 						},
-					}) as AgentLoop;
+					}) as MainAgentLoop;
 
 				await runLocalAgentLoop({
 					eventBus,
@@ -142,7 +142,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 					const threadId = randomUUID();
 					const capturedSignals: AbortSignal[] = [];
 
-					const factory = (config: AgentLoopConfig): AgentLoop => {
+					const factory = (config: AgentLoopConfig): MainAgentLoop => {
 						if (config.abortSignal) capturedSignals.push(config.abortSignal);
 						return {
 							run: async (): Promise<AgentLoopResult> => {
@@ -152,7 +152,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 								}
 								return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 							},
-						} as AgentLoop;
+						} as MainAgentLoop;
 					};
 
 					await runLocalAgentLoop({
@@ -182,12 +182,12 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 
 				eventBus.on("stream:chunk", (data) => emitted.push(data));
 
-				const factory = (_config: AgentLoopConfig): AgentLoop =>
+				const factory = (_config: AgentLoopConfig): MainAgentLoop =>
 					({
 						run: async (): Promise<AgentLoopResult> => {
 							return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 };
 						},
-					}) as AgentLoop;
+					}) as MainAgentLoop;
 
 				await runLocalAgentLoop({
 					eventBus,

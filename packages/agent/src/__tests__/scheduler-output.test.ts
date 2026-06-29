@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import type { AgentLoop } from "../agent-loop";
+import type { MainAgentLoop } from "../agent-loop";
 import { Scheduler } from "../scheduler";
 
 describe("R-O3: Task output delivered to original scheduling thread", () => {
@@ -123,7 +123,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 			taskId?: string;
 			userId: string;
 			modelId?: string;
-		}): AgentLoop => {
+		}): MainAgentLoop => {
 			capturedThreadId = config.threadId;
 			capturedTaskId = config.taskId;
 
@@ -152,7 +152,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 
 					return { success: true };
 				},
-			} as AgentLoop;
+			} as MainAgentLoop;
 		};
 
 		const scheduler = new Scheduler(ctx, mockAgentLoopFactory);
@@ -197,7 +197,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 			taskId?: string;
 			userId: string;
 			modelId?: string;
-		}): AgentLoop => {
+		}): MainAgentLoop => {
 			return {
 				run: async () => {
 					const msgId = randomUUID();
@@ -222,7 +222,7 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 
 					return { success: true };
 				},
-			} as AgentLoop;
+			} as MainAgentLoop;
 		};
 
 		const scheduler = new Scheduler(ctx, mockAgentLoopFactory);
@@ -260,12 +260,12 @@ describe("R-O3: Task output delivered to original scheduling thread", () => {
 			taskId?: string;
 			userId: string;
 			modelId?: string;
-		}): AgentLoop => {
+		}): MainAgentLoop => {
 			return {
 				run: async () => {
 					throw new Error("Task execution failed");
 				},
-			} as AgentLoop;
+			} as MainAgentLoop;
 		};
 
 		const scheduler = new Scheduler(ctx, mockAgentLoopFactory);

@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
@@ -126,7 +126,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		};
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
+		const agentLoop = new MainAgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 			threadId,
 			userId: "test-user",
 		});
@@ -202,7 +202,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		};
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
+		const agentLoop = new MainAgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 			threadId,
 			userId: "test-user",
 		});
@@ -281,7 +281,7 @@ describe("Memory Threshold Check (R-W2)", () => {
 		};
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
+		const agentLoop = new MainAgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
 			threadId,
 			userId: "test-user",
 		});
