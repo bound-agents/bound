@@ -134,13 +134,13 @@ function createBoundLoopExtensions(
 			logger: ctx.logger,
 		},
 		modelRouter,
-		resolveModel: () => ({ kind: "error", error: "Bound AgentLoop uses adapter model resolution" }),
+		resolveModel: () => ({ kind: "error", error: "BoundAgentLoop uses adapter model resolution" }),
 		assembleContext: async () => {
-			throw new Error("Bound AgentLoop uses adapter context assembly");
+			throw new Error("BoundAgentLoop uses adapter context assembly");
 		},
 		listTools: () => [],
 		executeTool: async () => {
-			throw new Error("Bound AgentLoop uses adapter tool dispatch");
+			throw new Error("BoundAgentLoop uses adapter tool dispatch");
 		},
 		persistence: {
 			recordTurn: async () => null,

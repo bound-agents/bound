@@ -1,7 +1,7 @@
 /**
  * Agent-loop diagnostic harness driver.
  *
- * Drives N turns of the production `AgentLoop` against a hermetic in-memory
+ * Drives N turns of the production `MainAgentLoop` against a hermetic in-memory
  * environment (`:memory:` SQLite + `InMemoryFs` + `InMemoryTurnStateStore`)
  * with live LLM inference. Captures wire bodies and per-turn metrics for
  * pluggable diagnostics.
@@ -17,7 +17,7 @@
  *   3. Hard stop after each turn (5% slack).
  *
  * Divergence audit (kept narrow on purpose).
- * Production constructs `AgentLoop` via `createAgentLoopFactory`
+ * Production constructs `MainAgentLoop` via `createAgentLoopFactory`
  * (`packages/cli/src/commands/start/agent-factory.ts`). The harness
  * deliberately deviates only where the daemon's wiring would force live
  * filesystem / sandbox / platform side effects. Every deviation either
@@ -81,7 +81,7 @@ import { toRouterConfig } from "../../../cli/src/commands/start/inference";
 // `@bound/agent` is the package this harness lives in; use relative paths to
 // avoid the package self-reference resolution issue under tsc. The hermetic
 // seed-and-run environment (in-memory DB, silent bus, AppContext stub, sandbox
-// shim, AgentLoop construction) is shared with persona-lab via the harness
+// shim, MainAgentLoop construction) is shared with persona-lab via the harness
 // core; only the wire-capture / budget / diagnostic logic is driver-specific.
 import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
 import { createHarnessEnvironment } from "../../src/harness/environment";

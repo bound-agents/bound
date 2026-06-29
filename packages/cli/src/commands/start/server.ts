@@ -20,7 +20,7 @@ import {
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
 } from "@bound/agent";
-import type { AgentLoop, AgentLoopConfig, ClientToolResolver } from "@bound/agent";
+import type { AgentLoopConfig, ClientToolResolver, MainAgentLoop } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	type DispatchEntry,
@@ -73,7 +73,7 @@ import { createSyncServer, createWebServer } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
 
 const getTracer = () => trace.getTracer("bound.web");
 

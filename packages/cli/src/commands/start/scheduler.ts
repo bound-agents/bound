@@ -11,7 +11,7 @@ import {
 	seedConsolidation,
 	seedHeartbeat,
 } from "@bound/agent";
-import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
+import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import { createRelayOutboxEntry } from "@bound/agent";
 import {
@@ -32,7 +32,7 @@ import {
 import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 import { shutdownTelemetry } from "./telemetry.js";
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
 
 export interface SchedulerResult {
 	schedulerHandle: { stop: () => void } | null;

@@ -1,9 +1,9 @@
 /**
- * Agent loop factory: creates per-invocation AgentLoop instances with
+ * Agent loop factory: creates per-invocation MainAgentLoop instances with
  * isolated snapshot state and full sandbox/tool wiring.
  */
 
-import { AgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
+import { MainAgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
@@ -48,7 +48,7 @@ export const sandboxTool: ToolDefinition = {
 	},
 };
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
 
 /**
  * Create a unified tool registry from all tool sources.
@@ -150,7 +150,7 @@ export function createAgentLoopFactory(
 		? createVfsRehydrator(clusterFsObj.fs, appContext.db)
 		: undefined;
 
-	return (config: AgentLoopConfig): AgentLoop => {
+	return (config: AgentLoopConfig): MainAgentLoop => {
 		// Per-invocation snapshot state. Each call gets its own
 		// closure so concurrent agent loops do not share preSnapshot.
 		let preSnapshot: Map<string, string> | null = null;
@@ -298,7 +298,7 @@ export function createAgentLoopFactory(
 			config.platformTools,
 		);
 
-		return new AgentLoop(appContext, loopSandbox, modelRouter, {
+		return new MainAgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
 			tools: [sandboxTool, ...builtInToolDefs, ...platformToolDefs],
 			toolRegistry,

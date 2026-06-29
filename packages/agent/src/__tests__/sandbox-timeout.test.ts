@@ -5,7 +5,7 @@
  * hanging. This pins the contract that aligns bms_bash with boundless_bash.
  *
  * Drives the real production path: ScriptedLLM emits a {command, timeout} tool
- * call → AgentLoop "sandbox" dispatch → execSandboxWithTimeout → mock exec that
+ * call → MainAgentLoop "sandbox" dispatch → execSandboxWithTimeout → mock exec that
  * honors opts.signal (mirroring just-bash's cooperative abort).
  */
 import type { Database } from "bun:sqlite";
@@ -15,7 +15,7 @@ import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import type { RegisteredTool } from "../types";
 
 const BASH_REGISTRY: Map<string, RegisteredTool> = new Map([
@@ -193,7 +193,7 @@ describe("bms_bash timeout dispatch", () => {
 		backend.toolThenText("call-1", { command: "slow", timeout: 20 }, "done");
 		const sandbox = makeSandbox();
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,
@@ -209,7 +209,7 @@ describe("bms_bash timeout dispatch", () => {
 		backend.toolThenText("call-2", { command: "echo hi", timeout: 20 }, "done");
 		const sandbox = makeSandbox();
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,
@@ -232,7 +232,7 @@ describe("bms_bash timeout dispatch", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,
@@ -253,7 +253,7 @@ describe("bms_bash timeout dispatch", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,
@@ -274,7 +274,7 @@ describe("bms_bash timeout dispatch", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,

@@ -19,7 +19,7 @@ import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 // ---------------------------------------------------------------------------
 // Mock LLM Backend
@@ -163,7 +163,7 @@ function createMockRouter(backend: LLMBackend): ModelRouter {
 	return new ModelRouter(backends, "mock");
 }
 
-describe("AgentLoop lifecycle", () => {
+describe("MainAgentLoop lifecycle", () => {
 	let tmpDir: string;
 	let db: Database;
 	let eventBus: TypedEventEmitter;
@@ -242,7 +242,7 @@ describe("AgentLoop lifecycle", () => {
 		mockBackend.setTextResponse("Hello from the agent.");
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "mock",
@@ -289,7 +289,7 @@ describe("AgentLoop lifecycle", () => {
 		mockBackend.setToolThenTextResponse("tc-1", "bash", { command: "echo hi" }, "Done.");
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "mock",
@@ -375,7 +375,7 @@ describe("AgentLoop lifecycle", () => {
 		});
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: userId,
 			modelId: "mock",
@@ -403,7 +403,7 @@ describe("AgentLoop lifecycle", () => {
 
 		const controller = new AbortController();
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "mock",
@@ -432,7 +432,7 @@ describe("AgentLoop lifecycle", () => {
 		mockBackend.setManyChunksResponse(50, 50);
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "mock",
@@ -457,7 +457,7 @@ describe("AgentLoop lifecycle", () => {
 		mockBackend.setToolThenTextResponse("tc-persist", "bash", { command: "echo test" }, "Final.");
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "mock",

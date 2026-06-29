@@ -1,5 +1,5 @@
 /**
- * Integration test: built-in file tools through a real AgentLoop with InMemoryFs.
+ * Integration test: built-in file tools through a real MainAgentLoop with InMemoryFs.
  *
  * Scripts the LLM to call write → read → edit in sequence and verifies
  * tool results, file content, and that bash exec is NOT invoked for these tools.
@@ -16,7 +16,7 @@ import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { InMemoryFs } from "just-bash";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { createBuiltInTools } from "../built-in-tools";
 
 // ─── Mock LLM ───────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ describe("built-in tools integration", () => {
 		} as unknown as AppContext;
 	}
 
-	it("write → read → edit flow through AgentLoop", async () => {
+	it("write → read → edit flow through MainAgentLoop", async () => {
 		const fs = new InMemoryFs();
 		const builtInTools = createBuiltInTools(fs);
 
@@ -166,7 +166,7 @@ describe("built-in tools integration", () => {
 		const router = new ModelRouter(new Map([["test", backend]]), "test");
 		const toolDefs = Array.from(builtInTools.values(), (t) => t.toolDefinition);
 
-		const loop = new AgentLoop(makeCtx(), sandbox, router, {
+		const loop = new MainAgentLoop(makeCtx(), sandbox, router, {
 			threadId,
 			userId: "test-user",
 			tools: toolDefs,
@@ -217,7 +217,7 @@ describe("built-in tools integration", () => {
 		const router = new ModelRouter(new Map([["test", backend]]), "test");
 		const toolDefs = Array.from(builtInTools.values(), (t) => t.toolDefinition);
 
-		const loop = new AgentLoop(makeCtx(), sandbox, router, {
+		const loop = new MainAgentLoop(makeCtx(), sandbox, router, {
 			threadId,
 			userId: "test-user",
 			tools: toolDefs,

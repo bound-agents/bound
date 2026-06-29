@@ -14,7 +14,7 @@ import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } fro
 import type { Task } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { createAdvisory } from "./advisories";
-import type { AgentLoop } from "./agent-loop";
+import type { MainAgentLoop } from "./agent-loop";
 import { buildConsolidationContext } from "./consolidation-context";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
@@ -800,7 +800,7 @@ export class Scheduler {
 
 	constructor(
 		private ctx: AppContext,
-		private agentLoopFactory: (config: AgentLoopConfig) => AgentLoop,
+		private agentLoopFactory: (config: AgentLoopConfig) => MainAgentLoop,
 		private config: SchedulerConfig = {},
 		private sandbox?: {
 			exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;

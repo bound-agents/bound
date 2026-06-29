@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { getLastThreadForFile, trackFilePath } from "../file-thread-tracker";
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
@@ -184,10 +184,15 @@ describe("File-Thread Tracker (R-E20)", () => {
 				siteId: "test-site-id",
 			} as unknown as AppContext;
 
-			const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
-				threadId,
-				userId: "test-user",
-			});
+			const agentLoop = new MainAgentLoop(
+				ctx,
+				mockSandbox,
+				createMockRouter(new MockLLMBackend()),
+				{
+					threadId,
+					userId: "test-user",
+				},
+			);
 
 			const result = await agentLoop.run();
 			expect(result.filesChanged).toBe(2);
@@ -242,10 +247,15 @@ describe("File-Thread Tracker (R-E20)", () => {
 				siteId: "test-site-id",
 			} as unknown as AppContext;
 
-			const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
-				threadId,
-				userId: "test-user",
-			});
+			const agentLoop = new MainAgentLoop(
+				ctx,
+				mockSandbox,
+				createMockRouter(new MockLLMBackend()),
+				{
+					threadId,
+					userId: "test-user",
+				},
+			);
 
 			await agentLoop.run();
 

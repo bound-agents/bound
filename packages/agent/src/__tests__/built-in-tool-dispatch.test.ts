@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import type { BuiltInTool } from "../built-in-tools";
 
 class MockLLMBackend implements LLMBackend {
@@ -99,7 +99,7 @@ function createMockRouter(backend: LLMBackend): ModelRouter {
 	return new ModelRouter(backends, "claude-opus");
 }
 
-describe("built-in tool dispatch in AgentLoop", () => {
+describe("built-in tool dispatch in MainAgentLoop", () => {
 	let tmpDir: string;
 	let db: Database;
 	let threadId: string;
@@ -170,7 +170,7 @@ describe("built-in tool dispatch in AgentLoop", () => {
 		mockBackend.setToolThenTextResponse("tool-1", "read", { path: "/hello.txt" }, "Done reading.");
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			tools: [fakeBuiltInTool.toolDefinition],
@@ -206,7 +206,7 @@ describe("built-in tool dispatch in AgentLoop", () => {
 		mockBackend.setToolThenTextResponse("tool-1", "read", { path: "/nope.txt" }, "Got an error.");
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			tools: [fakeBuiltInTool.toolDefinition],
@@ -264,7 +264,7 @@ describe("built-in tool dispatch in AgentLoop", () => {
 		);
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, mockSandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			tools: [fakeBuiltInTool.toolDefinition],
