@@ -19,11 +19,12 @@
  * cachePoint position was stable (msg index 14, byte ~80k both turns) but
  * the prefix bytes leading up to it differed → message-level cache miss.
  *
- * Boundary-aware throttle. The compaction boundary is the index of the
- * latest user message (history-compaction/compact.ts:32). Within an inner-
- * loop tool round (no new user message), the boundary is FROZEN — no new
- * messages are getting compacted, so the summary doesn't need to absorb
- * anything new. Skip regeneration in that regime. When a new user message
+ * Boundary-aware throttle. The boundary is the index of the latest user
+ * message (the same semantic anchor the Stage 7 telescope's recent tier and
+ * the cache-point placer use). Within an inner-loop tool round (no new user
+ * message), the boundary is FROZEN — no new messages are folding out of the
+ * recent window, so the summary doesn't need to absorb anything new. Skip
+ * regeneration in that regime. When a new user message
  * arrives, the boundary advances and previously-uncompacted assistant +
  * tool_result messages from the prior turn move below the boundary; the
  * summary then needs to absorb them.

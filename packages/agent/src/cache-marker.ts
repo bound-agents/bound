@@ -174,8 +174,9 @@ export function maybePlaceCacheMarker(
  * one prior user turn's worth of content — a natural cache-invalidation
  * cadence aligned with the user's interaction pattern.
  *
- * Same semantic boundary used by `computeCompactionBoundary` in
- * `history-compaction/` and the boundary-aware summary throttle (0ce38fb0).
+ * Same semantic boundary used by the Stage 7 telescope's recent-tier anchor
+ * (`progressive-fidelity/tier-allocation.ts`) and the boundary-aware summary
+ * throttle (0ce38fb0).
  * Anchoring on it unifies the architecture: summary regen, cachePoint
  * advance, and compaction events all happen at the same instant — the
  * arrival of a new user message.
@@ -292,9 +293,10 @@ export function computeStableCacheMarkerPlacement(
 	// at that index so the cachePoint attaches to messages[index - 1]
 	// (the prior turn's last message — semantically immutable history).
 	//
-	// This mirrors `computeCompactionBoundary` from `history-compaction/`
-	// — same semantic boundary (latest-user-msg-index) the summary
-	// throttle uses (0ce38fb0). The two systems advance in lockstep, so
+	// This mirrors the Stage 7 telescope's recent-tier anchor
+	// (`progressive-fidelity/tier-allocation.ts`) — same semantic boundary
+	// (latest-user-msg-index) the summary throttle uses (0ce38fb0). The two
+	// systems advance in lockstep, so
 	// summary regen and cachePoint advance happen at the same instant.
 	let insertAt = -1;
 	for (let i = messages.length - 1; i >= 0; i--) {
