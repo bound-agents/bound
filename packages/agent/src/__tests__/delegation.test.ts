@@ -614,7 +614,7 @@ describe("Delegation", () => {
 
 	describe("Confirmed tools blocking on delegated loops (AC6.6)", () => {
 		it("confirmed tools blocked on delegated loops; agent receives block error", () => {
-			// This test verifies that when an AgentLoop is created with a delegated taskId,
+			// This test verifies that when an MainAgentLoop is created with a delegated taskId,
 			// MCP-bridged confirmed tools will return a block error instead of prompting for confirmation.
 			// The actual check happens in mcp-bridge.ts line 112:
 			// if (isConfirmed && ctx.taskId && !ctx.taskId.startsWith("interactive-"))

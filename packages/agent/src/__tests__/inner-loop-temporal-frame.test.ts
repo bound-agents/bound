@@ -3,7 +3,7 @@
  *
  * Live evidence from threads 25687e6c-ff06-4e91-ae3f-7db91f112d9c (sonnet,
  * 11 inner-loop turns in one run) and d0372be6-bd60-452d-958b-249042c884a1
- * (kimi/opus webhook task) shows that within a single AgentLoop.run()
+ * (kimi/opus webhook task) shows that within a single MainAgentLoop.run()
  * invocation, every recorded turn writes the same totalEstimated value to
  * context_debug while actualTotalTokens climbs turn-over-turn. The cold-
  * assembly snapshot of section sizes is captured once and never refreshed
@@ -38,7 +38,7 @@ import type { ChatParams, LLMBackend, LLMMessage, StreamChunk } from "@bound/llm
 import { ModelRouter } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 let globalTmpDir: string;
 let globalDb: Database;
@@ -320,7 +320,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -412,7 +412,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -530,7 +530,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -660,7 +660,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop1 = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop1 = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -699,7 +699,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const callsBefore = mockBackend.getCapturedMessages().length;
-		const loop2 = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop2 = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -822,7 +822,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -956,7 +956,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});

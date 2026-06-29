@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { RelayProcessor } from "../relay-processor";
 import type { AgentLoopConfig } from "../types";
 
@@ -310,7 +310,7 @@ describe("relay-stream integration tests", () => {
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
 		// Create and run agent loop
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "claude-3-5-sonnet",
@@ -427,7 +427,7 @@ describe("relay-stream integration tests", () => {
 		const requesterRouter = createRemoteRouter("cancel-test-model");
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "cancel-test-model",
@@ -631,7 +631,7 @@ describe("relay-stream integration tests", () => {
 
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, localRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, localRouter, {
 			threadId,
 			userId,
 			modelId: "local-model",
@@ -668,7 +668,7 @@ describe("relay-stream integration tests", () => {
 	// ============================================================
 	//
 	// SKIPPED: Requires full network simulation with multiple concurrent
-	// AgentLoop instances and RelayProcessor streams. Same infrastructure
+	// MainAgentLoop instances and RelayProcessor streams. Same infrastructure
 	// blocker as TASK 2. Unit tests of concurrent stream_id isolation in
 	// RelayProcessor.activeInferenceStreams exist separately.
 
@@ -764,7 +764,7 @@ describe("relay-stream integration tests", () => {
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
 		const loops = [0, 1, 2].map((i) => {
-			const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+			const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 				threadId: threadIds[i],
 				userId: userIds[i],
 				modelId: "concurrent-model",
@@ -822,7 +822,7 @@ describe("relay-stream integration tests", () => {
 	}, 15000);
 
 	// SKIPPED: Requires full network simulation to verify end-to-end flow.
-	// The large prompt file creation in AgentLoop (lines 147-180) and the
+	// The large prompt file creation in MainAgentLoop (lines 147-180) and the
 	// file loading in RelayProcessor.executeInference (lines 598-625) are
 	// tested indirectly through unit tests.
 
@@ -903,7 +903,7 @@ describe("relay-stream integration tests", () => {
 		// Use AbortController so we can cancel the loop if sync times out,
 		// preventing the test from hanging forever on `await loopPromise`.
 		const abortController = new AbortController();
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "large-prompt-model",
@@ -962,7 +962,7 @@ describe("relay-stream integration tests", () => {
 
 	it("placeholder for AC6.2 delegation integration test (unit coverage sufficient via executeProcess tests)", () => {
 		// AC6.2 requires: Two-spoke cluster (requester + target), process message delivery,
-		// target AgentLoop execution, response sync back to requester.
+		// target MainAgentLoop execution, response sync back to requester.
 		//
 		// This is exercised via:
 		// - relay-processor-inference.test.ts: executeProcess() with mock LLM
@@ -1038,7 +1038,7 @@ describe("relay-stream integration tests", () => {
 		const requesterRouter = createRemoteRouter("slow-model");
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "slow-model",
@@ -1142,7 +1142,7 @@ describe("relay-stream integration tests", () => {
 		const requesterRouter = createRemoteRouter("retransmit-model");
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "retransmit-model",

@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
@@ -100,7 +100,7 @@ describe("Abort state tracking", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(stallBackend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(stallBackend), {
 			threadId,
 			userId: "test-user",
 			abortSignal: abortController.signal,
@@ -162,7 +162,7 @@ describe("Abort state tracking", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(stallBackend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(stallBackend), {
 			threadId,
 			userId: "test-user",
 			abortSignal: abortController.signal,
@@ -207,7 +207,7 @@ describe("Abort state tracking", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(errorBackend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(errorBackend), {
 			threadId,
 			userId: "test-user",
 		});

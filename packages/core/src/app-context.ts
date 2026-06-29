@@ -18,7 +18,7 @@ export interface AppContext {
 	hostName: string;
 	/**
 	 * Per-thread agent turn-state cache. Keyed by threadId. Survives
-	 * AgentLoop instance teardown so warm-path cache reuse works across
+	 * MainAgentLoop instance teardown so warm-path cache reuse works across
 	 * client-tool defer/wakeup cycles. Lifetime is process-scoped with
 	 * internal TTL shorter than upstream prompt-cache TTL.
 	 */

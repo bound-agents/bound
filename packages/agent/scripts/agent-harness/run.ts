@@ -2,7 +2,7 @@
 /**
  * Agent-loop diagnostic harness — CLI entry.
  *
- * Drives the production AgentLoop against a hermetic in-memory environment
+ * Drives the production MainAgentLoop against a hermetic in-memory environment
  * with live LLM inference. Plugin-shaped diagnostics observe per-turn data
  * (cache markers, wire-body byte diffs, …) without restarting the daemon.
  *

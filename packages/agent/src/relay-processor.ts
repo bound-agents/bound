@@ -70,7 +70,7 @@ import {
 	clampMaxOutputTokens,
 	createFileRefResolver,
 } from "./agent-loop-utils.js";
-import { AgentLoop } from "./agent-loop.js";
+import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import { formatMcpHelp } from "./mcp-bridge.js";
@@ -187,13 +187,13 @@ export class RelayProcessor {
 		private appCtx: AppContext | null = null,
 		private relayConfig?: RelayConfig,
 		threadAffinityMap: Map<string, string> = new Map(),
-		private agentLoopFactory?: (config: AgentLoopConfig) => AgentLoop,
+		private agentLoopFactory?: (config: AgentLoopConfig) => MainAgentLoop,
 	) {
 		this.threadAffinityMap = threadAffinityMap;
 	}
 
 	/** Inject the agent loop factory after startup completes (avoids circular init order). */
-	setAgentLoopFactory(factory: (config: AgentLoopConfig) => AgentLoop): void {
+	setAgentLoopFactory(factory: (config: AgentLoopConfig) => MainAgentLoop): void {
 		this.agentLoopFactory = factory;
 	}
 
@@ -1658,7 +1658,7 @@ export class RelayProcessor {
 			}
 		}
 
-		// For the delegated AgentLoop, we need the full AppContext passed to RelayProcessor
+		// For the delegated MainAgentLoop, we need the full AppContext passed to RelayProcessor
 		if (!this.appCtx) {
 			this.writeResponse(
 				entry,
@@ -1844,7 +1844,7 @@ export class RelayProcessor {
 
 		const agentLoop = this.agentLoopFactory
 			? this.agentLoopFactory(loopConfig)
-			: new AgentLoop(
+			: new MainAgentLoop(
 					delegatedCtx,
 					{
 						/* sandbox not available — no tools in context */

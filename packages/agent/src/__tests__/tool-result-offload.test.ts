@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
 	buildOffloadMessage,
@@ -64,7 +64,7 @@ describe("tool-result-offload helpers", () => {
 	});
 });
 
-// --- Integration tests with AgentLoop ---
+// --- Integration tests with MainAgentLoop ---
 
 class MockLLMBackend implements LLMBackend {
 	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
@@ -157,7 +157,7 @@ function createMockRouter(backend: LLMBackend): ModelRouter {
 	return new ModelRouter(backends, "claude-opus");
 }
 
-describe("AgentLoop tool result offloading", () => {
+describe("MainAgentLoop tool result offloading", () => {
 	let tmpDir: string;
 	let db: Database;
 	let threadId: string;
@@ -218,7 +218,7 @@ describe("AgentLoop tool result offloading", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -262,7 +262,7 @@ describe("AgentLoop tool result offloading", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -304,7 +304,7 @@ describe("AgentLoop tool result offloading", () => {
 			}),
 		};
 
-		const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});

@@ -78,9 +78,9 @@ export class MainAgentLoop extends BoundAgentLoop {
 
 	/**
 	 * Accessor for this thread's cached turn state. Lives in ctx.turnStateStore
-	 * so it survives AgentLoop instance teardown (e.g. across client-tool
+	 * so it survives MainAgentLoop instance teardown (e.g. across client-tool
 	 * defer/wakeup cycles). Previously an instance field, which meant every
-	 * fresh AgentLoop started cold regardless of upstream cache liveness.
+	 * fresh MainAgentLoop started cold regardless of upstream cache liveness.
 	 */
 	private getCachedTurnState(): CachedTurnState | undefined {
 		return this.ctx.turnStateStore?.get(this.config.threadId) as CachedTurnState | undefined;
@@ -641,8 +641,6 @@ export class MainAgentLoop extends BoundAgentLoop {
 		this.clearCachedTurnState();
 	}
 }
-
-export { MainAgentLoop as AgentLoop };
 
 // Re-export loop-guard constants and silence utilities for backward compatibility.
 // These were previously re-exported from this file directly; they now live in

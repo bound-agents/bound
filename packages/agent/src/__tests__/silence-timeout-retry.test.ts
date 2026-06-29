@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop, MAX_SILENCE_RETRIES, SILENCE_TIMEOUT_MS } from "../agent-loop";
+import { MAX_SILENCE_RETRIES, MainAgentLoop, SILENCE_TIMEOUT_MS } from "../agent-loop";
 
 /**
  * LLM backend that throws silence timeout errors N times, then succeeds.
@@ -119,7 +119,7 @@ describe("Silence timeout retry", () => {
 		// Fail once, then succeed on second call
 		const backend = new SilenceTimeoutBackend(1);
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -149,7 +149,7 @@ describe("Silence timeout retry", () => {
 		// Fail MAX_SILENCE_RETRIES times, then succeed
 		const backend = new SilenceTimeoutBackend(MAX_SILENCE_RETRIES);
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -164,7 +164,7 @@ describe("Silence timeout retry", () => {
 		// Fail more than MAX_SILENCE_RETRIES times
 		const backend = new SilenceTimeoutBackend(MAX_SILENCE_RETRIES + 1);
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -203,7 +203,7 @@ describe("Silence timeout retry", () => {
 			},
 		};
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -307,7 +307,7 @@ describe("Transport error retry", () => {
 		// Fail once with transport error, then succeed
 		const backend = new TransportErrorBackend(1);
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -328,7 +328,7 @@ describe("Transport error retry", () => {
 		// Fail more times than MAX_SILENCE_RETRIES
 		const backend = new TransportErrorBackend(MAX_SILENCE_RETRIES + 1);
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -349,7 +349,7 @@ describe("Transport error retry", () => {
 		// Retrying the same malformed body is pointless.
 		const backend = new InvalidJsonErrorBackend(1);
 
-		const loop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 		});

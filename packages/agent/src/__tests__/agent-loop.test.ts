@@ -13,11 +13,11 @@ import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { z } from "zod";
 import {
-	AgentLoop,
 	ERROR_SIGNATURE_NUDGE_AT,
 	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
 	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
 	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
+	MainAgentLoop,
 } from "../agent-loop";
 import { zodToToolParams } from "../tools/tool-schema";
 import type { RegisteredTool } from "../types";
@@ -155,7 +155,7 @@ function createMockRouter(backend: LLMBackend): ModelRouter {
 	return new ModelRouter(backends, "claude-opus");
 }
 
-describe("AgentLoop", () => {
+describe("MainAgentLoop", () => {
 	let tmpDir: string;
 	let dbPath: string;
 	let db: Database;
@@ -257,7 +257,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -280,7 +280,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -325,7 +325,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -350,10 +350,15 @@ describe("AgentLoop", () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setTextResponse("All good.");
 
-		const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(mockBackend), {
-			threadId,
-			userId: "test-user",
-		});
+		const agentLoop = new MainAgentLoop(
+			makeCtx(),
+			createMockSandbox(),
+			createMockRouter(mockBackend),
+			{
+				threadId,
+				userId: "test-user",
+			},
+		);
 
 		await agentLoop.run();
 
@@ -403,7 +408,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			onActivity: () => {
@@ -437,7 +442,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -502,7 +507,7 @@ describe("AgentLoop", () => {
 			exitCode: 0,
 		}));
 
-		const agentLoop = new AgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -537,7 +542,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -605,7 +610,7 @@ describe("AgentLoop", () => {
 			exitCode: 0,
 		}));
 
-		const agentLoop = new AgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -641,7 +646,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -669,7 +674,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -688,7 +693,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -720,7 +725,7 @@ describe("AgentLoop", () => {
 		const noExecSandbox = {};
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, noExecSandbox, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, noExecSandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -764,7 +769,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			abortSignal: controller.signal,
@@ -789,7 +794,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -852,7 +857,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -889,7 +894,7 @@ describe("AgentLoop", () => {
 		};
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -940,7 +945,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -989,7 +994,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const _agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(stallBackend), {
+		const _agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(stallBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1027,7 +1032,7 @@ describe("AgentLoop", () => {
 			},
 		};
 
-		const agentLoop2 = new AgentLoop(ctx, mockBash, createMockRouter(fastBackend), {
+		const agentLoop2 = new MainAgentLoop(ctx, mockBash, createMockRouter(fastBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1073,7 +1078,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1165,7 +1170,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(capturingBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(capturingBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1204,7 +1209,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1263,7 +1268,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1328,7 +1333,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1391,7 +1396,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1439,7 +1444,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1505,7 +1510,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1529,7 +1534,7 @@ describe("AgentLoop", () => {
 		const ctx = makeCtx();
 
 		// AgentLoopConfig with NO modelId — forces resolution via ModelRouter default
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			// modelId intentionally omitted — simulates a scheduler task with no model_hint
@@ -1558,7 +1563,7 @@ describe("AgentLoop", () => {
 		const ctx = makeCtx();
 
 		// AgentLoopConfig with NO modelId — simulates scheduler/discord/mcp threads
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			// modelId intentionally omitted
@@ -1593,7 +1598,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1648,7 +1653,7 @@ describe("AgentLoop", () => {
 		const ctx = makeCtx();
 
 		// Router only knows "claude-opus" but we request "nonexistent-model"
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "nonexistent-model",
@@ -1692,7 +1697,7 @@ describe("AgentLoop", () => {
 		const tiers = new Map([["phi3", 1]]);
 		const router = new ModelRouter(backends, "phi3", undefined, tiers);
 
-		const agentLoop = new AgentLoop(ctx, mockBash, router, {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
 			threadId,
 			userId: "test-user",
 			modelId: "glm",
@@ -1738,7 +1743,7 @@ describe("AgentLoop", () => {
 		const tiers = new Map([["opus", 5]]);
 		const router = new ModelRouter(backends, "opus", undefined, tiers);
 
-		const agentLoop = new AgentLoop(ctx, mockBash, router, {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
 			threadId,
 			userId: "test-user",
 			modelId: "glm",
@@ -1792,7 +1797,7 @@ describe("AgentLoop", () => {
 		const router = new ModelRouter(backends, "deepseek", undefined, tiers);
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
 			threadId,
 			userId: "test-user",
 			// No modelId / modelTier — empty hint, resolves to default "deepseek".
@@ -1820,7 +1825,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1841,7 +1846,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1868,7 +1873,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1897,7 +1902,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1970,7 +1975,7 @@ describe("AgentLoop", () => {
 			}
 		};
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -2058,7 +2063,7 @@ describe("AgentLoop", () => {
 			}
 		};
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -2132,7 +2137,7 @@ describe("AgentLoop", () => {
 			}
 		};
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -2151,7 +2156,7 @@ describe("AgentLoop", () => {
 		const backend = new CaptureParamsBackend();
 		const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
 
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
 			threadId: localThreadId,
 			userId: "test-user",
 			modelId: "test-model",
@@ -2218,7 +2223,7 @@ describe("AgentLoop", () => {
 			}));
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2300,7 +2305,7 @@ describe("AgentLoop", () => {
 			});
 
 			const ctx = makeCtx();
-			const agentLoop = new AgentLoop(
+			const agentLoop = new MainAgentLoop(
 				ctx,
 				createMockSandbox(() => ({ stdout: "", stderr: "", exitCode: 0 })),
 				createMockRouter(mockBackend),
@@ -2371,7 +2376,7 @@ describe("AgentLoop", () => {
 			// but aborts before relay stream timeout (which would take 120s)
 			setTimeout(() => controller.abort(), 10);
 
-			const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createEmptyRouter(), {
+			const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), createEmptyRouter(), {
 				threadId,
 				userId: "test-user",
 				abortSignal: controller.signal,
@@ -2399,7 +2404,7 @@ describe("AgentLoop", () => {
 				infos.push(msg);
 			};
 
-			const agentLoop = new AgentLoop(ctx, createMockSandbox(), createEmptyRouter(), {
+			const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createEmptyRouter(), {
 				threadId,
 				userId: "test-user",
 				abortSignal: controller.signal,
@@ -2424,7 +2429,7 @@ describe("AgentLoop", () => {
 
 			// shouldYield returns true after the first LLM call (before tool execution)
 			let llmCallCount = 0;
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => {
@@ -2484,7 +2489,7 @@ describe("AgentLoop", () => {
 				}
 			};
 
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => chunksSeen >= 2, // yield after 2 text chunks
@@ -2504,7 +2509,7 @@ describe("AgentLoop", () => {
 
 			const sandbox = createMockSandbox();
 
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => false,
@@ -2522,7 +2527,7 @@ describe("AgentLoop", () => {
 
 			const sandbox = createMockSandbox();
 
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => false,
@@ -2545,7 +2550,7 @@ describe("AgentLoop", () => {
 			const ctx = makeCtx();
 			// ctx has hostName: "test-host" and siteId: "test-site-id"
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2600,7 +2605,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2667,7 +2672,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2722,7 +2727,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2829,7 +2834,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 				toolRegistry,
@@ -2899,7 +2904,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2937,7 +2942,7 @@ describe("AgentLoop", () => {
 				const mockBash = createMockSandbox();
 				const ctx = makeCtx();
 
-				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 					threadId,
 					userId: "test-user",
 				});
@@ -2999,7 +3004,7 @@ describe("AgentLoop", () => {
 				const mockBash = createMockSandbox();
 				const ctx = makeCtx();
 
-				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 					threadId,
 					userId: "test-user",
 				});
@@ -3065,7 +3070,7 @@ describe("AgentLoop", () => {
 				const mockBash = createMockSandbox();
 				const ctx = makeCtx();
 
-				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 					threadId,
 					userId: "test-user",
 				});
@@ -3112,7 +3117,7 @@ describe("AgentLoop", () => {
 				const mockBash = createMockSandbox();
 				const ctx = makeCtx();
 
-				const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 					threadId,
 					userId: "test-user",
 				});
@@ -3146,7 +3151,7 @@ describe("AgentLoop", () => {
 					};
 				});
 
-				const agentLoop = new AgentLoop(
+				const agentLoop = new MainAgentLoop(
 					makeCtx(),
 					createMockSandbox(),
 					createMockRouter(mockBackend),
