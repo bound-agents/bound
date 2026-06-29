@@ -25,6 +25,12 @@ export interface ProviderStreamParams {
 	providerName: string;
 	stream: () => AsyncIterable<unknown>;
 	map?: Omit<MapChunksOptions, "providerName">;
+	/**
+	 * Abort signal, consulted by the empty-completion retry so a cancelled turn
+	 * is not re-issued. When omitted, retries proceed (the bounded count caps
+	 * them regardless).
+	 */
+	signal?: AbortSignal;
 }
 
 export async function* mapProviderStream(params: ProviderStreamParams): AsyncIterable<StreamChunk> {
@@ -40,7 +46,16 @@ export async function* mapProviderStream(params: ProviderStreamParams): AsyncIte
 
 export async function* runProviderStream(params: ProviderStreamParams): AsyncIterable<StreamChunk> {
 	yield { type: "heartbeat" };
-	yield* mapProviderStream(params);
+	// Universal empty-completion retry: every driver routing through here gets
+	// the same protection a dropped/empty stream needs, rather than each driver
+	// hand-rolling it. A fully-empty turn (no thinking/text/tool) would
+	// otherwise slip past the agent loop's degenerate-turn guard (which keys on
+	// thinking) and record as a silent success. mapProviderStream re-invokes the
+	// fresh `stream` thunk per attempt, so a re-issue is a clean new request.
+	yield* withEmptyRetry(() => mapProviderStream(params), {
+		maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+		isAborted: () => params.signal?.aborted ?? false,
+	});
 }
 
 /** Default bound for {@link withEmptyRetry} re-issues. */

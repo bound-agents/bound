@@ -4,7 +4,12 @@ import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { ANTHROPIC_ENVELOPE, PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
-import { mapProviderStream, resolveProviderFetch } from "./shared";
+import {
+	EMPTY_COMPLETION_MAX_RETRIES,
+	mapProviderStream,
+	resolveProviderFetch,
+	withEmptyRetry,
+} from "./shared";
 
 const DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 const PROVIDER_NAME = "opencode-go";
@@ -89,20 +94,27 @@ export class OpenCodeGoDriver implements LLMBackend {
 				// `thinking`-signature gotcha in CONTRIBUTING). "anthropic" drops them.
 				reasoningProviderOptions: "anthropic",
 			});
-			yield* mapProviderStream({
-				providerName: PROVIDER_NAME,
-				stream: () =>
-					streamText({
-						model: this.anthropicProvider.messages(modelId),
-						messages,
-						...(params.system && { system: params.system }),
-						...(tools && { tools }),
-						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-						...(params.temperature !== undefined && { temperature: params.temperature }),
-						abortSignal: params.signal,
-					}).fullStream,
-				map: { estimateInputFromMessages: params.messages },
-			});
+			yield* withEmptyRetry(
+				() =>
+					mapProviderStream({
+						providerName: PROVIDER_NAME,
+						stream: () =>
+							streamText({
+								model: this.anthropicProvider.messages(modelId),
+								messages,
+								...(params.system && { system: params.system }),
+								...(tools && { tools }),
+								...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+								...(params.temperature !== undefined && { temperature: params.temperature }),
+								abortSignal: params.signal,
+							}).fullStream,
+						map: { estimateInputFromMessages: params.messages },
+					}),
+				{
+					maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+					isAborted: () => params.signal?.aborted ?? false,
+				},
+			);
 			return;
 		}
 
@@ -117,20 +129,27 @@ export class OpenCodeGoDriver implements LLMBackend {
 			// that lacks encrypted continuation state, matching the mantle driver.
 			reasoningProviderOptions: "openai",
 		});
-		yield* mapProviderStream({
-			providerName: PROVIDER_NAME,
-			stream: () =>
-				streamText({
-					model: this.openaiProvider.chatModel(modelId),
-					messages,
-					...(params.system && { system: params.system }),
-					...(tools && { tools }),
-					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-					...(params.temperature !== undefined && { temperature: params.temperature }),
-					abortSignal: params.signal,
-				}).fullStream,
-			map: { estimateInputFromMessages: params.messages },
-		});
+		yield* withEmptyRetry(
+			() =>
+				mapProviderStream({
+					providerName: PROVIDER_NAME,
+					stream: () =>
+						streamText({
+							model: this.openaiProvider.chatModel(modelId),
+							messages,
+							...(params.system && { system: params.system }),
+							...(tools && { tools }),
+							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+							...(params.temperature !== undefined && { temperature: params.temperature }),
+							abortSignal: params.signal,
+						}).fullStream,
+					map: { estimateInputFromMessages: params.messages },
+				}),
+			{
+				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+				isAborted: () => params.signal?.aborted ?? false,
+			},
+		);
 	}
 
 	capabilities(): BackendCapabilities {

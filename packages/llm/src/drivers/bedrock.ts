@@ -274,6 +274,7 @@ export class BedrockDriver implements LLMBackend {
 		// timeout. This matches the legacy driver's messageStart behavior.
 		yield* runProviderStream({
 			providerName: "bedrock",
+			signal: params.signal,
 			stream: () =>
 				streamText({
 					model: this.provider.languageModel(modelId),

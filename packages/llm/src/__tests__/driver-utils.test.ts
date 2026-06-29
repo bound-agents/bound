@@ -23,6 +23,16 @@ async function* failingAiSdkStream(): AsyncIterable<unknown> {
 	throw Object.assign(new Error("upstream broke"), { statusCode: 503 });
 }
 
+// A clean finish with NO content and zero output — the shape a dropped stream
+// produces (the provider closed the stream before emitting any token).
+async function* emptyAiSdkStream(): AsyncIterable<unknown> {
+	yield {
+		type: "finish",
+		finishReason: "stop",
+		totalUsage: { inputTokens: 4, outputTokens: 0 },
+	};
+}
+
 describe("driver stream utilities", () => {
 	it("runProviderStream emits the initial heartbeat before mapped stream chunks", async () => {
 		const chunks = await collect(
@@ -69,6 +79,52 @@ describe("driver stream utilities", () => {
 		);
 
 		expect(chunks[0]).toEqual({ type: "text", content: "hello" });
+	});
+
+	it("runProviderStream re-issues an empty completion (universal empty-retry)", async () => {
+		// A dropped stream that finishes empty (output_tokens=0, no content) must
+		// be re-issued at the shared layer so EVERY driver routing through
+		// runProviderStream (bedrock, openai-compatible, …) gets the protection —
+		// not just the two that hand-rolled withEmptyRetry. Otherwise a
+		// fully-empty turn (no thinking either) slips past the loop's
+		// degenerate-turn guard and records as a silent success.
+		let attempt = 0;
+		const chunks = await collect(
+			runProviderStream({
+				providerName: "test-provider",
+				stream: () => {
+					attempt++;
+					return attempt === 1 ? emptyAiSdkStream() : normalAiSdkStream();
+				},
+				map: { estimateInputFromMessages: [{ role: "user", content: "hi" }] },
+			}),
+		);
+
+		expect(attempt).toBe(2); // empty attempt swallowed, re-issued
+		// The recovered (non-empty) completion is what the consumer sees.
+		expect(chunks.some((c) => c.type === "text" && c.content === "hello")).toBe(true);
+		const done = chunks.find((c) => c.type === "done");
+		expect(done).toMatchObject({ type: "done", usage: { output_tokens: 2 } });
+		// Exactly one heartbeat (up front), not one per retry attempt.
+		expect(chunks.filter((c) => c.type === "heartbeat").length).toBe(1);
+	});
+
+	it("runProviderStream gives up after the empty-retry bound and surfaces the empty done", async () => {
+		let attempt = 0;
+		const chunks = await collect(
+			runProviderStream({
+				providerName: "test-provider",
+				stream: () => {
+					attempt++;
+					return emptyAiSdkStream();
+				},
+				map: { estimateInputFromMessages: [{ role: "user", content: "hi" }] },
+			}),
+		);
+		// original + EMPTY_COMPLETION_MAX_RETRIES (2) = 3 attempts, then pass through.
+		expect(attempt).toBe(3);
+		const done = chunks.find((c) => c.type === "done");
+		expect(done).toBeDefined();
 	});
 });
 
