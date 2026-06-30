@@ -449,13 +449,19 @@ export class WsTransport {
 	/**
 	 * Handle incoming changelog_ack frame from a peer.
 	 *
-	 * Updates last_sent cursor to the HLC the peer confirmed.
+	 * Updates last_sent cursor to the HLC the peer confirmed, and advances the
+	 * authoritative last_confirmed watermark. last_confirmed is advanced ONLY
+	 * here — never on the optimistic send-side write in flushChangelogEntries —
+	 * so it is a true acknowledgement watermark and the sole anchor authority
+	 * for delegation range segments (R-UD7/R-UD11). See
+	 * docs/design/specs/2026-06-29-unified-delegation.md.
 	 */
 	handleChangelogAck(peerSiteId: string, payload: ChangelogAckPayload): void {
 		const { cursor } = payload;
 
 		updatePeerCursor(this.config.db, peerSiteId, {
 			last_sent: cursor,
+			last_confirmed: cursor,
 		});
 
 		this.config.logger?.debug("WsTransport changelog_ack received", {
@@ -1147,10 +1153,18 @@ export class WsTransport {
 		// from the right point and the pruner knows the spoke has everything
 		// up to this HLC. Without this, last_sent stays at HLC_ZERO and the
 		// drain relies on un-pruned changelog entries that may already be gone.
+		// SNAPSHOT_ACK is a genuine acknowledgement that the spoke applied every
+		// snapshot row up to snapshotHlc, so it advances last_confirmed (the
+		// peer-acknowledged watermark) too — distinct from the optimistic
+		// send-side write in flushChangelogEntries, which never advances it
+		// (R-UD7). Without this, last_confirmed would stay HLC_ZERO after a
+		// fresh snapshot, forcing all delegated history inline until the first
+		// post-snapshot changelog ack.
 		if (snapshotHlc) {
 			updatePeerCursor(this.config.db, peerSiteId, {
 				last_received: snapshotHlc,
 				last_sent: snapshotHlc,
+				last_confirmed: snapshotHlc,
 			});
 		}
 

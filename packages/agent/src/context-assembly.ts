@@ -117,6 +117,51 @@ export function computeSafetyMargin(contextWindow: number): number {
 	);
 }
 
+/**
+ * The ONLY source of "now" permitted inside `assembleContext`. Every wall-clock
+ * read in the assembly tree — `buildVolatileContext`'s relative-time anchor, the
+ * `formatInstant` year branch, the `bumpRenderedDetailEntries` debounce, and the
+ * Live State subsystems — draws its instant from this clock, so the produced
+ * `{messages, systemPrompt}` is a pure function of `(DB state, AssemblyContext)`
+ * (R-UD4 / AC.3). This extends the R-VC25 stable-prefix purity invariant to the
+ * *varying* Live State half: the producer assembles the whole context and ships
+ * it (segments), and no consumer ever re-renders Live State, so the producer's
+ * render must itself be deterministic given a fixed clock.
+ *
+ * Production callers pass `realTimeClock()` (delegates to `Date.now()`); tests
+ * pass `frozenClock(ms)` so two runs at different real times agree byte-for-byte.
+ */
+export interface AssemblyClock {
+	/** Milliseconds since the Unix epoch. The single ambient-time read. */
+	nowMs(): number;
+}
+
+/** A clock backed by the real wall clock. The production default. */
+export function realTimeClock(): AssemblyClock {
+	return { nowMs: () => Date.now() };
+}
+
+/** A clock frozen at a fixed instant. Used by determinism tests and any caller
+ * that needs two assemblies to agree byte-for-byte. */
+export function frozenClock(ms: number): AssemblyClock {
+	return { nowMs: () => ms };
+}
+
+/**
+ * The explicit assembly environment threaded into `assembleContext`. Bundles the
+ * three signals that make assembly a pure function of `(DB, AssemblyContext)`:
+ * the clock (sole "now"), the target backend capabilities (drives content-block
+ * substitution), and host identity (rendered into orientation). Capabilities and
+ * host are carried as individual `ContextParams` fields for backward compat; this
+ * type documents that together with `clock` they constitute the assembly context.
+ * See docs/design/specs/2026-06-29-unified-delegation.md §2.
+ */
+export interface AssemblyContext {
+	clock: AssemblyClock;
+	capabilities?: BackendCapabilities;
+	host?: { hostName?: string; siteId?: string; topologyRole?: "hub" | "spoke" };
+}
+
 export interface ContextParams {
 	db: Database;
 	threadId: string;
@@ -187,6 +232,16 @@ export interface ContextParams {
 	 * instance per process.
 	 */
 	stableSubsectionCache?: StableSubsectionCache;
+	/**
+	 * The sole source of "now" for this assembly (R-UD4 / AC.3). When supplied,
+	 * EVERY wall-clock read in the assembly tree draws from it, so the produced
+	 * `{messages, systemPrompt}` is a pure function of `(DB, clock)`. Defaults to
+	 * `realTimeClock()` when omitted, preserving current production behavior.
+	 * Determinism tests pass `frozenClock(ms)`; the single-delegation producer
+	 * passes `realTimeClock()` so its assembled output is reproducible from the
+	 * same `(DB, clock)` on any host.
+	 */
+	clock?: AssemblyClock;
 }
 
 export interface ContextAssemblyResult {
@@ -1026,8 +1081,12 @@ function formatUtcOffset(offsetMinutes: number): string {
  * and a `UTC±HH:MM` suffix is appended so the local time is unambiguous:
  *   "[Jun 5, 18:38 UTC-04:00]". The year-variant check uses the shifted (local) year.
  */
-export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): string {
-	return `[${formatInstant(isoTimestamp, offsetMinutes)}]`;
+export function formatTimestamp(
+	isoTimestamp: string,
+	offsetMinutes?: number,
+	nowMsRef?: number,
+): string {
+	return `[${formatInstant(isoTimestamp, offsetMinutes, nowMsRef)}]`;
 }
 
 /**
@@ -1040,8 +1099,21 @@ export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): s
  * Without an offset, components are read in UTC: same-year "Apr 4, 14:30 UTC",
  * different year "Jan 15 '25, 09:45 UTC". With `offsetMinutes` the instant is
  * shifted into the sender's local wall-clock and a `UTC±HH:MM` suffix appended.
+ *
+ * The "same year?" comparison is the function's ONLY wall-clock dependency. Pass
+ * `nowMsRef` (the AssemblyClock instant) to make it deterministic across hosts —
+ * two hosts in different calendar years rendering the same `created_at` would
+ * otherwise disagree (`Dec 31, 23:59 UTC` vs `Dec 31 '25, 23:59 UTC`), breaking
+ * the cross-host byte-equivalence the single-delegation path needs (R-UD4 /
+ * AC.3). When omitted, falls back to `Date.now()` (legacy callers, e.g. CLI
+ * formatting) — the value never crosses a relay so that residual impurity is
+ * harmless there.
  */
-export function formatInstant(isoTimestamp: string, offsetMinutes?: number): string {
+export function formatInstant(
+	isoTimestamp: string,
+	offsetMinutes?: number,
+	nowMsRef?: number,
+): string {
 	const utc = new Date(isoTimestamp);
 	const hasOffset = typeof offsetMinutes === "number" && Number.isFinite(offsetMinutes);
 	// Shift to the sender's local wall-clock, then read UTC components off the
@@ -1059,7 +1131,7 @@ export function formatInstant(isoTimestamp: string, offsetMinutes?: number): str
 	// sender-local time.
 	const suffix = hasOffset ? ` ${formatUtcOffset(offsetMinutes as number)}` : " UTC";
 
-	const currentYear = new Date().getUTCFullYear();
+	const currentYear = new Date(nowMsRef ?? Date.now()).getUTCFullYear();
 	if (d.getUTCFullYear() !== currentYear) {
 		const yearShort = String(d.getUTCFullYear()).slice(-2);
 		return `${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}`;
@@ -1093,6 +1165,12 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		targetCapabilities,
 		effectiveTruncationRatio = TRUNCATION_TARGET_RATIO,
 	} = params;
+
+	// The sole source of "now" for this assembly (R-UD4 / AC.3). Resolved ONCE
+	// here and threaded into every wall-clock-dependent subtree (annotation year
+	// branch, volatile context, Live State, last_accessed_at debounce). Defaults
+	// to the real clock for production callers that have not been threaded yet.
+	const assemblyNowMs = (params.clock ?? realTimeClock()).nowMs();
 
 	const sections: ContextSection[] = [];
 	let budgetPressure = false;
@@ -1241,7 +1319,7 @@ Original output was too large for the context window. If you need the full conte
 	// annotation. See `annotation/` for the full contract;
 	// property-tested at annotation/__tests__/annotate.property.test.ts.
 	const stage5Span = getTracer().startSpan("context.stage-5-annotation");
-	const annotated = annotateMessages({ messages: sanitized });
+	const annotated = annotateMessages({ messages: sanitized, nowMs: assemblyNowMs });
 	stage5Span.end();
 
 	// Stage 5b: CONTENT_SUBSTITUTION
@@ -1453,6 +1531,7 @@ Original output was too large for the context window. If you need the full conte
 			assistantMessageText,
 			inactiveSkillRef,
 			taskType: params.taskType,
+			nowMs: assemblyNowMs,
 		});
 
 		// STABLE PREFIX: fold WK bodies + DA titles + skill index into systemParts.
@@ -1541,7 +1620,7 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 5.5 (noHistory path): Inject enrichment
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
-		const nowMs = Date.now();
+		const nowMs = assemblyNowMs;
 
 		const inputs = loadVolatileSectionInputs({
 			db,
@@ -1707,7 +1786,7 @@ Original output was too large for the context window. If you need the full conte
 		// At this point, enrichmentBaseline is guaranteed to be non-undefined (caller checks it).
 		// biome-ignore lint/style/noNonNullAssertion: Caller checked the condition above
 		const baseline = enrichmentBaseline!;
-		const nowMs = Date.now();
+		const nowMs = assemblyNowMs;
 
 		const inputs = loadVolatileSectionInputs({
 			db,

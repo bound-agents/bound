@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
-import { getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
+import { getConfirmedSyncWatermark, getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
 import { MicrotaskCoalescer } from "../ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -94,6 +94,7 @@ describe("WsTransport", () => {
 				peer_site_id TEXT PRIMARY KEY,
 				last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 				last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+				last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 				sync_errors INTEGER DEFAULT 0,
 				last_sync_at TEXT
 			)
@@ -368,6 +369,45 @@ describe("WsTransport", () => {
 
 			const cursor = getPeerCursor(db, "peer-1");
 			expect(cursor?.last_sent).toBe("2026-03-22T10:00:00.000Z_0005_hub");
+		});
+
+		// AC.5 (R-UD7): last_confirmed is the peer-acknowledged watermark and the
+		// sole anchor authority for delegation range segments. It must advance ONLY
+		// on changelog_ack — never on the optimistic send-side write (the flush in
+		// flushChangelogEntries). This test drives a flush, asserts the watermark is
+		// still HLC_ZERO, then drives an ack and asserts it advances.
+		it("advances last_confirmed ONLY on ack, never on the optimistic send", async () => {
+			transport.start();
+
+			const key = new Uint8Array(32).fill(1);
+			transport.addPeer("peer-1", () => true, key);
+
+			// Insert a hub-originated changelog entry and emit the write event so
+			// flushChangelogEntries runs (the optimistic send-side path).
+			const now = new Date().toISOString();
+			const hlc = "2026-03-22T10:00:00.000Z_0007_hub";
+			db.run(
+				`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				[hlc, "semantic_memory", "mem-7", "hub", now, "{}"],
+			);
+			eventBus.emit("changelog:written", {
+				hlc,
+				tableName: "semantic_memory",
+				siteId: "hub",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// Optimistic send advanced last_sent...
+			expect(getPeerCursor(db, "peer-1")?.last_sent).toBe(hlc);
+			// ...but NOT the confirmed watermark.
+			expect(getConfirmedSyncWatermark(db, "peer-1")).toBe(HLC_ZERO);
+
+			// The peer now acks. ONLY now does last_confirmed advance.
+			transport.handleChangelogAck("peer-1", { cursor: hlc });
+			expect(getConfirmedSyncWatermark(db, "peer-1")).toBe(hlc);
+
+			transport.stop();
 		});
 	});
 

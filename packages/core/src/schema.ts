@@ -488,13 +488,27 @@ export function applySchema(db: Database): void {
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS sync_state (
-			peer_site_id  TEXT PRIMARY KEY,
-			last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
-			last_sent     TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
-			last_sync_at  TEXT,
-			sync_errors   INTEGER DEFAULT 0
+			peer_site_id   TEXT PRIMARY KEY,
+			last_received  TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_sent      TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_sync_at   TEXT,
+			sync_errors    INTEGER DEFAULT 0
 		) STRICT
 	`);
+
+	// last_confirmed column migration (idempotent — ignore if column already
+	// exists). Distinct from last_sent (optimistic) and last_received (inbound):
+	// last_confirmed is the peer-acknowledged watermark, advanced ONLY on
+	// changelog_ack, and is the sole anchor authority for delegation range
+	// segments (R-UD7/R-UD11). See docs/design/specs/2026-06-29-unified-delegation.md.
+	try {
+		db.run(
+			"ALTER TABLE sync_state ADD COLUMN last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000'",
+		);
+	} catch {
+		/* already exists */
+	}
 
 	// 17. host_meta (non-replicated, local-only)
 	db.run(`

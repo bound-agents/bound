@@ -231,6 +231,15 @@ export interface SyncState {
 	peer_site_id: string;
 	last_received: string;
 	last_sent: string;
+	/**
+	 * Highest HLC this peer has ACKNOWLEDGED receiving from us, advanced ONLY in
+	 * handleChangelogAck (never on the optimistic send-side write). This is the
+	 * sole anchor authority for delegation range segments: a range may cover a
+	 * row only if that row's change_log HLC <= last_confirmed for the consumer.
+	 * Distinct from last_sent (optimistic, advanced on send) — see R-UD7/R-UD11
+	 * in docs/design/specs/2026-06-29-unified-delegation.md.
+	 */
+	last_confirmed: string;
 	last_sync_at: string | null;
 	sync_errors: number;
 }
