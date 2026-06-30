@@ -31,6 +31,20 @@ export const cancelPayloadSchema = z.object({
 	reason: z.string().optional(),
 });
 
+export const clientToolPayloadSchema = z.object({
+	thread_id: z.string().min(1),
+	call_id: z.string().min(1),
+	tool_name: z.string().min(1),
+	args: z.record(z.string(), z.unknown()),
+	timeout_ms: z.number().int().positive(),
+});
+
+export const clientResultPayloadSchema = z.object({
+	call_id: z.string().min(1),
+	content: z.string(),
+	is_error: z.boolean(),
+});
+
 /**
  * The single delegation wire representation (R-UD3). Mirrors the `ContextSegment`
  * type in types.ts. A delegated inference payload carries `segments` instead of
@@ -226,8 +240,10 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	cancel: cancelPayloadSchema,
 	inference: inferenceRequestPayloadSchema,
 	intake: intakePayloadSchema,
+	client_tool: clientToolPayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,
+	client_result: clientResultPayloadSchema,
 	stream_chunk: streamChunkPayloadSchema,
 	stream_end: streamEndPayloadSchema,
 	status_forward: statusForwardPayloadSchema,

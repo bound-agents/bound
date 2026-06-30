@@ -487,6 +487,14 @@ export const RELAY_KIND_REGISTRY = {
 	// Platform MCP request — proxies arbitrary MCP protocol requests to a platform server on the target host
 	platform_request: { dispatch: "sync" },
 
+	// Client-tool request — relays a client (boundless/WS) tool call to the host
+	// holding the thread's live WS session, so the loop can run on ANY host and
+	// still serve client tools (R-UD5/R-UD8). The session host enqueues the call
+	// into its local WS dispatch, awaits the client's execution, and returns a
+	// `client_result`. async (not sync): the client may take arbitrarily long to
+	// execute, so the result returns out-of-band via relay_inbox polling.
+	client_tool: { dispatch: "async" },
+
 	// Async request kinds — fire-and-forget, processed via relay_inbox
 	cancel: { dispatch: "async" },
 	inference: { dispatch: "async" },
@@ -504,6 +512,11 @@ export const RELAY_KIND_REGISTRY = {
 	// Response kinds — stored in relay_inbox for polling loops
 	result: { dispatch: "response" },
 	error: { dispatch: "response" },
+	// Client-tool result — the session host's response to a `client_tool`
+	// request, carrying the executed client tool's output back to the loop that
+	// relayed the call. Mirrors `result`/`error` but distinct so the relay-wait
+	// stream can correlate it to the originating `client_tool` request.
+	client_result: { dispatch: "response" },
 	stream_chunk: { dispatch: "response" },
 	stream_end: { dispatch: "response" },
 	status_forward: { dispatch: "response" },
@@ -619,6 +632,31 @@ export interface PlatformRequestPayload {
 	method: string;
 	params: Record<string, unknown>;
 	timeout_ms: number;
+}
+
+/**
+ * `client_tool` relay request: relays a client (boundless/WS) tool call to the
+ * host holding the thread's live WS session. `thread_id` resolves the session
+ * host from the synced `client_sessions` table; `call_id` is the tool-call id
+ * (the idempotency key for the returned result, R-UD9).
+ */
+export interface ClientToolPayload {
+	thread_id: string;
+	call_id: string;
+	tool_name: string;
+	args: Record<string, unknown>;
+	timeout_ms: number;
+}
+
+/**
+ * `client_result` relay response: the session host's reply to a `client_tool`
+ * request, carrying the executed client tool's output (or an error) back to the
+ * loop that relayed the call.
+ */
+export interface ClientResultPayload {
+	call_id: string;
+	content: string;
+	is_error: boolean;
 }
 
 // Response payloads (target -> requester)
