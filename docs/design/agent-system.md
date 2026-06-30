@@ -158,7 +158,7 @@ interface ContextParams {
   noHistory?:      boolean;                   // skip message retrieval (default: false)
   hostName?:       string;
   siteId?:         string;
-  relayInfo?: {                               // injected for delegated loops
+  relayInfo?: {                               // injected when inference relays to a remote host
     remoteHost: string;
     localHost:  string;
     model:      string;
@@ -1356,7 +1356,7 @@ When `resolveModel()` returns `kind: "remote"`, `LLM_CALL` constructs an `Infere
 8. Per-host timeout: `inference_timeout_ms` (default 300s, configurable via `sync.relay.inference_timeout_ms`). On timeout, generates a new `stream_id` and retries on the next eligible host.
 9. After the first chunk, records `relay_target` and `relay_latency_ms` on the turn row via `recordTurnRelayMetrics`.
 
-**Large prompts (AC1.9):** If the serialized `InferenceRequestPayload` exceeds 2MB, the messages array is written to the `files` table (path `cluster/relay/inference-{uuid}.json`) and the payload sets `messages_file_ref` / `messages: []`. The file syncs to all cluster hosts; the target reads it by path.
+**Segmented context wire format (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD3/R-UD6):** The `InferenceRequestPayload` carries `segments: ContextSegment[]` instead of `messages`. A segment is `{kind:"inline"; message}` | `{kind:"range"; thread_id; anchor_created_at; count}`. The producer (`segmentAssembledMessages` in `packages/agent/src/delegation-segments.ts`) emits at most ONE range-pointer covering the confirmed-synced history prefix plus inline segments for the tail; the consumer (`resolveSegments`, same file) rebuilds history byte-for-byte by re-running the same Stage-1 projection finder + annotator. The consumer cannot import `assembleContext`, so consumer re-assembly is structurally unrepresentable (R-UD2). A single range-pointer is kilobytes regardless of token count, so the prior `messages_file_ref` / >2MB `files`-table offload is removed (an audit script, `scripts/validate-no-files-relay-offload.ts` wired into `bun check`, asserts no relay payload path writes the `files` table — R-UD14).
 
 ### `RELAY_WAIT` — Remote Tool Calls
 
@@ -1377,36 +1377,32 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 | `prompt_invoke` | `executePromptInvoke()` | Invokes MCP prompt |
 | `cache_warm` | `executeCacheWarm()` | Warms the file cache for requested paths. |
 | `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries |
-| `process` | `executeProcess()` | Starts a full `AgentLoop` on the delegated thread, emits `status_forward` outbox entries |
-| `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a four-tier algorithm (thread affinity → model match → tool match → least-loaded fallback) and writes a `process` outbox entry targeting the selected host. |
+| `client_tool` | (client dispatch) | Request: relays a client (WS) tool call to the session host, which enqueues it into its local WS dispatch and returns a `client_result`. |
+| `client_result` | (client dispatch) | Response: carries the result/error of a relayed `client_tool` call back to the loop host. `enqueueToolResult` is idempotent on `(thread_id, call_id)`. |
+| `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a four-tier algorithm (thread affinity → model match → tool match → least-loaded fallback); the selected host then runs the loop locally (no `process` entry). |
 | `platform_deliver` | `handlePlatformDeliver()` | Emits `platform:deliver` on the local event bus so the platform connector delivers the message to the external platform. |
 | `event_broadcast` | `handleEventBroadcast()` | Fires the named event locally on the event bus; sync routes broadcast entries to all spokes except the source. |
 
-`cancel` entries are special-cased: when encountered in the inbox, they abort any active inference stream for the referenced `ref_id` and are not routed through the dispatch table. `status_forward` entries originate from `executeProcess` and are consumed by the requester-side cache to serve `/api/threads/{id}/status`.
+The `process` relay kind is **removed** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD13): there is no whole-loop delegation. The loop always runs on the trigger host, which relays only inference (as segments) and tool calls.
+
+`cancel` entries are special-cased: when encountered in the inbox, they abort any active inference stream for the referenced `ref_id` and are not routed through the dispatch table.
 
 **`executeInference` buffering:** Chunks are flushed to outbox at 200ms timer OR 4KB buffer threshold, whichever fires first. The final flush is always `stream_end`. Each flush records a `relay_cycles` row. Cancel aborts the `for await` loop via `AbortController.signal.aborted` and writes an `error` response.
-
-**`executeProcess` — platform tools:** When `payload.platform` is set and a `PlatformConnectorRegistry` has been injected, `executeProcess()` calls `getPlatformTools()` on the matching connector and passes the result into the delegated `AgentLoopConfig`. This allows the delegated loop to call platform tools (e.g., `discord_send_message`) explicitly. After the loop completes, a `platform:deliver` event with empty content is emitted to stop the typing indicator regardless of whether the agent produced output. When `payload.platform` is not set, the legacy auto-deliver path finds the last assistant message and emits it.
 
 **`setPlatformConnectorRegistry(registry)`:** Wired at startup (after `PlatformConnectorRegistry` is created) to avoid circular initialization order. The `setAgentLoopFactory(factory)` method is wired similarly.
 
 **Constructor:** `new RelayProcessor(db, siteId, mcpClients, modelRouter, keyringSiteIds, logger, eventBus, appCtx?, relayConfig?, threadAffinityMap?, agentLoopFactory?)`
 
-### Loop Delegation
+### Delegation — One Path
 
-**Source:** `packages/agent/src/delegation.ts`, `packages/cli/src/commands/start/server.ts`
+**Source:** `packages/agent/src/delegation-segments.ts`, `packages/cli/src/commands/start/server.ts`
 
-Before starting a local `AgentLoop`, `server.ts` checks `getDelegationTarget()` which returns a target `EligibleHost` when all AC6.1 conditions hold:
+**Canonical spec:** `docs/design/specs/2026-06-29-unified-delegation.md` (R-UD requirement numbers below).
 
-1. `resolveModel()` returns `kind: "remote"` for the thread's model.
-2. Exactly one host has the model.
-3. That host has ≥50% of the thread's 20 most-recent tool calls in its `mcp_tools`.
-4. Vacuous match: threads with no tool history also delegate (condition 3 vacuously true).
+There is **one delegation path** (R-UD1/R-UD13). The whole-loop `process` path, the `getDelegationTarget()` ≥50%-tool-affinity heuristic, and `getClientSessionDelegationTarget`/`hasLocalClientSession` are all deleted. `server.ts handleThread` no longer has a delegate-vs-local branch: the loop ALWAYS runs locally on the trigger host (the producer that received the trigger and owns authoritative state), and platform intake likewise runs the loop locally on the selected host. The producer assembles context locally — where the data provably exists — and relays only **inference** (as segments, see `RELAY_STREAM` above) and **tool calls**. No consumer ever re-assembles context from its own replica; because the inference consumer cannot import `assembleContext`, consumer re-assembly is structurally unrepresentable (R-UD2).
 
-When delegation fires, `dispatchDelegation()` writes a `process` outbox entry targeting the host and polls for a new assistant message to appear in the thread (indicating the delegated loop finished and synced back). The originator tracks the delegation in `activeDelegations` for cancel routing: cancel emits `agent:cancel` locally AND writes a `cancel` relay message with `ref_id` matching the `process` outbox entry ID.
+This closes the `history: 0` bug class: previously a fresh web thread's first message could be whole-loop-delegated to a host whose replica had not converged, producing an empty-history model call. Now the consumer resolves a range only over rows it has *confirmed* receiving (see the confirmed-sync watermark in `docs/design/sync-protocol.md`).
 
-**Status forwarding:** While the delegated loop runs on the target, `executeProcess()` writes `status_forward` outbox entries on each state change. These sync back and are received by the originating host's `RelayProcessor`, which emits `status:forward` events cached in `statusForwardCache`. The web server serves this from `/api/threads/{id}/status`.
+**Affinity is an optimization, not a requirement (R-UD12).** Running a loop or serving a tool on the host that owns the data/connection saves round-trips, but is never required for correctness; when the affine host is unreachable, the work proceeds elsewhere via relay.
 
-**Confirmed tools on delegated loops:** `AgentLoop` instances created by `executeProcess()` use `taskId = "delegated-{id}"`, which does NOT start with `"interactive-"`. The MCP bridge blocks confirmed-tool prompts for non-interactive task IDs, so the delegated agent receives block errors instead of asking the user for confirmation.
-
-**`ProcessPayload.message_id` resolution:** The `message_id` the spoke forwards must exist in the delegating host's `messages` table so `executeProcess()` can load it. User-message queue entries already store the real message id, but `enqueueNotification()` stores a synthetic UUID, so forwarding `dispatch_queue.message_id` directly drops notifications on the receiving side. `resolveDelegationMessageId()` in `packages/cli/src/commands/start/server.ts` injects any claimed notifications into `messages` and returns the id to forward. `executeProcess()` degrades gracefully (warns, proceeds on thread state) when it cannot resolve the row, but the spoke remains the source of truth — see critical invariant 18 in [CONTRIBUTING.md](../../CONTRIBUTING.md#critical-invariants).
+**`AssemblyContext` / clock purity (R-UD4).** `assembleContext()` takes an `AssemblyClock` (via `ContextParams.clock`); its output is a pure function of `(DB, clock)` — including the varying Live State half and the `formatInstant` year branch — so no wall-clock or environment read influences byte output. `realTimeClock()` / `frozenClock(ms)` helpers exist. The producer captures one `nowMs` and ships it on the relay payload, so the consumer's range re-annotation in `resolveSegments` matches the producer's byte-for-byte (R-UD10). This extends the R-VC25 stable-prefix purity invariant to the full assembled context.

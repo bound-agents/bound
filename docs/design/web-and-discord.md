@@ -39,7 +39,6 @@ interface WebServerConfig {
   models?: ModelsConfig;
   siteId?: string;
   statusForwardCache?: Map<string, StatusForwardPayload>;
-  activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
   activeLoops?: Set<string>;
 }
 
@@ -432,7 +431,7 @@ The module does not implement automatic reconnection. A connection dropped by th
 
 The web UI can act as an [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) **renderer** for the servers the agent already connects to. When a server in `mcp.json` advertises the `io.modelcontextprotocol/ui` capability and binds UI resources to its tools, its UI-bearing tool results render as interactive apps inline in the conversation. The agent calls those tools **server-side** as normal — the browser is purely a renderer, never a second tool provider. Renderer and sourcing live entirely in the web router (`:3001`) and never touch the sync router.
 
-**Why renderer-not-provider.** An earlier iteration registered the app servers' tools on the shared `BoundClient` as **client tools** (the deferral mechanism `boundless` uses), with a dedicated `mcp_apps.json` config listing browser-reachable servers. That created two doors for the same tool — an agent-side one and a browser-side one that goes dead whenever there's no live web session (invariant #21) — and forced a parallel config for servers the agent already knew about. The renderer model drops both: there is no `mcp_apps.json`, and the browser registers nothing on the client.
+**Why renderer-not-provider.** An earlier iteration registered the app servers' tools on the shared `BoundClient` as **client tools** (the deferral mechanism `boundless` uses), with a dedicated `mcp_apps.json` config listing browser-reachable servers. That created two doors for the same tool — an agent-side one and a browser-side one that requires a live web session — and forced a parallel config for servers the agent already knew about. (Client tools that do require a WS session now dispatch uniformly: a loop on a non-session host relays a `client_tool` request to the session host and awaits a `client_result`, so session affinity is an optimization, not a correctness requirement — `docs/design/specs/2026-06-29-unified-delegation.md`, R-UD5/R-UD8/R-UD12.) The renderer model drops both: there is no `mcp_apps.json`, and the browser registers nothing on the client.
 
 **Config and discovery.** App-bearing servers are discovered by joining `mcp.json` (the agent's server-side connections) against the synced **capability inventory** — `hosts.mcp_capabilities`, captured at connect time, records each server's `serverInfo` and the per-tool `ui://` resource bindings. `GET /api/mcp-apps` (`routes/mcp-apps.ts`) returns the browser-reachable subset (`http`/`sse` transports) as same-origin `proxyPath`s plus each server's UI-bearing `tools`; the real upstream `url` and any auth `headers` stay server-side and are injected by the proxy, never sent to the browser. `stdio` servers are excluded — a browser cannot reach them.
 
@@ -476,7 +475,7 @@ interface PlatformConnector {
 - **`broadcast`** connectors maintain a persistent gateway connection (Discord). Only the elected leader connects.
 - **`exclusive`** connectors receive events via HTTP webhook (Telegram, Slack Events API). The new leader re-registers the webhook URL on failover.
 - **`onLoopComplete`** is optional. The registry calls it on every registered connector when an agent loop finishes a thread (success or error), letting connectors clean up per-thread state — e.g. Discord typing indicators.
-- **`getPlatformTools`** is optional. When a `process` relay payload has `platform` set, the `RelayProcessor` calls `getPlatformTools()` on the matching connector and injects those tools into the delegated agent loop's config. This is how platform-scoped tools (e.g. `discord_send_message`) reach loops running on remote hosts. The `readFileFn` parameter, when provided, lets the tool read files from the virtual filesystem rather than the host OS filesystem.
+- **`getPlatformTools`** is optional. It returns the platform-scoped tools (e.g. `discord_send_message`) for a thread; the agent loop runs locally on the trigger host (no whole-loop `process` delegation), and any platform tool whose serving host differs is reached through the uniform `{local | relay}` tool dispatch rather than by injecting tools into a delegated loop's config (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD5/R-UD8). The `readFileFn` parameter, when provided, lets the tool read files from the virtual filesystem rather than the host OS filesystem.
 
 ### PlatformLeaderElection
 
@@ -565,7 +564,7 @@ A post-loop hook detects Discord assistant turns that finish without calling `di
 
 **Scope and reset:** The retry budget is per-user-turn. A fresh user message un-silences the thread, resetting the tombstone window. The nudge respects intentional silence — if the agent chooses not to send on the retry turn, no further nudge is issued for that user message.
 
-**Hub-side hook:** For spoke nodes that delegate inference to a remote hub via relay, turns execute inside `RelayProcessor.runDelegatedLoop`. The delivery-check hook is wired on both the spoke-side (`server.ts:handleThread`) and the hub-side (`relay-processor.ts:runDelegatedLoop`), ensuring coverage for both local and delegated turns.
+**Loop-local hook:** Under the single delegation path the loop always runs on the trigger host (it relays only inference, not the whole loop), so the delivery-check hook is wired once on the local loop path (`server.ts:handleThread` → the local agent loop). Platform-intake loops run locally on the selected host via `RelayProcessor.runLocalThreadLoop`, which carries the same hook. There is no separate delegated-loop path to cover anymore.
 
 ### Webhook Ingress
 

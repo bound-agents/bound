@@ -113,13 +113,16 @@ These rules exist because violating them has historically caused real production
 12. [Canonical edge relations](docs/invariants.md#12-canonical-edge-relations) — `memory_edges.relation` must be one of the 10 `CANONICAL_RELATIONS`.
 13. [Config schemas are closed (strict mode)](docs/invariants.md#13-config-schemas-are-closed-strict-mode) — declare every config field in its Zod schema or the loader rejects the file.
 14. [Hub response-kind routing](docs/invariants.md#14-hub-response-kind-routing) — hub-targeted response kinds go into `relay_inbox`, not `executeImmediate()`.
-15. [Platform intake affinity](docs/invariants.md#15-platform-intake-affinity) — `intake` relay with a `platform` field routes to the host with that connector.
+15. [Platform intake affinity (optimization)](docs/invariants.md#15-platform-intake-affinity-optimization-not-a-requirement) — `intake` with a `platform` field prefers that connector's host, but the loop runs locally there; affinity saves a round-trip, it is not required.
 16. [Extended-thinking routing](docs/invariants.md#16-extended-thinking-routing) — `thinking` / `effort` fold into `reasoningConfig`; mirror new fields in `inferenceRequestPayloadSchema`.
 17. [Shared-config → router hand-off](docs/invariants.md#17-shared-config-to-router-hand-off) — new per-backend fields must be copied in `toRouterConfig()` or they never reach the router.
-18. [`ProcessPayload.message_id` must reference a real `messages` row](docs/invariants.md#18-forwarded-message_id-must-reference-a-real-messages-row) — forward a real id; notifications are the trap (use `resolveDelegationMessageId()`).
+18. [Forwarded message_id must reference a real `messages` row (RETIRED)](docs/invariants.md#18-forwarded-message_id-must-reference-a-real-messages-row-retired) — retired 2026-06-29; `ProcessPayload` / whole-loop delegation no longer exist (see #22).
 19. [`role: "system"` is forbidden in the `messages` table](docs/invariants.md#19-the-system-role-is-forbidden-in-the-messages-table) — use `role: "developer"` for injected system context.
 20. [No foreign key constraints on synced tables](docs/invariants.md#20-no-foreign-key-constraints-on-synced-tables) — replay inserts rows out of order; FK clauses would fail intermittently.
-21. [Client-session affinity wins over model-based delegation](docs/invariants.md#21-client-session-affinity-wins-over-model-based-delegation) — a live boundless / `BoundClient` session pins client-tool execution to its host.
+21. [Client tools relay to the session host](docs/invariants.md#21-client-tools-relay-to-the-session-host-affinity-is-an-optimization) — a client tool relays (`client_tool`/`client_result`) to the WS-session host; affinity is an optimization, not a must-run-here.
+22. [One delegation path — consumer never re-assembles](docs/invariants.md#22-one-delegation-path--consumer-never-re-assembles) — the producer assembles + ships segments; the consumer resolves via `resolveSegments` and never re-assembles. No `process` kind, no files-offload.
+23. [Relay history is one range-pointer over confirmed-synced rows](docs/invariants.md#23-relay-history-is-one-range-pointer-over-confirmed-synced-rows) — a range covers a row only if its HLC ≤ `last_confirmed`; `getConfirmedSyncWatermark` is the sole anchor.
+24. [Assembly is pure over (DB, AssemblyContext)](docs/invariants.md#24-assembly-is-pure-over-db-assemblycontext) — `assembleContext` output depends only on `(DB, clock)`; "now" enters only via `AssemblyClock`.
 
 ## Common Gotchas
 

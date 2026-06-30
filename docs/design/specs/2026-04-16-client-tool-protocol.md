@@ -1,5 +1,7 @@
 # RFC: Client-Tool WebSocket Protocol
 
+> **Superseded in part (2026-06-29):** `2026-06-29-unified-delegation.md` supersedes the must-run-on-the-WS-session-host requirement and the `process`-delegation facet. Client tools now dispatch through the uniform `{local | relay}` path: a loop on a non-session host relays a `client_tool` request to the session host and awaits a `client_result`, so session affinity is an optimization, not a correctness requirement.
+
 **Supplements:** `2026-04-17-boundless.md`, `agent-system.md` §6
 **Date:** 2026-04-16
 **Status:** Implemented

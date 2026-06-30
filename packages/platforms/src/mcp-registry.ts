@@ -382,7 +382,13 @@ export class PlatformMcpRegistry {
 
 		for (const serverName of remoteServerNames) {
 			try {
-				const result = (await remotePlatformRequest(serverName, "tools/list", {})) as {
+				// On-demand discovery with ONE retry (§7): a single transient relay
+				// failure (e.g. the owning host mid-reconnect) should not blank out a
+				// platform's tools for a whole refresh cycle, because the single
+				// delegation path means a loop on any host may need this definition
+				// before assembly. One immediate retry covers the common transient;
+				// a persistent failure still drops the server (see catch).
+				let result: {
 					tools?: Array<{
 						name: string;
 						description?: string;
@@ -390,6 +396,14 @@ export class PlatformMcpRegistry {
 						annotations?: PlatformRegisteredTool["annotations"];
 					}>;
 				};
+				try {
+					result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
+				} catch (firstErr) {
+					this.deps.logger.warn(
+						`Remote tools/list for platform '${serverName}' failed; retrying once: ${firstErr}`,
+					);
+					result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
+				}
 				const tools = result?.tools ?? [];
 				const serverTools = new Map<string, PlatformRegisteredTool>();
 				for (const tool of tools) {
