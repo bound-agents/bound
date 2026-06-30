@@ -67,15 +67,38 @@ export function enqueueClientToolCall(
 
 /**
  * Enqueue a tool result entry to trigger agent loop resume.
- * Returns the generated entry ID.
+ *
+ * IDEMPOTENT on `(thread_id, call_id)` (R-UD9): re-driving the same tool result
+ * — e.g. a relayed `client_result` retried after a held/duplicated delivery — is
+ * a no-op that returns the EXISTING entry's id rather than inserting a second
+ * row. Without this guard a relay retry would double-enqueue and risk
+ * double-execution / a duplicate tool-result row. The `(thread_id, call_id)`
+ * pair is the natural key: `call_id` is the tool-call's id, unique within a
+ * thread's turn. The match is scoped to the canonical `{"call_id":"…"}` payload
+ * this function writes, so it is stable across calls.
+ *
+ * Returns the (existing or newly-created) entry id.
  */
 export function enqueueToolResult(db: Database, threadId: string, callId: string): string {
+	const payload = JSON.stringify({ call_id: callId });
+	const existing = db
+		.prepare(
+			`SELECT message_id FROM dispatch_queue
+			 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
+			 LIMIT 1`,
+		)
+		.get(threadId, TOOL_RESULT, payload) as { message_id: string } | null;
+	if (existing) {
+		// Already enqueued for this (thread_id, call_id) — re-drive is a no-op.
+		return existing.message_id;
+	}
+
 	const messageId = randomUUID();
 	const now = new Date().toISOString();
 	db.prepare(
 		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
 		 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
-	).run(messageId, threadId, TOOL_RESULT, JSON.stringify({ call_id: callId }), now, now);
+	).run(messageId, threadId, TOOL_RESULT, payload, now, now);
 	return messageId;
 }
 
