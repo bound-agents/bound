@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { isClientToolInterface } from "@bound/shared";
+import type { EligibleHost } from "./relay-router";
 
 /**
  * Host-liveness window for client-session routing. Mirrors relay-router's
@@ -130,4 +131,78 @@ export function clientSessionWakeupWarning(
 		"processed when the client reconnects, but the woken loop cannot run client tools (boundless_*) " +
 		"until then."
 	);
+}
+
+/**
+ * Resolve the live REMOTE host that holds the thread's WS (boundless/client)
+ * session, for cross-host client-tool relay (R-UD5/R-UD8/R-UD12).
+ *
+ * Returns an {@link EligibleHost}-shaped value for the remote host holding a
+ * live, heartbeat-fresh session for `threadId`, or `null` when:
+ *   - the session is LOCAL (`site_id === localSiteId`) — the caller runs the
+ *     tool itself via its own WS connection, no relay needed;
+ *   - there is NO client session for the thread at all;
+ *   - every session-holding host is STALE (heartbeat older than `staleMs`).
+ *
+ * This is the relay-routing analogue of {@link isClientSessionLive}: that
+ * predicate answers "can the thread's client tools run *somewhere*?"; this
+ * resolver answers "which live *remote* host should I relay the call to?".
+ * site_ids are deduped and freshness uses `hosts.modified_at` (kept fresh by
+ * heartbeat) falling back to `online_at`, mirroring relay-router's window. When
+ * multiple live remote hosts hold a session, the freshest (most recently
+ * heartbeated) wins.
+ */
+export function resolveClientSessionHost(
+	db: Database,
+	threadId: string,
+	localSiteId: string,
+	staleMs = CLIENT_SESSION_HOST_STALE_MS,
+): EligibleHost | null {
+	const rows = db
+		.query("SELECT site_id FROM client_sessions WHERE thread_id = ? AND deleted = 0")
+		.all(threadId) as Array<{ site_id: string }>;
+	if (rows.length === 0) return null;
+
+	const cutoff = Date.now() - staleMs;
+	const seen = new Set<string>();
+	let best: EligibleHost | null = null;
+	let bestTs = Number.NEGATIVE_INFINITY;
+	for (const { site_id } of rows) {
+		// A local session is never a relay target — the caller runs the tool
+		// itself through its own connection.
+		if (site_id === localSiteId) continue;
+		if (seen.has(site_id)) continue;
+		seen.add(site_id);
+
+		const host = db
+			.query(
+				`SELECT site_id, host_name, sync_url, online_at, modified_at
+				 FROM hosts WHERE site_id = ? AND deleted = 0`,
+			)
+			.get(site_id) as {
+			site_id: string;
+			host_name: string;
+			sync_url: string | null;
+			online_at: string | null;
+			modified_at: string | null;
+		} | null;
+		if (!host) continue;
+
+		const tsRaw = host.modified_at ?? host.online_at;
+		if (!tsRaw) continue;
+		const ts = new Date(tsRaw).getTime();
+		if (ts < cutoff) continue; // Stale — skip.
+
+		if (ts > bestTs) {
+			bestTs = ts;
+			best = {
+				site_id: host.site_id,
+				host_name: host.host_name,
+				sync_url: host.sync_url,
+				online_at: host.online_at,
+				modified_at: host.modified_at,
+			};
+		}
+	}
+	return best;
 }

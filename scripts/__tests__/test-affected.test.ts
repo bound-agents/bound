@@ -185,8 +185,8 @@ describe("test-affected: buildWorkspaceGraph (against the real repo)", () => {
 	const root = resolve(import.meta.dir, "..", "..");
 	const graph = buildWorkspaceGraph(root);
 
-	it("discovers all 11 workspace packages", () => {
-		expect(graph.deps.size).toBe(11);
+	it("discovers all 12 workspace packages", () => {
+		expect(graph.deps.size).toBe(12);
 		expect(graph.nameToDir.get("@bound/agent")).toBe("packages/agent");
 	});
 

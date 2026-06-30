@@ -6,6 +6,7 @@ import {
 	type ThreadExecutor,
 	acknowledgeBatch,
 	claimPending,
+	enqueueClientToolCall,
 	enqueueMessage,
 	insertInbox,
 	markDelivered,
@@ -21,6 +22,8 @@ import { LLMError, type ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry } from "@bound/platforms";
 import type {
 	CacheWarmPayload,
+	ClientResultPayload,
+	ClientToolPayload,
 	ErrorPayload,
 	Logger,
 	PlatformRequestPayload,
@@ -40,6 +43,7 @@ import {
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
+	clientToolPayloadSchema,
 	createScopedTraceCollector,
 	extractTraceContext,
 	hostMcpToolsSchema,
@@ -80,6 +84,29 @@ const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const getTracer = () => trace.getTracer("bound.relay");
+
+/**
+ * Best-effort parse of a relay entry's serialized W3C trace carrier into the
+ * `{header: value}` record shape the `client_tool_call:created` event expects.
+ * Returns null for a missing or unparseable carrier — trace linkage is purely
+ * observability and must never gate a tool call.
+ */
+function parseTraceCarrier(raw: string | null | undefined): Record<string, string> | null {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const out: Record<string, string> = {};
+			for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+				if (typeof v === "string") out[k] = v;
+			}
+			return Object.keys(out).length > 0 ? out : null;
+		}
+	} catch {
+		// Unparseable carrier — no parent linkage.
+	}
+	return null;
+}
 
 /**
  * Handler for a relay request kind. Returns a response string (written as a
@@ -172,6 +199,7 @@ export class RelayProcessor {
 			),
 		inference: (entry) => this.handleInference(entry),
 		intake: (entry) => this.handleIntake(entry),
+		client_tool: (entry) => this.handleClientTool(entry),
 	};
 
 	constructor(
@@ -642,6 +670,259 @@ export class RelayProcessor {
 		}
 
 		return null;
+	}
+
+	/**
+	 * Cross-host client-tool relay consumer (R-UD5/R-UD8/R-UD12).
+	 *
+	 * Runs on the SESSION host — the node holding the thread's live WS
+	 * (boundless) connection. The producer loop on a different node relayed a
+	 * `client_tool` request here because IT could not reach the client. We:
+	 *   1. Verify a live LOCAL WS connection actually has this tool. If not, the
+	 *      session moved/dropped between the producer's resolve and our receipt —
+	 *      relay back a retriable `error` with `definitely_not_executed: true`
+	 *      so the producer can re-resolve/retry safely (never ran here).
+	 *   2. Enqueue the call into the LOCAL WS dispatch via the SAME machinery the
+	 *      local path uses (`enqueueClientToolCall` + `client_tool_call:created`),
+	 *      so `websocket.ts` pushes the `tool:call` frame to the connected client.
+	 *      The enqueue is idempotent-safe under re-drive (a duplicated relay just
+	 *      re-emits; the WS layer dedups on call_id).
+	 *   3. Await the client's `tool_result` (the WS `handleToolResult` persists a
+	 *      `messages` row with `role='tool_result'` and `tool_name=call_id`, then
+	 *      calls `enqueueToolResult`). We watch for that row, then relay a
+	 *      `client_result` (ClientResultPayload) back to the producer.
+	 *   4. On timeout / session drop mid-call, relay a retriable `error` (AC.7b).
+	 *
+	 * Returns `null` — the handler writes its own response(s) directly (like
+	 * `handleInference`), so processEntry must not wrap the return as a `result`.
+	 */
+	private async handleClientTool(entry: RelayInboxEntry): Promise<null> {
+		const payloadResult = parseJsonSafe(clientToolPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.logger.error("Invalid relay payload", {
+				kind: entry.kind,
+				error: payloadResult.error,
+				entryId: entry.id,
+			});
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
+			);
+			markProcessed(this.db, [entry.id]);
+			throw new PayloadParseError();
+		}
+		const payload = payloadResult.value as ClientToolPayload;
+
+		// Step 1: confirm a live LOCAL WS connection holds this tool. The producer
+		// resolved us from the synced `client_sessions` table, which can lag a
+		// session move/drop; the authoritative check is the in-memory registry.
+		const connectionId = this.wsRegistry?.getConnectionForTool(
+			payload.thread_id,
+			payload.tool_name,
+		);
+		if (!connectionId) {
+			this.logger.warn("[relay] client_tool: no live local WS session for thread/tool", {
+				threadId: payload.thread_id,
+				tool: payload.tool_name,
+				entryId: entry.id,
+			});
+			this.relayClientError(entry, "No live client session on this host for the requested tool", {
+				retriable: true,
+				definitely_not_executed: true,
+			});
+			markProcessed(this.db, [entry.id]);
+			return null;
+		}
+
+		// Step 2: enqueue into the LOCAL WS dispatch + emit the creation event so
+		// websocket.ts pushes the `tool:call` frame to the connected client. Reuse
+		// the exact machinery the local (same-host) deferred path uses. Idempotent
+		// under re-drive: a duplicated relay re-enqueues, and the WS handler dedups
+		// the result on call_id (AC.7c) while enqueueToolResult is idempotent on
+		// (thread_id, call_id).
+		let dispatchEntryId: string;
+		try {
+			dispatchEntryId = enqueueClientToolCall(
+				this.db,
+				payload.thread_id,
+				{
+					call_id: payload.call_id,
+					tool_name: payload.tool_name,
+					arguments: payload.args,
+				},
+				connectionId,
+			);
+		} catch (error) {
+			this.logger.error("[relay] client_tool: enqueue failed", {
+				threadId: payload.thread_id,
+				callId: payload.call_id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.relayClientError(entry, `Failed to enqueue client tool: ${String(error)}`, {
+				retriable: true,
+				definitely_not_executed: true,
+			});
+			markProcessed(this.db, [entry.id]);
+			return null;
+		}
+
+		this.eventBus.emit("client_tool_call:created", {
+			threadId: payload.thread_id,
+			callId: payload.call_id,
+			entryId: dispatchEntryId,
+			toolName: payload.tool_name,
+			arguments: payload.args,
+			// Forward the W3C trace carrier (a {header: value} record) the producer
+			// injected into the relay entry, so the WS `tool:call` frame stays on
+			// the same trace. Parsed defensively — a missing/garbled carrier just
+			// means no parent linkage, never a dropped tool call.
+			traceContext: parseTraceCarrier(entry.trace_context),
+		});
+
+		// Step 3: await the client's tool_result (persisted by WS handleToolResult
+		// as a messages row with role='tool_result' and tool_name=call_id), then
+		// relay a client_result back. Run async so the processor tick is not
+		// blocked; we mark the inbox entry processed up front (the dispatch row is
+		// the durable handoff to the WS layer) so a re-driven client_tool re-emits
+		// cleanly rather than wedging here.
+		markProcessed(this.db, [entry.id]);
+		const timeoutMs = payload.timeout_ms > 0 ? payload.timeout_ms : 30_000;
+		this.awaitClientResult(entry, payload, timeoutMs).catch((err) => {
+			this.logger.error("[relay] client_tool: awaitClientResult failed", {
+				threadId: payload.thread_id,
+				callId: payload.call_id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+		return null;
+	}
+
+	/**
+	 * Read the persisted client `tool_result` content for a call, or null when
+	 * none exists yet. The WS layer persists it with role='tool_result' and
+	 * tool_name=call_id (host-parity with the native dispatch return).
+	 */
+	private readClientToolResult(
+		threadId: string,
+		callId: string,
+	): { content: string; isError: boolean } | null {
+		const row = this.db
+			.query(
+				`SELECT content, exit_code FROM messages
+				 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
+				 ORDER BY created_at DESC LIMIT 1`,
+			)
+			.get(threadId, callId) as { content: string; exit_code: number | null } | null;
+		if (!row) return null;
+		return { content: row.content, isError: (row.exit_code ?? 0) !== 0 };
+	}
+
+	/**
+	 * Wait (event-driven, with a polling backstop and a hard timeout) for the
+	 * client's tool_result, then relay a `client_result` back to the producer.
+	 * On timeout — including a session dropped mid-call — relay a retriable
+	 * `error` (AC.7b) so the producer's relay-wait sees a transient failure.
+	 */
+	private async awaitClientResult(
+		entry: RelayInboxEntry,
+		payload: ClientToolPayload,
+		timeoutMs: number,
+	): Promise<void> {
+		// Fast path: a re-driven client_tool whose result already landed (AC.7c).
+		const existing = this.readClientToolResult(payload.thread_id, payload.call_id);
+		if (existing) {
+			this.relayClientResult(entry, payload.call_id, existing.content, existing.isError);
+			return;
+		}
+
+		const result = await new Promise<{ content: string; isError: boolean } | null>((resolve) => {
+			let settled = false;
+			const finish = (value: { content: string; isError: boolean } | null): void => {
+				if (settled) return;
+				settled = true;
+				this.eventBus.off("message:created", onMessage);
+				clearInterval(poll);
+				clearTimeout(timer);
+				resolve(value);
+			};
+			const check = (): void => {
+				const found = this.readClientToolResult(payload.thread_id, payload.call_id);
+				if (found) finish(found);
+			};
+			const onMessage = (data: { thread_id: string }): void => {
+				if (data.thread_id === payload.thread_id) check();
+			};
+			this.eventBus.on("message:created", onMessage);
+			// Polling backstop: covers the case where the WS handler persists the
+			// row without an observable event reaching this listener (and any race
+			// between the on() registration and the emit).
+			const poll = setInterval(check, 200);
+			const timer = setTimeout(() => finish(null), timeoutMs);
+			// Immediate re-check after wiring listeners (closes the registration
+			// race above before the first poll tick).
+			check();
+		});
+
+		if (result) {
+			this.relayClientResult(entry, payload.call_id, result.content, result.isError);
+		} else {
+			this.logger.warn("[relay] client_tool: timed out waiting for client result", {
+				threadId: payload.thread_id,
+				callId: payload.call_id,
+				timeoutMs,
+			});
+			this.relayClientError(entry, "Timed out waiting for client tool result", {
+				retriable: true,
+			});
+		}
+	}
+
+	/** Relay a `client_result` response back to the producer that sent `entry`. */
+	private relayClientResult(
+		entry: RelayInboxEntry,
+		callId: string,
+		content: string,
+		isError: boolean,
+	): void {
+		const targetSiteId = entry.source_site_id;
+		if (!targetSiteId) {
+			this.logger.warn("[relay] client_result: request entry has no source_site_id", {
+				entryId: entry.id,
+			});
+			return;
+		}
+		const resultPayload: ClientResultPayload = { call_id: callId, content, is_error: isError };
+		const now = new Date();
+		writeOutbox(this.db, {
+			id: randomUUID(),
+			source_site_id: this.siteId,
+			target_site_id: targetSiteId,
+			kind: "client_result",
+			ref_id: entry.id,
+			idempotency_key: null,
+			stream_id: entry.stream_id ?? null,
+			payload: JSON.stringify(resultPayload),
+			created_at: now.toISOString(),
+			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+			trace_context: null,
+		});
+	}
+
+	/** Relay an `error` response back to the producer that sent a `client_tool`. */
+	private relayClientError(
+		entry: RelayInboxEntry,
+		message: string,
+		opts: { retriable: boolean; definitely_not_executed?: boolean },
+	): void {
+		const errorPayload: ErrorPayload = {
+			error: message,
+			retriable: opts.retriable,
+			...(opts.definitely_not_executed !== undefined
+				? { definitely_not_executed: opts.definitely_not_executed }
+				: {}),
+		};
+		this.writeResponse(entry, "error", JSON.stringify(errorPayload));
 	}
 
 	private async executeToolCall(payload: ToolCallPayload): Promise<string> {

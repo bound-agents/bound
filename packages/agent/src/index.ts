@@ -37,6 +37,7 @@ export {
 	clientSessionWakeupWarning,
 	getClientSessions,
 	isClientSessionLive,
+	resolveClientSessionHost,
 } from "./delegation";
 
 // Export agent loop

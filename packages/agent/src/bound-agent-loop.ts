@@ -1,15 +1,19 @@
 import type { AppContext } from "@bound/core";
 import {
 	enqueueClientToolCall,
+	enqueueToolResult,
 	findMessageById,
 	getLatestChangeLogHlcForRows,
 	listLiveMessageProjectionByThreadNewestFirst,
+	markProcessed,
+	readInboxByRefId,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
 	resolveRelayConfig,
 	updateRow,
 	writeMessageMetadata,
+	writeOutbox,
 } from "@bound/core";
 import type {
 	ContentBlock,
@@ -39,19 +43,37 @@ import {
 	shouldRetryRelayCall,
 } from "@bound/loop";
 import type { McpAppBinding } from "@bound/sandbox";
-import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
+import type { ClientToolPayload, ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
 import {
 	HLC_ZERO,
 	appendToolDuration,
 	capToolResultContent,
+	clientResultPayloadSchema,
+	errorPayloadSchema,
 	formatError,
 	injectTraceContext,
+	parseJsonSafe,
 } from "@bound/shared";
 import { getConfirmedSyncWatermark } from "@bound/sync";
 import type { Context, Span } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
-import { Observable, Subject, firstValueFrom } from "rxjs";
+import {
+	Observable,
+	Subject,
+	TimeoutError,
+	catchError,
+	defer,
+	filter,
+	firstValueFrom,
+	map,
+	merge,
+	of,
+	race,
+	take,
+	throwError,
+	timeout,
+} from "rxjs";
 
 import {
 	buildCommandOutput,
@@ -65,13 +87,16 @@ import {
 } from "./agent-loop-utils";
 import type { selectCacheTtl } from "./cache-prediction";
 import { applyActualUsageToContextDebug } from "./context-assembly";
+import { resolveClientSessionHost } from "./delegation";
 import { segmentAssembledMessages } from "./delegation-segments";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
 import { createRelayBackend } from "./relay-backend";
+import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
+import { fromEventBus } from "./rx-utils";
 import { persistImageBlocksAsFileRefs } from "./tool-result-images";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -1372,11 +1397,11 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		}
 	}
 
-	protected override afterToolPersistence(
+	protected override async afterToolPersistence(
 		_parsed: ParsedResponse,
 		_frame: BoundPreparedFrame,
 		batch: LoopToolExecutionBatch,
-	): LoopTurnDecision {
+	): Promise<LoopTurnDecision> {
 		// Identical-error / routing-error hard aborts and the corrective nudge run
 		// in the base loop's runPostExecutionGuards after this hook. Bound routes
 		// their messages through emitDeveloperNotice via the overridden
@@ -1395,36 +1420,67 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		if (batch.deferred.length > 0) {
 			for (const { toolCall } of batch.deferred) {
 				const connectionId = this.config.connectionId;
-				if (!connectionId) {
-					this.ctx.logger.error("Client tool call without connectionId", {
-						tool: toolCall.name,
+				if (connectionId) {
+					// LOCAL PATH (unchanged): the thread's live WS session is on THIS
+					// host. Enqueue into the local WS dispatch and stop; the client's
+					// result arrives via websocket.ts → enqueueToolResult, which
+					// re-wakes the loop. The deferral is intentional.
+					const entryId = enqueueClientToolCall(
+						this.ctx.db,
+						this.config.threadId,
+						{
+							call_id: toolCall.id,
+							tool_name: toolCall.name,
+							arguments: toolCall.input,
+						},
+						connectionId,
+					);
+					const tracker = this.config.handleMessageTracker;
+					const dispatchCtx = tracker
+						? (tracker.openDispatch(this.config.threadId, toolCall.id, toolCall.name) as Context)
+						: context.active();
+					const traceContext = context.with(dispatchCtx, () => injectTraceContext());
+					this.ctx.eventBus.emit("client_tool_call:created", {
+						threadId: this.config.threadId,
 						callId: toolCall.id,
+						entryId,
+						toolName: toolCall.name,
+						arguments: toolCall.input,
+						traceContext,
 					});
 					continue;
 				}
-				const entryId = enqueueClientToolCall(
+
+				// NO LOCAL CONNECTION. Resolve the live REMOTE host holding the
+				// thread's WS session and relay the call there (R-UD5/R-UD8/R-UD12).
+				const sessionHost = resolveClientSessionHost(
 					this.ctx.db,
 					this.config.threadId,
-					{
-						call_id: toolCall.id,
-						tool_name: toolCall.name,
-						arguments: toolCall.input,
-					},
-					connectionId,
+					this.ctx.siteId,
 				);
-				const tracker = this.config.handleMessageTracker;
-				const dispatchCtx = tracker
-					? (tracker.openDispatch(this.config.threadId, toolCall.id, toolCall.name) as Context)
-					: context.active();
-				const traceContext = context.with(dispatchCtx, () => injectTraceContext());
-				this.ctx.eventBus.emit("client_tool_call:created", {
-					threadId: this.config.threadId,
-					callId: toolCall.id,
-					entryId,
-					toolName: toolCall.name,
-					arguments: toolCall.input,
-					traceContext,
-				});
+				if (!sessionHost) {
+					// No live session ANYWHERE (no local connection AND no live remote
+					// session). Keep the loud-error edge: persist an error tool_result
+					// so the loop resumes and the model sees the failure rather than
+					// silently dropping the call (which would leave an orphan tool_call).
+					this.ctx.logger.error("Client tool call without a live session anywhere", {
+						tool: toolCall.name,
+						callId: toolCall.id,
+						threadId: this.config.threadId,
+					});
+					this.persistRelayedClientToolResult(
+						toolCall.id,
+						`Error: no live boundless/client session for this thread on any host; cannot run client tool "${toolCall.name}"`,
+						true,
+					);
+					continue;
+				}
+
+				// Drive the relayed call to completion (relay request → wait for
+				// client_result → persist tool_result + enqueueToolResult). This
+				// matches the local resume contract: the persisted tool_result + the
+				// enqueued dispatch row re-wake the loop exactly as the WS path does.
+				await this.relayDeferredClientTool(toolCall, sessionHost);
 			}
 			return { action: "stop" };
 		}
@@ -1434,6 +1490,183 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			return { action: "yield" };
 		}
 		return { action: "continue" };
+	}
+
+	/**
+	 * Relay a deferred client tool to the remote host holding the thread's live
+	 * WS session and drive it to completion (R-UD5/R-UD8/R-UD12).
+	 *
+	 * Writes a `client_tool` relay outbox entry to the session host, then waits
+	 * for the matching `client_result` (or `error`) response on `relay_inbox`,
+	 * keyed by the outbox entry id — the same correlation `createRelayWait$` uses
+	 * for inference/tool relays. On success the executed tool output is persisted
+	 * as the thread's `tool_result` message (host-parity with the WS path) and
+	 * `enqueueToolResult` re-wakes the loop. On a retriable failure (timeout /
+	 * session drop mid-call, AC.7b) the failure is surfaced as the tool result so
+	 * the loop resumes and the model can react, rather than wedging the turn.
+	 */
+	private async relayDeferredClientTool(
+		toolCall: ParsedToolCall,
+		sessionHost: EligibleHost,
+	): Promise<void> {
+		const timeoutMs = this.inferenceTimeoutMs;
+		const tracker = this.config.handleMessageTracker;
+		const dispatchCtx = tracker
+			? (tracker.openDispatch(this.config.threadId, toolCall.id, toolCall.name) as Context)
+			: context.active();
+		const traceCarrier = context.with(dispatchCtx, () => injectTraceContext());
+
+		const payload: ClientToolPayload = {
+			thread_id: this.config.threadId,
+			call_id: toolCall.id,
+			tool_name: toolCall.name,
+			args: toolCall.input,
+			timeout_ms: timeoutMs,
+		};
+		const outboxEntry = createRelayOutboxEntry(
+			sessionHost.site_id,
+			this.ctx.siteId,
+			"client_tool",
+			JSON.stringify(payload),
+			timeoutMs,
+			undefined,
+			undefined,
+			undefined,
+			traceCarrier ? JSON.stringify(traceCarrier) : undefined,
+		);
+		try {
+			writeOutbox(this.ctx.db, outboxEntry);
+		} catch (error) {
+			this.ctx.logger.error("[agent-loop] Failed to write client_tool relay outbox entry", {
+				tool: toolCall.name,
+				callId: toolCall.id,
+				host: sessionHost.host_name,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.persistRelayedClientToolResult(
+				toolCall.id,
+				`Error: failed to relay client tool "${toolCall.name}" to session host: ${formatError(error)}`,
+				true,
+			);
+			return;
+		}
+
+		this.ctx.logger.info("[agent-loop] Relaying client tool to session host", {
+			tool: toolCall.name,
+			callId: toolCall.id,
+			host: sessionHost.host_name,
+			outboxEntryId: outboxEntry.id,
+		});
+
+		const previousRelayState = this.enterPhaseOverlay("RELAY_WAIT");
+		const aborted$ = new Subject<void>();
+		const abortCheck = setInterval(() => {
+			if (this.aborted) {
+				aborted$.next();
+				aborted$.complete();
+			}
+		}, 100);
+		let resolved: { content: string; isError: boolean } | null;
+		try {
+			resolved = await firstValueFrom(
+				this.createClientResultWait$(outboxEntry.id, timeoutMs, aborted$),
+				{ defaultValue: null },
+			);
+		} finally {
+			clearInterval(abortCheck);
+			this.restorePhase(previousRelayState);
+		}
+
+		if (resolved) {
+			this.persistRelayedClientToolResult(toolCall.id, resolved.content, resolved.isError);
+			return;
+		}
+		// Null = timeout / abort / unparseable response → retriable failure (AC.7b).
+		// Surface it as the tool result so the loop resumes; the producer treats it
+		// as transient (it did not hard-fail the turn).
+		this.persistRelayedClientToolResult(
+			toolCall.id,
+			`Error: client tool "${toolCall.name}" relay timed out or the session dropped before returning a result (retriable)`,
+			true,
+		);
+	}
+
+	/**
+	 * Wait for a `client_result` (or `error`) relay response correlated to
+	 * `outboxEntryId`, mirroring {@link createRelayWait$}'s inbox correlation
+	 * (initial read + `relay:inbox` event wakeups, with a hard timeout). Resolves
+	 * to the executed tool output, or null on timeout / abort / unparseable
+	 * payload (treated as a retriable failure by the caller).
+	 */
+	private createClientResultWait$(
+		outboxEntryId: string,
+		timeoutMs: number,
+		aborted$: Observable<unknown>,
+	): Observable<{ content: string; isError: boolean } | null> {
+		const db = this.ctx.db;
+		const eventBus = this.ctx.eventBus;
+		const response$ = merge(
+			defer(() => of(readInboxByRefId(db, outboxEntryId))),
+			fromEventBus(eventBus, "relay:inbox").pipe(
+				filter((event) => event.ref_id === outboxEntryId),
+				map(() => readInboxByRefId(db, outboxEntryId)),
+			),
+		).pipe(
+			filter((entry): entry is NonNullable<typeof entry> => entry !== null && entry !== undefined),
+			take(1),
+			timeout(timeoutMs),
+			map((entry) => {
+				markProcessed(db, [entry.id]);
+				if (entry.kind === "client_result") {
+					const parsed = parseJsonSafe(clientResultPayloadSchema, entry.payload, entry.kind);
+					if (!parsed.ok) {
+						return { content: "Error: malformed client_result payload", isError: true };
+					}
+					return { content: parsed.value.content, isError: parsed.value.is_error };
+				}
+				if (entry.kind === "error") {
+					const parsed = parseJsonSafe(errorPayloadSchema, entry.payload, entry.kind);
+					const message = parsed.ok ? parsed.value.error : entry.payload;
+					return { content: `Error: ${message}`, isError: true };
+				}
+				return { content: `Error: unexpected relay response kind "${entry.kind}"`, isError: true };
+			}),
+			catchError((err) => {
+				if (err instanceof TimeoutError) return of(null);
+				return throwError(() => err);
+			}),
+		);
+		const abort$ = aborted$.pipe(
+			take(1),
+			map(() => null),
+		);
+		return race(response$, abort$);
+	}
+
+	/**
+	 * Persist a relayed client tool's result as the thread's `tool_result`
+	 * message (role + `tool_name=callId`, host-parity with the WS path) and
+	 * re-wake the loop via `enqueueToolResult`. Idempotent re-drive is safe:
+	 * `enqueueToolResult` is a no-op on a duplicate `(thread_id, call_id)`.
+	 */
+	private persistRelayedClientToolResult(callId: string, content: string, isError: boolean): void {
+		const capped = capToolResultContent(content);
+		const messageId = insertThreadMessage(
+			this.ctx.db,
+			{
+				threadId: this.config.threadId,
+				role: "tool_result",
+				content: capped,
+				hostOrigin: this.ctx.siteId,
+				modelId: null,
+				toolName: callId,
+				exitCode: isError ? 1 : 0,
+			},
+			this.ctx.siteId,
+		);
+		this.broadcastMessage(messageId);
+		this.messagesCreated++;
+		enqueueToolResult(this.ctx.db, this.config.threadId, callId);
 	}
 
 	async run(): Promise<AgentLoopResult> {
