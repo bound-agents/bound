@@ -31,9 +31,37 @@ export const cancelPayloadSchema = z.object({
 	reason: z.string().optional(),
 });
 
+/**
+ * The single delegation wire representation (R-UD3). Mirrors the `ContextSegment`
+ * type in types.ts. A delegated inference payload carries `segments` instead of
+ * raw `messages`: zero or more `inline` segments plus AT MOST ONE `range` segment
+ * over the confirmed-synced history prefix. There is no `messages_file_ref` — a
+ * range-pointer is kilobytes regardless of token count, so the >2MB files-table
+ * offload race is removed, not relocated.
+ */
+export const contextSegmentSchema = z.union([
+	z.object({ kind: z.literal("inline"), message: z.unknown() }),
+	z.object({
+		kind: z.literal("range"),
+		thread_id: z.string().min(1),
+		anchor_created_at: z.string().min(1),
+		count: z.number().int().nonnegative(),
+	}),
+]);
+
 export const inferenceRequestPayloadSchema = z.object({
 	model: z.string().min(1),
-	messages: z.array(z.unknown()),
+	/**
+	 * The delegated context as segments (R-UD3). The consumer resolves these via
+	 * `resolveSegments` and NEVER re-assembles — it has no AssemblyAuthority.
+	 */
+	segments: z.array(contextSegmentSchema),
+	/**
+	 * The producer's AssemblyClock instant (epoch ms). The consumer threads this
+	 * into the annotator when resolving range segments so the `<user-message
+	 * sent="…">` year branch reproduces the producer's bytes exactly (R-UD4).
+	 */
+	nowMs: z.number().int().nonnegative(),
 	tools: z.array(z.unknown()).optional(),
 	system: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
@@ -58,14 +86,6 @@ export const inferenceRequestPayloadSchema = z.object({
 	// chose; the executing host's driver validates/maps it.
 	effort: z.string().min(1).optional(),
 	cache_ttl: z.enum(["5m", "1h"]).optional(),
-	messages_file_ref: z.string().optional(),
-});
-
-export const processPayloadSchema = z.object({
-	thread_id: z.string().min(1),
-	message_id: z.string().min(1),
-	user_id: z.string().min(1),
-	platform: z.string().nullable(),
 });
 
 export const intakePayloadSchema = z.object({
@@ -205,7 +225,6 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	platform_request: platformRequestPayloadSchema,
 	cancel: cancelPayloadSchema,
 	inference: inferenceRequestPayloadSchema,
-	process: processPayloadSchema,
 	intake: intakePayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,

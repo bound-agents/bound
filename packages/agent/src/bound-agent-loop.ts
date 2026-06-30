@@ -1,10 +1,9 @@
-import { randomUUID } from "node:crypto";
-
 import type { AppContext } from "@bound/core";
 import {
 	enqueueClientToolCall,
 	findMessageById,
-	insertRow,
+	getLatestChangeLogHlcForRows,
+	listLiveMessageProjectionByThreadNewestFirst,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
@@ -42,11 +41,13 @@ import {
 import type { McpAppBinding } from "@bound/sandbox";
 import type { ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
 import {
+	HLC_ZERO,
 	appendToolDuration,
 	capToolResultContent,
 	formatError,
 	injectTraceContext,
 } from "@bound/shared";
+import { getConfirmedSyncWatermark } from "@bound/sync";
 import type { Context, Span } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
@@ -64,6 +65,7 @@ import {
 } from "./agent-loop-utils";
 import type { selectCacheTtl } from "./cache-prediction";
 import { applyActualUsageToContextDebug } from "./context-assembly";
+import { segmentAssembledMessages } from "./delegation-segments";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
 import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
@@ -212,8 +214,6 @@ function observableToAsyncIterable<T>(source: Observable<T>): AsyncIterable<T> {
 	};
 }
 
-const textEncoder = new TextEncoder();
-
 /**
  * Default wall-clock ceiling for a single bms_bash (sandbox) command, in ms.
  * Mirrors boundless_bash's DEFAULT_TIMEOUT_MS (packages/less/src/tools/bash.ts)
@@ -261,6 +261,13 @@ export interface BoundPreparedFrame extends PreparedLoopFrame {
 		messages: import("@bound/llm").LLMMessage[];
 		systemPrompt: string;
 		debug: ContextDebugInfo;
+		/**
+		 * The AssemblyClock instant (epoch ms) this frame was assembled with. The
+		 * producer puts it on the inference relay payload so the consumer's
+		 * `resolveSegments` annotates range segments with the identical "now",
+		 * reproducing the producer's bytes (R-UD4).
+		 */
+		assemblyNowMs: number;
 	};
 	messages: import("@bound/llm").LLMMessage[];
 	toolDefinitions: ToolDefinition[];
@@ -533,40 +540,50 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			throw new Error(resolution?.error ?? "Model resolution not available");
 		}
 		if (resolution.kind === "remote") {
-			let inferencePayload: InferenceRequestPayload = {
+			// Single delegation wire format (R-UD3): ship the assembled context as
+			// SEGMENTS, never raw `messages` and never a `files`-table offload. The
+			// producer emits at most one range-pointer over the confirmed-synced
+			// history prefix plus inline segments for the tail; a range-pointer is
+			// kilobytes regardless of token count, so the >2MB offload race is gone
+			// (R-UD14). A row is range-coverable only if its latest change_log HLC
+			// is <= the confirmed watermark for EVERY candidate target host — the
+			// conservative gate guarantees the consumer holds the row whichever host
+			// the relay stream lands on (R-UD6).
+			const candidateWatermarks = resolution.hosts.map((h) =>
+				getConfirmedSyncWatermark(this.ctx.db, h.site_id),
+			);
+			const minConfirmedWatermark =
+				candidateWatermarks.length > 0
+					? candidateWatermarks.reduce((min, w) => (w < min ? w : min))
+					: HLC_ZERO;
+			const rowIds = listLiveMessageProjectionByThreadNewestFirst(
+				this.ctx.db,
+				this.config.threadId,
+				100_000,
+			).map((m) => m.id);
+			const latestHlcByRow = getLatestChangeLogHlcForRows(this.ctx.db, rowIds);
+			const segments = segmentAssembledMessages({
+				db: this.ctx.db,
+				threadId: this.config.threadId,
+				producerMessages: frame.messages,
+				nowMs: frame.assembled.assemblyNowMs,
+				isRangeCoverable: (row) => {
+					const hlc = latestHlcByRow.get(row.id);
+					// No change_log row => not confirmed-synced => not coverable.
+					return hlc !== undefined && hlc <= minConfirmedWatermark;
+				},
+			});
+
+			const inferencePayload: InferenceRequestPayload = {
 				model: resolution.modelId,
-				messages: frame.messages,
+				segments,
+				nowMs: frame.assembled.assemblyNowMs,
 				tools: frame.mergedTools,
 				system: frame.assembled.systemPrompt || undefined,
 				max_tokens: this.effectiveMaxOutputTokens(),
 				temperature: undefined,
 				timeout_ms: this.inferenceTimeoutMs,
 			};
-			const MAX_INLINE_BYTES = 2 * 1024 * 1024;
-			const serialized = JSON.stringify(inferencePayload);
-			const payloadBytes = textEncoder.encode(serialized).byteLength;
-			if (payloadBytes > MAX_INLINE_BYTES) {
-				const fileRef = `cluster/relay/inference-${randomUUID()}.json`;
-				const messagesJson = JSON.stringify(inferencePayload.messages);
-				insertRow(
-					this.ctx.db,
-					"files",
-					{
-						id: randomUUID(),
-						path: fileRef,
-						content: messagesJson,
-						is_binary: 0,
-						size_bytes: textEncoder.encode(messagesJson).byteLength,
-						created_at: new Date().toISOString(),
-						modified_at: new Date().toISOString(),
-						deleted: 0,
-						created_by: this.config.userId,
-						host_origin: this.ctx.siteId,
-					},
-					this.ctx.siteId,
-				);
-				inferencePayload = { ...inferencePayload, messages: [], messages_file_ref: fileRef };
-			}
 
 			const previousState = this.enterPhaseOverlay("RELAY_STREAM");
 			const aborted$ = new Observable<void>((subscriber) => {

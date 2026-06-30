@@ -19,6 +19,7 @@ import {
 	findMessageMetadataById,
 	findMessageRoleById,
 	findPairedToolResultId,
+	getLatestChangeLogHlcForRows,
 	listDistinctToolNamesByThread,
 	listLiveAssistantMessagesWithMetadataByThreadSince,
 	listLiveDeveloperMessageMetadataByThreadSince,
@@ -95,6 +96,51 @@ describe("messages repository finders", () => {
 
 		it("miss: returns null for an absent id", () => {
 			expect(findMessageById(db, "nope")).toBeNull();
+		});
+	});
+
+	// AC.4 / R-UD6 — the delegation segmenter's confirmed-sync gate. A range may
+	// cover a row only if its latest change_log HLC is <= the consumer's confirmed
+	// watermark, so this finder must report each row's HIGHEST HLC and the gate
+	// `hlc <= watermark` must never admit a row whose latest write outran it.
+	describe("getLatestChangeLogHlcForRows (segmenter confirmed-sync gate)", () => {
+		it("maps each row id to its change_log HLC, ordered by write time", () => {
+			seed(db, { id: "m1" });
+			seed(db, { id: "m2" });
+			const map = getLatestChangeLogHlcForRows(db, ["m1", "m2"]);
+			const m1Hlc = map.get("m1");
+			const m2Hlc = map.get("m2");
+			expect(m1Hlc).toBeDefined();
+			expect(m2Hlc).toBeDefined();
+			// m2 was inserted after m1, so its HLC is strictly greater — the gate
+			// relies on this monotonic ordering to decide range coverage.
+			expect((m2Hlc as string) > (m1Hlc as string)).toBe(true);
+		});
+
+		it("omits rows with no change_log entry", () => {
+			seed(db, { id: "m1" });
+			const map = getLatestChangeLogHlcForRows(db, ["m1", "ghost"]);
+			expect(map.has("m1")).toBe(true);
+			expect(map.has("ghost")).toBe(false);
+		});
+
+		it("returns an empty map for no row ids", () => {
+			expect(getLatestChangeLogHlcForRows(db, []).size).toBe(0);
+		});
+
+		it("the gate `hlc <= watermark` never admits a row whose latest HLC exceeds it (AC.4)", () => {
+			seed(db, { id: "old" });
+			seed(db, { id: "newer" });
+			const map = getLatestChangeLogHlcForRows(db, ["old", "newer"]);
+			const oldHlc = map.get("old");
+			const newerHlc = map.get("newer");
+			expect(oldHlc).toBeDefined();
+			expect(newerHlc).toBeDefined();
+			// Pick the watermark exactly at the older row: the older row is
+			// coverable, the newer row (HLC > watermark) is NOT.
+			const watermark = oldHlc as string;
+			expect((oldHlc as string) <= watermark).toBe(true);
+			expect((newerHlc as string) <= watermark).toBe(false);
 		});
 	});
 

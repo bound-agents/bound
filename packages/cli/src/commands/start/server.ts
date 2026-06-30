@@ -12,10 +12,7 @@ import {
 	WARM_POKE_MAX_OUTPUT_TOKENS,
 	createRelayOutboxEntry,
 	generateThreadTitle,
-	getClientSessionDelegationTarget,
 	getClientSessions,
-	getDelegationTarget,
-	hasLocalClientSession,
 	isWarmPokeNotificationPayload,
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
@@ -49,13 +46,7 @@ import {
 	getConnectorHandle,
 } from "@bound/platforms";
 import type { ClusterFsResult } from "@bound/sandbox";
-import type {
-	KeyringConfig,
-	Logger,
-	McpConfig,
-	ProcessPayload,
-	StatusForwardPayload,
-} from "@bound/shared";
+import type { KeyringConfig, Logger, McpConfig, StatusForwardPayload } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
 	DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
@@ -63,7 +54,6 @@ import {
 	deterministicUUID,
 	extractTraceContext,
 	formatError,
-	injectTraceContext,
 	isUserFacingInterface,
 	parseJsonSafe,
 	resultPayloadSchema,
@@ -231,7 +221,6 @@ export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
 	syncServer: Awaited<ReturnType<typeof createSyncServer>> | null;
 	statusForwardCache: Map<string, StatusForwardPayload>;
-	activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	threadExecutor: ThreadExecutor;
 	platformMcpRegistry: PlatformMcpRegistry | null;
 	handleMessageTracker: HandleMessageTracker;
@@ -306,7 +295,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	let syncServer: Awaited<ReturnType<typeof createSyncServer>> | null = null;
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
-	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
 	const handleMessageTracker = new HandleMessageTracker();
 	handleMessageTracker.startWatchdog();
@@ -426,7 +414,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				return cfg?.ok ? (cfg.value as McpConfig) : null;
 			})(),
 			statusForwardCache,
-			activeDelegations,
 			activeLoops: threadExecutor.activeThreads as Set<string>,
 			requestConsistency: (tables: string[]) => wsTransportHolder.requestConsistency(tables),
 			handleMessageTracker,
@@ -482,68 +469,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			statusForwardCache.set(payload.thread_id, payload);
 		});
 
-		// Helper: count messages in thread
-		const getThreadMessageCount = (threadId: string): number => {
-			const result = appContext.db
-				.query("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
-				.get(threadId) as { count: number } | null;
-			return result?.count ?? 0;
-		};
-
-		// Helper: dispatch delegation to remote host
-		const dispatchDelegation = async (
-			targetHost: ReturnType<typeof getDelegationTarget>,
-			threadId: string,
-			messageId: string,
-			userId: string,
-			traceContext?: string,
-		): Promise<void> => {
-			if (!targetHost) return;
-
-			const processPayload: ProcessPayload = {
-				thread_id: threadId,
-				message_id: messageId,
-				user_id: userId,
-				platform: null, // null = web UI delegation
-			};
-			const outboxEntry = createRelayOutboxEntry(
-				targetHost.site_id,
-				appContext.siteId,
-				"process",
-				JSON.stringify(processPayload),
-				5 * 60 * 1000, // 5 minute timeout for delegated loop
-				undefined,
-				undefined,
-				undefined,
-				traceContext,
-			);
-			writeOutbox(appContext.db, outboxEntry);
-			activeDelegations.set(threadId, {
-				targetSiteId: targetHost.site_id,
-				processOutboxId: outboxEntry.id,
-			});
-
-			// Poll until new assistant message appears in thread (loop completed on remote)
-			const POLL_INTERVAL_MS = 1000;
-			const TIMEOUT_MS = 5 * 60 * 1000;
-			const startTime = Date.now();
-			const initialMessageCount = getThreadMessageCount(threadId);
-
-			while (true) {
-				if (Date.now() - startTime > TIMEOUT_MS) {
-					appContext.logger.warn("Delegation timeout — no response received", {
-						threadId,
-					});
-					break;
-				}
-				const currentCount = getThreadMessageCount(threadId);
-				if (currentCount > initialMessageCount) break; // Response arrived via sync
-
-				await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-			}
-
-			activeDelegations.delete(threadId);
-		};
+		// Whole-loop delegation (the `process` relay kind) is removed: every loop
+		// runs locally on the trigger host and relays only inference. There is no
+		// dispatch-and-poll-for-remote-completion anymore (R-UD1).
 
 		// handleThread delegates to the shared ThreadExecutor.
 		// The executor owns the thread-exclusive lock and drain loop.
@@ -600,38 +528,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							routerConfig.default,
 						);
 
-						const delegationTarget = ((): ReturnType<typeof getDelegationTarget> => {
-							// Warm pokes (issue #10) never delegate: noTools/maxOutputTokens
-							// live in the local AgentLoopConfig and would be lost on the
-							// remote host.
-							if (isCacheWarmPoke) return null;
-							// Client-session affinity wins over model-based delegation
-							// (issue #91). A notify/introspect wakeup can fire on any
-							// host; the loop must run where the live WS session is so
-							// client tools resolve. Three cases:
-							//   1. session lives on another host → delegate there
-							//   2. session lives here → force local (suppress model
-							//      delegation, which would otherwise pull an opus-backed
-							//      boundless loop to the hub and strip its client tools)
-							//   3. no live session → fall back to model-based delegation
-							const sessionTarget = getClientSessionDelegationTarget(
-								appContext.db,
-								thread_id,
-								appContext.siteId,
-							);
-							if (sessionTarget) return sessionTarget;
-							if (hasLocalClientSession(appContext.db, thread_id, appContext.siteId)) {
-								return null;
-							}
-							return getDelegationTarget(
-								appContext.db,
-								thread_id,
-								activeModelId,
-								modelRouter,
-								appContext.siteId,
-							);
-						})();
-
 						const threadRow = appContext.db
 							.query("SELECT user_id, interface FROM threads WHERE id = ?")
 							.get(thread_id) as { user_id: string; interface: string } | null;
@@ -664,52 +560,20 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						}
 						handleMessageTracker.touchTurn(thread_id);
 
-						if (delegationTarget) {
-							appContext.logger.info(
-								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
-							);
-							const tracer = getTracer();
-							const rootSpan = tracer.startSpan(
-								"web.handle-message",
-								{
-									attributes: {
-										"thread.id": thread_id,
-										"user.id": userId,
-										"message.id": claimedIds[0] ?? "",
-										"agent.execution": "delegated",
-										"agent.delegate.site_id": delegationTarget.site_id,
-									},
-								},
-								turnCtx,
-							);
-							try {
-								await context.with(trace.setSpan(turnCtx, rootSpan), async () => {
-									// Inject the W3C trace context with web.handle-message
-									// active so the relay outbox carries our traceparent
-									// to the remote host. The remote `relay.execute-process`
-									// span re-exports under us via reExportSpans.
-									const carrier = injectTraceContext();
-									const carrierStr = carrier ? JSON.stringify(carrier) : undefined;
-									await dispatchDelegation(
-										delegationTarget,
-										thread_id,
-										delegationMessageId,
-										userId,
-										carrierStr,
-									);
-								});
-								rootSpan.setStatus({ code: SpanStatusCode.OK });
-							} catch (err) {
-								rootSpan.setStatus({
-									code: SpanStatusCode.ERROR,
-									message: err instanceof Error ? err.message : String(err),
-								});
-								throw err;
-							} finally {
-								rootSpan.end();
-								handleMessageTracker.touchTurn(thread_id);
-							}
-						} else {
+						{
+							// Single delegation path (R-UD1): the loop ALWAYS runs locally
+							// on the host that received the trigger. It producer-assembles
+							// from its own authoritative state and relays only the inference
+							// (segments) — and, under uniform tool dispatch, any tool calls —
+							// outward. There is no whole-loop `process` delegation, so a host
+							// can never re-assemble from an un-synced replica (the history:0
+							// bug class). Model affinity and client-session affinity are no
+							// longer correctness requirements (R-UD12): the model host is
+							// reached via the inference relay, and client tools relay to the
+							// session host. `delegationMessageId` is retained for notification
+							// wakeup bookkeeping. See
+							// docs/design/specs/2026-06-29-unified-delegation.md.
+							void delegationMessageId;
 							// Derive the platform tag and platform tools for
 							// this thread. The tag tells the agent which surface the
 							// current turn originated from — web, boundless, discord, etc.
@@ -1381,7 +1245,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		webServer,
 		syncServer,
 		statusForwardCache,
-		activeDelegations,
 		threadExecutor,
 		platformMcpRegistry,
 		handleMessageTracker,

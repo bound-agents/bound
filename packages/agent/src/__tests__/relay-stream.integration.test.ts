@@ -490,7 +490,8 @@ describe("relay-stream integration tests", () => {
 			stream_id: randomUUID(),
 			payload: JSON.stringify({
 				model: "unavailable-model",
-				messages: [],
+				segments: [],
+				nowMs: 0,
 				tools: [],
 				system: "",
 				max_tokens: 1000,
@@ -554,7 +555,8 @@ describe("relay-stream integration tests", () => {
 			stream_id: randomUUID(),
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [],
+				segments: [],
+				nowMs: 0,
 				tools: [],
 				system: "",
 				max_tokens: 1000,
@@ -940,20 +942,10 @@ describe("relay-stream integration tests", () => {
 		expect(outboxEntries.length).toBeGreaterThan(0);
 		const inferencePayload = JSON.parse(outboxEntries[0].payload);
 
-		if (inferencePayload.messages_file_ref) {
-			expect(inferencePayload.messages).toEqual([]);
-			const fileRow = requesterDb
-				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-				.get(inferencePayload.messages_file_ref) as { content: string } | null;
-
-			expect(fileRow).not.toBeNull();
-			if (fileRow) {
-				const fileMessages = JSON.parse(fileRow.content);
-				expect(fileMessages.length).toBeGreaterThan(0);
-			}
-		} else {
-			expect(inferencePayload.messages).toBeDefined();
-		}
+		// The >2MB file-based offload (messages_file_ref) has been removed; large
+		// payloads are now carried via range-pointer segments instead.
+		expect(Array.isArray(inferencePayload.segments)).toBe(true);
+		expect(inferencePayload.messages_file_ref).toBeUndefined();
 	}, 30000);
 
 	// ============================================================

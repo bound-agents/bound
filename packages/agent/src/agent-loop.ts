@@ -21,6 +21,7 @@ import {
 	assembleContext,
 	buildVolatileContext,
 	computeVolatileTailSection,
+	realTimeClock,
 	rebuildWarmSections,
 } from "./context-assembly";
 import { resolveAdaptiveTruncation } from "./inflation-ratio";
@@ -466,6 +467,10 @@ export class MainAgentLoop extends BoundAgentLoop {
 							messages: storedMessages,
 							systemPrompt: cached.systemPrompt,
 							debug: contextDebug,
+							// Reuse the cold-path assembly instant so a delegated warm turn
+							// ships the same nowMs the stored history was annotated under,
+							// keeping the consumer's range re-annotation byte-identical (R-UD4).
+							assemblyNowMs: cached.assemblyNowMs ?? Date.now(),
 						},
 						messages: storedMessages,
 						toolDefinitions: mergedTools ?? [],
@@ -503,6 +508,11 @@ export class MainAgentLoop extends BoundAgentLoop {
 				"context.effective_truncation_ratio": adaptiveTruncationRatio,
 			},
 		});
+		// One clock per assembly (R-UD4). The instant is captured so the producer
+		// can stamp it onto the inference relay payload — the consumer threads the
+		// SAME nowMs into resolveSegments so range bytes match the producer's.
+		const assemblyClock = realTimeClock();
+		const assemblyNowMs = assemblyClock.nowMs();
 		const result = await context.with(
 			trace.setSpan(context.active(), assembleContextSpan),
 			async () => {
@@ -529,6 +539,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 					platformInstructions: this.config.platformInstructions,
 					commandRegistry: this.ctx.commandRegistry,
 					stableSubsectionCache: sharedStableSubsectionCache,
+					clock: assemblyClock,
 				});
 			},
 		);
@@ -562,6 +573,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 			lastMessageCreatedAt: lastRow?.created_at ?? new Date().toISOString(),
 			toolFingerprint: currentFingerprint,
 			debugSections: contextDebug.sections,
+			assemblyNowMs,
 		});
 		this.lastContextDebug = contextDebug;
 		this.ctx.logger.info("[agent-loop] Cache path selected", {
@@ -596,7 +608,12 @@ export class MainAgentLoop extends BoundAgentLoop {
 		}
 
 		return {
-			assembled: { messages, systemPrompt: result.systemPrompt, debug: contextDebug },
+			assembled: {
+				messages,
+				systemPrompt: result.systemPrompt,
+				debug: contextDebug,
+				assemblyNowMs,
+			},
 			messages,
 			toolDefinitions: mergedTools ?? [],
 			mergedTools,

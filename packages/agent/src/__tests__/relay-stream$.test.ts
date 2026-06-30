@@ -105,7 +105,11 @@ async function pollUntil(
 
 const payloadFixture = {
 	model: "test-model",
-	messages: [{ role: "user" as const, content: "hello" }],
+	segments: [{ role: "user" as const, content: "hello" }].map((m) => ({
+		kind: "inline" as const,
+		message: m,
+	})),
+	nowMs: 0,
 };
 
 describe("createRelayStream$", () => {

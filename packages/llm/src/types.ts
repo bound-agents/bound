@@ -1,3 +1,5 @@
+import type { ContextSegment } from "@bound/shared";
+
 export interface LLMBackend {
 	chat(params: ChatParams): AsyncIterable<StreamChunk>;
 	capabilities(): BackendCapabilities;
@@ -431,7 +433,21 @@ export class LLMError extends Error {
 // forwards the top-level output_config.effort knob.
 export interface InferenceRequestPayload {
 	model: string;
-	messages: LLMMessage[];
+	/**
+	 * The delegated context as segments (R-UD3) — the SINGLE wire representation.
+	 * Replaces the old `messages` array and the `messages_file_ref` files-table
+	 * offload: zero or more `inline` segments plus at most one `range` segment over
+	 * the confirmed-synced history prefix. The consumer resolves these via
+	 * `resolveSegments` and NEVER re-assembles. See
+	 * docs/design/specs/2026-06-29-unified-delegation.md §3.
+	 */
+	segments: ContextSegment[];
+	/**
+	 * The producer's AssemblyClock instant (epoch ms). Threaded into the consumer's
+	 * annotator when resolving range segments so the rendered bytes match the
+	 * producer's exactly (R-UD4).
+	 */
+	nowMs: number;
 	tools?: ToolDefinition[];
 	system?: string;
 	max_tokens?: number;
@@ -443,7 +459,6 @@ export interface InferenceRequestPayload {
 	effort?: string;
 	cache_ttl?: "5m" | "1h";
 	timeout_ms: number;
-	messages_file_ref?: string; // Set when messages are written to synced file (large prompt path)
 }
 
 export interface StreamChunkPayload {

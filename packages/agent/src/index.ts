@@ -8,7 +8,8 @@ export type {
 	ToolContext,
 } from "./types";
 export { isClientToolCallRequest } from "./types";
-export type { ContextParams } from "./context-assembly";
+export type { ContextParams, AssemblyClock, AssemblyContext } from "./context-assembly";
+export { realTimeClock, frozenClock } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";
 
 // Export RxJS utilities
@@ -28,13 +29,14 @@ export {
 // Export model resolution
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
 
-// Export delegation
+// Export delegation / client-session helpers. Whole-loop delegation
+// (getDelegationTarget / getClientSessionDelegationTarget / hasLocalClientSession)
+// is gone under the single delegation path (R-UD1); what remains are the
+// client-session liveness helpers used by hostinfo + notify/introspect warnings.
 export {
-	getClientSessionDelegationTarget,
+	clientSessionWakeupWarning,
 	getClientSessions,
-	getDelegationTarget,
-	getRecentToolCalls,
-	hasLocalClientSession,
+	isClientSessionLive,
 } from "./delegation";
 
 // Export agent loop
