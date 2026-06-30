@@ -314,14 +314,19 @@ Splits a changeset into smaller chunks that each serialize under `maxBytes` (def
 
 **Source:** `packages/sync/src/peer-cursor.ts`
 
-Peer cursors track synchronisation progress per peer in the `sync_state` table. Each row holds a `peer_site_id` (primary key) along with `last_received`, `last_sent`, `last_sync_at`, and `sync_errors`.
+Peer cursors track synchronisation progress per peer in the `sync_state` table. Each row holds a `peer_site_id` (primary key) along with `last_received`, `last_sent`, `last_confirmed`, `last_sync_at`, and `sync_errors`.
+
+This is a **three-cursor model** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD7/R-UD11):
 
 | Field | Meaning |
 |---|---|
-| `last_received` | Highest `hlc` this instance has received from the peer |
-| `last_sent` | Highest `hlc` this instance has sent to (or confirmed by) the peer |
+| `last_received` | Highest `hlc` this instance has **received and applied** from the peer (inbound) |
+| `last_sent` | Highest `hlc` this instance has **pushed** to the peer (optimistic; the send/catch-up cursor) |
+| `last_confirmed` | Highest `hlc` the peer has **acknowledged receiving** from us; advanced ONLY on changelog ack (and snapshot ack), never on the optimistic send |
 | `last_sync_at` | ISO timestamp of the most recent successful cursor update |
 | `sync_errors` | Count of consecutive sync failures for this peer |
+
+`last_confirmed` is the sole authority for which rows a delegation range-pointer may cover: a row is coverable only if its latest `change_log` HLC ≤ `last_confirmed`. `getConfirmedSyncWatermark(db, peer)` (exported from `@bound/sync`) reads `last_confirmed`, defaulting to `HLC_ZERO` (cold start ⇒ all context segments inline ⇒ safe). See the segmented delegation wire format in `docs/design/agent-system.md`.
 
 #### `getPeerCursor(db, peerSiteId): SyncState | null`
 
@@ -329,11 +334,12 @@ Returns the full `SyncState` row for a peer, or `null` if none exists.
 
 #### `updatePeerCursor(db, peerSiteId, updates): void`
 
-Upserts `sync_state` for the given peer. Accepted fields in `updates` are `last_received`, `last_sent`, and `sync_errors`. `last_sync_at` is always set to the current time. On insert, omitted HLC fields default to `HLC_ZERO` and omitted `sync_errors` defaults to `0`.
+Upserts `sync_state` for the given peer. Accepted fields in `updates` are `last_received`, `last_sent`, `last_confirmed`, and `sync_errors`. `last_sync_at` is always set to the current time. On insert, omitted HLC fields default to `HLC_ZERO` and omitted `sync_errors` defaults to `0`.
 
 ```typescript
 updatePeerCursor(db, hubSiteId, { last_sent: outbound.source_hlc_end });
 updatePeerCursor(db, hubSiteId, { last_received: newLastReceivedHlc });
+updatePeerCursor(db, hubSiteId, { last_confirmed: ackCursor }); // only on changelog/snapshot ack
 ```
 
 #### `resetSyncErrors(db, peerSiteId): void`
@@ -482,7 +488,7 @@ On receipt, `WsTransport.handleChangelogPush` calls `replayEvents(db, entries)` 
 type ChangelogAckPayload = { cursor: string };  // HLC
 ```
 
-On receipt, `WsTransport.handleChangelogAck` advances `sync_state.last_sent` for the acknowledging peer to `cursor`.
+On receipt, `WsTransport.handleChangelogAck` advances `sync_state.last_sent` for the acknowledging peer to `cursor`, and also advances `sync_state.last_confirmed` to `cursor` — `last_confirmed` is advanced ONLY here (and on snapshot ack), never on the optimistic send (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD7).
 
 ### `RELAY_SEND` / `RELAY_DELIVER` / `RELAY_ACK`
 
@@ -611,12 +617,14 @@ CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocesse
 | `resource_read` | Read an MCP resource on the target |
 | `prompt_invoke` | Invoke an MCP prompt on the target |
 | `cache_warm` | Warm cache on the target |
-| `cancel` | Cancel an active inference stream or delegated loop (carries `ref_id`) |
-| `inference` | Request LLM inference from the target (streaming response) |
-| `process` | Delegate entire agent loop to the target |
+| `cancel` | Cancel an active inference stream (carries `ref_id`) |
+| `inference` | Request LLM inference from the target (streaming response; context travels as `segments`) |
+| `client_tool` | Relay a client (WS) tool call to the host holding the WS session |
 | `intake` | Route an inbound platform message to the appropriate spoke for processing |
 | `platform_deliver` | Route an outbound assistant response to the platform leader host for delivery |
 | `event_broadcast` | Fan out a custom event to all spokes (target is `*`) |
+
+The `process` (whole-loop delegation) relay kind is **removed** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD13); the loop always runs on the trigger host, which relays only inference and tool calls. The `client_tool`/`client_result` kinds are new: they let a loop on a non-session host execute a client tool by relaying to the session host (R-UD5/R-UD8).
 
 **Response kinds** (target → requester):
 
@@ -626,7 +634,7 @@ CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocesse
 | `error` | Error response for any request kind |
 | `stream_chunk` | One batch of `StreamChunk` objects from a remote inference stream |
 | `stream_end` | Final batch; closes the inference stream |
-| `status_forward` | Agent loop state update from a delegated loop |
+| `client_result` | Result/error of a relayed `client_tool` call (enqueue idempotent on `(thread_id, call_id)`, R-UD9) |
 
 ### Hub Routing
 
@@ -648,7 +656,7 @@ After routing, the hub sends a `RELAY_ACK` back to the originating spoke contain
 4. **tool match** — the spoke with the highest overlap between its registered MCP tools and the tools used in this thread.
 5. **least-loaded fallback** — the spoke with the fewest pending undelivered `relay_outbox` entries.
 
-Once a target is selected, the intake processor writes a `process` outbox entry targeting that spoke.
+Once a target is selected, the platform message is routed to that spoke, which runs the agent loop locally (the old `process` whole-loop delegation entry is gone — `docs/design/specs/2026-06-29-unified-delegation.md`).
 
 **Routing for `platform_deliver`:** The entry is routed to the spoke that currently holds the platform leader role for the relevant platform. Leadership is stored in the synced `cluster_config` table under the key `platform_leader:<platform>` (e.g., `platform_leader:discord`). The receiving spoke's `RelayProcessor` emits a local `platform:deliver` event, which the `PlatformConnectorRegistry` handles to send the message to the user.
 
@@ -685,7 +693,8 @@ The `InferenceRequestPayload` (defined in `@bound/llm`) carries:
 ```typescript
 interface InferenceRequestPayload {
   model: string;
-  messages: LLMMessage[];
+  segments: ContextSegment[];  // inline tail + at most one range-pointer (replaces `messages`)
+  nowMs: number;               // producer's captured clock, so range re-annotation is byte-identical
   tools?: ToolDefinition[];
   system?: string;
   system_suffix?: string;
@@ -694,7 +703,6 @@ interface InferenceRequestPayload {
   cache_breakpoints?: number[];
   thinking?: { type: "enabled"; budget_tokens: number };
   timeout_ms: number;
-  messages_file_ref?: string;  // set when messages were written to files table (>2MB payloads)
 }
 ```
 

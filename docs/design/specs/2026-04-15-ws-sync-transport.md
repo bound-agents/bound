@@ -1,5 +1,7 @@
 # RFC: WebSocket Sync Transport
 
+> **Superseded in part (2026-06-29):** `2026-06-29-unified-delegation.md` supersedes the `process` (whole-loop) delegation facet and the >2MB `messages_file_ref` files-table offload. Delegation is now a single path — the producer assembles context locally and relays only inference (as `segments`) and tool calls; no consumer re-assembles.
+
 **Supplements:** `sync-protocol.md`, `2026-03-25-service-channel.md`, `2026-04-03-sync-encryption.md`
 **Date:** 2026-04-15
 **Status:** Implemented

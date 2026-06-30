@@ -1221,6 +1221,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			process.on("exit", clearRemoteRefresh);
 			process.on("SIGINT", clearRemoteRefresh);
 			process.on("SIGTERM", clearRemoteRefresh);
+
+			// Eager discovery at the connector-sync boundary (§7): when a connector
+			// handle syncs in, re-discover remote tools immediately rather than
+			// waiting up to 60s for the next periodic refresh. This runs on EVERY
+			// host (not just the platform leader) — any host may run a loop that
+			// references a remote platform tool by name, and the single delegation
+			// path means assembly must see that tool's definition wherever the loop
+			// lands. Fire-and-forget; errors are logged inside discoverRemoteTools.
+			appContext.eventBus.on("connector:handle_synced", () => {
+				platformMcpRegistry?.discoverRemoteTools().catch((error) => {
+					appContext.logger.warn("[platforms-mcp] handle_synced remote tool discovery failed", {
+						error: formatError(error),
+					});
+				});
+			});
 		}
 
 		// Advertise platform names in hosts.platforms for relay platform affinity routing.
