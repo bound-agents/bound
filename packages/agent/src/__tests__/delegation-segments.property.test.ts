@@ -185,4 +185,61 @@ describe("delegation-segments codec", () => {
 			{ numRuns: 200 },
 		);
 	});
+
+	// P4 (review-hardening): a producer transform that diverges from a pure row
+	// re-annotation — a purge stub, truncation marker, cache marker, or any
+	// non-row-derived message spliced INTO the history — must end the range at
+	// that point, so the divergent material ships inline (never lost/duplicated)
+	// and the whole thing still round-trips byte-for-byte. We model the splice by
+	// inserting a synthetic developer message at an arbitrary mid-history index;
+	// because it does not byte-match the annotated row at that index, the range
+	// must stop before it.
+	it("P4 a mid-history non-row message ends the range and still round-trips", () => {
+		const midScenario = fc.array(rowSeed, { minLength: 2, maxLength: 12 }).chain((seeds) =>
+			fc.record({
+				seeds: fc.constant(seeds),
+				spliceAt: fc.integer({ min: 1, max: seeds.length - 1 }),
+				stub: fc.string({ minLength: 1, maxLength: 30 }),
+				nowMs: fc.integer({ min: 1_700_000_000_000, max: 1_900_000_000_000 }),
+			}),
+		);
+		fc.assert(
+			fc.property(midScenario, ({ seeds, spliceAt, stub, nowMs }) => {
+				const threadId = "t-splice";
+				const { db, rows } = seedThread(threadId, seeds);
+				const annotated = annotateMessages({ messages: rows, nowMs });
+
+				// Splice a non-row developer message into the middle of the history.
+				const producerMessages: LLMMessage[] = [
+					...annotated.slice(0, spliceAt),
+					{ role: "developer", content: `purge-stub:${stub}` },
+					...annotated.slice(spliceAt),
+				];
+
+				// ALL rows are confirmed-synced — so only the splice (not the
+				// watermark) can end the range.
+				const segments = segmentAssembledMessages({
+					db,
+					threadId,
+					producerMessages,
+					nowMs,
+					isRangeCoverable: () => true,
+				});
+
+				// Round-trips byte-for-byte regardless of where the splice landed.
+				const resolved = resolveSegments(segments, db, nowMs);
+				expect(JSON.stringify(resolved)).toBe(JSON.stringify(producerMessages));
+
+				// The range (if any) never reaches past the splice: its count is at
+				// most the number of leading annotated messages before the stub. (When
+				// spliceAt lands amid injected model-switch messages the producer-index
+				// boundary can map to fewer rows, so <= is the precise bound.)
+				const range = segments.find((s) => s.kind === "range");
+				if (range && range.kind === "range") {
+					expect(range.count).toBeLessThanOrEqual(spliceAt);
+				}
+			}),
+			{ numRuns: 200 },
+		);
+	});
 });

@@ -19,6 +19,13 @@
  *
  * Run: bun run scripts/validate-no-files-relay-offload.ts
  * Wired into: bun check (pre-commit hook), alongside validate-outbox-invariant.ts
+ *
+ * LIMITATION: this is a shallow, fixed-file-set scanner (matching the sibling
+ * outbox gate's style), not a taint analysis. It only inspects the relay-path
+ * files listed below and only catches literal `files`-table writes ON those
+ * lines. A `files` write routed through a helper in an UNLISTED module would
+ * evade it, and a listed file that no longer exists is silently skipped. When
+ * relay code moves or grows, extend RELAY_PAYLOAD_FILES to keep the gate honest.
  */
 
 import { readFileSync } from "node:fs";
