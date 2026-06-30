@@ -13,6 +13,14 @@ export interface CachedTurnState {
 	fixedCacheIdx: number;
 	/** created_at of the last message in the stored array (for DB delta query) */
 	lastMessageCreatedAt: string;
+	/**
+	 * The AssemblyClock instant (epoch ms) the stored messages were annotated
+	 * with. Reused on warm hits so a delegated warm turn ships the SAME nowMs the
+	 * history rows were rendered under — the consumer's range re-annotation then
+	 * matches byte-for-byte (R-UD4). Optional for backward compat with older
+	 * cached-state fixtures.
+	 */
+	assemblyNowMs?: number;
 	/** Hash of tool definitions — change triggers cold path */
 	toolFingerprint: string;
 	/**

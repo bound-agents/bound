@@ -33,6 +33,7 @@ describe("changeset", () => {
 				peer_site_id TEXT PRIMARY KEY,
 				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
 				last_sent TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_confirmed TEXT NOT NULL DEFAULT '${HLC_ZERO}',
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)

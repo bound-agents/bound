@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO } from "@bound/shared";
 import {
+	getConfirmedSyncWatermark,
 	getMinConfirmedHlc,
 	getPeerCursor,
 	incrementSyncErrors,
@@ -21,6 +22,7 @@ describe("peer-cursor", () => {
 				peer_site_id TEXT PRIMARY KEY,
 				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
 				last_sent TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_confirmed TEXT NOT NULL DEFAULT '${HLC_ZERO}',
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)
@@ -187,6 +189,31 @@ describe("peer-cursor", () => {
 
 			const minHlc = getMinConfirmedHlc(db);
 			expect(minHlc).toBe(HLC_ZERO);
+		});
+	});
+
+	describe("getConfirmedSyncWatermark", () => {
+		it("returns HLC_ZERO when the peer has never acked (cold start)", () => {
+			expect(getConfirmedSyncWatermark(db, "never-seen")).toBe(HLC_ZERO);
+		});
+
+		it("returns last_confirmed for a known peer, not last_sent", () => {
+			// last_sent is advanced optimistically; last_confirmed only on ack.
+			// The watermark must read last_confirmed (the lower, ack-anchored value).
+			updatePeerCursor(db, "peer-x", {
+				last_sent: "2026-04-10T10:00:00.000Z_0000_0010",
+				last_confirmed: "2026-04-10T10:00:00.000Z_0000_0004",
+			});
+
+			expect(getConfirmedSyncWatermark(db, "peer-x")).toBe("2026-04-10T10:00:00.000Z_0000_0004");
+		});
+
+		it("stays HLC_ZERO when only last_sent advanced (optimistic, no ack)", () => {
+			updatePeerCursor(db, "peer-y", {
+				last_sent: "2026-04-10T10:00:00.000Z_0000_0010",
+			});
+
+			expect(getConfirmedSyncWatermark(db, "peer-y")).toBe(HLC_ZERO);
 		});
 	});
 });

@@ -23,6 +23,7 @@ function createTestSchema(db: Database): void {
 			peer_site_id TEXT PRIMARY KEY,
 			last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 			last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 			sync_errors INTEGER DEFAULT 0,
 			last_sync_at TEXT
 		)

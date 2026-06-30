@@ -23,7 +23,7 @@ const USER_MESSAGE_TAG = "user-message";
  * Today that's the send time (`created_at` + the once-written `tz_offset`);
  * additional immutable fields slot in here as new attributes.
  */
-function buildUserMessageAttributes(m: Message): string {
+function buildUserMessageAttributes(m: Message, nowMsRef?: number): string {
 	const attrs: string[] = [];
 	// `from` first so the envelope reads "<user-message from="Kara" sent="...">".
 	// Stamped once into metadata at insert (like tz_offset), so it stays an
@@ -34,7 +34,7 @@ function buildUserMessageAttributes(m: Message): string {
 		attrs.push(`from="${escapeXmlAttr(from)}"`);
 	}
 	if (m.created_at) {
-		attrs.push(`sent="${formatInstant(m.created_at, readTzOffsetMinutes(m.metadata))}"`);
+		attrs.push(`sent="${formatInstant(m.created_at, readTzOffsetMinutes(m.metadata), nowMsRef)}"`);
 	}
 	return attrs.length > 0 ? ` ${attrs.join(" ")}` : "";
 }
@@ -105,16 +105,21 @@ export interface AnnotateMessagesParams {
 	/** Post-Stage-3 sanitized messages. */
 	messages: ReadonlyArray<Message>;
 	/**
-	 * @deprecated Unused under the byte-stable annotation rule (N7).
-	 * Kept in the input shape for backward compatibility with callers
-	 * that still pass a value. The annotator no longer consults
-	 * wall-clock time when deciding whether to prefix a user message.
+	 * The AssemblyClock instant, used SOLELY as the reference year for the
+	 * `<user-message sent="…">` envelope's `formatInstant` rendering (its only
+	 * wall-clock dependency: same-year vs `'YY` suffix). Threading it makes the
+	 * envelope a pure function of `(row, nowMs)` across hosts — two hosts in
+	 * different calendar years would otherwise render the same `created_at`
+	 * differently, breaking the cross-host byte-equivalence the single-delegation
+	 * path needs (R-UD4 / AC.3). It does NOT gate whether to annotate (the
+	 * byte-stable annotation rule N7 still annotates unconditionally). When
+	 * omitted, `formatInstant` falls back to `Date.now()`.
 	 */
 	nowMs?: number;
 }
 
 export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
-	const { messages } = params;
+	const { messages, nowMs } = params;
 
 	// Build a map from tool_call message ID to its first tool_use_id,
 	// plus a set of all known tool_use_ids for tool_result resolution.
@@ -201,7 +206,7 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 		// blocks survive intact between the tags — which also gives vision
 		// messages a send time they previously lacked.
 		if (m.role === "user" && m.created_at) {
-			const attrs = buildUserMessageAttributes(m);
+			const attrs = buildUserMessageAttributes(m, nowMs);
 			if (typeof annotatedContent === "string") {
 				annotatedContent = `<${USER_MESSAGE_TAG}${attrs}>\n${annotatedContent}\n</${USER_MESSAGE_TAG}>`;
 			} else if (Array.isArray(annotatedContent)) {

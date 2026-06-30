@@ -78,3 +78,12 @@ export { MicrotaskCoalescer } from "./ws-coalescer.js";
 
 // Reducers and column cache
 export { clearColumnCache, applySnapshotRows, applyLWWReducer } from "./reducers.js";
+
+// Peer sync cursors — getConfirmedSyncWatermark is the sole anchor authority
+// for delegation range segments (R-UD11).
+export {
+	getPeerCursor,
+	updatePeerCursor,
+	getConfirmedSyncWatermark,
+	getMinConfirmedHlc,
+} from "./peer-cursor.js";
