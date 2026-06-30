@@ -460,6 +460,41 @@ describe("enqueueToolResult", () => {
 		expect(row?.event_type).toBe(TOOL_RESULT);
 		expect(JSON.parse(row?.event_payload ?? "{}")).toEqual({ call_id: callId });
 	});
+
+	// R-UD9 / AC.7c — re-driving the same (thread_id, call_id) is a no-op so a
+	// relayed client_result retry cannot double-enqueue or double-execute.
+	it("is idempotent on (thread_id, call_id): a second enqueue is a no-op", () => {
+		const threadId = randomUUID();
+		const callId = "call-dup";
+
+		const firstId = enqueueToolResult(db, threadId, callId);
+		const secondId = enqueueToolResult(db, threadId, callId);
+
+		// Same entry id returned, and exactly ONE row exists for this pair.
+		expect(secondId).toBe(firstId);
+		const count = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND event_payload = ?",
+			)
+			.get(threadId, TOOL_RESULT, JSON.stringify({ call_id: callId })) as { c: number };
+		expect(count.c).toBe(1);
+	});
+
+	it("distinguishes different call_ids and different threads", () => {
+		const threadA = randomUUID();
+		const threadB = randomUUID();
+
+		const a1 = enqueueToolResult(db, threadA, "call-1");
+		const a2 = enqueueToolResult(db, threadA, "call-2"); // different call → new row
+		const b1 = enqueueToolResult(db, threadB, "call-1"); // different thread → new row
+
+		expect(a1).not.toBe(a2);
+		expect(a1).not.toBe(b1);
+		const total = db
+			.query("SELECT COUNT(*) AS c FROM dispatch_queue WHERE event_type = ?")
+			.get(TOOL_RESULT) as { c: number };
+		expect(total.c).toBe(3);
+	});
 });
 
 describe("acknowledgeClientToolCall", () => {
