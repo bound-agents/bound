@@ -191,6 +191,62 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
+		it("accepts bedrock-mantle with explicit openai_responses provider_mode", () => {
+			const config = {
+				backends: [
+					{
+						id: "mantle-gpt",
+						provider: "bedrock-mantle",
+						provider_mode: "openai_responses",
+						model: "openai.gpt-5.5",
+						region: "us-east-1",
+						context_window: 272000,
+						tier: 1,
+					},
+				],
+				default: "mantle-gpt",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("accepts bedrock-mantle with explicit anthropic provider_mode and no api_key", () => {
+			const config = {
+				backends: [
+					{
+						id: "mantle-sonnet",
+						provider: "bedrock-mantle",
+						provider_mode: "anthropic",
+						model: "anthropic.claude-sonnet-5",
+						region: "us-east-1",
+						context_window: 200000,
+						tier: 1,
+					},
+				],
+				default: "mantle-sonnet",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires provider_mode for bedrock-mantle", () => {
+			const config = {
+				backends: [
+					{
+						id: "mantle-gpt",
+						provider: "bedrock-mantle",
+						model: "openai.gpt-5.5",
+						region: "us-east-1",
+						context_window: 272000,
+						tier: 1,
+					},
+				],
+				default: "mantle-gpt",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
 		// --- umans (config-light, self-configuring) ---
 
 		it("accepts a config-light umans namespace (provider+id+api_key only) (AC.1)", () => {

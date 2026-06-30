@@ -45,6 +45,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 			(b): BackendConfig => ({
 				id: b.id,
 				provider: b.provider,
+				providerMode: b.provider_mode,
 				// umans is a self-configuring namespace with no operator-set
 				// model — the lineup is fetched at runtime. Coerce to "" so the
 				// loose BackendConfig.model stays a string; the umans driver

@@ -62,8 +62,9 @@ must be `""`.
 |-------|------|---------|---------|
 | `id` | string (non-empty) | — | Logical alias you route to (e.g. `"opus"`). Distinct from `model`. |
 | `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`, `umans`. |
-| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the mantle model id (e.g. `openai.gpt-5.4`). **Omitted for `umans`** (the model lineup is fetched at runtime — see below). |
-| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region`) and `umans` (default `https://api.code.umans.ai`). |
+| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model id for the selected `provider_mode` (e.g. `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). **Omitted for `umans`** (the model lineup is fetched at runtime — see below). |
+| `provider_mode` | enum `anthropic`\|`openai_responses` | — | Required for `bedrock-mantle`. Selects the Mantle protocol surface: Anthropic Messages (`/anthropic/v1/messages`) or OpenAI Responses (`/openai/v1/responses`). |
+| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region` and `provider_mode`) and `umans` (default `https://api.code.umans.ai`). |
 | `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`, `umans`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
 | `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |

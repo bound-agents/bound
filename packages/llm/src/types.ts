@@ -356,6 +356,7 @@ export interface ToolDefinition {
 export interface BackendConfig {
 	id: string;
 	provider: string;
+	providerMode?: "anthropic" | "openai_responses";
 	model: string;
 	baseUrl?: string;
 	contextWindow?: number;

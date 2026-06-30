@@ -342,6 +342,7 @@ type ModelBackendsConfig = {
   backends: Array<{
     id: string;
     provider: "bedrock" | "bedrock-mantle" | "anthropic" | "openai-compatible" | "cerebras" | "zai" | "opencode-go";
+    provider_mode?: "anthropic" | "openai_responses"; // Required for bedrock-mantle
     model: string;
     base_url?: string;              // Required for openai-compatible
     api_key?: string;               // Required for cerebras, anthropic, zai, and opencode-go

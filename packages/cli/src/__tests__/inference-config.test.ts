@@ -128,4 +128,24 @@ describe("toRouterConfig", () => {
 	it("leaves connectTimeoutMs undefined when connect_timeout_ms is not configured", () => {
 		expect(toRouterConfig(bedrockOpusWithThinking()).backends[0].connectTimeoutMs).toBeUndefined();
 	});
+
+	it("propagates `provider_mode` → BackendConfig.providerMode", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{
+					id: "mantle-sonnet",
+					provider: "bedrock-mantle",
+					provider_mode: "anthropic",
+					model: "anthropic.claude-sonnet-5",
+					region: "us-east-1",
+					context_window: 200000,
+					tier: 1,
+					price_per_m_input: 3,
+					price_per_m_output: 15,
+				},
+			],
+			default: "mantle-sonnet",
+		};
+		expect(toRouterConfig(cfg).backends[0].providerMode).toBe("anthropic");
+	});
 });
