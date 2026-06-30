@@ -7,6 +7,39 @@ export function findMessageById(db: Database, id: string): Message | null {
 	return db.query("SELECT * FROM messages WHERE id = ?").get(id) as Message | null;
 }
 
+/**
+ * Map each given message row id to the HIGHEST `change_log` HLC recorded for it
+ * (its latest write — insert or edit). Rows with no change_log entry (e.g. a
+ * locally-originated row whose changelog batch hasn't flushed, or a non-synced
+ * test row) are absent from the map. Used by the delegation segmenter to decide
+ * which rows are confirmed-synced to a consumer: a row is range-coverable only
+ * if its latest HLC is <= the consumer's confirmed watermark (R-UD6). Reading
+ * `change_log` here keeps this single cross-table read in the repository layer
+ * rather than inlined in feature code.
+ */
+export function getLatestChangeLogHlcForRows(
+	db: Database,
+	rowIds: readonly string[],
+): Map<string, string> {
+	const out = new Map<string, string>();
+	if (rowIds.length === 0) return out;
+	// Chunk to stay well under SQLite's parameter limit for very long threads.
+	const CHUNK = 500;
+	for (let i = 0; i < rowIds.length; i += CHUNK) {
+		const chunk = rowIds.slice(i, i + CHUNK);
+		const placeholders = chunk.map(() => "?").join(", ");
+		const rows = db
+			.query(
+				`SELECT row_id, MAX(hlc) AS hlc FROM change_log
+				WHERE table_name = 'messages' AND row_id IN (${placeholders})
+				GROUP BY row_id`,
+			)
+			.all(...chunk) as Array<{ row_id: string; hlc: string }>;
+		for (const r of rows) out.set(r.row_id, r.hlc);
+	}
+	return out;
+}
+
 export function listMessagesByThread(db: Database, threadId: string): Message[] {
 	return db
 		.query("SELECT * FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at ASC")

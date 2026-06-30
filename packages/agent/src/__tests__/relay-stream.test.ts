@@ -68,7 +68,8 @@ describe("createRelayStream$() observable", () => {
 		const eligibleHosts = [host];
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -180,7 +181,8 @@ describe("createRelayStream$() observable", () => {
 		const eligibleHosts = [host];
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -275,7 +277,8 @@ describe("createRelayStream$() observable", () => {
 		const eligibleHosts = [host];
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -407,7 +410,8 @@ describe("createRelayStream$() observable", () => {
 		const eligibleHosts = [host];
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -490,7 +494,8 @@ describe("createRelayStream$() observable", () => {
 
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -551,7 +556,8 @@ describe("createRelayStream$() observable", () => {
 
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -594,7 +600,8 @@ describe("createRelayStream$() observable", () => {
 		const eligibleHosts = [host];
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -662,7 +669,8 @@ describe("createRelayStream$() observable", () => {
 		const eligibleHosts = [host];
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -769,74 +777,14 @@ describe("createRelayStream$() observable", () => {
 		expect(textChunks.length).toBeGreaterThanOrEqual(2);
 	});
 
-	it("large prompt >2MB triggers file-based sync with messages_file_ref (AC1.9)", async () => {
-		const host = makeMockHost("relay-host-9");
-		const eligibleHosts = [host];
-
-		// Build a large payload (>2MB) by creating many messages
-		const largeMessages = Array.from({ length: 500 }, (_, _i) => ({
-			role: "user" as const,
-			content: "x".repeat(4000), // 4KB per message
-		}));
-
-		const payload = {
-			model: "test-model",
-			messages: largeMessages,
-			tools: [],
-		};
-
-		const aborted$ = new Subject<void>();
-
-		const deps = createDeps();
-
-		try {
-			const timeoutPromise = new Promise((_, reject) => {
-				setTimeout(() => reject(new Error("Test timeout - observable never completed")), 1000);
-			});
-			await Promise.race([
-				lastValueFrom(
-					createRelayStream$(
-						deps,
-						payload,
-						eligibleHosts,
-						aborted$,
-						{},
-						{ pollIntervalMs: 5, perHostTimeoutMs: 100 },
-					),
-					{ defaultValue: undefined },
-				),
-				timeoutPromise,
-			]);
-		} catch {
-			// Expected to timeout
-		}
-
-		// Check the outbox entry for messages_file_ref
-		const outboxEntry = db
-			.query(
-				"SELECT payload FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
-			)
-			.get() as { payload: string } | null;
-
-		if (outboxEntry) {
-			const parsed = JSON.parse(outboxEntry.payload) as {
-				messages_file_ref?: string;
-				messages?: unknown[];
-			};
-
-			// For large payloads, either messages_file_ref is set or payload is truncated
-			// The exact behavior depends on implementation
-			expect(parsed).toBeDefined();
-		}
-	});
-
 	it("captures relay metadata (hostName and firstChunkLatencyMs) (AC4.1)", async () => {
 		const host = makeMockHost("relay-host-metadata");
 		const eligibleHosts = [host];
 
 		const payload = {
 			model: "test-model",
-			messages: [],
+			segments: [],
+			nowMs: 0,
 			tools: [],
 		};
 
@@ -926,7 +874,7 @@ describe("createRelayStream$() observable", () => {
 	it("duplicate stream chunks with same id are ignored via INSERT OR IGNORE", async () => {
 		const host = makeMockHost("relay-host-dedup");
 		const eligibleHosts = [host];
-		const payload = { model: "test-model", messages: [], tools: [] };
+		const payload = { model: "test-model", segments: [], nowMs: 0, tools: [] };
 
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
@@ -1050,7 +998,7 @@ describe("createRelayStream$() observable", () => {
 	it("backwards seq jumps from stale duplicates are discarded, not reprocessed", async () => {
 		const host = makeMockHost("relay-host-backwards");
 		const eligibleHosts = [host];
-		const payload = { model: "test-model", messages: [], tools: [] };
+		const payload = { model: "test-model", segments: [], nowMs: 0, tools: [] };
 
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
@@ -1171,7 +1119,7 @@ describe("createRelayStream$() observable", () => {
 		// should arrive before the gap skip triggers.
 		const host = makeMockHost("relay-host-delayed");
 		const eligibleHosts = [host];
-		const payload = { model: "test-model", messages: [], tools: [] };
+		const payload = { model: "test-model", segments: [], nowMs: 0, tools: [] };
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 		const aborted$ = new Subject<void>();
@@ -1315,7 +1263,7 @@ describe("createRelayStream$() observable", () => {
 		// alongside fresh seq 3. The stale seq 1 should be ignored, seq 3 should be consumed.
 		const host = makeMockHost("relay-host-mixed");
 		const eligibleHosts = [host];
-		const payload = { model: "test-model", messages: [], tools: [] };
+		const payload = { model: "test-model", segments: [], nowMs: 0, tools: [] };
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 		const aborted$ = new Subject<void>();
@@ -1425,7 +1373,7 @@ describe("createRelayStream$() observable", () => {
 		// Reproduces: seq 1 is permanently lost, gap detection skips it after 6 cycles
 		const host = makeMockHost("relay-host-fwd-gap");
 		const eligibleHosts = [host];
-		const payload = { model: "test-model", messages: [], tools: [] };
+		const payload = { model: "test-model", segments: [], nowMs: 0, tools: [] };
 		const chunks: StreamChunk[] = [];
 		let generatedStreamId: string | null = null;
 		const aborted$ = new Subject<void>();

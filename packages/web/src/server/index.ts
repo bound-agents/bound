@@ -66,7 +66,6 @@ export interface WebAppConfig {
 	 */
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	emitToolCancel?: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -152,7 +151,6 @@ export async function createWebApp(
 		syncPort: config.syncPort,
 		hubUrl: config.hubUrl,
 		statusForwardCache: config.statusForwardCache,
-		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
 		emitToolCancel: config.emitToolCancel,
 		requestConsistency: config.requestConsistency,

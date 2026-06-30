@@ -45,7 +45,6 @@ export interface RoutesConfig {
 	 */
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	emitToolCancel?: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -80,7 +79,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		syncPort,
 		hubUrl,
 		statusForwardCache,
-		activeDelegations,
 		activeLoops,
 		emitToolCancel,
 		requestConsistency,
@@ -111,7 +109,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			hostName,
 			siteId,
 			modelsConfig,
-			activeDelegations,
 			undefined,
 			emitToolCancel,
 			requestConsistency,

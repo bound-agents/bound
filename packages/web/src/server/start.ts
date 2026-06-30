@@ -39,7 +39,6 @@ export interface WebServerConfig {
 	 */
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
 	/**
@@ -148,7 +147,6 @@ export async function createWebServer(
 		syncPort: config.syncPort,
 		hubUrl: config.hubUrl,
 		statusForwardCache: config.statusForwardCache,
-		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
 		emitToolCancel: wsHandler.emitToolCancel,
 		requestConsistency: config.requestConsistency,

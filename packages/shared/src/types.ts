@@ -490,7 +490,6 @@ export const RELAY_KIND_REGISTRY = {
 	// Async request kinds — fire-and-forget, processed via relay_inbox
 	cancel: { dispatch: "async" },
 	inference: { dispatch: "async" },
-	process: { dispatch: "async" },
 	intake: { dispatch: "async" },
 
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor
@@ -644,14 +643,55 @@ export interface ErrorPayload {
 	definitely_not_executed?: boolean;
 }
 
-// Loop delegation payloads
-export interface ProcessPayload {
-	thread_id: string;
-	message_id: string;
-	user_id: string;
-	platform: string | null; // null = web UI delegation
-}
+/**
+ * The SINGLE wire representation of a delegated context (R-UD3). The inference
+ * relay payload carries a list of these in place of raw `messages`. There are
+ * exactly two shapes:
+ *
+ *   - `inline` — one fully-assembled message carried verbatim on the wire. The
+ *     new tail (the triggering user message, the volatile developer tail, any
+ *     unsynced or non-verbatim rows like truncation markers / purge stubs) ships
+ *     this way.
+ *   - `range` — a pointer to a contiguous, confirmed-synced PREFIX of the
+ *     thread's message rows that the consumer rebuilds byte-for-byte by re-running
+ *     the same Stage-1 projection finder + annotation the producer used. History
+ *     is an append-only prefix, so there is always AT MOST ONE range (R-UD3), and
+ *     it never covers a row whose change_log HLC exceeds the consumer's confirmed
+ *     watermark (R-UD6) — so the pointed rows are guaranteed present on the
+ *     consumer (a missing row is a hard error that cannot happen by construction,
+ *     R-UD10).
+ *
+ * This replaces both the old `messages` inline array and the `messages_file_ref`
+ * files-table offload — a single range-pointer is kilobytes regardless of token
+ * count, so the >2MB offload race is deleted, not relocated. See
+ * docs/design/specs/2026-06-29-unified-delegation.md §3/§4.
+ */
+export type ContextSegment =
+	| {
+			kind: "inline";
+			/** A fully-assembled LLMMessage, JSON-shaped (driver-agnostic). */
+			message: unknown;
+	  }
+	| {
+			kind: "range";
+			thread_id: string;
+			/**
+			 * Inclusive upper bound of the range: the `created_at` of the last
+			 * message row the range covers. The consumer loads live message rows
+			 * with `created_at <= anchor_created_at` (ASC), takes the leading
+			 * `count`, and annotates them. Paired with `count` so a mid-thread
+			 * truncation window resolves to exactly the producer's prefix.
+			 */
+			anchor_created_at: string;
+			/**
+			 * Number of leading rows (oldest-first) the range covers. The producer's
+			 * truncation telescope may drop the very oldest rows; `count` pins the
+			 * window so the consumer reproduces the same prefix length.
+			 */
+			count: number;
+	  };
 
+// Loop delegation payloads
 export interface StatusForwardPayload {
 	thread_id: string;
 	status: string; // "idle" | "thinking" | "tool_call" | etc.

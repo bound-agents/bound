@@ -1,4 +1,3 @@
-import { createRelayOutboxEntry } from "@bound/agent";
 import {
 	cancelClientToolCalls,
 	compareAllTables,
@@ -11,7 +10,6 @@ import {
 	insertRow,
 	listHostsOrderedByName,
 	listRemoteHostModelLiveness,
-	writeOutbox,
 } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
@@ -48,7 +46,6 @@ export function createStatusRoutes(
 	hostName: string,
 	siteId: string,
 	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined),
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>,
 	logger?: ReturnType<typeof createLogger>,
 	emitToolCancel?: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -267,26 +264,12 @@ export function createStatusRoutes(
 				siteId,
 			);
 
-			// Emit cancel event on eventBus to signal agent loop to stop
+			// Emit cancel event on eventBus to signal agent loop to stop. The loop
+			// runs locally on the trigger host (single delegation path, R-UD1), so
+			// the local agent:cancel event reaches it; there is no whole-loop
+			// delegation to propagate a cancel to anymore. In-flight relayed
+			// inference is cancelled by the loop's own relay cancel path.
 			eventBus.emit("agent:cancel", { thread_id: threadId });
-
-			// AC6.4: Propagate cancel to delegated processing host
-			const delegation = activeDelegations?.get(threadId);
-			if (delegation) {
-				const cancelEntry = createRelayOutboxEntry(
-					delegation.targetSiteId,
-					siteId,
-					"cancel",
-					JSON.stringify({}),
-					30_000,
-					delegation.processOutboxId, // ref_id matches the process message
-				);
-				try {
-					writeOutbox(db, cancelEntry);
-				} catch {
-					// Non-fatal
-				}
-			}
 
 			return c.json({
 				cancelled: true,

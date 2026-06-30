@@ -120,9 +120,20 @@ describe("createRelayBackend", () => {
 		if (!row) throw new Error("no inference outbox row");
 
 		// AC1.2: the payload carries the logical alias, not a provider-specific id.
-		const payload = JSON.parse(row.payload) as { model: string; timeout_ms: number };
+		const payload = JSON.parse(row.payload) as {
+			model: string;
+			timeout_ms: number;
+			segments: Array<{ kind: string; message?: unknown }>;
+			nowMs: number;
+		};
 		expect(payload.model).toBe("opus");
 		expect(payload.timeout_ms).toBe(5000);
+		// The relay backend now emits inline segments + a send-instant nowMs
+		// instead of a raw `messages` array.
+		expect(payload.segments).toEqual([
+			{ kind: "inline", message: { role: "user", content: "hello" } },
+		]);
+		expect(typeof payload.nowMs).toBe("number");
 
 		insertRelayInboxEntry(db, {
 			id: "chunk-0",

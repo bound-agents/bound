@@ -24,7 +24,6 @@ import type {
 	ErrorPayload,
 	Logger,
 	PlatformRequestPayload,
-	ProcessPayload,
 	PromptInvokePayload,
 	RelayConfig,
 	RelayInboxEntry,
@@ -33,7 +32,6 @@ import type {
 	ResourceReadPayload,
 	ResultPayload,
 	SerializedSpan,
-	StatusForwardPayload,
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
@@ -50,7 +48,6 @@ import {
 	intakePayloadSchema,
 	parseJsonSafe,
 	parseJsonUntyped,
-	processPayloadSchema,
 } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
@@ -72,6 +69,7 @@ import {
 } from "./agent-loop-utils.js";
 import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
+import { resolveSegments } from "./delegation-segments.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import { formatMcpHelp } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
@@ -173,7 +171,6 @@ export class RelayProcessor {
 				this.executePlatformRequest(p as PlatformRequestPayload),
 			),
 		inference: (entry) => this.handleInference(entry),
-		process: (entry) => this.handleProcess(entry),
 		intake: (entry) => this.handleIntake(entry),
 	};
 
@@ -563,28 +560,6 @@ export class RelayProcessor {
 		return null;
 	}
 
-	private async handleProcess(entry: RelayInboxEntry): Promise<null> {
-		const payloadResult = parseJsonSafe(processPayloadSchema, entry.payload, entry.kind);
-		if (!payloadResult.ok) {
-			this.logger.error("Invalid relay payload", {
-				kind: entry.kind,
-				error: payloadResult.error,
-				entryId: entry.id,
-			});
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
-			);
-			markProcessed(this.db, [entry.id]);
-			throw new PayloadParseError();
-		}
-		this.executeProcess(entry, payloadResult.value).catch((err) => {
-			this.logger.error("executeProcess failed", { error: err, entryId: entry.id });
-		});
-		return null;
-	}
-
 	private async handleIntake(entry: RelayInboxEntry): Promise<null> {
 		const payloadResult = parseJsonSafe(intakePayloadSchema, entry.payload, entry.kind);
 		if (!payloadResult.ok) {
@@ -629,24 +604,42 @@ export class RelayProcessor {
 			isLocal: targetSiteId === this.siteId,
 		});
 
-		writeOutbox(this.db, {
-			id: randomUUID(),
-			source_site_id: entry.source_site_id,
-			target_site_id: targetSiteId,
-			kind: "process",
-			ref_id: entry.id,
-			idempotency_key: `process:${entry.id}`,
-			stream_id: null,
-			payload: JSON.stringify({
-				thread_id: payload.thread_id,
-				message_id: payload.message_id,
-				user_id: `platform:${payload.platform}`,
+		// Single delegation path (R-UD1): the selected host runs the agent loop
+		// LOCALLY — it producer-assembles from its own authoritative state and
+		// relays only the inference (and any tool calls) outward. There is no
+		// whole-loop `process` delegation and no consumer that re-assembles from
+		// an un-synced replica. When the selected host is remote, forward the
+		// SAME `intake` entry to it; that host re-runs selectIntakeHost, selects
+		// itself, and runs the loop locally. Affinity (platform-connector host)
+		// is an optimization the selector applies, never a correctness gate
+		// (R-UD12). See docs/design/specs/2026-06-29-unified-delegation.md.
+		if (targetSiteId === this.siteId) {
+			this.runLocalThreadLoop({
+				threadId: payload.thread_id,
+				messageId: payload.message_id,
+				userId: `platform:${payload.platform}`,
 				platform: payload.platform,
-			} satisfies ProcessPayload),
-			created_at: new Date().toISOString(),
-			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-			trace_context: null,
-		});
+			}).catch((err) => {
+				this.logger.error("Local intake loop failed", {
+					error: err,
+					threadId: payload.thread_id,
+				});
+			});
+		} else {
+			writeOutbox(this.db, {
+				id: randomUUID(),
+				source_site_id: entry.source_site_id,
+				target_site_id: targetSiteId,
+				kind: "intake",
+				ref_id: entry.id,
+				idempotency_key: idempotencyKey,
+				stream_id: null,
+				payload: entry.payload,
+				created_at: new Date().toISOString(),
+				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				trace_context: null,
+			});
+		}
 
 		return null;
 	}
@@ -1270,7 +1263,7 @@ export class RelayProcessor {
 			model: payload.model,
 			source: entry.source_site_id,
 			streamId: entry.stream_id,
-			messageCount: payload.messages?.length ?? 0,
+			segmentCount: payload.segments?.length ?? 0,
 			hasTools: !!payload.tools?.length,
 		});
 		const FLUSH_INTERVAL_MS = 200;
@@ -1325,33 +1318,30 @@ export class RelayProcessor {
 			return;
 		}
 
-		// Resolve large prompt file ref if present (AC1.9)
-		let messages = payload.messages;
-		if (payload.messages_file_ref) {
-			const fileRow = this.db
-				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-				.get(payload.messages_file_ref) as { content: string } | null;
-			if (!fileRow) {
-				this.writeResponse(
-					entry,
-					"error",
-					JSON.stringify({
-						error: `Large prompt file not found: ${payload.messages_file_ref}`,
-						retriable: false,
-					}),
-				);
-				return;
-			}
-			try {
-				messages = JSON.parse(fileRow.content);
-			} catch {
-				this.writeResponse(
-					entry,
-					"error",
-					JSON.stringify({ error: "Failed to parse large prompt file", retriable: false }),
-				);
-				return;
-			}
+		// Resolve the delegated context from segments (R-UD2 / R-UD10). The
+		// consumer NEVER re-assembles: it resolves inline segments verbatim and
+		// rebuilds each range segment byte-for-byte from its OWN confirmed-synced
+		// message rows via the same Stage-1 finder + annotator the producer used.
+		// `resolveSegments` has no access to assembleContext / an AssemblyAuthority
+		// — consumer re-assembly is structurally unrepresentable. A range that
+		// points past available rows throws (cannot happen by construction since
+		// the producer gates on last_confirmed, R-UD6).
+		let messages: ReturnType<typeof resolveSegments>;
+		try {
+			messages = resolveSegments(payload.segments, this.db, payload.nowMs);
+		} catch (err) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({
+					error: `Failed to resolve context segments: ${err instanceof Error ? err.message : String(err)}`,
+					// Retriable: a range row may simply not have synced yet on this
+					// consumer. By construction (last_confirmed gate) this should not
+					// happen, but if it does, a retry after sync converges can succeed.
+					retriable: true,
+				}),
+			);
+			return;
 		}
 
 		// Defense-in-depth: strip `{role:"cache"}` markers if the local backend
@@ -1601,133 +1591,64 @@ export class RelayProcessor {
 		}
 	}
 
-	private async executeProcess(entry: RelayInboxEntry, payload: ProcessPayload): Promise<void> {
-		this.logger.info("[relay] Process delegation started", {
-			threadId: payload.thread_id,
-			messageId: payload.message_id,
-			platform: payload.platform ?? null,
-			source: entry.source_site_id,
-		});
+	/**
+	 * Run an agent loop LOCALLY for an intake-routed thread (R-UD1). This is the
+	 * platform-intake leg of the single delegation path: the host the intake
+	 * selector chose (the platform-connector host as an optimization, R-UD12)
+	 * runs the whole loop here, against its OWN authoritative state. It assembles
+	 * locally (so it can never re-assemble from an un-synced replica — the old
+	 * `process` bug class) and relays only the inference outward.
+	 *
+	 * Unlike the deleted `process` consumer, there is no waiting cross-host
+	 * requester: platform intake is fire-and-forget, so there is no
+	 * status_forward / result relayed back. The loop's own output (assistant
+	 * messages, platform tool calls) is the observable effect.
+	 */
+	private async runLocalThreadLoop(req: {
+		threadId: string;
+		messageId: string;
+		userId: string;
+		platform: string | null;
+	}): Promise<void> {
 		if (!this.modelRouter) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: "No model router configured", retriable: false }),
-			);
+			this.logger.error("[relay] Local intake loop: no model router configured", {
+				threadId: req.threadId,
+			});
 			return;
 		}
 
-		// Sanity-check that the target thread exists. The agent loop reads
-		// messages from the thread directly — we don't need payload.message_id
-		// to anchor the turn, so we no longer reject when it references a row
-		// that doesn't exist locally. That reject was the silent-drop path
-		// for notification-triggered delegations: spokes historically
-		// forwarded the dispatch_queue entry id (a synthetic UUID) as
-		// message_id, and the lookup failed here. (The spoke-side fix in
-		// server.ts/resolveDelegationMessageId now forwards a real
-		// messages.id, but older spokes may still send a stale id during
-		// rollout.)
 		const thread = this.db
 			.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
-			.get(payload.thread_id) as { id: string } | null;
-
+			.get(req.threadId) as { id: string } | null;
 		if (!thread) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: `Thread not found: ${payload.thread_id}`, retriable: false }),
-			);
+			this.logger.error("[relay] Local intake loop: thread not found", {
+				threadId: req.threadId,
+			});
 			return;
 		}
 
-		// Warn once if the caller passed a message_id that doesn't resolve.
-		// Doesn't block execution; logged for diagnostics during rollout.
-		if (payload.message_id) {
-			const userMessage = this.db
-				.query("SELECT id FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
-				.get(payload.message_id, payload.thread_id) as { id: string } | null;
-			if (!userMessage) {
-				this.logger.warn(
-					"[relay] Process delegation payload.message_id does not match any row in messages; proceeding on thread state alone",
-					{
-						threadId: payload.thread_id,
-						messageId: payload.message_id,
-						source: entry.source_site_id,
-					},
-				);
-			}
-		}
-
-		// For the delegated MainAgentLoop, we need the full AppContext passed to RelayProcessor
 		if (!this.appCtx) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({
-					error: "AppContext not available for delegated loop execution",
-					retriable: false,
-				}),
-			);
+			this.logger.error("[relay] Local intake loop: AppContext not available", {
+				threadId: req.threadId,
+			});
 			return;
 		}
+		const localCtx = this.appCtx;
 
-		const delegatedCtx = this.appCtx;
-
-		// Emit status_forward on each state change
-		const emitStatusForward = (status: string, detail: string | null, tokens: number): void => {
-			const fwdPayload: StatusForwardPayload = {
-				thread_id: payload.thread_id,
-				status,
-				detail,
-				tokens,
-			};
-			const outboxEntry = {
-				id: randomUUID(),
-				source_site_id: this.siteId,
-				target_site_id: entry.source_site_id,
-				kind: "status_forward" as const,
-				ref_id: entry.id,
-				idempotency_key: null,
-				stream_id: null,
-				payload: JSON.stringify(fwdPayload),
-				created_at: new Date().toISOString(),
-				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-				trace_context: null,
-			};
-			try {
-				writeOutbox(this.db, outboxEntry);
-			} catch (error) {
-				this.logger.warn("Failed to write status forward outbox entry", {
-					threadId: payload.thread_id,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		};
-
-		emitStatusForward("thinking", null, 0);
-
-		// When a ThreadExecutor is available, enqueue the message into the dispatch
-		// queue and delegate to the executor. This prevents N concurrent inferences
-		// when N rapid Discord messages arrive for the same thread.
+		// Thread executor serializes concurrent intakes for the same thread
+		// (prevents N concurrent inferences when N rapid platform messages
+		// arrive). Mirrors the prior executeProcess concurrency control.
 		if (this.threadExecutor) {
-			enqueueMessage(this.db, payload.message_id, payload.thread_id);
-
+			enqueueMessage(this.db, req.messageId, req.threadId);
 			await this.threadExecutor.execute(
-				payload.thread_id,
-				// runFn: claim → run agent loop → acknowledge
+				req.threadId,
 				async (shouldYield) => {
-					const claimed = claimPending(this.db, payload.thread_id, this.siteId);
+					const claimed = claimPending(this.db, req.threadId, this.siteId);
 					if (claimed.length === 0) return {};
-
 					const claimedIds = claimed.map((e) => e.message_id);
-
 					try {
-						const result = await this.runDelegatedLoop(entry, payload, delegatedCtx, shouldYield);
-
-						if (result.yielded) {
-							return { yielded: true };
-						}
-
+						const result = await this.runLocalLoop(req, localCtx, shouldYield);
+						if (result.yielded) return { yielded: true };
 						acknowledgeBatch(this.db, claimedIds);
 						return result;
 					} catch (error) {
@@ -1742,42 +1663,31 @@ export class RelayProcessor {
 						throw error;
 					}
 				},
-				// onComplete: finalize the relay response
-				async (result) => {
-					this.finalizeProcess(entry, payload, result);
-				},
+				async () => {},
 			);
-
-			emitStatusForward("idle", null, 0);
 			return;
 		}
 
-		// Fallback: no executor available (backward compat for tests or standalone relay).
-		try {
-			const result = await this.runDelegatedLoop(entry, payload, delegatedCtx);
-			this.finalizeProcess(entry, payload, result);
-			emitStatusForward("idle", null, 0);
-		} catch (err) {
-			emitStatusForward("idle", null, 0);
-			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: false }));
-		}
+		// Fallback: no executor (tests / standalone relay).
+		await this.runLocalLoop(req, localCtx);
 	}
 
 	/**
-	 * Run a delegated agent loop. Extracted from executeProcess so both the
-	 * executor-backed and fallback paths can share the same inference logic.
+	 * Run a single local agent loop for an intake-routed thread. The loop reads
+	 * the thread's authoritative state from the local DB and assembles its own
+	 * context — never re-assembling from a relay payload (R-UD1/R-UD2).
 	 */
-	private async runDelegatedLoop(
-		entry: RelayInboxEntry,
-		payload: ProcessPayload,
-		delegatedCtx: AppContext,
+	private async runLocalLoop(
+		req: { threadId: string; messageId: string; userId: string; platform: string | null },
+		localCtx: AppContext,
 		shouldYield?: () => boolean,
 	): Promise<Record<string, unknown>> {
+		const entryId = req.messageId;
 		// Resolve thread's preferred model from the authoritative threads.model_hint column.
 		let threadModelId: string | undefined;
 		const threadRow = this.db
 			.query("SELECT model_hint FROM threads WHERE id = ?")
-			.get(payload.thread_id) as { model_hint: string | null } | null;
+			.get(req.threadId) as { model_hint: string | null } | null;
 		if (threadRow?.model_hint) {
 			threadModelId = threadRow.model_hint;
 		}
@@ -1787,7 +1697,7 @@ export class RelayProcessor {
 			.query(
 				"SELECT id, type, no_history, system_prompt_addition FROM tasks WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
 			)
-			.get(payload.thread_id) as {
+			.get(req.threadId) as {
 			id: string;
 			type: string;
 			no_history: number;
@@ -1795,9 +1705,9 @@ export class RelayProcessor {
 		} | null;
 
 		const loopConfig: AgentLoopConfig = {
-			threadId: payload.thread_id,
-			userId: payload.user_id,
-			taskId: owningTask?.id ?? `delegated-${entry.id}`,
+			threadId: req.threadId,
+			userId: req.userId,
+			taskId: owningTask?.id ?? `intake-${entryId}`,
 			// Surface-gating for volatile rendering (#70): a delegated heartbeat
 			// keeps its resolved-advisory operator-acks; all other surfaces strip
 			// them. Undefined when no owning task row resolves.
@@ -1808,13 +1718,13 @@ export class RelayProcessor {
 			shouldYield,
 		};
 
-		if (payload.platform) {
-			loopConfig.platform = payload.platform;
+		if (req.platform) {
+			loopConfig.platform = req.platform;
 		}
 
 		// Inject platform tools if registry is available
 		if (this.platformMcpRegistry) {
-			const platformToolsMap = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
+			const platformToolsMap = this.platformMcpRegistry.getToolsForThread(req.threadId);
 			if (platformToolsMap.size > 0) {
 				loopConfig.platformTools = Array.from(platformToolsMap.values());
 			}
@@ -1826,17 +1736,17 @@ export class RelayProcessor {
 		// is — which is why handleThread routed the wakeup here. Mirrors the
 		// local-path resolution in start/server.ts.
 		if (this.wsRegistry) {
-			const clientToolsFromRegistry = this.wsRegistry.getClientToolsForThread(payload.thread_id);
+			const clientToolsFromRegistry = this.wsRegistry.getClientToolsForThread(req.threadId);
 			if (clientToolsFromRegistry && clientToolsFromRegistry.size > 0) {
 				loopConfig.clientTools = clientToolsFromRegistry;
 				const firstToolName = clientToolsFromRegistry.keys().next().value;
 				loopConfig.connectionId = firstToolName
-					? this.wsRegistry.getConnectionForTool(payload.thread_id, firstToolName)
+					? this.wsRegistry.getConnectionForTool(req.threadId, firstToolName)
 					: undefined;
 			}
 			// A live boundless session's per-connection systemPromptAddition is
 			// more current than any owning-task value; prefer it when present.
-			const sessionSysPrompt = this.wsRegistry.getSystemPromptAdditionForThread(payload.thread_id);
+			const sessionSysPrompt = this.wsRegistry.getSystemPromptAdditionForThread(req.threadId);
 			if (sessionSysPrompt !== undefined) {
 				loopConfig.systemPromptAddition = sessionSysPrompt;
 			}
@@ -1845,22 +1755,21 @@ export class RelayProcessor {
 		const agentLoop = this.agentLoopFactory
 			? this.agentLoopFactory(loopConfig)
 			: new MainAgentLoop(
-					delegatedCtx,
+					localCtx,
 					{
 						/* sandbox not available — no tools in context */
 					} as object,
-					// biome-ignore lint/style/noNonNullAssertion: modelRouter checked before entering executeProcess
+					// biome-ignore lint/style/noNonNullAssertion: modelRouter checked before entering runLocalThreadLoop
 					this.modelRouter!,
 					loopConfig,
 				);
 
 		const tracer = getTracer();
-		const rootSpan = tracer.startSpan("relay.execute-process", {
+		const rootSpan = tracer.startSpan("relay.run-local-thread-loop", {
 			attributes: {
-				"thread.id": payload.thread_id,
-				"user.id": payload.user_id ?? "",
-				"source.site_id": entry.source_site_id,
-				platform: payload.platform ?? "",
+				"thread.id": req.threadId,
+				"user.id": req.userId ?? "",
+				platform: req.platform ?? "",
 			},
 		});
 
@@ -1883,22 +1792,6 @@ export class RelayProcessor {
 			error: result.error,
 			messagesCreated: result.messagesCreated,
 		};
-	}
-
-	/**
-	 * Finalize a process relay: write the response.
-	 */
-	private finalizeProcess(
-		entry: RelayInboxEntry,
-		_payload: ProcessPayload,
-		result: Record<string, unknown>,
-	): void {
-		if (result.error) {
-			this.writeResponse(entry, "error", JSON.stringify({ error: result.error, retriable: false }));
-			return;
-		}
-
-		this.writeResponse(entry, "result", JSON.stringify({ success: true }));
 	}
 
 	private createResultEntry(

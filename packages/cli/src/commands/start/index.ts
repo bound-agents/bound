@@ -92,7 +92,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 					webServer: null,
 					syncServer: null,
 					statusForwardCache: new Map(),
-					activeDelegations: new Map(),
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformMcpRegistry: null,
 					handleMessageTracker: new HandleMessageTracker({ watchdogIntervalMs: 0 }),
