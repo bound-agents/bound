@@ -263,6 +263,7 @@ const driver = new OpenAICompatibleDriver({
 interface BackendConfig {
   id: string;
   provider: string;  // "anthropic" | "bedrock" | "bedrock-mantle" | "openai-compatible" | "cerebras" | "zai" | "opencode-go" | "umans"
+  providerMode?: "anthropic" | "openai_responses";  // required for bedrock-mantle
   model: string;
   baseUrl?: string;
   contextWindow?: number;
@@ -284,6 +285,7 @@ Provider-specific extra fields:
 |---|---|---|
 | `anthropic` | `apiKey` | `contextWindow` (default 200 000) |
 | `bedrock` | `region` | `profile`, `contextWindow` (default 200 000) |
+| `bedrock-mantle` | `region`, `providerMode` | `profile`, `baseUrl`, `contextWindow` (default 272 000). `providerMode: "openai_responses"` routes to `/openai/v1/responses`; `"anthropic"` routes to `/anthropic/v1/messages`. Both use SigV4. |
 | `openai-compatible` | `apiKey` | `baseUrl` (default `http://localhost:8000`), `contextWindow` (default 8 192) |
 | `cerebras` | `apiKey` | `baseUrl` (default `https://api.cerebras.ai/v1`), `contextWindow` (default 128 000) |
 | `zai` | `apiKey` | `baseUrl` (default `https://api.z.ai/api/coding/paas/v4`), `contextWindow` (default 128 000) |

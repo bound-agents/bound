@@ -696,12 +696,17 @@ function createBackendFromConfig(
 			if (!region) {
 				throw new Error("Bedrock Mantle driver requires region in config");
 			}
+			const providerMode = config.providerMode as "anthropic" | "openai_responses" | undefined;
+			if (!providerMode) {
+				throw new Error("Bedrock Mantle driver requires providerMode in config");
+			}
 			const profile = config.profile as string | undefined;
 			const contextWindow = config.contextWindow ?? 272000;
 			return new BedrockMantleDriver({
 				region,
 				model: config.model,
 				contextWindow,
+				providerMode,
 				profile,
 				baseUrl: config.baseUrl,
 				logger,

@@ -1,10 +1,13 @@
 /**
- * Bedrock Mantle driver — OpenAI GPT-5.x on the Bedrock "mantle" surface.
+ * Bedrock Mantle driver.
  *
- * AWS serves the OpenAI GPT-5.x models (issue #155) on an OpenAI-compatible
- * Responses API at `https://bedrock-mantle.{region}.api.aws/openai/v1`, but
- * authenticates with AWS SigV4 rather than a bearer token. That combination
- * rules out the `openai-compatible` driver two ways:
+ * AWS serves multiple protocol surfaces behind `bedrock-mantle.{region}.api.aws`:
+ *   - OpenAI GPT-5.x on an OpenAI-compatible Responses API at `/openai/v1`
+ *   - Anthropic Claude on an Anthropic Messages API at `/anthropic/v1`
+ *
+ * Both surfaces authenticate with AWS SigV4 rather than a bearer token / API
+ * key. The OpenAI Responses combination rules out the `openai-compatible`
+ * driver two ways:
  *   1. `@ai-sdk/openai-compatible` speaks only `/chat/completions`; mantle
  *      GPT-5.x is Responses-only.
  *   2. its auth is a static API key, not request signing.
@@ -32,10 +35,11 @@
  * folds into contextDebug.
  */
 
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
-import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import { ANTHROPIC_ENVELOPE, PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
 import {
@@ -44,7 +48,7 @@ import {
 	resolveProviderFetch,
 	withEmptyRetry,
 } from "./shared";
-import { createSigV4Fetch } from "./sigv4-fetch";
+import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
 
 // Re-exported for the driver test suite; canonical definition lives in ./shared.
 export { withEmptyRetry } from "./shared";
@@ -53,6 +57,8 @@ export { withEmptyRetry } from "./shared";
 const MANTLE_SIGV4_SERVICE = "bedrock";
 
 const PROVIDER_NAME = "bedrock-mantle";
+
+export type BedrockMantleProviderMode = "anthropic" | "openai_responses";
 
 // Empty-completion retry bound. Mantle GPT-5.x intermittently returns empty
 // turns (~12% observed at the bare endpoint under store:false); store:true —
@@ -69,6 +75,38 @@ const PROVIDER_NAME = "bedrock-mantle";
  */
 export function deriveMantleBaseUrl(region: string, override?: string): string {
 	return override ?? `https://bedrock-mantle.${region}.api.aws/openai/v1`;
+}
+
+/**
+ * Derives the region-scoped Mantle base URL for the selected protocol. The AI
+ * SDK provider appends the terminal route (`/responses` or `/messages`), so
+ * both defaults stop at the version prefix.
+ */
+export function deriveMantleBaseUrlForMode(
+	region: string,
+	mode: BedrockMantleProviderMode,
+	override?: string,
+): string {
+	if (override) return override;
+	switch (mode) {
+		case "anthropic":
+			return `https://bedrock-mantle.${region}.api.aws/anthropic/v1`;
+		case "openai_responses":
+			return deriveMantleBaseUrl(region);
+	}
+}
+
+/**
+ * The Anthropic SDK requires an apiKey and adds an `x-api-key` header. Mantle's
+ * Anthropic Messages endpoint also accepts pure SigV4; strip the placeholder
+ * key before signing so the wire request carries only AWS auth.
+ */
+function stripPlaceholderAnthropicApiKeyFetch(baseFetch: typeof fetch): typeof fetch {
+	return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		const request = new Request(input as RequestInfo | URL, init);
+		request.headers.delete("x-api-key");
+		return baseFetch(request);
+	}) as typeof fetch;
 }
 
 /**
@@ -135,15 +173,18 @@ export function buildMantleOpenAIOptions(
 }
 
 export class BedrockMantleDriver implements LLMBackend {
-	private provider: ReturnType<typeof createOpenAI>;
+	private openaiProvider?: ReturnType<typeof createOpenAI>;
+	private anthropicProvider?: ReturnType<typeof createAnthropic>;
 	private model: string;
 	private contextWindow: number;
+	private providerMode: BedrockMantleProviderMode;
 	private logger?: Logger;
 
 	constructor(config: {
 		region: string;
 		model: string;
 		contextWindow: number;
+		providerMode: BedrockMantleProviderMode;
 		/** Explicit AWS profile (honors SSO/AssumeRole). Falls back to the node chain. */
 		profile?: string;
 		/** Override the derived mantle base URL (path differs by region, etc.). */
@@ -155,11 +196,14 @@ export class BedrockMantleDriver implements LLMBackend {
 		 * the signed request. Production leaves this unset and uses `logger`.
 		 */
 		fetch?: typeof fetch;
+		/** Test seam for deterministic signing without touching the AWS chain. */
+		credentials?: () => Promise<SigV4Credentials>;
 		/** Per-backend connect / time-to-first-byte deadline (ms). */
 		connectTimeoutMs?: number;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
+		this.providerMode = config.providerMode;
 		this.logger = config.logger;
 
 		// Lazy credential provider — resolved per request inside the SigV4 fetch,
@@ -167,7 +211,7 @@ export class BedrockMantleDriver implements LLMBackend {
 		// profile; the node chain covers env / SSO cache / instance roles. The
 		// shared resolver also honors a pending one-shot config-cache bust (SIGHUP),
 		// re-reading ~/.aws/config once after a reload instead of per request.
-		const credentials = () => resolveAwsCredentials(config.profile);
+		const credentials = config.credentials ?? (() => resolveAwsCredentials(config.profile));
 
 		// Transport the signed request is handed to: explicit override (tests) →
 		// logger-backed fetch → global fetch (inside createSigV4Fetch's default).
@@ -180,18 +224,73 @@ export class BedrockMantleDriver implements LLMBackend {
 			baseFetch,
 		});
 
-		this.provider = createOpenAI({
-			baseURL: deriveMantleBaseUrl(config.region, config.baseUrl),
-			// SigV4 supplies the real Authorization header; this sentinel only keeps
-			// the SDK from throwing on a missing key. It is overwritten on the wire.
-			apiKey: "sigv4",
-			fetch: signedFetch,
-		});
+		if (config.providerMode === "anthropic") {
+			this.anthropicProvider = createAnthropic({
+				name: PROVIDER_NAME,
+				baseURL: deriveMantleBaseUrlForMode(config.region, config.providerMode, config.baseUrl),
+				// Placeholder only; stripPlaceholderAnthropicApiKeyFetch removes it
+				// before SigV4 signing.
+				apiKey: "sigv4",
+				fetch: stripPlaceholderAnthropicApiKeyFetch(signedFetch),
+			});
+		} else {
+			this.openaiProvider = createOpenAI({
+				baseURL: deriveMantleBaseUrlForMode(config.region, config.providerMode, config.baseUrl),
+				// SigV4 supplies the real Authorization header; this sentinel only keeps
+				// the SDK from throwing on a missing key. It is overwritten on the wire.
+				apiKey: "sigv4",
+				fetch: signedFetch,
+			});
+		}
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
 		// `||` not `??`: callers pass `model: ""` as a "use default" sentinel.
 		const modelId = params.model || this.model;
+		const tools = toToolSet(params.tools);
+
+		yield { type: "heartbeat" };
+
+		if (this.providerMode === "anthropic") {
+			const provider = this.anthropicProvider;
+			if (!provider) throw new Error("Bedrock Mantle Anthropic provider was not initialized");
+			const messages = toModelMessages(params.messages, {
+				cacheProvider: "anthropic",
+				cacheTtl: params.cache_ttl,
+				resolveFileRef: params.resolveFileRef,
+				targetEnvelope: ANTHROPIC_ENVELOPE,
+				reasoningProviderOptions: "anthropic",
+			});
+			const runAttempt = (): AsyncIterable<StreamChunk> =>
+				mapProviderStream({
+					providerName: PROVIDER_NAME,
+					stream: () =>
+						streamText({
+							model: provider.messages(modelId),
+							messages,
+							...(params.system && { system: params.system }),
+							...(tools && { tools }),
+							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+							...(params.temperature !== undefined && { temperature: params.temperature }),
+							abortSignal: params.signal,
+						}).fullStream,
+					map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
+				});
+
+			yield* withEmptyRetry(runAttempt, {
+				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+				isAborted: () => params.signal?.aborted ?? false,
+				onRetry: (attempt) =>
+					this.logger?.warn?.(
+						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+						{ model: modelId },
+					),
+			});
+			return;
+		}
+
+		const provider = this.openaiProvider;
+		if (!provider) throw new Error("Bedrock Mantle OpenAI Responses provider was not initialized");
 		// Responses API has no cache-breakpoint marker — drop cache-role messages
 		// via null cacheProvider (caching is automatic, prefix-based). Permissive
 		// envelope: ids/names round-trip raw with only the length cap as a backstop.
@@ -208,9 +307,6 @@ export class BedrockMantleDriver implements LLMBackend {
 			// dropping at the boundary is equivalent and silences the flood.
 			reasoningProviderOptions: "openai",
 		});
-		const tools = toToolSet(params.tools);
-
-		yield { type: "heartbeat" };
 
 		// One streaming attempt — built fresh per retry so a re-issue is a clean
 		// new request (new SigV4 signature, new stream), not a replayed one.
@@ -219,7 +315,7 @@ export class BedrockMantleDriver implements LLMBackend {
 				providerName: PROVIDER_NAME,
 				stream: () =>
 					streamText({
-						model: this.provider.responses(modelId),
+						model: provider.responses(modelId),
 						messages,
 						...(params.system && { system: params.system }),
 						...(tools && { tools }),
@@ -257,14 +353,11 @@ export class BedrockMantleDriver implements LLMBackend {
 			streaming: true,
 			tool_use: true,
 			system_prompt: true,
-			// Mantle GPT-5.x caches automatically (prefix-based, no markers). The
-			// driver places no breakpoints but caching is real, so the honest
-			// capability is true — cached tokens flow through extractUsage.
+			// OpenAI Responses mode caches automatically; Anthropic mode uses
+			// explicit Anthropic cache_control breakpoints.
 			prompt_caching: true,
 			vision: true,
-			// GPT-5.x reasoning is internal to the Responses API (steered by
-			// reasoningEffort), not the Anthropic-style signed thinking-block path.
-			extended_thinking: false,
+			extended_thinking: this.providerMode === "anthropic",
 			max_context: this.contextWindow,
 		};
 	}

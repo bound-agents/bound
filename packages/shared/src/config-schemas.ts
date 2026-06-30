@@ -150,6 +150,7 @@ const modelBackendSchema = z
 		// enforce "required unless umans" and "reject authoritative fields on
 		// umans". See the model-router umans case + UmansDriver readiness.
 		model: z.string().min(1).optional(),
+		provider_mode: z.enum(["anthropic", "openai_responses"]).optional(),
 		base_url: z.string().url().optional(),
 		api_key: z.string().optional(),
 		region: z.string().optional(),
@@ -244,6 +245,17 @@ export const modelBackendsSchema = z
 			});
 		},
 		{ message: "openai-compatible providers require base_url" },
+	)
+	.refine(
+		(data) => {
+			return data.backends.every((b) => {
+				if (b.provider === "bedrock-mantle") {
+					return b.provider_mode !== undefined;
+				}
+				return true;
+			});
+		},
+		{ message: "bedrock-mantle providers require provider_mode" },
 	)
 	.refine(
 		(data) => {
