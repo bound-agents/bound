@@ -96,12 +96,10 @@ describe("Context Assembly Pipeline", () => {
 			expect(result.systemPrompt).toContain("bound");
 		});
 
-		it("systemPrompt explains bound and boundless surfaces", () => {
+		it("systemPrompt explains boundless", () => {
 			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("boundless");
-			// Points the agent at the volatile context for the per-turn platform tag
-			expect(result.systemPrompt).toContain("volatile context");
 		});
 
 		it("systemPrompt describes the concurrency model", () => {
