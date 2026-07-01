@@ -106,7 +106,7 @@ describe("Database Schema", () => {
 	});
 
 	it("idx_memory_detail_recency exists and supports R-VC4 SELECT predicate", () => {
-		const db = createDatabase(dbPath);
+		const db = createDatabase(":memory:");
 		applySchema(db);
 
 		// Verify the index exists

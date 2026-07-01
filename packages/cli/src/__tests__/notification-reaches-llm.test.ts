@@ -13,25 +13,18 @@
 
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { assembleContext } from "@bound/agent";
 import { applySchema, claimPending, createDatabase, enqueueNotification } from "@bound/core";
-import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { resolveDelegationMessageId } from "../commands/start/server";
 
 describe("Notification → LLM round-trip (Invariant #19)", () => {
-	let tmpDir: string;
 	let db: Database;
 	let siteId: string;
 	const hostName = "test-host";
 
 	beforeAll(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), `notif-llm-${randomBytes(4).toString("hex")}-`));
-		const dbPath = join(tmpDir, "test.db");
-		db = createDatabase(dbPath);
+		db = createDatabase(":memory:");
 		applySchema(db);
 	});
 
@@ -44,11 +37,8 @@ describe("Notification → LLM round-trip (Invariant #19)", () => {
 		db.run("DELETE FROM change_log");
 	});
 
-	afterAll(async () => {
+	afterAll(() => {
 		db.close();
-		// cleanupTmpDir retries on Windows EBUSY where SQLite WAL/SHM handles
-		// occasionally outlive db.close(); bare rmSync fails immediately.
-		await cleanupTmpDir(tmpDir);
 	});
 
 	function createThread(): { userId: string; threadId: string } {
