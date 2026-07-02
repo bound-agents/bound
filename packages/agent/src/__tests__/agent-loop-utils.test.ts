@@ -700,6 +700,27 @@ describe("convertDeltaMessages", () => {
 		expect(out).toHaveLength(1);
 		expect(out[0].role).toBe("user");
 	});
+
+	// Regression: alert-role rows (inference failures persisted via emitAlert)
+	// must be converted to developer-role messages in the warm path, matching
+	// the cold path's Stage 2.5 conversion in context-assembly.ts. Without
+	// this, the warm path emits role:"alert" which fails the AI SDK's
+	// ModelMessage[] schema validation, permanently poisoning the thread.
+	it("converts alert-role rows to developer-role with [system alert] prefix", () => {
+		const rows = [
+			mkRow({ role: "user", content: "hello" }),
+			mkRow({ role: "alert", content: "Failed after 3 attempts. Last error: undefined" }),
+			mkRow({ role: "user", content: "bump" }),
+		];
+
+		const out = convertDeltaMessages(rows);
+
+		expect(out).toHaveLength(3);
+		expect(out[0].role).toBe("user");
+		expect(out[1].role).toBe("developer");
+		expect(out[1].content).toBe("[system alert] Failed after 3 attempts. Last error: undefined");
+		expect(out[2].role).toBe("user");
+	});
 });
 
 // ---------------------------------------------------------------------------
