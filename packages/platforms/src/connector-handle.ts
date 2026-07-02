@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { insertRow, softDelete, updateRow } from "@bound/core";
+import { findConnectorHandleIncludingDeleted, insertRow, softDelete, updateRow } from "@bound/core";
 import { connectorHandleId } from "./connector-handle-id.js";
 
 export interface ConnectorHandleCreateParams {
@@ -35,6 +35,31 @@ export function createConnectorHandle(
 ): string {
 	const id = connectorHandleId(params.serverName, params.eventName, params.eventArgs);
 	const now = new Date().toISOString();
+
+	// The ID is deterministic over (server, event, args), so a soft-deleted
+	// tombstone from a prior detach occupies the same primary key. A raw
+	// insert would hit the UNIQUE constraint; resurrect the row instead.
+	const tombstone = findConnectorHandleIncludingDeleted(db, id);
+	if (tombstone) {
+		updateRow(
+			db,
+			"connector_handles",
+			id,
+			{
+				server_name: params.serverName,
+				event_name: params.eventName,
+				event_args: JSON.stringify(params.eventArgs),
+				delivery_mode: params.deliveryMode,
+				cursor: params.cursor ?? null,
+				task_id: params.taskId,
+				deleted: 0,
+				modified_at: now,
+			},
+			siteId,
+		);
+		return id;
+	}
+
 	insertRow(
 		db,
 		"connector_handles",

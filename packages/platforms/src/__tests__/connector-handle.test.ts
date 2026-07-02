@@ -52,6 +52,37 @@ describe("connector-handle CRUD", () => {
 		expect(id1).toBe(id2);
 	});
 
+	it("resurrects a soft-deleted handle on re-create with the same identity tuple", () => {
+		const id1 = createConnectorHandle(db, siteId, {
+			serverName: "discord",
+			eventName: "interaction.received",
+			eventArgs: {},
+			deliveryMode: "push",
+			taskId: "task-old",
+			cursor: "stale-cursor",
+		});
+		deleteConnectorHandle(db, siteId, id1);
+
+		// Same (server, event, args) → same deterministic ID. Must not throw
+		// UNIQUE constraint failed; must revive the tombstone with fresh fields.
+		const id2 = createConnectorHandle(db, siteId, {
+			serverName: "discord",
+			eventName: "interaction.received",
+			eventArgs: {},
+			deliveryMode: "poll",
+			taskId: "task-new",
+		});
+		expect(id2).toBe(id1);
+
+		const row = getConnectorHandle(db, id2);
+		expect(row).not.toBeNull();
+		if (!row) throw new Error("row should not be null");
+		expect(row.deleted).toBe(0);
+		expect(row.delivery_mode).toBe("poll");
+		expect(row.task_id).toBe("task-new");
+		expect(row.cursor).toBeNull();
+	});
+
 	it("updates cursor", () => {
 		const id = createConnectorHandle(db, siteId, {
 			serverName: "discord",
