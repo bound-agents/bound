@@ -11,6 +11,21 @@ export function findConnectorHandleById(db: Database, handleId: string): Connect
 		.get(handleId) as ConnectorHandleRow | null;
 }
 
+/**
+ * Finds a handle row by ID regardless of deleted status. Handle IDs are
+ * deterministic over (server, event, args), so a soft-deleted tombstone
+ * occupies the same primary key as a re-created subscription — creators
+ * must check for it to resurrect instead of inserting.
+ */
+export function findConnectorHandleIncludingDeleted(
+	db: Database,
+	handleId: string,
+): ConnectorHandleRow | null {
+	return db
+		.query("SELECT * FROM connector_handles WHERE id = ?")
+		.get(handleId) as ConnectorHandleRow | null;
+}
+
 export function listConnectorHandlesByServer(
 	db: Database,
 	serverName: string,
