@@ -565,15 +565,25 @@ export function convertDbRowToLLMMessage(
 		}
 	}
 
+	// Alert rows (inference failures persisted via emitAlert) must be
+	// converted to developer-role messages here, matching the cold path's
+	// Stage 2.5 conversion in context-assembly.ts. Without this, the warm
+	// path emits role:"alert" which fails the AI SDK's ModelMessage[] schema
+	// validation (InvalidPromptError), permanently poisoning the thread.
+	// See Invariant #9 (alert is not a wire role) and #19 (developer is the
+	// role for injected system context).
+	const isAlert = role === "alert";
 	const msg: LLMMessage = {
-		role: role as LLMMessage["role"],
+		role: (isAlert ? "developer" : role) as LLMMessage["role"],
 		// Readback seam: any role whose row holds a serialized ContentBlock[]
 		// (a user prompt with an attached image, a tool_result with a binary
 		// blob) is parsed back to blocks here. Without this, the driver
 		// receives the literal JSON text and the image/document never reaches
 		// the model. The live tool-result branch in agent-loop.ts handles the
 		// just-executed case; this covers every DB-readback path.
-		content: parseContentBlocks(content),
+		content: parseContentBlocks(
+			isAlert && typeof content === "string" ? `[system alert] ${content}` : content,
+		),
 	};
 
 	if (tool_name) {
