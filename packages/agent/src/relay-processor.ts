@@ -73,6 +73,7 @@ import {
 } from "./agent-loop-utils.js";
 import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
+import { reconcileDarkConnectorHandles } from "./connector-handle-reconciler.js";
 import { resolveSegments } from "./delegation-segments.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import { formatMcpHelp } from "./mcp-bridge.js";
@@ -301,6 +302,22 @@ export class RelayProcessor {
 					}
 				} catch (error) {
 					this.logger.error("Webhook intake reconcile failed", { error });
+				}
+				// Connector-side analogue: surface live connector-handle subscriptions
+				// whose backing event task has gone dark (cancelled/deleted/missing).
+				// Detector only — connector push events buffer in-memory, so there is
+				// no durable backlog to dead-letter, just a dark subscription to flag.
+				try {
+					const { advisoriesRaised } = reconcileDarkConnectorHandles(this.db, this.siteId, {
+						logger: this.logger,
+					});
+					if (advisoriesRaised > 0) {
+						this.logger.warn("[relay] Dark connector handle reconcile acted", {
+							advisoriesRaised,
+						});
+					}
+				} catch (error) {
+					this.logger.error("Dark connector handle reconcile failed", { error });
 				}
 			}),
 		);
