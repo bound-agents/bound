@@ -237,6 +237,17 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	};
 	addPath(cwd);
 	addPath(tmpdir());
+	// README contract: "writes are confined to the working directory and /tmp".
+	// On Linux os.tmpdir() IS /tmp so the line above already covers it, but on
+	// macOS os.tmpdir() is /var/folders/<user>/T — the literal /tmp (realpath
+	// /private/tmp) was never in the set, so portable shell idioms like
+	// `cat > /tmp/x` died with EPERM (tool_error 2026-06-21, reproduced
+	// 2026-07-03). Guarded by existence so Windows (no /tmp) is unaffected.
+	try {
+		if (statSync("/tmp").isDirectory()) addPath("/tmp");
+	} catch {
+		// no /tmp on this platform — nothing to grant
+	}
 	for (const dir of gitWorktreeWritablePaths(cwd)) addPath(dir);
 	for (const extra of cfg.writablePaths) addPath(extra);
 	return [...writable];
