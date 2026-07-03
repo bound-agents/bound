@@ -76,7 +76,7 @@ import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { reconcileDarkConnectorHandles } from "./connector-handle-reconciler.js";
 import { resolveSegments } from "./delegation-segments.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
-import { formatMcpHelp } from "./mcp-bridge.js";
+import { formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -1017,7 +1017,10 @@ export class RelayProcessor {
 		const result = await client.callTool(subcommand, coercedArgs);
 		const resultPayload: ResultPayload = {
 			stdout: result.content,
-			stderr: result.isError ? result.content : "",
+			// Mirror the local dispatch path: a failed call echoes the tool's
+			// parameter summary so the calling host's model can self-correct
+			// instead of blind-mutating args across retries.
+			stderr: result.isError ? result.content + formatToolParamHint(subcommand, inputSchema) : "",
 			exit_code: result.isError ? 1 : 0,
 			execution_ms: 0,
 		};
