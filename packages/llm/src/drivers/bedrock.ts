@@ -266,7 +266,7 @@ export class BedrockDriver implements LLMBackend {
 			cacheTtl: params.cache_ttl,
 		});
 		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
-		const tools = toToolSet(params.tools, { emitStrictFlag: false });
+		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);
 
 		// Emit heartbeat immediately. Extended thinking can produce a 60s+ gap

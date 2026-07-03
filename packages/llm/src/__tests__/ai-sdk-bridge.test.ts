@@ -2438,7 +2438,7 @@ describe("toToolSet", () => {
 		expect(tools.get_weather.description).toBe("Get weather for a city");
 	});
 
-	it("projects closed object schemas into provider-generic strict tool shape", async () => {
+	it("passes closed object schemas through unchanged with no strict flag", async () => {
 		const tools = toToolSet([
 			{
 				type: "function",
@@ -2463,31 +2463,29 @@ describe("toToolSet", () => {
 		]);
 		expect(tools).toBeDefined();
 		if (!tools) throw new Error("tools undefined");
-		expect((tools.boundless_bash as { strict?: boolean }).strict).toBe(true);
+		expect((tools.boundless_bash as { strict?: boolean }).strict).toBeUndefined();
 		const schema = await Promise.resolve(
 			(tools.boundless_bash.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
 		);
+		// Optionals stay optional: no forced `required`, no nullable rewrites,
+		// no additionalProperties injection. The strictifier was removed after
+		// determining strict projection didn't help the models it targeted.
 		expect(schema).toEqual({
 			type: "object",
 			properties: {
 				command: { type: "string" },
-				timeout: { type: ["number", "null"] },
+				timeout: { type: "number" },
 				options: {
-					type: ["object", "null"],
-					properties: {
-						cwd: { type: "string" },
-						login: { type: ["boolean", "null"] },
-					},
-					required: ["cwd", "login"],
-					additionalProperties: false,
+					type: "object",
+					properties: { cwd: { type: "string" }, login: { type: "boolean" } },
+					required: ["cwd"],
 				},
 			},
-			required: ["command", "timeout", "options"],
-			additionalProperties: false,
+			required: ["command"],
 		});
 	});
 
-	it("leaves deliberately open schemas non-strict", async () => {
+	it("passes deliberately open schemas through unchanged", async () => {
 		const tools = toToolSet([
 			{
 				type: "function",
@@ -2514,44 +2512,6 @@ describe("toToolSet", () => {
 			properties: { subcommand: { type: "string" } },
 			required: ["subcommand"],
 			additionalProperties: true,
-		});
-	});
-
-	it("can strictify schemas without emitting a provider strict flag", async () => {
-		const tools = toToolSet(
-			[
-				{
-					type: "function",
-					function: {
-						name: "query",
-						description: "Run a read-only query",
-						parameters: {
-							type: "object",
-							properties: {
-								sql: { type: "string" },
-								limit: { type: "number" },
-							},
-							required: ["sql"],
-						},
-					},
-				},
-			],
-			{ emitStrictFlag: false },
-		);
-		expect(tools).toBeDefined();
-		if (!tools) throw new Error("tools undefined");
-		expect((tools.query as { strict?: boolean }).strict).toBeUndefined();
-		const schema = await Promise.resolve(
-			(tools.query.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
-		);
-		expect(schema).toEqual({
-			type: "object",
-			properties: {
-				sql: { type: "string" },
-				limit: { type: ["number", "null"] },
-			},
-			required: ["sql", "limit"],
-			additionalProperties: false,
 		});
 	});
 });
