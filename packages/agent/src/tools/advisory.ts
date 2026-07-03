@@ -35,24 +35,35 @@ function resolveAdvisoryId(
 	return { ok: true, id: rows[0].id };
 }
 
+// Action-enum dispatch (CONTRIBUTING: grouped tools use an `action` enum).
+// The tool was previously flag-shaped — create fired whenever title+detail
+// were truthy, checked BEFORE the other operations — which twice minted junk
+// advisories when a dismiss/list call also carried create-shaped params
+// (tool_error 2026-06-08, 2026-06-19). The explicit enum makes the requested
+// operation unambiguous.
 const advisorySchema = z.object({
-	title: z.string().optional().describe("Advisory title (for creating)"),
-	detail: z.string().optional().describe("Advisory detail/description (for creating)"),
-	action: z.string().optional().describe("Recommended corrective action (for creating)"),
-	impact: z.string().optional().describe("Impact description (for creating)"),
-	list: z.boolean().optional().describe("List advisories"),
-	list_status: z.string().optional().describe("Filter listed advisories by status"),
-	approve: z.string().optional().describe("Advisory ID prefix to approve"),
-	apply: z.string().optional().describe("Advisory ID prefix to apply"),
-	dismiss: z.string().optional().describe("Advisory ID prefix to dismiss"),
-	defer: z.string().optional().describe("Advisory ID prefix to defer"),
-	defer_until: z.string().optional().describe("ISO date to defer until (default: 24h from now)"),
+	action: z
+		.enum(["create", "list", "approve", "apply", "dismiss", "defer"])
+		.describe("Advisory operation to perform"),
+	title: z.string().optional().describe("Advisory title (for create)"),
+	detail: z.string().optional().describe("Advisory detail/description (for create)"),
+	recommended_action: z.string().optional().describe("Recommended corrective action (for create)"),
+	impact: z.string().optional().describe("Impact description (for create)"),
+	list_status: z.string().optional().describe("Filter listed advisories by status (for list)"),
+	id: z
+		.string()
+		.optional()
+		.describe("Advisory ID or unique ID prefix (for approve/apply/dismiss/defer)"),
 	note: z
 		.string()
 		.optional()
 		.describe(
 			"Rationale / outcome for a state change (required for approve/apply/dismiss/defer). Recorded as provenance so a later reader knows why the advisory was resolved.",
 		),
+	defer_until: z
+		.string()
+		.optional()
+		.describe("ISO date to defer until (default: 24h from now) (for defer)"),
 });
 
 export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
@@ -68,24 +79,23 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
-		// Flag-shaped dispatch — multiple optional fields select the action.
 		// list → read-only; approve/apply/defer/dismiss → idempotent (terminal
-		// status transitions); create (title+detail) → non-idempotent (each
-		// call inserts a new advisory row with a fresh id).
+		// status transitions); create → non-idempotent (each call inserts a new
+		// advisory row with a fresh id).
 		resolveAnnotations: (args: Record<string, unknown>) => {
-			if (args.list === true) return { idempotent: true, readOnly: true };
-			if (
-				typeof args.approve === "string" ||
-				typeof args.apply === "string" ||
-				typeof args.defer === "string" ||
-				typeof args.dismiss === "string"
-			) {
-				return { idempotent: true, readOnly: false };
+			switch (args.action) {
+				case "list":
+					return { idempotent: true, readOnly: true };
+				case "approve":
+				case "apply":
+				case "dismiss":
+				case "defer":
+					return { idempotent: true, readOnly: false };
+				case "create":
+					return { idempotent: false, readOnly: false };
+				default:
+					return {};
 			}
-			if (typeof args.title === "string" && typeof args.detail === "string") {
-				return { idempotent: false, readOnly: false };
-			}
-			return {};
 		},
 		execute: async (raw: Record<string, unknown>) => {
 			const parsed = parseToolInput(advisorySchema, raw, "advisory");
@@ -93,109 +103,109 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 			const input = parsed.value;
 
 			try {
-				// Create advisory
-				if (input.title && input.detail) {
-					const id = createAdvisory(
-						ctx.db,
-						{
-							type: "general",
-							status: "proposed",
-							title: input.title.trim(),
-							detail: input.detail.trim(),
-							action: input.action?.trim() ?? null,
-							impact: input.impact?.trim() ?? null,
-							evidence: null,
-						},
-						ctx.siteId,
-						ctx.threadId ?? null,
-					);
-					return `Advisory created: ${id}`;
+				switch (input.action) {
+					case "create": {
+						const title = input.title?.trim();
+						const detail = input.detail?.trim();
+						if (!title || !detail) {
+							return "Error: `title` and `detail` are required for action=create.";
+						}
+						const id = createAdvisory(
+							ctx.db,
+							{
+								type: "general",
+								status: "proposed",
+								title,
+								detail,
+								action: input.recommended_action?.trim() ?? null,
+								impact: input.impact?.trim() ?? null,
+								evidence: null,
+							},
+							ctx.siteId,
+							ctx.threadId ?? null,
+						);
+						return `Advisory created: ${id}`;
+					}
+
+					case "list": {
+						const rows = input.list_status
+							? listAdvisorySummariesByStatus(ctx.db, input.list_status)
+							: listActiveAdvisorySummaries(ctx.db);
+
+						if (rows.length === 0) {
+							return "No advisories found.";
+						}
+
+						const lines = rows.map(
+							(r) => `[${r.status}] ${r.title} (${r.id.slice(0, 8)})\n  ${r.detail.slice(0, 120)}`,
+						);
+						return lines.join("\n\n");
+					}
+
+					case "approve":
+					case "apply":
+					case "dismiss":
+					case "defer": {
+						// State transitions require a note recording why/what was
+						// done — #192 provenance. The acting party on this surface
+						// is always the agent.
+						if (!input.id?.trim()) {
+							return `Error: an \`id\` (advisory ID or unique prefix) is required for action=${input.action}.`;
+						}
+						const note = input.note?.trim();
+						if (!note) {
+							return "Error: a `note` is required when changing an advisory's state — record why it's being approved/applied/dismissed/deferred.";
+						}
+						const resolved = resolveAdvisoryId(ctx.db, input.id);
+						if (!resolved.ok) {
+							return `Error: ${resolved.error}`;
+						}
+						const resolution = { note, by: "agent" };
+
+						switch (input.action) {
+							case "approve": {
+								const result = approveAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
+								if (!result.ok) {
+									return `Error: Failed to approve advisory: ${result.error.message}`;
+								}
+								return `Advisory ${resolved.id} approved.`;
+							}
+							case "apply": {
+								const result = applyAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
+								if (!result.ok) {
+									return `Error: Failed to apply advisory: ${result.error.message}`;
+								}
+								return `Advisory ${resolved.id} applied.`;
+							}
+							case "dismiss": {
+								const result = dismissAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
+								if (!result.ok) {
+									return `Error: Failed to dismiss advisory: ${result.error.message}`;
+								}
+								return `Advisory ${resolved.id} dismissed.`;
+							}
+							case "defer": {
+								const deferDate =
+									input.defer_until || new Date(Date.now() + 24 * 3600_000).toISOString();
+								const result = deferAdvisory(
+									ctx.db,
+									resolved.id,
+									deferDate,
+									resolution,
+									ctx.siteId,
+								);
+								if (!result.ok) {
+									return `Error: Failed to defer advisory: ${result.error.message}`;
+								}
+								return `Advisory ${resolved.id} deferred.`;
+							}
+						}
+						// Unreachable — the inner switch is exhaustive over the four
+						// transition actions.
+						break;
+					}
 				}
-
-				// List advisories
-				if (input.list) {
-					const rows = input.list_status
-						? listAdvisorySummariesByStatus(ctx.db, input.list_status)
-						: listActiveAdvisorySummaries(ctx.db);
-
-					if (rows.length === 0) {
-						return "No advisories found.";
-					}
-
-					const lines = rows.map(
-						(r) => `[${r.status}] ${r.title} (${r.id.slice(0, 8)})\n  ${r.detail.slice(0, 120)}`,
-					);
-					return lines.join("\n\n");
-				}
-
-				// State transitions (approve/apply/dismiss/defer) require a note
-				// recording why/what was done — #192 provenance. The acting party
-				// on this surface is always the agent.
-				const isTransition =
-					typeof input.approve === "string" ||
-					typeof input.apply === "string" ||
-					typeof input.dismiss === "string" ||
-					typeof input.defer === "string";
-				const note = input.note?.trim();
-				if (isTransition && !note) {
-					return "Error: a `note` is required when changing an advisory's state — record why it's being approved/applied/dismissed/deferred.";
-				}
-				const resolution = { note: note ?? "", by: "agent" };
-
-				// Approve advisory
-				if (input.approve) {
-					const resolved = resolveAdvisoryId(ctx.db, input.approve);
-					if (!resolved.ok) {
-						return `Error: ${resolved.error}`;
-					}
-					const result = approveAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
-					if (!result.ok) {
-						return `Error: Failed to approve advisory: ${result.error.message}`;
-					}
-					return `Advisory ${resolved.id} approved.`;
-				}
-
-				// Apply advisory
-				if (input.apply) {
-					const resolved = resolveAdvisoryId(ctx.db, input.apply);
-					if (!resolved.ok) {
-						return `Error: ${resolved.error}`;
-					}
-					const result = applyAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
-					if (!result.ok) {
-						return `Error: Failed to apply advisory: ${result.error.message}`;
-					}
-					return `Advisory ${resolved.id} applied.`;
-				}
-
-				// Dismiss advisory
-				if (input.dismiss) {
-					const resolved = resolveAdvisoryId(ctx.db, input.dismiss);
-					if (!resolved.ok) {
-						return `Error: ${resolved.error}`;
-					}
-					const result = dismissAdvisory(ctx.db, resolved.id, resolution, ctx.siteId);
-					if (!result.ok) {
-						return `Error: Failed to dismiss advisory: ${result.error.message}`;
-					}
-					return `Advisory ${resolved.id} dismissed.`;
-				}
-
-				// Defer advisory
-				if (input.defer) {
-					const resolved = resolveAdvisoryId(ctx.db, input.defer);
-					if (!resolved.ok) {
-						return `Error: ${resolved.error}`;
-					}
-					const deferDate = input.defer_until || new Date(Date.now() + 24 * 3600_000).toISOString();
-					const result = deferAdvisory(ctx.db, resolved.id, deferDate, resolution, ctx.siteId);
-					if (!result.ok) {
-						return `Error: Failed to defer advisory: ${result.error.message}`;
-					}
-					return `Advisory ${resolved.id} deferred.`;
-				}
-
-				return "Error: No operation specified. Use one of: title+detail (create), list, approve, apply, dismiss, defer";
+				return "Error: No operation specified. Use action=create|list|approve|apply|dismiss|defer.";
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return `Error: ${message}`;
