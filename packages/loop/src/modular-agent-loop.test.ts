@@ -509,4 +509,36 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		expect(backend.calls).toHaveLength(1);
 		expect(persisted.alerts).toEqual(["Loop error: malformed request"]);
 	});
+
+	it("completes a 20-turn run of genuinely distinct tool calls without a configured maxTurns", async () => {
+		// No maxTurns option is passed below — this exercises whatever default
+		// (if any) the base loop applies. Every turn issues a DIFFERENT tool call
+		// with different args, so none of the existing circuit breakers
+		// (duplicate-call, identical-error, truncated, routing-error) ever have a
+		// reason to fire — this is what legitimate, varied multi-step tool use
+		// looks like, and it must not be capped by an unrelated turn-count fuse.
+		// 20 turns > the old DEFAULT_MAX_TURNS (16), so this only passes once the
+		// blanket cap is gone and the loop is bounded purely by the specific
+		// circuit breakers above (none of which trip here).
+		const totalToolTurns = 20;
+		const backend = new ScriptedBackend([
+			...Array.from({ length: totalToolTurns }, (_, i) =>
+				toolTurn(`call-${i}`, "lookup", { step: i }),
+			),
+			[{ type: "text", content: "final answer" }, done()],
+		]);
+		const { extensions, persisted } = makeExtensions(backend, async () => ({
+			content: "ok",
+			exitCode: 0,
+		}));
+
+		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		expect(result.error).toBeUndefined();
+		expect(backend.calls).toHaveLength(totalToolTurns + 1);
+		expect(result.toolCallsMade).toBe(totalToolTurns);
+		expect(persisted.assistant).toHaveLength(1);
+		expect(persisted.alerts).toHaveLength(0);
+	});
 });
