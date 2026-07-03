@@ -199,6 +199,59 @@ export function getRemoteMcpToolAnnotations(
 }
 
 /**
+ * Render one line per parameter from a tool's JSON Schema: name, required/optional,
+ * type (with `array of <item type>` for arrays), enum values, and description.
+ *
+ * Shared by help rendering (formatMcpHelp) and error echo (formatToolParamHint)
+ * so a failed call and `--help` describe parameters identically. Takes the raw
+ * inputSchema rather than a Tool so the relay path — which caches only schemas —
+ * can use it too.
+ */
+export function formatToolParamLines(inputSchema: unknown): string[] {
+	const schema = inputSchema as
+		| { properties?: Record<string, unknown>; required?: string[] }
+		| undefined;
+	const props = schema?.properties ?? {};
+	const required = new Set(schema?.required ?? []);
+	const lines: string[] = [];
+	for (const [param, def] of Object.entries(props)) {
+		const propDef = def as {
+			description?: string;
+			type?: string | string[];
+			enum?: unknown[];
+			items?: { type?: string };
+		};
+		const qualifiers: string[] = [required.has(param) ? "required" : "optional"];
+		const typeName = Array.isArray(propDef.type) ? propDef.type.join("|") : propDef.type;
+		if (typeName === "array") {
+			qualifiers.push(propDef.items?.type ? `array of ${propDef.items.type}` : "array");
+		} else if (typeName) {
+			qualifiers.push(typeName);
+		}
+		if (Array.isArray(propDef.enum) && propDef.enum.length > 0) {
+			qualifiers.push(`one of: ${propDef.enum.join(", ")}`);
+		}
+		let line = `  ${param} (${qualifiers.join(", ")})`;
+		if (propDef.description) line += ` — ${propDef.description}`;
+		lines.push(line);
+	}
+	return lines;
+}
+
+/**
+ * Compact parameter summary appended to a failed tool call's stderr, so the
+ * model can self-correct on the next attempt instead of blind-mutating args
+ * across retries (tool_error 2026-06-19: `issue_read` failed with "missing
+ * required parameter: method" and nothing to correct against). Returns "" for
+ * tools with no declared parameters — their error output stays byte-identical.
+ */
+export function formatToolParamHint(toolName: string, inputSchema: unknown): string {
+	const lines = formatToolParamLines(inputSchema);
+	if (lines.length === 0) return "";
+	return `\n\n${toolName} parameters:\n${lines.join("\n")}\n`;
+}
+
+/**
  * Format MCP help text from a tool list, identically regardless of caller.
  *
  * Shared by the local dispatch path (generateMCPCommands handler) and the relay
@@ -228,24 +281,11 @@ export function formatMcpHelp(
 				exitCode: 1,
 			};
 		}
-		const schema = tool.inputSchema as
-			| { properties?: Record<string, unknown>; required?: string[] }
-			| undefined;
-		const props = schema?.properties ?? {};
-		const required = new Set(schema?.required ?? []);
 		let out = `${subcommand}`;
 		if (tool.description) out += ` — ${tool.description}`;
 		out += "\n\nParameters:\n";
-		for (const [param, def] of Object.entries(props)) {
-			const propDef = def as { description?: string };
-			const req = required.has(param) ? "(required)" : "(optional)";
-			out += `  ${param} ${req}`;
-			if (propDef.description) out += ` — ${propDef.description}`;
-			out += "\n";
-		}
-		if (Object.keys(props).length === 0) {
-			out += "  (no parameters)\n";
-		}
+		const paramLines = formatToolParamLines(tool.inputSchema);
+		out += paramLines.length > 0 ? `${paramLines.join("\n")}\n` : "  (no parameters)\n";
 		return { stdout: out, stderr: "", exitCode: 0 };
 	}
 
@@ -459,14 +499,16 @@ export async function generateMCPCommands(
 
 					return {
 						stdout,
-						stderr: result.isError ? result.content : "",
+						stderr: result.isError
+							? result.content + formatToolParamHint(subcommand, entry.tool.inputSchema)
+							: "",
 						exitCode: result.isError ? 1 : 0,
 					};
 				} catch (error) {
 					const message = formatError(error);
 					return {
 						stdout: "",
-						stderr: `Failed to call tool ${subcommand}: ${message}\n`,
+						stderr: `Failed to call tool ${subcommand}: ${message}\n${formatToolParamHint(subcommand, entry.tool.inputSchema)}`,
 						exitCode: 1,
 					};
 				}

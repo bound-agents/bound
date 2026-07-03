@@ -49,8 +49,9 @@ const TOOLS: Tool[] = [
 		inputSchema: {
 			type: "object",
 			properties: {
-				method: { type: "string" },
-				state: { type: "string" },
+				method: { type: "string", enum: ["create", "update"] },
+				state: { type: "string", enum: ["OPEN", "CLOSED"] },
+				labels: { type: "array", items: { type: "string" }, description: "Labels to set" },
 			},
 			required: ["method"],
 		},
@@ -68,13 +69,25 @@ describe("formatMcpHelp (shared formatter)", () => {
 		expect(result.stdout).toContain("github-bound <subcommand> --help");
 	});
 
-	it("subcommand-level help lists parameters with required/optional and descriptions", () => {
+	it("subcommand-level help lists parameters with required/optional, types, and descriptions", () => {
 		const result = formatMcpHelp("github-bound", TOOLS, "issue_read");
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("issue_read — Read an issue");
 		expect(result.stdout).toContain("Parameters:");
-		expect(result.stdout).toContain("owner (required) — Repo owner");
-		expect(result.stdout).toContain("issue_number (required) — Issue number");
+		expect(result.stdout).toContain("owner (required, string) — Repo owner");
+		expect(result.stdout).toContain("issue_number (required, number) — Issue number");
+	});
+
+	// Regression: tool_error 2026-06-19 — github's list_issues rejects "open"
+	// because the server wants GraphQL-style UPPERCASE enums, and the help
+	// output gave no way to discover that. Enum values must render in help so
+	// valid values are discoverable without a failed call.
+	it("subcommand-level help renders enum values and array item types", () => {
+		const result = formatMcpHelp("github-bound", TOOLS, "issue_write");
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("method (required, string, one of: create, update)");
+		expect(result.stdout).toContain("state (optional, string, one of: OPEN, CLOSED)");
+		expect(result.stdout).toContain("labels (optional, array of string) — Labels to set");
 	});
 
 	it("unknown subcommand returns an error listing the available subcommands", () => {
@@ -195,7 +208,7 @@ describe("RelayProcessor help requests", () => {
 		const payload = JSON.parse(out) as { stdout: string; exit_code: number };
 		expect(payload.exit_code).toBe(0);
 		expect(payload.stdout).toContain("Parameters:");
-		expect(payload.stdout).toContain("owner (required)");
+		expect(payload.stdout).toContain("owner (required, string)");
 		// help is a discovery request, not a dispatch
 		expect(client.callToolInvocations).not.toContain("issue_read");
 	});
