@@ -316,7 +316,7 @@ The 15 native tools replace the previous 20 bash-dispatched commands:
 | `emit` | event, payload | Standalone |
 | `await_event` | task_ids, timeout | Standalone |
 | `purge` | message_ids, last_n, thread_id | Standalone |
-| `advisory` | title, detail, action, impact, list, approve, apply, dismiss, defer | Standalone |
+| `advisory` | action (create/list/approve/apply/dismiss/defer), title, detail, recommended_action, impact, list_status, id, note, defer_until | Standalone |
 | `notify` | thread_id, message | Standalone |
 | `introspect` | thread_id, message, timeout | Standalone |
 | `archive` | thread_id, older_than | Standalone |
