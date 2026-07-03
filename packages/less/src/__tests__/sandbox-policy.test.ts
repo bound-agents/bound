@@ -112,6 +112,18 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		expect(hasCwd).toBe(true);
 	});
 
+	it("puts literal /tmp in the writable set on POSIX (README contract)", () => {
+		// README: "writes are confined to the working directory and /tmp". On
+		// Linux os.tmpdir() IS /tmp so the promise held incidentally; on macOS
+		// os.tmpdir() is /var/folders/<user>/T, leaving the literal /tmp
+		// (realpath /private/tmp) outside the writable set — shell idioms like
+		// `cat > /tmp/x` died with EPERM (tool_error 2026-06-21, reproduced
+		// live 2026-07-03).
+		if (process.platform === "win32") return;
+		const policy = buildPolicy(process.cwd(), enabled);
+		expect(policy.filesystem.readwritePaths).toContain(realpathSync("/tmp"));
+	});
+
 	it("adds operator-listed extra writable paths", () => {
 		const extra = join(tmpdir(), `sandbox-policy-extra-${randomBytes(4).toString("hex")}`);
 		mkdirSync(extra, { recursive: true });
@@ -226,10 +238,18 @@ describe("computeWritableRoots (git worktree gitdir resolution)", () => {
 		mkdirSync(bare, { recursive: true });
 
 		const roots = computeWritableRoots(bare, cfg);
-		// cwd + tmpdir only.
+		// cwd + tmpdir + literal /tmp — no git-derived roots. /tmp dedupes
+		// against tmpdir() where they resolve to the same directory (Linux),
+		// so compute the expected set instead of hardcoding a count.
 		expect(roots).toContain(realpathSync(bare));
 		expect(roots).toContain(realpathSync(tmpdir()));
-		expect(roots.length).toBe(2);
+		const expected = new Set([realpathSync(bare), realpathSync(tmpdir())]);
+		try {
+			expected.add(realpathSync("/tmp"));
+		} catch {
+			// no /tmp on this platform
+		}
+		expect(roots.length).toBe(expected.size);
 	});
 });
 
