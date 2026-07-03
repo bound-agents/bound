@@ -26,7 +26,21 @@ import {
 } from "./types";
 
 export interface ModularAgentLoopOptions {
-	/** Hard guard against unbounded tool-call loops. */
+	/**
+	 * Optional hard cap on turn count. Unset by default: the loop's actual
+	 * runaway protection is the set of targeted circuit breakers in
+	 * loop-guards.ts (duplicate tool calls, identical tool errors, truncated
+	 * turns, routing errors) plus the degenerate-turn retry bound — each keyed
+	 * to a specific, previously-observed spin signature. A blanket turn-count
+	 * ceiling was added briefly (2026-06-26, DEFAULT_MAX_TURNS=16) and then
+	 * removed (2026-07-03): it caught no failure mode the breakers above
+	 * didn't already catch, while aborting legitimate long-running tool-use
+	 * sessions (research/investigation work spanning 16+ distinct, non-repeating
+	 * calls) that were making real progress. Pass a value here only when a
+	 * specific caller has a real reason to bound turns (e.g. a hard cost/latency
+	 * ceiling for a particular extension agent) — it is no longer a loop-wide
+	 * default.
+	 */
 	maxTurns?: number;
 	/** Per-chunk silence timeout for local backend streams. */
 	silenceTimeoutMs?: number;
@@ -42,7 +56,6 @@ export interface ModularAgentLoopOptions {
 	loopGuards?: Partial<LoopGuardThresholds>;
 }
 
-const DEFAULT_MAX_TURNS = 16;
 const DEFAULT_SILENCE_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TRANSIENT_RETRIES = 3;
 const DEFAULT_DEGENERATE_RETRY_MAX = 2;
@@ -264,9 +277,12 @@ export class ModularAgentLoop {
 				...(await this.prepareFrame({ resolution: frameResolution })),
 			};
 			let currentDebug = frame.assembled.debug;
-			const maxTurns = this.loopOptions.maxTurns ?? DEFAULT_MAX_TURNS;
+			// No default cap: see the ModularAgentLoopOptions.maxTurns doc comment.
+			// Runaway protection is the targeted circuit breakers (loop-guards.ts)
+			// plus the degenerate-turn retry bound, not a blanket turn count.
+			const maxTurns = this.loopOptions.maxTurns;
 
-			for (let turn = 1; turn <= maxTurns; turn++) {
+			for (let turn = 1; maxTurns === undefined || turn <= maxTurns; turn++) {
 				const turnOutcome = await this.runTurn({
 					turn,
 					frame,
