@@ -1594,6 +1594,18 @@ describe("MainAgentLoop", () => {
 	it("records cache-path observability fields on context_debug", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setTextResponse("First response");
+		// The default MockLLMBackend.capabilities().max_context (8000) exactly
+		// equals DEFAULT_OUTPUT_TOKEN_RESERVE, which would zero out
+		// computeBaseTruncationTarget. Override with a roomier window so the
+		// assertion on truncationTargetTokens has something meaningful to check.
+		mockBackend.capabilities = () => ({
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 200000,
+		});
 
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
@@ -1615,7 +1627,7 @@ describe("MainAgentLoop", () => {
 		const debug = JSON.parse(turn?.context_debug ?? "{}") as {
 			cachePath?: string;
 			cachePathReason?: string;
-			effectiveTruncationRatio?: number;
+			truncationTargetTokens?: number;
 			measuredInflation?: number | null;
 			warmCompactionTokensSaved?: number;
 		};
@@ -1628,15 +1640,16 @@ describe("MainAgentLoop", () => {
 		expect(debug.cachePath).toBe("cold");
 		expect(debug.cachePathReason).toBe("no-stored-state");
 
-		// Adaptive truncation ratio must surface even on cold-start threads
-		// (where measuredInflation is null and the resolver returns the base
-		// 0.85). On a thread where the EMA HAS collapsed to 0.4, the recorded
-		// 0.4 is the only signal that explains why warm-path budget bails fire
-		// 200k tokens earlier than the contextWindow would suggest.
-		expect(debug.effectiveTruncationRatio).toBeCloseTo(0.85, 5);
+		// The adaptive truncation target (contextWindow - maxOutputTokens,
+		// divided by the EMA) must surface even on cold-start threads (where
+		// measuredInflation is null and the resolver returns the unadjusted
+		// base target). On a thread where the EMA HAS collapsed, the recorded
+		// target is the only signal that explains why warm-path budget bails
+		// fire earlier than the raw contextWindow would suggest.
+		expect(debug.truncationTargetTokens).toBeGreaterThan(0);
 		// Cold-start threads have insufficient samples for the EMA. Recording
 		// `null` distinguishes "estimator is accurate" from "we don't know yet"
-		// — both surfaces would otherwise look identical at the base ratio.
+		// — both surfaces would otherwise look identical at the base target.
 		expect(debug.measuredInflation).toBeNull();
 
 		// warmCompactionTokensSaved is undefined on cold turns (it's only

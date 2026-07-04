@@ -17,14 +17,14 @@ import {
 import { selectCacheTtl } from "./cache-prediction";
 import { type CachedTurnState, computeToolFingerprint } from "./cached-turn-state";
 import {
-	TRUNCATION_TARGET_RATIO,
 	assembleContext,
 	buildVolatileContext,
+	computeBaseTruncationTarget,
 	computeVolatileTailSection,
 	realTimeClock,
 	rebuildWarmSections,
 } from "./context-assembly";
-import { resolveAdaptiveTruncation } from "./inflation-ratio";
+import { resolveAdaptiveTruncationTarget } from "./inflation-ratio";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 import { extractAssistantSeedText, extractSummaryAndMemories } from "./summary-extraction";
 import { compactStoredMessagesInPlace, computeRecentWindow } from "./warm-compaction";
@@ -297,8 +297,16 @@ export class MainAgentLoop extends BoundAgentLoop {
 		const resolvedModelForDebug = getResolvedModelId(resolution, this.config.modelId);
 		const threadInterface = this.config.platform ?? "web";
 		const cacheTtl = selectCacheTtl(threadInterface);
-		const { ratio: adaptiveTruncationRatio, inflation: measuredInflation } =
-			resolveAdaptiveTruncation(this.ctx.db, this.config.threadId, TRUNCATION_TARGET_RATIO);
+		const maxOutputTokens = this.effectiveMaxOutputTokens();
+		const baseTruncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
+		const { target: truncationTargetTokens, inflation: measuredInflation } =
+			resolveAdaptiveTruncationTarget(this.ctx.db, this.config.threadId, baseTruncationTarget);
+		// Scaling factor for the physical `recentHardCeiling` (see context-assembly.ts
+		// comment at its use site): 1 / measuredInflation, clamped to ≤ 1 so an
+		// over-counting estimator (inflation < 1.0) never loosens the ceiling.
+		// Defaults to 1 (no tightening) on cold-start threads with no EMA yet.
+		const recentHardCeilingDeflator =
+			measuredInflation !== null ? Math.min(1, 1 / Math.max(1.0, measuredInflation)) : 1;
 		// Fingerprint the merged set the model actually receives — registry
 		// (built-ins + native agent tools) + client + platform + config extras —
 		// not the partial config.tools slice. Otherwise client/registry tool
@@ -329,7 +337,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 			const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
 				attributes: {
 					"context.cache_path": "warm",
-					"context.effective_truncation_ratio": adaptiveTruncationRatio,
+					"context.truncation_target_tokens": truncationTargetTokens,
 				},
 			});
 			const cached = cachedForWarm;
@@ -382,13 +390,13 @@ export class MainAgentLoop extends BoundAgentLoop {
 				);
 				const systemTokens = cached.systemPrompt ? countContentTokens(cached.systemPrompt) : 0;
 				let estimatedTotal = storedTokens + systemTokens + toolTokenEstimate;
-				const warmEffectiveBudget = Math.floor(contextWindow * adaptiveTruncationRatio);
+				const warmEffectiveBudget = truncationTargetTokens;
 				let warmCompactionTokensSaved = 0;
 				if (estimatedTotal > warmEffectiveBudget) {
 					const compactionResult = compactStoredMessagesInPlace(storedMessages, {
 						recentWindow: computeRecentWindow(contextWindow),
 						contextWindow,
-						effectiveTruncationRatio: adaptiveTruncationRatio,
+						truncationTargetTokens,
 						precomputedEstimate: storedTokens,
 					});
 					if (compactionResult.compacted) {
@@ -433,7 +441,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 						truncated: 0,
 						cachePath: "warm",
 						cachePathReason: "warm-eligible",
-						effectiveTruncationRatio: adaptiveTruncationRatio,
+						truncationTargetTokens,
 						measuredInflation,
 						warmCompactionTokensSaved,
 						relevantMemory: volatileContext.relevantMemory,
@@ -481,7 +489,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 						cacheMarkerCaps,
 						contextWindow,
 						toolTokenEstimate,
-						adaptiveTruncationRatio,
+						truncationTargetTokens,
 						measuredInflation,
 						cacheTtl,
 					};
@@ -505,7 +513,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 			attributes: {
 				"context.cache_path": "cold",
 				"context.cold_reason": cachePathReason,
-				"context.effective_truncation_ratio": adaptiveTruncationRatio,
+				"context.truncation_target_tokens": truncationTargetTokens,
 			},
 		});
 		// One clock per assembly (R-UD4). The instant is captured so the producer
@@ -533,7 +541,8 @@ export class MainAgentLoop extends BoundAgentLoop {
 					relayInfo,
 					targetCapabilities: resolvedCaps ?? undefined,
 					toolTokenEstimate,
-					effectiveTruncationRatio: adaptiveTruncationRatio,
+					truncationTargetTokens,
+					recentHardCeilingDeflator,
 					noHistory: this.config.noHistory,
 					systemPromptAddition: this.config.systemPromptAddition,
 					platformInstructions: this.config.platformInstructions,
@@ -561,7 +570,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 			}),
 			cachePath: "cold" as const,
 			cachePathReason,
-			effectiveTruncationRatio: adaptiveTruncationRatio,
+			truncationTargetTokens,
 			measuredInflation,
 		};
 		const lastRow = findLatestLiveMessageCreatedAtByThread(this.ctx.db, this.config.threadId);
@@ -623,7 +632,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 			cacheMarkerCaps,
 			contextWindow,
 			toolTokenEstimate,
-			adaptiveTruncationRatio,
+			truncationTargetTokens,
 			measuredInflation,
 			cacheTtl,
 		};

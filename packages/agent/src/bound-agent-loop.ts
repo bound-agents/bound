@@ -306,7 +306,7 @@ export interface BoundPreparedFrame extends PreparedLoopFrame {
 		| undefined;
 	contextWindow: number;
 	toolTokenEstimate: number;
-	adaptiveTruncationRatio: number;
+	truncationTargetTokens: number;
 	measuredInflation: number | null;
 	cacheTtl: ReturnType<typeof selectCacheTtl>;
 }

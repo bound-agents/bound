@@ -885,8 +885,8 @@ export interface ContextDebugInfo {
 	 *   `tool_result`. Distinct from `"budget-exceeded"` because the remedy
 	 *   is structural, not size-driven.
 	 * - `"budget-exceeded"` — warm-path estimate exceeded
-	 *   `effectiveTruncationRatio * contextWindow` even after in-place
-	 *   compaction fired (or none was applicable).
+	 *   `truncationTargetTokens` even after in-place compaction fired (or
+	 *   none was applicable).
 	 * - `"no-history"` — `noHistory` task threads always cold-assemble.
 	 *
 	 * Warm-side reasons:
@@ -903,27 +903,30 @@ export interface ContextDebugInfo {
 		| "no-history"
 		| "warm-eligible";
 	/**
-	 * Per-thread adaptive truncation ratio resolved at the start of this
-	 * assembly. `TRUNCATION_TARGET_RATIO` (0.85) divided by the EMA of
-	 * actual/estimated inflation over the recent `turns` lookback window
-	 * (clamped so inflation < 1.0 doesn't loosen the gate). Falls back to
-	 * the base ratio on threads with insufficient samples.
+	 * Per-thread adaptive truncation target (tokens) resolved at the start of
+	 * this assembly: `contextWindow - maxOutputTokens` (the exact room the
+	 * upcoming model call needs to reserve for its own response), divided by
+	 * the EMA of actual/estimated inflation over the recent `turns` lookback
+	 * window (clamped so inflation < 1.0 doesn't loosen the gate). Falls back
+	 * to the unadjusted base target on threads with insufficient samples.
 	 *
-	 * Recording it lets us correlate budget-gate decisions with the ratio
+	 * Recording it lets us correlate budget-gate decisions with the target
 	 * that drove them on the same turn — without it, debugging "why didn't
 	 * truncation fire?" requires re-running the EMA computation against
 	 * the same row history.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Replaces the old ratio-based `effectiveTruncationRatio` field (removed
+	 * 2026-07-04 — see `computeBaseTruncationTarget` in context-assembly.ts).
+	 * Optional so older `context_debug` rows still parse.
 	 */
-	effectiveTruncationRatio?: number;
+	truncationTargetTokens?: number;
 	/**
 	 * The raw inflation EMA (mean of `actual / estimated` over recent valid
-	 * turns) that fed into `effectiveTruncationRatio`. `null` when the
+	 * turns) that fed into `truncationTargetTokens`. `null` when the
 	 * thread has fewer than the minimum sample count and the resolver fell
-	 * back to the base ratio. Storing it separately from
-	 * `effectiveTruncationRatio` lets us tell "estimator is accurate" from
-	 * "we don't know yet" — both currently surface as the base ratio.
+	 * back to the unadjusted base target. Storing it separately from
+	 * `truncationTargetTokens` lets us tell "estimator is accurate" from
+	 * "we don't know yet".
 	 *
 	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
 	 */
