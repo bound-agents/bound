@@ -38,12 +38,29 @@ export interface CapturingFetch {
  * supports string / Uint8Array / ArrayBuffer / URLSearchParams; unknown
  * shapes record a placeholder (the AI SDK does not use them for inference
  * calls in practice).
+ *
+ * `Request`-object inputs are read via `clone().text()`: the SigV4-signing
+ * fetch (`createSigV4Fetch`, bedrock-mantle path) normalizes each request
+ * into a single signed `Request` and calls its delegate with NO `init`
+ * argument, so the body lives inside the Request object. Reading only
+ * `init?.body` captured every mantle wire as an empty string — 7 wires
+ * with matching turn rows but zero classifiable bodies (the persona
+ * signature can't match an empty string).
  */
 export function createCapturingFetch(): CapturingFetch {
 	const entries: CapturedRequest[] = [];
 	const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 		const url = extractUrl(input);
-		const body = readBody(init?.body);
+		let body = readBody(init?.body);
+		if (body === "" && typeof Request !== "undefined" && input instanceof Request) {
+			try {
+				// Clone before reading — consuming the original's body would
+				// break the forwarded request.
+				body = await input.clone().text();
+			} catch {
+				body = "[unreadable Request body]";
+			}
+		}
 		entries.push({ url, body });
 		return globalThis.fetch(input, init);
 	};

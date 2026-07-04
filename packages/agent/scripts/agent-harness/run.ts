@@ -83,6 +83,21 @@ async function main(): Promise<void> {
 		process.stdout.write(
 			`wire_dump:       ${dir}/turn-N.json (${result.rawTurnData.length} turns)\n`,
 		);
+		// Also dump wires the classifier did NOT attribute to a main-loop
+		// turn. Normally auxiliary (summary/title) calls — but when a run
+		// reports N turn rows and 0 classified turns, these files are the
+		// evidence needed to fix `isAgentLoopWire` for that provider's wire
+		// shape instead of leaving a silent dead end.
+		for (let i = 0; i < result.unmatchedWires.length; i++) {
+			const w = result.unmatchedWires[i];
+			const path = join(dir, `unmatched-${i}.json`);
+			writeFileSync(path, JSON.stringify(w, null, 2));
+		}
+		if (result.unmatchedWires.length > 0) {
+			process.stdout.write(
+				`wire_unmatched:  ${dir}/unmatched-N.json (${result.unmatchedWires.length} wires)\n`,
+			);
+		}
 	}
 
 	// Exit 0 for clean completion or intentional budget aborts (the budget
