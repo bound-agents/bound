@@ -25,4 +25,8 @@ describe("Component Tests", () => {
 		const LineView = await import("../views/LineView.svelte");
 		expect(LineView).toBeDefined();
 	});
+	it("ConnectorBindingsView module imports without error", async () => {
+		const ConnectorBindingsView = await import("../views/ConnectorBindingsView.svelte");
+		expect(ConnectorBindingsView).toBeDefined();
+	});
 });

@@ -186,6 +186,7 @@ export async function createWebApp(
 	app.route("/api/advisories", routes.advisories);
 	app.route("/api/mcp", routes.mcp);
 	app.route("/api/mcp-apps", routes.mcpApps);
+	app.route("/api/connectors", routes.connectors);
 	app.route("/api/webhooks", routes.webhooks);
 	app.route("/api/skills", routes.skills);
 	app.route("/api/metrics", routes.metrics);

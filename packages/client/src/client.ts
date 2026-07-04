@@ -18,6 +18,7 @@ import type {
 	BoundClientEvents,
 	CancelResult,
 	ConnectionState,
+	ConnectorBindingsResponse,
 	ContextDebugTurn,
 	CreateThreadOptions,
 	CreateWebhookOptions,
@@ -769,6 +770,16 @@ export class BoundClient {
 	 */
 	async listWebhookUrls(id: string): Promise<WebhookUrlsResponse> {
 		return this.fetchJson(`/api/webhooks/${id}/urls`);
+	}
+
+	// ---- Connector bindings ----
+
+	async listConnectorBindings(): Promise<ConnectorBindingsResponse> {
+		return this.fetchJson("/api/connectors/bindings");
+	}
+
+	async detachConnectorBinding(id: string): Promise<void> {
+		await this.fetchVoid(`/api/connectors/bindings/${id}`, { method: "DELETE" });
 	}
 
 	// ---- Status ----

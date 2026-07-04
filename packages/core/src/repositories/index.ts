@@ -39,6 +39,7 @@ export * from "./webhooks";
 
 export * from "./queries/attached-session-hosts";
 export * from "./queries/client-sessions-with-host";
+export * from "./queries/connector-bindings-with-task";
 export * from "./queries/evictable-running-tasks";
 export * from "./queries/file-modification-notices";
 export * from "./queries/find-dark-connector-handles";
