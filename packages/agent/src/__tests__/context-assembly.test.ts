@@ -12,10 +12,10 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import {
 	CONTEXT_SAFETY_MARGIN_FLOOR,
 	CONTEXT_SAFETY_MARGIN_RATIO,
-	TRUNCATION_TARGET_RATIO,
 	type VolatileContext,
 	applyActualUsageToContextDebug,
 	assembleContext,
+	computeBaseTruncationTarget,
 	computeSafetyMargin,
 	estimateContentLength,
 	formatTimestamp,
@@ -1918,9 +1918,13 @@ describe("Context Assembly Pipeline", () => {
 
 		it("truncation target never exceeds effective budget", () => {
 			// The post-truncation total must land ≤ effectiveBudget even when
-			// TRUNCATION_TARGET_RATIO is very close to (1 - safety ratio). With the current
-			// ratios (0.85 and 0.02) the 0.85 side wins, but clamping to effectiveBudget
-			// protects the invariant against future ratio tuning.
+			// computeBaseTruncationTarget's output EXCEEDS effectiveBudget.
+			// With maxOutputTokens=0 (an unrealistic but valid edge case), the
+			// base target (contextWindow - maxOutputTokens = 4000) is larger
+			// than effectiveBudget (contextWindow - safetyMargin = 3920) — the
+			// Math.min(truncationTargetTokens, effectiveBudget) clamp in
+			// assembleContext must pick effectiveBudget regardless of which
+			// side is tighter.
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const nowBase = new Date("2026-01-01T00:00:00Z");
@@ -1974,18 +1978,17 @@ describe("Context Assembly Pipeline", () => {
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 4000,
+				maxOutputTokens: 0,
 			});
 
 			expect(debug.truncated).toBeGreaterThan(0);
 			expect(debug.effectiveBudget).toBeDefined();
-			// Truncation target is min(contextWindow * 0.85, effectiveBudget); post-truncation
-			// message tokens must land at or under that. volatileTokenEstimate is NOT
-			// added here because the volatile developer message is already included in
-			// the messages array (it's a subset, not an additional cost).
-			const target = Math.min(
-				Math.floor(4000 * TRUNCATION_TARGET_RATIO),
-				debug.effectiveBudget ?? 0,
-			);
+			// Truncation target is min(computeBaseTruncationTarget(contextWindow, maxOutputTokens),
+			// effectiveBudget); post-truncation message tokens must land at or under that.
+			// volatileTokenEstimate is NOT added here because the volatile developer
+			// message is already included in the messages array (it's a subset, not an
+			// additional cost).
+			const target = Math.min(computeBaseTruncationTarget(4000, 0), debug.effectiveBudget ?? 0);
 			const wireTokens = messages.reduce((sum, m) => sum + countContentTokens(m.content), 0);
 			expect(wireTokens).toBeLessThanOrEqual(target);
 
@@ -5135,20 +5138,28 @@ This skill reviews pull requests.`;
 			}
 
 			const contextWindow = 10000;
+			// A realistic 20%-of-window output reserve, not the 8000-token
+			// DEFAULT_OUTPUT_TOKEN_RESERVE fallback (which would swamp this
+			// window, collapsing the target to 2000 — barely enough for the
+			// ~1.5k-token stable prefix alone, let alone any history — and
+			// forcing the tier allocator's non-negotiable ≥2-message floor to
+			// overshoot the already-starved remainder).
+			const maxOutputTokens = 2000;
 			const result = assembleContext({
 				db: debugTestDb,
 				threadId: testThreadId,
 				userId: debugTestUserId,
 				contextWindow,
+				maxOutputTokens,
 			});
 
 			// Truncation should fire
 			expect(result.debug.truncated).toBeGreaterThan(0);
 
-			// The resulting context should be ~85% of contextWindow (15% headroom),
-			// not right at the limit. This ensures the prefix stays stable for
-			// multiple turns, enabling prompt caching.
-			const targetBudget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			// The resulting context should land at contextWindow minus the
+			// output-token reserve, not right at the limit. This ensures the
+			// prefix stays stable for multiple turns, enabling prompt caching.
+			const targetBudget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 			expect(result.debug.totalEstimated).toBeLessThanOrEqual(targetBudget + 100); // small tolerance for system msgs
 		});
 
@@ -5366,6 +5377,12 @@ This skill reviews pull requests.`;
 				// retrieved messages won't fit — so truncation fires while
 				// still leaving > 10 messages in the kept set.
 				contextWindow: 3000,
+				// A realistic small-context model reserves a fraction of its
+				// window for output, not the 8000-token DEFAULT_OUTPUT_TOKEN_RESERVE
+				// (which would swamp a 3000-token window and collapse the base
+				// truncation target to 0 — nobody configures max_output_tokens
+				// bigger than contextWindow itself).
+				maxOutputTokens: 500,
 			});
 
 			const historyMessages = messages.filter((m) => m.role !== "system");
@@ -5449,7 +5466,7 @@ This skill reviews pull requests.`;
 	// When messages are truncated, the agent should know context was lost
 	// and how to recover it (query command).
 	// ──────────────────────────────────────────────────────────────────────
-	describe("effectiveTruncationRatio override (adaptive truncation)", () => {
+	describe("truncationTargetTokens override (adaptive truncation)", () => {
 		it("truncates more aggressively when a tighter override is supplied", () => {
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
@@ -5481,10 +5498,10 @@ This skill reviews pull requests.`;
 
 			// Insert enough message tokens to put Stage 7 firmly into truncation
 			// territory (totalTokens > effectiveBudget). With contextWindow=4000
-			// (effective_budget=3920, baseline truncationTarget=3400) and ~30
-			// tokens per message, ~120 messages overflow comfortably; under
-			// the tighter 0.40 override (truncationTarget=1600) Stage 7 must
-			// drop substantially more.
+			// (effective_budget=3920, baseline truncationTarget=computeBaseTruncationTarget(4000, undefined))
+			// and ~30 tokens per message, ~120 messages overflow comfortably;
+			// under the tighter 1600-token override Stage 7 must drop
+			// substantially more.
 			for (let i = 0; i < 120; i++) {
 				const role = i % 2 === 0 ? "user" : "assistant";
 				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
@@ -5504,18 +5521,25 @@ This skill reviews pull requests.`;
 				);
 			}
 
+			// maxOutputTokens: 500 keeps computeBaseTruncationTarget's baseline
+			// non-zero at this 4000-token window (the 8000-token
+			// DEFAULT_OUTPUT_TOKEN_RESERVE would otherwise swamp it and both
+			// runs would floor at 0, making "tighter" indistinguishable from
+			// baseline).
 			const baseline = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 4000,
+				maxOutputTokens: 500,
 			});
 			const tighter = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 4000,
-				effectiveTruncationRatio: 0.4,
+				maxOutputTokens: 500,
+				truncationTargetTokens: 1600,
 			});
 
 			expect(tighter.debug.truncated).toBeGreaterThan(baseline.debug.truncated);
@@ -5526,7 +5550,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		it("falls back to base TRUNCATION_TARGET_RATIO when no override is supplied", () => {
+		it("falls back to computeBaseTruncationTarget when no override is supplied", () => {
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const nowBase = new Date("2026-05-22T18:00:00Z");
@@ -5575,7 +5599,10 @@ This skill reviews pull requests.`;
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 200000,
-				effectiveTruncationRatio: TRUNCATION_TARGET_RATIO,
+				// Passing the exact value computeBaseTruncationTarget would have
+				// derived by default (no maxOutputTokens supplied either run) must
+				// be indistinguishable from omitting the override entirely.
+				truncationTargetTokens: computeBaseTruncationTarget(200000, undefined),
 			});
 
 			expect(noOverride.debug.truncated).toBe(explicitBase.debug.truncated);
@@ -6201,7 +6228,13 @@ This skill reviews pull requests.`;
 			// concurrency + orientation + schema ≈ 1.5k tokens) and the
 			// ~800 tokens of message content without truncating. The tool
 			// estimate below is what should push it over the edge.
+			// maxOutputTokens: 1000 keeps computeBaseTruncationTarget's
+			// truncationTarget (4000) meaningfully above the ~2.3k tokens of
+			// content+prefix — the 8000-token DEFAULT_OUTPUT_TOKEN_RESERVE
+			// would otherwise swamp this window and floor both runs at 0,
+			// making them indistinguishable.
 			const contextWindow = 5000;
+			const maxOutputTokens = 1000;
 
 			// Without tool estimate: should NOT truncate
 			const without = assembleContext({
@@ -6209,6 +6242,7 @@ This skill reviews pull requests.`;
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow,
+				maxOutputTokens,
 			});
 
 			// With a 3000-token tool estimate: total exceeds window → must truncate
@@ -6217,6 +6251,7 @@ This skill reviews pull requests.`;
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow,
+				maxOutputTokens,
 				toolTokenEstimate: 3000,
 			});
 

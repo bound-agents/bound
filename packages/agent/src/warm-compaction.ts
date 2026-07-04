@@ -94,18 +94,20 @@ export interface CompactStoredMessagesOptions {
 	 */
 	recentWindow: number;
 	/**
-	 * Backend context window (tokens). Used together with effectiveTruncationRatio
-	 * to derive the thinking-strip threshold — thinking is preserved as long
-	 * as post-tool_result-compaction estimate stays under the threshold, the
-	 * same gating as cold-path Stage 1.7.
+	 * Backend context window (tokens). Retained on the options shape for
+	 * parity with the cold path's signature even though the warm-path
+	 * threshold below is now supplied directly in tokens rather than derived
+	 * from this value.
 	 */
 	contextWindow: number;
 	/**
-	 * The per-thread adaptive truncation ratio resolved by the agent loop.
-	 * `contextWindow * effectiveTruncationRatio` is the thinking-strip
-	 * threshold.
+	 * The per-thread adaptive truncation target (tokens), resolved by the
+	 * agent loop via `resolveAdaptiveTruncationTarget`. This IS the
+	 * thinking-strip threshold — no ratio multiplication needed, since the
+	 * target is already expressed in tokens (`contextWindow - maxOutputTokens`,
+	 * divided by the measured inflation EMA).
 	 */
-	effectiveTruncationRatio: number;
+	truncationTargetTokens: number;
 	/**
 	 * Optional pre-computed sum of `countContentTokens(msg.content)` over
 	 * `messages` BEFORE compaction. The agent loop's warm-path budget gate
@@ -139,9 +141,9 @@ export interface CompactStoredMessagesResult {
  *     the messages table. tool_results without a tool_use_id are left alone
  *     (no recovery path → stub would be a dead end).
  *  2. If the post-step-1 token estimate still exceeds
- *     `floor(contextWindow * effectiveTruncationRatio)`, walk older
- *     `tool_call` messages and strip thinking blocks. Stops as soon as the
- *     estimate falls below the threshold.
+ *     `truncationTargetTokens`, walk older `tool_call` messages and strip
+ *     thinking blocks. Stops as soon as the estimate falls below the
+ *     threshold.
  *
  * Idempotent: a second call on already-compacted content produces no further
  * changes. This is critical — the warm path may compact the same array
@@ -199,7 +201,7 @@ export function compactStoredMessagesInPlace(
 	}
 
 	// Step 2: thinking strip if still over threshold.
-	const thinkingThreshold = Math.floor(opts.contextWindow * opts.effectiveTruncationRatio);
+	const thinkingThreshold = opts.truncationTargetTokens;
 	// Reuse caller's pre-computed sum when available (warm-path budget gate
 	// already tokenized the array). Apply Step 1 savings to get the
 	// post-step-1 estimate without re-summing.

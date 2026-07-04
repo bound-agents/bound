@@ -300,18 +300,18 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			{/if}
 
-			{#if selectedTurn.context_debug.effectiveTruncationRatio !== undefined}
-				{@const ratio = selectedTurn.context_debug.effectiveTruncationRatio}
+			{#if selectedTurn.context_debug.truncationTargetTokens !== undefined}
+				{@const target = selectedTurn.context_debug.truncationTargetTokens}
 				{@const inflation = selectedTurn.context_debug.measuredInflation}
-				{@const tightened = ratio < 0.84}
+				{@const tightened = inflation !== null && inflation !== undefined && inflation > 1.0}
 				<div class="adaptive-row">
 					<InfoPopover
-						label="Cold-assembly budget target = 0.85 ÷ inflation EMA. Lower telescopes sooner, compensating for estimator under-count."
+						label="Cold-assembly budget target = (contextWindow − maxOutputTokens) ÷ inflation EMA. Lower telescopes sooner, compensating for estimator under-count."
 					>
 						{#snippet trigger()}<span class="cache-kicker">Adaptive</span>{/snippet}
 					</InfoPopover>
 					<span class="adaptive-num mono tnum" class:adaptive-tight={tightened}>
-						ratio {ratio.toFixed(2)}
+						target {target.toLocaleString()}
 					</span>
 					{#if inflation !== null && inflation !== undefined}
 						<span class="cache-sep">·</span>

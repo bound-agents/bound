@@ -18,7 +18,7 @@ import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { MainAgentLoop } from "../agent-loop";
 import { type CachedTurnState, computeToolFingerprint } from "../cached-turn-state";
-import { TRUNCATION_TARGET_RATIO } from "../context-assembly";
+import { computeBaseTruncationTarget } from "../context-assembly";
 
 // FTS5 schema setup adds overhead on CI runners; bump default timeout
 setDefaultTimeout(10000);
@@ -507,19 +507,21 @@ describe("warm-cold-path", () => {
 		});
 	});
 
-	describe("AC6.1: Cold-path assembly targets 0.85 of contextWindow", () => {
-		it("verifies TRUNCATION_TARGET_RATIO is 0.85", () => {
-			expect(TRUNCATION_TARGET_RATIO).toBe(0.85);
+	describe("AC6.1: Cold-path assembly targets contextWindow - maxOutputTokens", () => {
+		it("verifies computeBaseTruncationTarget subtracts the output reserve", () => {
+			// At 200k context / 8k default output reserve, target = 192k — the
+			// exact room the model's own response needs to be reserved, not an
+			// arbitrary 85% ratio.
+			expect(computeBaseTruncationTarget(200000, 8000)).toBe(192000);
 		});
 
 		it("truncation target calculation at 200k context window", () => {
 			const contextWindow = 200000;
-			const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const truncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 
-			// Should target 85% = 170k tokens
+			// Headroom = exactly maxOutputTokens
 			expect(truncationTarget).toBe(170000);
-
-			// Headroom = 15% = 30k tokens
 			const headroom = contextWindow - truncationTarget;
 			expect(headroom).toBe(30000);
 		});
@@ -528,7 +530,8 @@ describe("warm-cold-path", () => {
 	describe("AC6.2: Warm-path turns fit within headroom (500 tokens/turn × 20 turns)", () => {
 		it("20 warm-path turns at 500 tokens each fit in 30k headroom", () => {
 			const contextWindow = 200000;
-			const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const truncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 			const headroom = contextWindow - truncationTarget;
 
 			// 20 turns × 500 tokens = 10k tokens
@@ -545,7 +548,8 @@ describe("warm-cold-path", () => {
 	describe("AC6.3: Initial cold-path assembly doesn't exceed contextWindow", () => {
 		it("truncation ensures final total <= contextWindow", () => {
 			const contextWindow = 200000;
-			const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const truncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 
 			// After truncation targets truncationTarget tokens, total should be <= contextWindow
 			// The cold path maintains: system + history (truncated) + tools + volatile <= contextWindow
@@ -564,7 +568,8 @@ describe("warm-cold-path", () => {
 	describe("AC6.4: Thread with large tool results triggers reassembly quickly", () => {
 		it("rapid accumulation of large tool results triggers reassembly within 3-4 turns", () => {
 			const contextWindow = 200000;
-			const headroom = contextWindow - Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const headroom = contextWindow - computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 
 			// Each turn adds a large tool result (~5k tokens)
 			const tokensPerLargeTurn = 5000;
@@ -1535,16 +1540,18 @@ describe("warm-cold-path", () => {
 			// cold+warm turns, an oversized tool_result is sitting in the
 			// cached storedMessages array".
 			const sharedStore = new InMemoryTurnStateStore();
-			// 800k chars ≈ 200k tokens. Against a 200k contextWindow at
-			// 0.85 ratio = 170k effective budget, this guarantees the
-			// budget gate fires. Compaction shrinks it to a ~few-hundred
-			// char stub, so post-compaction we're back under budget.
+			// 1M chars ≈ 222k tokens. Against a 200k contextWindow with no
+			// configured maxOutputTokens (falls back to
+			// DEFAULT_OUTPUT_TOKEN_RESERVE = 8k), the base truncation target
+			// is 192k — this guarantees the budget gate fires. Compaction
+			// shrinks it to a ~few-hundred char stub, so post-compaction
+			// we're back under budget.
 			//
 			// We use a varied-character pattern (not all "X") because
 			// js-tiktoken collapses long runs of identical characters into
-			// short token sequences, and an 800k-char "X" string would
-			// only count as ~few hundred tokens — not enough to trip the
-			// budget gate.
+			// short token sequences, and a 1M-char "X" string would only
+			// count as ~few hundred tokens — not enough to trip the budget
+			// gate.
 			const buildVariedContent = (size: number) => {
 				const chunks: string[] = [];
 				const pattern = "the quick brown fox jumps over the lazy dog. ";
@@ -1553,7 +1560,7 @@ describe("warm-cold-path", () => {
 				}
 				return chunks.join("").slice(0, size);
 			};
-			const inflatedToolResultContent = buildVariedContent(800_000);
+			const inflatedToolResultContent = buildVariedContent(1_000_000);
 			// At 200k contextWindow the cold-path Stage 1.7 default
 			// recent-window is 20 messages. Seed enough recent-window
 			// padding that the oversized tool_result lands well outside

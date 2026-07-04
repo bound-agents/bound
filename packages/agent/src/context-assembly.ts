@@ -84,12 +84,37 @@ function getTracer() {
 }
 
 /**
- * The cold path targets this fraction of contextWindow, leaving headroom for warm-path growth.
- * At 200k contextWindow, this leaves ~30k tokens (15%) for warm-path turns before triggering
- * high-water mark reassembly. With 10-15% underestimation by tiktoken, this also protects
- * against exceeding the model's true context limit.
+ * Fallback output-token reserve when the caller has no resolved max-output-tokens
+ * figure for the target backend (e.g. a test harness that omits `maxOutputTokens`,
+ * or a resolution path that hasn't threaded one through yet). Mirrors the `8_000`
+ * convention `estimateMaxTurnCost` and `BackendConfig` schema defaults already use
+ * elsewhere for "no configured cap" — see agent-loop-utils.ts.
  */
-export const TRUNCATION_TARGET_RATIO = 0.85;
+export const DEFAULT_OUTPUT_TOKEN_RESERVE = 8_000;
+
+/**
+ * The cold path targets `contextWindow - maxOutputTokens` tokens of history —
+ * the exact amount of room the upcoming model call needs to reserve for its own
+ * response, rather than an arbitrary headroom fraction. Replaces the old
+ * ratio-based `TRUNCATION_TARGET_RATIO` (a fixed 0.85 of contextWindow, removed
+ * 2026-07-04): a fixed ratio doesn't know how large the model's actual output
+ * budget is, so it either wastes headroom (small max_tokens, big context) or
+ * under-reserves it (large max_tokens relative to context). Subtracting the
+ * real reserve guarantees space for generation regardless of context-window
+ * size.
+ *
+ * The per-thread inflation EMA still divides this base target down (see
+ * `resolveAdaptiveTruncationTarget` in inflation-ratio.ts) — tiktoken's
+ * cl100k_base under-counts thinking-heavy threads by 1.5-2x, so the effective
+ * budget the agent loop resolves and passes in as `effectiveTruncationBudget` is
+ * tighter than this raw subtraction on threads with measured inflation.
+ */
+export function computeBaseTruncationTarget(
+	contextWindow: number,
+	maxOutputTokens: number | undefined,
+): number {
+	return Math.max(0, contextWindow - (maxOutputTokens ?? DEFAULT_OUTPUT_TOKEN_RESERVE));
+}
 
 /**
  * Safety margin between the estimated token count and the backend's true context window.
@@ -104,8 +129,9 @@ export const TRUNCATION_TARGET_RATIO = 0.85;
  * the backend sees the payload. The ratio is conservative (2%) with a floor (512 tokens) so
  * small contexts still get meaningful headroom.
  *
- * Note: TRUNCATION_TARGET_RATIO (0.85) is a separate concept — it controls how aggressively
- * truncation cuts once it fires. The safety margin controls WHEN truncation fires.
+ * Note: `computeBaseTruncationTarget` (contextWindow - maxOutputTokens) is a separate
+ * concept — it controls how aggressively truncation cuts once it fires. The safety
+ * margin controls WHEN truncation fires.
  */
 export const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
 export const CONTEXT_SAFETY_MARGIN_FLOOR = 512;
@@ -209,15 +235,39 @@ export interface ContextParams {
 	/** MCP commands to display in orientation block. Passed explicitly from AppContext. */
 	commandRegistry?: readonly CommandRegistryEntry[];
 	/**
-	 * Override for the truncation/headroom ratio applied to contextWindow.
-	 * Defaults to TRUNCATION_TARGET_RATIO (0.85) when omitted. The agent loop
-	 * supplies a per-thread adaptive value derived from the historical
-	 * tiktoken-vs-actual inflation ratio so threads with thinking-heavy
-	 * content (cl100k_base under-counts by 2x+) don't blow the configured
-	 * context window. Honored at the Stage 7 telescope truncation target
-	 * (the gate and the tier soft-budget both scale by it).
+	 * Precomputed truncation target (tokens) for the Stage 7 telescope gate and
+	 * the soft history budget derived from it. This is the amount of
+	 * context-window room reserved for system + tools + history — i.e.
+	 * `contextWindow` MINUS the room the upcoming model call needs to reserve
+	 * for its own output.
+	 *
+	 * Defaults to `computeBaseTruncationTarget(contextWindow, maxOutputTokens)`
+	 * when omitted — the raw physical constraint with no per-thread inflation
+	 * adjustment. The agent loop supplies a per-thread adaptive value instead:
+	 * the same base target further divided by the measured tiktoken-vs-actual
+	 * inflation EMA (`resolveAdaptiveTruncationTarget`), so threads with
+	 * thinking-heavy content (cl100k_base under-counts by 2x+) don't blow the
+	 * configured context window.
 	 */
-	effectiveTruncationRatio?: number;
+	truncationTargetTokens?: number;
+	/**
+	 * Output-token budget reserved for the upcoming model call. Used ONLY to
+	 * derive the default `truncationTargetTokens` when the caller omits it —
+	 * once `truncationTargetTokens` is supplied directly (the agent loop's
+	 * production path), this field has no further effect. See
+	 * `computeBaseTruncationTarget`.
+	 */
+	maxOutputTokens?: number;
+	/**
+	 * Scaling factor (≤ 1) applied to the PHYSICAL `recentHardCeiling`
+	 * (derived from `effectiveBudget`, i.e. `contextWindow - safetyMargin`) so
+	 * it is expressed in the same tiktoken-estimate units as
+	 * `truncationTargetTokens` when the latter has been tightened by
+	 * per-thread inflation. Equals `1 / measuredInflationEMA` clamped to ≤ 1;
+	 * defaults to 1 (no tightening) when the caller has no inflation
+	 * measurement or the estimator over-counts (inflation < 1).
+	 */
+	recentHardCeilingDeflator?: number;
 	/**
 	 * Per-process cache for the rendered R-VC25 stable volatile subsection.
 	 * When supplied, the cold-path stable bytes pushed onto `systemParts`
@@ -1158,12 +1208,13 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		userId,
 		noHistory = false,
 		currentModel,
-		contextWindow = 8000,
+		contextWindow = 200_000,
 		hostName,
 		siteId,
 		relayInfo,
 		targetCapabilities,
-		effectiveTruncationRatio = TRUNCATION_TARGET_RATIO,
+		truncationTargetTokens = computeBaseTruncationTarget(contextWindow, params.maxOutputTokens),
+		recentHardCeilingDeflator = 1,
 	} = params;
 
 	// The sole source of "now" for this assembly (R-UD4 / AC.3). Resolved ONCE
@@ -1947,36 +1998,38 @@ Original output was too large for the context window. If you need the full conte
 	const safetyMargin = computeSafetyMargin(contextWindow);
 	const effectiveBudget = Math.max(0, contextWindow - safetyMargin);
 
-	// Gate on the SOFT target (truncationTarget, ~85%), not effectiveBudget
-	// (~100%). The telescope is the sole history compressor now — the legacy
-	// in-place Stage 1.7 stubbing was removed — so it must engage across the
-	// whole 85-100% band. In that band the old code leaned on Stage 1.7 to
-	// shrink tool_results, but that mutated cached prefix bytes and busted the
-	// provider cache every other inner-loop turn. The telescope folds the same
-	// region cache-stably (RECENT anchored to the latest user message, MIDDLE a
-	// byte-stable digest), so firing at the soft target shrinks context without
-	// thrashing the cache. truncationTarget is defined just inside this block;
-	// hoist it above the gate so the condition can reference it.
-	const truncationTarget = Math.min(
-		Math.floor(contextWindow * effectiveTruncationRatio),
-		effectiveBudget,
-	);
+	// Gate on the SOFT target (truncationTarget — contextWindow minus the
+	// model's output reserve), not effectiveBudget (~100% of contextWindow).
+	// The telescope is the sole history compressor now — the legacy in-place
+	// Stage 1.7 stubbing was removed — so it must engage across the whole
+	// band between the soft target and effectiveBudget. In that band the old
+	// code leaned on Stage 1.7 to shrink tool_results, but that mutated
+	// cached prefix bytes and busted the provider cache every other
+	// inner-loop turn. The telescope folds the same region cache-stably
+	// (RECENT anchored to the latest user message, MIDDLE a byte-stable
+	// digest), so firing at the soft target shrinks context without
+	// thrashing the cache. truncationTarget is defined just inside this
+	// block; hoist it above the gate so the condition can reference it.
+	const truncationTarget = Math.min(truncationTargetTokens, effectiveBudget);
 	if (totalTokens > truncationTarget) {
 		// Truncate history from front — token-aware backward fill.
 		// Instead of keeping a hardcoded last-N messages, we fill from the end
 		// until we hit the remaining token budget. This ensures recent conversations
 		// survive even when bulky tool exchanges sit between them.
 		//
-		// CACHE-FRIENDLY HEADROOM: target effectiveTruncationRatio of contextWindow
-		// (default 0.85) so that truncation fires infrequently. Each truncation
-		// shifts the message prefix, breaking Bedrock/Anthropic's automatic prefix
-		// caching. By leaving ~15% headroom, the prefix stays stable for ~10-20
-		// turns between truncations, enabling 90%+ cache hit rates on long threads.
+		// CACHE-FRIENDLY HEADROOM: target `contextWindow - maxOutputTokens`
+		// tokens of history+system+tools so the model's own response always
+		// has the room it needs, rather	an arbitrary fixed fraction. Each
+		// truncation shifts the message prefix, breaking Bedrock/Anthropic's
+		// automatic prefix caching, so leaving genuine output-reserve headroom
+		// (rather than none) keeps the prefix stable for many turns between
+		// truncations, enabling 90%+ cache hit rates on long threads.
 		// Additionally, tiktoken cl100k_base underestimates Claude's actual token
 		// count — typically by 10-15%, but for thinking-heavy threads we've measured
-		// 2x+ inflation. The agent loop supplies a per-thread adaptive ratio
-		// (tightened by the historical actual/estimated mean) so the post-truncation
-		// payload genuinely fits the configured window even when the estimator runs
+		// 2x+ inflation. The agent loop supplies a per-thread adaptive target
+		// (tightened by the historical actual/estimated mean via
+		// `resolveAdaptiveTruncationTarget`) so the post-truncation payload
+		// genuinely fits the configured window even when the estimator runs
 		// far below reality.
 		//
 		// (truncationTarget is hoisted above the gate so the condition can
@@ -2043,20 +2096,18 @@ Original output was too large for the context window. If you need the full conte
 			// thinking-heavy threads. If the ceiling were the raw tiktoken
 			// `effectiveBudget`, a recent tier "fitting" the ceiling in estimator
 			// units could occupy far more real tokens and breach the window. The
-			// agent loop already measures this as an EMA and folds it into
-			// `effectiveTruncationRatio = TRUNCATION_TARGET_RATIO / inflationEMA`,
-			// so `effectiveTruncationRatio / TRUNCATION_TARGET_RATIO == 1 /
-			// inflationEMA`. Scaling the physical budget by that factor expresses
-			// the ceiling in the SAME estimator units the tier function compares
+			// agent loop already measures this as an EMA and passes the resulting
+			// factor down as `recentHardCeilingDeflator` (`1 / inflationEMA`,
+			// clamped to ≤ 1 so an over-counting estimator never loosens the
+			// ceiling). Scaling the physical budget by that factor expresses the
+			// ceiling in the SAME estimator units the tier function compares
 			// against, so "recent fits the ceiling (estimated)" implies "recent
-			// fits the window (real)". The factor is clamped to ≤ 1 so an
-			// estimator that over-counts (inflation < 1) never loosens the ceiling.
-			const inflationDeflator = Math.min(1, effectiveTruncationRatio / TRUNCATION_TARGET_RATIO);
+			// fits the window (real)".
 			const physicalHistoryHeadroom =
 				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTailTokens;
 			const recentHardCeiling = Math.max(
 				0,
-				Math.floor(physicalHistoryHeadroom * inflationDeflator),
+				Math.floor(physicalHistoryHeadroom * recentHardCeilingDeflator),
 			);
 
 			// Progressive fidelity: three-tier truncation replaces the binary cliff.
