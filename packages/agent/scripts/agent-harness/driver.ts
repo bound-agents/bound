@@ -113,6 +113,17 @@ export interface HarnessRunResult {
 	perDiagnosticReports: Map<string, string>;
 	perDiagnosticRecords: Map<string, ReadonlyArray<Record<string, unknown>>>;
 	rawTurnData: ReadonlyArray<DiagnosticTurnData>;
+	/**
+	 * Wire bodies captured during a user-turn that `isAgentLoopWire` did NOT
+	 * classify as main-loop inference. Normally these are auxiliary calls
+	 * (summary extraction, title generation) and safely ignorable — but when a
+	 * user-turn records N turn rows and 0 main-loop wires, the classifier
+	 * itself has failed for that provider's wire shape, and these bodies are
+	 * the evidence needed to fix it. Dumped by `--dump-wire` alongside the
+	 * classified turns so a silent classifier miss is inspectable instead of
+	 * a dead end.
+	 */
+	unmatchedWires: ReadonlyArray<{ userTurn: number; url: string; body: string }>;
 }
 
 /**
@@ -155,6 +166,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			perDiagnosticReports: new Map(),
 			perDiagnosticRecords: new Map(),
 			rawTurnData: [],
+			unmatchedWires: [],
 		};
 	}
 
@@ -243,6 +255,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	const perDiagRecords = new Map<string, Record<string, unknown>[]>();
 	for (const d of opts.diagnostics) perDiagRecords.set(d.name, []);
 	const rawTurnData: DiagnosticTurnData[] = [];
+	const unmatchedWires: { userTurn: number; url: string; body: string }[] = [];
 
 	// 11. Drive the turns loop.
 	let userTurnsCompleted = 0;
@@ -309,6 +322,9 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		const newTurnRows = readTurnRowsAfter(db, threadId, turnsRowCountBefore);
 		const allWires = capturing.entries.slice();
 		const mainWires = allWires.filter(isAgentLoopWire);
+		for (const w of allWires) {
+			if (!isAgentLoopWire(w)) unmatchedWires.push({ userTurn, url: w.url, body: w.body });
+		}
 		if (newTurnRows.length !== mainWires.length) {
 			opts.logger.warn(
 				`[harness] user-turn ${userTurn}: ${allWires.length} wires captured ` +
@@ -360,6 +376,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			]),
 		),
 		rawTurnData,
+		unmatchedWires,
 	};
 }
 
