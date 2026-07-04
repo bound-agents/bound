@@ -146,6 +146,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Cross-provider `tool_use` portability (id and name)](docs/gotchas.md#cross-provider-tool_use-portability-id-and-name)
 - [`thinking`-signature portability](docs/gotchas.md#thinking-signature-portability)
 - [`boundless_bash` runs inside a filesystem sandbox by default](docs/gotchas.md#boundless_bash-runs-inside-a-filesystem-sandbox-by-default)
+- [Mantle GPT-5.x prompt cache is exact-match, not prefix — agent loops never hit it](docs/gotchas.md#mantle-gpt-5x-prompt-cache-is-exact-match-not-prefix--agent-loops-never-hit-it)
 
 ## Recurring Checklists
 

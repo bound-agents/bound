@@ -147,18 +147,31 @@ function toReasoningEffort(
  * persists on AWS's side (the zero-retention requirement). That governs the
  * *response*; it does not, on its own, buy prompt caching.
  *
- * `promptCacheRetention: "24h"` is what actually engages the cache for this
- * model. Per OpenAI's prompt-caching guide, gpt-5.5 / -pro (and all future
- * models) do NOT support the `in_memory` retention policy — only `24h` — and
- * a request that omits the parameter falls to an `in_memory` default the model
- * can't honor, so it caches nothing. Verified live against the mantle endpoint
- * (issue #155): `store:false` with no retention reports `cached_tokens: 0`
- * across repeated identical prefixes; `store:false` + `"24h"` reports cache
- * hits. Extended retention is explicitly ZDR-clean — only the prompt's
- * key/value tensors persist (≤24h, GPU-local), never the response, and the
- * guide states extended-retention requests are not blocked under Zero Data
- * Retention (which bars `store:true`, not the cache). So this pairs the two:
- * stateless response, cached prefix.
+ * `promptCacheRetention: "24h"` engages the cache for this model. Per
+ * OpenAI's prompt-caching guide, gpt-5.5 / -pro (and all future models) do
+ * NOT support the `in_memory` retention policy — only `24h` — and a request
+ * that omits the parameter falls to an `in_memory` default the model can't
+ * honor, so it caches nothing. Extended retention is explicitly ZDR-clean —
+ * only the prompt's key/value tensors persist (≤24h, GPU-local), never the
+ * response, and the guide states extended-retention requests are not blocked
+ * under Zero Data Retention (which bars `store:true`, not the cache).
+ *
+ * HOWEVER — verified live against mantle us-east-2 (2026-07-04, raw SigV4
+ * replays of exact production bodies): mantle's cache lookup currently
+ * behaves as if keyed on the FULL prompt, not longest-prefix. An identical
+ * body resent back-to-back reports ~100% `cached_tokens`; a prefix-EXTENSION
+ * sharing 99.3% of the prior prompt — which is what every agent-loop
+ * inference is — reports 0, even back-to-back on the same connection. The
+ * Codex CLI against the same endpoint measures the same ~0%. This is almost
+ * certainly a serving-layer bug, not design: OpenAI-operated endpoints do
+ * longest-prefix matching, and Codex records show ~88% cache reads against
+ * an earlier (since-removed) mantle us-west-2 deployment. Until it is fixed
+ * server-side, agent traffic through this driver gets no cache reads
+ * regardless of request shape (`prompt_cache_key` is ignored for routing;
+ * no affinity header/cookie exists). We still send
+ * `promptCacheRetention: "24h"` — it is correct per the guide, harmless,
+ * and becomes load-bearing the moment prefix matching works again. See
+ * docs/gotchas.md ("Mantle GPT-5.x prompt cache is exact-match").
  */
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
