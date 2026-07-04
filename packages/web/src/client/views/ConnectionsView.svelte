@@ -1,9 +1,10 @@
 <script lang="ts">
+import ConnectorBindingsView from "./ConnectorBindingsView.svelte";
 import McpServersView from "./McpServersView.svelte";
 import SkillsView from "./SkillsView.svelte";
 import WebhookView from "./WebhookView.svelte";
 
-export type ConnectionsSection = "webhooks" | "skills" | "mcp";
+export type ConnectionsSection = "webhooks" | "connectors" | "skills" | "mcp";
 
 interface Props {
 	section: ConnectionsSection;
@@ -17,6 +18,13 @@ const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: str
 		label: "Webhooks",
 		desc: "Automated messaging endpoints",
 		hash: "#/connections/webhooks",
+	},
+
+	{
+		id: "connectors",
+		label: "Connector bindings",
+		desc: "Platform event subscriptions",
+		hash: "#/connections/connectors",
 	},
 	{
 		id: "skills",
@@ -57,6 +65,8 @@ const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: str
 			<SkillsView />
 		{:else if section === "mcp"}
 			<McpServersView />
+		{:else if section === "connectors"}
+			<ConnectorBindingsView />
 		{:else}
 			<WebhookView />
 		{/if}

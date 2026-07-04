@@ -37,6 +37,8 @@ export type {
 	ApiErrorBody,
 	BoundClientEvents,
 	ConnectionState,
+	ConnectorBindingEntry,
+	ConnectorBindingsResponse,
 	ToolDefinition,
 	ToolCallRequest,
 	ToolCallResult,

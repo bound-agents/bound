@@ -218,4 +218,43 @@ describe("BoundClient webhook methods", () => {
 		const [url] = mockFetch.mock.calls[0] as [string];
 		expect(url).toBe(`${baseUrl}/api/webhooks/test-id/urls`);
 	});
+	describe("connector binding methods", () => {
+		it("has connector binding methods", () => {
+			const client = new BoundClient(baseUrl);
+			expect(typeof client.listConnectorBindings).toBe("function");
+			expect(typeof client.detachConnectorBinding).toBe("function");
+		});
+
+		it("listConnectorBindings fetches /api/connectors/bindings", async () => {
+			const client = new BoundClient(baseUrl);
+			const body = { bindings: [] };
+			mockFetch.mockImplementation(() =>
+				Promise.resolve(
+					new Response(JSON.stringify(body), {
+						headers: { "Content-Type": "application/json" },
+					}),
+				),
+			);
+
+			const result = await client.listConnectorBindings();
+
+			expect(result).toEqual(body);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			const [url] = mockFetch.mock.calls[0] as [string];
+			expect(url).toBe(`${baseUrl}/api/connectors/bindings`);
+		});
+
+		it("detachConnectorBinding deletes /api/connectors/bindings/:id", async () => {
+			const client = new BoundClient(baseUrl);
+			mockFetch.mockImplementation(() => Promise.resolve(new Response(null, { status: 204 })));
+
+			const result: undefined = await client.detachConnectorBinding("handle-1");
+
+			expect(result).toBeUndefined();
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+			expect(url).toBe(`${baseUrl}/api/connectors/bindings/handle-1`);
+			expect(init.method).toBe("DELETE");
+		});
+	});
 });

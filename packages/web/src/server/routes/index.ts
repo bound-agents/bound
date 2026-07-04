@@ -3,6 +3,7 @@ import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import type { MountableFs } from "just-bash";
 import { createAdvisoriesRoutes } from "./advisories";
+import { createConnectorsRoutes } from "./connectors";
 import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
 import { createMcpAppsRoutes } from "./mcp-apps";
@@ -101,6 +102,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			activeLoops,
 		),
 		messages: createMessagesRoutes(db, eventBus),
+		connectors: createConnectorsRoutes(db),
 		files: createFilesRoutes(db),
 		memory: createMemoryRoutes(db),
 		status: createStatusRoutes(

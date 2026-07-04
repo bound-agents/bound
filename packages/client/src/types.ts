@@ -285,6 +285,29 @@ export interface ContextDebugTurn {
 	created_at: string;
 }
 
+// ---- Connector bindings ----
+
+export interface ConnectorBindingEntry {
+	id: string;
+	server_name: string;
+	event_name: string;
+	event_args: unknown;
+	event_args_raw: string;
+	delivery_mode: string;
+	cursor: string | null;
+	task_id: string | null;
+	created_at: string;
+	modified_at: string;
+	task_status: string | null;
+	task_thread_id: string | null;
+	task_trigger_spec: string | null;
+	thread_title: string | null;
+}
+
+export interface ConnectorBindingsResponse {
+	bindings: ConnectorBindingEntry[];
+}
+
 // ---- Webhooks ----
 
 export interface WebhookListEntry {
