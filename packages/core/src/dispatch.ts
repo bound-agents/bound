@@ -68,14 +68,22 @@ export function enqueueClientToolCall(
 /**
  * Enqueue a tool result entry to trigger agent loop resume.
  *
- * IDEMPOTENT on `(thread_id, call_id)` (R-UD9): re-driving the same tool result
- * — e.g. a relayed `client_result` retried after a held/duplicated delivery — is
- * a no-op that returns the EXISTING entry's id rather than inserting a second
- * row. Without this guard a relay retry would double-enqueue and risk
- * double-execution / a duplicate tool-result row. The `(thread_id, call_id)`
- * pair is the natural key: `call_id` is the tool-call's id, unique within a
- * thread's turn. The match is scoped to the canonical `{"call_id":"…"}` payload
- * this function writes, so it is stable across calls.
+ * IDEMPOTENT on `(thread_id, call_id)` (R-UD9) WHILE THE RE-DRIVE IS IN FLIGHT:
+ * re-driving the same tool result — e.g. a relayed `client_result` retried after
+ * a held/duplicated delivery — is a no-op that returns the EXISTING entry's id
+ * rather than inserting a second row. Without this guard a relay retry would
+ * double-enqueue and risk double-execution / a duplicate tool-result row.
+ *
+ * The dedup is scoped to rows still `pending`/`processing`. `call_id` is only
+ * unique within one turn, NOT across a thread's lifetime — clients (boundless)
+ * reuse `call_1, call_2, …` every turn. A guard that also matched already-
+ * `acknowledged` rows would drop a legitimate NEW turn's re-drive for a reused
+ * call_id, so the loop never gets its wakeup and the thread stalls one message
+ * per turn (regression: thread e1364833, 2026-07-03). Once the prior re-drive is
+ * consumed (acknowledged), the same call_id is free to enqueue a fresh row; a
+ * genuine retry arrives while the original is still in flight and is deduped.
+ * The match is scoped to the canonical `{"call_id":"…"}` payload this function
+ * writes, so it is stable across calls.
  *
  * Returns the (existing or newly-created) entry id.
  */
@@ -85,6 +93,7 @@ export function enqueueToolResult(db: Database, threadId: string, callId: string
 		.prepare(
 			`SELECT message_id FROM dispatch_queue
 			 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
+			   AND status IN ('pending', 'processing')
 			 LIMIT 1`,
 		)
 		.get(threadId, TOOL_RESULT, payload) as { message_id: string } | null;

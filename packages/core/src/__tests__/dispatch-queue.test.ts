@@ -480,6 +480,33 @@ describe("enqueueToolResult", () => {
 		expect(count.c).toBe(1);
 	});
 
+	// Regression (thread e1364833, 2026-07-03): boundless reuses call_1, call_2, …
+	// every turn, so a call_id is NOT unique across a thread's lifetime — only
+	// within one turn. The idempotency guard must dedup only while a re-drive is
+	// still in flight (pending/processing). Once the re-drive row has been consumed
+	// (acknowledged), a later turn reusing the same call_id must enqueue a FRESH
+	// row — otherwise the loop never gets its wakeup and the thread stalls one
+	// message per turn until a user message forces it forward.
+	it("re-enqueues a reused call_id after the prior re-drive was acknowledged", () => {
+		const threadId = randomUUID();
+		const callId = "call_1";
+
+		// Turn N: enqueue + consume (claim → acknowledge) the re-drive.
+		const firstId = enqueueToolResult(db, threadId, callId);
+		acknowledgeBatch(db, [firstId]);
+
+		// Turn N+1: same call_id comes back. Must be a NEW pending row, not a no-op.
+		const secondId = enqueueToolResult(db, threadId, callId);
+
+		expect(secondId).not.toBe(firstId);
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
 	it("distinguishes different call_ids and different threads", () => {
 		const threadA = randomUUID();
 		const threadB = randomUUID();
