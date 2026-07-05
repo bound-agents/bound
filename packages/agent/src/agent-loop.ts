@@ -107,9 +107,9 @@ export class MainAgentLoop extends BoundAgentLoop {
 	 * content. Across multi-call inner-loop runs, the tail's snapshot ages
 	 * relative to the agent's own state mutations (memorize, file writes,
 	 * applied advisories, purges, etc.), and the next LLM call reads the
-	 * stale snapshot — visible on thread 25687e6c as the agent re-stating
-	 * "the user is asking me to delete /Users again" on every inner-loop
-	 * turn even after its own tool calls had already deleted the row.
+	 * stale snapshot. (Observed in production: the agent kept re-stating
+	 * a stale file-deletion request on every inner-loop turn even after
+	 * its own tool calls had already deleted the row.)
 	 *
 	 * The recorded `context_debug.totalEstimated` and section breakdown
 	 * suffer the same staleness: every inner-loop turn writes the cold-

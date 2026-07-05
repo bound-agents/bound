@@ -14,14 +14,16 @@
  *   - **Freshness**: when relevant state changes, the next varying-
  *     tail render MUST reflect it. A memorize that lands within the
  *     turn must produce a `[changed since last turn]` marker on the
- *     next assembly. Stale freshness is the failure class that
- *     produced thread `d0372be6-...`'s confabulation incident.
+ *     next assembly. Stale freshness is the failure class behind a
+ *     production confabulation incident: the agent argued from a
+ *     purge summary it had authored itself, treating stale narrative
+ *     as ground truth instead of re-checking source state.
  *
  *   - **Source-label totality**: every Live-State line shall carry
  *     exactly one of `[thread] / [task] / [file] / [advisory] /
  *     [synthesis-backlog]`. Unlabeled lines confuse the agent about
- *     where the data came from (the `d0372be6` failure mode); double-
- *     labeled lines are a structural bug.
+ *     where the data came from; double-labeled lines are a structural
+ *     bug.
  *
  *   - **Subsystem ordering**: R-VC5 fixes the four Live-State
  *     subsystems in the order `thread → task → file → advisory`

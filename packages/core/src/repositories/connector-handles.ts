@@ -41,6 +41,11 @@ export function listActiveConnectorHandles(db: Database): ConnectorHandleRow[] {
 		.all() as ConnectorHandleRow[];
 }
 
+/**
+ * Looks up which connector server owns the event handler task `taskId` was
+ * created for. Used to resolve tool scoping for an event-task thread: the
+ * server name tells `getToolsForThread` which platform's tools to expose.
+ */
 export function findConnectorHandleServerNameByTaskId(
 	db: Database,
 	taskId: string,

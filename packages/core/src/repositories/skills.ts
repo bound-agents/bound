@@ -61,6 +61,7 @@ export function findSkillIdAndStatusByName(
 	} | null;
 }
 
+/** Like {@link findSkillIdAndStatusByName} but scoped to `status = 'active'`, returning `skill_root` for SKILL.md resolution instead of status. */
 export function findActiveSkillIdAndRootByName(
 	db: Database,
 	name: string,

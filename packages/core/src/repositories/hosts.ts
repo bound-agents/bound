@@ -88,6 +88,11 @@ export function listHostSiteIdAndPlatforms(
 		.all() as Array<{ site_id: string; platforms: string }>;
 }
 
+/**
+ * Every other host that declares platform connectors, newest-liveness-first
+ * (`COALESCE(modified_at, online_at) DESC`). Used to pick a platform-leader
+ * failover candidate in liveness order.
+ */
 export function listHostPlatformLivenessOrderedByRecency(
 	db: Database,
 	localSiteId: string,
@@ -111,6 +116,7 @@ export function listHostPlatformLivenessOrderedByRecency(
 	}>;
 }
 
+/** Same rows as {@link listHostPlatformLivenessOrderedByRecency}, unordered — callers that just need the set (e.g. checking "is anyone else alive") skip the sort cost. */
 export function listHostPlatformLivenessExcludingLocal(
 	db: Database,
 	localSiteId: string,
@@ -326,6 +332,7 @@ export function listHostMcpCapabilities(db: Database): Array<{ mcp_capabilities:
 		.all() as Array<{ mcp_capabilities: string }>;
 }
 
+/** MCP tool annotations (readOnlyHint etc., JSON-encoded) that `siteId` last reported. */
 export function findHostMcpToolAnnotationsById(
 	db: Database,
 	siteId: string,

@@ -480,6 +480,14 @@ function loadVolatileSectionInputs(args: {
 	};
 }
 
+/**
+ * Hashes the exact set of inputs that are allowed to influence the stable
+ * volatile subsection's bytes (R-VC25). Compared cold-assembly to
+ * cold-assembly: an unchanged fingerprint with changed output bytes means a
+ * renderer leaked an unlisted input; a changed fingerprint with no covering
+ * change-log row means a collector leaked one. See the R-VC25 drift
+ * detector in `validation/run-stable-prefix-drift-validation.ts`.
+ */
 function computeStablePrefixInputFingerprint(args: {
 	pinned: ReadonlyArray<StageEntry>;
 	summaries: ReadonlyArray<StageEntry>;
@@ -832,11 +840,12 @@ export function buildVolatileContext(params: {
 	// be rendered into Discoverable Archive. The DA sort key and
 	// per-entry `(last accessed Nd ago)` fragment depend on this
 	// column; without a render-time bump the agent reads its own
-	// actively-used memory as "26d ago" and concludes everything is
-	// stale (live evidence: thread d0372be6). Debounced to one bump
-	// per entry per hour. Direct SQL write (not via the outbox) —
-	// see bumpRenderedDetailEntries for the documented exception
-	// to invariant #1.
+	// actively-used memory as stale (observed: an entry rendered on
+	// every cold assembly for weeks still showed "26d ago" because
+	// nothing on the read path advanced the column). Debounced to
+	// one bump per entry per hour. Direct SQL write (not via the
+	// outbox) — see bumpRenderedDetailEntries for the documented
+	// exception to invariant #1.
 	bumpRenderedDetailEntries(params.db, detailEntries.entries, nowMs);
 
 	const staleChildrenMap = buildStaleChildrenMap(params.db, summaries.entries);

@@ -76,10 +76,9 @@ const getTracer = () => trace.getTracer("bound.web");
  * message in `<system-context>...</system-context>`, so without an
  * explicit provenance signal the receiving agent reads its sibling's
  * narrative as authoritative system state and primes diagnoses on the
- * phrasing rather than on ground truth (live evidence: 2026-05-17
- * incident, where the agent built a full dedup fix from a notify
- * payload's "byte-different content + 1 notify fallback" phrase
- * before discovering the real bug was in the LLM bridge layer).
+ * phrasing rather than on ground truth. (Observed in production: the
+ * agent built a full dedup fix from a notify payload's characterization
+ * of a bug, before discovering the real bug was elsewhere entirely.)
  *
  * For these two payload kinds, the prefix marks the content as
  * agent-authored and unverified so the receiving agent treats it as

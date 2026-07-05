@@ -151,8 +151,8 @@ export type ConsistencyResponsePayload = {
 	 *
 	 * Optional for backward compatibility: older hubs return only `pks`, in
 	 * which case the receiver falls back to PK-presence diff (legacy behavior,
-	 * does not detect tier flips, soft-deletes, or value mutations on rows
-	 * whose PK exists on both sides — see bound_issue:hub-backfill-pk-set-skips-state-updates).
+	 * which does not detect tier flips, soft-deletes, or value mutations on
+	 * rows whose PK exists on both sides).
 	 */
 	entries?: Array<{ pk: string; hash: string; modified_at: string | null }>;
 	count: number;

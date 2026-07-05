@@ -469,26 +469,22 @@ export function toModelMessages(
 	//       [..., assistant, developer]. The dev IS the latest event the model
 	//       needs to respond to; it should become a tail user message.
 	//
-	// Bug fixed (2026-05-17, thread f096a101 / 98926e2d, introspect-into-
-	// claude-opus): the old logic walked `result` from end to front looking
-	// for ANY user message and merged pendingDev into it. That handled (1)
-	// correctly but mishandled (2): tail dev content got buried into an
-	// earlier user message, AND the conversation kept ending in the
-	// assistant message — which Anthropic strict mode rejects with "This
-	// model does not support assistant message prefill. The conversation
-	// must end with a user message." Introspect injection was unusable on
-	// those adapters until that fix.
+	// Two rejected approaches, kept here so they aren't reinvented:
 	//
-	// Bug fixed (2026-05-31, thread 60db514d, notify-into-truncated-opus-loop):
-	// that 2026-05-17 fix discriminated HEAD vs TAIL by `result.some(user)`.
-	// But a long autonomous loop can be truncated to a window of ONLY
-	// assistant/tool turns — every user message scrolled out. A background-task
-	// notification then lands as a tail developer message, `hasUser` is false,
-	// and the old rule wrongly took the HEAD branch: it `unshift`ed the dev as
-	// a head user, leaving the conversation STILL ending on the assistant
-	// message → the same prefill rejection the 2026-05-17 fix was meant to
-	// prevent, now firing on plain notify/introspect wakeups into any
-	// sufficiently long thread.
+	//   - Walking `result` end-to-front for ANY user message and merging
+	//     pendingDev into it handles (1) but mishandles (2): tail dev content
+	//     gets buried into an earlier user message, and the conversation still
+	//     ends on an assistant message — which Anthropic strict mode rejects
+	//     ("This model does not support assistant message prefill. The
+	//     conversation must end with a user message.").
+	//   - Discriminating HEAD vs TAIL by `result.some(user)` breaks once a long
+	//     autonomous loop is truncated to a window of ONLY assistant/tool turns
+	//     (every user message scrolled out of the kept window). A background-
+	//     task notification then lands as a tail developer message with no
+	//     user message anywhere in `result`, `hasUser` is false, and this rule
+	//     wrongly takes the HEAD branch — `unshift`ing the dev as a head user
+	//     and leaving the conversation still ending on assistant, the exact
+	//     prefill rejection above, now on any sufficiently long thread.
 	//
 	// Correct rule: discriminate POSITIONALLY — was `result` empty when this
 	// pendingDev batch began accumulating? That is the true "dev is the
@@ -793,6 +789,7 @@ function imageUnavailablePlaceholder(b: Extract<ContentBlock, { type: "image" }>
 	return `[Image unavailable: file_id=${fileId}${desc}]`;
 }
 
+/** Like {@link imageUnavailablePlaceholder} but for document blocks whose backing `file_ref` could not be resolved. */
 function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "document" }>): string {
 	const fileId = b.source.type === "file_ref" ? b.source.file_id : "(inline)";
 	const title = b.title ? ` title=${JSON.stringify(b.title)}` : "";

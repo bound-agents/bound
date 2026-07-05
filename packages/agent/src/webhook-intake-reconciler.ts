@@ -48,13 +48,14 @@ export interface ReconcileStaleWebhookIntakeResult {
  * and folds them into its wakeup (`buildEventWakeupContent` → `markProcessed`).
  * If the handler is dark — cancelled, evicted-to-failed, declined by an incapable
  * host, or lost to a deploy gap — the rows sit unprocessed and silently expire.
- * The original incident (webhook:bound-v2, task d2ecf42d) went dark ~13h this way.
+ * (Observed in production: a handler went dark for ~13h before anyone noticed,
+ * with events queued the entire time.)
  *
  * This sweep is the far-end block protection paired with capability-gated claim:
  * the gate lowers the *rate* of handler death; this lowers the *blast radius* of
  * each death, turning a silent multi-hour outage into a deduplicated advisory the
- * operator (or I) can act on by reviving/rebinding the handler — at which point
- * the durable backlog drains on its own.
+ * operator can act on by reviving/rebinding the handler — at which point the
+ * durable backlog drains on its own.
  *
  * Runs against the LOCAL relay_inbox (invariant #3: relay tables are local-only),
  * so it belongs on the host that received the POST.

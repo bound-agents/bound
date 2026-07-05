@@ -184,6 +184,7 @@ export function listStaleClaimedTasks(db: Database, leaseExpiry: string): Task[]
 		.all(leaseExpiry) as Task[];
 }
 
+/** Pending `event`-type tasks listening on `triggerSpec` (`connector:event:<handleId>`) — the scheduler's routing lookup when a connector event fires. */
 export function listPendingEventTasksByTrigger(db: Database, triggerSpec: string): Task[] {
 	return db
 		.query(
@@ -220,6 +221,7 @@ export function listRecentTaskCompletions(
 	}[];
 }
 
+/** For every thread driven by a `no_history` cron task that ran since `activeCutoff`, the most recent `last_run_at` — the recency anchor those threads use in place of a real user message. */
 export function listNoHistoryCronThreadAnchors(
 	db: Database,
 	activeCutoff: string,
@@ -292,6 +294,7 @@ export function findRunningTaskIdForThread(db: Database, threadId: string): { id
 		.get(threadId) as { id: string } | null;
 }
 
+/** Most recently created `event`-type task bound to `threadId`, if any. */
 export function findLatestEventTaskIdForThread(
 	db: Database,
 	threadId: string,
@@ -303,6 +306,7 @@ export function findLatestEventTaskIdForThread(
 		.get(threadId) as { id: string } | null;
 }
 
+/** Most recently created task's type/no_history/system_prompt_addition for `threadId` — used to inherit those settings for a follow-up wakeup on the same thread. */
 export function findLatestTaskSettingsForThread(
 	db: Database,
 	threadId: string,
@@ -324,6 +328,7 @@ export function findLatestTaskSettingsForThread(
 	} | null;
 }
 
+/** Non-heartbeat, still-pending-or-claimed task ids whose payload matches `payloadPattern` (a SQL LIKE pattern) — the `cancel --payload-match` lookup. */
 export function listCancellableTaskIdsByPayload(
 	db: Database,
 	payloadPattern: string,

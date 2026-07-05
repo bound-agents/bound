@@ -12,6 +12,7 @@ export function findOverlayContentHashByPathActive(
 		.get(path) as Pick<OverlayIndexEntry, "content_hash"> | null;
 }
 
+/** Same as {@link findOverlayContentHashByPathActive}, looked up by row id instead of path. */
 export function findOverlayContentHashByIdActive(
 	db: Database,
 	id: string,

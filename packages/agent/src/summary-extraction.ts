@@ -603,11 +603,10 @@ function stalenessTag(isoString: string): string {
  *     `last_message_at` continuously. The recency baseline therefore
  *     advanced past every memorize that landed *between* wakeups,
  *     structurally excluding those entries from L3 recency rendering.
- *     Live evidence: thread d0372be6 with 558 wakeups had recent
- *     `bound:issue:*` and `_outcome:*` memorizes that never surfaced
- *     in volatile context, leading the agent to repeatedly report
- *     "Working knowledge is months stale" while in fact the entries
- *     were 0.9–1.9 days old.
+ *     Observed in production on a long-lived autonomous thread (558
+ *     wakeups): recent memorizes never surfaced in volatile context,
+ *     and the agent repeatedly reported "Working knowledge is months
+ *     stale" while the entries were in fact 0.9–1.9 days old.
  *
  *  2. **User threads where the agent persists assistant messages
  *     between user turns.** Each agent turn that persists an
@@ -1671,11 +1670,9 @@ const RENDER_BUMP_DEBOUNCE_MS = 60 * 60 * 1000;
  * this fires from the render pipeline, not the agent's deliberate
  * read tools. Without it, Discoverable Archive sorts and displays
  * rendered detail entries by their last WRITE time rather than their
- * actual usage. Live evidence: thread d0372be6's
- * `curiosity:smolagents-codeact-paradigm:2026-04-28` entry was
- * rendered on every cold assembly for weeks but still showed
- * `(last accessed 26d ago)` because nothing on the read path
- * advanced the column.
+ * actual usage. Observed in production: an entry rendered on every
+ * cold assembly for weeks still showed `(last accessed 26d ago)`
+ * because nothing on the read path advanced the column.
  *
  * **Documented exception to the change-log outbox invariant
  * (CONTRIBUTING.md #1).** This helper writes `last_accessed_at`

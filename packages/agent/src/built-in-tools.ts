@@ -587,10 +587,9 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 // tool_result pair using the name "retrieve_task" — models pattern-match
 // off that injected history and sometimes emit their own retrieve_task({})
 // call mid-session. Before this tool existed, those reflex calls fell
-// through to the bash fallback and returned "unknown tool" errors; pre
-// 2026-04-26 they also tripped the empty-args truncation bug and caused
-// runaway retry loops (see bound_issue:agent-loop:empty-args-false-
-// truncation and the 2026-04-24 repo_watch incident).
+// through to the bash fallback and returned "unknown tool" errors; they
+// also used to trip a parser bug that misclassified valid empty-args
+// calls as truncated, which drove runaway retry loops.
 //
 // The tool intentionally returns a short, stable message telling the
 // model the payload is already in conversation history and that it
