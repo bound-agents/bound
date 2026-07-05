@@ -273,6 +273,7 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  */
 const STABLE_SIDE_TABLES = ["semantic_memory", "skills", "hosts"] as const;
 
+/** True if any change_log row for a {@link STABLE_SIDE_TABLES} table lands in `(fromIso, toIso]` — the "did the stable prefix's own inputs actually change" check the drift detector uses to rule out a benign, expected fingerprint shift. */
 function changeLogTouchedStableSources(db: Database, fromIso: string, toIso: string): boolean {
 	const placeholders = STABLE_SIDE_TABLES.map(() => "?").join(",");
 	// `change_log.timestamp` is the wall-clock anchor (HLC encodes

@@ -39,6 +39,7 @@ export function findFileIdContentDeletedByPath(
 	> | null;
 }
 
+/** Like {@link findFileContentByPathActive} but also returns `id`, for callers that need to follow up with an update/delete keyed by row id. */
 export function findFileIdContentByPathActive(
 	db: Database,
 	path: string,
@@ -103,6 +104,7 @@ export function findFileContentBinaryByIdActive(
 		.get(id) as Pick<AgentFile, "content" | "is_binary"> | null;
 }
 
+/** Every active file, full rows, newest-created-first. Small-scale admin/debug listing — see {@link listWorkspaceFiles} for the bulk-hydration path. */
 export function listFilesActiveByCreatedDesc(db: Database): AgentFile[] {
 	return db
 		.query("SELECT * FROM files WHERE deleted = 0 ORDER BY created_at DESC")

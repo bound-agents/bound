@@ -19,6 +19,7 @@ import { Hono } from "hono";
 
 const logger = createLogger("@bound/web", "threads-routes");
 
+/** Host labels of every live WS client session currently attached to `threadId` — feeds the "attached from: X, Y" indicator in the web UI. */
 function getAttachedSessionHostLabels(db: Database, threadId: string): string[] {
 	return getAttachedSessionHosts(db, threadId)
 		.map((row) => row.label)

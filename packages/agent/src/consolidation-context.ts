@@ -47,6 +47,7 @@ ${pressureSection}
 Review the candidates above. Identify clusters that warrant summary, synthesize them, and connect edges. If nothing needs consolidating, respond briefly with what you observed.`;
 }
 
+/** Agent-editable consolidation policy text (`_consolidation_instructions` key), falling back to {@link DEFAULT_CONSOLIDATION_INSTRUCTIONS} when never customized. */
 function loadConsolidationInstructions(db: Database): string {
 	const row = db
 		.prepare("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0")

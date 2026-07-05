@@ -26,6 +26,7 @@ export function findConnectorHandleIncludingDeleted(
 		.get(handleId) as ConnectorHandleRow | null;
 }
 
+/** All active handles bound to `serverName` — e.g. every Discord subscription, when reconnecting a platform's subscriptions after a leader failover. */
 export function listConnectorHandlesByServer(
 	db: Database,
 	serverName: string,

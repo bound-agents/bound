@@ -126,6 +126,7 @@ function textFromToolResult(result: ToolExecutionResult): string {
 	return result.content;
 }
 
+/** Assembles one assistant turn's `ContentBlock[]` — leading text (if any), thinking/redacted-thinking blocks, then a `tool_use` block per call — in the fixed order every supported provider expects. */
 export function buildAssistantToolCallBlocks(
 	textContent: string,
 	thinking: {
