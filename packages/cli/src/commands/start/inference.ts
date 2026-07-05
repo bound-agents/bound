@@ -34,7 +34,7 @@ export interface InferenceResult {
  * This is a pure, allocation-only function — extracted so that the
  * hand-off can be covered by a focused regression test. Historically any
  * field omitted here was silently dropped on the way to the router; the
- * `thinking` field was the most recent casualty (2026-04-25). When adding
+ * `thinking` field was one such casualty. When adding
  * a new backend config field, update this mapping AND add a test in
  * packages/cli/src/__tests__/inference-config.test.ts asserting the field
  * is observable on the resulting router.

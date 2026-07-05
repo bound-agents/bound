@@ -4,15 +4,15 @@
  *
  * The pipeline's last line of defense before the wire. If we
  * over-truncate, the agent loses recent user context (sliding
- * sawtooth, fixed in 2026-04-01 by replacing keep-last-N with
- * token-aware backward-fill). If we under-truncate, we overflow
- * the backend's true context window — Bedrock and Anthropic both
- * reject the entire request, the turn fails, and the user sees
+ * sawtooth, fixed by replacing keep-last-N with token-aware
+ * backward-fill). If we under-truncate, we overflow the backend's
+ * true context window — Bedrock and Anthropic both reject the
+ * entire request, the turn fails, and the user sees
  * "context_length_exceeded" in the alert log.
  *
  * Two failure modes the algorithm specifically defends against:
  *
- *   1. **Sliding amputation** (pre-2026-04-01): hardcoded
+ *   1. **Sliding amputation** (predecessor implementation): hardcoded
  *      `historyMessages.length - 10` would cut at a fixed-N
  *      boundary regardless of how token-heavy the kept window
  *      was. A thread with 10 verbose tool errors would push the

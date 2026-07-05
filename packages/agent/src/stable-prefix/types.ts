@@ -95,7 +95,7 @@ export interface SkillIndexView {
 
 /**
  * Cluster model-topology projection for the `<stable-context>` models
- * section (Kara's ask, 2026-06-16). `name` is the logical model alias;
+ * section. `name` is the logical model alias;
  * `hosts` is the bytewise-sorted list of `host_name`s serving it (parsed
  * from each host row's `hosts.models` JSON); `local` is true when the
  * current host is among the serving set.

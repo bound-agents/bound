@@ -1988,11 +1988,10 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				// Zod error enumerates valid options for the CALLED tool but
 				// never reveals the params belong to a DIFFERENT tool. Models
 				// that confuse two tools re-decide the same wrong routing every
-				// turn — the 2026-06-12 / 2026-06-21 gpt-5.5 connector-vs-skill
-				// spins (action-value confusion, 26+/12+ turns) and the
-				// 2026-06-21 gpt-5.5 connector-spin (parameter-signature
-				// confusion, 60+ turns across three aborts) both followed this
-				// pattern. suggestCorrectTool tries action-value matching first,
+				// turn — observed spins on gpt-5.5 confusing action-value
+				// parameters between two similarly-shaped tools (26+/12+ turns)
+				// and confusing parameter signatures between tools (60+ turns
+				// across three aborts). suggestCorrectTool tries action-value matching first,
 				// then falls back to parameter-signature matching. Appended on
 				// the FIRST failed call so the model gets the correct tool name
 				// immediately, not after the loop guard's 5-turn threshold.

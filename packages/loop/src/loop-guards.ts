@@ -3,9 +3,9 @@ import type { ParsedToolCall } from "./stream-parser";
 /**
  * Circuit breaker for consecutive truncated tool calls on the same tool name.
  * If the parser flags N turns in a row as truncated for the same tool, we abort
- * the loop rather than let it spin. Guards against parser bugs (e.g. the
- * empty-args false-truncation regression from 2026-04-24 that burned 23M tokens
- * across 3,654 turns before Kara cancelled manually).
+ * the loop rather than let it spin. Guards against parser bugs (e.g. an
+ * empty-args false-truncation regression that burned 23M tokens
+ * across 3,654 turns before a human cancelled manually).
  */
 export const MAX_CONSECUTIVE_TRUNCATED_TURNS = 5;
 
@@ -14,7 +14,7 @@ export const MAX_CONSECUTIVE_TRUNCATED_TURNS = 5;
  * the truncation breaker above — which fires on malformed/parser-flagged calls —
  * this fires on well-formed calls that repeat byte-for-byte turn after turn: the
  * signature of a model stuck re-issuing the same call and re-deciding without
- * acting on the result (the 2026-04-24 synthesis spin — 20+ identical
+ * acting on the result (observed as a synthesis spin — 20+ identical
  * delta-check queries over ~6 min that all PARSED CLEANLY, so the truncation
  * breaker never saw them). Keyed on tool name + raw args, so a sequence of
  * *distinct* calls (real progress) never trips it. The threshold is higher than

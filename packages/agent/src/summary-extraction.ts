@@ -233,12 +233,11 @@ export async function extractSummaryAndMemories(
 		// previously-uncompacted assistant + tool_result content from
 		// the prior turn — those messages are about to be absorbed."
 		//
-		// Live evidence (thread `7339231f-…`, 2026-05-25): two cold-path
-		// assemblies 22 seconds apart sent different msg[0] bytes
-		// because the summary regenerated mid-turn — the second turn was
-		// an inner-loop tool round with no new user message. The
-		// message-level cachePoint's prefix-match missed even though the
-		// bucket-aligned placer held its byte-position stable.
+		// Live evidence: two cold-path assemblies 22 seconds apart sent
+		// different msg[0] bytes because the summary regenerated mid-turn —
+		// the second turn was an inner-loop tool round with no new user
+		// message. The message-level cachePoint's prefix-match missed even
+		// though the bucket-aligned placer held its byte-position stable.
 		const previousSummary = thread.summary;
 		if (previousSummary) {
 			const hasNewUserMessage = messages.some((m) => m.role === "user");
@@ -346,13 +345,12 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		// `role='assistant'` message, the summarizer LLM is reasoning
 		// from prompt + tool_results alone and produces plausible but
 		// fabricated first-person reasoning attributions ("I recognized
-		// this as ...", "I resolved that ..."). Live evidence: the
-		// 2026-04-26 model trial battery, where 5 threads with EOF
-		// after the initial tool_result surfaced "I recognized this
-		// as a model characterization trial" facts even though the
-		// model never reasoned about anything — inference errored
-		// before producing any real assistant turn. Skip extraction
-		// rather than persist confabulation as memory.
+		// this as ...", "I resolved that ..."). Live evidence: a batch of
+		// model-characterization trial threads that errored out after the
+		// initial tool_result (before any real assistant turn) still
+		// surfaced "I recognized this as a model characterization trial"
+		// facts, even though the model never reasoned about anything.
+		// Skip extraction rather than persist confabulation as memory.
 		const assistantTurnCount = countLiveAssistantMessagesByThread(db, threadId);
 		if (assistantTurnCount === 0) {
 			return {

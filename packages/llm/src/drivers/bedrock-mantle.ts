@@ -156,7 +156,7 @@ function toReasoningEffort(
  * response, and the guide states extended-retention requests are not blocked
  * under Zero Data Retention (which bars `store:true`, not the cache).
  *
- * HOWEVER — verified live against mantle us-east-2 (2026-07-04, raw SigV4
+ * HOWEVER — verified live against mantle us-east-2 (raw SigV4
  * replays of exact production bodies): mantle's cache lookup currently
  * behaves as if keyed on the FULL prompt, not longest-prefix. An identical
  * body resent back-to-back reports ~100% `cached_tokens`; a prefix-EXTENSION
@@ -343,7 +343,7 @@ export class BedrockMantleDriver implements LLMBackend {
 					// re-stated `message` items (each a prefix-extension of the prior,
 					// interleaved with reasoning rounds). Without coalescing, the
 					// default `outputText += text` concatenates every draft and a
-					// single reply lands N-fold duplicated — verified live 2026-06-07
+					// single reply lands N-fold duplicated — verified live
 					// against gpt-5.5 (sixfold). Emit only forward progress so the
 					// stream converges to exactly the final item.
 					coalescePrefixItems: true,

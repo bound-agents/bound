@@ -192,7 +192,7 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 		// 15:53] <content>`), itself once age-gated (≥60s only). The age gate
 		// introduced a one-time byte transition exactly 60s into the
 		// conversation that thrashed the message-level cachePoint anchored on
-		// user_1 (live regression on thread `6fff1513-...` 2026-05-26).
+		// user_1.
 		// Annotating always — and deriving every envelope attribute purely
 		// from immutable columns (`created_at` + the once-written `tz_offset`)
 		// — keeps the wire bytes a pure function of the row, so the cachePoint

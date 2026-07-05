@@ -32,9 +32,9 @@ export interface ModularAgentLoopOptions {
 	 * loop-guards.ts (duplicate tool calls, identical tool errors, truncated
 	 * turns, routing errors) plus the degenerate-turn retry bound — each keyed
 	 * to a specific, previously-observed spin signature. A blanket turn-count
-	 * ceiling was added briefly (2026-06-26, DEFAULT_MAX_TURNS=16) and then
-	 * removed (2026-07-03): it caught no failure mode the breakers above
-	 * didn't already catch, while aborting legitimate long-running tool-use
+	 * ceiling (`DEFAULT_MAX_TURNS=16`) was tried and then removed: it caught
+	 * no failure mode the breakers above didn't already catch, while aborting
+	 * legitimate long-running tool-use
 	 * sessions (research/investigation work spanning 16+ distinct, non-repeating
 	 * calls) that were making real progress. Pass a value here only when a
 	 * specific caller has a real reason to bound turns (e.g. a hard cost/latency

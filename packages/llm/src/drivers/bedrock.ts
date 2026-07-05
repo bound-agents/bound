@@ -1,7 +1,7 @@
 /**
  * Amazon Bedrock driver — thin shim onto `@ai-sdk/amazon-bedrock`.
  *
- * Replaced the hand-rolled Converse-API wrapper (~2000 lines) on 2026-04-25.
+ * Replaced the hand-rolled Converse-API wrapper (~2000 lines).
  * The AI SDK handles:
  *   - Converse API envelope + event-stream decoding
  *   - SigV4 signing / AWS_BEARER_TOKEN_BEDROCK fallback
@@ -134,10 +134,10 @@ export interface ShouldEnableSystemCachePointParams {
  * historical conflation — `cacheEnabled =
  * hasBedrockMessageCachePoint(bridgeMessages)` — meant any failure of
  * the upstream message-marker placer disabled the system anchor too.
- * Live regression: thread `a191e01f-…` 2026-05-25 had no message-level
- * marker placed (root cause still under investigation in the agent
- * loop's truncation/placement path), the gate flipped false, the
- * system anchor was suppressed, and 79 turns ran with cr=0.
+ * Live regression: a thread had no message-level marker placed (root
+ * cause still under investigation in the agent loop's
+ * truncation/placement path), the gate flipped false, the system
+ * anchor was suppressed, and 79 turns ran with cr=0.
  *
  * The new contract:
  *   - If the caller passed `cache_ttl`, they intend caching → enable

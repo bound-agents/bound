@@ -70,9 +70,9 @@ export function truncateHistoryToBudget(params: TruncateHistoryParams): Truncate
 	}
 
 	// Backward fill — accumulate tokens until we'd exceed budget.
-	// Pre-2026-04-01 this was hardcoded `length - 10`, which slid
-	// the kept window forward and amputated recent user messages
-	// when bulky tool errors were present.
+	// The predecessor implementation hardcoded `length - 10`, which
+	// slid the kept window forward and amputated recent user
+	// messages when bulky tool errors were present.
 	let accumulatedTokens = 0;
 	let sliceStart = historyMessages.length; // start at end (include nothing)
 	for (let i = historyMessages.length - 1; i >= 0; i--) {

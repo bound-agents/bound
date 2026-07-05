@@ -16,8 +16,8 @@
  * representation of the stable subsection. The R-VC25 drift detector
  * classifies this as a `flavor:collect` violation.
  *
- * Live evidence (thread `a0efd4a2-…` 2026-05-25 18:01:39 → 18:01:59,
- * 20-second window):
+ * Live evidence (a 20-second window between two cold rebuilds on the
+ * same thread):
  *
  *   - system block sha256 prefix mutated `eb0117b763bb` → `b55dff2241a9`
  *   - system text length identical (279,865 chars) — same length, different
