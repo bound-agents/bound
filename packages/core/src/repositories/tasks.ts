@@ -193,6 +193,7 @@ export function listPendingEventTasksByTrigger(db: Database, triggerSpec: string
 		.all(triggerSpec) as Task[];
 }
 
+/** Count of pending tasks flagged `no_quiescence` — tasks that keep the scheduler from ever entering its idle/quiescent polling backoff. */
 export function countPendingNoQuiescenceTasks(db: Database): { count: number } | null {
 	return db
 		.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'pending' AND no_quiescence = 1")

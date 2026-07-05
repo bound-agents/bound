@@ -17,6 +17,7 @@ export function findWebhookIdByName(db: Database, name: string): { id: string } 
 	} | null;
 }
 
+/** Like {@link findWebhookIdByName} but also returns the backing event task's id, for callers that need to touch both rows (e.g. deregistering a webhook and its task together). */
 export function findWebhookIdAndTaskIdByName(
 	db: Database,
 	name: string,

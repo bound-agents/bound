@@ -22,6 +22,7 @@ export function findOverlayContentHashByIdActive(
 		.get(id) as Pick<OverlayIndexEntry, "content_hash"> | null;
 }
 
+/** Every active overlay-index row a given host has indexed, id + path only — used to diff a host's known files against a fresh directory scan. */
 export function listOverlayIdPathBySiteActive(
 	db: Database,
 	siteId: string,
