@@ -108,8 +108,9 @@ export const STUCK_THRESHOLD = 2 * EVICTION_TIMEOUT;
  * liveness is NOT task-lease liveness: `hosts.modified_at` is bumped every
  * HOST_HEARTBEAT_INTERVAL independent of task servicing, so a host that restarted and
  * re-registered — but whose interrupted task never resumed — looks "alive" forever and
- * wedges the task indefinitely (observed: webhook task d2ecf42d, ~17h stuck after a hub
- * restart). Set to 2× EVICTION_TIMEOUT so the orphan arm never races the normal gate:
+ * wedges the task indefinitely. (Observed in production: a webhook task sat stuck for
+ * ~17h after its host restarted mid-run.) Set to 2× EVICTION_TIMEOUT so the orphan arm
+ * never races the normal gate:
  * the host-liveness path owns the first eviction window, and the orphan arm is the
  * backstop for the host-alive-but-task-orphaned case the gate cannot see.
  */
@@ -213,9 +214,9 @@ export function isConnectivityFailure(error: string): boolean {
  * clobber a peer's active task; rescheduling a stuck orphan is safe and intended.
  *
  * Scope note: the lease CAS defeats same-generation eviction/re-claim races. It
- * does NOT by itself defeat a stale peer on pre-fix code that re-pends via a
- * fresher `modified_at` — that is the separate soft-delete-tombstone-precedence
- * work tracked in bound_issue:scheduler:cron-cancel-reverted-by-peer-20260529.
+ * does NOT by itself defeat a stale peer that re-pends the row via a fresher
+ * `modified_at` — that requires soft-delete tombstones to take LWW precedence
+ * over a plain field update, which is separate, not-yet-done work.
  */
 export function rescheduleCronTask(
 	db: AppContext["db"],
@@ -276,9 +277,9 @@ export function rescheduleCronTask(
  *
  * Scope note: parking stops THIS node from re-arming a dead-model task on every
  * tick. It propagates via the change log, but does not by itself defeat a stale
- * peer that re-pends the row with a fresher `modified_at` — that is the separate
- * soft-delete-tombstone-precedence work tracked in
- * bound_issue:scheduler:cron-cancel-reverted-by-peer-20260529.
+ * peer that re-pends the row with a fresher `modified_at` — that requires
+ * soft-delete tombstones to take LWW precedence over a plain field update,
+ * which is separate, not-yet-done work.
  */
 function parkTask(
 	db: AppContext["db"],
@@ -385,13 +386,14 @@ function retryDeferredTask(
  * Success path: leaves `next_run_at = NULL`. Event tasks must only be woken by
  * real `connector:event` emissions (the `onEvent` path in this scheduler), not
  * by `phase1Schedule`. Setting a periodic fallback caused phase1 to re-claim
- * completed event tasks every N minutes with no new event payload, which
- * produced the spin observed in advisory 0b9441e5-c47a (2026-05-16: thread
- * 6a9d56aa, 1 real interaction → 29 wake-ups over 70min). The original
- * comment cited "AC4.6 periodic fallback" — that AC applies to the connector
- * **dispatcher** ("Periodic cron fallback wakes dispatcher even without
- * list_changed"), not to per-event handler tasks. The two were conflated.
- * (The dispatcher was later removed; see the MCP Platform Connectors RFC.)
+ * completed event tasks every N minutes with no new event payload — a spin
+ * observed in production as one real interaction producing 29 wake-ups over
+ * 70 minutes with no new content on any of them. The periodic-fallback idea
+ * came from a spec note about the connector **dispatcher** ("periodic cron
+ * fallback wakes the dispatcher even without list_changed"); that note
+ * applies to the dispatcher, not to per-event handler tasks like this one —
+ * the two got conflated. (The dispatcher itself was later removed; see the
+ * MCP Platform Connectors RFC.)
  *
  * Failure path: 60s retry IF AND ONLY IF the relay_inbox still has unprocessed
  * envelopes for this task's thread. Capped at MAX_FAILURE_BACKOFFS to avoid
@@ -404,9 +406,9 @@ function retryDeferredTask(
  * resetEventTask the common-case inbox is already drained. An unconditional
  * retry would re-fire the agent loop on an empty buildEventWakeupContent
  * payload — the "Execute scheduled task." fallback — giving the agent context-
- * free phantom wakeups. Observed 2026-05-18 in thread d0372be6 (task
- * 4b1d85f9, webhook:bound): a single soft-fail produced a 5-wakeup cluster at
- * 21:33→21:41 with no new event content on any retry. The narrow case the
+ * free phantom wakeups. Observed in production: a single soft-fail produced a
+ * 5-wakeup cluster within minutes with no new event content on any retry. The
+ * narrow case the
  * retry still serves: persistence failed BEFORE markProcessed (DB error
  * during message inserts), so the inbox is genuinely unprocessed and the
  * retry replays the actual event payload.
@@ -1395,12 +1397,11 @@ export class Scheduler {
 					// Event tasks (e.g. webhook-triggered) carry their dynamic
 					// payload in relay_inbox keyed by thread_id, written at
 					// intake time by webhook-handler.ts. Without this branch
-					// the agent would just see "Execute scheduled task." with
-					// no clue what fired the trigger — see the 2026-05-18
-					// d0372be6 incident where a GitHub-issue webhook woke a
-					// task and the agent had to do MCP archaeology to figure
-					// out what happened. Helper returns processedIds for
-					// post-insert draining (below).
+					// the agent would just see "Execute scheduled task." with no
+					// clue what fired the trigger, and would have to reconstruct
+					// the event by hand from external state (GitHub, etc.).
+					// Helper returns processedIds for post-insert draining
+					// (below).
 					const eventResult = buildEventWakeupContent(this.ctx.db, task);
 					taskContent = eventResult.content;
 					inboxIdsToMarkProcessed = eventResult.processedIds;
@@ -1464,8 +1465,8 @@ export class Scheduler {
 				// preceding tool_call as machinery, not as something it itself chose
 				// to do. Without this banner, models pattern-match off the injected
 				// retrieve_task call and emit their own redundant retrieve_task({})
-				// calls mid-session — see _feedback:correction:retrieve_task_spin_*
-				// and the 2026-05-16 incident in advisory 0b9441e5-c47a.
+				// calls mid-session — observed to cause spin loops where the model
+				// re-issues the acknowledgment call instead of acting on the payload.
 				const systemInjectedBanner =
 					"[System-injected on task wakeup — the preceding `retrieve_task` " +
 					"tool_call was forged by the scheduler, not issued by you. The " +

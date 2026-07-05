@@ -829,8 +829,7 @@ export class WsTransport {
 				} else {
 					// Hub fast-fail: the request never left the hub, so the target tool
 					// DEFINITELY did not execute. Lets the agent loop retry safely even
-					// for non-idempotent tools. See bound_issue:relay-hub-silent-buffer-
-					// on-offline-target.
+					// for non-idempotent tools.
 					const errorPayload: ErrorPayload = {
 						error: `Target host ${entry.target_site_id} is not currently connected`,
 						retriable: true,
@@ -1718,11 +1717,10 @@ export class WsTransport {
 			c: number;
 		};
 
-		// A1 state-aware backfill: select full rows so we can compute per-row
+		// State-aware backfill: select full rows so we can compute per-row
 		// content hashes for divergence detection. PK-only diff is insufficient
 		// because tier flips, soft-delete tombstones, and value mutations on
-		// rows present on both sides are silently skipped (see
-		// bound_issue:hub-backfill-pk-set-skips-state-updates).
+		// rows present on both sides are silently skipped.
 		const rows = this.config.db
 			.query(`SELECT * FROM ${table} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
 			.all(pageSize + 1, offset) as Array<Record<string, unknown>>;

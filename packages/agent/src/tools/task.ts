@@ -236,9 +236,9 @@ function handleUpdate(input: TaskInput, ctx: ToolContext): string {
 	// driven by the scheduler, `ctx.taskId` is the running task's id; if it
 	// matches the update target, refuse. This closes the class of incident where
 	// a webhook/event task cleared its own model_hint mid-run, silently
-	// upgrading cost (see bound_issue:task-self-clears-own-model_hint-via-task-update-20260601).
-	// To change the running task's model specifically, use the `model_hint` tool,
-	// which is the deliberate, single-field path for that intent.
+	// upgrading cost onto a more expensive default model. To change the running
+	// task's model specifically, use the `model_hint` tool, which is the
+	// deliberate, single-field path for that intent.
 	if (ctx.taskId && ctx.taskId === taskId) {
 		return "Error: a task cannot modify itself via the task tool";
 	}

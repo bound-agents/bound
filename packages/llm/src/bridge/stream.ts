@@ -141,13 +141,13 @@ export async function* mapChunks(
 ): AsyncIterable<StreamChunk> {
 	let outputText = "";
 	// Widened "something happened" signal for the zero-usage estimator.
-	// Pre-2026-04-26, estimation only kicked in when outputText.length > 0,
-	// so tool-only and thinking-only responses (haiku cron turns that just
-	// called retrieve_task; qwen3.6 threads that emitted only thinking
-	// + tool calls) were recorded with tokens_in=tokens_out=0. We now
+	// Previously, estimation only kicked in when outputText.length > 0,
+	// so tool-only and thinking-only responses (a cron turn that just
+	// called retrieve_task with no text; a model that emitted only
+	// thinking + tool calls) were recorded with tokens_in=tokens_out=0,
+	// silently breaking per-host cost/usage accounting. We now
 	// accumulate reasoning text and tool-input-delta bytes here so those
 	// responses get a reasonable char-based estimate.
-	// bound_issue:turns-table:observability-gap sub-gap 2b.
 	let reasoningText = "";
 	let toolInputText = "";
 	// Track tool-input-start names since tool-input-delta only carries the id.
@@ -431,12 +431,11 @@ function extractUsage(
 	const cacheWriteTokens = finish.cacheWriteTokens ?? null;
 
 	// Zero-usage guard — widened to cover any observable output, not just
-	// text. Responses that only emitted tool calls (haiku cron turns that
-	// called retrieve_task) or only thinking (qwen3.6 threads where the
-	// model reasoned extensively but produced no text before a tool call)
-	// were silently recorded as tokens_in=tokens_out=0, breaking cost/
-	// usage accounting per-host. bound_issue:turns-table:observability-gap
-	// sub-gap 2b.
+	// text. Responses that only emitted tool calls (a cron turn calling
+	// retrieve_task with no text) or only thinking (a model that reasoned
+	// extensively but produced no text before a tool call) were silently
+	// recorded as tokens_in=tokens_out=0, breaking cost/usage accounting
+	// per-host.
 	let estimated = false;
 	const observableOutput = output.text + output.reasoning + output.toolInput;
 	if (

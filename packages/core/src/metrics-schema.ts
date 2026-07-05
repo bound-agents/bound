@@ -11,8 +11,6 @@ import { insertRow, updateRow } from "./change-log.js";
  * `relay_target`, and `relay_latency_ms` — a thread can bounce between
  * hosts mid-run, so any host may be asked to render the full context
  * history for a thread.
- *
- * Related: bound_issue:turns-table:observability-gap (2026-04-26).
  */
 export interface TurnRecord {
 	thread_id?: string;

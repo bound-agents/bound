@@ -87,6 +87,7 @@ export function getLastThreadForFile(db: Database, filePath: string): string | n
 	return result?.value || null;
 }
 
+/** Cross-thread file-conflict notice: `filePath` was last touched by a different thread than the one currently about to read/write it. */
 export function getFileThreadNotificationMessage(
 	filePath: string,
 	otherThreadTitle: string,

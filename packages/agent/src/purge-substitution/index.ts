@@ -20,10 +20,10 @@
  * there's no system verification of truthfulness at write time.
  * The prefix `(purged N messages — agent-authored summary,
  * unverified; verify against source tables before relying)`
- * flags it. Live precedent for the necessity of this prefix:
- * thread `d0372be6-...` 2026-05-24 where the agent's confabulated
- * "Issues #20-36 captured" purge summary drove ~50 turns of
- * "stand down" decisions against actual fresh webhook deliveries.
+ * flags it. Necessary in practice: a production incident had the
+ * agent's own confabulated purge summary drive ~50 turns of "stand
+ * down" decisions against actual fresh webhook deliveries the
+ * summary claimed (wrongly) were already handled.
  *
  * Properties pinned by `__tests__/purge.property.test.ts`:
  *

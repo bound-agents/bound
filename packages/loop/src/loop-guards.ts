@@ -27,14 +27,14 @@ export const MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS = 12;
  * Circuit breaker for consecutive turns whose tool calls return the
  * byte-identical ERROR result. Distinct from MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS
  * above, which keys on the CALL inputs (name + args) and resets the moment the
- * model varies its args. The 2026-06-12 connector-name-contamination spin
- * (thread 53c7635e, gpt-5.5) defeated the input-signature breaker exactly that
- * way: the model emitted ~26 calls under the name "connector" with *different*
- * skill/memory arg schemas each turn, so the input signature kept resetting
- * while every call returned the identical Zod validation error (an enum error
- * enumerates the *valid* options, not the rejected value, so it is
- * input-independent). The loop never broke — the same error 26 times across
- * ~4 minutes, two user cancels, no self-recovery. This breaker keys on the
+ * model varies its args. A production spin on gpt-5.5 defeated the
+ * input-signature breaker exactly that way: the model emitted ~26 calls under
+ * the name "connector" with *different* skill/memory arg schemas each turn, so
+ * the input signature kept resetting while every call returned the identical
+ * Zod validation error (an enum error enumerates the *valid* options, not the
+ * rejected value, so it is input-independent). The loop never broke — the
+ * same error 26 times across ~4 minutes, two user cancels, no self-recovery.
+ * This breaker keys on the
  * ERROR RESULT instead, and only counts turns where EVERY tool call errored
  * (a mixed turn means the model is getting *some* useful signal — not a spin).
  * It can only fire post-execution (the error isn't known until the tool runs),

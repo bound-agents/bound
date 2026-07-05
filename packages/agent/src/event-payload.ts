@@ -80,9 +80,8 @@ function inlineWebhookEnvelopeBody(rawPayload: string): string {
  * `task.payload ?? "Execute scheduled task."`, which for webhook-
  * triggered tasks is just the default — leaving the agent with no idea
  * what fired the webhook and forcing it to do context archaeology over
- * GitHub / MCP to reconstruct the event. Observed on 2026-05-18 in
- * thread d0372be6 when Kara's GitHub issue webhook fired and the agent
- * had to guess what triggered it.
+ * GitHub / MCP to reconstruct the event. Observed in production: a
+ * GitHub issue webhook fired and the agent had to guess what triggered it.
  *
  * Non-event task types (cron, deferred, heartbeat) do NOT consume the
  * inbox — they have their own wakeup paths and shouldn't be hijacked

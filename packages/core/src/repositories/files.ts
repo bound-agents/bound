@@ -59,6 +59,7 @@ export function findFileContentByPathActive(
 	> | null;
 }
 
+/** Like {@link findFileContentByPathActive} but also returns `modified_at`, for callers that need to compare/report freshness alongside content. */
 export function findFileContentModifiedByPathActive(
 	db: Database,
 	path: string,
@@ -92,6 +93,7 @@ export function findFileContentByIdActive(
 	> | null;
 }
 
+/** Like {@link findFileContentByIdActive} but also returns `is_binary`, so callers can decide whether to base64-decode before serving the content. */
 export function findFileContentBinaryByIdActive(
 	db: Database,
 	id: string,
@@ -130,6 +132,7 @@ export function listWorkspaceFilesModifiedSince(
 		.all(sinceIso) as Array<Pick<AgentFile, "path" | "content" | "is_binary">>;
 }
 
+/** Path + content of every active file whose path matches `pathPattern` (a SQL LIKE pattern) — bulk read for a directory-prefix listing. */
 export function listFilePathContentByPrefixActive(
 	db: Database,
 	pathPattern: string,
@@ -139,6 +142,7 @@ export function listFilePathContentByPrefixActive(
 		.all(pathPattern) as Array<Pick<AgentFile, "path" | "content">>;
 }
 
+/** Like {@link listFilePathContentByPrefixActive} but returns id + size instead of content — for a directory listing that shouldn't pull full file bodies. */
 export function listFileIdPathSizeByPrefixActive(
 	db: Database,
 	pathPattern: string,
@@ -148,6 +152,7 @@ export function listFileIdPathSizeByPrefixActive(
 		.all(pathPattern) as Array<Pick<AgentFile, "id" | "path" | "size_bytes">>;
 }
 
+/** Like {@link listFileIdPathSizeByPrefixActive} but swaps `id` for `modified_at` — for a directory listing sorted or filtered by freshness. */
 export function listFilePathSizeModifiedByPrefixActive(
 	db: Database,
 	pathPattern: string,

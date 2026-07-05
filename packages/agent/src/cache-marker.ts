@@ -586,12 +586,12 @@ export function buildCacheMarkers(args: {
  * Why a PAIR, not a single rolling marker. A single rolling marker moves to
  * the tip every iteration, so iteration K has NO cachePoint at iteration
  * K-1's write position. Bedrock's exact-byte-position cache then has to bridge
- * P_{K-1} → P_K via its ~20-block auto-lookback. Live data (heavy coding
- * thread 60db514d, May 29-31) shows that lookback does NOT bridge for these
- * threads: a single large `tool_result` (file / bash blob) blows past the
- * window, the prior write is orphaned, `cr` stays pinned at the fixed floor
- * (~58,745) while `cw` re-writes the whole grown prefix (66-95k). Write-once-
- * read-never → cache-write/read ratio ~1.12 (paying for writes consumed once).
+ * P_{K-1} → P_K via its ~20-block auto-lookback. Measured on a heavy coding
+ * thread in production: that lookback does NOT bridge for these threads — a
+ * single large `tool_result` (file / bash blob) blows past the window, the
+ * prior write is orphaned, `cr` stays pinned at the fixed floor (~58,745)
+ * while `cw` re-writes the whole grown prefix (66-95k). Write-once-read-never
+ * → cache-write/read ratio ~1.12 (paying for writes consumed once).
  *
  * Keeping iteration K-1's marker in place gives iteration K an EXPLICIT
  * breakpoint at exactly K-1's write position. The preceding bytes are
