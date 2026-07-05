@@ -241,8 +241,8 @@ export function formatToolParamLines(inputSchema: unknown): string[] {
 /**
  * Compact parameter summary appended to a failed tool call's stderr, so the
  * model can self-correct on the next attempt instead of blind-mutating args
- * across retries (tool_error 2026-06-19: `issue_read` failed with "missing
- * required parameter: method" and nothing to correct against). Returns "" for
+ * across retries (observed: a call failed with "missing required parameter:
+ * method" and nothing in the error to correct against). Returns "" for
  * tools with no declared parameters — their error output stays byte-identical.
  */
 export function formatToolParamHint(toolName: string, inputSchema: unknown): string {

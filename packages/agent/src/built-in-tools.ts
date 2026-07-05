@@ -244,7 +244,7 @@ const DRIVE_LETTER_PATH_RE = /^\/?[A-Za-z]:([\\/]|$)/;
  * paths. just-bash treats backslashes as ordinary filename characters, so a
  * Windows-style path "writes successfully" as a single junk filename in the
  * VFS root while the caller believes it wrote to the host — the failure then
- * surfaces turns later as a host-side ENOENT (observed 2026-06-05).
+ * surfaces turns later as a host-side ENOENT.
  */
 function hostShapedPathError(path: string): string | null {
 	if (path.includes("\\") || DRIVE_LETTER_PATH_RE.test(path)) {

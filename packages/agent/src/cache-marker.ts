@@ -368,14 +368,13 @@ export function computeStableCacheMarkerPlacement(
 	// is silently dropped — no cachePoint reaches the wire.
 	//
 	// Live regressions:
-	//   - thread `91a31a43-...` 2026-05-26: autonomous task with one user
-	//     and only `[user_1, dev_tail]` in messages. Latest-user at idx 0,
-	//     fallback placed BEFORE user_1 → bridge dropped → cw=0.
-	//   - thread `3a833552-...` 2026-05-26: autonomous task WITH a Stage
-	//     1.7-prepended `developer` compaction summary at index 0 +
-	//     thread.summary. Strict semantic-anchor placed marker BEFORE
-	//     user_1 (at idx 1), but nothing non-developer preceded → bridge
-	//     dropped → cw=0 across all 33 turns.
+	//   - Autonomous task with one user and only `[user_1, dev_tail]` in
+	//     messages. Latest-user at idx 0, fallback placed BEFORE user_1 →
+	//     bridge dropped → cw=0.
+	//   - Autonomous task WITH a Stage 1.7-prepended `developer` compaction
+	//     summary at index 0 + thread.summary. Strict semantic-anchor
+	//     placed marker BEFORE user_1 (at idx 1), but nothing non-developer
+	//     preceded → bridge dropped → cw=0 across all 33 turns.
 	//
 	// Recovery rule. When the strict semantic-anchor target has 0
 	// non-developer preceding messages, the marker would be silently

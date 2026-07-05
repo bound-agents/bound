@@ -37,9 +37,9 @@ function resolveAdvisoryId(
 
 // Action-enum dispatch (CONTRIBUTING: grouped tools use an `action` enum).
 // The tool was previously flag-shaped — create fired whenever title+detail
-// were truthy, checked BEFORE the other operations — which twice minted junk
-// advisories when a dismiss/list call also carried create-shaped params
-// (tool_error 2026-06-08, 2026-06-19). The explicit enum makes the requested
+// were truthy, checked BEFORE the other operations — which minted junk
+// advisories on more than one occasion when a dismiss/list call also
+// carried create-shaped params. The explicit enum makes the requested
 // operation unambiguous.
 const advisorySchema = z.object({
 	action: z

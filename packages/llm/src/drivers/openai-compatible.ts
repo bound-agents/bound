@@ -2,7 +2,7 @@
  * OpenAI-compatible driver — thin shim onto `@ai-sdk/openai-compatible`.
  *
  * Replaced the hand-rolled /v1/chat/completions client (openai-driver.ts,
- * ~500 lines) on 2026-04-25. The AI SDK handles:
+ * ~500 lines). The AI SDK handles:
  *   - SSE streaming + `[DONE]` sentinel
  *   - Tool call assembly from delta fragments (no more `tooluse_` / `call_`
  *     prefix parse mismatches — tool IDs are opaque at the V2 boundary)

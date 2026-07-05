@@ -78,7 +78,10 @@ interface FinishState {
 		 * lives on `inputTokenDetails.noCacheTokens`. This bridge MUST read
 		 * from `inputTokenDetails.noCacheTokens` (with `inputTokens` as a
 		 * fallback when details are absent — covers older provider
-		 * adapters that haven't migrated to the structured shape).
+		 * adapters that haven't migrated to the structured shape). Verified
+		 * live on `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168`: a request
+		 * with 11 noCache + 3506 cacheWrite tokens reports
+		 * `inputTokens: 3517`.
 		 */
 		inputTokens?: number;
 		inputTokenDetails?: {
@@ -165,9 +168,9 @@ export async function* mapChunks(
 	// (tool-use rounds) emit one finish-step per step, each with that step's
 	// cacheWriteInputTokens. The cache write typically lands on the FIRST
 	// step (prompt prefix) and subsequent steps may report null/zero. Holding
-	// only the last step's metadata would drop the metric entirely. Thread
-	// c879be2b on 2026-05-24 had 13/23 turns recording tokens_cache_write =
-	// NULL because of this; summing recovers them.
+	// only the last step's metadata would drop the metric entirely.
+	// Observed in production: a thread had 13/23 turns recording
+	// tokens_cache_write = NULL because of this; summing recovers them.
 	let cacheWriteAccum = 0;
 	let cacheWriteSeen = false;
 

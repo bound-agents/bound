@@ -522,9 +522,9 @@ export class ModelRouter {
 	 *      get caching.
 	 *   3. Otherwise undefined (caching not intended).
 	 *
-	 * Live regression that motivated this defaulting: thread
-	 * `33212d49-…` 2026-05-25 ran with cr=0 across most of its turns
-	 * because Sonnet's config didn't explicitly set `cacheTtl`. The
+	 * Live regression that motivated this defaulting: a thread ran with
+	 * cr=0 across most of its turns because Sonnet's config didn't
+	 * explicitly set `cacheTtl`. The
 	 * Bedrock driver's `shouldEnableSystemCachePoint` gate disabled the
 	 * system anchor when both `cache_ttl` was undefined AND the
 	 * message-level marker wasn't placed — both layers failed silently,
@@ -717,7 +717,7 @@ function createBackendFromConfig(
 
 		default:
 			// anthropic, ollama, and other providers deliberately removed in the
-			// 2026-04-25 AI SDK migration. If a config still references them, it
+			// AI SDK migration. If a config still references them, it
 			// needs to be updated — anthropic backends should use bedrock, and
 			// local inference should go through the relay to a spoke host that
 			// runs bedrock or openai-compatible.

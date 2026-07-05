@@ -352,11 +352,11 @@ export function toModelMessages(
 			// consecutive run; the cachePoint attaches to that single
 			// surviving message and reaches the wire intact.
 			//
-			// Live regression: thread `b4541575-...` 2026-05-26 had cw=0
-			// across 50+ cold turns of an autonomous task with parallel
-			// tool calls. System anchor floor held at 84,440 read; message-
-			// level cachePoint never reached the wire. After this fix the
-			// cachePoint rides on the merged tool message instead.
+			// Live regression: an autonomous task with parallel tool calls
+			// had cw=0 across 50+ cold turns. System anchor floor held at
+			// 84,440 read; message-level cachePoint never reached the wire.
+			// After this fix the cachePoint rides on the merged tool
+			// message instead.
 			const lastEmitted = result[result.length - 1];
 			if (lastEmitted && lastEmitted.role === "tool" && Array.isArray(lastEmitted.content)) {
 				(lastEmitted.content as unknown[]).push(toolResultPart);

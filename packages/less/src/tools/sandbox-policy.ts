@@ -241,8 +241,8 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	// On Linux os.tmpdir() IS /tmp so the line above already covers it, but on
 	// macOS os.tmpdir() is /var/folders/<user>/T — the literal /tmp (realpath
 	// /private/tmp) was never in the set, so portable shell idioms like
-	// `cat > /tmp/x` died with EPERM (tool_error 2026-06-21, reproduced
-	// 2026-07-03). Guarded by existence so Windows (no /tmp) is unaffected.
+	// `cat > /tmp/x` died with EPERM. Guarded by existence so Windows (no
+	// /tmp) is unaffected.
 	try {
 		if (statSync("/tmp").isDirectory()) addPath("/tmp");
 	} catch {

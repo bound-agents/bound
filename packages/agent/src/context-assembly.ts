@@ -96,8 +96,8 @@ export const DEFAULT_OUTPUT_TOKEN_RESERVE = 8_000;
  * The cold path targets `contextWindow - maxOutputTokens` tokens of history —
  * the exact amount of room the upcoming model call needs to reserve for its own
  * response, rather than an arbitrary headroom fraction. Replaces the old
- * ratio-based `TRUNCATION_TARGET_RATIO` (a fixed 0.85 of contextWindow, removed
- * 2026-07-04): a fixed ratio doesn't know how large the model's actual output
+ * ratio-based `TRUNCATION_TARGET_RATIO` (a fixed 0.85 of contextWindow): a
+ * fixed ratio doesn't know how large the model's actual output
  * budget is, so it either wastes headroom (small max_tokens, big context) or
  * under-reserves it (large max_tokens relative to context). Subtracting the
  * real reserve guarantees space for generation regardless of context-window

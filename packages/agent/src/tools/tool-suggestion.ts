@@ -38,8 +38,9 @@ function getParamNames(tool: RegisteredTool): string[] {
  * validation error enumerates the *valid* options for the called tool but
  * never reveals that the rejected value belongs to a *different* tool. Models
  * that confuse two action-dispatcher tools re-decide the same wrong routing
- * every turn — the 2026-06-12 and 2026-06-21 gpt-5.5 connector-vs-skill spins
- * (26+ and 12+ identical-error turns respectively) both followed this pattern.
+ * every turn — observed gpt-5.5 spins confusing two similarly-shaped
+ * action-dispatcher tools this way (26+ and 12+ identical-error turns
+ * respectively).
  *
  * This function cross-references the rejected action against the full tool
  * registry. If exactly one other tool accepts it, it returns a direct
@@ -88,9 +89,8 @@ export function suggestToolForAction(
  * `pattern`, `path`, `case_insensitive`, `fixed_strings` and no `action`),
  * the Zod error enumerates the called tool's valid params but never reveals
  * the names belong to a *different* tool. Models that confuse the shape of
- * one tool with another re-decide the same wrong routing every turn — the
- * 2026-06-21 GPT-5.5 connector-spin (60+ identical-error turns across three
- * aborts) followed this exact pattern.
+ * one tool with another re-decide the same wrong routing every turn —
+ * observed on gpt-5.5 as 60+ identical-error turns across three aborts.
  *
  * Cross-references the rejected input's parameter names against every other
  * tool in the registry. If exactly one tool accepts ALL (or a strong majority

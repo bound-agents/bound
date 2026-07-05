@@ -79,7 +79,7 @@ export function enqueueClientToolCall(
  * reuse `call_1, call_2, …` every turn. A guard that also matched already-
  * `acknowledged` rows would drop a legitimate NEW turn's re-drive for a reused
  * call_id, so the loop never gets its wakeup and the thread stalls one message
- * per turn (this was a real regression, fixed 2026-07-03). Once the prior re-drive is
+ * per turn (this was a real regression). Once the prior re-drive is
  * consumed (acknowledged), the same call_id is free to enqueue a fresh row; a
  * genuine retry arrives while the original is still in flight and is deduped.
  * The match is scoped to the canonical `{"call_id":"…"}` payload this function

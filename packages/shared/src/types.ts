@@ -793,13 +793,13 @@ export interface ContextDebugInfo {
 	/**
 	 * Safety margin (in tokens) subtracted from contextWindow before the truncation
 	 * gate fires. Absorbs variance between the cl100k_base estimator and the backend's
-	 * real tokenizer. Optional so older context_debug rows (pre-2026-04-26) still parse.
+	 * real tokenizer. Optional so older context_debug rows predating this field still parse.
 	 */
 	safetyMargin?: number;
 	/**
 	 * contextWindow - safetyMargin. The gate that actually triggers truncation compares
 	 * the token estimate against this value, NOT against contextWindow. Optional so older
-	 * context_debug rows (pre-2026-04-26) still parse.
+	 * context_debug rows predating this field still parse.
 	 */
 	effectiveBudget?: number;
 	totalEstimated: number;
@@ -812,7 +812,7 @@ export interface ContextDebugInfo {
 	 * Preserving this separately from totalEstimated lets us compute the
 	 * tiktoken-vs-actual inflation ratio per turn, which the adaptive
 	 * truncation ratio depends on. Optional so older context_debug rows
-	 * (pre-2026-05-22) still parse.
+	 * predating this field still parse.
 	 */
 	actualTotalTokens?: number;
 	model: string;
@@ -828,9 +828,9 @@ export interface ContextDebugInfo {
 	 * ceiling and the response was cut off — the signature of the
 	 * "streaming interrupted" symptom.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-06-26) still parse,
-	 * and absent on assembly-only snapshots not yet correlated with a
-	 * response.
+	 * Optional so older `context_debug` rows predating this field still
+	 * parse, and absent on assembly-only snapshots not yet correlated with
+	 * a response.
 	 */
 	finishReason?: string;
 	/**
@@ -842,7 +842,7 @@ export interface ContextDebugInfo {
 	 * thinking+text turns. Recording it lets a `finishReason: "length"`
 	 * row be read together with the budget that produced it.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-06-26) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	maxOutputTokens?: number;
 	crossThreadSources?: CrossThreadSource[];
@@ -862,7 +862,7 @@ export interface ContextDebugInfo {
 	 * - `"cold"` — full `assembleContext()` ran. The next warm turn will
 	 *   read this turn's stored state.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	cachePath?: "warm" | "cold";
 	/**
@@ -892,7 +892,7 @@ export interface ContextDebugInfo {
 	 * Warm-side reasons:
 	 * - `"warm-eligible"` — warm path ran to completion within budget.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	cachePathReason?:
 		| "no-stored-state"
@@ -915,8 +915,8 @@ export interface ContextDebugInfo {
 	 * truncation fire?" requires re-running the EMA computation against
 	 * the same row history.
 	 *
-	 * Replaces the old ratio-based `effectiveTruncationRatio` field (removed
-	 * 2026-07-04 — see `computeBaseTruncationTarget` in context-assembly.ts).
+	 * Replaces the old ratio-based `effectiveTruncationRatio` field (see
+	 * `computeBaseTruncationTarget` in context-assembly.ts).
 	 * Optional so older `context_debug` rows still parse.
 	 */
 	truncationTargetTokens?: number;
@@ -928,7 +928,7 @@ export interface ContextDebugInfo {
 	 * `truncationTargetTokens` lets us tell "estimator is accurate" from
 	 * "we don't know yet".
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	measuredInflation?: number | null;
 	/**
