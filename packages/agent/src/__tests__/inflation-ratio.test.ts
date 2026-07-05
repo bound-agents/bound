@@ -222,7 +222,7 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		expect(computeInflationRatio(db, otherThread)).toBeCloseTo(5.0, 5);
 	});
 
-	// Regression: thread c879be2b-fe29-421d-b1a6-b9b1579e5648 (2026-05-24).
+	// Regression, observed live.
 	// The pre-fix agent-loop wrote actualTotalTokens = inputTokens +
 	// cacheReadTokens + cacheWriteTokens. Both AI SDK Bedrock@4.x and
 	// Anthropic@3.x already sum (raw_input + cR + cW) into the standardized

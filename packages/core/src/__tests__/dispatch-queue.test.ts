@@ -480,7 +480,7 @@ describe("enqueueToolResult", () => {
 		expect(count.c).toBe(1);
 	});
 
-	// Regression (thread e1364833, 2026-07-03): boundless reuses call_1, call_2, …
+	// Regression: boundless reuses call_1, call_2, …
 	// every turn, so a call_id is NOT unique across a thread's lifetime — only
 	// within one turn. The idempotency guard must dedup only while a re-drive is
 	// still in flight (pending/processing). Once the re-drive row has been consumed

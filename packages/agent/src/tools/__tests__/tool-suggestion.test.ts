@@ -115,7 +115,7 @@ describe("suggestToolForAction", () => {
 
 describe("suggestToolByParams", () => {
 	it("suggests the tool whose param names match the rejected input", () => {
-		// Reproduces the 2026-06-21 GPT-5.5 spin: model called `connector`
+		// Reproduces an observed GPT-5.5 spin: model called `connector`
 		// with boundless_search's param names and no action field.
 		const registry = new Map<string, RegisteredTool>([
 			["connector", makeActionTool("connector", ["list", "channels", "attach", "detach"])],

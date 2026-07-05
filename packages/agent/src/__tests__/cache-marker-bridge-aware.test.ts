@@ -2,7 +2,7 @@
  * Regression tests for bridge-aware cache marker placement.
  *
  * Background. The AI SDK bridge merges a trailing run of `developer` messages
- * onto the preceding user message via `appendDevToUser`. Until 2026-05-26 the
+ * onto the preceding user message via `appendDevToUser`. The predecessor
  * cache marker was always spliced at `messages.length - 1` regardless of
  * whether the trailing message was a developer; that placement made the
  * cachePoint land on the user message the bridge subsequently mutated, which

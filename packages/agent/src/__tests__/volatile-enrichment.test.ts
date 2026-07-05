@@ -31,7 +31,7 @@ afterEach(() => {
 
 describe("computeBaseline", () => {
 	it("AC4.1: returns the most-recent user-role message timestamp when newer than the 24h floor", () => {
-		// Post-2026-05-24 contract change: baseline anchors to the
+		// Contract change: baseline anchors to the
 		// last user-role message (the real conversational boundary)
 		// rather than thread.last_message_at. The latter advances on
 		// every persisted assistant/tool/developer row, which on

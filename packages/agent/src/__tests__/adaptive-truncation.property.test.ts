@@ -5,11 +5,11 @@
  * The adaptive truncation target is the gate that converts measured
  * tiktoken-vs-actual inflation into a tightened truncation target (tokens).
  * Two concrete failure modes have been fixed historically (memory
- * notes "Live Debugging Session 5" and the cache-aware EMA fix
- * in 2026-05-24); both surfaced as silent over-truncation OR
+ * notes "Live Debugging Session 5" and a cache-aware EMA fix);
+ * both surfaced as silent over-truncation OR
  * under-truncation in production. The base target itself moved from a
  * fixed ratio (0.85 of contextWindow) to `contextWindow - maxOutputTokens`
- * on 2026-07-04 (see `computeBaseTruncationTarget` in context-assembly.ts);
+ * (see `computeBaseTruncationTarget` in context-assembly.ts);
  * these properties describe the EMA layer on top, which is unchanged by
  * that move — it still just divides whatever base target it's handed.
  *

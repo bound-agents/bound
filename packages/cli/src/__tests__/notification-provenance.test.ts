@@ -39,7 +39,7 @@ import { formatNotification } from "../commands/start/server";
 describe("notification provenance marker", () => {
 	it("flags proactive notification content as agent-authored on render", () => {
 		// A confabulated agent-authored cross-thread summary, mirroring
-		// the d0372be6 / 2026-05-17 "byte-different content + 1 notify
+		// a real incident's "byte-different content + 1 notify
 		// fallback" framing that primed the wrong fix shape.
 		const payload = {
 			type: "proactive",

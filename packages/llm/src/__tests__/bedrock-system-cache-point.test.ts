@@ -43,7 +43,7 @@ import {
 } from "../drivers/bedrock";
 
 describe("Bedrock chat() — system anchor independence from message-level marker", () => {
-	// Regression sentry for the live thread `a191e01f-…` 2026-05-25 issue:
+	// Regression sentry for a live issue:
 	// the bedrock-driver gated `cacheEnabled` on
 	// `hasBedrockMessageCachePoint(bridgeMessages)`. When no message-level
 	// marker was placed (truncation drops the latest user, semantic-anchor

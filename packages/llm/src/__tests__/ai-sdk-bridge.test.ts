@@ -86,7 +86,7 @@ describe("toModelMessages — basic role mapping", () => {
 	});
 
 	it("emits a trailing user message when developer content follows an assistant turn (was: merged into earlier user, ended with assistant)", () => {
-		// Regression: 2026-05-17, thread f096a101 / 98926e2d. The introspect
+		// Regression, observed live. The introspect
 		// tool injects a developer-role message into the target thread AFTER
 		// the trailing assistant turn. The bridge used to walk back to the
 		// most recent user message and merge dev content into it, leaving
@@ -256,8 +256,7 @@ describe("toModelMessages — conversation-start invariant", () => {
 // with "This model does not support assistant message prefill. The
 // conversation must end with a user message."
 //
-// The introspect-into-claude-opus incident (2026-05-17, thread f096a101 /
-// 98926e2d) was a direct hit on this constraint: the introspect tool injects
+// The introspect-into-claude-opus incident was a direct hit on this constraint: the introspect tool injects
 // a developer-role message AFTER the existing trailing assistant, and the
 // bridge's old behavior buried the dev content into an earlier user message,
 // leaving `assistant` as the last message. Both introspect attempts hit the
@@ -334,11 +333,11 @@ describe("toModelMessages — conversation-end invariant (developer injection af
 	});
 
 	it("truncated-loop shape: [assistant, tool_call, tool_result, assistant, developer] (NO user in window) ends with user", () => {
-		// Regression for thread 60db514d (2026-05-31, notify-into-truncated-
+		// Regression, observed live (notify-into-truncated-
 		// opus-loop): a long autonomous boundless loop gets truncated to a
 		// window of ONLY assistant/tool turns — every user message scrolled
 		// out of context. A background-task notification then lands as a tail
-		// developer message. The 2026-05-17 fix discriminated HEAD vs TAIL by
+		// developer message. The original fix discriminated HEAD vs TAIL by
 		// `result.some(user)`; with no surviving user message that check was
 		// false, so the dev was wrongly `unshift`ed as a head user, leaving
 		// the conversation STILL ending on the assistant message → Bedrock's
@@ -1719,9 +1718,9 @@ describe("toModelMessages — tool_use.name sanitization (cross-provider portabi
 	});
 });
 
-describe("toModelMessages — full recovery on the corrupted shape from thread 81bd5e8d", () => {
-	// Reproduction of the exact ContentBlock that poisoned thread 81bd5e8d
-	// on 2026-05-21: kimi-k2.5 via OpenAI-compatible Bedrock path leaked its
+describe("toModelMessages — full recovery on a corrupted live shape", () => {
+	// Reproduction of the exact ContentBlock that poisoned a live thread:
+	// kimi-k2.5 via OpenAI-compatible Bedrock path leaked its
 	// own `<|tool_call_argument_begin|>` template token into a tool_use,
 	// resulting in a persisted block where both `id` and `name` are 200+ char
 	// strings containing illegal characters (`.`, `:`, `<`, `|`, `>`, `{`,
@@ -1841,7 +1840,7 @@ describe("toModelMessages — tool-pair completeness backstop (orphan recovery)"
 	}
 
 	it("synthesizes a stub tool-result for an unmatched tool_use (call with no result)", () => {
-		// Reconstructed shape from thread 53c7635e 2026-06-14: a parallel batch
+		// Reconstructed shape from a live thread: a parallel batch
 		// where one of two tool_use ids lost its tool_result before assembly,
 		// so the wire carried tool-call(CJSyxw) with no matching tool-result —
 		// Bedrock 400 "Expected toolResult blocks ... for the following Ids".
@@ -2648,7 +2647,7 @@ describe("mapChunks — coalescePrefixItems (Mantle GPT-5.x multi-message-item r
 	// distinct id), interleaved with reasoning rounds, where each item RE-STATES
 	// the whole answer one (often multibyte) codepoint longer than the previous.
 	// The final item is the complete answer; the earlier ones are progressive
-	// drafts. Verified live 2026-06-07 against openai.gpt-5.5 at effort=high:
+	// drafts. Verified live against openai.gpt-5.5 at effort=high:
 	// concatenating all items' deltas (the default `outputText += text`) produced
 	// a sixfold-duplicated assistant message. The invariant the data hands us:
 	// each item is a strict prefix-extension of the previous, monotonically
@@ -2810,7 +2809,7 @@ describe("mapChunks — finish / usage", () => {
 
 	it("reads input_tokens from inputTokenDetails.noCacheTokens when present (NOT the summed inputTokens)", async () => {
 		// Live regression observed via probe against
-		// `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168` (2026-05-26):
+		// `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168`:
 		// the AI SDK exposes `totalUsage.inputTokens` as the SUMMED total
 		// (`noCache + cacheRead + cacheWrite`), not the non-cached
 		// portion. Probe output for a request with 11 noCache + 3506

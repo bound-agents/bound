@@ -2,7 +2,7 @@
  * Regression tests for the ModelBackendsConfig → ModelRouter hand-off
  * performed by `initInference` in commands/start/inference.ts.
  *
- * Historical bug (2026-04-25): `initInference` hand-picks fields from the
+ * Historical bug: `initInference` hand-picks fields from the
  * parsed schema to build the router's BackendConfig. The `thinking` field
  * was never copied, so even after the Zod schema was fixed to preserve
  * `thinking`, the router received `undefined` and extended thinking stayed

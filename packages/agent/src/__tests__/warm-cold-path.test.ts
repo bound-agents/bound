@@ -1276,7 +1276,7 @@ describe("warm-cold-path", () => {
 		});
 
 		it("falls back to cold reassembly when warm-path delta would leave an orphaned tool_call", async () => {
-			// Regression for thread 6b6ddeb0-ad1 (2026-04-26). Setup: the prior
+			// Regression, observed live. Setup: the prior
 			// agent-loop had dispatched a boundless_bash client tool and yielded
 			// while waiting for the WS reply. The tool_call was persisted to the
 			// DB but no tool_result had arrived yet. When the user typed a
@@ -1479,8 +1479,7 @@ describe("warm-cold-path", () => {
 		});
 
 		it("compacts oversized tool_results in place when warm-path budget would otherwise bail", async () => {
-			// Regression for thread c879be2b-fe29-421d-b1a6-b9b1579e5648
-			// (2026-05-24). When the warm-path budget gate fails because
+			// Regression, observed live. When the warm-path budget gate fails because
 			// stored tool_results have grown past the effective budget, we
 			// must NOT immediately clear CachedTurnState and bail to a cold
 			// rebuild. The cold rebuild produces a different byte-prefix,

@@ -583,7 +583,7 @@ describe("MCP Bridge", () => {
 		}
 	});
 
-	// Regression: tool_error 2026-06-19 — `github-bound issue_read` failed with
+	// Regression: observed a call failing with
 	// "missing required parameter: method" and the error carried nothing to
 	// self-correct against, so the model blind-mutated arguments across
 	// retries. A failed dispatch now echoes the tool's parameter summary.

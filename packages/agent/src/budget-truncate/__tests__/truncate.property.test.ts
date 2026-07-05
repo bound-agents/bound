@@ -4,7 +4,7 @@
  * The pipeline's last line of defense before the wire. Two failure
  * modes documented in the module-level JSDoc:
  *
- *   1. **Sliding amputation** — historical pre-2026-04-01 keep-last-N
+ *   1. **Sliding amputation** — the predecessor keep-last-N
  *      cut at a fixed-N boundary regardless of token weight.
  *   2. **Wire-illegal opener** — kept slice opening on an orphan
  *      `tool_result` whose `tool_call` was sliced off triggers
@@ -202,7 +202,7 @@ describe("truncateHistoryToBudget — property tests", () => {
 	// failure modes documented in the module-level JSDoc.
 	it("B-regression: large tool errors don't push out recent user messages", () => {
 		// 5 verbose tool errors followed by a small user message.
-		// Pre-2026-04-01 keep-last-10 would have INCLUDED all 5 errors
+		// The predecessor keep-last-10 would have INCLUDED all 5 errors
 		// (small budget, but fixed N). Our backward-fill should
 		// preserve the user message even when the verbose errors
 		// would individually exhaust the budget.

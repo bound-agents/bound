@@ -1,7 +1,7 @@
 /**
  * Remote MCP help parity.
  *
- * Principle (Kara, 2026-06-06): the sandbox environment should look almost
+ * Principle (Kara): the sandbox environment should look almost
  * exactly the same regardless of which host executes a command. The local MCP
  * dispatch path enumerates a server's subcommands (and per-subcommand params)
  * via a live listTools against the connected client. The relay path historically
@@ -78,7 +78,7 @@ describe("formatMcpHelp (shared formatter)", () => {
 		expect(result.stdout).toContain("issue_number (required, number) — Issue number");
 	});
 
-	// Regression: tool_error 2026-06-19 — github's list_issues rejects "open"
+	// Regression: observed github's list_issues rejecting "open"
 	// because the server wants GraphQL-style UPPERCASE enums, and the help
 	// output gave no way to discover that. Enum values must render in help so
 	// valid values are discoverable without a failed call.
