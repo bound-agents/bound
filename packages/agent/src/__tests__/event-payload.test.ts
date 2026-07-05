@@ -6,11 +6,10 @@ import type { Task } from "@bound/shared";
 import { buildEventWakeupContent } from "../event-payload";
 
 /**
- * Reproduces the bug observed on 2026-05-18: webhook fires for thread
- * d0372be6 → task wakes up with developer="[Task wakeup] Scheduled event
- * task X triggered." and tool_result body="Execute scheduled task." —
- * the relay_inbox envelope written by webhook-handler.ts never reaches
- * the agent context.
+ * Reproduces an observed bug: webhook fires for a thread and the task
+ * wakes up with developer="[Task wakeup] Scheduled event task X triggered."
+ * and tool_result body="Execute scheduled task." — the relay_inbox envelope
+ * written by webhook-handler.ts never reaches the agent context.
  */
 describe("buildEventWakeupContent", () => {
 	let db: Database;

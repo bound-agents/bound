@@ -17,9 +17,9 @@
  * show as `(last accessed 26d ago)` and the DA sort doesn't reflect
  * actual relevance.
  *
- * Live evidence: thread d0372be6 has detail entries with
- * `last_accessed_at` from 2026-04-XX (e.g.,
- * `curiosity:smolagents-codeact-paradigm:2026-04-28`) that have been
+ * Live evidence: a thread has detail entries with
+ * `last_accessed_at` from months prior (e.g.,
+ * `curiosity:smolagents-codeact-paradigm`) that have been
  * rendered into the agent's context every turn for weeks. They still
  * appear as "26d ago / 28d ago / 38d ago" — the agent reads them and
  * concludes "Working knowledge is months stale" because the time

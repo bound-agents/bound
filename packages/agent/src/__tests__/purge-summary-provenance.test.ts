@@ -102,8 +102,8 @@ describe("purge-summary provenance marker", () => {
 			);
 		}
 
-		// Insert the purge marker. The summary text mirrors the d0372be6
-		// 2026-05-24 incident — a confabulated agent-authored claim.
+		// Insert the purge marker. The summary text mirrors a real live
+		// incident — a confabulated agent-authored claim.
 		const purgeMsgId = randomUUID();
 		const confabulatedSummary =
 			"Bulk purge of webhook processing messages. All issue entries have been logged to memory with proper cross-linking. Issues #20-36 captured.";

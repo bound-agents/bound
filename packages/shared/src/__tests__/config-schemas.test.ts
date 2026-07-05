@@ -367,7 +367,7 @@ describe("Config schemas", () => {
 		});
 
 		describe("thinking field", () => {
-			// Regression: prior to 2026-04-25, `thinking` was not declared on the
+			// Regression: `thinking` was not declared on the
 			// schema. Zod's default strip mode silently dropped it from parse
 			// output, which meant ModelRouter.getThinkingConfig() returned
 			// undefined for every backend even when the JSON config set
@@ -1129,7 +1129,7 @@ describe("RELAY_KIND_REGISTRY completeness", () => {
  * Guardrail: every top-level config schema must REJECT unknown keys
  * (Zod strict mode) rather than silently stripping them.
  *
- * Background — on 2026-04-25 a `thinking` key on model_backends.json was
+ * Background — a `thinking` key on model_backends.json was
  * silently dropped by the default Zod strip behavior, which meant
  * extended thinking was fully disabled at runtime while the user's
  * config file appeared correct. Tests, typecheck, and config-load all

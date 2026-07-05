@@ -221,7 +221,7 @@ describe("toModelMessages — property tests", () => {
 	});
 
 	it("B-regression: cachePoint survives AI SDK's tool-message combining (load-bearing)", () => {
-		// Live regression on thread `b4541575-...` 2026-05-26: 50+ cold
+		// Live regression: an autonomous task with parallel tool calls had 50+ cold
 		// turns with cw=0 and the message-level cachePoint never reaching
 		// the wire. Root cause: the AI SDK's `convertToLanguageModelPrompt`
 		// (ai@6.0.168 dist/index.mjs:1342-1354) combines consecutive

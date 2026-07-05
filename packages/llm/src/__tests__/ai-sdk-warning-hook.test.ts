@@ -5,7 +5,7 @@
  * to `console.warn`, which bypasses bound's pino logger entirely. As a result
  * the 32MB `logs/bound.log` file contains zero "AI SDK Warning" entries even
  * when the console is flooded with them (e.g. non-Anthropic models receiving
- * Anthropic-specific reasoning fields before the 2026-04-25 fix).
+ * Anthropic-specific reasoning fields before a fix landed).
  *
  * `installAiSdkWarningHook(logger)` replaces the global with a routing
  * function that feeds structured context to pino. These tests lock in the

@@ -1252,7 +1252,7 @@ describe("Context Assembly Pipeline", () => {
 			expect(nonSystemBetween.length).toBe(0);
 		});
 
-		// Regression: Bedrock tool_use_id_mismatch from thread 8c73f682 (2026-04-23).
+		// Regression: Bedrock tool_use_id_mismatch, observed live.
 		// A parallel tool_call emitted two tool_use blocks. One result returned on
 		// schedule; the agent loop re-entered inference before the straggler landed
 		// and emitted a SECOND tool_call. The straggler result arrived AFTER the
@@ -1546,7 +1546,7 @@ describe("Context Assembly Pipeline", () => {
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		// Regression for thread 141042bb (2026-05-20). The loaded message
+		// Regression: the loaded message
 		// window contained no user-role rows (a long burst of tool_call /
 		// tool_result pairs with the most recent user message older than the
 		// MESSAGE_LOAD_LIMIT cutoff). The forward-advance "skip past
@@ -5222,7 +5222,7 @@ This skill reviews pull requests.`;
 
 	// ──────────────────────────────────────────────────────────────────────
 	// Stage 1 retrieval covers the entire thread when budget allows.
-	// Root cause: silent-amputation-2026-05-21 — a fixed MESSAGE_LOAD_LIMIT of
+	// Root cause: a fixed MESSAGE_LOAD_LIMIT of
 	// 100 in Stage 1 silently dropped the oldest messages on cold reassembly
 	// for any thread with > 100 messages, even when contextWindow had plenty
 	// of room. Stage 7's truncation marker never fired (budget wasn't
@@ -5310,7 +5310,7 @@ This skill reviews pull requests.`;
 
 	// ──────────────────────────────────────────────────────────────────────
 	// Token-aware truncation (replaces hardcoded keep-last-10)
-	// Root cause: context-loss-2026-03-31 — a 4900-msg thread kept only 10
+	// Root cause: a 4900-msg thread kept only 10
 	// messages, and verbose tool errors crowded out a 30-second-old conversation.
 	// ──────────────────────────────────────────────────────────────────────
 	describe("token-aware truncation", () => {
@@ -6272,7 +6272,7 @@ This skill reviews pull requests.`;
 
 		it("loads the entire thread when budget allows; Stage 7 truncates if needed", () => {
 			// Stage 1's MESSAGE_LOAD_LIMIT (formerly 100, originally 500) was
-			// removed in 2026-05-21. It silently dropped the oldest messages
+			// removed. It silently dropped the oldest messages
 			// on cold reassembly when the warm cache had grown past the cap,
 			// bypassing Stage 7's truncation marker that tells the agent how
 			// to retrieve older context. See "Stage 1 retrieval covers entire
@@ -7526,7 +7526,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("should inject synthetic tool_result when user interrupts a pending client tool_call", () => {
-			// Regression for thread 6b6ddeb0-ad14-44ee-99d6-96b9debc32c7 (2026-04-26):
+			// Regression, observed live:
 			// 1. Agent dispatched a boundless_bash client tool, persisted the tool_call,
 			//    and yielded while waiting for the result over WS.
 			// 2. User typed a follow-up message before the long-running bash returned.

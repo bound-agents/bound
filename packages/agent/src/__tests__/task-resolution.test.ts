@@ -62,7 +62,7 @@ describe("task-resolution", () => {
 			}).toThrow();
 		});
 
-		// Regression: scheduler advisory 3e69a2bf (2026-04-19).
+		// Regression, observed via a scheduler advisory.
 		// Cron expressions must be interpreted in UTC, independent of host TZ,
 		// so that a given spec fires at the same wall-clock UTC moment on every
 		// node of a multi-host cluster. Prior impl used getHours/setMinutes (local

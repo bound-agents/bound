@@ -186,7 +186,7 @@ describe("MainAgentLoop", () => {
 			// transient 5xx retry `continue`, while the prior state is still
 			// LLM_CALL. Without the self-loop the transition validator logs an
 			// "Invalid state transition" warning on every retry attempt — three
-			// times per exhausted server fault (observed live 2026-06-08,
+			// times per exhausted server fault (observed live against
 			// bedrock-mantle response.failed). The retry is legitimate; the
 			// table must model it.
 			expect(VALID_TRANSITIONS.LLM_CALL).toContain("LLM_CALL");
@@ -369,7 +369,7 @@ describe("MainAgentLoop", () => {
 	});
 
 	it("should fire onActivity for heartbeat chunks (regression: Bedrock stall)", async () => {
-		// Regression: thread b6a3ddba (2026-04-20/21) — Bedrock extended-thinking
+		// Regression, observed live — Bedrock extended-thinking
 		// warmup emitted heartbeat chunks with no text for >5min. The outer
 		// inactivity timer in message-handler.ts ticks only on onActivity, so a
 		// long warmup aborted mid-session. Fix: heartbeat chunks must reset the
@@ -2297,7 +2297,7 @@ describe("MainAgentLoop", () => {
 			// non-cached scalar; the agent loop must add cache reads + writes
 			// back here to recover the true wire size for inflation purposes.
 			//
-			// Pre-2026-05-26 this test pinned the OLD broken contract — back
+			// This test previously pinned the OLD broken contract — back
 			// when the bridge accidentally read the AI SDK's summed scalar
 			// and the agent loop avoided adding cache fields back. The bridge
 			// is fixed; this contract reverses to "DO sum them back."
@@ -2588,8 +2588,8 @@ describe("MainAgentLoop", () => {
 			const mockBackend = new MockLLMBackend();
 			// Push more identical, well-formed (non-truncated) tool_use turns than
 			// the threshold. Each turn issues the byte-identical bash call; the loop
-			// executes it, re-prompts, and pulls the next identical response. This is
-			// the 2026-04-24 synthesis spin reproduced: 20+ identical delta-check
+			// executes it, re-prompts, and pulls the next identical response. This
+			// reproduces an observed synthesis spin: 20+ identical delta-check
 			// queries that all PARSED CLEANLY — the truncation breaker cannot see
 			// them. Without the duplicate breaker the loop runs every pushed turn.
 			const overshoot = MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS + 3;
@@ -2705,8 +2705,8 @@ describe("MainAgentLoop", () => {
 	describe("error-result circuit breaker", () => {
 		it("aborts when consecutive turns return the byte-identical error despite varying args", async () => {
 			const mockBackend = new MockLLMBackend();
-			// Reproduces the 2026-06-12 connector-name-contamination spin (thread
-			// 53c7635e): the model emitted ~26 tool calls under a CONSTANT tool name
+			// Reproduces an observed connector-name-contamination spin: the model
+			// emitted ~26 tool calls under a CONSTANT tool name
 			// with DIFFERENT args each turn. The args differ, so the byte-identical
 			// CALL-signature breaker (MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS) keeps
 			// resetting and never fires. But every call returns the byte-identical
@@ -2774,7 +2774,7 @@ describe("MainAgentLoop", () => {
 
 		it("aborts cross-tool routing-error loops earlier than the generic error breaker", async () => {
 			const mockBackend = new MockLLMBackend();
-			// Reproduces the 2026-06-22 connector-vs-skill spin: the model calls
+			// Reproduces an observed connector-vs-skill spin: the model calls
 			// `connector` with `action: "activate"` (a `skill` action) over and over.
 			// suggestCorrectTool names `skill` from turn 1, but the model ignores it.
 			// The routing-error fuse must abort at MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS

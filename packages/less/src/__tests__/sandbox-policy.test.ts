@@ -117,8 +117,7 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		// Linux os.tmpdir() IS /tmp so the promise held incidentally; on macOS
 		// os.tmpdir() is /var/folders/<user>/T, leaving the literal /tmp
 		// (realpath /private/tmp) outside the writable set — shell idioms like
-		// `cat > /tmp/x` died with EPERM (tool_error 2026-06-21, reproduced
-		// live 2026-07-03).
+		// `cat > /tmp/x` died with EPERM.
 		if (process.platform === "win32") return;
 		const policy = buildPolicy(process.cwd(), enabled);
 		expect(policy.filesystem.readwritePaths).toContain(realpathSync("/tmp"));

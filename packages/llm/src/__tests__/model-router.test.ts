@@ -65,7 +65,7 @@ class CachingMockBackend implements LLMBackend {
 }
 
 describe("ModelRouter — getCacheTtl capability defaulting", () => {
-	// Live regression: thread `33212d49-…` 2026-05-25 ran with cr=0 across
+	// Live regression: a thread ran with cr=0 across
 	// most of its turns because Sonnet's `model_backends.json` config didn't
 	// explicitly set `cacheTtl` (a config-landmine — every operator must
 	// remember to set it for each caching-capable backend). `getCacheTtl`

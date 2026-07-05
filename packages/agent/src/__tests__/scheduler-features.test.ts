@@ -2217,10 +2217,10 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 
-		// Regression for advisory 0b9441e5-c47a (2026-05-16): event tasks must
+		// Regression: event tasks must
 		// not self-wake periodically after success. Setting next_run_at on
 		// completion caused phase1Schedule to re-claim the task every 5 minutes
-		// with no new event payload (observed: thread 6a9d56aa, 1 real Discord
+		// with no new event payload (observed live: 1 real Discord
 		// interaction → 29 wake-ups over 70min).
 		it("event task next_run_at is NULL after successful completion (no periodic self-wake)", async () => {
 			const taskId = randomUUID();

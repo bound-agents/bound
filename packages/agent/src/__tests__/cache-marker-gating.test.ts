@@ -312,11 +312,11 @@ describe("maybePlaceCacheMarker — MiniMax regression scenario", () => {
 });
 
 describe("refreshInnerLoopRollingMarker — trailing-pair", () => {
-	// CONTRACT (2026-06-01, trailing-pair fix):
+	// CONTRACT (trailing-pair fix):
 	// The single rolling marker the inner loop placed last iteration moves
 	// every iteration, so Bedrock's exact-byte-position cache has no breakpoint
 	// at the PRIOR write position and must rely on its ~20-block auto-lookback
-	// to bridge P_{K-1} → P_K. Live data (May 29-31) shows that lookback does
+	// to bridge P_{K-1} → P_K. Live data shows that lookback does
 	// NOT bridge for heavy coding threads: a single large tool_result blows past
 	// the window, the prior write is orphaned, and `cr` stays pinned at the
 	// fixed floor while `cw` re-writes the whole grown prefix (ratio ~1.12).

@@ -217,9 +217,9 @@ describe("advisory tool", () => {
 		expect(row.defer_until).toBeTruthy();
 	});
 
-	// Regression: tool_error 2026-06-08 (dismiss fell through to create, 8 junk
-	// advisories) and 2026-06-19 (list shadowed by a placeholder title). Under
-	// flag-shaped dispatch, create ran whenever title+detail were truthy even
+	// Regression: observed twice — dismiss fell through to create (8 junk
+	// advisories minted), and separately list was shadowed by a placeholder
+	// title. Under flag-shaped dispatch, create ran whenever title+detail were truthy even
 	// when the caller asked for a different operation. Action-enum dispatch
 	// makes the operation explicit: stray create-shaped params must never
 	// shadow the requested action.

@@ -195,7 +195,7 @@ describe("parseStreamChunks thinking handling", () => {
 });
 
 describe("parseStreamChunks truncation handling", () => {
-	// Regression: 2026-04-24 empty-args false-truncation bug (burned 23M tokens).
+	// Regression: empty-args false-truncation bug (burned 23M tokens in production).
 	// A zero-argument tool call emits tool_use_start + tool_use_end with no
 	// tool_use_args chunks in between. Accumulator becomes "" (not undefined),
 	// so `?? "{}"` fallback didn't catch it and JSON.parse("") threw.

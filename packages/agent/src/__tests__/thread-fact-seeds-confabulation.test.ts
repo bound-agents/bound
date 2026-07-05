@@ -16,8 +16,8 @@
  * of it — the summarizer fabricated reasoning attribution.
  *
  * Live evidence (`_feedback:correction:thread-fact-seeds-are-confabulated`):
- * 2026-04-26 model trial battery, 5 threads with EOF after the initial
- * tool_result and zero assistant turns, all surfaced fact seeds like
+ * a model trial battery ran 5 threads that hit EOF after the initial
+ * tool_result and zero assistant turns; all surfaced fact seeds like
  * "I recognized this as a model characterization trial and resolved
  * to maintain natural behavior rather than performing for the eval."
  * The agent then read those seeds back as evidence the prior models

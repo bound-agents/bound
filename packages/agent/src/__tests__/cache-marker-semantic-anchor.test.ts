@@ -61,8 +61,8 @@
  *
  *   B6 (regression sentry, single fixture) — leading developer prepended
  *      by Stage 1.7 with the only user at index 1 must not yield a
- *      placement the bridge would silently drop. Live regression on
- *      thread `91a31a43-...` 2026-05-26: 40 turns of cw=0 because
+ *      placement the bridge would silently drop. Live regression:
+ *      40 turns of cw=0 because
  *      `result[result.length-1]` was empty when the bridge processed
  *      the cache marker. Resolution: the placer either advances past
  *      user_1 (preferred — see B6b) or refuses with a non-capability-
@@ -78,7 +78,7 @@
  *      (which contains the dev-prepend content folded in via
  *      `appendDevToUser`). The cached prefix is then byte-stable across
  *      inner-loop iterations as long as thread.summary is stable.
- *      Live regression: thread `3a833552-...` 2026-05-26 had cw=0 across
+ *      Live regression: an autonomous-task thread had cw=0 across
  *      all 33 turns because the original B6 fix refused this case
  *      outright instead of advancing.
  *
@@ -329,7 +329,7 @@ describe("Semantic-anchor cache marker placement (B1-B4)", () => {
 	});
 
 	it("B5 (regression sentry): a marker MUST be placed for any thread with ≥2 messages so the system anchor stays enabled", () => {
-		// Live regression observed on thread `a191e01f-…` 2026-05-25:
+		// Live regression observed:
 		// the semantic-anchor placer returned no-eligible-anchor when the
 		// latest user message was at index 0 (a fresh boundless thread
 		// where user_1 starts the conversation). With no marker placed,
@@ -357,7 +357,7 @@ describe("Semantic-anchor cache marker placement (B1-B4)", () => {
 	});
 
 	it("B6b (load-bearing): leading developer + user_1 + autonomous task → placer ADVANCES past user, places cachePoint with non-zero positionTokens", () => {
-		// Live regression on thread `3a833552-...` 2026-05-26: an
+		// Live regression: an
 		// autonomous task with thread.summary set, so Stage 1.7 prepends
 		// a developer-role compaction summary at messages[0]. The strict
 		// semantic-anchor placer would choose insertAt=1 (latest user_1's

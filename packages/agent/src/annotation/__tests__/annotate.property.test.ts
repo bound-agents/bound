@@ -173,7 +173,7 @@ describe("annotateMessages — property tests", () => {
 	});
 
 	it("N7 (load-bearing): timestamp annotation is byte-stable across ANY nowMs — no age-based cliff", () => {
-		// Live regression on thread `6fff1513-...` 2026-05-26: the prior
+		// Live regression: the prior
 		// annotation rule applied a timestamp prefix only when the user
 		// message was ≥ 60s old. For autonomous tasks (single user_1
 		// followed by long inner loops), this caused a one-time byte shift

@@ -579,7 +579,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 	it("warm path injects ONLY varyingContent into the developer tail (no stable-subsection duplication)", async () => {
 		// Live evidence captured via the agent-harness production-shape
-		// fixture (2026-05-26): warm-path inferences carried a 226,238-
+		// fixture: warm-path inferences carried a 226,238-
 		// byte trailing user message containing the FULL Working Knowledge
 		// + Discoverable Archive + skill index XML — exactly the content
 		// already in the cached system prompt. The cold path correctly
@@ -740,7 +740,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 	it("preserves a HEAD developer (telescope digest/marker) when refreshing the volatile-tail (load-bearing)", async () => {
 		// Live regression observed via the agent-harness on
-		// `production-shape` fixture (2026-05-26): between two consecutive
+		// `production-shape` fixture: between two consecutive
 		// inner-loop iterations of the same outer-turn, cumulative cache
 		// dropped by 22,363 tokens (cr 80,952 → 58,589) because the wire
 		// body's first user message changed by 232k bytes.
@@ -906,7 +906,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 	it("places a rolling cachePoint on each inner-loop iteration after the first", async () => {
 		// Live regression observed via the agent-harness on
-		// `production-shape` fixture (2026-05-26, /tmp/h8/turn-{2..6}.json):
+		// `production-shape` fixture:
 		// across a 5-iter cold-path inner loop, the wire body's only
 		// message-level cachePoint stayed at user_1 (the semantic anchor).
 		// Each iteration's appended `tool_call + tool_result` content lived
