@@ -1,6 +1,4 @@
 import { isToolVisibilityAppOnly } from "@modelcontextprotocol/ext-apps/app-bridge";
-// MCP-Apps-in-web-UI feature: see project memory project:mcp-apps-web-ui:design-and-progress.
-//
 // One-time bootstrap that turns the web UI into an MCP Apps *renderer* (NOT a
 // tool provider). App-bearing servers are sourced from the agent-side mcp.json
 // — the agent connects to them server-side and calls their tools as usual, so
@@ -26,7 +24,7 @@ import { mcpAppHost } from "./mcp-app-store";
  */
 export interface McpAppServer {
 	name: string;
-	transport: "http" | "sse";
+	transport: "http";
 	proxyPath: string;
 	tools?: Array<{ name: string; uiResourceUri: string }>;
 }

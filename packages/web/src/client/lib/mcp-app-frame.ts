@@ -1,6 +1,3 @@
-// Commit 3 of the MCP-Apps-in-web-UI feature: see project memory
-// project:mcp-apps-web-ui:commit3-sandbox-decision.
-//
 // Pure helpers for rendering an MCP App inside the bound web UI under the
 // hard single-origin (:3001, web router only) constraint. Each app runs in a
 // single iframe with sandbox="allow-scripts allow-forms" (NO allow-same-origin)

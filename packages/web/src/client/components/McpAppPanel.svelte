@@ -1,11 +1,8 @@
 <script lang="ts">
-// Commit 4 of the MCP-Apps-in-web-UI feature: see project memory
-// project:mcp-apps-web-ui:design-and-progress.
-//
 // Renders one UI-bearing MCP tool call as an inline app. On mount it reads the
 // app's `ui://` resource, builds an AppBridge wired to the in-page MCP SDK
 // client, and mounts the app into a single opaque-origin srcdoc iframe (the
-// single-origin sandbox model; see project:mcp-apps-web-ui:commit3-sandbox-decision).
+// single-origin sandbox model documented in mcp-app-frame.ts).
 // All DOM/iframe wiring is exercised by typecheck + manual smoke — bun:test has
 // no DOM env in the web package.
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";

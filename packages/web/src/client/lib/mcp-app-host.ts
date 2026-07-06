@@ -1,17 +1,13 @@
-// Commit 2 of the MCP-Apps-in-web-UI feature: see project memory
-// project:mcp-apps-web-ui:design-and-progress.
-//
 // The browser is both an MCP Apps *host* and a bound tool-provider *client*
 // (the boundless pattern). This module is the host half's connection manager:
 // it connects to the MCP App servers handed to the browser by
 // GET /api/mcp-apps, lists their tools, maps each to a bound ToolDefinition so
 // the agent can call them, and dispatches an inbound bound tool call to the
 // owning MCP server. UI-bearing tools (ext-apps `_meta.ui.resourceUri`) are
-// flagged here; the iframe/AppBridge rendering glue lands in a later commit.
+// flagged here; the iframe/AppBridge rendering glue lives in mcp-app-bridge.ts.
 import type { ToolCallRequest, ToolCallResult, ToolDefinition } from "@bound/client";
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult, ClientCapabilities, Tool } from "@modelcontextprotocol/sdk/types.js";
 
@@ -245,11 +241,10 @@ export class McpAppHost {
 }
 
 /**
- * Connect to an MCP server over Streamable HTTP, falling back to SSE for older
- * servers (the basic-host reference order). Returns the connected SDK client.
- * Optional `headers` are attached to every transport request. In the web UI's
- * renderer path these are injected server-side by the same-origin proxy, so the
- * browser never sees upstream auth tokens.
+ * Connect to an MCP server over Streamable HTTP. Returns the connected SDK
+ * client. Optional `headers` are attached to every transport request. In the
+ * web UI's renderer path these are injected server-side by the same-origin
+ * proxy, so the browser never sees upstream auth tokens.
  */
 export async function connectToMcpServer(
 	serverUrl: URL,
@@ -257,21 +252,7 @@ export async function connectToMcpServer(
 ): Promise<Client> {
 	const requestInit = headers ? { headers } : undefined;
 	const clientOptions = { capabilities: MCP_APPS_HOST_CAPABILITIES as ClientCapabilities };
-	try {
-		const client = new Client(IMPLEMENTATION, clientOptions);
-		await client.connect(new StreamableHTTPClientTransport(serverUrl, { requestInit }));
-		return client;
-	} catch (streamableError) {
-		try {
-			const client = new Client(IMPLEMENTATION, clientOptions);
-			await client.connect(new SSEClientTransport(serverUrl, { requestInit }));
-			return client;
-		} catch (sseError) {
-			throw new Error(
-				`Could not connect to MCP server ${serverUrl.href}. ` +
-					`Streamable HTTP error: ${streamableError instanceof Error ? streamableError.message : String(streamableError)}; ` +
-					`SSE error: ${sseError instanceof Error ? sseError.message : String(sseError)}`,
-			);
-		}
-	}
+	const client = new Client(IMPLEMENTATION, clientOptions);
+	await client.connect(new StreamableHTTPClientTransport(serverUrl, { requestInit }));
+	return client;
 }

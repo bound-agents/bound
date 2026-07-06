@@ -1,6 +1,3 @@
-// Commit 3 of the MCP-Apps-in-web-UI feature: see project memory
-// project:mcp-apps-web-ui:commit3-sandbox-decision.
-//
 // Host-side glue that renders an MCP App in the bound web UI and wires its
 // ext-apps AppBridge to the in-page MCP SDK client. Adapted from the ext-apps
 // reference (examples/basic-host/src/implementation.ts) with one structural
