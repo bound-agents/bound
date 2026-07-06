@@ -1,6 +1,3 @@
-// Commit 4 of the MCP-Apps-in-web-UI feature: see project memory
-// project:mcp-apps-web-ui:design-and-progress.
-//
 // The browser dispatches the agent's MCP tool calls (the boundless pattern). For
 // UI-bearing tools (ext-apps `_meta.ui.resourceUri`) the call ALSO renders an
 // app iframe. This module owns the bridge between the tool-call dispatch path
