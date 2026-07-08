@@ -380,4 +380,109 @@ describe("PlatformMcpRegistry: remote tool relay (Option 2)", () => {
 		expect(tools.has("second_tool")).toBe(true);
 		expect(tools.has("first_tool")).toBe(false);
 	});
+
+	it("event-bound thread receives a remote connector's WRITE tools (leader hosts the subscription)", async () => {
+		// A spoke reaches Discord only as a remote server: the leader runs the
+		// live subscription, this host discovers its tools through the relay.
+		// An event-bound thread whose loop runs here must still get the scoped
+		// WRITE tools (discord_send_message), not just the read-only set — they
+		// relay their tools/call to the leader (R-UD12: any host serves any tool).
+		seedRemoteHost("remote-leader", ["discord"]);
+
+		const remotePlatformRequest = await makeRemoteRouter(() => {
+			const s = new McpServer({ name: "discord", version: "1.0.0" });
+			s.registerTool(
+				"discord_list_channels",
+				{
+					description: "List channels.",
+					inputSchema: z.object({}),
+					annotations: { readOnlyHint: true },
+				},
+				async () => ({ content: [{ type: "text", text: '["C1"]' }] }),
+			);
+			s.registerTool(
+				"discord_send_message",
+				{
+					description: "Send a Discord message.",
+					inputSchema: z.object({ channel_id: z.string(), content: z.string() }),
+					// no readOnlyHint → a WRITE tool
+				},
+				async () => ({ content: [{ type: "text", text: "sent" }] }),
+			);
+			return s;
+		});
+
+		registry.setRemotePlatformRequest(remotePlatformRequest);
+		await registry.discoverRemoteTools();
+
+		// Build the thread → event task → connector handle chain for Discord.
+		const now = new Date().toISOString();
+		const threadId = "remote-event-thread";
+		const taskId = "remote-event-task";
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: "user-1",
+				host_origin: siteId,
+				title: "event",
+				created_at: now,
+				modified_at: now,
+				last_message_at: now,
+				deleted: 0,
+				interface: "platform",
+				summary: null,
+			},
+			siteId,
+		);
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId,
+				type: "event",
+				thread_id: threadId,
+				status: "running",
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+				trigger_spec: "",
+				payload: null,
+				last_run_at: null,
+				next_run_at: null,
+				consecutive_failures: 0,
+				alert_threshold: 3,
+			},
+			siteId,
+		);
+		insertRow(
+			db,
+			"connector_handles",
+			{
+				id: "remote-event-handle",
+				task_id: taskId,
+				server_name: "discord",
+				event_name: "message.received",
+				event_args: "{}",
+				delivery_mode: "poll",
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+				cursor: null,
+			},
+			siteId,
+		);
+
+		const scoped = registry.getToolsForThread(threadId);
+		expect(scoped.has("discord_list_channels")).toBe(true);
+		expect(scoped.has("discord_send_message")).toBe(true);
+
+		// The write tool is relay-backed and actually invocable.
+		const send = scoped.get("discord_send_message");
+		expect(send?.execute).toBeDefined();
+		if (!send?.execute) throw new Error("unreachable");
+		const result = await send.execute({ channel_id: "C1", content: "hi" });
+		expect(result).toContain("sent");
+	});
 });
