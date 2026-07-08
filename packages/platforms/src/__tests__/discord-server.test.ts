@@ -62,12 +62,23 @@ function createMockDiscordClient() {
 	const createDMCalls: string[] = [];
 	const dmOverrides = new Map<string, { id?: string; error?: Error }>();
 	// Per-channel fetch overrides so a test can make client.channels.fetch
-	// return a guild (non-DM) text channel or a non-text channel.
-	const channelOverrides = new Map<string, { isDMBased: boolean; isTextBased: boolean }>();
+	// return a guild (non-DM) text channel or a non-text channel. `canView`
+	// (default true) and `guild` (default false) let a test model a guild
+	// channel the bot lacks View Channel permission on, for subscription-time
+	// permission validation.
+	const channelOverrides = new Map<
+		string,
+		{ isDMBased: boolean; isTextBased: boolean; canView?: boolean; guild?: boolean }
+	>();
 	// Guild cache for discord_list_channels enumeration.
 	const guildCache = new Map<
 		string,
-		{ id: string; name: string; channels: { cache: Map<string, unknown> } }
+		{
+			id: string;
+			name: string;
+			members: { me: { id: string } };
+			channels: { cache: Map<string, unknown> };
+		}
 	>();
 
 	return {
@@ -83,10 +94,17 @@ function createMockDiscordClient() {
 				const override = channelOverrides.get(channelId);
 				const isDMBased = override ? override.isDMBased : true;
 				const isTextBased = override ? override.isTextBased : true;
+				const canView = override?.canView ?? true;
+				const isGuild = override?.guild ?? false;
 				return {
 					isDMBased: () => isDMBased,
 					// Real discord.js DM channels report isTextBased() === true.
 					isTextBased: () => isTextBased,
+					// Guild channels carry a guild ref (with the bot member) and a
+					// permissionsFor() resolver; DM channels have neither. The
+					// subscription-time permission gate keys off these.
+					guild: isGuild ? { id: "guild-1", members: { me: { id: "bot" } } } : undefined,
+					permissionsFor: isGuild ? () => ({ has: () => canView }) : undefined,
 					sendTyping: async () => {
 						sendTypingCalls.push(channelId);
 					},
@@ -125,19 +143,26 @@ function createMockDiscordClient() {
 		_addGuild: (guild: {
 			id: string;
 			name: string;
-			channels: Array<{ id: string; name: string; isTextBased: boolean }>;
+			channels: Array<{ id: string; name: string; isTextBased: boolean; canView?: boolean }>;
 		}) => {
 			const channelCache = new Map<string, unknown>();
 			for (const ch of guild.channels) {
+				const canView = ch.canView ?? true;
 				channelCache.set(ch.id, {
 					id: ch.id,
 					name: ch.name,
 					isTextBased: () => ch.isTextBased,
+					// permissionsFor(member) ignores the member arg in the mock and
+					// answers from the channel's `canView` flag; ViewChannel is the
+					// only permission the list filter checks.
+					permissionsFor: () => ({ has: () => canView }),
 				});
 			}
 			guildCache.set(guild.id, {
 				id: guild.id,
 				name: guild.name,
+				// The Guilds intent always caches the bot's own member.
+				members: { me: { id: "bot" } },
 				channels: { cache: channelCache },
 			});
 		},
@@ -1301,6 +1326,103 @@ describe("Discord MCP Server", () => {
 					channel_name: "random",
 				},
 			]);
+		});
+
+		it("discord_list_channels omits guild text channels the bot cannot view", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._addGuild({
+				id: "guild-1",
+				name: "My Server",
+				channels: [
+					{ id: "text-1", name: "general", isTextBased: true, canView: true },
+					// The bot is a member of the guild (so it's in the channel cache)
+					// but lacks View Channel on this one — must be filtered out.
+					{ id: "text-2", name: "secret", isTextBased: true, canView: false },
+				],
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
+				Record<string, unknown>
+			>;
+			const ids = parsed.map((e) => e.channel_id);
+			expect(ids).toContain("text-1");
+			expect(ids).not.toContain("text-2");
+		});
+
+		it("events/stream rejects a subscription to a guild channel the bot cannot view", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._setChannelOverride("hidden-ch", {
+				isDMBased: false,
+				isTextBased: true,
+				guild: true,
+				canView: false,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await expect(
+				mcpClient.request(
+					{
+						method: "events/stream",
+						params: { event: "message.received", params: { channel_id: "hidden-ch" } },
+					},
+					z.object({ subscriptionId: z.string() }),
+				),
+			).rejects.toThrow(/view channel|cannot subscribe|permission/i);
+		});
+
+		it("events/stream allows a subscription to a guild channel the bot can view", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._setChannelOverride("visible-ch", {
+				isDMBased: false,
+				isTextBased: true,
+				guild: true,
+				canView: true,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const result = await mcpClient.request(
+				{
+					method: "events/stream",
+					params: { event: "message.received", params: { channel_id: "visible-ch" } },
+				},
+				z.object({ subscriptionId: z.string() }),
+			);
+			expect(result.subscriptionId).toBeTruthy();
+		});
+
+		it("events/stream allows a DM subscription without a channel-permission check", async () => {
+			// DM channels have no permissionsFor/guild; the gate must exempt them
+			// (DMs are gated by the allowed_users allowlist, not channel perms).
+			const config: PlatformConnectorConfig = { allowed_users: ["user-1"] };
+			mockDiscordClient._setChannelOverride("dm-ch", {
+				isDMBased: true,
+				isTextBased: true,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const result = await mcpClient.request(
+				{
+					method: "events/stream",
+					params: { event: "message.received", params: { channel_id: "dm-ch" } },
+				},
+				z.object({ subscriptionId: z.string() }),
+			);
+			expect(result.subscriptionId).toBeTruthy();
 		});
 
 		it("drops a guild message from a non-text channel (receive-side gate)", async () => {
