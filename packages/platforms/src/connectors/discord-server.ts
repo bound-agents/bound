@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { sniffImageMediaType } from "@bound/llm";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ChannelType } from "discord.js";
+import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { z } from "zod";
+import { CHANNEL_ACCESS_DENIED_CODE } from "../subscription-errors.js";
 
 // Discord.js types imported dynamically to avoid hard dep at module load
 type DiscordClient = import("discord.js").Client;
@@ -37,14 +38,54 @@ function compareSnowflakeCursors(a: string, b: string): number {
 	}
 }
 
+/**
+ * Throws a subscription-rejection error if the bot definitively cannot view the
+ * target channel of a `message.received` subscription. DMs are exempt — they
+ * are gated by the `allowed_users` allowlist, not per-channel permissions, and
+ * carry no `guild`/`permissionsFor`. A guild channel is rejected ONLY on a
+ * definitive negative: the channel is fetched, its guild + bot member + channel
+ * permissions all resolve, and `ViewChannel` is absent. Every unresolvable case
+ * (fetch throws, channel missing, cold guild-member cache, no `permissionsFor`)
+ * is treated as "cannot confirm" and does NOT throw — a subscription-time gate
+ * must not nuke a legitimate handle just because the cache is cold during a
+ * failover reconnect. `code` rides on the thrown error so the registry can tell
+ * a permanent access denial (roll the handle back) from a transient stream
+ * failure (leave it, retry later).
+ */
+async function assertBotCanViewChannel(client: DiscordClient, channelId: string): Promise<void> {
+	let channel: unknown;
+	try {
+		channel = await client.channels.fetch(channelId);
+	} catch {
+		return; // transient/unresolvable — do not block
+	}
+	if (!channel) return;
+	const c = channel as {
+		isDMBased?: () => boolean;
+		guild?: { members?: { me?: unknown } };
+		permissionsFor?: (member: unknown) => { has: (flag: bigint) => boolean } | null;
+	};
+	// DMs are gated by allowed_users, not channel permissions.
+	if (c.isDMBased?.() === true) return;
+	const me = c.guild?.members?.me;
+	if (!me || typeof c.permissionsFor !== "function") return; // unresolvable — do not block
+	const perms = c.permissionsFor(me);
+	if (!perms) return; // unresolvable — do not block
+	if (!perms.has(PermissionFlagsBits.ViewChannel)) {
+		const err = new Error(
+			`Cannot subscribe to channel ${channelId}: bot lacks View Channel permission`,
+		) as Error & { code?: number };
+		err.code = CHANNEL_ACCESS_DENIED_CODE;
+		throw err;
+	}
+}
+
 /** Event subscription storage */
 interface Subscription {
 	subscriptionId: string;
 	eventName: string;
 	params: Record<string, unknown>;
 }
-
-/** Event buffer entry */
 interface BufferedEvent {
 	eventId: string;
 	name: string;
@@ -250,6 +291,13 @@ export function createDiscordServer(
 			if (!eventParams.channel_id || typeof eventParams.channel_id !== "string") {
 				throw new Error("message.received requires channel_id in event params");
 			}
+			// Reject subscriptions to a guild channel the bot cannot view. A
+			// dead subscription (bot lacks View Channel) would otherwise sit in
+			// the handle/task tables forever, never delivering — Discord never
+			// sends messageCreate for a channel the bot can't see. Throwing here
+			// (before subscriptions.set) refuses registration; the code on the
+			// error lets the registry roll the handle back rather than retry.
+			await assertBotCanViewChannel(client, eventParams.channel_id);
 		}
 
 		const subscriptionId = randomUUID();
@@ -496,12 +544,27 @@ export function createDiscordServer(
 			// discord.js guild/channel cache, which the Guilds intent populates —
 			// no per-channel API call needed. Only text-bearing channels are
 			// listed; categories/stage/voice-without-text are skipped.
+			//
+			// The Guilds intent seeds the cache with EVERY channel in a guild the
+			// bot is a member of, regardless of per-channel View Channel overwrites
+			// — so the raw cache includes rooms the bot cannot actually read.
+			// Filter those out: enumerating a channel the bot can't see invites a
+			// subscription that will never deliver (Discord never sends
+			// messageCreate for it). Skip ONLY on a definitive negative (guild
+			// member + channel permissions both resolve and ViewChannel is absent);
+			// when permissions can't be resolved, fall back to listing rather than
+			// hiding everything (no regression vs. the pre-filter behavior).
 			const guilds = (
 				client as {
 					guilds?: {
 						cache?: Map<
 							string,
-							{ id: string; name: string; channels?: { cache?: Map<string, unknown> } }
+							{
+								id: string;
+								name: string;
+								members?: { me?: unknown };
+								channels?: { cache?: Map<string, unknown> };
+							}
 						>;
 					};
 				}
@@ -510,13 +573,20 @@ export function createDiscordServer(
 				for (const guild of guilds.values()) {
 					const channelCache = guild.channels?.cache;
 					if (!channelCache) continue;
+					const me = guild.members?.me ?? null;
 					for (const rawChannel of channelCache.values()) {
 						const channel = rawChannel as {
 							id: string;
 							name?: string;
 							isTextBased?: () => boolean;
+							permissionsFor?: (member: unknown) => { has: (flag: bigint) => boolean } | null;
 						};
 						if (channel.isTextBased?.() !== true) continue;
+						// Definitive View Channel denial → skip. Unresolvable → keep.
+						if (me && typeof channel.permissionsFor === "function") {
+							const perms = channel.permissionsFor(me);
+							if (perms && !perms.has(PermissionFlagsBits.ViewChannel)) continue;
+						}
 						entries.push({
 							guild_id: guild.id,
 							guild_name: guild.name,
