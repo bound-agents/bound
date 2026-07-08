@@ -1302,6 +1302,119 @@ describe("Discord MCP Server", () => {
 				},
 			]);
 		});
+
+		it("drops a guild message from a non-text channel (receive-side gate)", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await subscribe(mcpClient, "stage-ch");
+			// A guild channel that is not text-based (e.g. a stage/voice channel):
+			// isTextBased() === false must drop it before it becomes an event,
+			// mirroring the send-side non-text rejection.
+			const nonTextGuildMsg = guildMessage({
+				id: "2",
+				channelId: "stage-ch",
+				channel: {
+					type: ChannelType.GuildStageVoice,
+					name: "Stage",
+					isDMBased: () => false,
+					isTextBased: () => false,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+			});
+			await mockDiscordClient._triggerMessageCreate(nonTextGuildMsg);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "message.received", params: { channel_id: "stage-ch" } },
+				},
+				pollSchema,
+			);
+			expect(pollResult.events.length).toBe(0);
+		});
+
+		it("DM message emits guild_id null and undefined channel_name", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await subscribe(mcpClient, "dm-ch");
+			const dm: MockDiscordMessage = {
+				id: "dm-shape-1",
+				author: { id: "user-9", username: "friend", displayName: null, bot: false },
+				content: "hi in a DM",
+				channelId: "dm-ch",
+				guildId: null,
+				channel: {
+					type: ChannelType.DM,
+					// DM channels have no `name` — proves the optional read does not throw.
+					isDMBased: () => true,
+					isTextBased: () => true,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+				attachments: new Map(),
+			};
+			await mockDiscordClient._triggerMessageCreate(dm);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "message.received", params: { channel_id: "dm-ch" } },
+				},
+				pollSchema,
+			);
+			expect(pollResult.events.length).toBe(1);
+			const data = (pollResult.events[0] as Record<string, unknown>).data as Record<
+				string,
+				unknown
+			>;
+			expect(data.guild_id).toBeNull();
+			expect(data.channel_name).toBeUndefined();
+		});
+
+		it("discord_list_channels returns DM and guild entries in one flat array", async () => {
+			// Both enumeration sources active at once: the flat array must carry
+			// DM {user_id, channel_id} entries AND guild entries, discriminable by
+			// user_id vs guild_id.
+			const config: PlatformConnectorConfig = { allowed_users: ["user-a"] };
+			mockDiscordClient._setDMOverride("user-a", { id: "dm-a" });
+			mockDiscordClient._addGuild({
+				id: "guild-1",
+				name: "My Server",
+				channels: [{ id: "text-1", name: "general", isTextBased: true }],
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
+				Record<string, unknown>
+			>;
+			// DM entries come first (enumerated before guilds), guild entries after.
+			expect(parsed).toEqual([
+				{ user_id: "user-a", channel_id: "dm-a" },
+				{
+					guild_id: "guild-1",
+					guild_name: "My Server",
+					channel_id: "text-1",
+					channel_name: "general",
+				},
+			]);
+		});
 	});
 
 	describe("discord_list_channels", () => {
