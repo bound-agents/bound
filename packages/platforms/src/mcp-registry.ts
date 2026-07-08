@@ -873,8 +873,26 @@ export class PlatformMcpRegistry {
 		const serverName = this.resolveBoundServerName(threadId);
 		if (!serverName) return new Map(); // AC3.3: no event task / handle → no platform tools
 
-		// AC3.1: return only this server's tools
-		return this.getToolsForServer(serverName);
+		// AC3.1: return only this server's tools — local OR remote. A spoke reaches
+		// a connector only as a remote (the leader runs the live subscription), so
+		// its tools live in remoteTools, not platformTools. getToolsForServer alone
+		// reads only local, which would hand an event-bound thread whose loop runs
+		// here an EMPTY scoped set — silently dropping every write tool
+		// (discord_send_message, etc.) and forcing a fall-through to the read-only
+		// set. Remote platform tools relay their tools/call through makeRemoteTool,
+		// so they are fully invocable from any host (R-UD12: any host serves any
+		// tool via relay). Local entries win on name collision, mirroring
+		// getReadOnlyPlatformTools / getAllPlatformTools.
+		const merged = new Map<string, PlatformRegisteredTool>();
+		const remote = this.remoteTools.get(serverName);
+		if (remote) {
+			for (const [toolName, tool] of remote) merged.set(toolName, tool);
+		}
+		const local = this.platformTools.get(serverName);
+		if (local) {
+			for (const [toolName, tool] of local) merged.set(toolName, tool);
+		}
+		return merged;
 	}
 
 	/**
