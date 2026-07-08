@@ -23,3 +23,4 @@ export type { ConnectorToolContext, ConnectorToolDef } from "./connector-tool.js
 export { registerConnectorEventDelivery } from "./mcp-registry.js";
 export { PlatformLeaderElection } from "./leader-election.js";
 export { setupDiscordServers } from "./setup-platform-servers.js";
+export { SUBSCRIPTION_REJECTED_CODE, isSubscriptionRejected } from "./subscription-errors.js";

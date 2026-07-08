@@ -289,7 +289,21 @@ async function handleAttach(
 	if (ctx.registry.getClient(serverName)) {
 		const handle = getConnectorHandle(ctx.db, handleId);
 		if (handle) {
-			await ctx.registry.activateSubscription(handle);
+			try {
+				await ctx.registry.activateSubscription(handle);
+			} catch (err) {
+				// The connector permanently rejected the subscription (e.g. the
+				// Discord bot can't view the channel). Roll back the thread, task,
+				// and handle we just created so nothing looks bound when it will
+				// never deliver, and report the reason instead of a false success.
+				// Transient stream failures never reach here — the registry only
+				// rethrows subscription-rejected errors.
+				softDelete(ctx.db, "connector_handles", handleId, ctx.siteId);
+				softDelete(ctx.db, "tasks", taskId, ctx.siteId);
+				softDelete(ctx.db, "threads", threadId, ctx.siteId);
+				const reason = err instanceof Error ? err.message : String(err);
+				return `Error: subscription rejected for (${serverName}, ${eventName}, ${JSON.stringify(eventArgs)}): ${reason}`;
+			}
 		}
 	}
 
