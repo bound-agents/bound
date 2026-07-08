@@ -621,8 +621,8 @@ CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocesse
 | `inference` | Request LLM inference from the target (streaming response; context travels as `segments`) |
 | `client_tool` | Relay a client (WS) tool call to the host holding the WS session |
 | `intake` | Route an inbound platform message to the appropriate spoke for processing |
-| `platform_deliver` | Route an outbound assistant response to the platform leader host for delivery |
-| `event_broadcast` | Fan out a custom event to all spokes (target is `*`) |
+| `platform_request` | Proxy an MCP platform request (e.g. `events/list`) to the host running that connector (sync dispatch) |
+| `webhook_intake` | Passive: durable HTTP-envelope mailbox row written by `/webhook/:name`, consumed by the scheduler (not the relay-processor) |
 
 The `process` (whole-loop delegation) relay kind is **removed** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD13); the loop always runs on the trigger host, which relays only inference and tool calls. The `client_tool`/`client_result` kinds are new: they let a loop on a non-session host execute a client tool by relaying to the session host (R-UD5/R-UD8).
 
@@ -658,9 +658,7 @@ After routing, the hub sends a `RELAY_ACK` back to the originating spoke contain
 
 Once a target is selected, the platform message is routed to that spoke, which runs the agent loop locally (the old `process` whole-loop delegation entry is gone — `docs/design/specs/2026-06-29-unified-delegation.md`).
 
-**Routing for `platform_deliver`:** The entry is routed to the spoke that currently holds the platform leader role for the relevant platform. Leadership is stored in the synced `cluster_config` table under the key `platform_leader:<platform>` (e.g., `platform_leader:discord`). The receiving spoke's `RelayProcessor` emits a local `platform:deliver` event, which the `PlatformConnectorRegistry` handles to send the message to the user.
-
-**Routing for `event_broadcast`:** The target field is set to `*`. The hub fans out the entry to all connected spokes, excluding the originating source spoke. Each recipient's `RelayProcessor` fires the named event locally on its event bus. Used by the agent's `emit` command to propagate custom events across the cluster.
+**Outbound platform delivery:** There is no dedicated `platform_deliver` relay kind. The agent sends to a platform by calling the connector's own tool (e.g. `discord_send_message`), which is a platform MCP tool. When the loop runs on a host that does not hold that platform's leader role, the uniform `{local | relay}` tool dispatch relays the tool call to the serving host and returns the result (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD5/R-UD8). Leadership is stored in the synced `cluster_config` table under the key `platform_leader:<platform>` (e.g., `platform_leader:discord`); only the leader runs the active gateway connection.
 
 **Immediate delivery:** Because replication runs over a persistent WebSocket, relay entries are delivered to connected peers as soon as they are written — there is no separate polling cycle to wait for. The `relay_cycles.delivery_method` column records whether delivery went through the sync pipeline or an out-of-band eager push path; the current WebSocket transport uses `"sync"`.
 

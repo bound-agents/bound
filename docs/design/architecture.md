@@ -146,10 +146,12 @@ Requester                          Hub                         Target
 ```
 
 Relay message kinds:
-- **Request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `cancel`, `inference`, `process`, `intake`, `platform_deliver`, `event_broadcast`
-- **Response kinds:** `result`, `error`, `stream_chunk`, `stream_end`, `status_forward`
+- **Sync request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `platform_request`
+- **Async request kinds:** `client_tool`, `cancel`, `inference`, `intake`
+- **Passive kinds:** `webhook_intake` (durable mailbox owned by the scheduler, not the relay-processor)
+- **Response kinds:** `result`, `error`, `client_result`, `stream_chunk`, `stream_end`, `status_forward`, `trace_data`
 
-`intake` routes inbound platform messages to the spoke with platform affinity. `platform_deliver` routes outbound assistant responses to the platform leader host. `event_broadcast` (target `*`) fans out custom events to all spokes.
+`intake` routes an inbound platform message to the spoke with platform affinity; the selected host then runs the loop locally. `platform_request` proxies an MCP platform request (e.g. `events/list`) to the host running that connector. Outbound assistant responses are not a dedicated kind — the agent calls the connector's tool (e.g. `discord_send_message`), relayed to the leader host via the uniform tool dispatch if needed. The `process` (whole-loop delegation) kind was removed (`docs/design/specs/2026-06-29-unified-delegation.md`).
 
 ## Database Schema
 
