@@ -333,9 +333,10 @@ export function createDiscordServer(
 		"discord_send_message",
 		{
 			description:
-				"Send a message to a Discord DM channel. Returns an error if content exceeds 2000 characters.",
+				"Send a message to a Discord channel — a DM or a guild text channel. " +
+				"Returns an error if content exceeds 2000 characters.",
 			inputSchema: {
-				channel_id: z.string().describe("The Discord channel ID to send to"),
+				channel_id: z.string().describe("The Discord channel ID to send to (DM or guild channel)"),
 				content: z.string().describe("Message content (must be <= 2000 chars)"),
 			},
 		},
@@ -354,17 +355,22 @@ export function createDiscordServer(
 
 			try {
 				const channel = await client.channels.fetch(channel_id);
-				if (!channel || !channel.isDMBased()) {
+				// Accept any text-bearing channel (DM or guild text). isTextBased()
+				// covers DMs, guild text, threads, and announcement channels;
+				// non-text channels (category, stage, voice-without-text) lack a
+				// usable send() surface and are rejected.
+				if (!channel || channel.isTextBased?.() !== true) {
 					return {
-						content: [{ type: "text", text: "Error: channel not found or not a DM" }],
+						content: [{ type: "text", text: "Error: channel not found or not a text channel" }],
 						isError: true,
 					};
 				}
 
-				const dmChannel = channel as DiscordMessage["channel"];
-				await (dmChannel as { sendTyping(): Promise<void> }).sendTyping();
-
-				const sendableChannel = channel as { send(content: string): Promise<unknown> };
+				const sendableChannel = channel as DiscordMessage["channel"] & {
+					sendTyping(): Promise<void>;
+					send(content: string): Promise<unknown>;
+				};
+				await sendableChannel.sendTyping();
 				await sendableChannel.send(content);
 
 				return {
@@ -432,53 +438,92 @@ export function createDiscordServer(
 		"discord_list_channels",
 		{
 			description:
-				"List DM channels available for binding, derived from the bot's `allowed_users` allowlist. " +
-				"Each entry maps an allowed user ID to its DM channel ID, opening the DM if not already open " +
-				"(idempotent on Discord's side; does not notify the user). " +
-				"Returns an empty array when `allowed_users` is empty — the tool has no enumeration source in that case " +
-				"because Discord does not expose a 'list my DM channels' API to bots. " +
-				"Per-user `createDM` failures are surfaced inline as `{user_id, error}` entries (string error message) " +
-				"alongside successful `{user_id, channel_id}` entries; callers should discriminate by the presence " +
-				"of `channel_id` vs `error` on each entry. An array of all-`error` entries is distinct from `[]` " +
-				"(empty allowlist) and means every allowed user's DM resolution failed.",
+				"List Discord channels available for binding. Returns a flat array mixing two entry shapes. " +
+				"DM entries, derived from the bot's `allowed_users` allowlist, map an allowed user ID to its DM " +
+				"channel ID (`{user_id, channel_id}`), opening the DM if not already open (idempotent on Discord's " +
+				"side; does not notify the user); a per-user `createDM` failure is surfaced inline as " +
+				"`{user_id, error}`. Guild entries, derived from the guild text channels the bot can currently see, " +
+				"carry `{guild_id, guild_name, channel_id, channel_name}` (no `user_id`). Discriminate DM vs guild " +
+				"entries by the presence of `user_id` vs `guild_id`. When `allowed_users` is empty the tool emits no " +
+				"DM entries (Discord exposes no 'list my DM channels' API to bots); guild channels are still listed. " +
+				"An empty array means the bot has neither an allowlist nor any visible guild text channels.",
 			inputSchema: {},
 			annotations: {
 				readOnlyHint: true,
 			},
 		},
 		async () => {
-			if (config.allowed_users.length === 0) {
-				return {
-					content: [{ type: "text", text: JSON.stringify([]) }],
-				};
-			}
-
-			const results = await Promise.allSettled(
-				config.allowed_users.map(async (userId) => {
-					const dm = await client.users.createDM(userId);
-					return { user_id: userId, channel_id: dm.id };
-				}),
-			);
-
 			type ChannelEntry =
 				| { user_id: string; channel_id: string }
-				| { user_id: string; error: string };
+				| { user_id: string; error: string }
+				| {
+						guild_id: string;
+						guild_name: string;
+						channel_id: string;
+						channel_name: string;
+				  };
 			const entries: ChannelEntry[] = [];
-			for (let i = 0; i < results.length; i++) {
-				const result = results[i];
-				const userId = config.allowed_users[i];
-				if (result.status === "fulfilled") {
-					entries.push(result.value);
-				} else {
-					const errorMessage =
-						result.reason instanceof Error ? result.reason.message : String(result.reason);
-					// Keep the warn log for operators reading the daemon log; the
-					// inline error-shape entry is the additive caller-facing channel.
-					logger.warn("[discord-server] Failed to resolve DM for allowed user", {
-						userId,
-						error: errorMessage,
-					});
-					entries.push({ user_id: userId, error: errorMessage });
+
+			// DM entries from the allowlist (unchanged behavior).
+			if (config.allowed_users.length > 0) {
+				const results = await Promise.allSettled(
+					config.allowed_users.map(async (userId) => {
+						const dm = await client.users.createDM(userId);
+						return { user_id: userId, channel_id: dm.id };
+					}),
+				);
+
+				for (let i = 0; i < results.length; i++) {
+					const result = results[i];
+					const userId = config.allowed_users[i];
+					if (result.status === "fulfilled") {
+						entries.push(result.value);
+					} else {
+						const errorMessage =
+							result.reason instanceof Error ? result.reason.message : String(result.reason);
+						// Keep the warn log for operators reading the daemon log; the
+						// inline error-shape entry is the additive caller-facing channel.
+						logger.warn("[discord-server] Failed to resolve DM for allowed user", {
+							userId,
+							error: errorMessage,
+						});
+						entries.push({ user_id: userId, error: errorMessage });
+					}
+				}
+			}
+
+			// Guild text channels the bot can currently see. Enumerated from the
+			// discord.js guild/channel cache, which the Guilds intent populates —
+			// no per-channel API call needed. Only text-bearing channels are
+			// listed; categories/stage/voice-without-text are skipped.
+			const guilds = (
+				client as {
+					guilds?: {
+						cache?: Map<
+							string,
+							{ id: string; name: string; channels?: { cache?: Map<string, unknown> } }
+						>;
+					};
+				}
+			).guilds?.cache;
+			if (guilds) {
+				for (const guild of guilds.values()) {
+					const channelCache = guild.channels?.cache;
+					if (!channelCache) continue;
+					for (const rawChannel of channelCache.values()) {
+						const channel = rawChannel as {
+							id: string;
+							name?: string;
+							isTextBased?: () => boolean;
+						};
+						if (channel.isTextBased?.() !== true) continue;
+						entries.push({
+							guild_id: guild.id,
+							guild_name: guild.name,
+							channel_id: channel.id,
+							channel_name: channel.name ?? "",
+						});
+					}
 				}
 			}
 
@@ -517,11 +562,25 @@ function setupDiscordListeners(
 			// Skip bot messages
 			if (msg.author.bot) return;
 
-			// Skip non-DM messages
-			if (msg.channel.type !== ChannelType.DM) return;
+			// Accept DMs and guild text channels. Guild threads/announcement/
+			// voice-text channels all report isTextBased(); use that rather than
+			// enumerating ChannelType so new text-bearing channel kinds work
+			// without a code change. Non-text channels (categories, stage) are
+			// dropped.
+			const isDm = msg.channel.type === ChannelType.DM;
+			const isGuildText = !isDm && msg.guildId != null && msg.channel.isTextBased?.() === true;
+			if (!isDm && !isGuildText) return;
 
-			// Allowlist check
-			if (config.allowed_users.length > 0 && !config.allowed_users.includes(msg.author.id)) {
+			// Author gate. DMs use the `allowed_users` allowlist. Guild channels
+			// are gated by the channel subscription itself (the agent only hears
+			// a channel it explicitly attached to), so any member of an attached
+			// channel may trigger the agent — `allowed_users` does not apply
+			// there.
+			if (
+				isDm &&
+				config.allowed_users.length > 0 &&
+				!config.allowed_users.includes(msg.author.id)
+			) {
 				return;
 			}
 
@@ -586,6 +645,11 @@ function setupDiscordListeners(
 				}
 			}
 
+			// Resolve a human-readable channel name for guild channels (DMs have
+			// no name). Guarded behind optional chaining because the DM channel
+			// shape lacks `name`.
+			const channelName = (msg.channel as { name?: string | null }).name ?? undefined;
+
 			// Emit event
 			emitEvent(msg.id, "message.received", {
 				author: {
@@ -594,6 +658,11 @@ function setupDiscordListeners(
 					display_name: msg.author.displayName ?? msg.author.username,
 				},
 				channel_id: msg.channelId,
+				// guild_id is null for DMs, the guild snowflake for guild channels.
+				// It lets the agent (and downstream context) distinguish a DM from
+				// a server channel and address the right surface.
+				guild_id: msg.guildId ?? null,
+				channel_name: channelName,
 				content: msg.content,
 				attachments,
 				message_id: msg.id,

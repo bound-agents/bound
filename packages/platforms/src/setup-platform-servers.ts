@@ -24,6 +24,11 @@ const defaultDiscordClientFactory: DiscordClientFactory = async () => {
 			discordJs.GatewayIntentBits.DirectMessages,
 			discordJs.GatewayIntentBits.MessageContent,
 			discordJs.GatewayIntentBits.Guilds,
+			// GuildMessages is required for the gateway to fire messageCreate in
+			// guild text channels. Guilds alone only delivers guild/channel
+			// metadata, not message events — without this intent guild-channel
+			// support is silently dead even though the code paths accept them.
+			discordJs.GatewayIntentBits.GuildMessages,
 		],
 		partials: [discordJs.Partials.Channel, discordJs.Partials.Message, discordJs.Partials.Reaction],
 	});
