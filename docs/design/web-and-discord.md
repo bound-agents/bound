@@ -16,10 +16,10 @@ This document covers the `@bound/web` and `@bound/platforms` packages. The web p
    - [API Client](#api-client)
    - [WebSocket Client](#websocket-client)
 3. [@bound/platforms](#boundplatforms)
-   - [PlatformConnector Interface](#platformconnector-interface)
+   - [PlatformMcpRegistry](#platformmcpregistry)
    - [PlatformLeaderElection](#platformleaderelection)
-   - [PlatformConnectorRegistry](#platformconnectorregistry)
-   - [DiscordConnector](#discordconnector)
+   - [Discord MCP Server](#discord-mcp-server)
+   - [Connector Handles and the connector Tool](#connector-handles-and-the-connector-tool)
    - [Webhook Ingress](#webhook-ingress)
 
 ---
@@ -65,7 +65,7 @@ localhost
 
 Any request whose `Host` header resolves to a hostname not in that list is rejected with `400 Bad Request` and the JSON body `{ "error": "Invalid Host header" }`. Requests with no `Host` header pass through unchanged.
 
-The middleware is mounted globally on the web app (`app.use("*", ...)`), so it runs for every route on this server including `/hooks/:platform`. Ed25519-authenticated sync traffic is not affected because it is handled by a separate sync server (`createSyncServer`) listening on its own port (`/sync/ws`) — that process has its own binding and does not share this middleware.
+The middleware is mounted globally on the web app (`app.use("*", ...)`), so it runs for every route on this (web/API) server. Neither Ed25519-authenticated sync traffic nor webhook ingress is affected: both are served by a separate sync server (`createSyncServer`) on its own port (`/sync/ws` and `/webhook/:name`), which has its own binding and does not share this middleware.
 
 Host header validation is the primary mechanism that prevents the local API from being reachable by remote callers via DNS rebinding or forwarded proxies.
 
@@ -242,13 +242,9 @@ All queries filter on `turns.deleted = 0`. Relay metrics come from the local-onl
 
 The `MetricsResponse` type is exported from `packages/web/src/server/routes/metrics.ts`. The route factory signature is `createMetricsRoutes(db, backends?: BackendPricing[])`; `BackendPricing` is also exported from `packages/web/src/server/routes/metrics.ts` (and re-exported from `routes/index.ts`, `server/index.ts`, `server/start.ts`) and is intentionally local to `@bound/web` rather than imported from `@bound/agent` to avoid pulling agent code into the web package. The CLI populates it from `modelBackends.backends` at `createWebServer()` call time in `packages/cli/src/commands/start/server.ts`.
 
-#### Webhook Ingress — `/hooks`
+#### Webhook Ingress — `/webhook/:name`
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/hooks/:platform` | Webhook ingress for exclusive-delivery platform connectors. Emits `platform:webhook` event; signature verification is handled by each connector's `handleWebhookPayload()`. The platform segment is constrained to `[a-z0-9-]+` and raw bodies are capped at 1 MB. Host header validation still applies. |
-
-The raw body and all headers are forwarded to `platform:webhook` on the eventBus unchanged. The `PlatformConnectorRegistry` routes this event to the leader connector matching `payload.platform`. Note: peer-to-peer relay traffic (Ed25519-signed sync) is not served here — it runs on the separate sync WebSocket server at `/sync/ws`.
+Webhook ingestion is **not** served by the web/API server (port 3001). External services deliver events to `POST /webhook/:name` on the **sync** server (port 3000, alongside `/sync/ws`); see [Webhook Ingress](#webhook-ingress) below for the full flow. The route lives there because the handler writes a `relay_inbox` row and emits on the same eventBus the scheduler listens to. Peer-to-peer relay traffic (Ed25519-signed sync) also runs on that server at `/sync/ws`.
 
 #### Error Shape
 
@@ -445,134 +441,70 @@ The web UI can act as an [MCP Apps](https://github.com/modelcontextprotocol/ext-
 
 ## @bound/platforms
 
-The `@bound/platforms` package connects the agent system to external messaging platforms. It replaces the old `@bound/discord` package with a generic connector framework supporting multiple platforms (Discord, and future webhook-based connectors).
+The `@bound/platforms` package connects the agent system to external messaging platforms. Platform connectors are **in-process MCP servers**: a connector declares event types and tools through the Model Context Protocol, and the agent system consumes them like any other MCP server. The package manages tool discovery, event subscriptions (connector handles), tool-annotation filtering, and the unified `connector` management tool. See `packages/platforms/CLAUDE.md` for the contract-level summary.
 
-### PlatformConnector Interface
+### PlatformMcpRegistry
 
-Every platform connector implements `PlatformConnector`:
+`PlatformMcpRegistry` (`packages/platforms/src/mcp-registry.ts`) owns every in-process MCP platform server on a host and the active event subscriptions bound to them. `setupDiscordServers` logs the Discord.js client in and calls `registry.registerServer(platform, server)` with the server returned by `createDiscordServer`.
 
-```typescript
-interface PlatformConnector {
-  readonly platform: string;          // e.g. "discord"
-  readonly delivery: "broadcast" | "exclusive";
-  connect(hostBaseUrl?: string): Promise<void>;
-  disconnect(): Promise<void>;
-  deliver(
-    threadId: string,
-    messageId: string,
-    content: string,
-    attachments?: Array<{ filename: string; data: Buffer }>,
-  ): Promise<void>;
-  handleWebhookPayload?(rawBody: string, headers: Record<string, string>): Promise<void>;
-  onLoopComplete?(threadId: string): void;
-  getPlatformTools?(
-    threadId: string,
-    readFileFn?: (path: string) => Promise<Uint8Array>,
-  ): Map<string, { toolDefinition: ToolDefinition; execute: (input: Record<string, unknown>) => Promise<string> }>;
-}
-```
+Key methods:
 
-- **`broadcast`** connectors maintain a persistent gateway connection (Discord). Only the elected leader connects.
-- **`exclusive`** connectors receive events via HTTP webhook (Telegram, Slack Events API). The new leader re-registers the webhook URL on failover.
-- **`onLoopComplete`** is optional. The registry calls it on every registered connector when an agent loop finishes a thread (success or error), letting connectors clean up per-thread state — e.g. Discord typing indicators.
-- **`getPlatformTools`** is optional. It returns the platform-scoped tools (e.g. `discord_send_message`) for a thread; the agent loop runs locally on the trigger host (no whole-loop `process` delegation), and any platform tool whose serving host differs is reached through the uniform `{local | relay}` tool dispatch rather than by injecting tools into a delegated loop's config (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD5/R-UD8). The `readFileFn` parameter, when provided, lets the tool read files from the virtual filesystem rather than the host OS filesystem.
+- `getServerNames()` / `getClient(name)` / `getServerEntry(name)` — server discovery.
+- `getToolsForThread(threadId)` — resolves the scoped tool set for an event-task thread by tracing thread → task → `connector_handle` → `server_name`.
+- `getReadOnlyPlatformTools()` — every tool annotated `readOnlyHint === true`, across all servers, for non-event-task threads.
+- `getInstructionsForThread(threadId)` — connector-authored orientation prose, surfaced only to threads bound to that connector (e.g. Discord's markdown dialect).
+- `activateSubscription(handle)` — starts push or poll delivery for a connector handle; only the elected leader activates.
+- `reconnectAll()` — reconstitutes all active subscriptions after a leadership change.
+- `setRemotePlatformRequest(fn)` — wires the relay proxy so tool calls and `events/list` can reach a connector hosted on another cluster node.
+
+**Event subscription and push delivery.** A connector handle binds `(server_name, event_name, event_args)` to a `delivery_mode` (`"push"` or `"poll"`) and a `task_id`. In push mode the registry installs a `notifications/events/event` handler on the MCP client, buffers matching events per subscription, and flushes on a ~2s cadge through `deliverBatch()`. `deliverBatch()` deduplicates by `eventId`, persists each event as a `developer`-role message, advances the handle cursor, writes a relay `intake` row for multi-host routing, and emits a `connector:event` trigger keyed `connector:event:<handleId>` so only the bound task wakes. Poll mode calls `events/poll` on the same cadence (exponential backoff to 60s on error) and runs the identical `deliverBatch()` path. Cursors are the Discord-issued snowflake, not an in-process counter, so they survive daemon restarts without collision.
+
+**`registerConnectorEventDelivery(registry, scheduler, eventBus)`** wires the `connector:event` eventBus signal to the scheduler's event-task wakeup. There is no `connector:list_changed` event; tool discovery happens at server registration, not per-thread.
 
 ### PlatformLeaderElection
 
-`PlatformLeaderElection` ensures exactly one host holds the platform connection per platform at a time. It uses `cluster_config` (key `platform_leader:<platform>`) as the distributed lock, synced via the change-log outbox.
+`PlatformLeaderElection` (`packages/platforms/src/leader-election.ts`) ensures exactly one host runs active subscriptions per platform. It uses `cluster_config` (key `platform_leader:<platform>`) as the distributed lock, synced via the change-log outbox.
 
-**Startup logic:**
-- If no `cluster_config` entry exists for this platform, the host claims leadership immediately.
-- If this host is already registered as leader, it reclaims (idempotent).
-- If another host is leader, the host enters standby and polls for staleness.
+- **Startup:** claim leadership if no entry exists; reclaim idempotently if already leader; otherwise enter standby.
+- **Liveness signal:** leadership uses `hosts.modified_at` as the freshness signal. That column is refreshed by the process-wide `startHostHeartbeat` (`@bound/core`, `HOST_HEARTBEAT_INTERVAL` = 120s) — it is not a leader-only write.
+- **Failover:** a standby polls the current leader's `hosts.modified_at` every `failover_threshold_ms / 3` and promotes itself when the leader's timestamp is older than `failover_threshold_ms` (default 30s).
 
-**Heartbeat:** The leader updates `hosts.modified_at` every `failover_threshold_ms / 3` (default 10s).
+Only the leader activates subscriptions; on promotion the new leader calls `reconnectAll()`.
 
-**Failover:** A standby host checks the leader's `hosts.modified_at` on the same interval. If the leader's timestamp is older than `failover_threshold_ms` (default 30s), the standby promotes itself.
+### Discord MCP Server
 
-### PlatformConnectorRegistry
+`createDiscordServer(config, client, logger)` (`packages/platforms/src/connectors/discord-server.ts`) returns an in-process MCP server. `setupDiscordServers` builds the Discord.js client — logging in **before** `registerServer` so a failed login never exposes a half-initialized tool to the cluster — with intents `DirectMessages`, `MessageContent`, `Guilds`, and `GuildMessages`. `GuildMessages` is required for the gateway to fire `messageCreate` in guild text channels; `Guilds` alone delivers only guild/channel metadata.
 
-`PlatformConnectorRegistry` instantiates all configured connectors from `platforms.json`, starts their leader elections, and routes `platform:deliver` and `platform:webhook` eventBus events to the correct leader connector.
+**Events** (declared via `events/list`, streamed via `events/stream`, polled via `events/poll`):
 
-```typescript
-const registry = new PlatformConnectorRegistry(ctx, platformsConfig, hostBaseUrl);
-registry.start();   // launches leader elections, wires eventBus listeners
-// ... on shutdown:
-registry.stop();
-```
+- `message.received` — requires a `channel_id` subscription filter. Fires for DMs and guild text channels. The `messageCreate` handler drops bot messages and any non-text channel; the `allowed_users` allowlist gates **DM authors only**. Guild channels are gated by the channel subscription itself, so any member of an attached channel may trigger the agent. Event data: `{ author, channel_id, guild_id, channel_name, content, attachments, message_id }` — `guild_id` is null for DMs; `channel_name` is undefined for DMs. Attachments are downloaded from the Discord CDN (30s timeout) and normalized to base64 `ContentBlock` images below 1 MB or `file_ref` entries at 1 MB and above.
+- `interaction.received` — fires for slash commands and context-menu interactions. The handler defers with an ephemeral reply, stores the interaction under a `callback_id` (14-minute TTL), and emits `{ callback_id, interaction_type, user, channel_id, target_message?, command? }`. There is no longer a bespoke `DiscordInteractionConnector` or hardcoded filing-prompt logic: every interaction — including the "File for Later" message context-menu command (issue #196) — surfaces through this one generic event. The command is registered with Discord out of band (nothing in source calls `commands.create`); when a user invokes it, the context-menu interaction carries the `target_message`, the bound event task handles the filing in its own reasoning, and the agent replies by calling `discord_respond_interaction`.
 
-Only the leader connector for a given platform handles `platform:deliver` and `platform:webhook` events. Non-leaders ignore them.
+**Tools:**
 
-The Discord entry is special: the registry constructs a compound connector that drives a shared `DiscordClientManager` plus two sub-connectors — `DiscordConnector` (DM messages, registered under the `"discord"` key) and `DiscordInteractionConnector` (slash-command / component interactions, registered under `"discord-interaction"`). Both share a single leader election (`"discord"`), so they connect and disconnect together. Interaction events arrive via the gateway's `interactionCreate`, not via `/hooks`, so the webhook router never dispatches to `discord-interaction`.
+- `discord_send_message` — sends to any text-based channel (DM or guild), rejecting content over 2000 characters and non-text channels.
+- `discord_respond_interaction` — edits the ephemeral reply for a stored `callback_id`.
+- `discord_list_channels` (annotated `readOnlyHint: true`) — returns a flat array mixing DM entries (`{user_id, channel_id}` from `allowed_users`, or `{user_id, error}` on `createDM` failure) and guild entries (`{guild_id, guild_name, channel_id, channel_name}` from the visible guild text channels). Callers discriminate by `user_id` vs `guild_id`.
 
-After startup, the registry is wired into the `RelayProcessor` so the processor can look up connectors when dispatching `platform_deliver` relay messages and injecting platform tools into delegated loops. The registry also exposes `getConnector(platform)` and `notifyLoopComplete(threadId)`.
+### Connector Handles and the connector Tool
 
-### DiscordConnector
+Subscription lifecycle is driven by the unified `connector` tool (`createConnectorTool`, `packages/platforms/src/connector-tool.ts`), an action dispatcher available to any non-event-task thread:
 
-`DiscordConnector` migrates the old `DiscordBot` behavior to the new connector contract:
+- `list` — cluster-wide server discovery (local registry + synced `hosts.platforms`).
+- `channels` — `events/list` for a server (local or via `remotePlatformRequest`), annotated with the existing handles bound to each event.
+- `attach` — creates a `connector_handles` row (synced, LWW), an `event`-type task, and a thread, then activates the subscription if this host is the leader; otherwise the handle syncs to the leader and activates there.
+- `detach` — soft-deletes the handle and its task.
 
-| Aspect | Old `DiscordBot` | New `DiscordConnector` |
-|--------|------------------|------------------------|
-| Message handling | Called `agentLoopFactory()` directly | Writes `intake` relay to `relay_outbox` targeting hub |
-| Activation | `shouldActivate()` hostname check | Leader election handles this |
-| User identity | `discord_id` DB column | `platform_ids` JSON (`{"discord":"<id>"}`) |
-| Allowlist | Queried DB for `discord_id` | Reads `allowed_users` from `platforms.json` connector config |
-| Interface | `start()` / `stop()` | `connect()` / `disconnect()` |
-
-**Inbound flow (DM received):**
-1. Allowlist check against `config.allowed_users` — non-allowlisted users silently dropped.
-2. `findOrCreateUser` looks up by `json_extract(platform_ids, '$.discord') = ?`, creates if absent.
-3. `findOrCreateThread` finds or creates a thread with `interface = 'discord'` for that user.
-4. Image attachments are downloaded from Discord CDN URLs (30s timeout per attachment). Images smaller than 1 MB are stored inline as base64 `ContentBlock` image entries. Images 1 MB or larger are written to the `files` table and referenced via a `file_ref` source (storing only the file ID in the message). Non-image attachments are skipped.
-5. Persists the message via `insertRow()` with `role = "user"`. When image blocks were added, `content` is stored as a JSON-serialised `ContentBlock[]`; otherwise plain text is stored for backward compatibility.
-6. Writes an `intake` relay to `relay_outbox` with `target_site_id = hub`. The hub's `RelayProcessor` routes this to the appropriate spoke via the four-tier intake routing algorithm (thread affinity → model match → tool match → least-loaded).
-
-**Outbound flow (deliver called):**
-1. Looks up `platform_ids.discord` for the thread's user.
-2. Opens a DM channel via the Discord client.
-3. If attachments are present, sends content and files in a single Discord message. Otherwise, chunks text content at Discord's 2000-character limit and sends each chunk sequentially.
-
-**Platform tools:** `getPlatformTools(threadId, readFileFn?)` returns a single `discord_send_message` tool. The tool validates that `content` does not exceed 2000 characters, loads any requested file attachment paths (using `readFileFn` if provided, falling back to `node:fs/promises`), and calls `deliver()`. If any attachment path cannot be read, an error string is returned and no message is sent (fail-fast, no partial delivery).
-
-#### Discord "File for Later" Context-Menu Command
-
-The Discord platform integration includes a "File for Later" message context-menu command that allows users to save messages for future reference. When a user right-clicks any message and selects "File for Later," the invoking user receives an ephemeral response visible only to them. The agent processes the filed message through the standard intake pipeline, producing a natural language acknowledgment.
-
-The implementation shares a single Discord.js client between `DiscordConnector` (DM messages) and `DiscordInteractionConnector` (context-menu interactions) via a shared `DiscordClientManager`. Both connectors share one leader election and connect/disconnect together.
-
-**Registration:** The context-menu command is registered globally via `client.application.commands.create()` with `ApplicationCommandType.Message` when the connector calls `connect()`. Registration is idempotent; re-connecting does not duplicate the command.
-
-**Interaction flow:** When a user selects "File for Later," the interaction is acknowledged via `deferReply({ ephemeral: true })` as the first action. The invoking user is checked against the allowlist configured in `platforms.json` under `allowed_users`. Non-allowlisted users receive an ephemeral error reply and no message, thread, or relay is created. If the target message has empty content and no image attachments, the interaction replies with an error and the pipeline is not invoked.
-
-**Message pipeline reuse:** The interaction handler reuses the existing message pipeline. It calls `findOrCreateUser` with the invoking user's Discord ID, then `findOrCreateThread` with `interface='discord-interaction'`. A user message is persisted via `insertRow` with a filing prompt that includes the target message content, author metadata, channel name, server name, and timestamp. The filing prompt also includes a trust signal for the target message author: `(recognized -- bound user "<name>")` if the author is found in the users table via `json_extract(platform_ids, '$.discord')`, `(unrecognized)` if not found, or `(this bot)` if the target is the bot itself. An `intake` relay is written to `relay_outbox` targeting the hub, and `sync:trigger` is emitted.
-
-**Interaction token storage:** Interaction tokens are stored in an in-memory map (keyed by thread ID) with a 14-minute TTL, slightly shorter than Discord's 15-minute interaction window. Tokens are ephemeral; on process restart all pending tokens are lost. This is acceptable because the agent's response persists in the database.
-
-**Response polling and delivery:** After writing the intake relay, the interaction handler polls the messages table for an assistant response on the thread at a 500ms interval with a 5-minute timeout. When a response is found, `DiscordInteractionConnector.deliver()` is called, which looks up the stored interaction and calls `editReply` with the assistant content (truncated to 2000 characters if necessary). If the interaction token is expired or missing, a warning is logged and no exception is thrown. On timeout, `editReply` is called with a timeout error message.
-
-**Client management:** `DiscordClientManager` owns the Discord.js client instance and gateway lifecycle. It creates the client with combined intents (`DirectMessages`, `DirectMessageReactions`, `MessageContent`, `Guilds`, `GuildMessages`). `GuildMessages` is required for `messageCreate` to fire in guild text channels — `Guilds` alone delivers only guild/channel metadata. Both `DiscordConnector` and `DiscordInteractionConnector` register event handlers on the same client instance. On `disconnect()`, the client is destroyed and both connectors' handlers are cleaned up.
-
-**Registry integration:** A single `platform: "discord"` config entry in `platforms.json` creates both `DiscordConnector` and `DiscordInteractionConnector`, plus the shared `DiscordClientManager`. The registry routes `platform:deliver` events to the correct connector based on the thread's `interface` field — threads with `interface='discord'` route to `DiscordConnector.deliver()`, while `interface='discord-interaction'` routes to `DiscordInteractionConnector.deliver()`.
-
-#### Discord Delivery Verification and Retry
-
-A post-loop hook detects Discord assistant turns that finish without calling `discord_send_message` and enqueues a one-time retry nudge. The hook runs only on threads with `interface='discord'` or `interface='discord-interaction'`.
-
-**Detection logic:** After an agent loop completes on a Discord platform thread, `verifyDelivery` examines the most recent assistant turn. If the assistant message has no matching tool call, the check identifies a missing send. A tombstone mechanism prevents double-nudging: the check queries for existing `developer`-role messages with `metadata` containing the `discord_platform_delivery_retry` flag in the window since the most recent user message. If one exists, the nudge is not repeated.
-
-**Nudge injection:** When a missing send is detected and no tombstone exists, a `developer`-role message is inserted with content `[Delivery retry] ...` and `metadata` containing `discord_platform_delivery_retry`. The message is enqueued via `enqueueMessage` so the agent runs a follow-up turn with the nudge as developer context.
-
-**Scope and reset:** The retry budget is per-user-turn. A fresh user message un-silences the thread, resetting the tombstone window. The nudge respects intentional silence — if the agent chooses not to send on the retry turn, no further nudge is issued for that user message.
-
-**Loop-local hook:** Under the single delegation path the loop always runs on the trigger host (it relays only inference, not the whole loop), so the delivery-check hook is wired once on the local loop path (`server.ts:handleThread` → the local agent loop). Platform-intake loops run locally on the selected host via `RelayProcessor.runLocalThreadLoop`, which carries the same hook. There is no separate delegated-loop path to cover anymore.
+**Tool scoping** uses a two-branch resolver, wired into the scheduler as `platformToolResolver` (and mirrored on the relay path via `RelayProcessor.setPlatformMcpRegistry`): event-task threads get their bound server's full tool set from `getToolsForThread(threadId)`; all other threads get `getReadOnlyPlatformTools()` plus the `connector` tool. The agent loop always runs on the trigger host; a tool whose serving host differs is reached through the uniform `{local | relay}` tool dispatch (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD5/R-UD8), never by injecting tools into a delegated loop's config.
 
 ### Webhook Ingress
 
-The web server exposes `POST /hooks/:platform` for exclusive-delivery connectors. It emits `platform:webhook` on the eventBus with the raw body and headers; signature verification is delegated to each connector's `handleWebhookPayload()` implementation.
+External services deliver events to **`POST /webhook/:name` on the sync server** (port 3000, `PORT`), registered in `packages/web/src/server/start.ts` alongside `/sync/ws` — not on the web/API server. There is no `/hooks/:platform` route and no `platform:webhook` event; both were removed with the old connector framework.
 
-```
-POST /hooks/discord  →  eventBus.emit("platform:webhook", { platform, rawBody, headers })
-POST /hooks/telegram →  eventBus.emit("platform:webhook", { platform, rawBody, headers })
-```
+The handler (`packages/web/src/server/webhook-handler.ts`):
 
-The `PlatformConnectorRegistry` routes `platform:webhook` events to the leader connector matching `payload.platform`.
+1. Looks up the webhook by name; unknown names 404. Every rejection observable without the secret (unknown name, empty/oversized/unreadable body, bad signature) returns an identical 404 so responses can't distinguish a real webhook name.
+2. Reads the body (capped at 1 MB) and validates the signature via `validateWebhookSignature` (`github | stripe | slack | raw`).
+3. Builds an HTTP envelope with filtered headers and writes a `relay_inbox` row with `kind: "webhook_intake"` — a **passive** relay kind the relay-processor deliberately skips, so the scheduler's event-task wakeup (`buildEventWakeupContent`) is the sole consumer.
+4. Deduplicates via platform delivery headers (`X-GitHub-Delivery`, `Stripe-Idempotency-Key`, `X-Idempotency-Key`) mapped to `relay_inbox.idempotency_key`.
+5. Emits `connector:event` (`{ trigger_key: "webhook:<name>", handle_id, task_id, batch_size }`) to wake the bound task, and returns 202.

@@ -188,8 +188,7 @@ interface EventMap {
   "alert:created":         { message: Message; thread_id: string };
   "agent:cancel":          { thread_id: string };
   "status:forward":        StatusForwardPayload;
-  "platform:deliver":      PlatformDeliverPayload;
-  "platform:webhook":      { platform: string; rawBody: string; headers: Record<string, string> };
+  "connector:event":       { trigger_key: string; task_id: string; handle_id: string; batch_size: number };
   "context:debug":         { thread_id: string; turn_id: number; debug: ContextDebugInfo };
   "notify:enqueued":       { thread_id: string };
   "model:fallback": {
@@ -206,7 +205,7 @@ interface EventMap {
 }
 ```
 
-`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"status:forward"` carries delegated loop state from remote hosts. `"platform:deliver"` routes outbound assistant responses to the platform leader; `"platform:webhook"` carries inbound webhook payloads for signature verification and dispatch. `"changelog:written"`, `"relay:outbox-written"`, and `"relay:inbox"` wake the sync and relay subsystems when new work is appended.
+`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"status:forward"` carries delegated loop state from remote hosts. `"connector:event"` wakes the scheduler's bound event task when a platform connector delivers a buffered event batch or a webhook arrives (the `/webhook/:name` handler emits it after writing the `webhook_intake` inbox row). `"changelog:written"`, `"relay:outbox-written"`, and `"relay:inbox"` wake the sync and relay subsystems when new work is appended.
 
 To add a new event to the system, add an entry to this interface. The `TypedEventEmitter` class (below) enforces the payload type at every call site.
 

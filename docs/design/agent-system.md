@@ -1379,9 +1379,9 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 | `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries |
 | `client_tool` | (client dispatch) | Request: relays a client (WS) tool call to the session host, which enqueues it into its local WS dispatch and returns a `client_result`. |
 | `client_result` | (client dispatch) | Response: carries the result/error of a relayed `client_tool` call back to the loop host. `enqueueToolResult` is idempotent on `(thread_id, call_id)`. |
-| `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a four-tier algorithm (thread affinity → model match → tool match → least-loaded fallback); the selected host then runs the loop locally (no `process` entry). |
-| `platform_deliver` | `handlePlatformDeliver()` | Emits `platform:deliver` on the local event bus so the platform connector delivers the message to the external platform. |
-| `event_broadcast` | `handleEventBroadcast()` | Fires the named event locally on the event bus; sync routes broadcast entries to all spokes except the source. |
+| `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a five-tier algorithm (platform affinity → thread affinity → model match → tool match → least-loaded fallback); the selected host then runs the loop locally (no `process` entry). |
+| `platform_request` | `executePlatformRequest()` | Proxies an MCP platform request (e.g. `events/list`) to the connector running on this host and returns the result — the relay side of `PlatformMcpRegistry`'s `remotePlatformRequest`. |
+| `webhook_intake` | (none — passive) | Not dispatched by the relay-processor: it is a durable mailbox row written by `/webhook/:name` and drained by the scheduler's event-task wakeup. |
 
 The `process` relay kind is **removed** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD13): there is no whole-loop delegation. The loop always runs on the trigger host, which relays only inference (as segments) and tool calls.
 
@@ -1389,7 +1389,7 @@ The `process` relay kind is **removed** (`docs/design/specs/2026-06-29-unified-d
 
 **`executeInference` buffering:** Chunks are flushed to outbox at 200ms timer OR 4KB buffer threshold, whichever fires first. The final flush is always `stream_end`. Each flush records a `relay_cycles` row. Cancel aborts the `for await` loop via `AbortController.signal.aborted` and writes an `error` response.
 
-**`setPlatformConnectorRegistry(registry)`:** Wired at startup (after `PlatformConnectorRegistry` is created) to avoid circular initialization order. The `setAgentLoopFactory(factory)` method is wired similarly.
+**`setPlatformMcpRegistry(registry)`:** Wired at startup (after `PlatformMcpRegistry` is created) to avoid circular initialization order, so the relay-processor can resolve platform tools (`getToolsForThread`) for relayed inference. The `setAgentLoopFactory(factory)` method is wired similarly.
 
 **Constructor:** `new RelayProcessor(db, siteId, mcpClients, modelRouter, keyringSiteIds, logger, eventBus, appCtx?, relayConfig?, threadAffinityMap?, agentLoopFactory?)`
 
