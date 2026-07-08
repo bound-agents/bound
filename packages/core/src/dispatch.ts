@@ -248,6 +248,25 @@ export function hasPendingClientToolCalls(db: Database, threadId: string): boole
 }
 
 /**
+ * True if a connection is holding any in-flight (pending|processing) client
+ * tool call. Used by the WS liveness sweep to scope its blast radius: a
+ * connection is only force-closed when it has an actual wedged call to free,
+ * so a silent-but-idle client (nothing outstanding) is never disturbed.
+ */
+export function hasInFlightClientToolCallsForConnection(
+	db: Database,
+	connectionId: string,
+): boolean {
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) as c FROM dispatch_queue
+			 WHERE claimed_by = ? AND event_type = ? AND status IN ('pending', 'processing')`,
+		)
+		.get(connectionId, CLIENT_TOOL_CALL) as { c: number };
+	return row.c > 0;
+}
+
+/**
  * Get all pending/processing client tool calls for a thread.
  * Returns the entries (event_payload is JSON-encoded).
  */

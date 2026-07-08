@@ -87,6 +87,15 @@ export class BoundClient {
 	private shouldReconnect = false;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempt = 0;
+	/**
+	 * Application-level heartbeat. Rides the same JS timer path the client uses
+	 * for everything else, so it stops the instant the event loop wedges — the
+	 * signal the server's liveness sweep keys on to reap a wedged editor's
+	 * in-flight tool call (server would otherwise wait on a socket that Bun may
+	 * keep alive with below-JS protocol pongs). 15s = one third of the server's
+	 * 45s staleness window, so a healthy client always lands ≥1 beat inside it.
+	 */
+	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	private configureOptions?: { systemPromptAddition?: string };
 	private _connectionState: ConnectionState = "disconnected";
 	/**
@@ -413,6 +422,26 @@ export class BoundClient {
 	private sendWsMessage(msg: Record<string, unknown>): void {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			this.ws.send(JSON.stringify(msg));
+		}
+	}
+
+	/**
+	 * Begin (or restart) the application-level heartbeat. Sends { type: "ping" }
+	 * every 15s while the socket is open; the server treats prolonged silence
+	 * from a heartbeating connection as a wedged/dead client (see BoundClient's
+	 * heartbeatTimer field). Idempotent — clears any prior timer first.
+	 */
+	private startHeartbeat(): void {
+		this.stopHeartbeat();
+		this.heartbeatTimer = setInterval(() => {
+			this.sendWsMessage({ type: "ping" });
+		}, 15_000);
+	}
+
+	private stopHeartbeat(): void {
+		if (this.heartbeatTimer) {
+			clearInterval(this.heartbeatTimer);
+			this.heartbeatTimer = null;
 		}
 	}
 

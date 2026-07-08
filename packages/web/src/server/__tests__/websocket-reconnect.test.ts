@@ -22,6 +22,10 @@ class MockWebSocket {
 	clearMessages() {
 		this.messages = [];
 	}
+
+	close() {
+		this.readyState = 3;
+	}
 }
 
 describe("WebSocket Reconnect and Expiry (AC7.1-AC7.3)", () => {
@@ -435,6 +439,161 @@ describe("WebSocket Reconnect and Expiry (AC7.1-AC7.3)", () => {
 			const messages2 = (ws2 as unknown as MockWebSocket).getSentMessages();
 			const toolCall2 = messages2.find((msg: any) => msg.type === "tool:call");
 			expect(toolCall2).toBeUndefined();
+		});
+	});
+
+	describe("close-reap drives resume (auto-resume, no manual bump)", () => {
+		it("emits message:created for the synthesized error result so the thread resumes on its own", () => {
+			// A delivered-but-unanswered client tool call whose connection dies.
+			// close() reaps it and synthesizes the paired error tool_result, but a
+			// bare enqueueToolResult only leaves a dispatch_queue row — the server's
+			// message:created handler is what actually drives handleThread (with the
+			// parallel-tool barrier). Without a message:created emit here, the thread
+			// sits wedged until the next inbound message; the reap must emit it just
+			// as the happy-path handleToolResult does.
+			const callId = "call-resume";
+			const toolName = "test_tool";
+			const now = new Date().toISOString();
+			const entryId = randomUUID();
+
+			// Pending call left by a prior (non-live) connection.
+			db.prepare(
+				`INSERT INTO dispatch_queue
+				 (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at)
+				 VALUES (?, ?, 'pending', 'client_tool_call', ?, ?, ?, ?)`,
+			).run(
+				entryId,
+				threadId,
+				JSON.stringify({ call_id: callId, tool_name: toolName, arguments: {} }),
+				"old-connection-id",
+				now,
+				now,
+			);
+
+			// Capture message:created emissions.
+			const created: Array<{ message: { role?: string }; thread_id: string }> = [];
+			eventBus.on("message:created", (data: any) => created.push(data));
+
+			// A live connection subscribes; the orphan is re-claimed to it (→ processing).
+			const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(ws);
+			handler.message(
+				ws,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: { name: toolName, description: "t", parameters: { type: "object" } },
+						},
+					],
+				}),
+			);
+			handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: threadId }));
+
+			// Sanity: the call is now claimed by the live connection.
+			const claimed = db
+				.prepare("SELECT status FROM dispatch_queue WHERE message_id = ?")
+				.get(entryId) as { status: string };
+			expect(claimed.status).toBe("processing");
+
+			// The connection dies. close() reaps + synthesizes the error result and
+			// MUST emit message:created to drive resume.
+			handler.close(ws);
+
+			const resumeEmit = created.find(
+				(d) => d.thread_id === threadId && d.message?.role === "tool_result",
+			);
+			expect(resumeEmit).toBeDefined();
+		});
+	});
+
+	describe("liveness sweep (dead-client detection)", () => {
+		// Set up a live connection holding an in-flight (processing) client tool
+		// call, optionally heartbeating. Returns the ws + the dispatch entryId.
+		function setupInFlightConnection(opts: { heartbeat: boolean }): {
+			ws: ServerWebSocket<unknown>;
+			entryId: string;
+		} {
+			const callId = `call-${randomUUID()}`;
+			const toolName = "test_tool";
+			const now = new Date().toISOString();
+			const entryId = randomUUID();
+			db.prepare(
+				`INSERT INTO dispatch_queue
+				 (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at)
+				 VALUES (?, ?, 'pending', 'client_tool_call', ?, ?, ?, ?)`,
+			).run(
+				entryId,
+				threadId,
+				JSON.stringify({ call_id: callId, tool_name: toolName, arguments: {} }),
+				"old-connection-id",
+				now,
+				now,
+			);
+			const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(ws);
+			handler.message(
+				ws,
+				JSON.stringify({
+					type: "session:configure",
+					tools: [
+						{
+							type: "function",
+							function: { name: toolName, description: "t", parameters: { type: "object" } },
+						},
+					],
+				}),
+			);
+			// subscribe re-claims the orphan to this live connection (→ processing)
+			handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: threadId }));
+			if (opts.heartbeat) {
+				handler.message(ws, JSON.stringify({ type: "ping" }));
+			}
+			return { ws, entryId };
+		}
+
+		it("force-closes a heartbeating connection gone silent while holding an in-flight call", () => {
+			const { entryId } = setupInFlightConnection({ heartbeat: true });
+			// Now far past the staleness window → wedged.
+			const closed = handler.sweepUnresponsiveConnections(45_000, Date.now() + 120_000);
+			expect(closed).toBe(1);
+			// The in-flight call was reaped (terminal 'expired').
+			const row = db
+				.prepare("SELECT status FROM dispatch_queue WHERE message_id = ?")
+				.get(entryId) as { status: string };
+			expect(row.status).toBe("expired");
+		});
+
+		it("spares a connection that never heartbeated (older client / web UI)", () => {
+			const { entryId } = setupInFlightConnection({ heartbeat: false });
+			const closed = handler.sweepUnresponsiveConnections(45_000, Date.now() + 120_000);
+			expect(closed).toBe(0);
+			const row = db
+				.prepare("SELECT status FROM dispatch_queue WHERE message_id = ?")
+				.get(entryId) as { status: string };
+			expect(row.status).toBe("processing");
+		});
+
+		it("spares a heartbeating connection that was seen recently (healthy long tool)", () => {
+			const { entryId } = setupInFlightConnection({ heartbeat: true });
+			// Default nowMs = Date.now(): the heartbeat we just sent is fresh.
+			const closed = handler.sweepUnresponsiveConnections(45_000);
+			expect(closed).toBe(0);
+			const row = db
+				.prepare("SELECT status FROM dispatch_queue WHERE message_id = ?")
+				.get(entryId) as { status: string };
+			expect(row.status).toBe("processing");
+		});
+
+		it("spares a stale heartbeating connection holding no in-flight call", () => {
+			// Heartbeat + subscribe, but no in-flight client tool call.
+			const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(ws);
+			handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: threadId }));
+			handler.message(ws, JSON.stringify({ type: "ping" }));
+			const closed = handler.sweepUnresponsiveConnections(45_000, Date.now() + 120_000);
+			expect(closed).toBe(0);
 		});
 	});
 });
