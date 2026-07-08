@@ -100,6 +100,7 @@ export {
 	pruneAcknowledged,
 	hasPending,
 	hasPendingClientToolCalls,
+	hasInFlightClientToolCallsForConnection,
 	getPendingClientToolCalls,
 	expireClientToolCalls,
 	expireClientToolCallsForConnection,

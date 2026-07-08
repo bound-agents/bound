@@ -13,6 +13,7 @@ import {
 	findMessageById,
 	findUserDisplayNameById,
 	getPendingClientToolCalls,
+	hasInFlightClientToolCallsForConnection,
 	insertRow,
 	listClientSessionIdsByConnectionId,
 	softDelete,
@@ -129,6 +130,16 @@ const contextStageSchema = z.object({
 	content: z.union([z.string(), z.array(contentBlockSchema)]),
 });
 
+// Application-level heartbeat. Distinct from WS protocol ping/pong (which Bun
+// may answer below the JS event loop, so a wedged client's socket can still
+// look alive): this rides the same JS timer path the client uses for
+// everything else, so it stops the instant the client's event loop wedges.
+// That silence is what the liveness sweep keys on. Server replies { type:
+// "pong" } so the client can likewise notice a dead server.
+const pingSchema = z.object({
+	type: z.literal("ping"),
+});
+
 // Discriminated union for all message types
 const wsClientMessageSchema = z.discriminatedUnion("type", [
 	sessionConfigureSchema,
@@ -137,6 +148,7 @@ const wsClientMessageSchema = z.discriminatedUnion("type", [
 	threadUnsubscribeSchema,
 	toolResultSchema,
 	contextStageSchema,
+	pingSchema,
 ]);
 
 interface ClientConnection {
@@ -156,6 +168,20 @@ interface ClientConnection {
 	>;
 	systemPromptAddition: string | undefined;
 	threadSystemPromptAdditions: Map<string, string>;
+	/**
+	 * Epoch ms of the last inbound WS message on this connection (any type,
+	 * including the application-level heartbeat). The liveness sweep compares
+	 * this against a staleness threshold.
+	 */
+	lastSeenAt: number;
+	/**
+	 * Whether this connection has ever sent an application-level heartbeat.
+	 * The liveness sweep only reaps connections that heartbeat: a client that
+	 * never has is an older build (or a non-heartbeating surface like the web
+	 * UI) whose silence carries no liveness signal, so it falls back to the
+	 * existing TTL/idle behavior and is never force-closed mid-tool-call.
+	 */
+	heartbeatSeen: boolean;
 }
 
 export interface WebSocketConfig {
@@ -210,6 +236,7 @@ export function createWebSocketHandler(
 ): WebSocketConfig & {
 	cleanup: () => void;
 	reapStaleSessions: () => number;
+	sweepUnresponsiveConnections: (staleMs: number, nowMs?: number) => number;
 	registry: ConnectionRegistry;
 	emitToolCancel: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -1229,11 +1256,12 @@ export function createWebSocketHandler(
 							? "Error: Tool call expired (dispatch_expired)"
 							: "Error: Client tool call cancelled: client disconnected (session_reset)";
 
+					const errorMessageId = randomUUID();
 					insertRow(
 						db,
 						"messages",
 						{
-							id: randomUUID(),
+							id: errorMessageId,
 							thread_id: threadId,
 							role: "tool_result",
 							content: errorContent,
@@ -1251,6 +1279,21 @@ export function createWebSocketHandler(
 
 					// Enqueue tool result to wake the agent loop
 					enqueueToolResult(db, threadId, payload.call_id);
+
+					// Drive resume the same way the happy path does. enqueueToolResult
+					// alone only leaves a dispatch_queue row; the thread does not
+					// re-drive until something emits message:created — which is why a
+					// reaped call previously sat wedged until the next inbound message
+					// (a manual bump). Emitting it here routes through the server's
+					// message:created handler, which enforces the parallel-tool barrier
+					// (hasPendingClientToolCalls) before calling handleThread, so a turn
+					// with several in-flight client tools only resumes once the last one
+					// is resolved. Mirrors handleToolResult's post-result emit.
+					const errorMessage = findMessageById(db, errorMessageId) as Message;
+					eventBus.emit("message:created", {
+						message: errorMessage,
+						thread_id: threadId,
+					});
 				}
 			} catch {
 				// Ignore parse errors and continue
@@ -1316,6 +1359,55 @@ export function createWebSocketHandler(
 	eventBus.on("status:forward", handleStatusForward);
 	eventBus.on("stream:chunk", handleStreamChunk);
 
+	/**
+	 * Reap a connection's in-flight client tool calls and drop its session
+	 * affinity, then forget it. Shared by the WS `close` handler (socket
+	 * actually closed) and the liveness sweep (socket still open but the client
+	 * has gone silent — we close it ourselves first). Idempotent: a second call
+	 * for the same ws finds no `conn` and no-ops, so the re-entrant `close` Bun
+	 * fires after the sweep calls `ws.close()` is harmless.
+	 */
+	function closeConnection(ws: ServerWebSocket<unknown>): void {
+		const conn = clients.get(ws);
+		if (conn && db && siteId) {
+			// A closing connection can never return results for the client tool
+			// calls it was handling. Resolve them to a terminal 'expired' state
+			// (both 'pending' and delivered-but-unanswered 'processing'), synthesize
+			// paired error tool_results, and clear the resume barrier so the thread
+			// isn't wedged at one-message-per-turn on the next bump.
+			//
+			// Previously this scanned `status = 'pending'` only, so a call that had
+			// been delivered (→ 'processing') was missed entirely; and even for the
+			// rows it found, `emitToolCancel` writes the paired result but never
+			// flips the dispatch_queue status, so `hasPendingClientToolCalls` stayed
+			// true forever and `server.ts` returned after one tool every turn. An
+			// editor restart re-claims the orphan to the new connection (see
+			// redeliverPendingToolCalls), defeating the TTL expiry scan's live-session
+			// exclusion (1c0027f6) — so connection-close is the only seam that can
+			// reliably reap a delivered-but-unanswered call. The two are complementary:
+			// the TTL scan spares calls a live session may still complete; close reaps
+			// calls whose session just went away.
+			const expired = expireClientToolCallsForConnection(db, conn.connectionId);
+			if (expired.length > 0) {
+				const byThread = new Map<string, typeof expired>();
+				for (const entry of expired) {
+					const list = byThread.get(entry.thread_id) ?? [];
+					list.push(entry);
+					byThread.set(entry.thread_id, list);
+				}
+				for (const [threadId, entries] of byThread) {
+					emitToolCancel(entries, threadId, "session_reset", conn.connectionId);
+				}
+			}
+
+			// Drop client-session affinity rows held by this connection so
+			// notify/introspect wakeups stop being routed to a host whose
+			// session just went away (issue #91).
+			clearAllClientSessions(conn);
+		}
+		clients.delete(ws);
+	}
+
 	return {
 		open(ws: ServerWebSocket<unknown>): void {
 			const conn: ClientConnection = {
@@ -1325,6 +1417,8 @@ export function createWebSocketHandler(
 				clientTools: new Map(),
 				systemPromptAddition: undefined,
 				threadSystemPromptAdditions: new Map(),
+				lastSeenAt: Date.now(),
+				heartbeatSeen: false,
 			};
 			clients.set(ws, conn);
 		},
@@ -1336,6 +1430,9 @@ export function createWebSocketHandler(
 
 			const conn = clients.get(ws);
 			if (!conn) return;
+
+			// Any inbound frame is proof of life; the sweep compares this stamp.
+			conn.lastSeenAt = Date.now();
 
 			try {
 				const parsed = wsClientMessageSchema.safeParse(JSON.parse(rawMessage));
@@ -1378,6 +1475,15 @@ export function createWebSocketHandler(
 						handleToolResult(conn, message);
 						break;
 					}
+					case "ping": {
+						// Heartbeat. lastSeenAt was already bumped above; flag that this
+						// connection heartbeats so the liveness sweep is allowed to act on
+						// its silence (see heartbeatSeen). Echo a pong for the client's own
+						// dead-server detection.
+						conn.heartbeatSeen = true;
+						ws.send(JSON.stringify({ type: "pong" }));
+						break;
+					}
 				}
 			} catch {
 				// Invalid JSON, send error response
@@ -1392,44 +1498,7 @@ export function createWebSocketHandler(
 		},
 
 		close(ws: ServerWebSocket<unknown>): void {
-			const conn = clients.get(ws);
-			if (conn && db && siteId) {
-				// A closing connection can never return results for the client tool
-				// calls it was handling. Resolve them to a terminal 'expired' state
-				// (both 'pending' and delivered-but-unanswered 'processing'), synthesize
-				// paired error tool_results, and clear the resume barrier so the thread
-				// isn't wedged at one-message-per-turn on the next bump.
-				//
-				// Previously this scanned `status = 'pending'` only, so a call that had
-				// been delivered (→ 'processing') was missed entirely; and even for the
-				// rows it found, `emitToolCancel` writes the paired result but never
-				// flips the dispatch_queue status, so `hasPendingClientToolCalls` stayed
-				// true forever and `server.ts` returned after one tool every turn. An
-				// editor restart re-claims the orphan to the new connection (see
-				// redeliverPendingToolCalls), defeating the TTL expiry scan's live-session
-				// exclusion (1c0027f6) — so connection-close is the only seam that can
-				// reliably reap a delivered-but-unanswered call. The two are complementary:
-				// the TTL scan spares calls a live session may still complete; close reaps
-				// calls whose session just went away.
-				const expired = expireClientToolCallsForConnection(db, conn.connectionId);
-				if (expired.length > 0) {
-					const byThread = new Map<string, typeof expired>();
-					for (const entry of expired) {
-						const list = byThread.get(entry.thread_id) ?? [];
-						list.push(entry);
-						byThread.set(entry.thread_id, list);
-					}
-					for (const [threadId, entries] of byThread) {
-						emitToolCancel(entries, threadId, "session_reset", conn.connectionId);
-					}
-				}
-
-				// Drop client-session affinity rows held by this connection so
-				// notify/introspect wakeups stop being routed to a host whose
-				// session just went away (issue #91).
-				clearAllClientSessions(conn);
-			}
-			clients.delete(ws);
+			closeConnection(ws);
 		},
 
 		cleanup(): void {
@@ -1458,6 +1527,48 @@ export function createWebSocketHandler(
 				liveConnectionIds.add(conn.connectionId);
 			}
 			return reapStaleClientSessions(db, siteId, liveConnectionIds).length;
+		},
+
+		/**
+		 * Force-close connections that have gone silent while holding an in-flight
+		 * client tool call, so a wedged/dead-but-TCP-connected editor no longer
+		 * parks its thread until the operator kills the TUI. A connection is
+		 * closed only when all three hold:
+		 *
+		 *   1. It has sent at least one application-level heartbeat (`heartbeatSeen`).
+		 *      Bun may answer WS protocol pings below the JS event loop, so the
+		 *      socket looking alive proves nothing; a client that never heartbeats
+		 *      (older build, or a non-heartbeating surface like the web UI) gives no
+		 *      liveness signal and is left to the TTL/idle path — never force-closed.
+		 *   2. It has not been heard from within `staleMs`. The client heartbeats on
+		 *      a timer independent of tool execution, so a healthy editor mid-long-
+		 *      `boundless_bash` keeps its stamp fresh and is spared; only a stalled
+		 *      event loop lets the stamp age out.
+		 *   3. It is holding an in-flight client tool call — the only case with a
+		 *      wedged thread to free. This bounds the blast radius: a silent-but-idle
+		 *      editor is left alone.
+		 *
+		 * Closing routes through `closeConnection` (same reap as WS `close`), which
+		 * now emits `message:created` for the synthesized error result, so the
+		 * thread resumes on its own. Returns the count force-closed.
+		 */
+		sweepUnresponsiveConnections(staleMs: number, nowMs: number = Date.now()): number {
+			if (!db) return 0;
+			let closed = 0;
+			// Snapshot: closeConnection mutates `clients`, so don't iterate it live.
+			for (const [ws, conn] of [...clients]) {
+				if (!conn.heartbeatSeen) continue;
+				if (nowMs - conn.lastSeenAt <= staleMs) continue;
+				if (!hasInFlightClientToolCallsForConnection(db, conn.connectionId)) continue;
+				closeConnection(ws);
+				try {
+					ws.close();
+				} catch {
+					// Socket may already be tearing down; the reap above is what matters.
+				}
+				closed++;
+			}
+			return closed;
 		},
 
 		registry,

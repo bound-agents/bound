@@ -13,6 +13,10 @@ import type { ConnectionRegistry } from "./websocket";
 const logger = createLogger("@bound/web", "server-start");
 const LOOPBACK_BIND_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const UNSAFE_WEB_BIND_OVERRIDE = "BOUND_ALLOW_UNSAFE_WEB_BIND";
+// A heartbeating connection unheard-from for this long while holding an
+// in-flight client tool call is treated as wedged/dead and force-closed. 45s =
+// 3 missed 15s client heartbeats: rides out a GC pause, still recovers fast.
+const WS_LIVENESS_STALE_MS = 45_000;
 
 export type { ModelsConfig, BackendPricing };
 
@@ -166,6 +170,7 @@ export async function createWebServer(
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
 	let reapInterval: ReturnType<typeof setInterval> | null = null;
+	let livenessInterval: ReturnType<typeof setInterval> | null = null;
 
 	return {
 		async start(): Promise<void> {
@@ -206,11 +211,26 @@ export async function createWebServer(
 				}
 			}, 60_000);
 
+			// Liveness sweep: force-close heartbeating connections that have gone
+			// silent while holding an in-flight client tool call, so a wedged/dead
+			// editor whose socket is still TCP-open no longer parks its thread until
+			// the operator kills the TUI. staleMs (45s) is 3 missed 15s client
+			// heartbeats — long enough to ride out a GC pause, short enough to
+			// recover fast. Only connections that heartbeat are eligible (older
+			// clients / the web UI are untouched), so this is safe to run always.
+			livenessInterval = setInterval(() => {
+				const closed = wsHandler.sweepUnresponsiveConnections(WS_LIVENESS_STALE_MS);
+				if (closed > 0) {
+					logger.info("Force-closed unresponsive client connections", { count: closed });
+				}
+			}, 15_000);
+
 			logger.info("Web server listening", { host, port, url: `http://${host}:${port}` });
 		},
 
 		async stop(): Promise<void> {
 			if (reapInterval) clearInterval(reapInterval);
+			if (livenessInterval) clearInterval(livenessInterval);
 			wsHandler.cleanup();
 			if (server) {
 				server.stop(true);
