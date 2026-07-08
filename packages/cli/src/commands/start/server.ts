@@ -32,6 +32,7 @@ import {
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
+	softDelete,
 	updateRow,
 	writeMessageMetadata,
 	writeOutbox,
@@ -44,6 +45,7 @@ import {
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
 	createConnectorTool,
 	getConnectorHandle,
+	isSubscriptionRejected,
 } from "@bound/platforms";
 import type { ClusterFsResult } from "@bound/sandbox";
 import type { KeyringConfig, Logger, McpConfig, StatusForwardPayload } from "@bound/shared";
@@ -1090,7 +1092,36 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							handle_id,
 							server_name: handle.server_name,
 						});
-						await platformMcpRegistry.activateSubscription(handle);
+						try {
+							await platformMcpRegistry.activateSubscription(handle);
+						} catch (err) {
+							// The connector permanently rejected this subscription (e.g.
+							// a spoke bound a Discord channel the bot can't view — the
+							// spoke has no local client, so it couldn't validate at attach
+							// time; the leader is the first host that can). Roll the
+							// synced handle + task back so the deletion propagates to the
+							// spoke rather than leaving a dead subscription that never
+							// delivers. A non-rejection error (transient) is logged and
+							// left for the next reconnect. Wrapping also prevents an
+							// unhandled rejection in this event handler.
+							if (isSubscriptionRejected(err)) {
+								appContext.logger.warn(
+									"[platforms-mcp] Rolling back synced handle: connector rejected subscription",
+									{
+										handle_id,
+										server_name: handle.server_name,
+										reason: err instanceof Error ? err.message : String(err),
+									},
+								);
+								softDelete(appContext.db, "connector_handles", handle_id, appContext.siteId);
+								softDelete(appContext.db, "tasks", handle.task_id, appContext.siteId);
+							} else {
+								appContext.logger.error("[platforms-mcp] Failed to activate synced handle", {
+									handle_id,
+									error: err instanceof Error ? err.message : String(err),
+								});
+							}
+						}
 					}
 				});
 			},

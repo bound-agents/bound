@@ -14,6 +14,7 @@ import {
 	getConnectorHandle,
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
+import { isSubscriptionRejected } from "./subscription-errors.js";
 
 export interface PlatformServerEntry {
 	name: string;
@@ -636,6 +637,15 @@ export class PlatformMcpRegistry {
 					.passthrough(),
 			);
 		} catch (err) {
+			// A permanent subscription rejection (e.g. the connector refuses a
+			// channel the bot can't view) must propagate so the caller can roll
+			// the handle back — leaving it would recreate the very dead-handle
+			// state the rejection exists to prevent. Transient stream failures
+			// are logged and swallowed as before; they retry on the next
+			// reconnect and must not tear down a legitimate handle.
+			if (isSubscriptionRejected(err)) {
+				throw err;
+			}
 			this.deps.logger.error(
 				`Failed to subscribe to stream for handle ${subscription.handleId}: ${err}`,
 			);
@@ -709,7 +719,17 @@ export class PlatformMcpRegistry {
 		this.activeSubscriptions.set(handle.id, subscription);
 
 		if (handle.delivery_mode === "push") {
-			await this.startStreamSubscription(subscription, handle);
+			try {
+				await this.startStreamSubscription(subscription, handle);
+			} catch (err) {
+				// A permanent subscription rejection means this handle will never
+				// deliver. Undo the in-memory registration and rethrow so the
+				// caller (attach, or the handle_synced listener) can roll the
+				// persisted handle/task back. Transient failures never reach here
+				// — startStreamSubscription swallows those.
+				this.activeSubscriptions.delete(handle.id);
+				throw err;
+			}
 		} else {
 			// Poll mode: start with 2s interval
 			this.startPollTimer(subscription, 2);
@@ -726,7 +746,19 @@ export class PlatformMcpRegistry {
 		this.deps.logger.info(`Reconnecting ${handles.length} connector handles`);
 		for (const handle of handles) {
 			if (!handle.task_id) continue; // orphan handle, skip
-			await this.activateSubscription(handle);
+			try {
+				await this.activateSubscription(handle);
+			} catch (err) {
+				// A permanent rejection here (e.g. the bot's View Channel
+				// permission was revoked while we were down) must not abort the
+				// whole reconnect, and — unlike attach — must not roll the handle
+				// back: reconnect is not the subscription-creation moment, and the
+				// permission may be restored before the next failover. Log and
+				// carry on; the operator can detach if it's genuinely dead.
+				this.deps.logger.warn(
+					`Skipping handle ${handle.id} during reconnect: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 		}
 	}
 
