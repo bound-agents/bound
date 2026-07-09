@@ -509,6 +509,16 @@ export const RELAY_KIND_REGISTRY = {
 	// platform-MCP `intake` shape (intakePayloadSchema).
 	webhook_intake: { dispatch: "passive" },
 
+	// `connector_intake` carries a platform push-connector event batch
+	// written by `deliverBatch` (packages/platforms). Like `webhook_intake`
+	// it is a passive mailbox row owned by the scheduler's event-task wakeup
+	// path (buildEventWakeupContent), NOT the relay-processor: it exists so a
+	// leader-local connector wakeup carries the triggering event in its
+	// tool_result rather than falling back to the bare static task payload.
+	// Its payload is the connector's own batch content (opaque to bound),
+	// distinct from the platform-MCP `intake` shape (intakePayloadSchema).
+	connector_intake: { dispatch: "passive" },
+
 	// Response kinds — stored in relay_inbox for polling loops
 	result: { dispatch: "response" },
 	error: { dispatch: "response" },

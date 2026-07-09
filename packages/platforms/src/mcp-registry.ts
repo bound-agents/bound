@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
+import { insertInbox, insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -537,9 +537,12 @@ export class PlatformMcpRegistry {
 		const lastCursor = newEvents[newEvents.length - 1]?.cursor;
 		updateConnectorHandleCursor(this.deps.db, this.deps.siteId, subscription.handleId, lastCursor);
 
-		// 5.5. Write relay intake entry for multi-host routing (AC7.1, AC7.2)
+		// 5.5. Route the batch so the woken task's wakeup carries it.
 		if (this.deps.hubSiteId && this.deps.hubSiteId !== this.deps.siteId) {
-			// Multi-host mode: write intake for hub routing
+			// Multi-host mode (a spoke is leader): write intake for hub routing.
+			// The hub's relay-processor claims the developer message written
+			// above via runLocalThreadLoop; that path does NOT go through
+			// buildEventWakeupContent, so no connector_intake row is written here.
 			writeOutbox(this.deps.db, {
 				id: randomUUID(),
 				source_site_id: this.deps.siteId,
@@ -558,6 +561,31 @@ export class PlatformMcpRegistry {
 				}),
 				created_at: now,
 				expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+				trace_context: null,
+			});
+		} else {
+			// Leader-local mode (this host is the platform leader): the scheduler
+			// wakes the task here via connector:event and synthesizes its wakeup
+			// through buildEventWakeupContent. Write a passive connector_intake
+			// relay_inbox row so that wakeup folds the triggering batch into its
+			// tool_result — otherwise the wakeup falls back to the bare static
+			// task payload ({handle_id, server_name}) and the event sits only in
+			// the developer message above, losing the model's attention to any
+			// stale imperatives already in thread history. Mirrors the
+			// webhook_intake path (packages/web/src/server/webhook-handler.ts).
+			// relay_inbox is local-only (invariant #3); this host is where the
+			// wakeup is built, so the row is readable there.
+			insertInbox(this.deps.db, {
+				id: randomUUID(),
+				source_site_id: this.deps.siteId,
+				kind: "connector_intake" as const,
+				ref_id: subscription.threadId,
+				idempotency_key: `connector_intake:${subscription.handleId}:${newEvents[0].eventId}`,
+				stream_id: null,
+				payload: batchContent,
+				expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+				received_at: now,
+				processed: 0,
 				trace_context: null,
 			});
 		}
