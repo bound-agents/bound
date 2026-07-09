@@ -32,7 +32,7 @@ export function writeOutbox(
 	entry: Omit<RelayOutboxEntry, "delivered">,
 	maxPayloadBytes: number = MAX_PAYLOAD_BYTES_DEFAULT,
 	eventBus?: TypedEventEmitter,
-): void {
+): boolean {
 	if (!entry.source_site_id) {
 		throw new Error("writeOutbox: source_site_id is required for relay routing");
 	}
@@ -67,7 +67,12 @@ export function writeOutbox(
 	// re-buffers an entry that's already in relay_outbox). The Node
 	// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
 	// throws RangeError.
-	if (result.changes === 0) return;
+	//
+	// Returns whether a row was actually inserted (mirrors insertInbox), so
+	// callers using per-event idempotency keys can gate dependent writes on
+	// the dedupe outcome (e.g. deliverBatch skips the developer message for a
+	// crash-replayed event the outbox already carries).
+	if (result.changes === 0) return false;
 
 	// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
 	const bus = eventBus ?? relayOutboxEventBus;
@@ -77,6 +82,7 @@ export function writeOutbox(
 			target_site_id: entry.target_site_id,
 		});
 	}
+	return true;
 }
 
 export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {

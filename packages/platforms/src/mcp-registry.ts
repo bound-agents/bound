@@ -567,86 +567,101 @@ export class PlatformMcpRegistry {
 			}
 		}
 
-		// 3. Format batch content (opaque to bound — format determined by MCP server)
-		const batchContent = JSON.stringify(newEvents.map((e) => e.data));
+		// 3. Persist per EVENT, not per batch. Batch-level rows keyed on the
+		// FIRST event's id made INSERT OR IGNORE a batch-shaped guillotine:
+		// after a crash between persistence and the cursor update, reconnect
+		// replays the overlap as one batch [e1, e2] — the batch key collides
+		// with e1's already-persisted row, the whole insert is ignored, and
+		// the cursor then advances past e2, losing it permanently. Per-event
+		// rows with per-event keys make replay dedupe exact: e1 is ignored,
+		// e2 survives. The batch boundary was only ever an artifact of the
+		// 2s flush timer — it carries no semantics worth preserving.
 		const now = new Date().toISOString();
 
-		// 4. Route the batch so the woken task's wakeup carries it — exactly ONE
-		// delivery vehicle per branch. Delivering the same batch as BOTH a
-		// developer-role message and a folded wakeup tool_result doubles the
-		// event in thread history (confusing and bloaty); each branch persists
-		// the content exactly once, in the form its own wakeup path consumes.
+		// 4. Route each event so the woken task's wakeup carries it — exactly
+		// ONE delivery vehicle per branch. Delivering the same event as BOTH a
+		// developer-role message and a folded wakeup tool_result doubles it in
+		// thread history (confusing and bloaty); each branch persists the
+		// content exactly once, in the form its own wakeup path consumes.
 		if (this.deps.hubSiteId && this.deps.hubSiteId !== this.deps.siteId) {
 			// Multi-host mode (a spoke is leader): the hub's relay-processor
 			// claims a developer-role message via runLocalThreadLoop
 			// (enqueueMessage → claimPending), so the developer message is the
 			// delivery vehicle and the intake outbox references it by id. This
 			// path never goes through buildEventWakeupContent, so no
-			// connector_intake row is written here.
-			const messageId = randomUUID();
-			insertRow(
-				this.deps.db,
-				"messages",
-				{
-					id: messageId,
-					thread_id: subscription.threadId,
-					role: "developer",
-					content: batchContent,
-					model_id: null,
-					tool_name: null,
+			// connector_intake row is written here. The outbox insert runs
+			// FIRST and gates the message insert: writeOutbox is INSERT OR
+			// IGNORE on the per-event idempotency key, so a crash-replayed
+			// event is dropped here before it can duplicate the message.
+			for (const event of newEvents) {
+				const messageId = randomUUID();
+				const inserted = writeOutbox(this.deps.db, {
+					id: randomUUID(),
+					source_site_id: this.deps.siteId,
+					target_site_id: this.deps.hubSiteId,
+					kind: "intake",
+					ref_id: null,
+					idempotency_key: `intake:${subscription.serverName}:${event.eventId}`,
+					stream_id: null,
+					payload: JSON.stringify({
+						platform: subscription.serverName,
+						platform_event_id: event.eventId,
+						thread_id: subscription.threadId,
+						message_id: messageId,
+						content: JSON.stringify([event.data]),
+						attachments: [],
+					}),
 					created_at: now,
-					modified_at: now,
-					host_origin: this.deps.siteId,
-					deleted: 0,
-					exit_code: null,
-					metadata: null,
-				},
-				this.deps.siteId,
-			);
-			writeOutbox(this.deps.db, {
-				id: randomUUID(),
-				source_site_id: this.deps.siteId,
-				target_site_id: this.deps.hubSiteId,
-				kind: "intake",
-				ref_id: null,
-				idempotency_key: `intake:${subscription.serverName}:${newEvents[0].eventId}`,
-				stream_id: null,
-				payload: JSON.stringify({
-					platform: subscription.serverName,
-					platform_event_id: newEvents[0].eventId,
-					thread_id: subscription.threadId,
-					message_id: messageId,
-					content: batchContent,
-					attachments: [],
-				}),
-				created_at: now,
-				expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-				trace_context: null,
-			});
+					expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+					trace_context: null,
+				});
+				if (!inserted) continue;
+				insertRow(
+					this.deps.db,
+					"messages",
+					{
+						id: messageId,
+						thread_id: subscription.threadId,
+						role: "developer",
+						content: JSON.stringify([event.data]),
+						model_id: null,
+						tool_name: null,
+						created_at: now,
+						modified_at: now,
+						host_origin: this.deps.siteId,
+						deleted: 0,
+						exit_code: null,
+						metadata: null,
+					},
+					this.deps.siteId,
+				);
+			}
 		} else {
 			// Leader-local mode (this host is the platform leader): the scheduler
 			// wakes the task here via connector:event and synthesizes its wakeup
-			// through buildEventWakeupContent, which folds this passive
-			// connector_intake row into the wakeup tool_result — the single
-			// place the event lands in thread history, mirroring the
+			// through buildEventWakeupContent, which folds these passive
+			// connector_intake rows into the wakeup tool_result — the single
+			// place the events land in thread history, mirroring the
 			// webhook_intake path (packages/web/src/server/webhook-handler.ts).
 			// relay_inbox is local-only (invariant #3); this host is where the
-			// wakeup is built, so the row is readable there. The folded
+			// wakeup is built, so the rows are readable there. The folded
 			// tool_result is a synced messages row, so cross-host history is
 			// preserved without a separate developer message.
-			insertInbox(this.deps.db, {
-				id: randomUUID(),
-				source_site_id: this.deps.siteId,
-				kind: "connector_intake" as const,
-				ref_id: subscription.threadId,
-				idempotency_key: `connector_intake:${subscription.handleId}:${newEvents[0].eventId}`,
-				stream_id: null,
-				payload: batchContent,
-				expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-				received_at: now,
-				processed: 0,
-				trace_context: null,
-			});
+			for (const event of newEvents) {
+				insertInbox(this.deps.db, {
+					id: randomUUID(),
+					source_site_id: this.deps.siteId,
+					kind: "connector_intake" as const,
+					ref_id: subscription.threadId,
+					idempotency_key: `connector_intake:${subscription.handleId}:${event.eventId}`,
+					stream_id: null,
+					payload: JSON.stringify([event.data]),
+					expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+					received_at: now,
+					processed: 0,
+					trace_context: null,
+				});
+			}
 		}
 
 		// 5. Update cursor on connector handle (AC5.5)

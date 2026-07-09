@@ -2177,6 +2177,168 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 
+		// Regression: resetEventTask's re-arm gate counted only webhook_intake
+		// rows, and the completion path skipped the check entirely. Since the
+		// single-delivery-vehicle change, connector_intake rows are the ONLY
+		// leader-local record of a platform event — so an event arriving while
+		// the task's loop was already running (onEvent's CAS claim fails on a
+		// non-pending task) stranded: the intake row sat unprocessed and
+		// nothing re-armed the task until the NEXT event happened to fire.
+		it("re-arms a completed event task when unprocessed connector_intake rows remain", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', 'pending', 'connector:event:test-handle', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'results', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, new Date(Date.now() - 60_000).toISOString(), now, now],
+			);
+			// Simulate an event that arrives MID-RUN: the wakeup fold marks
+			// pre-existing rows processed BEFORE the loop runs, so a row that
+			// is still unprocessed at completion time can only have arrived
+			// while the loop was executing (onEvent's CAS claim fails while
+			// the task is claimed/running, stranding the row). Insert it from
+			// inside the loop factory to model exactly that interleaving.
+			const midRunEventFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					db.run(
+						`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+						 VALUES (?, ?, 'connector_intake', ?, ?, ?, ?, ?, 0)`,
+						[
+							randomUUID(),
+							siteId,
+							threadId,
+							`connector_intake:test-handle:${randomUUID()}`,
+							JSON.stringify([{ content: "mid-run event" }]),
+							new Date(Date.now() + 3600_000).toISOString(),
+							new Date().toISOString(),
+						],
+					);
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, midRunEventFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, run_count, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						run_count: number;
+						next_run_at: string | null;
+					} | null;
+					// After completion WITH a pending intake row: task must be
+					// re-armed (next_run_at set), not parked with NULL.
+					return task?.status === "pending" && task.run_count > 0 && task.next_run_at !== null;
+				},
+				{
+					timeoutMs: 5000,
+					message: "completed event task was not re-armed despite unprocessed connector_intake",
+				},
+			);
+			stop();
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+		});
+
+		it("counts connector_intake rows in the soft-failure retry gate", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', 'pending', 'connector:event:test-handle-2', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'results', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, new Date(Date.now() - 60_000).toISOString(), now, now],
+			);
+
+			// The row must arrive MID-RUN here too: the wakeup fold marks any
+			// pre-existing rows processed before run() executes, so a row
+			// seeded before the run never reaches the failure gate.
+			const softErrorFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					db.run(
+						`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+						 VALUES (?, ?, 'connector_intake', ?, ?, ?, ?, ?, 0)`,
+						[
+							randomUUID(),
+							siteId,
+							threadId,
+							`connector_intake:test-handle-2:${randomUUID()}`,
+							JSON.stringify([{ content: "pending event" }]),
+							new Date(Date.now() + 3600_000).toISOString(),
+							new Date().toISOString(),
+						],
+					);
+					return {
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+						error: "Transient model failure",
+					};
+				},
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						consecutive_failures: number;
+						next_run_at: string | null;
+					} | null;
+					// Failure path with a pending connector_intake row must
+					// schedule a retry (next_run_at set), same as webhook_intake.
+					return (
+						task?.status === "pending" && task.consecutive_failures > 0 && task.next_run_at !== null
+					);
+				},
+				{
+					timeoutMs: 5000,
+					message: "failed event task did not schedule retry despite unprocessed connector_intake",
+				},
+			);
+			stop();
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+		});
+
 		it("resets event task to pending after successful completion", async () => {
 			const taskId = randomUUID();
 			insertEventTask(taskId, { consecutiveFailures: 3 });
