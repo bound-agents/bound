@@ -478,15 +478,103 @@ describe("Connector Handle Lifecycle", () => {
 			expect(messages[0].content).toContain("delivered via notification path");
 		});
 
-		// Regression: the notifications/events/event handler routed on
-		// (serverName, eventName) alone, ignoring the subscription's own
-		// event_args filter. With two message.received handles live (e.g. a DM
-		// channel and a guild channel), ONE Discord message fanned out to BOTH
-		// buffers: both deliverBatch runs fired, both event threads woke, both
-		// cursors advanced to the same snowflake — observed in production as
-		// duplicate agent responses from two threads to a single message. The
-		// connector already filters per-subscription server-side; the registry
-		// must apply the same params match against event.data.
+		// Regression: deliverBatch wrote ONE intake row per BATCH, keyed on the
+		// FIRST event's id. After a crash between insertInbox and the cursor
+		// update, reconnect replays the overlap as one batch [e1, e2]: the
+		// batch key collides with e1's already-persisted row, INSERT OR IGNORE
+		// drops the whole row — and the cursor then advances past e2, losing
+		// it permanently. Per-event rows with per-event keys make replay
+		// dedupe exact: e1 is ignored, e2 survives.
+		it("keeps trailing events when a crash-replay batch overlaps an already-delivered event", async () => {
+			const now = new Date().toISOString();
+			const threadId = `thread-${randomBytes(4).toString("hex")}`;
+			const taskId = `task-${randomBytes(4).toString("hex")}`;
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: "test-user",
+					interface: "test",
+					host_origin: siteId,
+					summary: null,
+					last_message_at: now,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				siteId,
+			);
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "event",
+					status: "pending",
+					trigger_spec: `connector:event:${taskId}`,
+					thread_id: threadId,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				siteId,
+			);
+			const handleId = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "test.event",
+				eventArgs: {},
+				deliveryMode: "push",
+				taskId,
+			});
+
+			await registry.registerServer("test-server", server);
+			const handle = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleId);
+			await registry.activateSubscription(handle as never);
+
+			const e1 = {
+				eventId: "replay-e1",
+				name: "test.event",
+				timestamp: now,
+				data: { num: 1 },
+				cursor: "101",
+			};
+			const e2 = {
+				eventId: "replay-e2",
+				name: "test.event",
+				timestamp: now,
+				data: { num: 2 },
+				cursor: "102",
+			};
+
+			// First delivery: e1 alone. Row persisted, cursor advances to 101.
+			const sub = (registry as any).activeSubscriptions.get(handleId);
+			registry.deliverBatch(sub, [e1]);
+
+			// Simulate the crash window: the intake row for e1 was written but
+			// the cursor update was lost. Reset the cursor and rebuild the
+			// subscription (in-memory dedup set dies with the process).
+			db.run("UPDATE connector_handles SET cursor = NULL WHERE id = ?", [handleId]);
+			(registry as any).activeSubscriptions.delete(handleId);
+			const handleAfter = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleId);
+			await registry.activateSubscription(handleAfter as never);
+			const subAfter = (registry as any).activeSubscriptions.get(handleId);
+
+			// Replay delivers the overlap as one batch.
+			registry.deliverBatch(subAfter, [e1, e2]);
+
+			const rows = db
+				.query(
+					"SELECT payload FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' ORDER BY received_at",
+				)
+				.all(threadId) as Array<{ payload: string }>;
+
+			// e1 must not double; e2 must survive the replay.
+			const withE2 = rows.filter((r) => r.payload.includes('"num":2'));
+			expect(withE2.length).toBe(1);
+			const withE1 = rows.filter((r) => r.payload.includes('"num":1'));
+			expect(withE1.length).toBe(1);
+		});
 		it("routes an event only to subscriptions whose params match event.data", async () => {
 			const now = new Date().toISOString();
 			const mkThreadTask = (suffix: string) => {
@@ -1240,25 +1328,27 @@ describe("Connector Handle Lifecycle", () => {
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			// Verify only one message was created (containing events 6 and 7)
+			// Verify per-event intake rows were created for events 6 and 7 only
+			// (persistence is per-event, not per-batch: one row per event so
+			// crash-replay dedupe via idempotency key is exact).
 			const messages = db
 				.query(
 					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
 				)
 				.all(threadId) as any[];
 
-			expect(messages.length).toBe(1);
+			expect(messages.length).toBe(2);
 
-			// Verify the message contains both 6 and 7
-			const content = messages[0].content;
-			expect(content).toContain("6");
-			expect(content).toContain("7");
+			// One row carries event 6, the other event 7.
+			const contents = messages.map((m) => m.content).join("|");
+			expect(contents).toContain('"num":6');
+			expect(contents).toContain('"num":7');
 
-			// Verify events 3, 4, 5 (before cursor) are NOT in the message
+			// Verify events 3, 4, 5 (before cursor) are NOT in any row
 			// These should have been filtered by cursor-based replay
-			expect(content).not.toContain('"num":3');
-			expect(content).not.toContain('"num":4');
-			expect(content).not.toContain('"num":5');
+			expect(contents).not.toContain('"num":3');
+			expect(contents).not.toContain('"num":4');
+			expect(contents).not.toContain('"num":5');
 
 			// Verify cursor was updated to 7
 			const updatedHandle = db

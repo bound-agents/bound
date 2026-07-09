@@ -448,29 +448,40 @@ function resetEventTask(
 
 	const isCompletion = context === "completion" || context === "template completion";
 	let nextRunAt: string | null = null;
-	if (!isCompletion && task.thread_id) {
-		// Only retry if the inbox has unprocessed webhook envelopes for this
-		// thread. markProcessed (scheduler.ts:895) drains the inbox BEFORE the
-		// agent loop runs, so the common-case retry would replay an empty
-		// wakeup (the "Execute scheduled task." fallback in
-		// buildEventWakeupContent) and produce phantom wakeups. The retry
-		// remains useful only when persistence failed BEFORE markProcessed,
-		// leaving the inbox genuinely pending and the retry replaying the
-		// actual event payload.
+	if (task.thread_id) {
+		// Re-arm if the inbox has unprocessed foldable envelopes for this
+		// thread. markProcessed (below, post-wakeup-insert) drains the inbox
+		// BEFORE the agent loop runs, so an unprocessed row here can only be
+		// (a) an event that arrived MID-RUN — onEvent's CAS claim fails while
+		// the task is claimed/running, so without this re-arm the event
+		// strands until the next event happens to fire — or (b) a wakeup that
+		// failed before markProcessed, where the retry replays the actual
+		// payload.
 		//
-		// kind is filtered to match buildEventWakeupContent's reader — only
-		// webhook_intake rows are foldable into the wakeup, so only those
-		// rows can produce a non-empty retry. A stray platform-MCP `intake`
-		// row sharing this thread_id would NOT survive a retry into the
-		// helper, so retrying on its presence would be a phantom wakeup.
+		// Kinds match buildEventWakeupContent's readers exactly: BOTH
+		// webhook_intake and connector_intake fold into the wakeup. Since the
+		// single-delivery-vehicle change, connector_intake rows are the ONLY
+		// leader-local record of a platform event, so missing them here loses
+		// events outright (observed: Discord messages during an active loop
+		// produced no response). The completion path runs this check too —
+		// completing the CURRENT wakeup says nothing about rows that arrived
+		// after its fold drained the inbox.
+		//
+		// A stray platform-MCP `intake` row sharing this thread_id would NOT
+		// survive a retry into the helper, so it is deliberately not counted
+		// (retrying on its presence would be a phantom wakeup).
 		const unprocessed = db
 			.query(
-				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
+				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN ('webhook_intake', 'connector_intake')",
 			)
-			.get(task.thread_id, "webhook_intake") as { c: number } | null;
+			.get(task.thread_id) as { c: number } | null;
 		if (unprocessed && unprocessed.c > 0) {
 			const failures = current.consecutive_failures ?? 0;
-			if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
+			if (isCompletion) {
+				// Success path with pending rows: immediate re-arm — this is a
+				// live event waiting, not a retry backoff.
+				nextRunAt = new Date().toISOString();
+			} else if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
 				nextRunAt = new Date(Date.now() + 60_000).toISOString();
 			}
 		}
