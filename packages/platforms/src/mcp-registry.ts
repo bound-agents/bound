@@ -93,6 +93,47 @@ export interface McpEvent {
 	cursor: string;
 }
 
+/**
+ * Parses a handle's `event_args` JSON into a filter object. Malformed or
+ * non-object args degrade to `{}` (match-everything), logged once — a handle
+ * with unreadable args should keep delivering rather than go silently dark,
+ * matching the pre-filter behavior for that handle.
+ */
+function parseEventArgs(
+	eventArgs: string,
+	logger: Logger,
+	handleId: string,
+): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(eventArgs);
+		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+	} catch {
+		// fall through
+	}
+	logger.warn(`Handle ${handleId}: event_args is not a JSON object; treating as unfiltered`);
+	return {};
+}
+
+/**
+ * True when every key in the subscription's filter equals the corresponding
+ * field in the event's data. Same semantics as the connector-side filter
+ * (discord-server.ts emitEvent): an empty filter matches everything; a filter
+ * key absent from the event data fails closed.
+ */
+function eventMatchesParams(
+	params: Record<string, unknown>,
+	data: Record<string, unknown>,
+): boolean {
+	for (const [key, value] of Object.entries(params)) {
+		if (data[key] !== value) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /** Active subscription state for push mode */
 interface ActiveSubscription {
 	handleId: string;
@@ -103,6 +144,16 @@ interface ActiveSubscription {
 	 * can route events without relying on a closure over a single handle.
 	 */
 	eventName: string;
+	/**
+	 * The subscription's event filter (parsed `connector_handles.event_args`,
+	 * e.g. `{ channel_id: "..." }`). The notification handler must match these
+	 * against `event.data` — routing on (serverName, eventName) alone fans one
+	 * event out to EVERY same-named subscription: with a DM handle and a guild
+	 * handle both on message.received, one Discord message woke both event
+	 * threads and both responded. Same match semantics as the connector-side
+	 * filter in discord-server.ts emitEvent.
+	 */
+	params: Record<string, unknown>;
 	taskId: string;
 	threadId: string;
 	buffer: McpEvent[];
@@ -261,13 +312,22 @@ export class PlatformMcpRegistry {
 		client.setNotificationHandler(eventsEventNotificationSchema, (notification) => {
 			const event = notification.params as unknown as McpEvent;
 			// Route to every active subscription on this server whose
-			// event_name matches. We look up by `sub.eventName` (set in
-			// activateSubscription) rather than closing over a single
-			// handle, so a server with multiple concurrent push
-			// subscriptions (e.g. message.received + interaction.received)
-			// dispatches each event to exactly the right buffer.
+			// event_name matches AND whose event_args filter matches the
+			// event's data. The server already filters per-subscription and
+			// tags its notification with a subscriptionId, but the registry
+			// discards that tag (startStreamSubscription ignores the
+			// events/stream response), so routing on (serverName, eventName)
+			// alone fanned one event out to EVERY same-named subscription:
+			// with a DM handle and a guild handle both on message.received,
+			// one Discord message woke both event threads and both replied.
+			// Applying the same params match here (eventMatchesParams, the
+			// connector-side semantics) keeps each event on its own line.
 			for (const sub of this.activeSubscriptions.values()) {
-				if (sub.serverName === name && sub.eventName === event.name) {
+				if (
+					sub.serverName === name &&
+					sub.eventName === event.name &&
+					eventMatchesParams(sub.params, event.data)
+				) {
 					sub.buffer.push(event);
 					if (!sub.flushTimer) {
 						sub.flushTimer = setTimeout(() => {
@@ -737,6 +797,7 @@ export class PlatformMcpRegistry {
 			handleId: handle.id,
 			serverName: handle.server_name,
 			eventName: handle.event_name,
+			params: parseEventArgs(handle.event_args, this.deps.logger, handle.id),
 			taskId: handle.task_id,
 			threadId: task.thread_id,
 			buffer: [],

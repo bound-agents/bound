@@ -467,6 +467,117 @@ describe("Connector Handle Lifecycle", () => {
 			expect(messages.length).toBe(1);
 			expect(messages[0].content).toContain("delivered via notification path");
 		});
+
+		// Regression: the notifications/events/event handler routed on
+		// (serverName, eventName) alone, ignoring the subscription's own
+		// event_args filter. With two message.received handles live (e.g. a DM
+		// channel and a guild channel), ONE Discord message fanned out to BOTH
+		// buffers: both deliverBatch runs fired, both event threads woke, both
+		// cursors advanced to the same snowflake — observed in production as
+		// duplicate agent responses from two threads to a single message. The
+		// connector already filters per-subscription server-side; the registry
+		// must apply the same params match against event.data.
+		it("routes an event only to subscriptions whose params match event.data", async () => {
+			const now = new Date().toISOString();
+			const mkThreadTask = (suffix: string) => {
+				const threadId = `thread-${suffix}-${randomBytes(4).toString("hex")}`;
+				const taskId = `task-${suffix}-${randomBytes(4).toString("hex")}`;
+				insertRow(
+					db,
+					"threads",
+					{
+						id: threadId,
+						user_id: "test-user",
+						interface: "test",
+						host_origin: siteId,
+						summary: null,
+						last_message_at: now,
+						created_at: now,
+						deleted: 0,
+						modified_at: now,
+					},
+					siteId,
+				);
+				insertRow(
+					db,
+					"tasks",
+					{
+						id: taskId,
+						type: "event",
+						status: "pending",
+						trigger_spec: `connector:event:${taskId}`,
+						thread_id: threadId,
+						created_at: now,
+						deleted: 0,
+						modified_at: now,
+					},
+					siteId,
+				);
+				return { threadId, taskId };
+			};
+
+			const a = mkThreadTask("dm");
+			const b = mkThreadTask("guild");
+
+			const handleA = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "message.received",
+				eventArgs: { channel_id: "channel-dm" },
+				deliveryMode: "push",
+				taskId: a.taskId,
+			});
+			const handleB = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "message.received",
+				eventArgs: { channel_id: "channel-guild" },
+				deliveryMode: "push",
+				taskId: b.taskId,
+			});
+
+			await registry.registerServer("test-server", server);
+			const rowA = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleA);
+			const rowB = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleB);
+			await registry.activateSubscription(rowA as never);
+			await registry.activateSubscription(rowB as never);
+
+			// One event on the guild channel. Only handle B's filter matches.
+			await server.notification({
+				method: "notifications/events/event",
+				params: {
+					eventId: "event-guild-only",
+					name: "message.received",
+					timestamp: now,
+					data: { channel_id: "channel-guild", content: "testing receive" },
+					cursor: "100",
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			const subA = (registry as any).activeSubscriptions.get(handleA);
+			const subB = (registry as any).activeSubscriptions.get(handleB);
+			expect(subA).toBeDefined();
+			expect(subB).toBeDefined();
+			expect(subB.buffer.length).toBe(1);
+			expect(subB.buffer[0].data.channel_id).toBe("channel-guild");
+			// The DM subscription must NOT receive the guild event.
+			expect(subA.buffer.length).toBe(0);
+
+			// An event carrying no channel_id at all matches neither filtered
+			// subscription (fail-closed, mirroring the connector-side filter).
+			await server.notification({
+				method: "notifications/events/event",
+				params: {
+					eventId: "event-no-channel",
+					name: "message.received",
+					timestamp: now,
+					data: { content: "channel-less event" },
+					cursor: "101",
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(subA.buffer.length).toBe(0);
+			expect(subB.buffer.length).toBe(1);
+		});
 	});
 
 	describe("AC5.3: Poll with no events", () => {
