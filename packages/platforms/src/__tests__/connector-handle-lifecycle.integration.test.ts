@@ -178,22 +178,26 @@ describe("Connector Handle Lifecycle", () => {
 			// Give time for async operations
 			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			// Verify message was created in the thread
-			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND deleted = 0")
+			// Verify the batch landed as a passive connector_intake relay row —
+			// the leader-local delivery vehicle. The scheduler folds it into the
+			// event task's wakeup tool_result via buildEventWakeupContent; no
+			// separate developer-role message is written (single delivery
+			// vehicle per branch). relay_inbox is local-only (invariant #3), so
+			// there is no changelog entry to assert.
+			const intakeRows = db
+				.query("SELECT * FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
+				.all(threadId) as any[];
+
+			expect(intakeRows.length).toBe(1);
+			expect(intakeRows[0].processed).toBe(0);
+			expect(intakeRows[0].payload).toContain("data");
+
+			// No developer-role message in the leader-local branch — the folded
+			// wakeup is the single place the event enters thread history.
+			const devMessages = db
+				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
 				.all(threadId) as never[];
-
-			expect(messages.length).toBeGreaterThan(0);
-
-			const devMessage = messages.find((m: any) => m.role === "developer");
-			expect(devMessage).toBeDefined();
-			expect(devMessage?.thread_id).toBe(threadId);
-
-			// Verify changelog entry exists
-			const changelog = db
-				.query("SELECT * FROM change_log WHERE row_id = ? AND table_name = 'messages'")
-				.all(devMessage?.id) as never[];
-			expect(changelog.length).toBeGreaterThan(0);
+			expect(devMessages.length).toBe(0);
 		});
 	});
 
@@ -287,7 +291,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify only one developer message was created
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as never[];
 
 			expect(messages.length).toBe(1);
@@ -364,7 +370,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify message was created
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(1);
@@ -462,7 +470,9 @@ describe("Connector Handle Lifecycle", () => {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 			expect(messages.length).toBe(1);
 			expect(messages[0].content).toContain("delivered via notification path");
@@ -642,7 +652,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify no message was created
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(0);
@@ -746,7 +758,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify message was created in the thread
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(1);
@@ -879,11 +893,15 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Get messages from both threads
 			const pushMessages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadIdPush) as any[];
 
 			const pollMessages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadIdPoll) as any[];
 
 			// Verify both have exactly one message
@@ -1108,11 +1126,15 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify messages were created in both threads
 			const messages1 = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId1) as any[];
 
 			const messages2 = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId2) as any[];
 
 			expect(messages1.length).toBe(1);
@@ -1220,7 +1242,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify only one message was created (containing events 6 and 7)
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(1);

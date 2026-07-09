@@ -569,40 +569,40 @@ export class PlatformMcpRegistry {
 
 		// 3. Format batch content (opaque to bound — format determined by MCP server)
 		const batchContent = JSON.stringify(newEvents.map((e) => e.data));
-
-		// 4. Persist as developer-role message in the event task's thread (AC1.2)
 		const now = new Date().toISOString();
-		const messageId = randomUUID();
-		insertRow(
-			this.deps.db,
-			"messages",
-			{
-				id: messageId,
-				thread_id: subscription.threadId,
-				role: "developer",
-				content: batchContent,
-				model_id: null,
-				tool_name: null,
-				created_at: now,
-				modified_at: now,
-				host_origin: this.deps.siteId,
-				deleted: 0,
-				exit_code: null,
-				metadata: null,
-			},
-			this.deps.siteId,
-		);
 
-		// 5. Update cursor on connector handle (AC5.5)
-		const lastCursor = newEvents[newEvents.length - 1]?.cursor;
-		updateConnectorHandleCursor(this.deps.db, this.deps.siteId, subscription.handleId, lastCursor);
-
-		// 5.5. Route the batch so the woken task's wakeup carries it.
+		// 4. Route the batch so the woken task's wakeup carries it — exactly ONE
+		// delivery vehicle per branch. Delivering the same batch as BOTH a
+		// developer-role message and a folded wakeup tool_result doubles the
+		// event in thread history (confusing and bloaty); each branch persists
+		// the content exactly once, in the form its own wakeup path consumes.
 		if (this.deps.hubSiteId && this.deps.hubSiteId !== this.deps.siteId) {
-			// Multi-host mode (a spoke is leader): write intake for hub routing.
-			// The hub's relay-processor claims the developer message written
-			// above via runLocalThreadLoop; that path does NOT go through
-			// buildEventWakeupContent, so no connector_intake row is written here.
+			// Multi-host mode (a spoke is leader): the hub's relay-processor
+			// claims a developer-role message via runLocalThreadLoop
+			// (enqueueMessage → claimPending), so the developer message is the
+			// delivery vehicle and the intake outbox references it by id. This
+			// path never goes through buildEventWakeupContent, so no
+			// connector_intake row is written here.
+			const messageId = randomUUID();
+			insertRow(
+				this.deps.db,
+				"messages",
+				{
+					id: messageId,
+					thread_id: subscription.threadId,
+					role: "developer",
+					content: batchContent,
+					model_id: null,
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: this.deps.siteId,
+					deleted: 0,
+					exit_code: null,
+					metadata: null,
+				},
+				this.deps.siteId,
+			);
 			writeOutbox(this.deps.db, {
 				id: randomUUID(),
 				source_site_id: this.deps.siteId,
@@ -626,15 +626,14 @@ export class PlatformMcpRegistry {
 		} else {
 			// Leader-local mode (this host is the platform leader): the scheduler
 			// wakes the task here via connector:event and synthesizes its wakeup
-			// through buildEventWakeupContent. Write a passive connector_intake
-			// relay_inbox row so that wakeup folds the triggering batch into its
-			// tool_result — otherwise the wakeup falls back to the bare static
-			// task payload ({handle_id, server_name}) and the event sits only in
-			// the developer message above, losing the model's attention to any
-			// stale imperatives already in thread history. Mirrors the
+			// through buildEventWakeupContent, which folds this passive
+			// connector_intake row into the wakeup tool_result — the single
+			// place the event lands in thread history, mirroring the
 			// webhook_intake path (packages/web/src/server/webhook-handler.ts).
 			// relay_inbox is local-only (invariant #3); this host is where the
-			// wakeup is built, so the row is readable there.
+			// wakeup is built, so the row is readable there. The folded
+			// tool_result is a synced messages row, so cross-host history is
+			// preserved without a separate developer message.
 			insertInbox(this.deps.db, {
 				id: randomUUID(),
 				source_site_id: this.deps.siteId,
@@ -649,6 +648,10 @@ export class PlatformMcpRegistry {
 				trace_context: null,
 			});
 		}
+
+		// 5. Update cursor on connector handle (AC5.5)
+		const lastCursor = newEvents[newEvents.length - 1]?.cursor;
+		updateConnectorHandleCursor(this.deps.db, this.deps.siteId, subscription.handleId, lastCursor);
 
 		// 6. Fire event trigger to wake the SPECIFIC task (AFTER commit per invariant #6)
 		// Use per-handle trigger key so only the target task wakes (not all event tasks)
