@@ -37,7 +37,7 @@ import {
 	writeMessageMetadata,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
+import type { ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
 import {
 	type ConnectorToolContext,
@@ -264,7 +264,6 @@ export interface ServerResult {
 export interface ServerDeps {
 	appContext: AppContext;
 	modelRouter: ModelRouter;
-	routerConfig: ModelBackendsConfig;
 	agentLoopFactory: AgentLoopFactory;
 	relayExecutor: RelayExecutor | undefined;
 	keyManager: KeyManager | undefined;
@@ -285,7 +284,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const {
 		appContext,
 		modelRouter,
-		routerConfig,
 		agentLoopFactory,
 		relayExecutor,
 		keyManager,
@@ -530,11 +528,19 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 						// Resolve the model for this thread from the authoritative
 						// threads.model_hint column (set by /model command or web UI).
-						// Falls back to the node's default when model_hint is NULL.
+						// Falls back to the node's LIVE default when model_hint is NULL.
+						// Must be modelRouter.getDefaultId(), not routerConfig.default:
+						// routerConfig is a startup snapshot, and on a umans-configured
+						// node its default is the namespace placeholder id ("umans").
+						// The lineup registrar later retires that id and redirects the
+						// router default to a concrete model, but never rewrites the
+						// frozen snapshot — so any NULL-hint thread dispatched here
+						// would request the retired id and fail resolution
+						// ('Unknown model "umans"').
 						const activeModelId = resolveThreadModel(
 							appContext.db,
 							thread_id,
-							routerConfig.default,
+							modelRouter.getDefaultId(),
 						);
 
 						const threadRow = appContext.db
@@ -991,7 +997,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// the dramatically different break-even economics between providers
 			// (cap 0 = never warm threads on that backend).
 			const resolvePokePolicy = (threadId: string): { ttlMs: number; maxPokes: number } | null => {
-				const modelId = resolveThreadModel(appContext.db, threadId, routerConfig.default);
+				// Live router default, not routerConfig.default — the startup
+				// snapshot can still name a retired dynamic-provider namespace
+				// id (see activeModelId above).
+				const modelId = resolveThreadModel(appContext.db, threadId, modelRouter.getDefaultId());
 				const warmCfg = modelRouter.getCacheWarmConfig(modelId);
 				if (!warmCfg?.enabled) return null;
 				const ttl = modelRouter.getCacheTtl(modelId);

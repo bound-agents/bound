@@ -51,7 +51,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	);
 
 	// Phase 4: Model router and inference setup
-	const { modelRouter, routerConfig } = await initInference(appContext, commandContext);
+	const { modelRouter } = await initInference(appContext, commandContext);
 
 	// Phase 5: Relay processor, KeyManager
 	const { relayProcessor, relayProcessorHandle, relayExecutor, keyManager, hubSiteId, keyring } =
@@ -79,7 +79,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 			? await initServer({
 					appContext,
 					modelRouter,
-					routerConfig,
 					agentLoopFactory,
 					relayExecutor,
 					keyManager,
