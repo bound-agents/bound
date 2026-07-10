@@ -28,6 +28,8 @@ export {
 
 // Export model resolution
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
+export { createModelCommandSpec } from "./platform-command-handlers";
+export type { PlatformCommandHandlerDeps } from "./platform-command-handlers";
 
 // Export delegation / client-session helpers. Whole-loop delegation
 // (getDelegationTarget / getClientSessionDelegationTarget / hasLocalClientSession)

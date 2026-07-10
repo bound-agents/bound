@@ -4,6 +4,7 @@ import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { z } from "zod";
+import type { PlatformCommandSpec } from "../platform-commands.js";
 import { CHANNEL_ACCESS_DENIED_CODE } from "../subscription-errors.js";
 
 // Discord.js types imported dynamically to avoid hard dep at module load
@@ -125,6 +126,7 @@ export function createDiscordServer(
 	config: PlatformConnectorConfig,
 	client: DiscordClient,
 	logger: Logger,
+	commands?: PlatformCommandSpec[],
 ): McpServer {
 	const mcpServer = new McpServer(
 		{
@@ -603,8 +605,51 @@ export function createDiscordServer(
 		},
 	);
 
+	// Register platform commands as Discord application commands. The command
+	// SHAPE lives here; the handler is injected domain logic (see
+	// platform-commands.ts for the dependency-direction rationale). Global
+	// commands are fine: guild-scoped registration is a propagation-speed
+	// optimization, not a correctness matter.
+	if (commands && commands.length > 0) {
+		const appCommands = commands.map((c) => ({
+			name: c.name,
+			description: c.description,
+			options: c.options.map((o) => ({
+				name: o.name,
+				description: o.description,
+				required: o.required,
+				type: 3, // STRING — all option values arrive as strings; handlers parse
+			})),
+		}));
+		const registerCommands = async () => {
+			try {
+				await client.application?.commands?.set(appCommands);
+				logger.info("[discord-server] Registered application commands", {
+					names: commands.map((c) => c.name),
+				});
+			} catch (err) {
+				logger.error("[discord-server] Failed to register application commands", {
+					error: String(err),
+				});
+			}
+		};
+		if (client.isReady?.()) {
+			void registerCommands();
+		} else {
+			client.once?.("ready", () => void registerCommands());
+		}
+	}
+
 	// Setup Discord client listeners
-	setupDiscordListeners(client, config, logger, emitEvent, interactionStore, recentMessageIds);
+	setupDiscordListeners(
+		client,
+		config,
+		logger,
+		emitEvent,
+		interactionStore,
+		recentMessageIds,
+		commands,
+	);
 
 	// Cleanup on server close
 	const originalClose = mcpServer.close.bind(mcpServer);
@@ -626,6 +671,7 @@ function setupDiscordListeners(
 	emitEvent: (eventId: string, eventName: string, data: Record<string, unknown>) => void,
 	interactionStore: Map<string, StoredInteraction>,
 	recentMessageIds: Set<string>,
+	commandSpecs?: PlatformCommandSpec[],
 ): void {
 	client.on("messageCreate", async (msg: DiscordMessage) => {
 		try {
@@ -749,6 +795,61 @@ function setupDiscordListeners(
 			// Only handle slash commands and context menus
 			if (!interaction.isChatInputCommand() && !interaction.isContextMenuCommand()) {
 				return;
+			}
+
+			// Platform-command fast path: a registered command spec routes to
+			// its injected handler DETERMINISTICALLY — no event emission, no
+			// agent loop, no inference. The canonical consumer is /model: a
+			// user reaches for it precisely when the current model cannot
+			// complete an agent turn, so a command that needs inference to
+			// execute could never fix a broken model. Unmatched commands fall
+			// through to the normal interaction.received event path.
+			if (interaction.isChatInputCommand() && commandSpecs && commandSpecs.length > 0) {
+				const cmdInteraction = interaction as DiscordInteraction & {
+					commandName: string;
+					options: { data?: Array<{ name: string; value: unknown }> };
+					editReply(options: { content: string }): Promise<unknown>;
+				};
+				const spec = commandSpecs.find((c) => c.name === cmdInteraction.commandName);
+				if (spec) {
+					await interaction.deferReply({ ephemeral: true });
+
+					// Restricted commands mutate agent state; gate on the same
+					// allowlist that gates DM conversations. An empty allowlist
+					// means no gate (mirrors DM semantics).
+					if (
+						spec.restricted &&
+						config.allowed_users.length > 0 &&
+						!config.allowed_users.includes(interaction.user.id)
+					) {
+						await cmdInteraction.editReply({
+							content: "You are not authorized to use this command.",
+						});
+						return;
+					}
+
+					const options: Record<string, unknown> = {};
+					if (cmdInteraction.options?.data) {
+						for (const option of cmdInteraction.options.data) {
+							options[option.name] = option.value;
+						}
+					}
+
+					try {
+						const reply = await spec.handler({
+							command: spec.name,
+							options,
+							channel_id: interaction.channelId,
+							user_id: interaction.user.id,
+							server_name: config.platform ?? "discord",
+						});
+						await cmdInteraction.editReply({ content: reply.slice(0, 2000) });
+					} catch (err) {
+						const message = err instanceof Error ? err.message : String(err);
+						await cmdInteraction.editReply({ content: `Error: ${message}`.slice(0, 2000) });
+					}
+					return;
+				}
 			}
 
 			// Defer with ephemeral flag
