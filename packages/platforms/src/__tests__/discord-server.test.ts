@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createDiscordServer } from "../connectors/discord-server";
+import type { PlatformCommandInvocation, PlatformCommandSpec } from "../platform-commands";
 
 // Mock Logger
 const mockLogger: Logger = {
@@ -58,6 +59,7 @@ function createMockDiscordClient() {
 	const sendTypingCalls: string[] = [];
 	const sendCalls: Array<{ channelId: string; content: string }> = [];
 	const editReplyCalls: string[] = [];
+	const commandSetCalls: unknown[][] = [];
 	const interactionStore = new Map<string, MockDiscordInteraction>();
 	const createDMCalls: string[] = [];
 	const dmOverrides = new Map<string, { id?: string; error?: Error }>();
@@ -181,6 +183,19 @@ function createMockDiscordClient() {
 				await handler(interaction);
 			}
 		},
+		// Application-command registration surface. isReady() => true makes
+		// createDiscordServer register immediately instead of waiting on the
+		// (never-fired) ready event.
+		isReady: () => true,
+		application: {
+			commands: {
+				set: async (cmds: unknown[]) => {
+					commandSetCalls.push(cmds);
+					return cmds;
+				},
+			},
+		},
+		_getCommandSetCalls: () => commandSetCalls,
 	};
 }
 
@@ -209,11 +224,13 @@ describe("Discord MCP Server", () => {
 	 */
 	async function setupMCPConnection(
 		config: PlatformConnectorConfig,
+		commands?: PlatformCommandSpec[],
 	): Promise<{ server: Awaited<ReturnType<typeof createDiscordServer>>; client: Client }> {
 		const discordServer = createDiscordServer(
 			config,
 			mockDiscordClient as unknown as any,
 			mockLogger,
+			commands,
 		);
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -1716,6 +1733,201 @@ describe("Discord MCP Server", () => {
 			expect(JSON.parse((res2.content[0] as { text: string }).text)).toEqual([
 				{ user_id: "user-x", channel_id: "dm-x" },
 			]);
+		});
+	});
+
+	describe("platform command registration and routing", () => {
+		function makeSpec(overrides: Partial<PlatformCommandSpec> = {}): PlatformCommandSpec & {
+			calls: PlatformCommandInvocation[];
+		} {
+			const calls: PlatformCommandInvocation[] = [];
+			return {
+				name: "model",
+				description: "Show or set the model for this channel's thread",
+				options: [
+					{
+						name: "model",
+						description: "Model ID or tier (omit to show current)",
+						required: false,
+					},
+				],
+				restricted: true,
+				handler: async (inv: PlatformCommandInvocation) => {
+					calls.push(inv);
+					return `Model hint set to: ${inv.options.model}`;
+				},
+				calls,
+				...overrides,
+			};
+		}
+
+		it("registers provided command specs as Discord application commands", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const setCalls = mockDiscordClient._getCommandSetCalls();
+			expect(setCalls.length).toBe(1);
+			const registered = setCalls[0] as Array<{ name: string; description: string }>;
+			expect(registered.length).toBe(1);
+			expect(registered[0].name).toBe("model");
+			expect(registered[0].description).toContain("model");
+		});
+
+		it("routes a matching slash command to the handler deterministically (no event emitted)", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const editReplies: string[] = [];
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-1",
+				user: { id: "user-1", username: "kara", displayName: null },
+				channelId: "ch-cmd-1",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async (options: { content: string }) => {
+					editReplies.push(options.content);
+					return {};
+				},
+				commandName: "model",
+				options: { data: [{ name: "model", value: "opus" }] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			// Handler saw the invocation with parsed options
+			expect(spec.calls.length).toBe(1);
+			expect(spec.calls[0].options.model).toBe("opus");
+			expect(spec.calls[0].channel_id).toBe("ch-cmd-1");
+			// Reply carries the handler's return
+			expect(editReplies).toEqual(["Model hint set to: opus"]);
+
+			// Deterministic path: NO interaction.received event was emitted —
+			// the command must work even when no model can run an agent loop.
+			const eventsPollSchema = z.object({
+				events: z.array(z.unknown()),
+				cursor: z.string(),
+				nextPollSeconds: z.number(),
+			});
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "interaction.received", params: { channel_id: "ch-cmd-1" } },
+				},
+				eventsPollSchema,
+			);
+			expect(pollResult.events.length).toBe(0);
+		});
+
+		it("still emits interaction.received for commands with no registered spec", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-2",
+				user: { id: "user-1", username: "kara", displayName: null },
+				channelId: "ch-cmd-2",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async () => ({}),
+				commandName: "unrelated",
+				options: { data: [] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			expect(spec.calls.length).toBe(0);
+			const eventsPollSchema = z.object({
+				events: z.array(z.unknown()),
+				cursor: z.string(),
+				nextPollSeconds: z.number(),
+			});
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "interaction.received", params: { channel_id: "ch-cmd-2" } },
+				},
+				eventsPollSchema,
+			);
+			expect(pollResult.events.length).toBe(1);
+		});
+
+		it("replies with the error when the handler throws", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec({
+				handler: async () => {
+					throw new Error("no such model: bogus");
+				},
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const editReplies: string[] = [];
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-3",
+				user: { id: "user-1", username: "kara", displayName: null },
+				channelId: "ch-cmd-3",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async (options: { content: string }) => {
+					editReplies.push(options.content);
+					return {};
+				},
+				commandName: "model",
+				options: { data: [{ name: "model", value: "bogus" }] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			expect(editReplies.length).toBe(1);
+			expect(editReplies[0]).toContain("Error");
+			expect(editReplies[0]).toContain("no such model: bogus");
+		});
+
+		it("rejects a restricted command from a user outside allowed_users", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: ["kara-id"] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const editReplies: string[] = [];
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-4",
+				user: { id: "stranger", username: "stranger", displayName: null },
+				channelId: "ch-cmd-4",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async (options: { content: string }) => {
+					editReplies.push(options.content);
+					return {};
+				},
+				commandName: "model",
+				options: { data: [{ name: "model", value: "opus" }] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			expect(spec.calls.length).toBe(0);
+			expect(editReplies.length).toBe(1);
+			expect(editReplies[0]).toContain("not authorized");
 		});
 	});
 });

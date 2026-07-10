@@ -1076,9 +1076,26 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				// Create Discord.js clients and register MCP servers for each connector
 				if (platformMcpRegistry) {
 					const { setupDiscordServers } = await import("@bound/platforms");
+					const { createModelCommandSpec } = await import("@bound/agent");
+					// Platform-native commands, handled deterministically on the
+					// leader (no inference): /model must work precisely when the
+					// current model cannot complete an agent turn.
+					const platformCommands = [
+						createModelCommandSpec({
+							db: appContext.db,
+							siteId: appContext.siteId,
+							modelRouter,
+							logger: appContext.logger,
+						}),
+					];
 					for (const connectorConfig of platformsConfig.connectors) {
 						try {
-							await setupDiscordServers(connectorConfig, platformMcpRegistry, appContext.logger);
+							await setupDiscordServers(
+								connectorConfig,
+								platformMcpRegistry,
+								appContext.logger,
+								platformCommands,
+							);
 						} catch (err) {
 							appContext.logger.warn(
 								`[platforms-mcp] Could not setup server for '${connectorConfig.platform}': ${err}`,

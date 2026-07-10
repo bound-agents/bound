@@ -80,9 +80,9 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			allowed_users: [],
 		} as unknown as PlatformConnectorConfig;
 
-		await expect(setupDiscordServers(config, registry, mockLogger, factory)).rejects.toThrow(
-			"An invalid token was provided.",
-		);
+		await expect(
+			setupDiscordServers(config, registry, mockLogger, undefined, factory),
+		).rejects.toThrow("An invalid token was provided.");
 
 		// The bug: pre-fix, registry.registerServer ran BEFORE login, so this
 		// array would have one entry ('discord') even though login rejected.
@@ -105,7 +105,7 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			allowed_users: [],
 		} as unknown as PlatformConnectorConfig;
 
-		await setupDiscordServers(config, registry, mockLogger, factory);
+		await setupDiscordServers(config, registry, mockLogger, undefined, factory);
 
 		// Both happened.
 		expect(client.__loginCalls).toHaveLength(1);
@@ -130,7 +130,7 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			token: "irrelevant",
 		} as unknown as PlatformConnectorConfig;
 
-		await setupDiscordServers(config, registry, mockLogger, factory);
+		await setupDiscordServers(config, registry, mockLogger, undefined, factory);
 
 		expect(client.__loginCalls).toHaveLength(0);
 		expect(calls).toHaveLength(0);
@@ -150,7 +150,9 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			allowed_users: [],
 		} as unknown as PlatformConnectorConfig;
 
-		await expect(setupDiscordServers(config, registry, mockLogger, factory)).rejects.toThrow();
+		await expect(
+			setupDiscordServers(config, registry, mockLogger, undefined, factory),
+		).rejects.toThrow();
 
 		expect(calls).toEqual([]);
 		expect(client.__loginCalls).toHaveLength(1);

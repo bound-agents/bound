@@ -1,6 +1,7 @@
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { createDiscordServer } from "./connectors/discord-server.js";
 import type { PlatformMcpRegistry } from "./mcp-registry.js";
+import type { PlatformCommandSpec } from "./platform-commands.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: discord.js Client type from dynamic import
 type DiscordClient = any;
@@ -79,6 +80,10 @@ function wireGatewayLifecycleLogging(client: DiscordClient, logger: Logger): voi
  * @param config Platform connector configuration
  * @param registry MCP registry to register servers with
  * @param logger Logger instance
+ * @param commands Platform command specs to register as Discord application
+ *   commands and route deterministically (no inference) — see
+ *   platform-commands.ts. Supplied by the wiring layer, which owns the
+ *   domain logic the handlers close over.
  * @param clientFactory Optional Client factory for testing. Production code
  *   should not pass this — the default constructs a real discord.js Client.
  */
@@ -86,6 +91,7 @@ export async function setupDiscordServers(
 	config: PlatformConnectorConfig,
 	registry: PlatformMcpRegistry,
 	logger: Logger,
+	commands?: PlatformCommandSpec[],
 	clientFactory: DiscordClientFactory = defaultDiscordClientFactory,
 ): Promise<void> {
 	if (config.platform !== "discord" && config.platform !== "discord-interaction") {
@@ -115,7 +121,7 @@ export async function setupDiscordServers(
 		// of the misleading half-init "token not set" symptom.
 		await discordClient.login(config.token);
 
-		const server = createDiscordServer(config, discordClient, logger);
+		const server = createDiscordServer(config, discordClient, logger, commands);
 		await registry.registerServer(config.platform, server);
 
 		logger.info(`[platforms-mcp] Discord server registered for '${config.platform}'`);
