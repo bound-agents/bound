@@ -934,6 +934,39 @@ describe("memory tool", () => {
 			expect(result).toContain("one_keyword");
 		});
 
+		it("should find an entry searched by its exact key (colons + hyphens)", async () => {
+			const tool = createMemoryTool(ctx);
+			// Keys in the real namespace are punctuation-dense:
+			// `_outcome:connector-event-fanout-fix:2026-07-09`. The colon is
+			// FTS5 column-filter syntax and the hyphen is the NOT operator, so
+			// an unquoted single-token MATCH either errors (no such column) or
+			// silently zeroes out — both swallowed into "No memories matched".
+			// A search by exact key must find the entry.
+			await getExecute(tool)({
+				action: "store",
+				key: "_outcome:connector-event-fanout-fix:2026-07-09",
+				value: "single delivery vehicle plus params-match routing fix",
+			});
+
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "_outcome:connector-event-fanout-fix:2026-07-09",
+			});
+
+			expect(result).toContain("Found");
+			expect(result).toContain("_outcome:connector-event-fanout-fix:2026-07-09");
+		});
+
+		it("should not crash on a query with a leading hyphen or bare colon", async () => {
+			const tool = createMemoryTool(ctx);
+			// FTS5 operator characters appearing standalone must not throw.
+			for (const q of ["-python", "python:", ":python", "python -", "a:b:c"]) {
+				const result = await getExecute(tool)({ action: "search", key: q });
+				expect(typeof result).toBe("string");
+				expect(result).not.toContain("Error");
+			}
+		});
+
 		it("should filter results excluding _internal prefix", async () => {
 			const tool = createMemoryTool(ctx);
 
