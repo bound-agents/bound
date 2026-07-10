@@ -275,6 +275,24 @@ function handleForget(args: MemoryInput, ctx: ToolContext): string {
  * Preserves quoted phrases and explicit operators (OR, AND, NOT).
  * Unquoted bare words are joined with OR for permissive matching.
  */
+/**
+ * Wrap a token in an FTS5 string literal (`"..."`) when it contains any
+ * character FTS5 parses as query syntax rather than content: `:` (column
+ * filter), `-` (NOT), `*` (prefix), `(` `)` (grouping), `^` (anchor), `"`
+ * (phrase delimiter). A raw memory key like
+ * `_outcome:connector-event-fanout-fix:2026-07-09` is a single
+ * whitespace-free token dense with these — unquoted, FTS5 reads `_outcome:`
+ * as a column filter, finds no such column, throws, and handleSearch's catch
+ * swallows the error into "No memories matched". Quoting makes FTS5 tokenize
+ * the literal and match it as a contiguous phrase; embedded double quotes are
+ * doubled per FTS5 string-literal rules. Pure alphanumeric/underscore tokens
+ * stay bare so the common keyword path is byte-identical to before.
+ */
+function quoteFtsToken(token: string): string {
+	if (/^[\p{L}\p{N}_]+$/u.test(token)) return token;
+	return `"${token.replace(/"/g, '""')}"`;
+}
+
 function toFts5OrQuery(query: string): string {
 	const trimmed = query.trim();
 	if (!trimmed) return "";
@@ -284,11 +302,14 @@ function toFts5OrQuery(query: string): string {
 		return trimmed;
 	}
 
-	// Split into tokens and join with OR for permissive matching
+	// Split into tokens and join with OR for permissive matching. Each token is
+	// quoted if it carries FTS5 syntax characters (see quoteFtsToken), so a
+	// punctuation-dense memory key matches as a literal phrase instead of
+	// erroring out as a malformed column/operator expression.
 	const tokens = trimmed.split(/\s+/).filter((t) => t.length > 0);
 	if (tokens.length === 0) return "";
-	if (tokens.length === 1) return tokens[0];
-	return tokens.join(" OR ");
+	if (tokens.length === 1) return quoteFtsToken(tokens[0]);
+	return tokens.map(quoteFtsToken).join(" OR ");
 }
 
 function handleSearch(args: MemoryInput, ctx: ToolContext): string {
