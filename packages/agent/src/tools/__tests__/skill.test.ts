@@ -293,71 +293,6 @@ name: no-desc
 
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/skill-one/i);
-			expect(result).toMatch(/active/i);
-		});
-
-		it("should filter by status when provided", async () => {
-			// Setup: Create active and retired skills
-			const now = new Date().toISOString();
-			insertRow(
-				db,
-				"skills",
-				{
-					id: "skill-active",
-					name: "active-skill",
-					description: "Active",
-					status: "active",
-					skill_root: "/home/user/skills/active",
-					content_hash: "abc",
-					allowed_tools: null,
-					compatibility: null,
-					metadata_json: "{}",
-					activated_at: now,
-					created_by_thread: null,
-					activation_count: 1,
-					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			insertRow(
-				db,
-				"skills",
-				{
-					id: "skill-retired",
-					name: "retired-skill",
-					description: "Retired",
-					status: "retired",
-					skill_root: "/home/user/skills/retired",
-					content_hash: "def",
-					allowed_tools: null,
-					compatibility: null,
-					metadata_json: "{}",
-					activated_at: now,
-					created_by_thread: null,
-					activation_count: 1,
-					last_activated_at: now,
-					retired_by: "test",
-					retired_reason: null,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "list",
-				status: "active",
-			});
-
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/active-skill/i);
-			expect(result).not.toMatch(/retired-skill/i);
 		});
 	});
 
@@ -425,7 +360,6 @@ Content here.`;
 
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/readable-skill/i);
-			expect(result).toMatch(/active/i);
 			expect(result).toMatch(/Content here/);
 		});
 

@@ -171,89 +171,10 @@ Content`,
 		});
 	});
 
-	describe("web-skills-tab.AC1.5: Exceeding active skill cap returns error", () => {
-		it("should return error when creating 21st active skill", async () => {
-			// Insert 20 active skills
-			for (let i = 0; i < 20; i++) {
-				const skillId = deterministicUUID(BOUND_NAMESPACE, `skill-${i}`);
-				insertRow(
-					db,
-					"skills",
-					{
-						id: skillId,
-						name: `skill-${i}`,
-						description: `Skill ${i}`,
-						status: "active",
-						skill_root: `skills/skill-${i}`,
-						content_hash: null,
-						allowed_tools: null,
-						compatibility: null,
-						metadata_json: null,
-						activated_at: new Date().toISOString(),
-						created_by_thread: null,
-						activation_count: 1,
-						last_activated_at: new Date().toISOString(),
-						retired_by: null,
-						retired_reason: null,
-						modified_at: new Date().toISOString(),
-						deleted: 0,
-					},
-					siteId,
-				);
-			}
-
-			// Try to create 21st skill with a new name
-			const files: SkillFileEntry[] = [
-				{
-					path: "SKILL.md",
-					content: `---
-name: skill-21
-description: 21st skill
----
-
-Content`,
-				},
-			];
-
-			const result = await importSkillFromFiles(db, siteId, files, {});
-
-			expect(result.ok).toBe(false);
-			if (result.ok) throw new Error("Expected ok: false");
-			expect(result.error).toMatch(/cap.*20|skill cap|limit/i);
-		});
-
-		it("should allow re-importing a retired skill even when at cap", async () => {
+	describe("re-importing a retired skill re-activates it", () => {
+		it("should allow re-importing a retired skill", async () => {
 			const skillName = "retired-skill";
 			const skillId = deterministicUUID(BOUND_NAMESPACE, skillName);
-
-			// Insert 20 active skills
-			for (let i = 0; i < 19; i++) {
-				const id = deterministicUUID(BOUND_NAMESPACE, `skill-${i}`);
-				insertRow(
-					db,
-					"skills",
-					{
-						id,
-						name: `skill-${i}`,
-						description: `Skill ${i}`,
-						status: "active",
-						skill_root: `skills/skill-${i}`,
-						content_hash: null,
-						allowed_tools: null,
-						compatibility: null,
-						metadata_json: null,
-						activated_at: new Date().toISOString(),
-						created_by_thread: null,
-						activation_count: 1,
-						last_activated_at: new Date().toISOString(),
-						retired_by: null,
-						retired_reason: null,
-						modified_at: new Date().toISOString(),
-						deleted: 0,
-					},
-					siteId,
-				);
-			}
 
 			// Insert a retired skill
 			insertRow(

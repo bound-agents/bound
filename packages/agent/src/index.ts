@@ -157,7 +157,6 @@ export {
 	deleteSkill,
 	type DeleteSkillOptions,
 	type DeleteSkillResult,
-	MAX_ACTIVE_SKILLS,
 	MAX_SKILL_BODY_LINES,
 	MAX_FILE_SIZE_BYTES,
 	MAX_DESCRIPTION_LENGTH,
