@@ -376,6 +376,87 @@ describe("BoundAcpAgent.loadSession", () => {
 		const kinds = recording.notifications.map((n) => n.update.sessionUpdate);
 		expect(kinds).toEqual(["user_message_chunk", "agent_message_chunk"]);
 	});
+
+	it("adopts the thread's most recently-used model as the session model", async () => {
+		const mock = mockBoundClient();
+		mock.setMessages([
+			msg("1", "user", "hi"),
+			{ ...msg("2", "assistant", "hello"), model_id: "model-alt" },
+			msg("3", "user", "thanks"),
+		]);
+
+		const { agentProxy } = makeAcpHarness(mock);
+		await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+		if (!agentProxy.loadSession) throw new Error("loadSession not implemented");
+		const res = await agentProxy.loadSession({
+			sessionId: "existing-thread",
+			cwd: "/work",
+			mcpServers: [],
+		});
+
+		// The load response advertises the thread's model as the current value —
+		// the agent is the source of truth during session resumption.
+		const modelOption = res.configOptions?.find((option) => option.id === "model");
+		expect(modelOption).toMatchObject({ type: "select", currentValue: "model-alt" });
+
+		// And subsequent prompts ride that model.
+		const promptP = agentProxy.prompt({
+			sessionId: "existing-thread",
+			prompt: [{ type: "text", text: "continue" }],
+		});
+		await flush();
+		expect(mock.calls.sendMessage).toEqual([
+			{ threadId: "existing-thread", content: "continue", modelId: "model-alt" },
+		]);
+		mock.emitThreadStatus("existing-thread", true);
+		mock.emitStreamChunk("existing-thread", { type: "text", content: "ok" });
+		await flush();
+		mock.emitThreadStatus("existing-thread", false);
+		await promptP;
+	});
+
+	it("keeps the configured model when history carries none, or an unknown one", async () => {
+		const mock = mockBoundClient();
+		mock.setMessages([msg("1", "user", "hi"), msg("2", "assistant", "hello")]);
+
+		const { agentProxy } = makeAcpHarness(mock);
+		await agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+		if (!agentProxy.loadSession) throw new Error("loadSession not implemented");
+		const res = await agentProxy.loadSession({
+			sessionId: "existing-thread",
+			cwd: "/work",
+			mcpServers: [],
+		});
+		const modelOption = res.configOptions?.find((option) => option.id === "model");
+		expect(modelOption).toMatchObject({ type: "select", currentValue: "model-default" });
+
+		// A model that has since left the roster must not be adopted either:
+		// prompts would fail daemon-side on an unknown alias.
+		const mock2 = mockBoundClient();
+		mock2.setMessages([{ ...msg("2", "assistant", "hello"), model_id: "model-retired" }]);
+		const harness2 = makeAcpHarness(mock2);
+		await harness2.agentProxy.initialize({ protocolVersion: PROTOCOL_VERSION });
+		const res2 = await harness2.agentProxy.loadSession?.({
+			sessionId: "existing-thread",
+			cwd: "/work",
+			mcpServers: [],
+		});
+		const modelOption2 = res2?.configOptions?.find((option) => option.id === "model");
+		expect(modelOption2).toMatchObject({ type: "select", currentValue: "model-default" });
+
+		const promptP = harness2.agentProxy.prompt({
+			sessionId: "existing-thread",
+			prompt: [{ type: "text", text: "continue" }],
+		});
+		await flush();
+		// No modelId key at all — the daemon default applies, not the retired alias.
+		expect(mock2.calls.sendMessage).toEqual([{ threadId: "existing-thread", content: "continue" }]);
+		mock2.emitThreadStatus("existing-thread", true);
+		mock2.emitStreamChunk("existing-thread", { type: "text", content: "ok" });
+		await flush();
+		mock2.emitThreadStatus("existing-thread", false);
+		await promptP;
+	});
 });
 
 // ---- helpers ----
