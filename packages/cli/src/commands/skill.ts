@@ -9,66 +9,54 @@ import type { SkillFileEntry } from "@bound/shared";
 // ---------------------------------------------------------------------------
 
 export interface SkillListOpts {
-	status?: string;
 	verbose?: boolean;
 }
 
 export function skillList(db: Database, opts: SkillListOpts = {}): void {
-	const whereClause = opts.status ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
-	const queryArgs = opts.status ? [opts.status] : [];
-
 	const rows = db
 		.prepare(
-			`SELECT name, status, activation_count, last_activated_at, description,
-			        allowed_tools, compatibility, content_hash, retired_reason,
-			        skill_root
+			`SELECT name, activation_count, last_activated_at, description,
+			        allowed_tools, content_hash
 			 FROM skills
-			 ${whereClause}
+			 WHERE deleted = 0
 			 ORDER BY last_activated_at DESC, name ASC`,
 		)
-		.all(...queryArgs) as Array<{
+		.all() as Array<{
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		allowed_tools: string | null;
-		compatibility: string | null;
 		content_hash: string | null;
-		retired_reason: string | null;
-		skill_root: string;
 	}>;
 
 	if (rows.length === 0) {
-		const filter = opts.status ? ` (status: ${opts.status})` : "";
-		console.log(`No skills found${filter}.`);
+		console.log("No skills found.");
 		return;
 	}
 
 	if (opts.verbose) {
 		console.log(
-			"NAME             STATUS   ACT  LAST USED            DESCRIPTION                         ALLOWED_TOOLS        HASH             RETIRED_REASON",
+			"NAME             ACT  LAST USED            DESCRIPTION                         ALLOWED_TOOLS        HASH",
 		);
-		console.log("-".repeat(150));
+		console.log("-".repeat(130));
 	} else {
-		console.log("NAME             STATUS   ACT  LAST USED            DESCRIPTION");
-		console.log("-".repeat(80));
+		console.log("NAME             ACT  LAST USED            DESCRIPTION");
+		console.log("-".repeat(70));
 	}
 
 	for (const row of rows) {
 		const name = row.name.padEnd(16);
-		const status = row.status.padEnd(8);
 		const act = String(row.activation_count ?? 0).padEnd(4);
 		const lastUsed = (row.last_activated_at?.slice(0, 19) ?? "never").padEnd(20);
 		const desc = row.description.slice(0, 35).padEnd(35);
 
 		if (opts.verbose) {
 			const tools = (row.allowed_tools ?? "").slice(0, 20).padEnd(20);
-			const hash = (row.content_hash ?? "").slice(0, 16).padEnd(16);
-			const reason = (row.retired_reason ?? "").slice(0, 20);
-			console.log(`${name} ${status} ${act} ${lastUsed} ${desc} ${tools} ${hash} ${reason}`);
+			const hash = (row.content_hash ?? "").slice(0, 16);
+			console.log(`${name} ${act} ${lastUsed} ${desc} ${tools} ${hash}`);
 		} else {
-			console.log(`${name} ${status} ${act} ${lastUsed} ${desc}`);
+			console.log(`${name} ${act} ${lastUsed} ${desc}`);
 		}
 	}
 }
@@ -80,21 +68,18 @@ export function skillList(db: Database, opts: SkillListOpts = {}): void {
 export function skillView(db: Database, name: string): void {
 	const skill = db
 		.prepare(
-			`SELECT id, name, status, activation_count, last_activated_at, description,
-			        content_hash, skill_root, retired_by, retired_reason
+			`SELECT id, name, activation_count, last_activated_at, description,
+			        content_hash, skill_root
 			 FROM skills WHERE name = ? AND deleted = 0`,
 		)
 		.get(name) as {
 		id: string;
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		content_hash: string | null;
 		skill_root: string;
-		retired_by: string | null;
-		retired_reason: string | null;
 	} | null;
 
 	if (!skill) {
@@ -103,16 +88,9 @@ export function skillView(db: Database, name: string): void {
 
 	// Print metadata header
 	console.log(`=== Skill: ${skill.name} ===`);
-	console.log(`Status:      ${skill.status}`);
 	console.log(`Activations: ${skill.activation_count ?? 0}`);
 	console.log(`Last used:   ${skill.last_activated_at?.slice(0, 19) ?? "never"}`);
 	console.log(`Hash:        ${skill.content_hash ?? "unknown"}`);
-	if (skill.retired_by) {
-		console.log(`Retired by:  ${skill.retired_by}`);
-		if (skill.retired_reason) {
-			console.log(`Reason:      ${skill.retired_reason}`);
-		}
-	}
 	console.log("");
 
 	// Print SKILL.md content from files table

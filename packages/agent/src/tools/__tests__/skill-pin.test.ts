@@ -130,11 +130,11 @@ describe("skill pinning helpers (issue #173)", () => {
 			expect(result.fingerprint).not.toBe("");
 		});
 
-		it("drops a skill that was activated then retired (status filter)", async () => {
+		it("drops a skill that was activated then deleted", async () => {
 			await importSkill(db, "alpha", "Alpha body.");
 			insertSkillToolCall(db, threadId, "activate", "alpha", "2026-01-01T00:00:00.000Z");
-			// Retire it globally.
-			db.prepare("UPDATE skills SET status = 'retired' WHERE name = 'alpha'").run();
+			// Delete it globally (soft-delete tombstone).
+			db.prepare("UPDATE skills SET deleted = 1 WHERE name = 'alpha'").run();
 
 			const result = collectThreadPinnedSkills(db, threadId);
 			expect(result.pinnedNames).toEqual([]);

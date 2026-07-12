@@ -141,7 +141,7 @@ export function collectThreadPinnedSkills(
 	for (const name of names) {
 		const skill = db
 			.prepare(
-				"SELECT skill_root, content_hash, modified_at FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
+				"SELECT skill_root, content_hash, modified_at FROM skills WHERE name = ? AND deleted = 0",
 			)
 			.get(name) as {
 			skill_root: string | null;
@@ -285,7 +285,7 @@ export async function importSkillFromFiles(
 		// `deleted = 0` lookup would miss it and the INSERT below would collide on the
 		// tombstone; a deleted OR retired row is instead treated as a re-activation.
 		const existingSkill = findSkillByIdIncludingDeleted(db, skillId) as
-			| (Record<string, unknown> & { status: string; activation_count: number; deleted: number })
+			| (Record<string, unknown> & { activation_count: number; deleted: number })
 			| null;
 
 		// Step 8: Compute deterministic UUID (already done above)
@@ -306,12 +306,11 @@ export async function importSkillFromFiles(
 
 		if (existingSkill) {
 			const existingAsSkill = existingSkill as Record<string, unknown> & {
-				status: string;
 				activation_count: number;
 				deleted: number;
 			};
-			if (existingAsSkill.status === "retired" || existingAsSkill.deleted === 1) {
-				// Re-activation (of a retired OR soft-deleted skill — undelete the row)
+			if (existingAsSkill.deleted === 1) {
+				// Re-activation: undelete the soft-deleted row (re-import restores a deleted skill)
 				updateRow(
 					db,
 					"skills",

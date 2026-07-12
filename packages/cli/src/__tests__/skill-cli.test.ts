@@ -38,7 +38,7 @@ describe("boundctl skill commands", () => {
 	});
 
 	describe("AC4.1: skillList outputs tabular data", () => {
-		it("displays skills with NAME, STATUS, ACT, LAST USED, DESCRIPTION columns", () => {
+		it("displays skills with NAME, ACT, LAST USED, DESCRIPTION columns", () => {
 			// Insert a test skill
 			db.run(
 				`INSERT INTO skills (
@@ -71,7 +71,6 @@ describe("boundctl skill commands", () => {
 			// Verify header line contains expected columns
 			const headerLine = logOutput.find((line) => line.includes("NAME"));
 			expect(headerLine).toBeDefined();
-			expect(headerLine).toContain("STATUS");
 			expect(headerLine).toContain("ACT");
 			expect(headerLine).toContain("LAST USED");
 			expect(headerLine).toContain("DESCRIPTION");
@@ -79,7 +78,6 @@ describe("boundctl skill commands", () => {
 			// Verify skill name appears in output
 			const skillLine = logOutput.find((line) => line.includes("test-skill"));
 			expect(skillLine).toBeDefined();
-			expect(skillLine).toContain("active");
 		});
 	});
 

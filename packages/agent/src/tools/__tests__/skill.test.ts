@@ -115,7 +115,7 @@ Body content.
 					id: deterministicUUID(BOUND_NAMESPACE, skillName),
 					name: skillName,
 					description: "stale description",
-					status: "retired",
+					status: "active",
 					skill_root: skillRoot,
 					content_hash: "stalehash",
 					allowed_tools: null,

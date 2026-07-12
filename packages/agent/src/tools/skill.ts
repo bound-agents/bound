@@ -259,8 +259,8 @@ async function handleDeactivate(
 	// global skill status is untouched. Removing a skill is an operator action
 	// (`boundctl skill delete` / `DELETE /api/skills/:id`). Issue #173.
 	const skill = ctx.db
-		.prepare("SELECT status FROM skills WHERE name = ? AND deleted = 0")
-		.get(input.name) as { status: string } | null;
+		.prepare("SELECT name FROM skills WHERE name = ? AND deleted = 0")
+		.get(input.name) as { name: string } | null;
 
 	if (!skill) {
 		return `Skill '${input.name}' not found; nothing to deactivate.`;

@@ -26,11 +26,6 @@ export function listSkills(db: Database): Skill[] {
 	return db.query("SELECT * FROM skills WHERE deleted = 0").all() as Skill[];
 }
 
-/** All non-deleted skills with the given status, unordered. */
-export function listSkillsByStatus(db: Database, status: string): Skill[] {
-	return db.query("SELECT * FROM skills WHERE deleted = 0 AND status = ?").all(status) as Skill[];
-}
-
 /** Existence check by id (no `deleted` filter — matches the raw read-back). */
 export function findSkillIdById(db: Database, id: string): { id: string } | null {
 	return db.query("SELECT id FROM skills WHERE id = ?").get(id) as { id: string } | null;
@@ -45,30 +40,15 @@ export function findSkillRootByName(
 	} | null;
 }
 
-export function findSkillStatusByName(db: Database, name: string): { status: string } | null {
-	return db.query("SELECT status FROM skills WHERE name = ? AND deleted = 0").get(name) as {
-		status: string;
-	} | null;
-}
-
-export function findSkillIdAndStatusByName(
-	db: Database,
-	name: string,
-): { id: string; status: string } | null {
-	return db.query("SELECT id, status FROM skills WHERE name = ? AND deleted = 0").get(name) as {
-		id: string;
-		status: string;
-	} | null;
-}
-
-/** Like {@link findSkillIdAndStatusByName} but scoped to `status = 'active'`, returning `skill_root` for SKILL.md resolution instead of status. */
+/** Id + `skill_root` (for SKILL.md resolution) of a non-deleted skill. */
 export function findActiveSkillIdAndRootByName(
 	db: Database,
 	name: string,
 ): { id: string; skill_root: string | null } | null {
-	return db
-		.query("SELECT id, skill_root FROM skills WHERE name = ? AND status = 'active' AND deleted = 0")
-		.get(name) as { id: string; skill_root: string | null } | null;
+	return db.query("SELECT id, skill_root FROM skills WHERE name = ? AND deleted = 0").get(name) as {
+		id: string;
+		skill_root: string | null;
+	} | null;
 }
 
 export function findActiveSkillSourceByName(
@@ -77,7 +57,7 @@ export function findActiveSkillSourceByName(
 ): { skill_root: string | null; content_hash: string | null; modified_at: string | null } | null {
 	return db
 		.query(
-			"SELECT skill_root, content_hash, modified_at FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
+			"SELECT skill_root, content_hash, modified_at FROM skills WHERE name = ? AND deleted = 0",
 		)
 		.get(name) as {
 		skill_root: string | null;
@@ -92,7 +72,6 @@ export function findSkillMetadataByName(
 ): {
 	id: string;
 	name: string;
-	status: string;
 	activation_count: number;
 	last_activated_at: string | null;
 	description: string;
@@ -101,12 +80,11 @@ export function findSkillMetadataByName(
 } | null {
 	return db
 		.query(
-			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
+			"SELECT id, name, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
 		)
 		.get(name) as {
 		id: string;
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
@@ -121,39 +99,27 @@ export function findSkillDetailByName(
 ): {
 	id: string;
 	name: string;
-	status: string;
 	activation_count: number;
 	last_activated_at: string | null;
 	description: string;
 	content_hash: string | null;
 	skill_root: string;
-	retired_by: string | null;
-	retired_reason: string | null;
 } | null {
 	return db
 		.query(
-			`SELECT id, name, status, activation_count, last_activated_at, description,
-			        content_hash, skill_root, retired_by, retired_reason
+			`SELECT id, name, activation_count, last_activated_at, description,
+			        content_hash, skill_root
 			 FROM skills WHERE name = ? AND deleted = 0`,
 		)
 		.get(name) as {
 		id: string;
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		content_hash: string | null;
 		skill_root: string;
-		retired_by: string | null;
-		retired_reason: string | null;
 	} | null;
-}
-
-export function countActiveSkills(db: Database): { count: number } {
-	return db
-		.query("SELECT COUNT(*) as count FROM skills WHERE status = 'active' AND deleted = 0")
-		.get() as { count: number };
 }
 
 /** Active skills (name + description), ordered by most-recently-activated. */
@@ -161,93 +127,72 @@ export function listActiveSkillNameDescriptions(
 	db: Database,
 ): Array<{ name: string; description: string }> {
 	return db
-		.query(
-			"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
-		)
+		.query("SELECT name, description FROM skills WHERE deleted = 0 ORDER BY last_activated_at DESC")
 		.all() as Array<{ name: string; description: string }>;
 }
 
 /**
- * Skill list view (CLI). `status` optional; when omitted, returns all
- * non-deleted skills. Ordered by most-recently-activated, then name.
+ * Skill list view (CLI). All non-deleted skills, ordered by
+ * most-recently-activated, then name.
  */
-export function listSkillsForCliView(
-	db: Database,
-	status?: string,
-): Array<{
+export function listSkillsForCliView(db: Database): Array<{
 	name: string;
-	status: string;
 	activation_count: number;
 	last_activated_at: string | null;
 	description: string;
 	allowed_tools: string | null;
 	compatibility: string | null;
 	content_hash: string | null;
-	retired_reason: string | null;
 	skill_root: string;
 }> {
-	const whereClause = status ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
-	const queryArgs = status ? [status] : [];
 	return db
 		.query(
-			`SELECT name, status, activation_count, last_activated_at, description,
-			        allowed_tools, compatibility, content_hash, retired_reason,
-			        skill_root
+			`SELECT name, activation_count, last_activated_at, description,
+			        allowed_tools, compatibility, content_hash, skill_root
 			 FROM skills
-			 ${whereClause}
+			 WHERE deleted = 0
 			 ORDER BY last_activated_at DESC, name ASC`,
 		)
-		.all(...queryArgs) as Array<{
+		.all() as Array<{
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		allowed_tools: string | null;
 		compatibility: string | null;
 		content_hash: string | null;
-		retired_reason: string | null;
 		skill_root: string;
 	}>;
 }
 
 /**
  * Skill list view (agent `skill` tool). Same as the CLI view minus `skill_root`.
- * `status` optional; when omitted, returns all non-deleted skills.
+ * All non-deleted skills.
  */
-export function listSkillsForToolView(
-	db: Database,
-	status?: string,
-): Array<{
+export function listSkillsForToolView(db: Database): Array<{
 	name: string;
-	status: string;
 	activation_count: number;
 	last_activated_at: string | null;
 	description: string;
 	allowed_tools: string | null;
 	compatibility: string | null;
 	content_hash: string | null;
-	retired_reason: string | null;
 }> {
-	const whereClause = status ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
-	const queryArgs = status ? [status] : [];
 	return db
 		.query(
-			`SELECT name, status, activation_count, last_activated_at, description,
-			        allowed_tools, compatibility, content_hash, retired_reason
+			`SELECT name, activation_count, last_activated_at, description,
+			        allowed_tools, compatibility, content_hash
 			 FROM skills
-			 ${whereClause}
+			 WHERE deleted = 0
 			 ORDER BY last_activated_at DESC, name ASC`,
 		)
-		.all(...queryArgs) as Array<{
+		.all() as Array<{
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		allowed_tools: string | null;
 		compatibility: string | null;
 		content_hash: string | null;
-		retired_reason: string | null;
 	}>;
 }

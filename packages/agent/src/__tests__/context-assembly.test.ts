@@ -2211,9 +2211,9 @@ This skill reviews pull requests.`;
 			void messages;
 		});
 
-		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
+		it("AC3.4: should inject inactive skill reference note when referenced skill is deleted", () => {
 			cleanupTestData();
-			// Insert a retired skill (not active)
+			// Insert a soft-deleted skill (no longer active)
 			const now = new Date().toISOString();
 			db2.run(
 				"INSERT INTO skills (id, name, description, status, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -2221,10 +2221,10 @@ This skill reviews pull requests.`;
 					randomUUID(),
 					"pr-review",
 					"Review GitHub PRs",
-					"retired",
+					"active",
 					"/home/user/skills/pr-review",
 					now,
-					0,
+					1,
 				],
 			);
 
