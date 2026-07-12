@@ -3,7 +3,13 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { computeLineHash } from "@bound/shared";
 import { readTool } from "../tools/read";
+
+/** Expected hashline read rendering for a given line. */
+function hashline(n: number, text: string): string {
+	return `${n}:${computeLineHash(text)}|${text}`;
+}
 
 describe("boundless_read", () => {
 	let tempDir: string;
@@ -36,9 +42,9 @@ describe("boundless_read", () => {
 
 		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
-		expect(contentBlock.text).toContain("1\tline one");
-		expect(contentBlock.text).toContain("2\tline two");
-		expect(contentBlock.text).toContain("3\tline three");
+		expect(contentBlock.text).toContain(hashline(1, "line one"));
+		expect(contentBlock.text).toContain(hashline(2, "line two"));
+		expect(contentBlock.text).toContain(hashline(3, "line three"));
 	});
 
 	it("AC5.2: returns specified line range with offset and limit", async () => {
@@ -55,12 +61,12 @@ describe("boundless_read", () => {
 		expect(result.content).toHaveLength(2);
 		expect(result.isError).toBeUndefined();
 		const contentBlock = result.content[1];
-		expect(contentBlock.text).toContain("5\tline 5");
-		expect(contentBlock.text).toContain("6\tline 6");
-		expect(contentBlock.text).toContain("7\tline 7");
+		expect(contentBlock.text).toContain(hashline(5, "line 5"));
+		expect(contentBlock.text).toContain(hashline(6, "line 6"));
+		expect(contentBlock.text).toContain(hashline(7, "line 7"));
 		// Should not contain lines outside the range
-		expect(contentBlock.text).not.toContain("4\tline 4");
-		expect(contentBlock.text).not.toContain("8\tline 8");
+		expect(contentBlock.text).not.toContain(hashline(4, "line 4"));
+		expect(contentBlock.text).not.toContain(hashline(8, "line 8"));
 	});
 
 	it("AC5.3: returns error with ENOENT for nonexistent file", async () => {
@@ -98,7 +104,7 @@ describe("boundless_read", () => {
 		expect(contentBlock.text).toContain("Binary file");
 		expect(contentBlock.text).toContain("100 bytes");
 		// Should not have line numbers (not text content)
-		expect(contentBlock.text).not.toMatch(/^\s+\d+\t/m);
+		expect(contentBlock.text).not.toMatch(/^\d+:[0-9a-f]{4}\|/m);
 	});
 
 	it("AC5.12: always includes provenance block first", async () => {

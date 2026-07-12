@@ -14,6 +14,7 @@ import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
+import { computeLineHash } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { InMemoryFs } from "just-bash";
 import { MainAgentLoop } from "../agent-loop";
@@ -158,7 +159,13 @@ describe("built-in tools integration", () => {
 		// Step 3: LLM calls edit
 		backend.pushToolCall("t3", "bms_edit", {
 			path: "/home/user/test.py",
-			edits: [{ old_text: "hello world", new_text: "goodbye world" }],
+			edits: [
+				{
+					start: `1:${computeLineHash('print("hello world")')}`,
+					end: `1:${computeLineHash('print("hello world")')}`,
+					content: 'print("goodbye world")',
+				},
+			],
 		});
 		// Step 4: LLM finishes
 		backend.pushText("All done.");

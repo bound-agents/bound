@@ -2,6 +2,8 @@ import { posix } from "node:path";
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import {
 	type SearchFileInput,
+	applyHashlineEdits,
+	computeLineHash,
 	formatSearchResults,
 	isLikelyBinary,
 	searchFiles,
@@ -52,11 +54,18 @@ const editSchema = z.object({
 	edits: z
 		.array(
 			z.object({
-				old_text: z.string(),
-				new_text: z.string(),
+				start: z
+					.string()
+					.describe('Anchor of the first line to replace, as "LINE:HASH" from a prior read.'),
+				end: z
+					.string()
+					.describe("Anchor of the last line to replace (same as start for a single line)."),
+				content: z
+					.string()
+					.describe("Replacement text for the range; multi-line via \\n, empty string deletes."),
 			}),
 		)
-		.describe("Ordered list of edits to apply."),
+		.describe("Edits to apply atomically. Line ranges must not overlap."),
 });
 
 const searchSchema = z.object({
@@ -304,7 +313,9 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "bms_read",
 			description:
-				"Read a file from the in-memory sandbox VFS (not the host filesystem). Returns the file's text content. " +
+				"Read a file from the in-memory sandbox VFS (not the host filesystem). Returns the file's " +
+				"text content in hashline format: each line renders as LINE:HASH|content, where the 4-char " +
+				"hash is a stable anchor accepted by bms_edit. " +
 				"Output is head-truncated to 2000 lines or 50,000 bytes (whichever is smaller); " +
 				"use offset and limit to page through larger files.",
 			parameters: jsonSchema,
@@ -376,10 +387,10 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 			const startIdx = offset - 1;
 			const sliced = allLines.slice(startIdx, startIdx + limit);
 
-			// Format with line numbers (6-col padded)
+			// Format as hashline: LINE:HASH|content (hash anchors feed bms_edit)
 			const formatted = sliced.map((line, i) => {
-				const lineNum = (startIdx + i + 1).toString().padStart(6, " ");
-				return `${lineNum}\t${line}`;
+				const lineNum = startIdx + i + 1;
+				return `${lineNum}:${computeLineHash(line)}|${line}`;
 			});
 
 			// Byte-size trimming: trim trailing lines until <= MAX_BYTES
@@ -451,10 +462,12 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "bms_edit",
 			description:
-				"Apply one or more search-and-replace edits to an existing file in the in-memory sandbox " +
-				"VFS (not the host filesystem). Each edit's old_text " +
-				"must match the ORIGINAL file content exactly once. All edits are validated against the " +
-				"pre-edit content; if any edit's match is missing or ambiguous, no changes are written. " +
+				"Edit an existing file in the in-memory sandbox VFS (not the host filesystem) using " +
+				"hashline anchors from a prior bms_read. Each edit replaces the inclusive line range " +
+				'[start..end] with new content; anchors are "LINE:HASH" tags as shown by bms_read. ' +
+				"Anchors survive line drift: if the file changed since the read, the hash is matched " +
+				"by proximity to the line hint. All edits are validated against the pre-edit content " +
+				"and applied atomically; if any anchor fails to resolve, no changes are written. " +
 				"Returns a unified diff on success.",
 			parameters: jsonSchema,
 		},
@@ -495,66 +508,21 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 			const originalEol = withoutBom.includes("\r\n") ? "\r\n" : "\n";
 			const normalized = withoutBom.replace(/\r\n/g, "\n");
 
-			// Validate all edits against pre-edit content
-			interface ValidatedEdit {
-				index: number; // position in normalized string
-				oldText: string; // normalized
-				newText: string; // normalized
-				editIdx: number; // 1-based edit number
+			// Resolve anchors and apply all edits atomically against the
+			// pre-edit content (validation + overlap checks + proximity
+			// recovery live in the shared hashline library).
+			const applied = applyHashlineEdits(
+				normalized,
+				edits.map((e) => ({
+					start: e.start,
+					end: e.end,
+					content: e.content.replace(/\r\n/g, "\n"),
+				})),
+			);
+			if (!applied.ok) {
+				return `Error: ${applied.error}`;
 			}
-			const validated: ValidatedEdit[] = [];
-
-			for (let ei = 0; ei < edits.length; ei++) {
-				const edit = edits[ei];
-				const oldNorm = edit.old_text.replace(/\r\n/g, "\n");
-				const newNorm = edit.new_text.replace(/\r\n/g, "\n");
-
-				// Count occurrences
-				let count = 0;
-				let pos = 0;
-				let foundAt = -1;
-				while (true) {
-					const idx = normalized.indexOf(oldNorm, pos);
-					if (idx === -1) break;
-					count++;
-					foundAt = idx;
-					pos = idx + 1;
-				}
-
-				if (count === 0) {
-					return `Error: edit ${ei + 1} old_text not found`;
-				}
-				if (count > 1) {
-					return `Error: edit ${ei + 1} old_text matches ${count} times (must be unique)`;
-				}
-
-				validated.push({
-					index: foundAt,
-					oldText: oldNorm,
-					newText: newNorm,
-					editIdx: ei + 1,
-				});
-			}
-
-			// Sort by position and check for overlaps
-			validated.sort((a, b) => a.index - b.index);
-			for (let vi = 1; vi < validated.length; vi++) {
-				const prev = validated[vi - 1];
-				const curr = validated[vi];
-				if (curr.index < prev.index + prev.oldText.length) {
-					return `Error: edits ${prev.editIdx} and ${curr.editIdx} overlap in source content`;
-				}
-			}
-
-			// Apply replacements left-to-right
-			let result = "";
-			let cursor = 0;
-			for (const v of validated) {
-				result += normalized.slice(cursor, v.index);
-				result += v.newText;
-				cursor = v.index + v.oldText.length;
-			}
-			result += normalized.slice(cursor);
+			const result = applied.content;
 
 			// Restore original EOL
 			let finalContent = result;

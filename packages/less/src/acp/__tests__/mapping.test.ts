@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ContentBlock as AcpContentBlock } from "@agentclientprotocol/sdk";
+import { computeLineHash } from "@bound/shared";
 import type { Message, WsStreamChunk } from "@bound/shared";
 import fc from "fast-check";
 import {
@@ -119,82 +120,70 @@ describe("toolCallLocations", () => {
 		).toEqual([{ path: resolve("/work", "src/a.ts") }]);
 	});
 
-	it("locates the first old_string match as the edit follow-along line", () => {
+	it("resolves the first edit's start anchor as the follow-along line", () => {
 		const dir = join(tmpdir(), `boundless-acp-test-${randomBytes(4).toString("hex")}`);
 		mkdirSync(dir, { recursive: true });
 		try {
-			writeFileSync(join(dir, "a.ts"), "line 1\nline 2\nTARGET here\nline 4\nTARGET here\n");
-			// First match begins on line 3, even though there are two.
+			writeFileSync(join(dir, "a.ts"), "line 1\nline 2\nTARGET here\nline 4\n");
+			const anchor = `3:${computeLineHash("TARGET here")}`;
 			expect(
-				toolCallLocations("boundless_edit", { file_path: "a.ts", old_string: "TARGET here" }, dir),
+				toolCallLocations(
+					"boundless_edit",
+					{ file_path: "a.ts", edits: [{ start: anchor, end: anchor, content: "x" }] },
+					dir,
+				),
 			).toEqual([{ path: join(dir, "a.ts"), line: 3 }]);
 
-			// Multi-line old_string resolves to the line where the match begins.
-			writeFileSync(join(dir, "b.ts"), "alpha\nbeta\ngamma\ndelta\n");
+			// A stale line hint still resolves by hash: the file gained a header
+			// line since the anchor was read, so "beta" moved from 2 to 3.
+			writeFileSync(join(dir, "b.ts"), "// header\nalpha\nbeta\ngamma\n");
+			const stale = `2:${computeLineHash("beta")}`;
 			expect(
-				toolCallLocations("boundless_edit", { file_path: "b.ts", old_string: "beta\ngamma" }, dir),
-			).toEqual([{ path: join(dir, "b.ts"), line: 2 }]);
+				toolCallLocations(
+					"boundless_edit",
+					{ file_path: "b.ts", edits: [{ start: stale, end: stale, content: "x" }] },
+					dir,
+				),
+			).toEqual([{ path: join(dir, "b.ts"), line: 3 }]);
 
-			// old_string absent from the file → path-only, no line.
+			// Hash absent from the file entirely -> fall back to the line hint.
 			expect(
-				toolCallLocations("boundless_edit", { file_path: "a.ts", old_string: "nope" }, dir),
-			).toEqual([{ path: join(dir, "a.ts") }]);
+				toolCallLocations(
+					"boundless_edit",
+					{ file_path: "a.ts", edits: [{ start: "2:ffff", end: "2:ffff", content: "x" }] },
+					dir,
+				),
+			).toEqual([{ path: join(dir, "a.ts"), line: 2 }]);
 
-			// Missing old_string arg → nothing to match → path-only.
+			// Missing edits arg -> nothing to resolve -> path-only.
 			expect(toolCallLocations("boundless_edit", { file_path: "a.ts" }, dir)).toEqual([
 				{ path: join(dir, "a.ts") },
 			]);
+
+			// Malformed anchor -> path-only.
+			expect(
+				toolCallLocations(
+					"boundless_edit",
+					{ file_path: "a.ts", edits: [{ start: "nope!", end: "nope!", content: "x" }] },
+					dir,
+				),
+			).toEqual([{ path: join(dir, "a.ts") }]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	it("anchors the edit follow-along line on the first divergence from old_string", () => {
-		// mkdtempSync(tmpdir()) yields a real absolute path (with a drive letter on
-		// Windows), so it matches what toolCallLocations resolves internally. A bare
-		// join("/tmp", …) produces a drive-less "\tmp\…" that never matches the
-		// resolved "D:\tmp\…" on Windows.
-		const dir = mkdtempSync(join(tmpdir(), "boundless-acp-test-"));
-		try {
-			writeFileSync(join(dir, "a.ts"), "alpha\nbeta\ngamma\ndelta\n");
-
-			// old_string leads with an unchanged context line; the real change is
-			// the inserted line, so the follow line advances past the shared prefix
-			// instead of landing on the (unchanged) match-start line.
-			expect(
-				toolCallLocations(
-					"boundless_edit",
-					{ file_path: "a.ts", old_string: "beta\ngamma", new_string: "beta\nINSERTED\ngamma" },
-					dir,
-				),
-			).toEqual([{ path: join(dir, "a.ts"), line: 3 }]);
-
-			// First line itself changes → no shared prefix → match start stands.
-			expect(
-				toolCallLocations(
-					"boundless_edit",
-					{ file_path: "a.ts", old_string: "beta\ngamma", new_string: "BETA\ngamma" },
-					dir,
-				),
-			).toEqual([{ path: join(dir, "a.ts"), line: 2 }]);
-
-			// new_string absent → falls back to match start (unchanged behavior).
-			expect(
-				toolCallLocations("boundless_edit", { file_path: "a.ts", old_string: "beta\ngamma" }, dir),
-			).toEqual([{ path: join(dir, "a.ts"), line: 2 }]);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("degrades to path-only when the edit target does not exist", () => {
+	it("falls back to the anchor line hint when the edit target does not exist", () => {
 		expect(
 			toolCallLocations(
 				"boundless_edit",
-				{ file_path: "/tmp/does-not-exist-acp.ts", old_string: "x" },
+				{
+					file_path: "/tmp/does-not-exist-acp.ts",
+					edits: [{ start: "3:abcd", end: "3:abcd", content: "x" }],
+				},
 				"/work",
 			),
-		).toEqual([{ path: "/tmp/does-not-exist-acp.ts" }]);
+		).toEqual([{ path: "/tmp/does-not-exist-acp.ts", line: 3 }]);
 	});
 
 	it("does not compute a line for writes even when the file exists", () => {
@@ -272,14 +261,48 @@ describe("toolCallContent", () => {
 		}
 	});
 
-	it("diffs an edit from the args without touching disk", () => {
-		expect(
-			toolCallContent(
-				"boundless_edit",
-				{ file_path: "/tmp/x.ts", old_string: "a", new_string: "b" },
-				"/work",
-			),
-		).toEqual([{ type: "diff", path: "/tmp/x.ts", oldText: "a", newText: "b" }]);
+	it("diffs an edit by applying hashline edits to the pre-edit file", () => {
+		const dir = join(tmpdir(), `boundless-acp-test-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		try {
+			writeFileSync(join(dir, "x.ts"), "alpha\nbeta\ngamma\n");
+			const anchor = `2:${computeLineHash("beta")}`;
+			expect(
+				toolCallContent(
+					"boundless_edit",
+					{ file_path: "x.ts", edits: [{ start: anchor, end: anchor, content: "BETA" }] },
+					dir,
+				),
+			).toEqual([
+				{
+					type: "diff",
+					path: join(dir, "x.ts"),
+					oldText: "alpha\nbeta\ngamma\n",
+					newText: "alpha\nBETA\ngamma\n",
+				},
+			]);
+
+			// Stale anchors (hash not found anywhere) degrade to no content;
+			// the tool call itself surfaces the error.
+			expect(
+				toolCallContent(
+					"boundless_edit",
+					{ file_path: "x.ts", edits: [{ start: "2:ffff", end: "2:ffff", content: "x" }] },
+					dir,
+				),
+			).toEqual([]);
+
+			// Missing file -> no content.
+			expect(
+				toolCallContent(
+					"boundless_edit",
+					{ file_path: "gone.ts", edits: [{ start: "1:abcd", end: "1:abcd", content: "x" }] },
+					dir,
+				),
+			).toEqual([]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

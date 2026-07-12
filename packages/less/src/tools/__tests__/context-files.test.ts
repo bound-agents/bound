@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { computeLineHash } from "@bound/shared";
 import {
 	CONTEXT_FILE_CANDIDATES,
 	collectContextFiles,
@@ -114,13 +115,14 @@ describe("write/edit context-file steering note", () => {
 		try {
 			writeFileSync(join(dir, "AGENTS.md"), "old line\n");
 			const edit = createEditTool("host", undefined, CONTEXT_FILE_CANDIDATES);
+			const anchor = `1:${computeLineHash("old line")}`;
 			const result = await edit(
-				{ file_path: "AGENTS.md", old_string: "old line", new_string: "new line" },
+				{ file_path: "AGENTS.md", edits: [{ start: anchor, end: anchor, content: "new line" }] },
 				undefined,
 				dir,
 			);
 			const text = blockText(result as never);
-			expect(text).toContain("replaced 1 occurrence");
+			expect(text).toContain("Edited");
 			expect(text).toContain("injected into your system prompt as a context file");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

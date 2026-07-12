@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { formatWithHashes } from "@bound/shared";
 import { formatProvenance } from "./provenance";
 import type { ToolHandler, ToolResult } from "./types";
 
@@ -116,38 +117,18 @@ async function readToolImpl(
 		}
 
 		const content = buffer.toString("utf-8");
-		const lines = content.split("\n");
 
-		// Remove trailing empty line if present (from split on trailing newline)
-		if (lines.length > 0 && lines[lines.length - 1] === "") {
-			lines.pop();
-		}
-
-		// Apply offset (1-indexed) and limit
-		let startLine = 0;
-		let endLine = lines.length;
-
-		if (offset !== undefined) {
-			startLine = Math.max(0, offset - 1); // Convert to 0-indexed
-		}
-
-		if (limit !== undefined) {
-			endLine = Math.min(lines.length, startLine + limit);
-		}
-
-		// Format with line numbers (1-indexed for display)
-		const numberedLines = lines
-			.slice(startLine, endLine)
-			.map((line, idx) => `  ${startLine + idx + 1}\t${line}`);
-
-		const numberedContent = numberedLines.join("\n");
+		// Hashline format (issue #16): each line renders as LINE:HASH|content.
+		// The 4-char content hash is a stable edit anchor — boundless_edit
+		// addresses lines by these anchors instead of reproducing file text.
+		const hashedContent = formatWithHashes(content, offset ?? 1, limit);
 
 		const result: ToolResult = {
 			content: [
 				provenance,
 				{
 					type: "text",
-					text: numberedContent,
+					text: hashedContent,
 				},
 			],
 		};

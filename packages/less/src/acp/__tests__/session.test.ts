@@ -6,13 +6,17 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type {
 	RequestPermissionRequest,
 	RequestPermissionResponse,
 	SessionNotification,
 } from "@agentclientprotocol/sdk";
 import type { ToolCallRequest } from "@bound/client";
+import { computeLineHash } from "@bound/shared";
 import { AcpSession, type AcpSessionDeps } from "../session";
 
 interface Recorder {
@@ -238,13 +242,25 @@ describe("AcpSession permission gating", () => {
 		]);
 		const { session, rec } = setup({ permissionAnswers: ["allow_once"], toolHandlers: handlers });
 
-		const result = await session.handleToolCall(
-			call({
-				call_id: "c-edit",
-				tool_name: "boundless_edit",
-				arguments: { file_path: "src/x.ts", old_string: "a", new_string: "b" },
-			}),
-		);
+		// The pending-frame diff is computed by resolving hashline anchors
+		// against the real pre-edit file, so the fixture needs one on disk.
+		const dir = join(tmpdir(), `boundless-acp-session-${randomBytes(4).toString("hex")}`);
+		mkdirSync(dir, { recursive: true });
+		const target = join(dir, "x.ts");
+		writeFileSync(target, "a\n");
+		const anchor = `1:${computeLineHash("a")}`;
+		let result: Awaited<ReturnType<typeof session.handleToolCall>>;
+		try {
+			result = await session.handleToolCall(
+				call({
+					call_id: "c-edit",
+					tool_name: "boundless_edit",
+					arguments: { file_path: target, edits: [{ start: anchor, end: anchor, content: "b" }] },
+				}),
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 
 		expect(result.is_error).toBeFalsy();
 		// The pending frame carried a diff; ACP tool_call_update content replaces
@@ -273,7 +289,9 @@ describe("AcpSession permission gating", () => {
 			[
 				"boundless_edit",
 				async () => ({
-					content: [{ type: "text" as const, text: "Error: old_string not found" }],
+					content: [
+						{ type: "text" as const, text: 'Error: edit 1: start anchor "1:ffff": hash not found' },
+					],
 					isError: true,
 				}),
 			],
@@ -284,7 +302,10 @@ describe("AcpSession permission gating", () => {
 			call({
 				call_id: "c-edit-fail",
 				tool_name: "boundless_edit",
-				arguments: { file_path: "src/x.ts", old_string: "a", new_string: "b" },
+				arguments: {
+					file_path: "src/x.ts",
+					edits: [{ start: "1:ffff", end: "1:ffff", content: "b" }],
+				},
 			}),
 		);
 

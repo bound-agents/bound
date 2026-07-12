@@ -120,8 +120,7 @@ describe("buildToolSet", () => {
 
 		const params = editTool.function.parameters as Record<string, unknown>;
 		expect(params.required).toContain("file_path");
-		expect(params.required).toContain("old_string");
-		expect(params.required).toContain("new_string");
+		expect(params.required).toContain("edits");
 	});
 
 	it("has correct shell-tool parameters", () => {
