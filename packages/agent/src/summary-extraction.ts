@@ -29,6 +29,7 @@ import {
 	listSummaryMemoryWithSource,
 	updateRow,
 } from "@bound/core";
+import type { CrossThreadSummaryRow } from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
 import type {
 	CrossThreadSource,
@@ -519,6 +520,86 @@ export function buildCrossThreadDigest(
 	}
 }
 
+export const CROSS_THREAD_SUMMARIES_HEADER =
+	"## Cross-thread context — recent activity from other threads";
+
+/**
+ * Renders sibling thread summaries as a varying-side block for cross-thread
+ * injection (#178). Unlike `buildCrossThreadDigest` (metadata-only: title,
+ * message count, last-updated), this function renders the actual summary
+ * *content* so the agent has direct awareness of what happened in other
+ * threads — closing the gap left by keyword-driven retrieval, which misses
+ * contextually important changes that don't share keywords with the current
+ * turn.
+ *
+ * Used by both Scenario A (new thread seed, injected into the stable prefix
+ * as a frozen snapshot) and Scenario B (re-injection after inactivity with
+ * sibling summary delta, injected on the varying side as a one-shot
+ * developer block). The input rows are pre-sorted by `last_message_at DESC`
+ * from `listCrossThreadSummaries`.
+ *
+ * Pure in inputs alone — no DB, no clock.
+ */
+export function renderCrossThreadSummaries(rows: CrossThreadSummaryRow[]): RenderedSection {
+	if (rows.length === 0) return { lines: [] };
+
+	const lines: string[] = [CROSS_THREAD_SUMMARIES_HEADER, ""];
+
+	for (const row of rows) {
+		const title = row.title || "(untitled)";
+		lines.push(`### ${title}`);
+		lines.push(row.summary);
+		lines.push("");
+	}
+
+	return { lines };
+}
+
+/** Idle threshold for Scenario B: 1 hour in milliseconds. Tunable. */
+export const CROSS_THREAD_INJECTION_IDLE_MS = 60 * 60 * 1000;
+
+/**
+ * Decides whether cross-thread summary injection should fire for this turn
+ * (#178). Pure in inputs alone — no DB, no clock beyond `nowMs`.
+ *
+ * Two scenarios share one decision function:
+ *
+ * **Scenario A** — new thread seed: fires when the thread has never been
+ * compacted (`threadSummaryThrough === null`) and sibling summaries exist.
+ * The injection goes into the stable prefix as a frozen snapshot.
+ *
+ * **Scenario B** — re-injection after inactivity: fires when BOTH conditions
+ * hold:
+ * 1. The thread has been idle past the threshold (`nowMs -
+ *    Date.parse(threadLastMessageAt) > CROSS_THREAD_INJECTION_IDLE_MS`).
+ * 2. At least one sibling thread's `summary_through` advanced past this
+ *    thread's `last_message_at` (content delta exists).
+ *
+ * The trigger is a pure function of existing DB columns — no new persistent
+ * state. When the user's message lands, `last_message_at` advances to now and
+ * the trigger goes quiet until the next idle + delta.
+ */
+export function shouldInjectCrossThreadSummaries(args: {
+	threadSummaryThrough: string | null;
+	threadLastMessageAt: string;
+	nowMs: number;
+	siblingSummaries: CrossThreadSummaryRow[];
+}): boolean {
+	const { threadSummaryThrough, threadLastMessageAt, nowMs, siblingSummaries } = args;
+
+	if (siblingSummaries.length === 0) return false;
+
+	// Scenario A: new thread, never compacted.
+	if (threadSummaryThrough === null) return true;
+
+	// Scenario B: re-injection after inactivity with sibling content delta.
+	const idleMs = nowMs - Date.parse(threadLastMessageAt);
+	if (idleMs <= CROSS_THREAD_INJECTION_IDLE_MS) return false;
+
+	return siblingSummaries.some(
+		(row) => Date.parse(row.summary_through) > Date.parse(threadLastMessageAt),
+	);
+}
 /**
  * Resolve a memory entry's `source` field into a human-readable
  * label. Pure in inputs alone — no DB, no clock. Exposed so the

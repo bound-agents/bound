@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+	type CrossThreadSummaryRow,
 	countActiveMemory,
 	findActiveSkillIdAndRootByName,
 	findActiveTaskPayloadById,
@@ -7,7 +8,9 @@ import {
 	findFileContentByPathActive,
 	findTaskClaimedAtById,
 	findThreadSummaryById,
+	findThreadSummaryStateById,
 	listActiveSkillNameDescriptions,
+	listCrossThreadSummaries,
 	listLiveMessageProjectionByThreadNewestFirst,
 	listLiveMessageProjectionByThreadSince,
 	listMemoryDeltaKeysSince,
@@ -63,12 +66,14 @@ import {
 	loadFileModificationsForLiveState,
 	loadPinnedEntries,
 	loadSummaryEntries,
+	renderCrossThreadSummaries,
 	renderDiscoverableArchive,
 	renderLiveState,
 	renderWorkingKnowledge,
 	resolveVc15Tunables,
 	resolveVc27Cap,
 	selectRelevantMemory,
+	shouldInjectCrossThreadSummaries,
 	toRelevantMemoryDebug,
 	wrapVolatileContext,
 } from "./summary-extraction.js";
@@ -392,6 +397,7 @@ interface VolatileSectionInputs {
 	detailEntries: ReturnType<typeof loadDetailEntries>;
 	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
+	crossThreadSummaries: CrossThreadSummaryRow[];
 	digest: ReturnType<typeof buildCrossThreadDigest>;
 	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
 	taskDigestEntries: LiveStateTaskEntry[];
@@ -447,6 +453,22 @@ function loadVolatileSectionInputs(args: {
 		detailEntries.entries.map((e) => e.key),
 	);
 	const digest = buildCrossThreadDigest(db, userId, threadId);
+
+	// #178: cross-thread summary injection (Scenario A: new thread seed +
+	// Scenario B: re-injection after inactivity with sibling content delta).
+	const threadState = findThreadSummaryStateById(db, threadId);
+	const recencyCutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+	const allSiblingSummaries = listCrossThreadSummaries(db, userId, threadId, recencyCutoff);
+	const crossThreadSummaries =
+		threadState &&
+		shouldInjectCrossThreadSummaries({
+			threadSummaryThrough: threadState.summary_through,
+			threadLastMessageAt: threadState.last_message_at ?? new Date(nowMs).toISOString(),
+			nowMs,
+			siblingSummaries: allSiblingSummaries,
+		})
+			? allSiblingSummaries
+			: [];
 	const advisories = loadAppliedAdvisoriesForLiveState(db, nowMs);
 	const fileEntries = loadFileModificationsForLiveState(db, threadId, siteId, hostName);
 
@@ -470,6 +492,7 @@ function loadVolatileSectionInputs(args: {
 		detailEntries,
 		staleChildrenMap,
 		parentSummaryMap,
+		crossThreadSummaries,
 		digest,
 		advisories,
 		taskDigestEntries,
@@ -564,6 +587,7 @@ interface ComposeVolatileSectionsParams {
 	includeStaleChildren: boolean;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
 	deltaKeys: Set<string>;
+	crossThreadSummaries: CrossThreadSummaryRow[];
 	digest: ReturnType<typeof buildCrossThreadDigest>;
 	taskDigestEntries: LiveStateTaskEntry[];
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
@@ -687,6 +711,10 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		for (const entry of params.recencyEntries) {
 			varyingLines.push(formatRelevantMemoryTitleLine(entry));
 		}
+	}
+
+	if (params.crossThreadSummaries.length > 0) {
+		varyingLines.push(...renderCrossThreadSummaries(params.crossThreadSummaries).lines);
 	}
 
 	const ls = renderLiveState({
@@ -854,6 +882,26 @@ export function buildVolatileContext(params: {
 		detailEntries.entries.map((e) => e.key),
 	);
 	const digest = buildCrossThreadDigest(params.db, params.userId, params.threadId);
+
+	// #178: cross-thread summary injection (Scenario A + B).
+	const coldThreadState = findThreadSummaryStateById(params.db, params.threadId);
+	const coldRecencyCutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+	const coldAllSiblingSummaries = listCrossThreadSummaries(
+		params.db,
+		params.userId,
+		params.threadId,
+		coldRecencyCutoff,
+	);
+	const coldThreadSummaries =
+		coldThreadState &&
+		shouldInjectCrossThreadSummaries({
+			threadSummaryThrough: coldThreadState.summary_through,
+			threadLastMessageAt: coldThreadState.last_message_at ?? new Date(nowMs).toISOString(),
+			nowMs,
+			siblingSummaries: coldAllSiblingSummaries,
+		})
+			? coldAllSiblingSummaries
+			: [];
 	const advisories = loadAppliedAdvisoriesForLiveState(params.db, nowMs);
 
 	// Compute task and file entries
@@ -906,6 +954,7 @@ export function buildVolatileContext(params: {
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap,
 			deltaKeys,
+			crossThreadSummaries: coldThreadSummaries,
 			digest,
 			taskDigestEntries,
 			fileEntries,
@@ -1720,6 +1769,7 @@ Original output was too large for the context window. If you need the full conte
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
+			crossThreadSummaries: inputs.crossThreadSummaries,
 			digest: inputs.digest,
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
@@ -1879,6 +1929,7 @@ Original output was too large for the context window. If you need the full conte
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
+			crossThreadSummaries: inputs.crossThreadSummaries,
 			digest: inputs.digest,
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
