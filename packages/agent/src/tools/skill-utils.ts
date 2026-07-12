@@ -297,7 +297,7 @@ export async function importSkillFromFiles(
 		if (activeCount.count >= MAX_ACTIVE_SKILLS && !existingSkill) {
 			return {
 				ok: false,
-				error: `Active skill cap (${MAX_ACTIVE_SKILLS}) reached. Retire a skill before creating a new one.`,
+				error: `Active skill cap (${MAX_ACTIVE_SKILLS}) reached. An operator must delete a skill (\`boundctl skill delete\` / \`DELETE /api/skills/:id\`) before a new one can be created.`,
 			};
 		}
 

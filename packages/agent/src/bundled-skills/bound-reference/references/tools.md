@@ -101,7 +101,7 @@ phrasing in the `context` field, not the relation. This is your durable
 cross-session memory — see `references/memory.md`.
 
 ### `skill`
-Manage skills: `activate`, `list`, `bms_read`, `retire`. Skills are reusable
+Manage skills: `activate`, `list`, `read`, `deactivate`. Skills are reusable
 instruction sets; activating one makes its index entry appear in every turn and
 lets a task inject its body. See the `skill-authoring` skill for how to write one.
 

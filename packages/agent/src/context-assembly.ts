@@ -327,8 +327,8 @@ export interface VolatileContext {
 	/**
 	 * Varying lines: per-thread / per-turn content. Working Knowledge update
 	 * markers, Live State (cross-thread digest, task digest, file
-	 * modifications, applied advisories), retired-skill notifications,
-	 * advisory feedback notifications, inactive-skill references, the
+	 * modifications, applied advisories), advisory feedback
+	 * notifications, inactive-skill references, the
 	 * User/Thread ID line, relay/platform/model context, and any
 	 * systemPromptAddition. Emitted as a developer message AFTER history;
 	 * uncached.
@@ -1820,8 +1820,7 @@ Original output was too large for the context window. If you need the full conte
 
 		// --- VARYING: heartbeat-only resolved-advisory operator-acks (#70).
 		// The maintenance surface keeps advisory-hygiene tracking; active
-		// conversations strip these (see buildVolatileContext). Skill-retirement
-		// notes stay active-only and are not loaded here. Computed independent of
+		// conversations strip these (see buildVolatileContext). Computed independent of
 		// enrichment presence so a heartbeat with no memory enrichment still
 		// surfaces its acks. These lines sit after the enrichment window
 		// [start, end), so they do not perturb any indices (and the
@@ -1831,7 +1830,6 @@ Original output was too large for the context window. If you need the full conte
 				...loadNotificationInputs({
 					db,
 					siteId,
-					includeRetiredSkills: false,
 					includeResolvedAdvisories: true,
 					nowMs,
 				}),

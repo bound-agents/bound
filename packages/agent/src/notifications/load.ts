@@ -8,7 +8,7 @@
  */
 
 import type Database from "bun:sqlite";
-import type { ResolvedAdvisoryRow, RetiredSkillRow } from "./render";
+import type { ResolvedAdvisoryRow } from "./render";
 
 export interface LoadNotificationInputsParams {
 	db: Database;
@@ -16,13 +16,6 @@ export interface LoadNotificationInputsParams {
 	siteId: string | null | undefined;
 	/** Wall-clock anchor for the 24-h cutoff. Defaults to `Date.now()`. */
 	nowMs?: number;
-	/**
-	 * Load retired-skill rows. Defaults to `true`. The heartbeat surface sets
-	 * this `false` because skill-retirement notes belong to active-conversation
-	 * contexts (a skill the agent might invoke was retired), not the maintenance
-	 * surface.
-	 */
-	includeRetiredSkills?: boolean;
 	/**
 	 * Load resolved-advisory rows. Defaults to `true`. Active-conversation
 	 * surfaces set this `false`: resolved-advisory acknowledgments are
@@ -37,7 +30,6 @@ export interface LoadNotificationInputsParams {
 }
 
 export interface NotificationInputs {
-	retiredSkills: RetiredSkillRow[];
 	resolvedAdvisories: ResolvedAdvisoryRow[];
 }
 
@@ -52,25 +44,7 @@ const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 export function loadNotificationInputs(params: LoadNotificationInputsParams): NotificationInputs {
 	const nowMs = params.nowMs ?? Date.now();
 	const cutoff24h = new Date(nowMs - TWENTY_FOUR_HOURS_MS).toISOString();
-	const includeRetiredSkills = params.includeRetiredSkills ?? true;
 	const includeResolvedAdvisories = params.includeResolvedAdvisories ?? true;
-
-	let retiredSkills: RetiredSkillRow[] = [];
-	if (includeRetiredSkills) {
-		try {
-			retiredSkills = params.db
-				.query(
-					`SELECT name, retired_reason FROM skills
-				 WHERE status = 'retired'
-				   AND retired_by = 'operator'
-				   AND modified_at > ?
-				   AND deleted = 0`,
-				)
-				.all(cutoff24h) as RetiredSkillRow[];
-		} catch (_error) {
-			// Non-fatal: retired skills query failed.
-		}
-	}
 
 	let resolvedAdvisories: ResolvedAdvisoryRow[] = [];
 	if (includeResolvedAdvisories && params.siteId) {
@@ -99,5 +73,5 @@ export function loadNotificationInputs(params: LoadNotificationInputsParams): No
 		}
 	}
 
-	return { retiredSkills, resolvedAdvisories };
+	return { resolvedAdvisories };
 }

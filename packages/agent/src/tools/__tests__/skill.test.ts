@@ -453,9 +453,9 @@ Content here.`;
 		});
 	});
 
-	describe("retire action", () => {
-		it("should retire a skill and update status (AC3.4)", async () => {
-			// Setup: Create active skill
+	describe("retire action (removed)", () => {
+		it("rejects the retire action — retire no longer exists", async () => {
+			// Setup: an active skill that, under the old design, could be retired.
 			const now = new Date().toISOString();
 			const skillName = "retiring-skill";
 			insertRow(
@@ -487,41 +487,17 @@ Content here.`;
 			const result = await getExecute(tool)({
 				action: "retire",
 				name: skillName,
-				reason: "No longer needed",
 			});
 
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/retired/i);
-
-			// Verify skill status changed
-			const skill = db
-				.prepare("SELECT status, retired_reason FROM skills WHERE name = ?")
-				.get(skillName) as any;
-			expect(skill.status).toBe("retired");
-			expect(skill.retired_reason).toBe("No longer needed");
-		});
-
-		it("should return error when skill not found", async () => {
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "retire",
-				name: "nonexistent",
-			});
-
+			// The action is rejected — the enum no longer accepts it.
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/Error/i);
-			expect(result).toMatch(/not found/i);
-		});
 
-		it("should require 'name' parameter", async () => {
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "retire",
-			});
-
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/Error/i);
-			expect(result).toMatch(/name/i);
+			// And the skill is untouched: still active, never flipped to retired.
+			const skill = db.prepare("SELECT status FROM skills WHERE name = ?").get(skillName) as {
+				status: string;
+			};
+			expect(skill.status).toBe("active");
 		});
 	});
 
@@ -537,7 +513,9 @@ Content here.`;
 			expect(result).toMatch(/activate/i);
 			expect(result).toMatch(/list/i);
 			expect(result).toMatch(/read/i);
-			expect(result).toMatch(/retire/i);
+			expect(result).toMatch(/deactivate/i);
+			// retire is no longer a valid action and must not appear in the list.
+			expect(result).not.toMatch(/retire/i);
 		});
 	});
 
