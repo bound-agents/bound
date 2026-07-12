@@ -233,4 +233,92 @@ describe("performAttach", () => {
 		expect(result.messages.length).toBeGreaterThan(0);
 		expect(result.messages[0].role).toBe("user");
 	});
+
+	it("surfaces the most recently-used model from message history", async () => {
+		mockClient.listMessages = vi.fn(async () => [
+			{
+				id: "m1",
+				thread_id: "thread1",
+				role: "assistant",
+				content: "first",
+				model_id: "opus",
+				tool_name: null,
+				created_at: "2026-04-18T00:00:00Z",
+				modified_at: null,
+				host_origin: "local",
+			} as Message,
+			{
+				id: "m2",
+				thread_id: "thread1",
+				role: "user",
+				content: "switch models please",
+				model_id: null,
+				tool_name: null,
+				created_at: "2026-04-18T00:00:01Z",
+				modified_at: null,
+				host_origin: "local",
+			} as Message,
+			{
+				id: "m3",
+				thread_id: "thread1",
+				role: "assistant",
+				content: "done",
+				model_id: "glm-5",
+				tool_name: null,
+				created_at: "2026-04-18T00:00:02Z",
+				modified_at: null,
+				host_origin: "local",
+			} as Message,
+			// Trailing user message with no model — must not mask m3's model.
+			{
+				id: "m4",
+				thread_id: "thread1",
+				role: "user",
+				content: "thanks",
+				model_id: null,
+				tool_name: null,
+				created_at: "2026-04-18T00:00:03Z",
+				modified_at: null,
+				host_origin: "local",
+			} as Message,
+		]);
+
+		const result = await performAttach(baseParams());
+
+		expect(result.lastUsedModelId).toBe("glm-5");
+	});
+
+	it("returns null lastUsedModelId when no message carries a model", async () => {
+		// The default beforeEach fixture has model_id: null on every row.
+		const result = await performAttach(baseParams());
+
+		expect(result.lastUsedModelId).toBeNull();
+	});
+
+	it("returns null lastUsedModelId for an empty thread", async () => {
+		mockClient.listMessages = vi.fn(async () => []);
+
+		const result = await performAttach(baseParams());
+
+		expect(result.lastUsedModelId).toBeNull();
+	});
+
+	function baseParams(): AttachParams {
+		return {
+			client: mockClient,
+			threadId: "thread1",
+			mcpManager: mockMcpManager,
+			mcpConfigs: [],
+			cwd: "/home/test",
+			hostname: "test-host",
+			logger: mockLogger,
+			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
+			shell: {
+				command: "sh",
+				execFlag: "-c",
+				toolName: "boundless_bash",
+				label: "POSIX shell (sh)",
+			},
+		};
+	}
 });

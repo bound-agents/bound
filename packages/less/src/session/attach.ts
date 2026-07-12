@@ -40,6 +40,14 @@ export interface AttachResult {
 	messages: Message[];
 	pendingToolCallIds: string[];
 	mcpFailures: Array<{ serverName: string; error: string }>;
+	/**
+	 * The model that most recently produced a message in this thread, or null
+	 * when no fetched message carries one (new/empty thread, or a thread whose
+	 * model-bearing rows fell outside the fetch window). Callers use this to
+	 * seed the session's selected model so an attach resumes the thread on
+	 * the model it was last using rather than the client-config default.
+	 */
+	lastUsedModelId: string | null;
 }
 
 /**
@@ -153,9 +161,21 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 		mcpFailures: mcpFailures.length,
 	});
 
+	// Most recent model to have produced a message in this thread. Messages
+	// arrive in chronological order (newest-N window, ASC), so scan backwards
+	// for the first non-null model_id.
+	let lastUsedModelId: string | null = null;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].model_id) {
+			lastUsedModelId = messages[i].model_id;
+			break;
+		}
+	}
+
 	return {
 		messages,
 		pendingToolCallIds,
 		mcpFailures,
+		lastUsedModelId,
 	};
 }

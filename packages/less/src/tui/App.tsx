@@ -235,6 +235,19 @@ export function App({
 			// (bounded by the same 200-msg cap used at startup).
 			replaceMessages(result.attachResult.messages);
 			dispatch({ type: "SET_THREAD", threadId: result.threadId });
+
+			// Resume the thread on the model it last used. A thread with no
+			// model-bearing history (fresh thread, or model rows outside the
+			// fetch window) keeps the current selection.
+			const inheritedModel = result.attachResult.lastUsedModelId;
+			if (inheritedModel && inheritedModel !== state.model) {
+				dispatch({ type: "SET_MODEL", model: inheritedModel });
+				dispatch({
+					type: "SET_BANNER",
+					message: `Model set to ${inheritedModel} (last used in this thread)`,
+					bannerType: "info",
+				});
+			}
 		},
 		[
 			client,
