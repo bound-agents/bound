@@ -8,7 +8,7 @@ import { applySchema, createDatabase } from "@bound/core";
 import { hydrateWorkspace } from "@bound/sandbox";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { InMemoryFs, MountableFs } from "just-bash";
-import { skillImport, skillList, skillRetire, skillView } from "../commands/skill.js";
+import { skillDelete, skillImport, skillList, skillView } from "../commands/skill.js";
 
 describe("boundctl skill commands", () => {
 	let tempDir: string;
@@ -181,10 +181,10 @@ This is a test skill.`;
 		});
 	});
 
-	describe("AC4.3: skillRetire sets status and retired_by", () => {
-		it("sets skill status to retired and retired_by to operator", () => {
-			// Insert a skill
-			const skillId = "retire-test-id";
+	describe("AC4.3: skillDelete soft-deletes the skill and its files", () => {
+		it("marks the skill row and its files deleted", () => {
+			// Insert a skill + a SKILL.md file under its root
+			const skillId = "delete-test-id";
 			db.run(
 				`INSERT INTO skills (
 				id, name, description, status, skill_root,
@@ -192,45 +192,46 @@ This is a test skill.`;
 			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
-					"retire-test",
-					"Test retire skill",
+					"delete-test",
+					"Test delete skill",
 					"active",
-					"/home/user/skills/retire-test",
+					"/home/user/skills/delete-test",
 					"2026-03-29T09:00:00Z",
 					0,
 				],
 			);
+			const skillMdPath = "/home/user/skills/delete-test/SKILL.md";
+			db.run(
+				`INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[skillMdPath, skillMdPath, "body", 0, 4, "2026-03-29T09:00:00Z", "2026-03-29T09:00:00Z", 0],
+			);
 
-			// Call skillRetire
-			const logOutput: string[] = [];
-			const logSpy = spyOn(console, "log").mockImplementation((msg: string) => {
-				logOutput.push(msg);
-			});
-
-			skillRetire(db, siteId, "retire-test");
-
+			const logSpy = spyOn(console, "log").mockImplementation(() => {});
+			skillDelete(db, siteId, "delete-test");
 			logSpy.mockRestore();
 
-			// Verify skill was updated
-			const skill = db
-				.query("SELECT status, retired_by FROM skills WHERE name = ?")
-				.get("retire-test") as { status: string; retired_by: string | null };
+			// Skill row is tombstoned
+			const skill = db.query("SELECT deleted FROM skills WHERE id = ?").get(skillId) as {
+				deleted: number;
+			};
+			expect(skill.deleted).toBe(1);
 
-			expect(skill.status).toBe("retired");
-			expect(skill.retired_by).toBe("operator");
+			// SKILL.md file is tombstoned
+			const file = db.query("SELECT deleted FROM files WHERE id = ?").get(skillMdPath) as {
+				deleted: number;
+			};
+			expect(file.deleted).toBe(1);
 
-			// Verify change_log entry was created
+			// change_log entries were created
 			const changeLog = db
 				.query("SELECT COUNT(*) as count FROM change_log WHERE table_name = 'skills'")
 				.get() as { count: number };
 			expect(changeLog.count).toBeGreaterThan(0);
 		});
-	});
 
-	describe("AC4.4: skillRetire persists retirement reason", () => {
-		it("stores the reason when provided", () => {
-			// Insert a skill
-			const skillId = "retire-reason-test-id";
+		it("deletes irrespective of status — a retired skill is deletable", () => {
+			const skillId = "delete-retired-id";
 			db.run(
 				`INSERT INTO skills (
 				id, name, description, status, skill_root,
@@ -238,30 +239,74 @@ This is a test skill.`;
 			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
-					"retire-reason-test",
-					"Test retire reason skill",
-					"active",
-					"/home/user/skills/retire-reason-test",
+					"delete-retired",
+					"Test retired delete",
+					"retired",
+					"/home/user/skills/delete-retired",
 					"2026-03-29T09:00:00Z",
 					0,
 				],
 			);
 
-			// Mock console to suppress output
 			const logSpy = spyOn(console, "log").mockImplementation(() => {});
-			const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-
-			skillRetire(db, siteId, "retire-reason-test", "Too noisy");
-
+			skillDelete(db, siteId, "delete-retired");
 			logSpy.mockRestore();
-			warnSpy.mockRestore();
 
-			// Verify reason was stored
-			const skill = db
-				.query("SELECT retired_reason FROM skills WHERE name = ?")
-				.get("retire-reason-test") as { retired_reason: string | null };
+			const skill = db.query("SELECT deleted FROM skills WHERE id = ?").get(skillId) as {
+				deleted: number;
+			};
+			expect(skill.deleted).toBe(1);
+		});
 
-			expect(skill.retired_reason).toBe("Too noisy");
+		it("throws for a non-existent skill", () => {
+			expect(() => skillDelete(db, siteId, "no-such-skill")).toThrow(/not found/i);
+		});
+	});
+
+	describe("AC4.4: skillDelete files advisories for referencing tasks", () => {
+		it("creates an advisory per active task referencing the deleted skill", () => {
+			const skillId = "delete-ref-id";
+			db.run(
+				`INSERT INTO skills (
+				id, name, description, status, skill_root,
+				modified_at, deleted
+			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					skillId,
+					"delete-ref",
+					"Referenced skill",
+					"active",
+					"/home/user/skills/delete-ref",
+					"2026-03-29T09:00:00Z",
+					0,
+				],
+			);
+			db.run(
+				`INSERT INTO tasks (id, type, status, trigger_spec, payload, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					"task-delete-ref",
+					"cron",
+					"pending",
+					"0 * * * *",
+					JSON.stringify({ skill: "delete-ref" }),
+					"2026-03-29T09:00:00Z",
+					"2026-03-29T09:00:00Z",
+					0,
+				],
+			);
+
+			const logSpy = spyOn(console, "log").mockImplementation(() => {});
+			skillDelete(db, siteId, "delete-ref", "Too noisy");
+			logSpy.mockRestore();
+
+			const advisory = db.query("SELECT title, detail FROM advisories WHERE deleted = 0").get() as {
+				title: string;
+				detail: string;
+			} | null;
+			expect(advisory).not.toBeNull();
+			expect(advisory?.title).toMatch(/delete-ref/);
+			expect(advisory?.detail).toMatch(/Too noisy/);
 		});
 	});
 

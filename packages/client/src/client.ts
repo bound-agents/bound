@@ -890,12 +890,8 @@ export class BoundClient {
 		});
 	}
 
-	async retireSkill(id: string, reason?: string): Promise<{ skill: Skill }> {
-		return this.fetchJson(`/api/skills/${id}/retire`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ reason }),
-		});
+	async deleteSkill(id: string): Promise<void> {
+		await this.fetchVoid(`/api/skills/${id}`, { method: "DELETE" });
 	}
 
 	async activateSkill(id: string): Promise<{ skill: Skill }> {

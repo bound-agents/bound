@@ -630,8 +630,8 @@ This is from a zip.`;
 		});
 	});
 
-	describe("POST /:id/retire - Retire skill", () => {
-		it("AC2.7: Retires an active skill", async () => {
+	describe("DELETE /:id - Delete skill", () => {
+		it("AC2.7: Soft-deletes a skill (any status) and its files, returns 204", async () => {
 			const app = createSkillsRoutes(db);
 
 			const skillId = randomUUID();
@@ -646,10 +646,10 @@ This is from a zip.`;
 				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
-					"to-retire",
-					"A skill to retire",
+					"to-delete",
+					"A skill to delete",
 					"active",
-					"skills/to-retire",
+					"/home/user/skills/to-delete",
 					"hash123",
 					null,
 					null,
@@ -664,30 +664,42 @@ This is from a zip.`;
 					0,
 				],
 			);
+			const skillMdPath = "/home/user/skills/to-delete/SKILL.md";
+			db.run(
+				`INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					skillMdPath,
+					skillMdPath,
+					"body",
+					0,
+					4,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
 
-			const res = await app.request(`/${skillId}/retire`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ reason: "No longer needed" }),
-			});
+			const res = await app.request(`/${skillId}`, { method: "DELETE" });
 
-			expect(res.status).toBe(200);
+			expect(res.status).toBe(204);
 
-			const data = (await res.json()) as { skill: Skill };
-			expect(data.skill.status).toBe("retired");
-			expect(data.skill.retired_by).toBe("web");
-			expect(data.skill.retired_reason).toBe("No longer needed");
+			const skill = db.query("SELECT deleted FROM skills WHERE id = ?").get(skillId) as {
+				deleted: number;
+			};
+			expect(skill.deleted).toBe(1);
+
+			const file = db.query("SELECT deleted FROM files WHERE id = ?").get(skillMdPath) as {
+				deleted: number;
+			};
+			expect(file.deleted).toBe(1);
 		});
 
 		it("AC2.9: Returns 404 for non-existent skill", async () => {
 			const app = createSkillsRoutes(db);
 			const fakeId = randomUUID();
 
-			const res = await app.request(`/${fakeId}/retire`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			});
+			const res = await app.request(`/${fakeId}`, { method: "DELETE" });
 
 			expect(res.status).toBe(404);
 

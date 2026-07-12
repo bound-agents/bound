@@ -1,8 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { importSkillFromFiles } from "@bound/agent";
-import { updateRow } from "@bound/core";
+import { deleteSkill, importSkillFromFiles } from "@bound/agent";
 import type { SkillFileEntry } from "@bound/shared";
 
 // ---------------------------------------------------------------------------
@@ -154,61 +153,22 @@ export function skillView(db: Database, name: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// skillRetire
+// skillDelete
 // ---------------------------------------------------------------------------
 
-export function skillRetire(db: Database, siteId: string, name: string, reason?: string): void {
-	const skill = db
-		.prepare("SELECT id, status FROM skills WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; status: string } | null;
+export function skillDelete(db: Database, siteId: string, name: string, reason?: string): void {
+	const result = deleteSkill(db, siteId, name, { by: "operator", reason });
 
-	if (!skill) {
-		throw new Error(`Skill '${name}' not found.`);
-	}
-
-	const now = new Date().toISOString();
-
-	updateRow(
-		db,
-		"skills",
-		skill.id,
-		{
-			status: "retired",
-			retired_by: "operator",
-			retired_reason: reason ?? null,
-			modified_at: now,
-		},
-		siteId,
-	);
-
-	// Print per-task warnings for tasks referencing this skill
-	const tasks = db
-		.prepare("SELECT id, payload, thread_id FROM tasks WHERE deleted = 0 AND payload IS NOT NULL")
-		.all() as Array<{ id: string; payload: string; thread_id: string | null }>;
-
-	let warned = 0;
-	for (const task of tasks) {
-		try {
-			const payload = JSON.parse(task.payload);
-			if (
-				typeof payload === "object" &&
-				payload !== null &&
-				(payload as Record<string, unknown>).skill === name
-			) {
-				console.warn(
-					`Warning: Task ${task.id} references skill '${name}' (payload.skill). Update or remove the skill reference.`,
-				);
-				warned++;
-			}
-		} catch {
-			// Skip malformed payload
-		}
+	if (!result.ok) {
+		throw new Error(result.error ?? `Failed to delete skill '${name}'.`);
 	}
 
 	const reasonMsg = reason ? ` (reason: ${reason})` : "";
-	console.log(`Skill '${name}' retired by operator${reasonMsg}.`);
-	if (warned > 0) {
-		console.log(`${warned} task(s) reference this skill — see warnings above.`);
+	console.log(`Skill '${name}' deleted${reasonMsg}. ${result.filesDeleted} file(s) removed.`);
+	if (result.advisoryCount > 0) {
+		console.log(
+			`${result.advisoryCount} task(s) reference this skill — advisories filed to update or remove the reference.`,
+		);
 	}
 }
 
