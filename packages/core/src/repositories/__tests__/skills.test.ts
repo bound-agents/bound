@@ -3,22 +3,18 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Skill } from "@bound/shared";
 import { applyMetricsSchema, applySchema, insertRow, softDelete } from "../../index";
 import {
-	countActiveSkills,
 	findActiveSkillIdAndRootByName,
 	findActiveSkillSourceByName,
 	findSkillById,
 	findSkillByIdIncludingDeleted,
 	findSkillByName,
 	findSkillDetailByName,
-	findSkillIdAndStatusByName,
 	findSkillIdById,
 	findSkillMetadataByName,
 	findSkillRootByName,
-	findSkillStatusByName,
 	listActiveSkillNameDescriptions,
 	listActiveSkills,
 	listSkills,
-	listSkillsByStatus,
 	listSkillsForCliView,
 	listSkillsForToolView,
 } from "../skills";
@@ -172,37 +168,14 @@ describe("skills repository finders", () => {
 		});
 	});
 
-	describe("findSkillStatusByName", () => {
-		it("returns the status for a live skill", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "retired" }), SITE_ID);
-			expect(findSkillStatusByName(db, "alpha")).toEqual({ status: "retired" });
-		});
-
-		it("returns null for an absent name", () => {
-			expect(findSkillStatusByName(db, "nope")).toBeNull();
-		});
-	});
-
-	describe("findSkillIdAndStatusByName", () => {
-		it("returns id+status for a live skill", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "active" }), SITE_ID);
-			expect(findSkillIdAndStatusByName(db, "alpha")).toEqual({ id: "s1", status: "active" });
-		});
-
-		it("returns null for an absent name", () => {
-			expect(findSkillIdAndStatusByName(db, "nope")).toBeNull();
-		});
-	});
-
-	describe("findActiveSkillIdAndRootByName (status='active' AND deleted=0)", () => {
-		it("returns id+skill_root for an active skill", () => {
+	describe("findActiveSkillIdAndRootByName (deleted=0)", () => {
+		it("returns id+skill_root for a live skill", () => {
 			insertRow(
 				db,
 				"skills",
 				makeSkill({
 					id: "s1",
 					name: "alpha",
-					status: "active",
 					skill_root: "skills/alpha/SKILL.md",
 				}),
 				SITE_ID,
@@ -213,27 +186,21 @@ describe("skills repository finders", () => {
 			});
 		});
 
-		it("returns null for a retired skill (status filter)", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "retired" }), SITE_ID);
-			expect(findActiveSkillIdAndRootByName(db, "alpha")).toBeNull();
-		});
-
-		it("returns null for a soft-deleted active skill (deleted filter)", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "active" }), SITE_ID);
+		it("returns null for a soft-deleted skill (deleted filter)", () => {
+			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
 			softDelete(db, "skills", "s1", SITE_ID);
 			expect(findActiveSkillIdAndRootByName(db, "alpha")).toBeNull();
 		});
 	});
 
-	describe("findActiveSkillSourceByName (status='active' AND deleted=0)", () => {
-		it("returns skill_root, content_hash, modified_at for an active skill", () => {
+	describe("findActiveSkillSourceByName (deleted=0)", () => {
+		it("returns skill_root, content_hash, modified_at for a live skill", () => {
 			insertRow(
 				db,
 				"skills",
 				makeSkill({
 					id: "s1",
 					name: "alpha",
-					status: "active",
 					skill_root: "skills/alpha/SKILL.md",
 					content_hash: "abc123",
 					modified_at: "2026-02-02T00:00:00.000Z",
@@ -247,8 +214,9 @@ describe("skills repository finders", () => {
 			});
 		});
 
-		it("returns null for a retired skill", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "retired" }), SITE_ID);
+		it("returns null for a soft-deleted skill", () => {
+			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
+			softDelete(db, "skills", "s1", SITE_ID);
 			expect(findActiveSkillSourceByName(db, "alpha")).toBeNull();
 		});
 	});
@@ -262,7 +230,6 @@ describe("skills repository finders", () => {
 					id: "s1",
 					name: "alpha",
 					description: "Alpha",
-					status: "active",
 					activation_count: 4,
 					last_activated_at: "2026-03-03T00:00:00.000Z",
 					content_hash: "h1",
@@ -273,7 +240,6 @@ describe("skills repository finders", () => {
 			expect(findSkillMetadataByName(db, "alpha")).toEqual({
 				id: "s1",
 				name: "alpha",
-				status: "active",
 				activation_count: 4,
 				last_activated_at: "2026-03-03T00:00:00.000Z",
 				description: "Alpha",
@@ -290,7 +256,7 @@ describe("skills repository finders", () => {
 	});
 
 	describe("findSkillDetailByName", () => {
-		it("returns the projected detail columns including retired fields", () => {
+		it("returns the projected detail columns for a live skill", () => {
 			insertRow(
 				db,
 				"skills",
@@ -298,27 +264,21 @@ describe("skills repository finders", () => {
 					id: "s1",
 					name: "alpha",
 					description: "Alpha",
-					status: "retired",
 					activation_count: 2,
 					last_activated_at: null,
 					content_hash: null,
 					skill_root: "skills/alpha/SKILL.md",
-					retired_by: "operator",
-					retired_reason: "stale",
 				}),
 				SITE_ID,
 			);
 			expect(findSkillDetailByName(db, "alpha")).toEqual({
 				id: "s1",
 				name: "alpha",
-				status: "retired",
 				activation_count: 2,
 				last_activated_at: null,
 				description: "Alpha",
 				content_hash: null,
 				skill_root: "skills/alpha/SKILL.md",
-				retired_by: "operator",
-				retired_reason: "stale",
 			});
 		});
 
@@ -327,7 +287,7 @@ describe("skills repository finders", () => {
 		});
 	});
 
-	// ---- listSkills / listSkillsByStatus (unordered, deleted=0) ----
+	// ---- listSkills (unordered, deleted=0) ----
 
 	describe("listSkills", () => {
 		it("returns all live skills and excludes soft-deleted ones", () => {
@@ -344,28 +304,6 @@ describe("skills repository finders", () => {
 
 		it("returns [] when no live skills exist", () => {
 			expect(listSkills(db)).toEqual([]);
-		});
-	});
-
-	describe("listSkillsByStatus", () => {
-		it("filters by status and excludes soft-deleted rows", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "active" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s2", name: "beta", status: "retired" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s3", name: "gamma", status: "active" }), SITE_ID);
-			softDelete(db, "skills", "s3", SITE_ID);
-
-			const activeIds = listSkillsByStatus(db, "active")
-				.map((s) => s.id)
-				.sort();
-			expect(activeIds).toEqual(["s1"]);
-
-			const retiredIds = listSkillsByStatus(db, "retired").map((s) => s.id);
-			expect(retiredIds).toEqual(["s2"]);
-		});
-
-		it("returns [] for a status with no matching rows", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "active" }), SITE_ID);
-			expect(listSkillsByStatus(db, "retired")).toEqual([]);
 		});
 	});
 
@@ -388,28 +326,10 @@ describe("skills repository finders", () => {
 		});
 	});
 
-	// ---- countActiveSkills (aggregate) ----
-
-	describe("countActiveSkills (aggregate)", () => {
-		it("counts only active, non-deleted skills", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "active" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s2", name: "beta", status: "active" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s3", name: "gamma", status: "retired" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s4", name: "delta", status: "active" }), SITE_ID);
-			softDelete(db, "skills", "s4", SITE_ID); // active but tombstoned -> excluded
-
-			expect(countActiveSkills(db)).toEqual({ count: 2 });
-		});
-
-		it("returns count 0 over an empty table (zero-row case)", () => {
-			expect(countActiveSkills(db)).toEqual({ count: 0 });
-		});
-	});
-
-	// ---- listActiveSkillNameDescriptions (ORDER BY last_activated_at DESC) ----
+	// ---- listActiveSkillNameDescriptions (ORDER BY last_activated_at DESC, deleted=0) ----
 
 	describe("listActiveSkillNameDescriptions", () => {
-		it("returns active skills as name+description ordered by last_activated_at DESC", () => {
+		it("returns live skills as name+description ordered by last_activated_at DESC", () => {
 			insertRow(
 				db,
 				"skills",
@@ -417,7 +337,6 @@ describe("skills repository finders", () => {
 					id: "s1",
 					name: "alpha",
 					description: "A",
-					status: "active",
 					last_activated_at: "2026-01-01T00:00:00.000Z",
 				}),
 				SITE_ID,
@@ -429,7 +348,6 @@ describe("skills repository finders", () => {
 					id: "s2",
 					name: "beta",
 					description: "B",
-					status: "active",
 					last_activated_at: "2026-03-01T00:00:00.000Z",
 				}),
 				SITE_ID,
@@ -441,12 +359,11 @@ describe("skills repository finders", () => {
 					id: "s3",
 					name: "gamma",
 					description: "G",
-					status: "active",
 					last_activated_at: "2026-02-01T00:00:00.000Z",
 				}),
 				SITE_ID,
 			);
-			// retired -> excluded
+			// soft-deleted -> excluded
 			insertRow(
 				db,
 				"skills",
@@ -454,11 +371,11 @@ describe("skills repository finders", () => {
 					id: "s4",
 					name: "delta",
 					description: "D",
-					status: "retired",
 					last_activated_at: "2026-04-01T00:00:00.000Z",
 				}),
 				SITE_ID,
 			);
+			softDelete(db, "skills", "s4", SITE_ID);
 
 			expect(listActiveSkillNameDescriptions(db)).toEqual([
 				{ name: "beta", description: "B" },
@@ -467,14 +384,15 @@ describe("skills repository finders", () => {
 			]);
 		});
 
-		it("returns [] when no active skills exist", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "retired" }), SITE_ID);
+		it("returns [] when no live skills exist", () => {
+			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha" }), SITE_ID);
+			softDelete(db, "skills", "s1", SITE_ID);
 			expect(listActiveSkillNameDescriptions(db)).toEqual([]);
 		});
 	});
 
 	// ---- listSkillsForCliView / listSkillsForToolView
-	//      (optional status, ORDER BY last_activated_at DESC, name ASC) ----
+	//      (all live skills, ORDER BY last_activated_at DESC, name ASC) ----
 
 	describe("listSkillsForCliView", () => {
 		function seedOrderingSet() {
@@ -486,7 +404,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s1",
 					name: "zeta",
-					status: "active",
 					last_activated_at: "2026-03-01T00:00:00.000Z",
 					skill_root: "skills/zeta/SKILL.md",
 				}),
@@ -498,7 +415,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s2",
 					name: "beta",
-					status: "active",
 					last_activated_at: "2026-03-01T00:00:00.000Z",
 					skill_root: "skills/beta/SKILL.md",
 				}),
@@ -510,7 +426,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s3",
 					name: "alpha",
-					status: "retired",
 					last_activated_at: "2026-05-01T00:00:00.000Z",
 					skill_root: "skills/alpha/SKILL.md",
 				}),
@@ -522,7 +437,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s4",
 					name: "gone",
-					status: "active",
 					last_activated_at: "2026-09-01T00:00:00.000Z",
 					skill_root: "skills/gone/SKILL.md",
 				}),
@@ -531,18 +445,12 @@ describe("skills repository finders", () => {
 			softDelete(db, "skills", "s4", SITE_ID);
 		}
 
-		it("returns all live skills (no status) ordered by last_activated_at DESC then name ASC", () => {
+		it("returns all live skills ordered by last_activated_at DESC then name ASC", () => {
 			seedOrderingSet();
 			const view = listSkillsForCliView(db).map((r) => r.name);
 			// s3 (2026-05-01) first; then the 2026-03-01 pair tie-broken by name ASC: beta, zeta.
 			// s4 is soft-deleted and excluded.
 			expect(view).toEqual(["alpha", "beta", "zeta"]);
-		});
-
-		it("filters by status when provided", () => {
-			seedOrderingSet();
-			const names = listSkillsForCliView(db, "active").map((r) => r.name);
-			expect(names).toEqual(["beta", "zeta"]);
 		});
 
 		it("projects the skill_root column (distinguishes it from the tool view)", () => {
@@ -552,7 +460,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s1",
 					name: "alpha",
-					status: "active",
 					skill_root: "skills/alpha/SKILL.md",
 					allowed_tools: '["read"]',
 					compatibility: "v1",
@@ -563,14 +470,12 @@ describe("skills repository finders", () => {
 			const row = listSkillsForCliView(db)[0];
 			expect(row).toEqual({
 				name: "alpha",
-				status: "active",
 				activation_count: 0,
 				last_activated_at: null,
 				description: "desc",
 				allowed_tools: '["read"]',
 				compatibility: "v1",
 				content_hash: "h1",
-				retired_reason: null,
 				skill_root: "skills/alpha/SKILL.md",
 			});
 		});
@@ -588,7 +493,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s1",
 					name: "zeta",
-					status: "active",
 					last_activated_at: "2026-03-01T00:00:00.000Z",
 				}),
 				SITE_ID,
@@ -599,7 +503,6 @@ describe("skills repository finders", () => {
 				makeSkill({
 					id: "s2",
 					name: "beta",
-					status: "active",
 					last_activated_at: "2026-03-01T00:00:00.000Z",
 				}),
 				SITE_ID,
@@ -609,12 +512,6 @@ describe("skills repository finders", () => {
 			expect(rows.map((r) => r.name)).toEqual(["beta", "zeta"]);
 			// skill_root must NOT be present on tool-view rows.
 			expect("skill_root" in rows[0]).toBe(false);
-		});
-
-		it("filters by status when provided", () => {
-			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "active" }), SITE_ID);
-			insertRow(db, "skills", makeSkill({ id: "s2", name: "beta", status: "retired" }), SITE_ID);
-			expect(listSkillsForToolView(db, "retired").map((r) => r.name)).toEqual(["beta"]);
 		});
 
 		it("returns [] over an empty table", () => {

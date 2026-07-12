@@ -51,9 +51,9 @@ COMMANDS:
   sync-status                Show sync status for all peers
   consistency-check          Compare local DB against hub via sync protocol
   drain <new-hub>            Graceful hub decommissioning
-  skill list                 List all skills with status and telemetry
+  skill list                 List all skills with usage telemetry
   skill view <name>          View SKILL.md and file listing for a skill
-  skill delete <name>        Delete a skill (any status); use --reason "..." to explain
+  skill delete <name>        Delete a skill; use --reason "..." to explain
   skill import <path>        Import a skill from a local directory
   webhook list               List all webhooks
   webhook create             Create a new webhook
@@ -321,9 +321,8 @@ EXAMPLES:
 
 		try {
 			if (subcommand === "list") {
-				const statusFilter = getArgValue(args, "--status");
 				const verbose = args.includes("--verbose");
-				skillList(db, { status: statusFilter, verbose });
+				skillList(db, { verbose });
 				db.close();
 				process.exit(0);
 			}

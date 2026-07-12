@@ -222,13 +222,13 @@ Updated content`,
 		});
 	});
 
-	describe("web-skills-tab.AC1.6: Re-importing retired skill reactivates it", () => {
-		it("should update retired skill to active and increment activation_count", async () => {
+	describe("web-skills-tab.AC1.6: Re-importing a soft-deleted skill reactivates it", () => {
+		it("should reactivate a soft-deleted skill and increment activation_count", async () => {
 			const skillName = "reactivate-skill";
 			const skillId = deterministicUUID(BOUND_NAMESPACE, skillName);
 			const oldHash = "old-content-hash";
 
-			// Insert a retired skill
+			// Insert a soft-deleted skill
 			insertRow(
 				db,
 				"skills",
@@ -236,7 +236,7 @@ Updated content`,
 					id: skillId,
 					name: skillName,
 					description: "Old description",
-					status: "retired",
+					status: "active",
 					skill_root: `skills/${skillName}`,
 					content_hash: oldHash,
 					allowed_tools: null,
@@ -249,7 +249,7 @@ Updated content`,
 					retired_by: "user-id",
 					retired_reason: "Temporarily disabled",
 					modified_at: new Date().toISOString(),
-					deleted: 0,
+					deleted: 1,
 				},
 				siteId,
 			);
