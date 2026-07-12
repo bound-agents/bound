@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { computeLineHash } from "@bound/shared";
 import { InMemoryFs, MountableFs } from "just-bash";
 import { type BuiltInTool, createBuiltInTools } from "../built-in-tools";
+
+/** Expected hashline read rendering for a given line. */
+function hl(n: number, text: string): string {
+	return `${n}:${computeLineHash(text)}|${text}`;
+}
+
+/** Build a "LINE:HASH" edit anchor for a given line's content. */
+function anchor(line: number, text: string): string {
+	return `${line}:${computeLineHash(text)}`;
+}
 
 describe("built-in-tools", () => {
 	let fs: InstanceType<typeof InMemoryFs>;
@@ -42,9 +53,9 @@ describe("built-in-tools", () => {
 		it("reads a file with line numbers", async () => {
 			fs.writeFileSync("/home/user/hello.txt", "line one\nline two\nline three\n");
 			const result = await tool("bms_read").execute({ path: "/home/user/hello.txt" });
-			expect(result).toContain("1\tline one");
-			expect(result).toContain("2\tline two");
-			expect(result).toContain("3\tline three");
+			expect(result).toContain(hl(1, "line one"));
+			expect(result).toContain(hl(2, "line two"));
+			expect(result).toContain(hl(3, "line three"));
 		});
 
 		it("returns error on ENOENT", async () => {
@@ -71,18 +82,18 @@ describe("built-in-tools", () => {
 		it("applies offset (1-based)", async () => {
 			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
 			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt", offset: 3 });
-			expect(result).toContain("3\tc");
-			expect(result).toContain("4\td");
-			expect(result).not.toContain("1\ta");
-			expect(result).not.toContain("2\tb");
+			expect(result).toContain(hl(3, "c"));
+			expect(result).toContain(hl(4, "d"));
+			expect(result).not.toContain(hl(1, "a"));
+			expect(result).not.toContain(hl(2, "b"));
 		});
 
 		it("applies limit", async () => {
 			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
 			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt", limit: 2 });
-			expect(result).toContain("1\ta");
-			expect(result).toContain("2\tb");
-			expect(result).not.toContain("3\tc");
+			expect(result).toContain(hl(1, "a"));
+			expect(result).toContain(hl(2, "b"));
+			expect(result).not.toContain(hl(3, "c"));
 		});
 
 		it("applies offset + limit together", async () => {
@@ -92,10 +103,10 @@ describe("built-in-tools", () => {
 				offset: 2,
 				limit: 2,
 			});
-			expect(result).toContain("2\tb");
-			expect(result).toContain("3\tc");
-			expect(result).not.toContain("1\ta");
-			expect(result).not.toContain("4\td");
+			expect(result).toContain(hl(2, "b"));
+			expect(result).toContain(hl(3, "c"));
+			expect(result).not.toContain(hl(1, "a"));
+			expect(result).not.toContain(hl(4, "d"));
 		});
 
 		it("shows continuation hint when more lines exist", async () => {
@@ -139,11 +150,10 @@ describe("built-in-tools", () => {
 			expect(result).toContain("[Use offset=");
 		});
 
-		it("pads line numbers to 6 columns", async () => {
+		it("renders lines in hashline format (LINE:HASH|content)", async () => {
 			fs.writeFileSync("/home/user/f.txt", "hello\n");
 			const result = await tool("bms_read").execute({ path: "/home/user/f.txt" });
-			// Line number should be right-padded to 6 chars
-			expect(result).toMatch(/\s+1\thello/);
+			expect(result).toMatch(/^1:[0-9a-f]{4}\|hello/m);
 		});
 	});
 
@@ -280,7 +290,7 @@ describe("built-in-tools", () => {
 		it("rejects a Windows path on edit with the guard message, not ENOENT", async () => {
 			const result = await tool("bms_edit").execute({
 				path: "C:\\Users\\user\\code.ts",
-				edits: [{ old_text: "a", new_text: "b" }],
+				edits: [{ start: "1:abcd", end: "1:abcd", content: "b" }],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("sandbox");
@@ -308,7 +318,13 @@ describe("built-in-tools", () => {
 			fs.writeFileSync("/home/user/code.ts", "const x = 1;\nconst y = 2;\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "const x = 1;", new_text: "const x = 42;" }],
+				edits: [
+					{
+						start: anchor(1, "const x = 1;"),
+						end: anchor(1, "const x = 1;"),
+						content: "const x = 42;",
+					},
+				],
 			});
 			expect(result).toContain("-const x = 1;");
 			expect(result).toContain("+const x = 42;");
@@ -316,24 +332,24 @@ describe("built-in-tools", () => {
 			expect(await fs.readFile("/home/user/code.ts")).toBe("const x = 42;\nconst y = 2;\n");
 		});
 
-		it("returns error when old_text not found", async () => {
+		it("returns error when an anchor's hash is not found", async () => {
 			fs.writeFileSync("/home/user/code.ts", "const x = 1;\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "NOPE", new_text: "whatever" }],
+				edits: [{ start: "1:ffff", end: "1:ffff", content: "whatever" }],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("not found");
 		});
 
-		it("returns error when old_text matches multiple times", async () => {
-			fs.writeFileSync("/home/user/code.ts", "foo\nfoo\n");
+		it("disambiguates duplicate lines by proximity to the line hint", async () => {
+			fs.writeFileSync("/home/user/code.ts", "foo\nbar\nfoo\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "foo", new_text: "bar" }],
+				edits: [{ start: anchor(3, "foo"), end: anchor(3, "foo"), content: "baz" }],
 			});
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("2 times");
+			expect(result).not.toStartWith("Error:");
+			expect(await fs.readFile("/home/user/code.ts")).toBe("foo\nbar\nbaz\n");
 		});
 
 		it("applies multiple edits atomically", async () => {
@@ -341,8 +357,8 @@ describe("built-in-tools", () => {
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
 				edits: [
-					{ old_text: "aaa", new_text: "AAA" },
-					{ old_text: "ccc", new_text: "CCC" },
+					{ start: anchor(1, "aaa"), end: anchor(1, "aaa"), content: "AAA" },
+					{ start: anchor(3, "ccc"), end: anchor(3, "ccc"), content: "CCC" },
 				],
 			});
 			expect(result).toContain("-aaa");
@@ -357,8 +373,8 @@ describe("built-in-tools", () => {
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
 				edits: [
-					{ old_text: "aaa", new_text: "AAA" },
-					{ old_text: "NOPE", new_text: "whatever" },
+					{ start: anchor(1, "aaa"), end: anchor(1, "aaa"), content: "AAA" },
+					{ start: "2:ffff", end: "2:ffff", content: "whatever" },
 				],
 			});
 			expect(result).toStartWith("Error:");
@@ -369,7 +385,7 @@ describe("built-in-tools", () => {
 		it("returns error on ENOENT", async () => {
 			const result = await tool("bms_edit").execute({
 				path: "/nope.txt",
-				edits: [{ old_text: "x", new_text: "y" }],
+				edits: [{ start: "1:abcd", end: "1:abcd", content: "y" }],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("not found");
@@ -379,7 +395,7 @@ describe("built-in-tools", () => {
 			fs.writeFileSync("/home/user/win.txt", "line1\r\nline2\r\nline3\r\n");
 			await tool("bms_edit").execute({
 				path: "/home/user/win.txt",
-				edits: [{ old_text: "line2", new_text: "LINE2" }],
+				edits: [{ start: anchor(2, "line2"), end: anchor(2, "line2"), content: "LINE2" }],
 			});
 			const content = await fs.readFile("/home/user/win.txt");
 			expect(content).toBe("line1\r\nLINE2\r\nline3\r\n");
@@ -391,7 +407,13 @@ describe("built-in-tools", () => {
 			fs.writeFileSync("/home/user/bom.txt", "\uFEFFhello world\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/bom.txt",
-				edits: [{ old_text: "hello", new_text: "HELLO" }],
+				edits: [
+					{
+						start: anchor(1, "hello world"),
+						end: anchor(1, "hello world"),
+						content: "HELLO world",
+					},
+				],
 			});
 			const content = await fs.readFile("/home/user/bom.txt");
 			expect(content).toContain("HELLO world");
@@ -400,25 +422,31 @@ describe("built-in-tools", () => {
 		});
 
 		it("detects overlapping edits", async () => {
-			fs.writeFileSync("/home/user/code.ts", "abcdef\n");
+			fs.writeFileSync("/home/user/code.ts", "aaa\nbbb\nccc\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
 				edits: [
-					{ old_text: "abcd", new_text: "ABCD" },
-					{ old_text: "cdef", new_text: "CDEF" },
+					{ start: anchor(1, "aaa"), end: anchor(2, "bbb"), content: "X" },
+					{ start: anchor(2, "bbb"), end: anchor(3, "ccc"), content: "Y" },
 				],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("overlap");
 			// File must be unchanged
-			expect(await fs.readFile("/home/user/code.ts")).toBe("abcdef\n");
+			expect(await fs.readFile("/home/user/code.ts")).toBe("aaa\nbbb\nccc\n");
 		});
 
 		it("produces correct unified diff header", async () => {
 			fs.writeFileSync("/home/user/code.ts", "const x = 1;\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "const x = 1;", new_text: "const x = 2;" }],
+				edits: [
+					{
+						start: anchor(1, "const x = 1;"),
+						end: anchor(1, "const x = 1;"),
+						content: "const x = 2;",
+					},
+				],
 			});
 			expect(result).toContain("--- /home/user/code.ts");
 			expect(result).toContain("+++ /home/user/code.ts");

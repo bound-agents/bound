@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { computeLineHash } from "@bound/shared";
 import { createCopyTool } from "../tools/copy";
 import { createEditTool } from "../tools/edit";
 import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
@@ -94,8 +95,12 @@ describe("write guard through the real file tools", () => {
 			const target = join(cwd, "edit-me.txt");
 			writeFileSync(target, "alpha beta");
 			const tool = createEditTool("test", ENABLED);
+			const anchor = `1:${computeLineHash("alpha beta")}`;
 			const result = await tool(
-				{ file_path: "edit-me.txt", old_string: "alpha", new_string: "gamma" },
+				{
+					file_path: "edit-me.txt",
+					edits: [{ start: anchor, end: anchor, content: "gamma beta" }],
+				},
 				signal,
 				cwd,
 			);
@@ -106,7 +111,7 @@ describe("write guard through the real file tools", () => {
 		it("denies editing a file outside the writable set when enabled", async () => {
 			const tool = createEditTool("test", ENABLED);
 			const result = await tool(
-				{ file_path: "/etc/hosts", old_string: "localhost", new_string: "pwned" },
+				{ file_path: "/etc/hosts", edits: [{ start: "1:abcd", end: "1:abcd", content: "pwned" }] },
 				signal,
 				cwd,
 			);

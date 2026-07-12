@@ -49,7 +49,10 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: "boundless_read",
-				description: "Read file contents with line numbers",
+				description:
+					"Read file contents in hashline format: each line renders as LINE:HASH|content. " +
+					"The 4-char hash is a stable anchor — pass it to boundless_edit to address lines " +
+					"without reproducing their text.",
 				parameters: {
 					type: "object",
 					required: ["file_path"],
@@ -97,23 +100,45 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: "boundless_edit",
-				description: "Replace exactly one occurrence of a string in a file",
+				description:
+					"Edit a file using hashline anchors from a prior read. Each edit replaces the " +
+					"inclusive line range [start..end] with new content; anchors are LINE:HASH tags " +
+					'(e.g. "12:a3f1") as shown by boundless_read. Anchors survive line drift: if the ' +
+					"file shifted since the read, the hash is matched by proximity to the line hint. " +
+					"All edits in one call are validated together and applied atomically.",
 				parameters: {
 					type: "object",
-					required: ["file_path", "old_string", "new_string"],
+					required: ["file_path", "edits"],
 					properties: {
 						file_path: {
 							type: "string",
 							description:
 								"Path to file to edit (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
-						old_string: {
-							type: "string",
-							description: "String to find and replace",
-						},
-						new_string: {
-							type: "string",
-							description: "String to replace with",
+						edits: {
+							type: "array",
+							description:
+								"Edits to apply atomically. Ranges must not overlap. Results report fresh anchors for the replaced regions.",
+							items: {
+								type: "object",
+								required: ["start", "end", "content"],
+								properties: {
+									start: {
+										type: "string",
+										description:
+											'Anchor of the first line to replace, as "LINE:HASH" from a read (same as end for a single line)',
+									},
+									end: {
+										type: "string",
+										description: 'Anchor of the last line to replace, as "LINE:HASH"',
+									},
+									content: {
+										type: "string",
+										description:
+											"Replacement text for the range; multi-line via \\n, empty string deletes the range",
+									},
+								},
+							},
 						},
 					},
 				},

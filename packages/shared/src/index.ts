@@ -24,6 +24,9 @@ export * from "./strings.js";
 
 // Content search core (shared by host + sandbox search tools)
 export * from "./search.js";
+
+// Hashline read/edit format (issue #16): per-line content-hash anchors
+export * from "./hashline.js";
 export * from "./offload.js";
 
 // Hybrid Logical Clocks

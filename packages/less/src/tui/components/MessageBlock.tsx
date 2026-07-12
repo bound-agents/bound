@@ -8,13 +8,10 @@ import { tildifyPath, tildifyText } from "../util/path";
 import { wrapLinesAtWidth } from "../util/wrap";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
-import { computeLineDiff, hunkDiff } from "./lineDiff";
 
 const TOOL_RESULT_MAX_LINES = 5;
 /** Hard cap on rendered diff entries (after hunking) per edit call. */
 const EDIT_DIFF_MAX_LINES = 24;
-/** Lines of unchanged context to keep on either side of a change run. */
-const EDIT_DIFF_CONTEXT = 3;
 /** Preview lines shown under a `boundless_write` call. */
 const WRITE_PREVIEW_MAX_LINES = 8;
 
@@ -56,74 +53,87 @@ function summarizeToolArgs(toolName: string, input: Record<string, unknown>): st
 	return parts.join(" ");
 }
 
+/** Shape of one hashline edit as carried in `boundless_edit` args. */
+type HashlineEditArg = { start: string; end: string; content: string };
+
+/** Narrow an unknown `edits` arg into the hashline edit list (best-effort). */
+function asHashlineEdits(raw: unknown): HashlineEditArg[] {
+	if (!Array.isArray(raw)) return [];
+	const out: HashlineEditArg[] = [];
+	for (const e of raw) {
+		if (
+			typeof e === "object" &&
+			e !== null &&
+			typeof (e as Record<string, unknown>).start === "string" &&
+			typeof (e as Record<string, unknown>).end === "string" &&
+			typeof (e as Record<string, unknown>).content === "string"
+		) {
+			out.push(e as HashlineEditArg);
+		}
+	}
+	return out;
+}
+
 /**
- * Render a unified-diff body for a `boundless_edit` tool call, using the
- * call's `old_string`/`new_string` args. Lines get syntax-highlighted via
- * the shared shiki singleton; on add/remove lines the diff color (green/red)
- * overrides token colors so the diff signal stays unambiguous.
- * Long unchanged stretches between changes are collapsed via `hunkDiff`,
- * and the whole rendering is hard-capped at EDIT_DIFF_MAX_LINES entries.
+ * Render the body of a hashline `boundless_edit` tool call. Each edit shows
+ * a dim anchor-range header (`12:a3f1 → 14:9c8a`) followed by the replacement
+ * lines as green adds. The removed text isn't in the args by design — hashline
+ * edits reference anchors instead of reproducing prior content — so there are
+ * no red lines to show; the anchor header carries the "what was replaced"
+ * signal. Rendering is hard-capped at EDIT_DIFF_MAX_LINES lines total.
  */
-function EditDiffBody({
-	oldString,
-	newString,
+function HashlineEditsBody({
+	edits,
 	filePath,
 }: {
-	oldString: string;
-	newString: string;
+	edits: HashlineEditArg[];
 	filePath?: string | null;
 }): React.ReactElement | null {
-	const diff = computeLineDiff(oldString, newString);
-	const hunked = hunkDiff(diff, EDIT_DIFF_CONTEXT);
-	if (hunked.length === 0) {
-		return null;
-	}
-
-	const truncated = hunked.length > EDIT_DIFF_MAX_LINES;
-	const display = truncated ? hunked.slice(0, EDIT_DIFF_MAX_LINES) : hunked;
+	if (edits.length === 0) return null;
 	const lang = langFromPath(filePath);
+
+	let budget = EDIT_DIFF_MAX_LINES;
+	const rows: React.ReactElement[] = [];
+	let truncatedLines = 0;
+
+	for (let ei = 0; ei < edits.length; ei++) {
+		const edit = edits[ei];
+		const range = edit.start === edit.end ? edit.start : `${edit.start} → ${edit.end}`;
+		const contentLines = edit.content === "" ? [] : edit.content.split("\n");
+
+		if (budget <= 0) {
+			truncatedLines += contentLines.length + 1;
+			continue;
+		}
+		budget--;
+		rows.push(
+			<Text key={`h${ei}`} dimColor>
+				@ {range}
+				{contentLines.length === 0 ? " (delete)" : ""}
+			</Text>,
+		);
+
+		for (let li = 0; li < contentLines.length; li++) {
+			if (budget <= 0) {
+				truncatedLines += contentLines.length - li;
+				break;
+			}
+			budget--;
+			rows.push(
+				<Text key={`l${ei}-${li}`}>
+					<Text color="green">+ </Text>
+					<HighlightedLine line={contentLines[li]} lang={lang} color="green" />
+				</Text>,
+			);
+		}
+	}
 
 	return (
 		<Box flexDirection="column" paddingLeft={2}>
-			{display.map((entry, idx) => {
-				if (entry.kind === "ellipsis") {
-					return (
-						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-						<Text key={idx} dimColor>
-							⋯ {entry.count} unchanged {entry.count === 1 ? "line" : "lines"}
-						</Text>
-					);
-				}
-				if (entry.kind === "remove") {
-					return (
-						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-						<Text key={idx}>
-							<Text color="red">- </Text>
-							<HighlightedLine line={entry.text} lang={lang} color="red" />
-						</Text>
-					);
-				}
-				if (entry.kind === "add") {
-					return (
-						// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-						<Text key={idx}>
-							<Text color="green">+ </Text>
-							<HighlightedLine line={entry.text} lang={lang} color="green" />
-						</Text>
-					);
-				}
-				return (
-					// biome-ignore lint/suspicious/noArrayIndexKey: diff entries are immutable per render
-					<Text key={idx}>
-						<Text dimColor>{"  "}</Text>
-						<HighlightedLine line={entry.text} lang={lang} dim />
-					</Text>
-				);
-			})}
-			{truncated && (
+			{rows}
+			{truncatedLines > 0 && (
 				<Text dimColor>
-					⋯ {hunked.length - EDIT_DIFF_MAX_LINES} more diff{" "}
-					{hunked.length - EDIT_DIFF_MAX_LINES === 1 ? "entry" : "entries"}
+					⋯ {truncatedLines} more {truncatedLines === 1 ? "line" : "lines"}
 				</Text>
 			)}
 		</Box>
@@ -186,14 +196,13 @@ function ToolCallRow({
 	const name = displayToolName(block.name);
 	const filePath = typeof block.input.file_path === "string" ? block.input.file_path : null;
 	// `displayPath` is the tildified version for header rendering; we keep the
-	// original `filePath` for EditDiffBody / WritePreviewBody, which use it for
+	// original `filePath` for HashlineEditsBody / WritePreviewBody, which use it for
 	// syntax-highlighting language detection.
 	const displayPath = filePath ? tildifyPath(filePath) : null;
 
-	// boundless_edit: header + colored unified diff
+	// boundless_edit: header + per-edit anchor ranges with added-line previews
 	if (block.name === "boundless_edit" && filePath) {
-		const oldString = typeof block.input.old_string === "string" ? block.input.old_string : "";
-		const newString = typeof block.input.new_string === "string" ? block.input.new_string : "";
+		const edits = asHashlineEdits(block.input.edits);
 		return (
 			<Box flexDirection="column">
 				<Text>
@@ -203,7 +212,7 @@ function ToolCallRow({
 					</Text>
 					<Text dimColor> {displayPath}</Text>
 				</Text>
-				<EditDiffBody oldString={oldString} newString={newString} filePath={filePath} />
+				<HashlineEditsBody edits={edits} filePath={filePath} />
 			</Box>
 		);
 	}
