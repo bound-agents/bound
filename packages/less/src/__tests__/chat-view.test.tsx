@@ -103,6 +103,16 @@ describe("ChatView slash commands", () => {
 		expect(frame).toContain("/model");
 		expect(frame).not.toContain("/model <name>");
 	});
+
+	it("lists the Esc hint in the action bar", async () => {
+		const props = makeProps();
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("Esc");
+		expect(frame).toContain("clear input");
+	});
 });
 
 describe("ChatView active prop", () => {

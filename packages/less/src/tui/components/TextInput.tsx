@@ -416,8 +416,16 @@ export function TextInput({
 				return;
 			}
 
+			// Esc clears the buffer (single press, no-op when empty). Bare ESC
+			// only — escape *sequences* (arrows, meta-combos) were consumed by the
+			// branches above, so key.escape here means the lone byte.
+			if (key.escape) {
+				clear();
+				return;
+			}
+
 			// Swallow any remaining control sequences.
-			if (key.ctrl || key.meta || key.escape) {
+			if (key.ctrl || key.meta) {
 				return;
 			}
 
