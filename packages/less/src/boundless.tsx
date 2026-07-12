@@ -315,7 +315,7 @@ async function main(): Promise<void> {
 				mcpConfigs={mcpConfig.servers}
 				logger={logger}
 				initialMessages={attachResult.messages}
-				model={config.model}
+				model={attachResult.lastUsedModelId ?? config.model}
 				toolHandlers={toolSet.handlers}
 				shell={shell}
 				sandbox={sandbox}
