@@ -7,10 +7,7 @@ class MockBoundClient {
 	skills: Skill[] = [];
 	skillDetails: Record<string, { content: string; files: { path: string; size: number }[] }> = {};
 
-	async listSkills(options?: { status?: string }): Promise<Skill[]> {
-		if (options?.status) {
-			return this.skills.filter((s) => s.status === options.status);
-		}
+	async listSkills(): Promise<Skill[]> {
 		return this.skills;
 	}
 
@@ -27,13 +24,6 @@ class MockBoundClient {
 		const idx = this.skills.findIndex((s) => s.id === id);
 		if (idx === -1) throw new Error("Skill not found");
 		this.skills.splice(idx, 1);
-	}
-
-	async activateSkill(id: string): Promise<{ skill: Skill }> {
-		const skill = this.skills.find((s) => s.id === id);
-		if (!skill) throw new Error("Skill not found");
-		skill.status = "active";
-		return { skill };
 	}
 }
 
@@ -98,7 +88,7 @@ describe("SkillsView Component", () => {
 		};
 	});
 
-	describe("Task 2: List with DataTable and status filter", () => {
+	describe("Task 2: List with DataTable", () => {
 		it("AC3.2: Lists all skills with name, status, description, last activated", async () => {
 			const skills = await client.listSkills();
 
@@ -107,23 +97,6 @@ describe("SkillsView Component", () => {
 			expect(skills[0].description).toBe("First test skill");
 			expect(skills[0].status).toBe("active");
 			expect(skills[0].last_activated_at).toBeTruthy();
-		});
-
-		it("AC3.3: Filters by status - all", async () => {
-			const skills = await client.listSkills();
-			expect(skills).toHaveLength(2);
-		});
-
-		it("AC3.3: Filters by status - active only", async () => {
-			const skills = await client.listSkills({ status: "active" });
-			expect(skills).toHaveLength(1);
-			expect(skills[0].status).toBe("active");
-		});
-
-		it("AC3.3: Filters by status - retired only", async () => {
-			const skills = await client.listSkills({ status: "retired" });
-			expect(skills).toHaveLength(1);
-			expect(skills[0].status).toBe("retired");
 		});
 	});
 
@@ -155,16 +128,11 @@ describe("SkillsView Component", () => {
 		});
 	});
 
-	describe("Task 3: Delete and re-activate (for completeness)", () => {
+	describe("Task 3: Delete", () => {
 		it("Deletes a skill", async () => {
 			const id = client.skills[0].id;
 			await client.deleteSkill(id);
 			expect(client.skills.find((s) => s.id === id)).toBeUndefined();
-		});
-
-		it("Re-activates a retired skill", async () => {
-			const result = await client.activateSkill(client.skills[1].id);
-			expect(result.skill.status).toBe("active");
 		});
 	});
 });

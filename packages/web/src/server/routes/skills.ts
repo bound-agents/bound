@@ -6,9 +6,7 @@ import {
 	findSkillById,
 	findSkillByIdIncludingDeleted,
 	listFileIdPathSizeByPrefixActive,
-	listFilePathContentByPrefixActive,
 	listSkills,
-	listSkillsByStatus,
 	updateRow,
 } from "@bound/core";
 import type { Skill, SkillFileEntry } from "@bound/shared";
@@ -25,14 +23,10 @@ export function createSkillsRoutes(db: Database): Hono {
 		return row?.value ?? "unknown";
 	}
 
-	// GET / - List all skills (with optional status filter)
+	// GET / - List all skills
 	app.get("/", (c) => {
 		try {
-			const status = c.req.query("status");
-
-			const skills = status ? listSkillsByStatus(db, status) : listSkills(db);
-
-			return c.json(skills);
+			return c.json(listSkills(db));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -340,79 +334,6 @@ export function createSkillsRoutes(db: Database): Hono {
 			return c.json(
 				{
 					error: "Failed to delete skill",
-					details: message,
-				},
-				500,
-			);
-		}
-	});
-
-	// POST /:id/activate - Re-activate a retired skill
-	app.post("/:id/activate", async (c) => {
-		try {
-			const { id } = c.req.param();
-			const siteId = getSiteId();
-
-			// Query skill
-			const skill = findSkillById(db, id);
-
-			if (!skill) {
-				return c.json({ error: "Skill not found" }, 404);
-			}
-
-			// Query skill files using skill_root to handle both old relative paths
-			// ("skills/{name}") and new absolute paths ("/home/user/skills/{name}").
-			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
-			const pattern = `${skillRoot}/%`;
-			const files = listFilePathContentByPrefixActive(db, pattern);
-
-			if (files.length === 0) {
-				return c.json(
-					{
-						error: "Skill files not found. Re-import the skill.",
-					},
-					500,
-				);
-			}
-
-			// Convert to SkillFileEntry[], stripping the skill_root prefix
-			const skillFiles: SkillFileEntry[] = files.map((f) => ({
-				path: f.path.replace(`${skillRoot}/`, ""),
-				content: f.content ?? "",
-			}));
-
-			// Re-import the skill via importSkillFromFiles
-			// If it's a new import or update, this handles both
-			const result = await importSkillFromFiles(db, siteId, skillFiles, {});
-
-			if (!result.ok) {
-				// If import fails due to name conflict, just update status instead
-				// Mark skill as active and clear retired fields, increment activation_count
-				updateRow(
-					db,
-					"skills",
-					id,
-					{
-						status: "active",
-						retired_by: null,
-						retired_reason: null,
-						activation_count: (skill.activation_count || 0) + 1,
-						activated_at: new Date().toISOString(),
-						modified_at: new Date().toISOString(),
-					},
-					siteId,
-				);
-			}
-
-			// Query updated skill
-			const updated = findSkillByIdIncludingDeleted(db, id) as Skill;
-
-			return c.json({ skill: updated }, 200);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : "Unknown error";
-			return c.json(
-				{
-					error: "Failed to activate skill",
 					details: message,
 				},
 				500,

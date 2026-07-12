@@ -7,7 +7,6 @@ import { parseToolInput, zodToToolParams } from "./tool-schema";
 const skillSchema = z.object({
 	action: z.enum(["activate", "list", "read", "deactivate"]).describe("Skill operation to perform"),
 	name: z.string().optional().describe("Skill name (for activate, read, deactivate)"),
-	status: z.enum(["active", "retired"]).optional().describe("Filter by status (for list)"),
 	verbose: z.boolean().optional().describe("Show extra columns (for list)"),
 });
 
@@ -142,32 +141,26 @@ async function handleActivate(
 }
 
 async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
-	const whereClause = input.status ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
-	const queryArgs = input.status ? [input.status] : [];
-
 	const rows = ctx.db
 		.prepare(
-			`SELECT name, status, activation_count, last_activated_at, description,
-            allowed_tools, compatibility, content_hash, retired_reason
+			`SELECT name, activation_count, last_activated_at, description,
+            allowed_tools, compatibility, content_hash
      FROM skills
-     ${whereClause}
+     WHERE deleted = 0
      ORDER BY last_activated_at DESC, name ASC`,
 		)
-		.all(...queryArgs) as Array<{
+		.all() as Array<{
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		allowed_tools: string | null;
 		compatibility: string | null;
 		content_hash: string | null;
-		retired_reason: string | null;
 	}>;
 
 	if (rows.length === 0) {
-		const filter = input.status ? ` (status: ${input.status})` : "";
-		return `No skills found${filter}.`;
+		return "No skills found.";
 	}
 
 	const lines: string[] = [];
@@ -175,17 +168,16 @@ async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 	// Header
 	if (input.verbose) {
 		lines.push(
-			"NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        COMPATIBILITY   CONTENT_HASH     RETIRED_REASON",
+			"NAME             ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        COMPATIBILITY   CONTENT_HASH",
 		);
-		lines.push("-".repeat(160));
+		lines.push("-".repeat(140));
 	} else {
-		lines.push("NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION");
-		lines.push("-".repeat(90));
+		lines.push("NAME             ACTIVATIONS LAST USED            DESCRIPTION");
+		lines.push("-".repeat(80));
 	}
 
 	for (const row of rows) {
 		const name = row.name.padEnd(16);
-		const status = row.status.padEnd(8);
 		const activations = String(row.activation_count ?? 0).padEnd(11);
 		const lastUsed = (row.last_activated_at?.slice(0, 19) ?? "never").padEnd(20);
 		const desc = row.description.slice(0, 33).padEnd(33);
@@ -194,12 +186,9 @@ async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 			const tools = (row.allowed_tools ?? "").slice(0, 20).padEnd(20);
 			const compatibility = (row.compatibility ?? "").slice(0, 15).padEnd(15);
 			const hash = (row.content_hash ?? "").slice(0, 16).padEnd(16);
-			const reason = (row.retired_reason ?? "").slice(0, 20);
-			lines.push(
-				`${name} ${status} ${activations} ${lastUsed} ${desc} ${tools} ${compatibility} ${hash} ${reason}`,
-			);
+			lines.push(`${name} ${activations} ${lastUsed} ${desc} ${tools} ${compatibility} ${hash}`);
 		} else {
-			lines.push(`${name} ${status} ${activations} ${lastUsed} ${desc}`);
+			lines.push(`${name} ${activations} ${lastUsed} ${desc}`);
 		}
 	}
 
@@ -214,12 +203,11 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 	// Get skill metadata including skill_root
 	const skill = ctx.db
 		.prepare(
-			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
+			"SELECT id, name, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
 		)
 		.get(input.name) as {
 		id: string;
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
@@ -245,7 +233,6 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 
 	const header = [
 		`--- Skill: ${skill.name} ---`,
-		`Status:      ${skill.status}`,
 		`Activations: ${skill.activation_count ?? 0}`,
 		`Last used:   ${skill.last_activated_at?.slice(0, 19) ?? "never"}`,
 		`Hash:        ${skill.content_hash ?? "unknown"}`,

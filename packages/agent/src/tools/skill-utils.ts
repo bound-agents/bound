@@ -199,7 +199,6 @@ export function parseFrontmatter(
 }
 
 // Validation constants
-export const MAX_ACTIVE_SKILLS = 20;
 export const MAX_SKILL_BODY_LINES = 500;
 export const MAX_FILE_SIZE_BYTES = 64 * 1024;
 export const MAX_DESCRIPTION_LENGTH = 1024;
@@ -280,11 +279,6 @@ export async function importSkillFromFiles(
 			};
 		}
 
-		// Step 7: Check active skill cap
-		const activeCount = db
-			.prepare("SELECT COUNT(*) as count FROM skills WHERE status = 'active' AND deleted = 0")
-			.get() as { count: number };
-
 		const skillId = deterministicUUID(BOUND_NAMESPACE, name);
 		// Look up including tombstoned rows: skills are keyed by a deterministic UUID
 		// (UUID5 of the name), so a soft-deleted skill still occupies its PK. A plain
@@ -293,13 +287,6 @@ export async function importSkillFromFiles(
 		const existingSkill = findSkillByIdIncludingDeleted(db, skillId) as
 			| (Record<string, unknown> & { status: string; activation_count: number; deleted: number })
 			| null;
-
-		if (activeCount.count >= MAX_ACTIVE_SKILLS && !existingSkill) {
-			return {
-				ok: false,
-				error: `Active skill cap (${MAX_ACTIVE_SKILLS}) reached. An operator must delete a skill (\`boundctl skill delete\` / \`DELETE /api/skills/:id\`) before a new one can be created.`,
-			};
-		}
 
 		// Step 8: Compute deterministic UUID (already done above)
 		// Step 9: Compute content_hash

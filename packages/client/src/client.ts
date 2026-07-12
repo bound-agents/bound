@@ -837,11 +837,8 @@ export class BoundClient {
 
 	// ---- Skills ----
 
-	async listSkills(options?: { status?: string }): Promise<Skill[]> {
-		const params = new URLSearchParams();
-		if (options?.status) params.set("status", options.status);
-		const qs = params.toString();
-		return this.fetchJson(`/api/skills${qs ? `?${qs}` : ""}`);
+	async listSkills(): Promise<Skill[]> {
+		return this.fetchJson("/api/skills");
 	}
 
 	async getSkill(
@@ -892,11 +889,5 @@ export class BoundClient {
 
 	async deleteSkill(id: string): Promise<void> {
 		await this.fetchVoid(`/api/skills/${id}`, { method: "DELETE" });
-	}
-
-	async activateSkill(id: string): Promise<{ skill: Skill }> {
-		return this.fetchJson(`/api/skills/${id}/activate`, {
-			method: "POST",
-		});
 	}
 }
