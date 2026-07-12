@@ -23,11 +23,10 @@ class MockBoundClient {
 		return { skill, ...detail };
 	}
 
-	async retireSkill(id: string, _reason?: string): Promise<{ skill: Skill }> {
-		const skill = this.skills.find((s) => s.id === id);
-		if (!skill) throw new Error("Skill not found");
-		skill.status = "retired";
-		return { skill };
+	async deleteSkill(id: string): Promise<void> {
+		const idx = this.skills.findIndex((s) => s.id === id);
+		if (idx === -1) throw new Error("Skill not found");
+		this.skills.splice(idx, 1);
 	}
 
 	async activateSkill(id: string): Promise<{ skill: Skill }> {
@@ -156,10 +155,11 @@ describe("SkillsView Component", () => {
 		});
 	});
 
-	describe("Task 3: Retire and re-activate (for completeness)", () => {
-		it("Retires an active skill", async () => {
-			const result = await client.retireSkill(client.skills[0].id, "Test reason");
-			expect(result.skill.status).toBe("retired");
+	describe("Task 3: Delete and re-activate (for completeness)", () => {
+		it("Deletes a skill", async () => {
+			const id = client.skills[0].id;
+			await client.deleteSkill(id);
+			expect(client.skills.find((s) => s.id === id)).toBeUndefined();
 		});
 
 		it("Re-activates a retired skill", async () => {

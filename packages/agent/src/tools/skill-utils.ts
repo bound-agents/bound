@@ -1,8 +1,18 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
+import {
+	findFileById,
+	findSkillByIdIncludingDeleted,
+	findSkillByName,
+	insertRow,
+	listActiveTasksWithPayload,
+	listFileIdPathSizeByPrefixActive,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { ImportSkillOptions, ImportSkillResult, SkillFileEntry } from "@bound/shared";
+import { createAdvisory } from "../advisories.js";
 
 /**
  * Explains, in the system prompt, what the pinned-skill block is and why the
@@ -276,9 +286,13 @@ export async function importSkillFromFiles(
 			.get() as { count: number };
 
 		const skillId = deterministicUUID(BOUND_NAMESPACE, name);
-		const existingSkill = db
-			.prepare("SELECT * FROM skills WHERE id = ? AND deleted = 0")
-			.get(skillId) as Record<string, unknown> | null;
+		// Look up including tombstoned rows: skills are keyed by a deterministic UUID
+		// (UUID5 of the name), so a soft-deleted skill still occupies its PK. A plain
+		// `deleted = 0` lookup would miss it and the INSERT below would collide on the
+		// tombstone; a deleted OR retired row is instead treated as a re-activation.
+		const existingSkill = findSkillByIdIncludingDeleted(db, skillId) as
+			| (Record<string, unknown> & { status: string; activation_count: number; deleted: number })
+			| null;
 
 		if (activeCount.count >= MAX_ACTIVE_SKILLS && !existingSkill) {
 			return {
@@ -307,15 +321,17 @@ export async function importSkillFromFiles(
 			const existingAsSkill = existingSkill as Record<string, unknown> & {
 				status: string;
 				activation_count: number;
+				deleted: number;
 			};
-			if (existingAsSkill.status === "retired") {
-				// Re-activation
+			if (existingAsSkill.status === "retired" || existingAsSkill.deleted === 1) {
+				// Re-activation (of a retired OR soft-deleted skill — undelete the row)
 				updateRow(
 					db,
 					"skills",
 					skillId,
 					{
 						status: "active",
+						deleted: 0,
 						content_hash: contentHash,
 						skill_root: skillRoot,
 						activation_count: existingAsSkill.activation_count + 1,
@@ -385,9 +401,11 @@ export async function importSkillFromFiles(
 			const fileId = filePath;
 			const sizeBytes = Buffer.byteLength(entry.content, "utf8");
 
-			const existingFile = db
-				.prepare("SELECT id FROM files WHERE id = ? AND deleted = 0")
-				.get(fileId) as Record<string, unknown> | null;
+			// Look up including tombstoned rows (same PK-collision reasoning as the
+			// skill row above): a soft-deleted file keeps its path-keyed PK, so a
+			// `deleted = 0` lookup would miss it and the INSERT would collide. An
+			// existing row (deleted or not) is updated in place, undeleting it.
+			const existingFile = findFileById(db, fileId);
 
 			if (existingFile) {
 				updateRow(
@@ -397,6 +415,7 @@ export async function importSkillFromFiles(
 					{
 						content: entry.content,
 						size_bytes: sizeBytes,
+						deleted: 0,
 						modified_at: now,
 					},
 					siteId,
@@ -428,4 +447,93 @@ export async function importSkillFromFiles(
 		const message = err instanceof Error ? err.message : String(err);
 		return { ok: false, error: `Failed to import skill: ${message}` };
 	}
+}
+
+/** Options for {@link deleteSkill}. */
+export interface DeleteSkillOptions {
+	/** Actor recorded on any task-reference advisory (e.g. "operator", "web"). Defaults to "operator". */
+	by?: string;
+	/** Optional human-readable reason, folded into the advisory detail. */
+	reason?: string;
+}
+
+/** Result of {@link deleteSkill}. */
+export interface DeleteSkillResult {
+	ok: boolean;
+	/** Number of task-reference advisories created. */
+	advisoryCount: number;
+	/** Number of skill files soft-deleted. */
+	filesDeleted: number;
+	error?: string;
+}
+
+/**
+ * Hard-remove a skill regardless of its status (active OR retired): soft-delete
+ * the `skills` row and every file under its `skill_root`, then scan for active
+ * tasks whose payload references the skill by name and raise one advisory each
+ * (the R-SK14 scan, run here because delete can target an active skill directly
+ * with no retire-first step). This is the single unified removal operation that
+ * subsumes the old retire/purge split on the operator surfaces; it is exposed on
+ * `boundctl` and the web API, NOT on the agent's `skill` tool. The tombstone does
+ * not block a later re-import: `importSkillFromFiles` treats a deleted row keyed
+ * by the same deterministic UUID as a re-activation (undelete).
+ */
+export function deleteSkill(
+	db: Database,
+	siteId: string,
+	name: string,
+	options: DeleteSkillOptions = {},
+): DeleteSkillResult {
+	const skill = findSkillByName(db, name);
+	if (!skill) {
+		return { ok: false, advisoryCount: 0, filesDeleted: 0, error: `Skill '${name}' not found.` };
+	}
+
+	const by = options.by ?? "operator";
+	const reason = options.reason ?? null;
+
+	// Soft-delete the skill row.
+	softDelete(db, "skills", skill.id, siteId);
+
+	// Soft-delete every file under the skill's root.
+	const skillRoot = skill.skill_root ?? `skills/${name}`;
+	const files = listFileIdPathSizeByPrefixActive(db, `${skillRoot}/%`);
+	for (const file of files) {
+		softDelete(db, "files", file.id, siteId);
+	}
+
+	// R-SK14 scan: advise on any active task still referencing the deleted skill.
+	let advisoryCount = 0;
+	for (const task of listActiveTasksWithPayload(db)) {
+		let payload: unknown;
+		try {
+			payload = JSON.parse(task.payload);
+		} catch {
+			continue;
+		}
+		if (
+			typeof payload === "object" &&
+			payload !== null &&
+			"skill" in payload &&
+			(payload as Record<string, unknown>).skill === name
+		) {
+			createAdvisory(
+				db,
+				{
+					type: "general",
+					status: "proposed",
+					title: `Skill '${name}' was deleted`,
+					detail: `Task ${task.id} references skill '${name}' which was deleted by ${by}${reason ? `: ${reason}` : ""}.`,
+					action: `Update task ${task.id} to use a different skill or remove the skill reference.`,
+					impact: null,
+					evidence: JSON.stringify({ task_id: task.id, skill: name }),
+				},
+				siteId,
+				task.thread_id ?? null,
+			);
+			advisoryCount++;
+		}
+	}
+
+	return { ok: true, advisoryCount, filesDeleted: files.length };
 }

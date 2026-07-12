@@ -154,6 +154,9 @@ export { seedBundledSkills } from "./seed-skills";
 export {
 	parseFrontmatter,
 	importSkillFromFiles,
+	deleteSkill,
+	type DeleteSkillOptions,
+	type DeleteSkillResult,
 	MAX_ACTIVE_SKILLS,
 	MAX_SKILL_BODY_LINES,
 	MAX_FILE_SIZE_BYTES,

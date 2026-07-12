@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { importSkillFromFiles, parseFrontmatter } from "@bound/agent";
+import { deleteSkill, importSkillFromFiles, parseFrontmatter } from "@bound/agent";
 import {
 	findFileContentByPathActive,
 	findSkillById,
@@ -318,50 +318,28 @@ export function createSkillsRoutes(db: Database): Hono {
 		}
 	});
 
-	// POST /:id/retire - Retire a skill
-	app.post("/:id/retire", async (c) => {
+	// DELETE /:id - Delete a skill (any status): soft-delete row + files, R-SK14 advisory scan
+	app.delete("/:id", (c) => {
 		try {
 			const { id } = c.req.param();
 			const siteId = getSiteId();
 
-			// Query skill
 			const skill = findSkillById(db, id);
 
 			if (!skill) {
 				return c.json({ error: "Skill not found" }, 404);
 			}
 
-			// Parse optional body
-			let body: { reason?: string } = {};
-			try {
-				body = (await c.req.json()) as { reason?: string };
-			} catch {
-				// No body or invalid JSON
-			}
+			// Unified removal (any status): soft-deletes the row + its files and files
+			// task-reference advisories. Shared with boundctl and the agent core.
+			deleteSkill(db, siteId, skill.name, { by: "web" });
 
-			// Update skill
-			updateRow(
-				db,
-				"skills",
-				id,
-				{
-					status: "retired",
-					retired_reason: body.reason ?? null,
-					retired_by: "web",
-					modified_at: new Date().toISOString(),
-				},
-				siteId,
-			);
-
-			// Query updated skill
-			const updated = findSkillByIdIncludingDeleted(db, id) as Skill;
-
-			return c.json({ skill: updated }, 200);
+			return new Response(null, { status: 204 });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
 				{
-					error: "Failed to retire skill",
+					error: "Failed to delete skill",
 					details: message,
 				},
 				500,

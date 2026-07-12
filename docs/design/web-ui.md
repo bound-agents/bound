@@ -265,7 +265,7 @@ Browser-based skill management interface. List view with `DataTable`, expandable
 
 **Actions:** Retire action (with optional reason), re-activate action.
 
-**Data sources:** `GET /api/skills` (optionally `?status=active|retired`) polled every 5s. `GET /api/skills/:id` fetches individual skill (metadata + content + file list). `POST /api/skills` creates (multipart or JSON body). `POST /api/skills/:id/retire` retires. `POST /api/skills/:id/activate` re-activates.
+**Data sources:** `GET /api/skills` (optionally `?status=active|retired`) polled every 5s. `GET /api/skills/:id` fetches individual skill (metadata + content + file list). `POST /api/skills` creates (multipart or JSON body). `DELETE /api/skills/:id` deletes a skill (any status): soft-deletes the row and its files and files an advisory for any task referencing it. `POST /api/skills/:id/activate` re-activates a retired skill.
 
 **Content rendering:** SKILL.md rendered as formatted markdown using shared `renderMarkdown()` pipeline (Shiki syntax highlighting, DOMPurify sanitization). Rendered inline in expanded row via dynamic import + `{@html}`, with `:global(.md-content)` CSS rules.
 

@@ -12,7 +12,7 @@ import { runDrain } from "./commands/drain.js";
 import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
 import { runSetPersona } from "./commands/set-persona.js";
-import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
+import { skillDelete, skillImport, skillList, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
 import { taskUpdate } from "./commands/task.js";
@@ -53,7 +53,7 @@ COMMANDS:
   drain <new-hub>            Graceful hub decommissioning
   skill list                 List all skills with status and telemetry
   skill view <name>          View SKILL.md and file listing for a skill
-  skill retire <name>        Retire a skill (operator); use --reason "..." to explain
+  skill delete <name>        Delete a skill (any status); use --reason "..." to explain
   skill import <path>        Import a skill from a local directory
   webhook list               List all webhooks
   webhook create             Create a new webhook
@@ -340,18 +340,18 @@ EXAMPLES:
 				process.exit(0);
 			}
 
-			if (subcommand === "retire") {
+			if (subcommand === "delete") {
 				const name = args[2];
 				if (!name) {
 					console.error(
-						'Error: skill name is required. Usage: boundctl skill retire <name> [--reason "..."]',
+						'Error: skill name is required. Usage: boundctl skill delete <name> [--reason "..."]',
 					);
 					db.close();
 					process.exit(1);
 				}
 				const reason = getArgValue(args, "--reason");
 				const siteId = getSiteId(db);
-				skillRetire(db, siteId, name, reason);
+				skillDelete(db, siteId, name, reason);
 				db.close();
 				process.exit(0);
 			}
@@ -371,7 +371,7 @@ EXAMPLES:
 
 			// Unknown subcommand
 			console.error(`Error: unknown skill subcommand '${subcommand}'.`);
-			console.error("Available: list, view, retire, import");
+			console.error("Available: list, view, delete, import");
 			db.close();
 			process.exit(1);
 		} catch (error) {

@@ -28,8 +28,7 @@ let renderedContent = $state<Record<string, string>>({});
 let contentLoading = $state<string | null>(null);
 
 let actionInProgress = $state<string | null>(null);
-let retireReason = $state<Record<string, string>>({});
-let showRetireInput = $state<Record<string, boolean>>({});
+let showDeleteConfirm = $state<Record<string, boolean>>({});
 
 const filteredSkills = $derived(
 	statusFilter === "all" ? skills : skills.filter((s) => s.status === statusFilter),
@@ -66,15 +65,18 @@ async function loadSkillDetail(id: string): Promise<void> {
 	contentLoading = null;
 }
 
-async function retireSkill(id: string): Promise<void> {
-	actionInProgress = `${id}:retire`;
+async function deleteSkill(id: string): Promise<void> {
+	actionInProgress = `${id}:delete`;
 	try {
-		await client.retireSkill(id, retireReason[id] || undefined);
-		retireReason = { ...retireReason, [id]: "" };
-		showRetireInput = { ...showRetireInput, [id]: false };
+		await client.deleteSkill(id);
+		showDeleteConfirm = { ...showDeleteConfirm, [id]: false };
+		if (expandedId === id) expandedId = null;
+		const newDetail = { ...skillDetail };
+		delete newDetail[id];
+		skillDetail = newDetail;
 		await loadSkills();
 	} catch (error) {
-		console.error("Failed to retire skill:", error);
+		console.error("Failed to delete skill:", error);
 	}
 	actionInProgress = null;
 }
@@ -282,32 +284,7 @@ $effect.pre(() => {
 			>
 				Edit
 			</Btn>
-			{#if skill.status === "active"}
-				{#if showRetireInput[skill.id as string]}
-					<input
-						type="text"
-						bind:value={retireReason[skill.id as string]}
-						placeholder="Reason (optional)"
-					/>
-					<Btn
-						size="sm"
-						variant="danger"
-						disabled={actionInProgress === `${skill.id}:retire`}
-						onclick={() => retireSkill(skill.id as string)}
-					>
-						Confirm Retire
-					</Btn>
-				{:else}
-					<Btn
-						size="sm"
-						onclick={() => {
-							showRetireInput = { ...showRetireInput, [skill.id as string]: true };
-						}}
-					>
-						Retire
-					</Btn>
-				{/if}
-			{:else if skill.status === "retired"}
+			{#if skill.status === "retired"}
 				<Btn
 					size="sm"
 					variant="accent"
@@ -315,6 +292,34 @@ $effect.pre(() => {
 					onclick={() => activateSkill(skill.id as string)}
 				>
 					Re-activate
+				</Btn>
+			{/if}
+			{#if showDeleteConfirm[skill.id as string]}
+				<Btn
+					size="sm"
+					variant="danger"
+					disabled={actionInProgress === `${skill.id}:delete`}
+					onclick={() => deleteSkill(skill.id as string)}
+				>
+					Confirm Delete
+				</Btn>
+				<Btn
+					size="sm"
+					onclick={() => {
+						showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: false };
+					}}
+				>
+					Cancel
+				</Btn>
+			{:else}
+				<Btn
+					size="sm"
+					variant="danger"
+					onclick={() => {
+						showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: true };
+					}}
+				>
+					Delete
 				</Btn>
 			{/if}
 		</div>
