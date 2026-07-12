@@ -17,7 +17,6 @@ import {
 	findSkillStatusByName,
 	listActiveSkillNameDescriptions,
 	listActiveSkills,
-	listOperatorRetiredSkillsSince,
 	listSkills,
 	listSkillsByStatus,
 	listSkillsForCliView,
@@ -471,110 +470,6 @@ describe("skills repository finders", () => {
 		it("returns [] when no active skills exist", () => {
 			insertRow(db, "skills", makeSkill({ id: "s1", name: "alpha", status: "retired" }), SITE_ID);
 			expect(listActiveSkillNameDescriptions(db)).toEqual([]);
-		});
-	});
-
-	// ---- listOperatorRetiredSkillsSince (status='retired' AND retired_by='operator'
-	//       AND modified_at > ? AND deleted=0). modified_at is controlled at insert. ----
-
-	describe("listOperatorRetiredSkillsSince", () => {
-		it("returns operator-retired skills modified strictly after the cutoff", () => {
-			// match
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "alpha",
-					status: "retired",
-					retired_by: "operator",
-					retired_reason: "obsolete",
-					modified_at: "2026-05-10T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			// before cutoff -> excluded
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s2",
-					name: "beta",
-					status: "retired",
-					retired_by: "operator",
-					retired_reason: "old",
-					modified_at: "2026-04-01T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			// equal to cutoff -> excluded (strict >)
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s3",
-					name: "gamma",
-					status: "retired",
-					retired_by: "operator",
-					retired_reason: "edge",
-					modified_at: "2026-05-01T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			// retired by agent, not operator -> excluded
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s4",
-					name: "delta",
-					status: "retired",
-					retired_by: "agent",
-					retired_reason: "self",
-					modified_at: "2026-06-01T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			// active operator skill after cutoff -> excluded (status filter)
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s5",
-					name: "epsilon",
-					status: "active",
-					retired_by: "operator",
-					modified_at: "2026-06-01T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-
-			const rows = listOperatorRetiredSkillsSince(db, "2026-05-01T00:00:00.000Z");
-			expect(rows).toEqual([{ name: "alpha", retired_reason: "obsolete" }]);
-		});
-
-		it("excludes a matching skill once soft-deleted (deleted filter)", () => {
-			insertRow(
-				db,
-				"skills",
-				makeSkill({
-					id: "s1",
-					name: "alpha",
-					status: "retired",
-					retired_by: "operator",
-					retired_reason: "obsolete",
-					modified_at: "2026-05-10T00:00:00.000Z",
-				}),
-				SITE_ID,
-			);
-			// softDelete rewrites modified_at to "now" (well after the cutoff), so the
-			// only thing excluding it is the deleted=0 clause.
-			softDelete(db, "skills", "s1", SITE_ID);
-			expect(listOperatorRetiredSkillsSince(db, "2026-05-01T00:00:00.000Z")).toEqual([]);
-		});
-
-		it("returns [] over an empty table", () => {
-			expect(listOperatorRetiredSkillsSince(db, "2026-01-01T00:00:00.000Z")).toEqual([]);
 		});
 	});
 

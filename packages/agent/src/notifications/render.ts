@@ -1,8 +1,8 @@
 /**
  * Operator-feedback notification renderer.
  *
- * Pure function over `(retiredSkills, resolvedAdvisories)` that produces
- * the `[Skill notification]` / `[Advisory notification]` lines emitted
+ * Pure function over `resolvedAdvisories` that produces
+ * the `[Advisory notification]` lines emitted
  * into the volatile-tail varying half of the assembled context.
  *
  * Contract pinned by `__tests__/render.property.test.ts`:
@@ -11,7 +11,6 @@
  *   F2 Cap — at most ADVISORY_NOTIF_CAP advisory lines emitted.
  *   F3 Dedup — duplicate titles collapse to one line; counts >1 carry "(×N)".
  *   F4 Empty inputs → empty output.
- *   F5 Skill retirement is uncapped (operator action, all should surface).
  *   F6 Line-shape — each line begins with the expected tag prefix.
  *   F7 Order preservation — input order drives output order.
  *
@@ -25,11 +24,6 @@ import { relativeTimeAt } from "../summary-extraction";
 /** Advisory dedup cap — limits *distinct titles* emitted, not summed counts. */
 export const ADVISORY_NOTIF_CAP = 5;
 
-export interface RetiredSkillRow {
-	name: string;
-	retired_reason: string | null;
-}
-
 export interface ResolvedAdvisoryRow {
 	title: string;
 	status: string;
@@ -38,7 +32,6 @@ export interface ResolvedAdvisoryRow {
 }
 
 export interface RenderNotificationsParams {
-	retiredSkills: ReadonlyArray<RetiredSkillRow>;
 	resolvedAdvisories: ReadonlyArray<ResolvedAdvisoryRow>;
 	/**
 	 * Wall-clock anchor for the advisory-ack relative-time fragment. Plumbed
@@ -58,11 +51,6 @@ export interface RenderNotificationsParams {
  */
 export function renderNotifications(params: RenderNotificationsParams): string[] {
 	const lines: string[] = [];
-
-	for (const s of params.retiredSkills) {
-		const reason = s.retired_reason ? `"${s.retired_reason}"` : "no reason given";
-		lines.push(`[Skill notification] Skill '${s.name}' was retired by operator: ${reason}.`);
-	}
 
 	// Dedup by title. The loader hands rows newest-first (ORDER BY resolved_at
 	// DESC), so the first occurrence of a title is its most-recent resolution —

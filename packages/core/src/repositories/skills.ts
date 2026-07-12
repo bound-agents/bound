@@ -167,22 +167,6 @@ export function listActiveSkillNameDescriptions(
 		.all() as Array<{ name: string; description: string }>;
 }
 
-/** Operator-retired skills modified since the given ISO cutoff. */
-export function listOperatorRetiredSkillsSince(
-	db: Database,
-	modifiedAfter: string,
-): Array<{ name: string; retired_reason: string | null }> {
-	return db
-		.query(
-			`SELECT name, retired_reason FROM skills
-			 WHERE status = 'retired'
-			   AND retired_by = 'operator'
-			   AND modified_at > ?
-			   AND deleted = 0`,
-		)
-		.all(modifiedAfter) as Array<{ name: string; retired_reason: string | null }>;
-}
-
 /**
  * Skill list view (CLI). `status` optional; when omitted, returns all
  * non-deleted skills. Ordered by most-recently-activated, then name.
