@@ -35,7 +35,7 @@ export { Spinner } from "./Spinner.js";
 export type { SpinnerProps } from "./Spinner.js";
 
 export { TextInput } from "./TextInput.js";
-export type { ChatInputController, TextInputProps } from "./TextInput.js";
+export type { TextInputProps } from "./TextInput.js";
 
 export { MessageBlock } from "./MessageBlock.js";
 export type { MessageBlockProps } from "./MessageBlock.js";

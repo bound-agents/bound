@@ -134,69 +134,6 @@ describe("CancelStateMachine", () => {
 		});
 	});
 
-	describe("Single-press input clear (CC/Codex convention)", () => {
-		it("clears a focused non-empty input and consumes the press when idle", async () => {
-			deps.clearChatInput = vi.fn(() => true);
-			stateMachine.turnActive = false;
-
-			await stateMachine.onCtrlC();
-
-			expect(deps.clearChatInput).toHaveBeenCalledTimes(1);
-			// Consumed: no exit-sequence side effects.
-			expect(deps.showHint).not.toHaveBeenCalled();
-			expect(deps.gracefulExit).not.toHaveBeenCalled();
-		});
-
-		it("does not arm the two-press exit when a clear consumes the first press", async () => {
-			// Clear, then a second press: the clear left lastCtrlCTime untouched, so
-			// the second press is the FIRST real exit press and must show the hint,
-			// not exit — even though it lands well within 2s of the clear.
-			deps.clearChatInput = vi.fn(() => true);
-			stateMachine.turnActive = false;
-
-			await stateMachine.onCtrlC();
-			// Input is now empty; controller reports nothing to clear.
-			(deps.clearChatInput as ReturnType<typeof vi.fn>).mockReturnValue(false);
-
-			await stateMachine.onCtrlC();
-
-			expect(deps.gracefulExit).not.toHaveBeenCalled();
-			expect(deps.showHint).toHaveBeenCalledWith("Press Ctrl-C again to exit");
-		});
-
-		it("falls through to the exit dance when the input is empty/unfocused", async () => {
-			deps.clearChatInput = vi.fn(() => false);
-			stateMachine.turnActive = false;
-
-			await stateMachine.onCtrlC();
-
-			expect(deps.clearChatInput).toHaveBeenCalledTimes(1);
-			expect(deps.showHint).toHaveBeenCalledWith("Press Ctrl-C again to exit");
-		});
-
-		it("falls through to turn cancel when the input is empty during a turn", async () => {
-			deps.clearChatInput = vi.fn(() => false);
-			stateMachine.turnActive = true;
-
-			await stateMachine.onCtrlC();
-
-			expect(deps.clearChatInput).toHaveBeenCalledTimes(1);
-			expect(deps.cancelThread).toHaveBeenCalledTimes(1);
-			expect(deps.abortInFlightTools).toHaveBeenCalledTimes(1);
-		});
-
-		it("is not consulted while a modal is open (modal dismiss wins)", async () => {
-			deps.clearChatInput = vi.fn(() => true);
-			deps.dismissModal = vi.fn(() => true);
-			stateMachine.modalOpen = true;
-
-			await stateMachine.onCtrlC();
-
-			expect(deps.dismissModal).toHaveBeenCalled();
-			expect(deps.clearChatInput).not.toHaveBeenCalled();
-		});
-	});
-
 	describe("resetTurn", () => {
 		it("clears canceled flag and turns off turnActive", () => {
 			stateMachine.turnActive = true;
