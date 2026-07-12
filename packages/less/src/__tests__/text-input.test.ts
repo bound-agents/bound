@@ -669,3 +669,51 @@ describe("findCursorInLines", () => {
 		});
 	});
 });
+
+describe("TextInput Esc clear", () => {
+	const tickLocal = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+	it("Esc clears a non-empty input buffer", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tickLocal();
+
+		stdin.write("hello");
+		await tickLocal();
+		expect(lastFrame()).toContain("hello");
+
+		stdin.write("\x1b");
+		await tickLocal();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("hello");
+		// Cleared — placeholder shows again.
+		expect(frame).toContain("type here");
+	});
+
+	it("Esc on an already-empty input is a no-op", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tickLocal();
+
+		stdin.write("\x1b");
+		await tickLocal();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("type here");
+	});
+
+	it("Esc does not clear when the input lacks focus", async () => {
+		const { lastFrame, stdin, rerender } = render(React.createElement(TestHarness));
+		await tickLocal();
+
+		stdin.write("hello");
+		await tickLocal();
+
+		rerender(React.createElement(TestHarness, { hasFocus: false }));
+		await tickLocal();
+
+		stdin.write("\x1b");
+		await tickLocal();
+
+		expect(lastFrame()).toContain("hello");
+	});
+});

@@ -492,6 +492,7 @@ export function ChatView({
 							{ keys: "/model", label: "switch model" },
 							{ keys: "/attach", label: "switch thread" },
 							{ keys: "/mcp", label: "MCP config" },
+							{ keys: "Esc", label: "clear input" },
 							{ keys: "Ctrl-C", label: "exit" },
 						]}
 					/>
