@@ -170,6 +170,7 @@ describe("threads repository", () => {
 			expect(findThreadSummaryStateById(db, "t-ss")).toEqual({
 				summary: "recap",
 				summary_through: "2026-01-05T00:00:00.000Z",
+				last_message_at: "2026-01-01T00:00:00.000Z",
 			});
 		});
 

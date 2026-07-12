@@ -68,14 +68,21 @@ export function findThreadSummaryById(db: Database, id: string): { summary: stri
 	} | null;
 }
 
-/** `SELECT summary, summary_through FROM threads WHERE id = ?` — ignores deleted flag. */
+/** `SELECT summary, summary_through, last_message_at FROM threads WHERE id = ?` — ignores deleted flag. */
 export function findThreadSummaryStateById(
 	db: Database,
 	id: string,
-): { summary: string | null; summary_through: string | null } | null {
-	return db.query("SELECT summary, summary_through FROM threads WHERE id = ?").get(id) as {
+): {
+	summary: string | null;
+	summary_through: string | null;
+	last_message_at: string | null;
+} | null {
+	return db
+		.query("SELECT summary, summary_through, last_message_at FROM threads WHERE id = ?")
+		.get(id) as {
 		summary: string | null;
 		summary_through: string | null;
+		last_message_at: string | null;
 	} | null;
 }
 

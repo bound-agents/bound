@@ -123,7 +123,12 @@ export { generateThreadTitle } from "./title-generation";
 
 // Export summary extraction
 export type { ExtractionResult } from "./summary-extraction";
-export { extractSummaryAndMemories, buildCrossThreadDigest } from "./summary-extraction";
+export {
+	extractSummaryAndMemories,
+	buildCrossThreadDigest,
+	renderCrossThreadSummaries,
+	shouldInjectCrossThreadSummaries,
+} from "./summary-extraction";
 
 // Export file-thread tracker
 export {
