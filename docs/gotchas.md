@@ -44,7 +44,7 @@ The bound CLI config dir defaults to `./config` (relative to cwd) and data to `.
 
 ### Stale binaries
 
-`bun run build && cp dist/bound* ~/.local/bin/` is the install step. Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
+`just install` (build + atomic swap into `~/.local/bin/`) is the install step — see the `install` recipe in the repo's `justfile` for why it's not a plain `cp dist/bound* ~/.local/bin/` (macOS 26+ AMFI SIGKILL race on stale cached pages at the same inode). Running a stale compiled binary in one shell while iterating on source in another has burned us repeatedly. Check `bound --version` if behavior doesn't match source.
 
 ### Universal 256 KiB tool-result cap
 
