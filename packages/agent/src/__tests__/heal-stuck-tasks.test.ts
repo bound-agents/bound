@@ -513,6 +513,35 @@ describe("healStuckTasks", () => {
 			expect(updated?.next_run_at).not.toBeNull();
 		});
 
+		// Event tasks (webhook/connector-triggered) can be left stuck in 'completed'
+		// by the same race #104 documents for heartbeats: a host completes the run
+		// and writes status='pending' via resetEventTask, but a peer's sync
+		// changeset for the same row (carrying its own stale 'completed' snapshot,
+		// e.g. from a still-in-flight run on that peer) wins the LWW merge and
+		// clobbers the local pending-reset. Unlike heartbeats, event-task
+		// completion is otherwise terminal by design (a webhook fires once per
+		// delivery) — but a row wedged in 'completed' with stale claim metadata is
+		// never revisited by anything else (the pending-task sweep only looks at
+		// 'pending'), so every subsequent delivery for that webhook goes nowhere.
+		// Observed in production: task f862e622 (webhook:bound) stuck in
+		// 'completed' with next_run_at pinned to a stale pre-run timestamp.
+		it("revives an event task stuck in completed state", () => {
+			cleanupDb();
+			const taskId = randomUUID();
+			insertStuckTask(taskId, "event", "completed", 0, "webhook:bound");
+
+			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
+
+			expect(recovered).toBe(1);
+			const updated = db
+				.query("SELECT status, claimed_by, claimed_at, lease_id FROM tasks WHERE id = ?")
+				.get(taskId) as Partial<Task> | undefined;
+			expect(updated?.status).toBe("pending");
+			expect(updated?.claimed_by).toBeNull();
+			expect(updated?.claimed_at).toBeNull();
+			expect(updated?.lease_id).toBeNull();
+		});
+
 		it("does not revive a completed cron task (cron completion is terminal)", () => {
 			cleanupDb();
 			const taskId = randomUUID();

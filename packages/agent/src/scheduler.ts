@@ -639,9 +639,28 @@ export function healStuckTasks(
 			// rescheduleHeartbeat; if a crash/eviction lands in that window (or
 			// rescheduleHeartbeat early-returns), the heartbeat is left stuck in
 			// 'completed' with nothing to re-arm it. Heartbeats are perpetual, so
-			// 'completed' is a recoverable wedge for them — but NOT for cron/event,
-			// whose completion is terminal. The claimed_at < threshold guard keeps a
-			// healthy heartbeat (claim always fresh, completed for only microseconds)
+			// 'completed' is a recoverable wedge for them. Cron's own 'completed' wedge
+			// is truly terminal (cron re-arms via next_run_at, not by needing a status
+			// flip) so it is deliberately excluded here.
+			//
+			// Event tasks also recover from 'completed', for a different reason than
+			// heartbeats: resetEventTask's own status='pending' write (immediately
+			// following completion) can be clobbered by a concurrent sync changeset
+			// for the same row from a peer host that raced the same delivery — the
+			// peer's LWW-newer snapshot of the row (itself mid- or post-completion,
+			// carrying its own 'completed' status and a stale next_run_at) wins the
+			// merge and overwrites the local pending-reset after the fact. Unlike a
+			// crash mid-window, this is not self-healing — nothing re-runs
+			// resetEventTask once the row settles in 'completed', and the pending-task
+			// sweep never selects it, so the webhook/connector handler goes dark for
+			// every subsequent delivery. Observed in production: task f862e622
+			// (webhook:bound) stuck in 'completed' with next_run_at pinned to a stale
+			// pre-run timestamp from a peer host's earlier firing. The claimed_at <
+			// threshold guard (same as heartbeats) keeps a healthy in-flight event task
+			// from ever matching. Cron intentionally stays excluded — its 'completed'
+			// state is written by the SAME rescheduleCronTask call that sets
+			// next_run_at in one step, so cron never wedges in 'completed' the way
+			// event's two-step (complete, then separately resetEventTask) can.
 			// from ever matching.
 			`SELECT * FROM tasks
 			WHERE deleted = 0
@@ -649,7 +668,8 @@ export function healStuckTasks(
 			  AND claimed_at < ?
 			  AND (
 			    (type = 'heartbeat' AND status IN ('failed', 'cancelled', 'completed'))
-			    OR (type IN ('cron', 'event') AND status = 'failed')
+			    OR (type = 'event' AND status IN ('failed', 'completed'))
+			    OR (type = 'cron' AND status = 'failed')
 			    OR (type = 'deferred' AND status = 'failed' AND consecutive_failures < ?)
 			  )`,
 		)
