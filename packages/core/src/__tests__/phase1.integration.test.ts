@@ -85,7 +85,7 @@ describe("Phase 1 Integration", () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(30); // 18 main tables (incl. skills, memory_edges, connector_handles, webhooks, client_sessions) + 3 relay + dispatch_queue + 2 metrics - 1 (host_meta is local) + 1 FTS5 virtual + 5 FTS5 shadow = 30
+		expect(tables.length).toBe(29); // 17 main tables (incl. skills, memory_edges, connector_handles, webhooks, client_sessions) + 3 relay + dispatch_queue + 2 metrics - 1 (host_meta is local) + 1 FTS5 virtual + 5 FTS5 shadow = 29
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
@@ -99,7 +99,6 @@ describe("Phase 1 Integration", () => {
 			"hosts",
 			"memory_edges",
 			"messages",
-			"overlay_index",
 			"relay_cycles",
 			"relay_inbox",
 			"relay_outbox",

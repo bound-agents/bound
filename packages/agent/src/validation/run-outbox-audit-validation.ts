@@ -85,7 +85,6 @@ const AUDITED_TABLES = [
 	"tasks",
 	"files",
 	"hosts",
-	"overlay_index",
 	"cluster_config",
 	"advisories",
 	"skills",

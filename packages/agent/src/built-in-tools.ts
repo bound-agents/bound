@@ -271,9 +271,8 @@ interface MountPointLister {
 }
 
 /**
- * Writable roots: the static defaults plus every mount point, which covers
- * /home/user and any overlay mounts on a MountableFs. A bare InMemoryFs
- * (unit tests) has no mount table and keeps the defaults.
+ * Writable roots: the static defaults plus every mount point. A bare
+ * InMemoryFs (unit tests) has no mount table and keeps the defaults.
  */
 function writableRoots(fs: IFileSystem): string[] {
 	const roots = new Set<string>(["/home/user", "/tmp"]);

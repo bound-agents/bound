@@ -184,10 +184,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 		},
 	});
 
-	// Phase 8: Sync loop, pruning, overlay scanner
+	// Phase 8: Sync loop, pruning
 	const syncResult = await initSync(appContext, keypair, keyManager, args.reseed);
 	wsClient = syncResult.wsClient;
-	const { pruningHandle, overlayHandle, wsTransport } = syncResult;
+	const { pruningHandle, wsTransport } = syncResult;
 
 	// Wire WsTransport into the sync server's deferred holder (for hub-side frame dispatch)
 	if (wsTransport && serverResult.wsTransportHolder) {
@@ -243,7 +243,6 @@ Press Ctrl+C to stop.
 		heartbeatHandle,
 		schedulerHandle,
 		pruningHandle,
-		overlayHandle,
 		relayProcessorHandle,
 		mcpClientsMap,
 		webServer: serverResult.webServer,

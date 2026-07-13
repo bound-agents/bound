@@ -128,7 +128,6 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"files",
 	"advisories",
 	"skills",
-	"overlay_index",
 ];
 
 /** Per-peer snapshot seeding progress (hub-side). */
@@ -1657,7 +1656,6 @@ export class WsTransport {
 			"files",
 			"advisories",
 			"skills",
-			"overlay_index",
 		];
 
 		const requestedNames = payload.tables.length > 0 ? payload.tables : allTables.map(String);
@@ -1982,7 +1980,6 @@ export class WsTransport {
 		"files",
 		"advisories",
 		"skills",
-		"overlay_index",
 	];
 
 	clearSyncedTables(): void {

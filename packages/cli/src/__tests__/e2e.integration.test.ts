@@ -80,7 +80,6 @@ describe("Bound CLI E2E Integration Test", () => {
 			ollama: true,
 			withSync: true,
 			withMcp: true,
-			withOverlay: true,
 			configDir: tempDir,
 		});
 
@@ -88,7 +87,6 @@ describe("Bound CLI E2E Integration Test", () => {
 
 		expect(existsSync(join(tempDir, "sync.json"))).toBe(true);
 		expect(existsSync(join(tempDir, "mcp.json"))).toBe(true);
-		expect(existsSync(join(tempDir, "overlay.json"))).toBe(true);
 	});
 
 	it("hub init generates empty-backends config for relay-only node", async () => {

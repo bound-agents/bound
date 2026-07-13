@@ -127,20 +127,6 @@ describe("bound init", () => {
 		expect(Array.isArray(mcp.servers)).toBe(true);
 	});
 
-	it("creates overlay.json template with --with-overlay", async () => {
-		await runInit({
-			ollama: true,
-			withOverlay: true,
-			configDir: tempDir,
-		});
-
-		const overlayPath = join(tempDir, "overlay.json");
-		const overlayContent = readFileSync(overlayPath, "utf-8");
-		const overlay = JSON.parse(overlayContent);
-
-		expect(overlay).toHaveProperty("mounts");
-	});
-
 	it("uses custom name with --name flag", async () => {
 		await runInit({
 			ollama: true,

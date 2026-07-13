@@ -10,7 +10,6 @@ import {
 	memoryConfigSchema,
 	networkSchema,
 	ok,
-	overlaySchema,
 	platformsSchema,
 	relaySchema,
 	syncSchema,
@@ -208,7 +207,6 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 		{ filename: "sync.json", schema: syncSchema as ZodSchema<unknown>, key: "sync" },
 		{ filename: "keyring.json", schema: keyringSchema as ZodSchema<unknown>, key: "keyring" },
 		{ filename: "mcp.json", schema: mcpSchema as ZodSchema<unknown>, key: "mcp" },
-		{ filename: "overlay.json", schema: overlaySchema as ZodSchema<unknown>, key: "overlay" },
 		{ filename: "memory.json", schema: memoryConfigSchema as ZodSchema<unknown>, key: "memory" },
 	];
 

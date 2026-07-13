@@ -14,7 +14,6 @@ interface HostRow {
 	mcp_servers: string | null;
 	mcp_tools: string | null;
 	models: string | null;
-	overlay_root: string | null;
 	online_at: string | null;
 	modified_at: string;
 	platforms: string | null;

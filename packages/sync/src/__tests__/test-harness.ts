@@ -127,7 +127,6 @@ const FULL_SCHEMA = `
 		mcp_servers TEXT,
 		mcp_tools TEXT,
 		models TEXT,
-		overlay_root TEXT,
 		online_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
 		platforms TEXT,
@@ -183,16 +182,6 @@ const FULL_SCHEMA = `
 	FOR EACH ROW WHEN NEW.relation NOT IN ('related_to','informs','supports','extends','complements','contrasts-with','competes-with','cites','summarizes','synthesizes')
 	BEGIN SELECT RAISE(ABORT, 'Invalid relation. Must be one of: related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes. Use context column for bespoke phrasing.'); END;
 
-	CREATE TABLE overlay_index (
-		id TEXT PRIMARY KEY,
-		site_id TEXT NOT NULL,
-		path TEXT NOT NULL,
-		size_bytes INTEGER NOT NULL,
-		content_hash TEXT NOT NULL,
-		indexed_at TEXT NOT NULL,
-		deleted INTEGER NOT NULL DEFAULT 0,
-		modified_at TEXT
-	);
 
 	CREATE TABLE cluster_config (
 		key TEXT PRIMARY KEY,

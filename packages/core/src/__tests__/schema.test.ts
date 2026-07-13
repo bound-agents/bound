@@ -53,7 +53,6 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("tasks");
 		expect(tableNames).toContain("files");
 		expect(tableNames).toContain("hosts");
-		expect(tableNames).toContain("overlay_index");
 		expect(tableNames).toContain("cluster_config");
 		expect(tableNames).toContain("advisories");
 		expect(tableNames).toContain("skills");
@@ -71,9 +70,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 22 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 28
+		// 21 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 27
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(23); // 22 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(22); // 21 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -91,7 +90,6 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_threads_user");
 		expect(indexNames).toContain("idx_messages_thread");
 		expect(indexNames).toContain("idx_memory_key");
-		expect(indexNames).toContain("idx_overlay_site_path");
 		expect(indexNames).toContain("idx_files_path");
 		expect(indexNames).toContain("idx_skills_name");
 		expect(indexNames).toContain("idx_edges_triple");
@@ -235,8 +233,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 28 tables (22 base + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(28);
+		// Still exactly 27 tables (21 base + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(27);
 
 		db.close();
 	});

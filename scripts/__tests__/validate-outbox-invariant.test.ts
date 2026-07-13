@@ -37,9 +37,9 @@ describe("validate-outbox-invariant", () => {
 			expect(findTableInLine(line)).toBe("semantic_memory");
 		});
 
-		it("should find DELETE mutation on overlay_index table", () => {
-			const line = '"DELETE FROM overlay_index WHERE id = ?"';
-			expect(findTableInLine(line)).toBe("overlay_index");
+		it("should find DELETE mutation on skills table", () => {
+			const line = '"DELETE FROM skills WHERE id = ?"';
+			expect(findTableInLine(line)).toBe("skills");
 		});
 
 		it("should not find table in comment-only lines", () => {

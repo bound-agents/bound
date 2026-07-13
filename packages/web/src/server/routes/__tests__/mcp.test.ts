@@ -57,7 +57,6 @@ describe("createMcpRoutes GET /servers", () => {
 				mcp_servers: fields.mcp_servers ?? null,
 				mcp_tools: fields.mcp_tools ?? null,
 				models: null,
-				overlay_root: null,
 				online_at: fields.online_at ?? null,
 				modified_at: new Date().toISOString(),
 				deleted: fields.deleted ?? 0,
