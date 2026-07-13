@@ -5,6 +5,26 @@
 // bun test runner, and direct `bun run` invocations from other entry
 // points — where ESM module-graph evaluation is faithful and the
 // side-effect import runs as written.
+
+// Bun on Windows presents a non-extensible global Reflect object, but
+// reflect-metadata needs to attach metadata helpers to it. Swap in an
+// extensible wrapper that delegates back to the native methods so the
+// polyfill can run without touching a frozen object.
+if (typeof globalThis.Reflect !== "undefined" && !Object.isExtensible(globalThis.Reflect)) {
+	const nativeReflect = globalThis.Reflect;
+	const extensibleReflect: typeof Reflect = Object.create(nativeReflect);
+	try {
+		Object.defineProperty(globalThis, "Reflect", {
+			value: extensibleReflect,
+			configurable: true,
+			writable: true,
+		});
+	} catch {
+		// If the global property itself is locked, leave Reflect as-is and
+		// let reflect-metadata fail with its original, unambiguous error.
+	}
+}
+
 import "reflect-metadata";
 import type { Database } from "bun:sqlite";
 import { TypedEventEmitter, createLogger } from "@bound/shared";
