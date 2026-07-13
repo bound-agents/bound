@@ -550,7 +550,7 @@ describe("built-in-tools", () => {
 			await fs.writeFile("/docs/readme.md", "Say hello to the docs.\n");
 		});
 
-		it("returns grep-style path:line:preview matches across files", async () => {
+		it("returns grep-style path:line:hash:preview matches across files", async () => {
 			const result = (await tool("bms_search").execute({ pattern: "greeting" })) as string;
 			expect(result).toContain("/src/alpha.ts:1:");
 			expect(result).toContain("greeting");

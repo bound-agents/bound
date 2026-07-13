@@ -617,7 +617,7 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "bms_search",
 			description:
-				"Search file contents in the sandbox filesystem for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through bash — it returns identical results to the host boundless_search.",
+				"Search file contents in the sandbox filesystem for a regex pattern. Returns grep-style path:line:hash:preview matches (the hash is the line's hashline anchor from bms_read/bms_edit, so a hit can feed bms_edit directly as `${line}:${hash}` with no extra read) with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through bash — it returns identical results to the host boundless_search.",
 			parameters: jsonSchema,
 		},
 	};
