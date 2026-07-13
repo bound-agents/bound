@@ -142,7 +142,6 @@ describe("Connector Tool", () => {
 					mcp_servers: null,
 					mcp_tools: null,
 					models: null,
-					overlay_root: null,
 					online_at: null,
 					modified_at: new Date().toISOString(),
 					platforms: JSON.stringify(["remote-platform"]),

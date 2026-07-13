@@ -31,15 +31,6 @@ path may show the *old* content or no row yet. The write is real and a subsequen
 a write by querying `files` in the same turn and conclude it failed — `bms_read` the
 path instead.
 
-## Overlay mounts — reading real codebases
-
-The sandbox can mount real host directories read-through as **overlays** (e.g. a
-checked-out repo), configured in `overlay.json`. An overlay scanner indexes those
-trees into the `overlay_index` table so you can discover and read source without
-the files being copied into the VFS proper. This is how you read a codebase you
-are reasoning about. Overlay mounts are read paths; your writable workspace is the
-VFS itself.
-
 ## The 256 KiB tool-result cap
 
 Every tool result, regardless of kind, is bounded by a universal **256 KiB**

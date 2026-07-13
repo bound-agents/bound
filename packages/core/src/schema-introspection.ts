@@ -31,7 +31,6 @@ const SYNCED_TABLE_NAMES: readonly SyncedTableName[] = [
 	"tasks",
 	"files",
 	"hosts",
-	"overlay_index",
 	"cluster_config",
 	"advisories",
 	"skills",

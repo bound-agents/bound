@@ -55,7 +55,6 @@ describe("Config key consistency", () => {
 		expect(LOADER_KEYS).toContain("sync");
 		expect(LOADER_KEYS).toContain("keyring");
 		expect(LOADER_KEYS).toContain("mcp");
-		expect(LOADER_KEYS).toContain("overlay");
 	});
 
 	it("all optionalConfig[...] lookups in the codebase use keys from the loader", () => {

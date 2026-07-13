@@ -130,7 +130,6 @@ describe("getSyncedTableSchemas — property tests", () => {
 			"hosts",
 			"memory_edges",
 			"messages",
-			"overlay_index",
 			"semantic_memory",
 			"skills",
 			"tasks",

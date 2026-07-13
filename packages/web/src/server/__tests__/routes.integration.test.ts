@@ -790,7 +790,6 @@ describe("API Routes", () => {
 					mcp_servers: JSON.stringify(["github"]),
 					mcp_tools: null,
 					models: null,
-					overlay_root: null,
 					online_at: "2026-06-13T00:00:00.000Z",
 					modified_at: new Date().toISOString(),
 					deleted: 0,

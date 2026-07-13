@@ -34,7 +34,6 @@ export * from "./cluster-config";
 export * from "./connector-handles";
 export * from "./memory-edges";
 export * from "./client-sessions";
-export * from "./overlay-index";
 export * from "./webhooks";
 
 export * from "./queries/attached-session-hosts";

@@ -3,7 +3,7 @@
  *
  * These tests verify that the bootstrap sequence in start.ts actually
  * performs all the operations it claims to: host registration via outbox,
- * crash recovery scanning, cron seeding, overlay start, and sync start.
+ * crash recovery scanning, cron seeding, and sync start.
  *
  * Because start.ts is one monolithic function we cannot easily spy on it
  * directly.  Instead we replicate the key bootstrap logic against a real
@@ -756,25 +756,6 @@ describe("Startup Wiring", () => {
 					);
 				}
 			}
-		});
-	});
-
-	// -----------------------------------------------------------------------
-	// Test 4: Overlay scanner starts when overlay config exists
-	// -----------------------------------------------------------------------
-	describe("overlay scanner wiring", () => {
-		it("is activated when overlay config is present in optionalConfig", () => {
-			// Verify the config key used in start.ts matches what the loader stores.
-			// start.ts reads: appContext.optionalConfig.overlay
-			// config-loader stores under key: "overlay"
-			// These must match or the overlay scanner will silently never start.
-			const optionalConfig: Record<string, { ok: boolean; value?: Record<string, unknown> }> = {
-				overlay: { ok: true, value: { mounts: { "/data": "/mnt/data" } } },
-			};
-
-			const overlayResult = optionalConfig.overlay;
-			expect(overlayResult).toBeDefined();
-			expect(overlayResult.ok).toBe(true);
 		});
 	});
 

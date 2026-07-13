@@ -146,9 +146,6 @@ Initializes a relay hub: no local inference backends are configured; the node re
 `--with-mcp`
 : Creates an optional `mcp.json` template for Model Context Protocol (MCP) server connections.
 
-`--with-overlay`
-: Creates an optional `overlay.json` template for filesystem overlay configuration.
-
 `--force`
 : Overwrites existing configuration files. Without this flag, initialization exits if config already exists.
 
@@ -473,7 +470,7 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 
 1. **Load and validate all config files**
    - Reads and validates `allowlist.json` and `model_backends.json`
-   - Checks for optional files (`sync.json`, `keyring.json`, `mcp.json`, `overlay.json`, `network.json`, `platforms.json`)
+   - Checks for optional files (`sync.json`, `keyring.json`, `mcp.json`, `network.json`, `platforms.json`)
    - Exits with error if required files are missing or invalid
 
 2. **Initialize cryptography**
@@ -514,7 +511,6 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
 9. **Set up sandbox**
    - Creates ClusterFs (sandboxed filesystem)
    - Defines available commands and tools
-   - Loads overlay mounts from `overlay.json` if present
 
 10. **Load persona**
     - Reads the synced `cluster_config['persona']` row, if present
@@ -544,12 +540,7 @@ The `bound start` command executes a strictly ordered bootstrap sequence. All st
     - Starts the WebSocket transport (`WsTransport` / `WsSyncClient`) for push-on-write changelog replication
     - Establishes cluster membership and state replication
 
-15. **Initialize overlay scanner**
-    - Reads `overlay.json` if present
-    - Scans mounted directories for file changes
-    - Indexes files for agent access with automatic cache management
-
-16. **Start scheduler**
+15. **Start scheduler**
     - Initializes scheduler loop with MCP client registry
     - Begins processing incoming messages and tasks from agent event loop
     - Starts autonomous agent execution with tool integration
@@ -563,7 +554,6 @@ Bootstrap is driven by file presence and configuration:
 - If `mcp.json` is absent, step 8 is skipped (no external tool integrations)
 - If the `cluster_config['persona']` row is absent, step 10 uses default system prompt
 - If `platforms.json` is absent, step 13 is skipped
-- If `overlay.json` is absent, step 15 is skipped
 
 All other steps execute unconditionally. MCP tools discovered in step 8 are automatically wired into the agent loop (step 16) and available during chat interactions.
 
@@ -1193,30 +1183,6 @@ To distinguish two servers of the same type with different credentials (for exam
 ```
 
 Server URLs, credentials, and transport details are never exposed to the agent sandbox.
-
----
-
-### overlay.json
-
-**Optional.** Mounts host-local directories into the agent's virtual filesystem under `/mnt/<host-name>/`. The agent can read files from these mounts to understand codebases and documents. The overlay is read-only from the agent's perspective.
-
-**Schema:**
-
-| Field | Type | Description |
-|---|---|---|
-| `mounts` | object | Map from mount name to an absolute host filesystem path (string). |
-
-**Example:**
-
-```json
-{
-  "mounts": {
-    "projects": "/home/alice/projects"
-  }
-}
-```
-
-Files under the mounted path are indexed into `overlay_index` and accessible to the agent at `/mnt/<hostname>/projects/...`. A background scanner keeps the index current. Auto-cached overlay files have a separate configurable budget from the agent's own workspace (default: 200 MB) with LRU eviction.
 
 ---
 

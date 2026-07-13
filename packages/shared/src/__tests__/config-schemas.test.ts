@@ -6,7 +6,6 @@ import {
 	mcpSchema,
 	modelBackendsSchema,
 	networkSchema,
-	overlaySchema,
 	platformsSchema,
 	syncSchema,
 	userEntrySchema,
@@ -986,19 +985,6 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 	});
-
-	describe("overlaySchema", () => {
-		it("validates correct overlay config", () => {
-			const config = {
-				mounts: {
-					"/real/path": "/mount/path",
-					"/another/real": "/another/mount",
-				},
-			};
-			const result = overlaySchema.safeParse(config);
-			expect(result.success).toBe(true);
-		});
-	});
 });
 
 describe("platform-connectors Phase 1 config schema validation", () => {
@@ -1187,9 +1173,6 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 		},
 		"mcp.json": {
 			servers: [],
-		},
-		"overlay.json": {
-			mounts: {},
 		},
 	};
 

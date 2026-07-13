@@ -18,7 +18,6 @@ export interface InitArgs {
 	name?: string;
 	withSync?: boolean;
 	withMcp?: boolean;
-	withOverlay?: boolean;
 	force?: boolean;
 	configDir?: string;
 }
@@ -230,14 +229,5 @@ Next steps:
 		};
 		writeFileSync(mcpPath, `${JSON.stringify(mcpConfig, null, 2)}\n`);
 		console.log(`  - ${configDir}/mcp.json (template)`);
-	}
-
-	if (args.withOverlay) {
-		const overlayPath = resolve(configDir, "overlay.json");
-		const overlayConfig = {
-			mounts: {},
-		};
-		writeFileSync(overlayPath, `${JSON.stringify(overlayConfig, null, 2)}\n`);
-		console.log(`  - ${configDir}/overlay.json (template)`);
 	}
 }

@@ -27,7 +27,6 @@ about *running* behavior, the loaded config is what matters, not the file on dis
 | `sync.json` | no | hub URL, sync interval, relay + WS settings |
 | `keyring.json` | no | per-host identity keys (auto-populated) |
 | `mcp.json` | no | MCP server connections (stdio or http transport) |
-| `overlay.json` | no | codebase mount points (drives the sandbox overlays) |
 | `memory.json` | no | pinned-memory caps (`pinned_count_cap`, `pinned_size_cap`) |
 
 ## Schemas are strict — unknown keys fail loudly

@@ -68,7 +68,6 @@ function seedHost(db: Database, siteId: string, hostName: string, deleted = 0): 
 		mcp_tool_annotations: null,
 		mcp_capabilities: null,
 		models: null,
-		overlay_root: null,
 		online_at: null,
 		modified_at: TS,
 		platforms: null,
