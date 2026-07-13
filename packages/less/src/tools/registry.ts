@@ -211,7 +211,7 @@ export function buildToolSet(
 			function: {
 				name: "boundless_search",
 				description:
-					"Search file contents under the working directory for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through the shell — it returns identical results on host and sandbox.",
+					"Search file contents under the working directory for a regex pattern. Returns grep-style path:line:hash:preview matches (the hash is the line's hashline anchor from boundless_read/boundless_edit, so a hit can feed boundless_edit directly as `${line}:${hash}` with no extra read) with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through the shell — it returns identical results on host and sandbox.",
 				parameters: {
 					type: "object",
 					required: ["pattern"],

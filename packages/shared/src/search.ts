@@ -12,7 +12,14 @@
  * line independently, so it never spans a newline. Previews are windowed so a
  * match inside a minified single-line asset yields a bounded slice, never the
  * whole multi-megabyte line.
+ *
+ * Each match also carries the line's hashline anchor (issue #16's `LINE:HASH`
+ * scheme, `computeLineHash` from `./hashline.js`) so a match found here can feed
+ * `edit`/`bms_edit` directly — no separate read hop just to mint an anchor.
  */
+
+export { computeLineHash } from "./hashline.js";
+import { computeLineHash } from "./hashline.js";
 
 export const DEFAULT_MAX_MATCHES = 200;
 export const DEFAULT_MAX_MATCHES_PER_FILE = 50;
@@ -90,6 +97,9 @@ export interface SearchMatch {
 	column: number;
 	/** Bounded preview of the matching line. */
 	preview: string;
+	/** Hashline anchor hash (`computeLineHash`) for the match's full line, so the
+	 * match can feed `edit`/`bms_edit` directly as `${line}:${hash}`. */
+	hash: string;
 }
 
 export interface SearchOptions {
@@ -232,6 +242,7 @@ export function searchFiles(
 					line: i + 1,
 					column: matchStart + 1,
 					preview: buildPreview(line, matchStart, matchEnd, maxPreviewChars),
+					hash: computeLineHash(line),
 				});
 				if (fileMatchCount === 0) filesMatched++;
 				fileMatchCount++;
@@ -263,15 +274,17 @@ function plural(n: number, word: string): string {
 }
 
 /**
- * Render a SearchResult into the shared `path:line:preview` output contract,
- * with a summary footer. This is the single formatting authority for both
- * surface tools.
+ * Render a SearchResult into the shared `path:line:hash:preview` output
+ * contract, with a summary footer. The hash segment is the match's line
+ * hashline anchor (`computeLineHash`) — combine it with the line number
+ * (`${line}:${hash}`) to feed `edit`/`bms_edit` directly, no extra read hop.
+ * This is the single formatting authority for both surface tools.
  */
 export function formatSearchResults(result: SearchResult): string {
 	if (result.matches.length === 0) {
 		return `No matches found (${plural(result.filesSearched, "file")} searched).`;
 	}
-	const lines = result.matches.map((m) => `${m.path}:${m.line}:${m.preview}`);
+	const lines = result.matches.map((m) => `${m.path}:${m.line}:${m.hash}:${m.preview}`);
 	let summary = `${plural(result.matches.length, "match")} in ${plural(
 		result.filesMatched,
 		"file",
