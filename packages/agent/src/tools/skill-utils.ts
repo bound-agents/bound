@@ -316,7 +316,6 @@ export async function importSkillFromFiles(
 					"skills",
 					skillId,
 					{
-						status: "active",
 						deleted: 0,
 						content_hash: contentHash,
 						skill_root: skillRoot,
@@ -328,8 +327,6 @@ export async function importSkillFromFiles(
 						allowed_tools: data.allowed_tools ?? null,
 						compatibility: data.compatibility ?? null,
 						metadata_json: JSON.stringify(data),
-						retired_by: null,
-						retired_reason: null,
 					},
 					siteId,
 				);
@@ -362,7 +359,6 @@ export async function importSkillFromFiles(
 					id: skillId,
 					name,
 					description,
-					status: "active",
 					skill_root: skillRoot,
 					content_hash: contentHash,
 					allowed_tools: data.allowed_tools ?? null,
@@ -372,8 +368,6 @@ export async function importSkillFromFiles(
 					created_by_thread: options.threadId ?? null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},

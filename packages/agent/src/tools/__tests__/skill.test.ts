@@ -79,11 +79,10 @@ This is a test skill for unit testing.
 
 			// Verify skill row exists in DB
 			const skill = db
-				.prepare("SELECT id, name, status, description FROM skills WHERE name = ? AND deleted = 0")
+				.prepare("SELECT id, name, description FROM skills WHERE name = ? AND deleted = 0")
 				.get(skillName) as any;
 			expect(skill).not.toBeNull();
 			expect(skill.name).toBe(skillName);
-			expect(skill.status).toBe("active");
 			expect(skill.description).toBe("A test skill");
 		});
 
@@ -115,7 +114,6 @@ Body content.
 					id: deterministicUUID(BOUND_NAMESPACE, skillName),
 					name: skillName,
 					description: "stale description",
-					status: "active",
 					skill_root: skillRoot,
 					content_hash: "stalehash",
 					allowed_tools: null,
@@ -125,8 +123,6 @@ Body content.
 					created_by_thread: null,
 					activation_count: 2,
 					last_activated_at: now,
-					retired_by: "test",
-					retired_reason: "manually retired",
 					modified_at: now,
 				},
 				siteId,
@@ -161,11 +157,8 @@ Body content.
 			expect(result).toMatch(/activated successfully/i);
 
 			const skill = db
-				.prepare(
-					"SELECT status, skill_root, description FROM skills WHERE name = ? AND deleted = 0",
-				)
-				.get(skillName) as { status: string; skill_root: string; description: string };
-			expect(skill.status).toBe("active");
+				.prepare("SELECT skill_root, description FROM skills WHERE name = ? AND deleted = 0")
+				.get(skillName) as { skill_root: string; description: string };
 			// skill_root must be preserved, not clobbered to /home/user/skills/<name>
 			expect(skill.skill_root).toBe(skillRoot);
 			// content was re-read from the files table and refreshed
@@ -268,7 +261,6 @@ name: no-desc
 					id: "skill-1",
 					name: "skill-one",
 					description: "First skill",
-					status: "active",
 					skill_root: "/home/user/skills/skill-one",
 					content_hash: "abc123",
 					allowed_tools: null,
@@ -278,8 +270,6 @@ name: no-desc
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},
@@ -318,7 +308,6 @@ Content here.`;
 					id: "skill-read",
 					name: skillName,
 					description: "A readable skill",
-					status: "active",
 					skill_root: `/home/user/skills/${skillName}`,
 					content_hash: "abc",
 					allowed_tools: null,
@@ -328,8 +317,6 @@ Content here.`;
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},
@@ -399,7 +386,6 @@ Content here.`;
 					id: "skill-retire",
 					name: skillName,
 					description: "To retire",
-					status: "active",
 					skill_root: `/home/user/skills/${skillName}`,
 					content_hash: "abc",
 					allowed_tools: null,
@@ -409,8 +395,6 @@ Content here.`;
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},
@@ -427,11 +411,11 @@ Content here.`;
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/Error/i);
 
-			// And the skill is untouched: still active, never flipped to retired.
-			const skill = db.prepare("SELECT status FROM skills WHERE name = ?").get(skillName) as {
-				status: string;
+			// And the skill is untouched: still present, not removed.
+			const skill = db.prepare("SELECT deleted FROM skills WHERE name = ?").get(skillName) as {
+				deleted: number;
 			};
-			expect(skill.status).toBe("active");
+			expect(skill.deleted).toBe(0);
 		});
 	});
 

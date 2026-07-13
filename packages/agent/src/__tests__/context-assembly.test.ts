@@ -2089,12 +2089,11 @@ describe("Context Assembly Pipeline", () => {
 			// Insert an active skill
 			const now = new Date().toISOString();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO skills (id, name, description, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				[
 					randomUUID(),
 					"pr-review",
 					"Review GitHub PRs",
-					"active",
 					"/home/user/skills/pr-review",
 					now,
 					now,
@@ -2137,17 +2136,8 @@ describe("Context Assembly Pipeline", () => {
 			const now = new Date().toISOString();
 			const skillId = randomUUID();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					skillId,
-					"pr-review",
-					"Review GitHub PRs",
-					"active",
-					"/home/user/skills/pr-review",
-					now,
-					now,
-					0,
-				],
+				"INSERT INTO skills (id, name, description, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[skillId, "pr-review", "Review GitHub PRs", "/home/user/skills/pr-review", now, now, 0],
 			);
 
 			// Insert the SKILL.md file
@@ -2216,16 +2206,8 @@ This skill reviews pull requests.`;
 			// Insert a soft-deleted skill (no longer active)
 			const now = new Date().toISOString();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					"pr-review",
-					"Review GitHub PRs",
-					"active",
-					"/home/user/skills/pr-review",
-					now,
-					1,
-				],
+				"INSERT INTO skills (id, name, description, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "pr-review", "Review GitHub PRs", "/home/user/skills/pr-review", now, 1],
 			);
 
 			// Insert a task with skill reference
@@ -2278,17 +2260,8 @@ This skill reviews pull requests.`;
 			const now = new Date().toISOString();
 			const skillId = randomUUID();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					skillId,
-					"pr-review",
-					"Review GitHub PRs",
-					"active",
-					"/home/user/skills/pr-review",
-					now,
-					now,
-					0,
-				],
+				"INSERT INTO skills (id, name, description, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[skillId, "pr-review", "Review GitHub PRs", "/home/user/skills/pr-review", now, now, 0],
 			);
 
 			// Insert the SKILL.md file

@@ -42,16 +42,15 @@ describe("Skills Route", () => {
 
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skill1Id,
 					"active-skill",
 					"An active skill",
-					"active",
 					"skills/active-skill",
 					"hash1",
 					null,
@@ -61,8 +60,6 @@ describe("Skills Route", () => {
 					null,
 					1,
 					null,
-					null,
-					null,
 					new Date().toISOString(),
 					0,
 				],
@@ -70,16 +67,15 @@ describe("Skills Route", () => {
 
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skill2Id,
 					"retired-skill",
 					"A retired skill",
-					"retired",
 					"skills/retired-skill",
 					"hash2",
 					null,
@@ -88,8 +84,6 @@ describe("Skills Route", () => {
 					null,
 					null,
 					0,
-					null,
-					"web",
 					null,
 					new Date().toISOString(),
 					0,
@@ -115,16 +109,15 @@ describe("Skills Route", () => {
 			// Insert skill
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					"test-skill",
 					"A test skill",
-					"active",
 					"skills/test-skill",
 					"hash123",
 					null,
@@ -133,8 +126,6 @@ describe("Skills Route", () => {
 					new Date().toISOString(),
 					null,
 					1,
-					null,
-					null,
 					null,
 					new Date().toISOString(),
 					0,
@@ -405,16 +396,15 @@ This is from a zip.`;
 		function insertTestSkill(skillId: string, name: string, skillRoot: string): void {
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					name,
 					"Original description",
-					"active",
 					skillRoot,
 					"originalhash",
 					"tool1",
@@ -423,8 +413,6 @@ This is from a zip.`;
 					new Date().toISOString(),
 					null,
 					1,
-					null,
-					null,
 					null,
 					new Date().toISOString(),
 					0,
@@ -568,16 +556,15 @@ This is from a zip.`;
 			// Insert active skill
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					"to-delete",
 					"A skill to delete",
-					"active",
 					"/home/user/skills/to-delete",
 					"hash123",
 					null,
@@ -586,8 +573,6 @@ This is from a zip.`;
 					new Date().toISOString(),
 					null,
 					1,
-					null,
-					null,
 					null,
 					new Date().toISOString(),
 					0,
