@@ -24,7 +24,6 @@ const SITE_ID = "site-test";
 function makeSkill(overrides: Partial<Skill> & Pick<Skill, "id" | "name">): Skill {
 	return {
 		description: "desc",
-		status: "active",
 		skill_root: "skills/default/SKILL.md",
 		content_hash: null,
 		allowed_tools: null,
@@ -34,8 +33,6 @@ function makeSkill(overrides: Partial<Skill> & Pick<Skill, "id" | "name">): Skil
 		created_by_thread: null,
 		activation_count: 0,
 		last_activated_at: null,
-		retired_by: null,
-		retired_reason: null,
 		modified_at: "2026-01-01T00:00:00.000Z",
 		deleted: 0,
 		...overrides,

@@ -42,14 +42,13 @@ describe("boundctl skill commands", () => {
 			// Insert a test skill
 			db.run(
 				`INSERT INTO skills (
-				id, name, description, status, skill_root,
+				id, name, description, skill_root,
 				activation_count, last_activated_at, modified_at, deleted
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					"test-skill-id",
 					"test-skill",
 					"A test skill for CLI",
-					"active",
 					"/home/user/skills/test-skill",
 					5,
 					"2026-03-29T12:00:00Z",
@@ -87,14 +86,13 @@ describe("boundctl skill commands", () => {
 			const skillId = "view-test-id";
 			db.run(
 				`INSERT INTO skills (
-				id, name, description, status, skill_root, content_hash,
+				id, name, description, skill_root, content_hash,
 				activation_count, last_activated_at, modified_at, deleted
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					"view-test",
 					"Test view skill",
-					"active",
 					"/home/user/skills/view-test",
 					"abcd1234",
 					1,
@@ -185,14 +183,13 @@ This is a test skill.`;
 			const skillId = "delete-test-id";
 			db.run(
 				`INSERT INTO skills (
-				id, name, description, status, skill_root,
+				id, name, description, skill_root,
 				modified_at, deleted
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					"delete-test",
 					"Test delete skill",
-					"active",
 					"/home/user/skills/delete-test",
 					"2026-03-29T09:00:00Z",
 					0,
@@ -228,34 +225,6 @@ This is a test skill.`;
 			expect(changeLog.count).toBeGreaterThan(0);
 		});
 
-		it("deletes irrespective of status — a retired skill is deletable", () => {
-			const skillId = "delete-retired-id";
-			db.run(
-				`INSERT INTO skills (
-				id, name, description, status, skill_root,
-				modified_at, deleted
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					skillId,
-					"delete-retired",
-					"Test retired delete",
-					"retired",
-					"/home/user/skills/delete-retired",
-					"2026-03-29T09:00:00Z",
-					0,
-				],
-			);
-
-			const logSpy = spyOn(console, "log").mockImplementation(() => {});
-			skillDelete(db, siteId, "delete-retired");
-			logSpy.mockRestore();
-
-			const skill = db.query("SELECT deleted FROM skills WHERE id = ?").get(skillId) as {
-				deleted: number;
-			};
-			expect(skill.deleted).toBe(1);
-		});
-
 		it("throws for a non-existent skill", () => {
 			expect(() => skillDelete(db, siteId, "no-such-skill")).toThrow(/not found/i);
 		});
@@ -266,14 +235,13 @@ This is a test skill.`;
 			const skillId = "delete-ref-id";
 			db.run(
 				`INSERT INTO skills (
-				id, name, description, status, skill_root,
+				id, name, description, skill_root,
 				modified_at, deleted
-			) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					"delete-ref",
 					"Referenced skill",
-					"active",
 					"/home/user/skills/delete-ref",
 					"2026-03-29T09:00:00Z",
 					0,
@@ -345,16 +313,14 @@ This skill was imported.`;
 
 			// Verify skills table has entry
 			const skill = db
-				.query("SELECT name, description, status FROM skills WHERE name = ?")
+				.query("SELECT name, description FROM skills WHERE name = ?")
 				.get("imported-skill") as {
 				name: string;
 				description: string;
-				status: string;
 			} | null;
 
 			expect(skill).not.toBeNull();
 			expect(skill?.description).toBe("An imported test skill");
-			expect(skill?.status).toBe("active");
 		});
 	});
 

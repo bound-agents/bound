@@ -38,7 +38,6 @@ describe("SkillsView Component", () => {
 			id: randomUUID(),
 			name: "Test Skill 1",
 			description: "First test skill",
-			status: "active",
 			skill_root: "/skills/test1",
 			content_hash: "hash1",
 			allowed_tools: "tool1, tool2",
@@ -48,8 +47,6 @@ describe("SkillsView Component", () => {
 			created_by_thread: "thread-1",
 			activation_count: 5,
 			last_activated_at: new Date().toISOString(),
-			retired_by: null,
-			retired_reason: null,
 			modified_at: new Date().toISOString(),
 			deleted: 0,
 		};
@@ -58,7 +55,6 @@ describe("SkillsView Component", () => {
 			id: randomUUID(),
 			name: "Test Skill 2",
 			description: "Second test skill",
-			status: "retired",
 			skill_root: "/skills/test2",
 			content_hash: "hash2",
 			allowed_tools: "tool3",
@@ -68,8 +64,6 @@ describe("SkillsView Component", () => {
 			created_by_thread: "thread-2",
 			activation_count: 3,
 			last_activated_at: new Date(Date.now() - 86400000).toISOString(),
-			retired_by: "thread-1",
-			retired_reason: "No longer needed",
 			modified_at: new Date().toISOString(),
 			deleted: 0,
 		};
@@ -89,13 +83,12 @@ describe("SkillsView Component", () => {
 	});
 
 	describe("Task 2: List with DataTable", () => {
-		it("AC3.2: Lists all skills with name, status, description, last activated", async () => {
+		it("AC3.2: Lists all skills with name, description, last activated", async () => {
 			const skills = await client.listSkills();
 
 			expect(skills).toHaveLength(2);
 			expect(skills[0].name).toBe("Test Skill 1");
 			expect(skills[0].description).toBe("First test skill");
-			expect(skills[0].status).toBe("active");
 			expect(skills[0].last_activated_at).toBeTruthy();
 		});
 	});

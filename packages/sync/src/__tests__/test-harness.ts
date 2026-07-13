@@ -138,7 +138,6 @@ const FULL_SCHEMA = `
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		description TEXT NOT NULL,
-		status TEXT NOT NULL,
 		skill_root TEXT NOT NULL,
 		content_hash TEXT,
 		allowed_tools TEXT,
@@ -148,8 +147,6 @@ const FULL_SCHEMA = `
 		created_by_thread TEXT,
 		activation_count INTEGER DEFAULT 0,
 		last_activated_at TEXT,
-		retired_by TEXT,
-		retired_reason TEXT,
 		modified_at TEXT NOT NULL,
 		deleted INTEGER DEFAULT 0
 	);

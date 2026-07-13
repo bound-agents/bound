@@ -18,8 +18,6 @@ export type AdvisoryType = "cost" | "frequency" | "memory" | "model" | "general"
 
 export type AdvisoryStatus = "proposed" | "approved" | "dismissed" | "deferred" | "applied";
 
-export type SkillStatus = "active" | "retired";
-
 export type MemoryTier = "pinned" | "summary" | "default" | "detail";
 
 export type SyncedTableName =
@@ -275,7 +273,6 @@ export interface Skill extends SoftDeletable {
 	id: string;
 	name: string;
 	description: string;
-	status: SkillStatus;
 	skill_root: string;
 	content_hash: string | null;
 	allowed_tools: string | null;
@@ -285,8 +282,6 @@ export interface Skill extends SoftDeletable {
 	created_by_thread: string | null;
 	activation_count: number;
 	last_activated_at: string | null;
-	retired_by: string | null;
-	retired_reason: string | null;
 	modified_at: string;
 }
 

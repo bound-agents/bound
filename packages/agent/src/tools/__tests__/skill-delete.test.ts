@@ -11,7 +11,7 @@ const SITE_ID = "test-site-delete";
 function seedSkill(
 	db: Database,
 	name: string,
-	opts: { status?: string; skillRoot?: string; extraFiles?: string[] } = {},
+	opts: { skillRoot?: string; extraFiles?: string[] } = {},
 ): string {
 	const id = deterministicUUID(BOUND_NAMESPACE, name);
 	const skillRoot = opts.skillRoot ?? `/home/user/skills/${name}`;
@@ -23,7 +23,6 @@ function seedSkill(
 			id,
 			name,
 			description: `Desc for ${name}`,
-			status: opts.status ?? "active",
 			skill_root: skillRoot,
 			content_hash: "hash",
 			allowed_tools: null,
@@ -33,8 +32,6 @@ function seedSkill(
 			created_by_thread: null,
 			activation_count: 1,
 			last_activated_at: now,
-			retired_by: null,
-			retired_reason: null,
 			modified_at: now,
 			deleted: 0,
 		},
@@ -95,18 +92,6 @@ describe("deleteSkill", () => {
 			.query("SELECT COUNT(*) as c FROM files WHERE path LIKE ? AND deleted = 0")
 			.get("/home/user/skills/active-skill/%") as { c: number };
 		expect(activeFiles.c).toBe(0);
-	});
-
-	it("deletes irrespective of status — a retired skill is deletable", () => {
-		const id = seedSkill(db, "retired-skill", { status: "retired" });
-
-		const result = deleteSkill(db, SITE_ID, "retired-skill", { by: "operator" });
-
-		expect(result.ok).toBe(true);
-		const skill = db.query("SELECT deleted FROM skills WHERE id = ?").get(id) as {
-			deleted: number;
-		};
-		expect(skill.deleted).toBe(1);
 	});
 
 	it("returns ok:false for a non-existent skill", () => {
@@ -194,14 +179,12 @@ description: Freshly re-imported
 		if (!result.ok) throw new Error("expected ok");
 
 		const skill = db
-			.query("SELECT status, deleted, description FROM skills WHERE id = ?")
+			.query("SELECT deleted, description FROM skills WHERE id = ?")
 			.get(deterministicUUID(BOUND_NAMESPACE, "reimport-skill")) as {
-			status: string;
 			deleted: number;
 			description: string;
 		};
 		expect(skill.deleted).toBe(0);
-		expect(skill.status).toBe("active");
 		expect(skill.description).toBe("Freshly re-imported");
 	});
 });

@@ -356,7 +356,6 @@ export function applySchema(db: Database): void {
 			id                TEXT PRIMARY KEY,
 			name              TEXT NOT NULL,
 			description       TEXT NOT NULL,
-			status            TEXT NOT NULL,
 			skill_root        TEXT NOT NULL,
 			content_hash      TEXT,
 			allowed_tools     TEXT,
@@ -366,8 +365,6 @@ export function applySchema(db: Database): void {
 			created_by_thread TEXT,
 			activation_count  INTEGER DEFAULT 0,
 			last_activated_at TEXT,
-			retired_by        TEXT,
-			retired_reason    TEXT,
 			modified_at       TEXT NOT NULL,
 			deleted           INTEGER DEFAULT 0
 		) STRICT
@@ -759,6 +756,22 @@ export function applySchema(db: Database): void {
 		db.run("ALTER TABLE overlay_index ADD COLUMN modified_at TEXT");
 	} catch {
 		/* already exists */
+	}
+
+	// Drop skills.status / retired_by / retired_reason (idempotent).
+	// The `retire` operation and status filtering were removed; the only skill
+	// states are live (deleted = 0) and tombstoned (deleted = 1), so these
+	// three columns carry no information. On existing DBs they are dropped here;
+	// fresh installs never create them (see the CREATE TABLE above). DDL only —
+	// not a synced row write, so raw db.run is correct (cf. the discord_id drop).
+	// None are indexed (the unique index is on `name`), so DROP COLUMN succeeds.
+	// (Requires SQLite 3.35.0+; Bun bundles 3.51.0.)
+	for (const col of ["status", "retired_by", "retired_reason"]) {
+		try {
+			db.run(`ALTER TABLE skills DROP COLUMN ${col}`);
+		} catch {
+			/* already dropped, or column does not exist on fresh install */
+		}
 	}
 
 	db.run(`

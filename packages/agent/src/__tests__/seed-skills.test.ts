@@ -68,35 +68,31 @@ describe("seedBundledSkills", () => {
 		expect(refFile?.content).toBe(SKILL_AUTHORING_FORMAT_REFERENCE_MD);
 	});
 
-	it("AC5.2: Creates skills table row with correct ID and active status", () => {
+	it("AC5.2: Creates skills table row with correct ID", () => {
 		seedBundledSkills(db, siteId);
 
 		const expectedSkillId = deterministicUUID(BOUND_NAMESPACE, "skill-authoring");
-		const skillRow = db
-			.prepare("SELECT id, name, status FROM skills WHERE id = ?")
-			.get(expectedSkillId);
+		const skillRow = db.prepare("SELECT id, name FROM skills WHERE id = ?").get(expectedSkillId);
 
 		expect(skillRow).toBeDefined();
 		expect(skillRow?.id).toBe(expectedSkillId);
 		expect(skillRow?.name).toBe("skill-authoring");
-		expect(skillRow?.status).toBe("active");
 	});
 
-	it("AC5.3: Does not override retired skill if already retired", () => {
+	it("AC5.3: Does not override an existing skill row on re-seed", () => {
 		const skillName = "skill-authoring";
 		const skillId = deterministicUUID(BOUND_NAMESPACE, skillName);
 		const skillRoot = `/home/user/skills/${skillName}`;
 		const now = new Date().toISOString();
 
-		// Pre-insert a retired skill-authoring row
+		// Pre-insert a skill-authoring row with a distinctive description
 		insertRow(
 			db,
 			"skills",
 			{
 				id: skillId,
 				name: skillName,
-				description: "Retired skill",
-				status: "retired",
+				description: "Pre-existing description",
 				skill_root: skillRoot,
 				content_hash: "dummy-hash",
 				allowed_tools: "",
@@ -106,8 +102,6 @@ describe("seedBundledSkills", () => {
 				created_by_thread: null,
 				activation_count: 0,
 				last_activated_at: null,
-				retired_by: "operator",
-				retired_reason: "Testing",
 				modified_at: now,
 				deleted: 0,
 			},
@@ -117,11 +111,12 @@ describe("seedBundledSkills", () => {
 		// Call seeding
 		seedBundledSkills(db, siteId);
 
-		// Verify status remains retired
-		const skillRow = db.prepare("SELECT status, retired_by FROM skills WHERE id = ?").get(skillId);
+		// Verify the pre-existing row is left unchanged
+		const skillRow = db.prepare("SELECT description FROM skills WHERE id = ?").get(skillId) as {
+			description: string;
+		} | null;
 
-		expect(skillRow?.status).toBe("retired");
-		expect(skillRow?.retired_by).toBe("operator");
+		expect(skillRow?.description).toBe("Pre-existing description");
 
 		// Verify no duplicate rows exist
 		const count = db.prepare("SELECT COUNT(*) as cnt FROM skills WHERE id = ?").get(skillId) as {
@@ -198,12 +193,10 @@ describe("seedBundledSkills", () => {
 
 		for (const skill of BUNDLED_SKILLS) {
 			const skillId = deterministicUUID(BOUND_NAMESPACE, skill.name);
-			const row = db.prepare("SELECT name, status FROM skills WHERE id = ?").get(skillId) as {
+			const row = db.prepare("SELECT name FROM skills WHERE id = ?").get(skillId) as {
 				name: string;
-				status: string;
 			} | null;
 			expect(row?.name).toBe(skill.name);
-			expect(row?.status).toBe("active");
 
 			for (const file of skill.files) {
 				const path = `/home/user/skills/${skill.name}/${file.path}`;

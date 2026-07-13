@@ -481,12 +481,11 @@ describe("volatile-context-integration", () => {
 		expect(result.content).not.toContain("Summary: ");
 	});
 
-	test("Skills index and skill retirement notes preserved", () => {
-		// Create an active skill
+	test("Skills index preserved", () => {
+		// Create a skill
 		dbInsert(db, "skills", {
 			id: "test-skill-id",
 			name: "test-skill",
-			status: "active",
 			description: "Test skill description",
 			skill_root: "skills/test-skill",
 			deleted: 0,
