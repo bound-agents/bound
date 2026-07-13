@@ -19,7 +19,6 @@ function makeHost(siteId: string, modifiedAt: string): Host {
 		mcp_tool_annotations: null,
 		mcp_capabilities: null,
 		models: null,
-		overlay_root: null,
 		online_at: null,
 		modified_at: modifiedAt,
 		platforms: null,

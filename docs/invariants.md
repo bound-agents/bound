@@ -10,7 +10,7 @@ All writes to synced tables MUST use `insertRow()`, `updateRow()`, or `softDelet
 
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
-overlay_index, cluster_config, advisories, skills, memory_edges,
+cluster_config, advisories, skills, memory_edges,
 connector_handles, webhooks, turns, client_sessions
 ```
 
@@ -165,7 +165,6 @@ cross-host correctness invariant.
 | `packages/agent/src/summary-extraction.ts` (`bumpRenderedDetailEntries`) | semantic_memory.last_accessed_at | Per-host relevance hint; routing through `updateRow` would advance `modified_at` and cascade into stale-child detection (see Section A). |
 | `packages/cli/src/commands/start/bootstrap.ts` (`STALE_TASK_RESET_SQL` execution) | tasks (status, lease_id, claimed_by, claimed_at) | Per-host crash recovery scoped to `claimed_by = ?siteId` (see Section A). |
 | `packages/core/src/relay-metrics.ts` (`recordTurnRelayMetrics`, no-siteId branch) | turns.relay_target, turns.relay_latency_ms | Local-only instrumentation columns on a synced table; per-host relay metrics are not synced. |
-| `packages/sandbox/src/overlay-scanner.ts` (INSERT, UPDATE, soft-delete) | overlay_index | Local index rebuilt from the filesystem on every scan when no outbox is injected (backward-compat path; the outbox-injected path uses `insertRow`/`updateRow`/`softDelete`). |
 | `packages/agent/src/task-resolution.ts` (heartbeat migration) | tasks.no_history | One-time, idempotent, self-converging startup migration of a per-host semantic flag. |
 
 Scheduler CAS task transitions, host registration, and cluster_config CLI commands are NOT in this

@@ -52,7 +52,6 @@ function makeHost(overrides: Partial<Host> & { site_id: string }): Host {
 		mcp_tool_annotations: null,
 		mcp_capabilities: null,
 		models: null,
-		overlay_root: null,
 		online_at: "2026-01-01T00:00:00.000Z",
 		modified_at: "2026-01-01T00:00:00.000Z",
 		platforms: null,

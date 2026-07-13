@@ -121,9 +121,9 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 			onlineAtMs !== null ? new Date(now.getTime() - onlineAtMs).toISOString() : null;
 
 		db.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[siteId, "test-host", "1.0", null, null, null, null, null, onlineAt, modifiedAt, 0],
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[siteId, "test-host", "1.0", null, null, null, null, onlineAt, modifiedAt, 0],
 		);
 	}
 

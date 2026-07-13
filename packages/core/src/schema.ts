@@ -292,7 +292,6 @@ export function applySchema(db: Database): void {
 			mcp_tool_annotations TEXT,
 			mcp_capabilities TEXT,
 			models       TEXT,
-			overlay_root TEXT,
 			online_at    TEXT,
 			modified_at  TEXT NOT NULL,
 			platforms    TEXT,
@@ -300,23 +299,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 8. overlay_index
-	db.run(`
-		CREATE TABLE IF NOT EXISTS overlay_index (
-			id           TEXT PRIMARY KEY,
-			site_id      TEXT NOT NULL,
-			path         TEXT NOT NULL,
-			size_bytes   INTEGER NOT NULL,
-			content_hash TEXT,
-			indexed_at   TEXT NOT NULL,
-			deleted      INTEGER DEFAULT 0
-		) STRICT
-	`);
-
-	db.run(`
-		CREATE INDEX IF NOT EXISTS idx_overlay_site_path ON overlay_index(site_id, path)
-		WHERE deleted = 0
-	`);
+	// 8. cluster_config
 
 	// 9. cluster_config
 	db.run(`
@@ -746,18 +729,6 @@ export function applySchema(db: Database): void {
 	} catch {
 		/* already exists */
 	}
-
-	// modified_at column on overlay_index — required so the shared softDelete()
-	// helper (which writes modified_at = ?) works uniformly. Nullable because
-	// SQLite cannot add a NOT NULL column to a populated table without a default;
-	// existing rows get NULL (the LWW reducer skips the timestamp compare on null),
-	// and all new rows / tombstones write modified_at explicitly.
-	try {
-		db.run("ALTER TABLE overlay_index ADD COLUMN modified_at TEXT");
-	} catch {
-		/* already exists */
-	}
-
 	// Drop skills.status / retired_by / retired_reason (idempotent).
 	// The `retire` operation and status filtering were removed; the only skill
 	// states are live (deleted = 0) and tombstoned (deleted = 1), so these

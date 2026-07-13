@@ -244,8 +244,8 @@ describe("relay-stream integration tests", () => {
 		// Setup: Register target spoke in requester's hosts table
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -254,7 +254,6 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				JSON.stringify([{ id: "claude-3-5-sonnet", capabilities: { max_context: 200000 } }]),
-				null,
 				now,
 				now,
 				0,
@@ -361,8 +360,8 @@ describe("relay-stream integration tests", () => {
 		// Setup: Register target in requester's hosts
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -371,7 +370,6 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				JSON.stringify([{ id: "cancel-test-model", capabilities: { max_context: 200000 } }]),
-				null,
 				now,
 				now,
 				0,
@@ -678,8 +676,8 @@ describe("relay-stream integration tests", () => {
 		// Register target
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -688,7 +686,6 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				JSON.stringify([{ id: "concurrent-model", capabilities: { max_context: 200000 } }]),
-				null,
 				now,
 				now,
 				0,
@@ -836,8 +833,8 @@ describe("relay-stream integration tests", () => {
 		// Register target
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -846,7 +843,6 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				JSON.stringify([{ id: "large-prompt-model", capabilities: { max_context: 200000 } }]),
-				null,
 				now,
 				now,
 				0,
@@ -973,8 +969,8 @@ describe("relay-stream integration tests", () => {
 	it("slow multi-chunk inference completes through full relay pipeline", async () => {
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -983,7 +979,6 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				JSON.stringify([{ id: "slow-model", capabilities: { max_context: 200000 } }]),
-				null,
 				now,
 				now,
 				0,
@@ -1081,8 +1076,8 @@ describe("relay-stream integration tests", () => {
 	it("stream completes correctly even with simulated retransmission", async () => {
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -1091,7 +1086,6 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				JSON.stringify([{ id: "retransmit-model", capabilities: { max_context: 200000 } }]),
-				null,
 				now,
 				now,
 				0,

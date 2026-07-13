@@ -110,7 +110,6 @@ describe("eviction host-liveness gate integration (R-LR2)", () => {
 				mcp_servers: null,
 				mcp_tools: null,
 				models: null,
-				overlay_root: null,
 				online_at: nowStr,
 				modified_at: freshTime,
 				deleted: 0,
@@ -195,7 +194,6 @@ describe("eviction host-liveness gate integration (R-LR2)", () => {
 				mcp_servers: null,
 				mcp_tools: null,
 				models: null,
-				overlay_root: null,
 				online_at: nowStr,
 				modified_at: freshTime,
 				deleted: 0,
@@ -275,7 +273,6 @@ describe("eviction host-liveness gate integration (R-LR2)", () => {
 				mcp_servers: null,
 				mcp_tools: null,
 				models: null,
-				overlay_root: null,
 				online_at: nowStr,
 				modified_at: pastTime30Min, // stale
 				deleted: 0,

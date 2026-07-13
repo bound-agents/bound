@@ -18,7 +18,6 @@ this is where the per-field detail lives.
 | [`sync.json`](#syncjson) | No | Hub URL, relay, WebSocket sync tuning |
 | [`keyring.json`](#keyringjson) | No | Per-host identity keys (auto-populated) |
 | [`mcp.json`](#mcpjson) | No | MCP server connections |
-| [`overlay.json`](#overlayjson) | No | Codebase mount points |
 | [`memory.json`](#memoryjson) | No | Pinned-memory caps |
 
 ---
@@ -262,16 +261,6 @@ connect time), and the web router serves the browser-reachable subset via
 `GET /api/mcp-apps`. The agent still calls these tools server-side as normal; the browser
 is purely a renderer (it reads the server's `ui://` resources and routes the app's
 callbacks), never a second tool provider.
-
----
-
-## `overlay.json`
-
-Codebase mount points exposed to the agent's virtual filesystem.
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `mounts` | map<string, string> | Mount name → host filesystem path. |
 
 ---
 

@@ -68,14 +68,13 @@ type SyncedTableName =
   | "tasks"
   | "files"
   | "hosts"
-  | "overlay_index"
   | "cluster_config"
   | "advisories"
   | "skills"
   | "memory_edges";
 ```
 
-These twelve names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
+These eleven names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
 
 #### TABLE_REDUCER_MAP
 
@@ -96,7 +95,6 @@ Maps each synced table to its conflict resolution strategy. `"lww"` (last-write-
 | `Task` | `id: string` | `deleted: number` | Full task scheduling state; see field notes below |
 | `AgentFile` | `id: string` | `deleted: number` | Stored as text or binary; `content` is the raw payload |
 | `Host` | `site_id: string` | — (schema only) | Describes a Bound node in the cluster; the TS interface omits `deleted`, the SQL table carries it for replication hygiene |
-| `OverlayIndexEntry` | `id: string` | `deleted: number` | File index for a host's overlay filesystem |
 | `ClusterConfigEntry` | `key: string` | — | Key-value cluster-wide config; LWW by `modified_at` |
 | `Advisory` | `id: string` | — (schema only) | Agent self-advisory lifecycle; the TS interface omits `deleted`, the SQL table carries it |
 | `Skill` | `id: string` | — (schema only) | Deterministic UUID from name; `status` is `"active"\|"retired"`; `skill_root` is the VFS path; context assembly uses `activation_count` and `last_activated_at`. The TS interface omits `deleted`, the SQL table carries it |
@@ -376,7 +374,6 @@ Three cross-field constraints are enforced: `default` must reference a `backend.
 | `syncSchema` | `sync.json` | Optional hub URL, nested `relay` (payload/timeout/prune/drain/inference limits), and `ws` (backpressure, idle timeout, reconnect) configs |
 | `keyringSchema` | `keyring.json` | Per-host public key and URL map |
 | `mcpSchema` | `mcp.json` | MCP server definitions (stdio or http transport) |
-| `overlaySchema` | `overlay.json` | Virtual filesystem mount points |
 
 **`networkSchema`:**
 
@@ -426,7 +423,6 @@ const configSchemaMap: {
   "sync.json":            typeof syncSchema;
   "keyring.json":         typeof keyringSchema;
   "mcp.json":             typeof mcpSchema;
-  "overlay.json":         typeof overlaySchema;
 }
 ```
 
@@ -544,19 +540,11 @@ Index: unique on `path` where `deleted = 0`.
 **`hosts`**
 ```sql
 site_id TEXT PRIMARY KEY, host_name TEXT NOT NULL, version TEXT, sync_url TEXT,
-mcp_servers TEXT, mcp_tools TEXT, models TEXT, overlay_root TEXT,
+mcp_servers TEXT, mcp_tools TEXT, models TEXT,
 online_at TEXT, modified_at TEXT NOT NULL,
 platforms TEXT, deleted INTEGER DEFAULT 0
 ```
 JSON-encoded arrays/objects stored as TEXT in `mcp_servers`, `mcp_tools`, `models`, and `platforms`. `platforms` is a JSON array of platform names for which this host is the leader (e.g. `["discord"]`).
-
-**`overlay_index`**
-```sql
-id TEXT PRIMARY KEY, site_id TEXT NOT NULL, path TEXT NOT NULL,
-size_bytes INTEGER NOT NULL, content_hash TEXT, indexed_at TEXT NOT NULL,
-deleted INTEGER DEFAULT 0
-```
-Index: on `(site_id, path)` where `deleted = 0`.
 
 **`cluster_config`**
 ```sql
@@ -846,7 +834,7 @@ function loadOptionalConfigs(configDir: string): OptionalConfigs
 type OptionalConfigs = Record<string, Result<Record<string, unknown>, ConfigError>>
 ```
 
-Attempts to load all seven optional config files. Files that are absent (ENOENT) are silently omitted from the returned map. Files that are present but fail validation are included as `err(ConfigError)` entries so the caller can surface them. The keys in the returned map are the logical config names (`"network"`, `"platforms"`, `"sync"`, `"keyring"`, `"mcp"`, `"overlay"`, `"cronSchedules"`).
+Attempts to load all six optional config files. Files that are absent (ENOENT) are silently omitted from the returned map. Files that are present but fail validation are included as `err(ConfigError)` entries so the caller can surface them. The keys in the returned map are the logical config names (`"network"`, `"platforms"`, `"sync"`, `"keyring"`, `"mcp"`, `"cronSchedules"`).
 
 ```typescript
 const optionals = loadOptionalConfigs("/etc/bound/config");
@@ -1071,11 +1059,11 @@ console.log(`Today's spend: $${todaySpend.toFixed(4)}`);
 
 ### Virtual Filesystem Persistence
 
-The agent sandbox operates over a composable virtual filesystem abstraction that allows in-memory, overlay, and passthrough filesystem instances to be mounted at different path prefixes. The `@bound/sandbox` package's `createClusterFs` factory returns a `ClusterFsResult` object that wraps a `MountableFs` root and exposes optional computed methods for staleness checking and enumeration. The full state of the agent's in-memory filesystem survives process restarts through a snapshot-hydrate-persist pipeline backed by the `files` synced table.
+The agent sandbox operates over a composable virtual filesystem abstraction that allows in-memory and passthrough filesystem instances to be mounted at different path prefixes. The `@bound/sandbox` package's `createClusterFs` factory returns a `ClusterFsResult` object that wraps a `MountableFs` root and exposes an optional computed method for path enumeration. The full state of the agent's in-memory filesystem survives process restarts through a snapshot-hydrate-persist pipeline backed by the `files` synced table.
 
 #### Scope and Exclusions
 
-Snapshot and hydration cover all paths stored in in-memory filesystem instances — specifically the root `InMemoryFs` (which holds paths like `/tmp/`, `/workspace/`, arbitrary agent-created directories) and the `/home/user/` mounted `InMemoryFs`. System pseudo-paths (`/dev/`, `/proc/`, `/bin/`, `/usr/`) are never created in those instances, so they are naturally excluded from enumeration. Overlay-managed paths (`/mnt/*`) live in separate `OverlayFs` instances and are explicitly excluded from the snapshot pipeline — they have their own hydration path and are never written to the `files` table by the general persistence layer.
+Snapshot and hydration cover all paths stored in in-memory filesystem instances — specifically the root `InMemoryFs` (which holds paths like `/tmp/`, `/workspace/`, arbitrary agent-created directories) and the `/home/user/` mounted `InMemoryFs`. System pseudo-paths (`/dev/`, `/proc/`, `/bin/`, `/usr/`) are never created in those instances, so they are naturally excluded from enumeration.
 
 #### Path Enumeration
 
@@ -1083,7 +1071,7 @@ Snapshot and hydration cover all paths stored in in-memory filesystem instances 
 
 #### Snapshot and Hydration
 
-`snapshotWorkspace(fs, options?)` accepts an optional `paths` parameter. When supplied, it iterates that explicit list rather than calling `getAllPaths()` on the full filesystem and filtering. The function returns a map of `path → { hash, size }`, which serves as the input to the diff-and-persist logic. `hydrateWorkspace(db, fs, siteId)` queries the `files` table with `WHERE deleted = 0 AND path NOT LIKE '/mnt/%'` and writes all matching rows back into the in-memory filesystem. The `/mnt/` exclusion ensures overlay-cached paths (which are already handled by `hydrateRemoteCache`) are not overwritten.
+`snapshotWorkspace(fs, options?)` accepts an optional `paths` parameter. When supplied, it iterates that explicit list rather than calling `getAllPaths()` on the full filesystem and filtering. The function returns a map of `path → { hash, size }`, which serves as the input to the diff-and-persist logic. `hydrateWorkspace(db, fs, siteId)` queries the `files` table with `WHERE deleted = 0` and writes all matching rows back into the in-memory filesystem.
 
 #### Pre-Snapshot Hook
 

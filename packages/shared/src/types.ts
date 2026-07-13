@@ -28,7 +28,6 @@ export type SyncedTableName =
 	| "tasks"
 	| "files"
 	| "hosts"
-	| "overlay_index"
 	| "cluster_config"
 	| "advisories"
 	| "skills"
@@ -171,7 +170,6 @@ export interface Host extends SoftDeletable {
 	mcp_tool_annotations: string | null;
 	mcp_capabilities: string | null;
 	models: string | null;
-	overlay_root: string | null;
 	online_at: string | null;
 	modified_at: string;
 	platforms: string | null;
@@ -198,16 +196,6 @@ export interface HostModelEntry {
 		vision?: boolean;
 		max_context?: number;
 	};
-}
-
-export interface OverlayIndexEntry extends SoftDeletable {
-	id: string;
-	site_id: string;
-	path: string;
-	size_bytes: number;
-	content_hash: string | null;
-	indexed_at: string;
-	modified_at: string | null;
 }
 
 export interface ClusterConfigEntry extends SoftDeletable {
@@ -366,7 +354,6 @@ export interface SyncedTableRowMap {
 	tasks: Task;
 	files: AgentFile;
 	hosts: Host;
-	overlay_index: OverlayIndexEntry;
 	cluster_config: ClusterConfigEntry;
 	advisories: Advisory;
 	skills: Skill;
@@ -406,7 +393,6 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	tasks: "lww",
 	files: "lww",
 	hosts: "lww",
-	overlay_index: "lww",
 	cluster_config: "lww",
 	advisories: "lww",
 	skills: "lww",
@@ -971,7 +957,7 @@ export interface ContextDebugInfo {
 	 * compares consecutive cold rebuilds on the same thread within
 	 * the cache TTL window: if `stablePrefixHash` differs but no
 	 * change_log row touched `semantic_memory | skills | files |
-	 * advisories | overlay_index` between them, that's a leak.
+	 * advisories` between them, that's a leak.
 	 *
 	 * `undefined` on warm turns (the warm path reuses the cached
 	 * `systemPrompt` and recording the hash again would just
