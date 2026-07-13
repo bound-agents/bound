@@ -1,10 +1,6 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { applySchema, insertRow } from "@bound/core";
-import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { InMemoryFs, MountableFs } from "just-bash";
 import {
 	createClusterFs,
@@ -157,36 +153,6 @@ describe("getInMemoryPaths", () => {
 		const paths = result.getInMemoryPaths();
 
 		expect(paths).toContain("/home/user/notes.txt");
-	});
-
-	test("AC1.4 + AC1.5: excludes /mnt/ paths and OverlayFs files", async () => {
-		// `/tmp` is not a real path on Windows except via Git Bash mapping;
-		// use `tmpdir()` for portability.
-		const tmpDir = mkdtempSync(join(tmpdir(), "test-overlay-"));
-		const testFile = join(tmpDir, "real-file.txt");
-		writeFileSync(testFile, "real content");
-
-		try {
-			const result = createClusterFs({
-				hostName: "localhost",
-				syncEnabled: false,
-				db,
-				siteId: "test-site",
-				overlayMounts: {
-					[tmpDir]: "/mnt/host",
-				},
-			});
-
-			const paths = result.getInMemoryPaths();
-
-			// Verify no paths start with /mnt/
-			for (const path of paths) {
-				expect(path.startsWith("/mnt/")).toBe(false);
-			}
-		} finally {
-			// Cleanup
-			await cleanupTmpDir(tmpDir);
-		}
 	});
 });
 

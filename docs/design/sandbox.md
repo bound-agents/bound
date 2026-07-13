@@ -8,7 +8,7 @@ The two solve different problems. `@bound/sandbox` is an in-memory VFS whose con
 
 ## @bound/sandbox
 
-The sandbox package provides a controlled Bash execution environment built on top of the `just-bash` library. It manages a virtual filesystem, persists workspace changes to a SQLite database, defines custom commands that agents can invoke, and maintains an indexed view of overlay-mounted host directories.
+The sandbox package provides a controlled Bash execution environment built on top of the `just-bash` library. It manages a virtual filesystem, persists workspace changes to a SQLite database, and defines custom commands that agents can invoke.
 
 ### ClusterFs
 
@@ -22,7 +22,6 @@ The layout is fixed:
 |---|---|---|
 | `/` (base) | `InMemoryFs` | Catch-all for everything not otherwise mounted |
 | `/home/user` | `InMemoryFs` | The agent's primary working directory |
-| `/mnt/<name>` (optional) | `OverlayFs` | Read-write overlay onto a real host directory |
 
 ```typescript
 import { createClusterFs } from "@bound/sandbox";
@@ -30,20 +29,14 @@ import { createClusterFs } from "@bound/sandbox";
 const fs = createClusterFs({
   hostName: "worker-1",
   syncEnabled: true,
-  overlayMounts: {
-    // realPath on the host -> virtual mount point inside the sandbox
-    "/projects/myapp": "/mnt/myapp",
-  },
 });
 ```
-
-`overlayMounts` is a `Record<string, string>` mapping real host paths to their virtual mount points. Each entry becomes a read-write `OverlayFs`. Omitting the field means no overlay mounts are created.
 
 #### Snapshotting and diffing
 
 The OCC (Optimistic Concurrency Control) persistence model relies on before/after snapshots of the in-memory workspace. Two functions handle this:
 
-- **`snapshotWorkspace(fs, options?)`** — Returns a `Map<string, string>` of `path -> SHA-256 hash`. When `options.paths` is provided, only those specific paths are snapshotted — used by the agent loop to scope pre-execution snapshots to in-memory (agent-written) files only, avoiding unnecessary hashing of overlay content. Without `paths`, falls back to scanning all `/home/user/` paths via `fs.getAllPaths()`. Directories and unreadable entries are skipped.
+- **`snapshotWorkspace(fs, options?)`** — Returns a `Map<string, string>` of `path -> SHA-256 hash`. When `options.paths` is provided, only those specific paths are snapshotted — used by the agent loop to scope pre-execution snapshots to in-memory (agent-written) files only. Without `paths`, falls back to scanning all `/home/user/` paths via `fs.getAllPaths()`. Directories and unreadable entries are skipped.
 
   ```typescript
   snapshotWorkspace(fs: IFileSystem, options?: { paths?: string[] }): Promise<Map<string, string>>
@@ -285,9 +278,6 @@ import { createClusterFs, createDefineCommands, createSandbox } from "@bound/san
 const clusterFs = createClusterFs({
   hostName: "worker-1",
   syncEnabled: true,
-  overlayMounts: {
-    "/projects/myapp": "/mnt/myapp",
-  },
 });
 
 // 2. Hydrate from the database so prior state is available
@@ -316,61 +306,6 @@ const postSnapshot = await snapshotWorkspace(clusterFs, { paths: clusterFs.getIn
 const result = await persistWorkspaceChanges(
   db, siteId, preSnapshot, postSnapshot, eventBus, {}, clusterFs
 );
-```
-
----
-
-### Overlay Index Scanner
-
-**Source:** `packages/sandbox/src/overlay-scanner.ts`
-
-The overlay scanner maintains an `overlay_index` table in the database that mirrors the content of host directories mounted via `OverlayFs`. It detects new files, changed files, and files that have been removed since the last scan.
-
-#### scanOverlayIndex
-
-```typescript
-function scanOverlayIndex(
-  db: Database,
-  siteId: string,
-  overlayMounts: Record<string, string>,
-): ScanResult
-```
-
-For each mount path in `overlayMounts`, `scanOverlayIndex` recursively walks the directory tree on the host filesystem. For every file found:
-
-- A deterministic UUID v5 is derived from the file's path using the fixed Bound namespace UUID (`550e8400-e29b-41d4-a716-446655440000`), so IDs are stable across restarts.
-- A SHA-256 hash of the file content is computed.
-- If no existing non-deleted row exists for that ID, a new row is inserted.
-- If a row exists but the stored content hash differs, the row is updated with the new hash and size.
-
-After the directory walk, any rows in `overlay_index` for this `siteId` that were not encountered during the scan are soft-deleted (`deleted = 1`). This handles files that were removed from the host since the last scan.
-
-```typescript
-interface ScanResult {
-  created: number;
-  updated: number;
-  tombstoned: number;
-}
-```
-
-#### startOverlayScanLoop
-
-```typescript
-function startOverlayScanLoop(
-  db: Database,
-  siteId: string,
-  overlayMounts: Record<string, string>,
-  intervalMs?: number,   // default: 300_000 (5 minutes)
-): { stop: () => void }
-```
-
-Starts a `setInterval` loop that calls `scanOverlayIndex` on the given interval. Returns a handle with a `stop()` method to cancel the loop.
-
-```typescript
-const scanner = startOverlayScanLoop(db, siteId, { "/projects/myapp": "/mnt/myapp" });
-
-// Later, when shutting down:
-scanner.stop();
 ```
 
 ---

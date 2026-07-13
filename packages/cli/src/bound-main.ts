@@ -39,7 +39,6 @@ OPTIONS:
   bound init --name <name>         Set operator name
   bound init --with-sync           Also create sync.json template
   bound init --with-mcp            Also create mcp.json template
-  bound init --with-overlay        Also create overlay.json template
   bound init --force               Overwrite existing config
 
   bound start                       Start the orchestrator
@@ -72,7 +71,6 @@ EXAMPLES:
 			name: nameIdx !== -1 ? args[nameIdx + 1] : undefined,
 			withSync: args.includes("--with-sync"),
 			withMcp: args.includes("--with-mcp"),
-			withOverlay: args.includes("--with-overlay"),
 			force: args.includes("--force"),
 			configDir: configDirIdx !== -1 ? args[configDirIdx + 1] : "config",
 		};

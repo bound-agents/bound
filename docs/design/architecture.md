@@ -166,7 +166,6 @@ Relay message kinds:
 | `tasks` | Scheduled/deferred/event-driven tasks | LWW |
 | `files` | Virtual filesystem contents | LWW |
 | `hosts` | Known hosts in the cluster (includes `models` JSON array) | LWW |
-| `overlay_index` | Content-addressed overlay file index | LWW |
 | `cluster_config` | Cluster-wide settings (hub, emergency_stop) | LWW |
 | `advisories` | Cost/frequency/model advisories | LWW |
 | `skills` | Operator-defined skill prompts injected into agent context | LWW |

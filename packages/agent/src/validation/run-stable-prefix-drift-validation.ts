@@ -20,7 +20,7 @@
  *
  *   - **Collect drift** (`collect:`): different input fingerprint,
  *     no `change_log` row covering `semantic_memory | skills |
- *     files | advisories | overlay_index` between the two cold
+ *     files | advisories` between the two cold
  *     rebuilds. Either the input collector is reading something
  *     that doesn't go through the outbox (a documented narrow
  *     exception, e.g., `last_accessed_at` bumps) and that something
@@ -265,7 +265,7 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  *     but does not move the fingerprint, so it never triggers a
  *     finding.
  *
- *   - `advisories`, `files`, `overlay_index`: NOT consulted by the
+ *   - `advisories`, `files`: NOT consulted by the
  *     stable-side renderer. Listed here only so future additions
  *     to the stable-side input set don't silently fail to update
  *     this list — the JSDoc on `StableVolatileInputs` makes the

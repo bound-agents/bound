@@ -16,7 +16,6 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"tasks",
 	"files",
 	"hosts",
-	"overlay_index",
 	"cluster_config",
 	"advisories",
 	"skills",

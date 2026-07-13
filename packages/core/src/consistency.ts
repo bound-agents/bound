@@ -103,7 +103,6 @@ export function compareAllTables(
 		"tasks",
 		"files",
 		"hosts",
-		"overlay_index",
 		"cluster_config",
 		"advisories",
 		"skills",

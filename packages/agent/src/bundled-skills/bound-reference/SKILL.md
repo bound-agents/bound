@@ -27,7 +27,7 @@ This SKILL.md is the index. The detail lives in `references/`:
   connector-authored instructions, and webhooks. **Read this when an event woke
   you and you are unsure where the message came from or which tools you have.**
 - `references/sandbox.md` — the virtual filesystem your `read`/`write`/`edit`/`bash`
-  tools act on: the VFS, overlay mounts, the 256 KiB tool-result cap, the
+  tools act on: the VFS, the 256 KiB tool-result cap, the
   deferred `files`-table snapshot, and the boundless real-disk distinction.
 - `references/config.md` — operator-owned host configuration: where it lives
   (`config/` on host disk, **not** the sandbox), strict schemas, and why your

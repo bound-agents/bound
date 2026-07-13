@@ -455,14 +455,6 @@ export const mcpSchema = z
 
 export type McpConfig = z.infer<typeof mcpSchema>;
 
-export const overlaySchema = z
-	.object({
-		mounts: z.record(z.string(), z.string()),
-	})
-	.strict();
-
-export type OverlayConfig = z.infer<typeof overlaySchema>;
-
 // Memory Config — caps on pinned-memory creation as a context-management
 // control. Enabled by default: when memory.json is absent the loader skips it,
 // so the enforcement code falls back to these same defaults (see
@@ -496,7 +488,6 @@ export type ConfigType =
 	| SyncConfig
 	| KeyringConfig
 	| McpConfig
-	| OverlayConfig
 	| MemoryConfig
 	| CacheWarmingConfig;
 
@@ -509,5 +500,4 @@ export const configSchemaMap = {
 	"sync.json": syncSchema,
 	"keyring.json": keyringSchema,
 	"mcp.json": mcpSchema,
-	"overlay.json": overlaySchema,
 } as const;
