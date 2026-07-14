@@ -21,6 +21,7 @@ import {
 	webhookDelete,
 	webhookList,
 	webhookRotateSecret,
+	webhookSetUnauthenticated,
 	webhookUpdate,
 } from "./commands/webhook.js";
 import { openBoundDB } from "./lib/db.js";
@@ -429,7 +430,21 @@ EXAMPLES:
 				process.exit(0);
 			}
 
-			console.error("Usage: boundctl webhook {create|list|delete|update|rotate-secret}");
+			if (subcommand === "allow-unauthenticated") {
+				webhookSetUnauthenticated(db, siteId, true);
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "disallow-unauthenticated") {
+				webhookSetUnauthenticated(db, siteId, false);
+				db.close();
+				process.exit(0);
+			}
+
+			console.error(
+				"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}",
+			);
 			db.close();
 			process.exit(1);
 		} catch (error) {

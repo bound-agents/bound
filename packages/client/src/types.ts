@@ -376,6 +376,15 @@ export interface WebhookUrlsResponse {
 	urls: WebhookUrlEntry[];
 }
 
+/**
+ * State of the cluster-wide unauthenticated-webhook kill switch (#195).
+ * When false (the default), `signature_format: "none"` webhooks cannot be
+ * created and existing ones receive no deliveries.
+ */
+export interface WebhookUnauthenticatedSwitch {
+	allow_unauthenticated: boolean;
+}
+
 export interface CreateWebhookOptions {
 	name: string;
 	format?: string;

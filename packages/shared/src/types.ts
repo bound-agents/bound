@@ -146,7 +146,7 @@ export interface Webhook extends SoftDeletable {
 	modified_at: string;
 }
 
-export type SignatureFormat = "github" | "stripe" | "slack" | "raw";
+export type SignatureFormat = "github" | "stripe" | "slack" | "raw" | "none";
 
 export interface AgentFile extends SoftDeletable {
 	id: string;
@@ -384,6 +384,26 @@ export const PERSONA_CLUSTER_CONFIG_KEY = "persona";
  * persona is realistically a few KB.
  */
 export const MAX_PERSONA_BYTES = 64 * 1024; // 64 KB
+
+/**
+ * `cluster_config` key gating unauthenticated webhook creation and delivery
+ * (#195). Webhooks may be created with `signature_format: "none"`, which
+ * skips HMAC validation entirely — anyone who can reach the sync server's
+ * `/webhook/:name` endpoint can trigger the bound task. That is a broad
+ * surface for arbitrary external data to reach the agent, so it is gated
+ * behind an explicit, operator-controlled kill switch that defaults to
+ * disabled (row absent or value !== "true").
+ *
+ * Checked at two points, both defense-in-depth against the switch being
+ * flipped after a `"none"` webhook already exists:
+ *  - Webhook create/update (`POST /api/webhooks`, `PATCH /api/webhooks/:id`,
+ *    `boundctl webhook create/update`) refuse to set `signature_format:
+ *    "none"` while the switch is off.
+ *  - Webhook delivery (`handleWebhookRequest`) re-checks the switch live for
+ *    every request to a `"none"`-format webhook, so disabling it also stops
+ *    delivery to webhooks created while it was on — no restart required.
+ */
+export const WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY = "webhooks_allow_unauthenticated";
 
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",

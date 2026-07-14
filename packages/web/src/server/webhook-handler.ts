@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { findWebhookByName, insertInbox } from "@bound/core";
+import { findClusterConfigValueByKey, findWebhookByName, insertInbox } from "@bound/core";
+import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
 import type { TypedEventEmitter, Webhook } from "@bound/shared";
 import { validateWebhookSignature } from "./webhook-hmac.js";
 
@@ -120,16 +121,32 @@ export async function handleWebhookRequest(
 		return new Response("", { status: 404 });
 	}
 
-	// Validate signature
-	const validationResult = validateWebhookSignature(
-		webhook.signature_format,
-		webhook.secret,
-		request.headers,
-		rawBody,
-	);
+	// "none" format webhooks skip HMAC entirely and are gated behind the
+	// cluster-wide kill switch (#195). Re-check live on every delivery (not
+	// just at creation time) so flipping the switch off immediately stops
+	// delivery to a "none" webhook that was created while it was on, with no
+	// restart required. Every other rejection in this handler returns an
+	// identical 404 to avoid a name-enumeration oracle; mirror that here.
+	if (webhook.signature_format === "none") {
+		const allowUnauthenticated = findClusterConfigValueByKey(
+			deps.db,
+			WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+		);
+		if (allowUnauthenticated?.value !== "true") {
+			return new Response("", { status: 404 });
+		}
+	} else {
+		// Validate signature
+		const validationResult = validateWebhookSignature(
+			webhook.signature_format,
+			webhook.secret,
+			request.headers,
+			rawBody,
+		);
 
-	if (!validationResult.valid) {
-		return new Response("", { status: 404 });
+		if (!validationResult.valid) {
+			return new Response("", { status: 404 });
+		}
 	}
 
 	// Build envelope with filtered headers

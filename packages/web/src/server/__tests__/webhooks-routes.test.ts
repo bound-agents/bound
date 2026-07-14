@@ -778,4 +778,93 @@ describe("webhooks routes", () => {
 			expect(webhook.secret).toBe(newSecret);
 		});
 	});
+
+	describe("#195: unauthenticated-webhook kill switch", () => {
+		it("GET /unauthenticated-switch defaults to false (row absent)", async () => {
+			const app = createWebhooksRoutes(db);
+			const res = await app.fetch(
+				new Request("http://localhost/unauthenticated-switch", { method: "GET" }),
+			);
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ allow_unauthenticated: false });
+		});
+
+		it("rejects creating a format=none webhook while the switch is off (403)", async () => {
+			const app = createWebhooksRoutes(db);
+			const res = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "unauth-hook", format: "none" }),
+				}),
+			);
+			expect(res.status).toBe(403);
+			const count = db.prepare("SELECT COUNT(*) AS n FROM webhooks WHERE deleted = 0").get() as {
+				n: number;
+			};
+			expect(count.n).toBe(0);
+		});
+
+		it("PUT /unauthenticated-switch flips the switch and then format=none creates (201)", async () => {
+			const app = createWebhooksRoutes(db);
+
+			const put = await app.fetch(
+				new Request("http://localhost/unauthenticated-switch", {
+					method: "PUT",
+					body: JSON.stringify({ allow_unauthenticated: true }),
+				}),
+			);
+			expect(put.status).toBe(200);
+			expect(await put.json()).toEqual({ allow_unauthenticated: true });
+
+			const get = await app.fetch(
+				new Request("http://localhost/unauthenticated-switch", { method: "GET" }),
+			);
+			expect(await get.json()).toEqual({ allow_unauthenticated: true });
+
+			const create = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "unauth-hook", format: "none" }),
+				}),
+			);
+			expect(create.status).toBe(201);
+			const created = (await create.json()) as Record<string, unknown>;
+			expect(created.signature_format).toBe("none");
+		});
+
+		it("PUT rejects a non-boolean allow_unauthenticated (400)", async () => {
+			const app = createWebhooksRoutes(db);
+			const res = await app.fetch(
+				new Request("http://localhost/unauthenticated-switch", {
+					method: "PUT",
+					body: JSON.stringify({ allow_unauthenticated: "yes" }),
+				}),
+			);
+			expect(res.status).toBe(400);
+		});
+
+		it("disabling the switch again blocks format=none creates (round-trip)", async () => {
+			const app = createWebhooksRoutes(db);
+			const set = (allow: boolean) =>
+				app.fetch(
+					new Request("http://localhost/unauthenticated-switch", {
+						method: "PUT",
+						body: JSON.stringify({ allow_unauthenticated: allow }),
+					}),
+				);
+			await set(true);
+			await set(false);
+			const get = await app.fetch(
+				new Request("http://localhost/unauthenticated-switch", { method: "GET" }),
+			);
+			expect(await get.json()).toEqual({ allow_unauthenticated: false });
+			const res = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "unauth-hook-2", format: "none" }),
+				}),
+			);
+			expect(res.status).toBe(403);
+		});
+	});
 });
