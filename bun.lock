@@ -244,9 +244,10 @@
       },
     },
   },
-  "patchedDependencies": {
-    "just-bash@2.14.4": "patches/just-bash@2.14.4.patch",
-  },
+	"patchedDependencies": {
+		"just-bash@2.14.4": "patches/just-bash@2.14.4.patch",
+		"reflect-metadata@0.2.2": "patches/reflect-metadata@0.2.2.patch",
+	},
   "packages": {
     "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@0.24.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-vvu9appvGvfYstBj19C6NCepV6SvUhY5VRv60KUZ4XzhTah/olOYul5Zo4C+x2enyshMSvgB2mm/OEmrsHaSmA=="],
 

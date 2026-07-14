@@ -1,0 +1,29 @@
+diff --git a/Reflect.js b/Reflect.js
+index 1f7b..b2e4 100644
+--- a/Reflect.js
++++ b/Reflect.js
+@@ -22,10 +22,19 @@ var Reflect;
+             typeof global === "object" ? global :
+                 typeof self === "object" ? self :
+                     typeof this === "object" ? this :
+                         sloppyModeThis();
+-        var exporter = makeExporter(Reflect);
+-        if (typeof root.Reflect !== "undefined") {
+-            exporter = makeExporter(root.Reflect, exporter);
++        var exporter;
++        if (typeof root.Reflect !== "undefined" && Object.isExtensible(root.Reflect)) {
++            exporter = makeExporter(root.Reflect);
++        }
++        else if (Object.isExtensible(Reflect)) {
++            exporter = makeExporter(Reflect);
++        }
++        else {
++            var fallback = {};
++            exporter = makeExporter(fallback);
++            if (typeof root.Reflect === "undefined") {
++                root.Reflect = fallback;
++            }
+         }
+         factory(exporter, root);
+         if (typeof root.Reflect === "undefined") {
+             root.Reflect = Reflect;
