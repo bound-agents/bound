@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { randomUUID } from "node:crypto";
 import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	findClusterConfigValueByKey,
 	findWebhookDeletedFlagById,
 	findWebhookIdById,
 	findWebhookIdByName,
@@ -16,7 +18,11 @@ import {
 	softDelete,
 	updateRow,
 } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import {
+	BOUND_NAMESPACE,
+	WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+	deterministicUUID,
+} from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 import { Hono } from "hono";
 import { buildWebhookUrls } from "../webhook-urls";
@@ -86,6 +92,55 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				},
 				500,
 			);
+		}
+	});
+
+	// GET /unauthenticated-switch — Read the cluster-wide unauthenticated-webhook
+	// kill switch (#195). Registered BEFORE `/:id` so the literal path is not
+	// captured as a webhook id. Absent row reads as disabled (the default).
+	app.get("/unauthenticated-switch", (c) => {
+		try {
+			const row = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+			return c.json({ allow_unauthenticated: row?.value === "true" });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to read switch", details: message }, 500);
+		}
+	});
+
+	// PUT /unauthenticated-switch — Flip the switch. Body: { allow_unauthenticated:
+	// boolean }. Upserts the cluster_config row (un-tombstoning a prior value).
+	// Disabling immediately stops delivery to existing "none" webhooks (the
+	// handler re-checks live) as well as blocking new "none" creates.
+	app.put("/unauthenticated-switch", async (c) => {
+		try {
+			const body = (await c.req.json()) as Record<string, unknown>;
+			if (typeof body.allow_unauthenticated !== "boolean") {
+				return c.json({ error: "allow_unauthenticated must be a boolean" }, 400);
+			}
+			const siteId = resolveSiteId();
+			const value = body.allow_unauthenticated ? "true" : "false";
+			const now = new Date().toISOString();
+			if (findClusterConfigKeyByKeyIncludingDeleted(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY)) {
+				updateRow(
+					db,
+					"cluster_config",
+					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+					{ value, deleted: 0 },
+					siteId,
+				);
+			} else {
+				insertRow(
+					db,
+					"cluster_config",
+					{ key: WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, value, modified_at: now, deleted: 0 },
+					siteId,
+				);
+			}
+			return c.json({ allow_unauthenticated: body.allow_unauthenticated });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to update switch", details: message }, 500);
 		}
 	});
 
@@ -184,6 +239,26 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 					},
 					400,
 				);
+			}
+
+			// "none" (unauthenticated) webhooks are gated behind an explicit,
+			// operator-controlled cluster_config switch (#195), default off. This
+			// runs before the duplicate-name check so a rejected create doesn't
+			// leak whether the name is taken.
+			if (format === "none") {
+				const allowUnauthenticated = findClusterConfigValueByKey(
+					db,
+					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+				);
+				if (allowUnauthenticated?.value !== "true") {
+					return c.json(
+						{
+							error:
+								"Unauthenticated webhooks (signature_format: 'none') are disabled. Enable them cluster-wide first (POST /api/webhooks/unauthenticated-switch or `boundctl webhook allow-unauthenticated`).",
+						},
+						403,
+					);
+				}
 			}
 
 			// Check for existing non-deleted webhook

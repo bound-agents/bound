@@ -41,6 +41,7 @@ import type {
 	WebhookCreateResponse,
 	WebhookListEntry,
 	WebhookRotateResponse,
+	WebhookUnauthenticatedSwitch,
 	WebhookUrlsResponse,
 } from "./types.js";
 
@@ -799,6 +800,24 @@ export class BoundClient {
 	 */
 	async listWebhookUrls(id: string): Promise<WebhookUrlsResponse> {
 		return this.fetchJson(`/api/webhooks/${id}/urls`);
+	}
+
+	/**
+	 * Read the cluster-wide unauthenticated-webhook kill switch (#195).
+	 * `allow_unauthenticated: false` (the default) blocks creating and
+	 * delivering `signature_format: "none"` webhooks.
+	 */
+	async getWebhookUnauthenticatedSwitch(): Promise<WebhookUnauthenticatedSwitch> {
+		return this.fetchJson("/api/webhooks/unauthenticated-switch");
+	}
+
+	/** Flip the cluster-wide unauthenticated-webhook kill switch (#195). */
+	async setWebhookUnauthenticatedSwitch(allow: boolean): Promise<WebhookUnauthenticatedSwitch> {
+		return this.fetchJson("/api/webhooks/unauthenticated-switch", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ allow_unauthenticated: allow }),
+		});
 	}
 
 	// ---- Connector bindings ----

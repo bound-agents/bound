@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	findClusterConfigValueByKey,
 	findWebhookDeletedFlagById,
 	findWebhookIdAndTaskIdByName,
 	findWebhookIdByName,
@@ -10,8 +12,60 @@ import {
 	softDelete,
 	updateRow,
 } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import {
+	BOUND_NAMESPACE,
+	WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+	deterministicUUID,
+} from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
+
+/**
+ * Throws unless the cluster-wide unauthenticated-webhook switch
+ * (`cluster_config['webhooks_allow_unauthenticated']`) is set to `"true"`.
+ * Shared by create and update so `--format none` is refused identically on
+ * both paths (#195).
+ */
+function assertUnauthenticatedWebhooksAllowed(db: Database): void {
+	const allowUnauthenticated = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+	if (allowUnauthenticated?.value !== "true") {
+		throw new Error(
+			"Unauthenticated webhooks (--format none) are disabled. Enable them cluster-wide first: boundctl webhook allow-unauthenticated",
+		);
+	}
+}
+
+/**
+ * Upsert a cluster_config key through the outbox helpers. The existence probe
+ * INCLUDES tombstoned rows: a soft-deleted row still occupies the `key` PK, so
+ * a re-set must UPDATE (un-tombstoning via deleted=0), never INSERT a colliding
+ * row. Mirrors the pattern in drain.ts / set-hub.ts.
+ */
+function upsertClusterConfig(db: Database, siteId: string, key: string, value: string): void {
+	const now = new Date().toISOString();
+	if (findClusterConfigKeyByKeyIncludingDeleted(db, key)) {
+		updateRow(db, "cluster_config", key, { value, deleted: 0 }, siteId);
+	} else {
+		insertRow(db, "cluster_config", { key, value, modified_at: now, deleted: 0 }, siteId);
+	}
+}
+
+/**
+ * Flip the cluster-wide unauthenticated-webhook switch (#195). `allow=true`
+ * lets operators create `--format none` webhooks and lets those webhooks
+ * receive deliveries; `allow=false` (the default state, row absent) blocks
+ * both. This is the deliberate, visible opt-in the issue calls for.
+ */
+export function webhookSetUnauthenticated(db: Database, siteId: string, allow: boolean): void {
+	upsertClusterConfig(db, siteId, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, allow ? "true" : "false");
+	if (allow) {
+		console.log("Unauthenticated webhooks are now ALLOWED cluster-wide.");
+		console.log("⚠ Any host that can reach POST /webhook/:name can now trigger a 'none'-format");
+		console.log("  webhook without a signature. Create them deliberately.");
+	} else {
+		console.log("Unauthenticated webhooks are now DISABLED cluster-wide (default).");
+		console.log("Existing 'none'-format webhooks will stop receiving deliveries (404).");
+	}
+}
 
 // ---------------------------------------------------------------------------
 // webhookCreate
@@ -29,6 +83,10 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	// --no-history is a presence flag: when set, the webhook's event task runs
 	// with no_history=1 so each delivery starts from a clean context window.
 	const noHistory = hasFlag(args, "--no-history") ? 1 : 0;
+
+	if (format === "none") {
+		assertUnauthenticatedWebhooksAllowed(db);
+	}
 
 	// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 	if (!name) {
@@ -300,6 +358,10 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 			},
 			siteId,
 		);
+	}
+
+	if (format === "none") {
+		assertUnauthenticatedWebhooksAllowed(db);
 	}
 
 	if (format) {
