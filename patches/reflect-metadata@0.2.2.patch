@@ -1,35 +1,27 @@
---- Reflect.js.orig	2026-07-13 18:01:17
-+++ Reflect.js	2026-07-13 18:01:49
-@@ -22,14 +22,24 @@
+diff --git a/Reflect.js b/Reflect.js
+index 0c0d77f..f3c63f8 100644
+--- a/Reflect.js
++++ b/Reflect.js
+@@ -22,9 +22,19 @@ var Reflect;
                  typeof self === "object" ? self :
                      typeof this === "object" ? this :
                          sloppyModeThis();
 -        var exporter = makeExporter(Reflect);
 -        if (typeof root.Reflect !== "undefined") {
 -            exporter = makeExporter(root.Reflect, exporter);
--        }
--        factory(exporter, root);
--        if (typeof root.Reflect === "undefined") {
--            root.Reflect = Reflect;
--        }
-+		var exporter;
-+		if (typeof root.Reflect !== "undefined" && Object.isExtensible(root.Reflect)) {
-+			exporter = makeExporter(root.Reflect);
-+		}
-+		else if (Object.isExtensible(Reflect)) {
-+			exporter = makeExporter(Reflect);
-+		}
-+		else {
-+			var fallback = {};
-+			exporter = makeExporter(fallback);
-+			if (typeof root.Reflect === "undefined") {
-+				root.Reflect = fallback;
-+			}
-+		}
-+		factory(exporter, root);
-+		if (typeof root.Reflect === "undefined") {
-+			root.Reflect = Reflect;
-+		}
-         function makeExporter(target, previous) {
-             return function (key, value) {
-                 Object.defineProperty(target, key, { configurable: true, writable: true, value: value });
++        var exporter;
++        if (typeof root.Reflect !== "undefined" && Object.isExtensible(root.Reflect)) {
++            exporter = makeExporter(root.Reflect);
++        }
++        else if (Object.isExtensible(Reflect)) {
++            exporter = makeExporter(Reflect);
++        }
++        else {
++            var fallback = {};
++            exporter = makeExporter(fallback);
++            if (typeof root.Reflect === "undefined") {
++                root.Reflect = fallback;
++            }
+         }
+         factory(exporter, root);
+         if (typeof root.Reflect === "undefined") {
