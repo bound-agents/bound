@@ -97,11 +97,19 @@ jobs:
           # teardown error like Windows EBUSY) that a pure-JUnit summary would
           # render as "all green". The sidecar is what makes that case visible.
           mkdir -p test-results
+          # GitHub's Windows runners are ~2-core and I/O-slow; bun's default 5s
+          # per-test timeout trips intermittently under that contention — a
+          # different set of tests each run (core FTS5 queries one run, relay
+          # agent tests the next), all TimeoutError, none reproducing. Give
+          # slow-but-correct tests headroom. The 20-minute step cap above still
+          # bounds a genuine hang; this only raises the per-test ceiling.
+          TEST_TIMEOUT=15000
+          if [ "$RUNNER_OS" = "Windows" ]; then TEST_TIMEOUT=30000; fi
           exit_code=0
           for pkg in shared core sync sandbox llm agent platforms web client cli less; do
             echo "::group::packages/$pkg"
             pkg_code=0
-            bun test "packages/$pkg" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
+            bun test "packages/$pkg" --timeout "$TEST_TIMEOUT" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
             echo "$pkg_code" > "test-results/$pkg.exit"
             if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"
