@@ -1,8 +1,15 @@
 // Bun on Windows ships a non-extensible global Reflect object. reflect-metadata
 // needs to attach metadata helpers to it, so we swap in an extensible wrapper
-// that delegates back to the native methods before the polyfill runs.
+// that copies the native methods before the polyfill runs.
 const nativeReflect = globalThis.Reflect;
-const extensibleReflect: typeof Reflect = Object.create(nativeReflect);
+const extensibleReflect: typeof Reflect = Object.create(Object.getPrototypeOf(nativeReflect));
+
+for (const key of Reflect.ownKeys(nativeReflect)) {
+	const descriptor = Object.getOwnPropertyDescriptor(nativeReflect, key);
+	if (descriptor) {
+		Object.defineProperty(extensibleReflect, key, descriptor);
+	}
+}
 
 if (!Reflect.defineProperty(globalThis, "Reflect", { value: extensibleReflect })) {
 	throw new Error(
