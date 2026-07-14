@@ -27,5 +27,4 @@
 		"just-bash@2.14.4": "patches/just-bash@2.14.4.patch",
 		"reflect-metadata@0.2.2": "patches/reflect-metadata@0.2.2.patch"
 	}
-	}
 }
