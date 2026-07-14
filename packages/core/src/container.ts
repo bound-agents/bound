@@ -5,7 +5,6 @@
 // bun test runner, and direct `bun run` invocations from other entry
 // points — where ESM module-graph evaluation is faithful and the
 // side-effect import runs as written.
-import "./reflect-shim";
 import "reflect-metadata";
 import type { Database } from "bun:sqlite";
 import { TypedEventEmitter, createLogger } from "@bound/shared";
