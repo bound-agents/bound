@@ -22,6 +22,7 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"memory_edges",
 	"connector_handles",
 	"webhooks",
+	"rss_feeds",
 	"turns",
 	"client_sessions",
 ];

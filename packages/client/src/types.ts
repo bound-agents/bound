@@ -422,6 +422,51 @@ export interface UpdateWebhookOptions {
 	no_history?: boolean;
 }
 
+// ---- RSS feeds ----
+
+export interface RssFeedListEntry {
+	id: string;
+	name: string;
+	url: string;
+	description: string | null;
+	poll_interval_seconds: number;
+	task_id: string;
+	thread_id: string;
+	created_at: string;
+	modified_at: string;
+	/** task.system_prompt_addition surfaced on the feed (see WebhookListEntry.prompt). */
+	prompt: string | null;
+	/** tasks.model_hint; null means "use the cluster default model". */
+	model_hint: string | null;
+	/** tasks.no_history coerced to a boolean (see WebhookListEntry.no_history). */
+	no_history: boolean;
+}
+
+export interface CreateRssFeedOptions {
+	name: string;
+	/** Feed URL — must be http(s). */
+	url: string;
+	description?: string;
+	prompt?: string;
+	/** Poll cadence in seconds; server default 900, floor 60. */
+	poll_interval_seconds?: number;
+	/** See CreateWebhookOptions.model_hint. */
+	model_hint?: string | null;
+	/** See CreateWebhookOptions.no_history. */
+	no_history?: boolean;
+}
+
+export interface UpdateRssFeedOptions {
+	url?: string;
+	description?: string;
+	prompt?: string;
+	poll_interval_seconds?: number;
+	/** Three-state semantics — see UpdateWebhookOptions.model_hint. */
+	model_hint?: string | null;
+	/** Two-state semantics — see UpdateWebhookOptions.no_history. */
+	no_history?: boolean;
+}
+
 // ---- Errors ----
 
 export interface ApiErrorBody {

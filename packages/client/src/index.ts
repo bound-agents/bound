@@ -48,4 +48,7 @@ export type {
 	WebhookRotateResponse,
 	CreateWebhookOptions,
 	UpdateWebhookOptions,
+	RssFeedListEntry,
+	CreateRssFeedOptions,
+	UpdateRssFeedOptions,
 } from "./types.js";

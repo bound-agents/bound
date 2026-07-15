@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+	findActiveRssFeedByThreadId,
 	findActiveWebhookByThreadId,
 	findStaleUnprocessedIntake,
 	markProcessed,
@@ -15,6 +16,9 @@ interface ReconcilerLogger {
 
 /** Relay kind the webhook intake pipeline writes (see web/src/server/webhook-handler.ts). */
 const WEBHOOK_INTAKE_KIND = "webhook_intake";
+
+/** Relay kind the leader-gated RSS poller writes (see platforms/src/rss-poller.ts). */
+const RSS_INTAKE_KIND = "rss_intake";
 
 /**
  * Default staleness window. A healthy event handler drains its intake the moment
@@ -87,71 +91,102 @@ export function reconcileStaleWebhookIntake(
 	const staleBeforeIso = new Date(now.getTime() - staleAfterMs).toISOString();
 	const logger = options.logger;
 
-	const groups = findStaleUnprocessedIntake(db, WEBHOOK_INTAKE_KIND, staleBeforeIso);
-	if (groups.length === 0) {
-		return { advisoriesRaised: 0, deadLettered: 0 };
-	}
-
 	let advisoriesRaised = 0;
 	let deadLettered = 0;
 
-	for (const group of groups) {
-		const liveBinding = findActiveWebhookByThreadId(db, group.ref_id);
+	// Sweep each passive intake kind that binds a thread to an external event
+	// source. Webhooks and RSS feeds share the binding shape (row + thread +
+	// event task) and the drain contract (ref_id = binding.thread_id), so the
+	// recoverable/orphaned classification is identical — only the binding
+	// lookup and the operator-facing wording differ. `connector_intake` is
+	// deliberately NOT swept here: connector handles have their own reconciler
+	// (connector-handle-reconciler.ts) keyed on handle liveness.
+	for (const sweep of INTAKE_SWEEPS) {
+		const groups = findStaleUnprocessedIntake(db, sweep.kind, staleBeforeIso);
 
-		if (!liveBinding) {
-			// Orphaned: no handler can ever drain this. Dead-letter every unprocessed
-			// intake row for the ref_id (the whole binding is gone, not just the stale
-			// rows), which removes it from future sweeps and stops the advisory churn.
-			const orphaned = readUnprocessedInboxByRefId(db, group.ref_id, WEBHOOK_INTAKE_KIND);
-			if (orphaned.length > 0) {
-				markProcessed(
-					db,
-					orphaned.map((row) => row.id),
-				);
-				deadLettered += orphaned.length;
-				logger?.warn("[relay] Dead-lettered orphaned webhook intake (no live binding)", {
-					refId: group.ref_id,
-					rows: orphaned.length,
-				});
+		for (const group of groups) {
+			const liveBinding = sweep.findBinding(db, group.ref_id);
+
+			if (!liveBinding) {
+				// Orphaned: no handler can ever drain this. Dead-letter every unprocessed
+				// intake row for the ref_id (the whole binding is gone, not just the stale
+				// rows), which removes it from future sweeps and stops the advisory churn.
+				const orphaned = readUnprocessedInboxByRefId(db, group.ref_id, sweep.kind);
+				if (orphaned.length > 0) {
+					markProcessed(
+						db,
+						orphaned.map((row) => row.id),
+					);
+					deadLettered += orphaned.length;
+					logger?.warn(`[relay] Dead-lettered orphaned ${sweep.noun} intake (no live binding)`, {
+						refId: group.ref_id,
+						rows: orphaned.length,
+					});
+				}
+				continue;
 			}
-			continue;
+
+			// Recoverable: a live binding still owns the thread but its handler is dark.
+			// Dedup across ALL non-deleted advisory statuses so applying does not re-raise.
+			const title = sweep.titleFor(group.ref_id);
+			if (hasAdvisoryWithTitle(db, title)) continue;
+
+			const ageMs = now.getTime() - new Date(group.oldest_received_at).getTime();
+			const ageMinutes = Math.floor(ageMs / 60000);
+
+			createAdvisory(
+				db,
+				{
+					type: "general",
+					status: "proposed",
+					title,
+					detail: `${group.count} ${sweep.noun} event(s) for handler thread ${group.ref_id} (${sweep.noun} '${liveBinding.name}') have sat unprocessed in relay_inbox for ~${ageMinutes}m (oldest received ${group.oldest_received_at}). The ${sweep.noun} binding is live but its event handler is dark — cancelled, evicted-to-failed, or declined by an incapable host. The events are durable (7-day TTL) and reviving the handler drains the backlog.`,
+					action: `Revive the event handler for ${sweep.noun} '${liveBinding.name}' (thread ${group.ref_id}) — recreate its pending event task. Once a pending handler exists, the queued events drain on the next wakeup; no events are lost. (If the ${sweep.noun} itself should be retired, deregister it — that dead-letters the intake instead.)`,
+					impact: `Inbound ${sweep.noun} events for this live ${sweep.noun} go unanswered until the handler is revived.`,
+					evidence: JSON.stringify({
+						ref_id: group.ref_id,
+						[sweep.noun]: liveBinding.name,
+						kind: group.kind,
+						count: group.count,
+						oldest_received_at: group.oldest_received_at,
+						stale_after_ms: staleAfterMs,
+					}),
+				},
+				siteId,
+			);
+			advisoriesRaised++;
 		}
-
-		// Recoverable: a live webhook still owns the thread but its handler is dark.
-		// Dedup across ALL non-deleted advisory statuses so applying does not re-raise.
-		const title = titleFor(group.ref_id);
-		if (hasAdvisoryWithTitle(db, title)) continue;
-
-		const ageMs = now.getTime() - new Date(group.oldest_received_at).getTime();
-		const ageMinutes = Math.floor(ageMs / 60000);
-
-		createAdvisory(
-			db,
-			{
-				type: "general",
-				status: "proposed",
-				title,
-				detail: `${group.count} webhook event(s) for handler thread ${group.ref_id} (webhook '${liveBinding.name}') have sat unprocessed in relay_inbox for ~${ageMinutes}m (oldest received ${group.oldest_received_at}). The webhook binding is live but its event handler is dark — cancelled, evicted-to-failed, or declined by an incapable host. The events are durable (7-day TTL) and reviving the handler drains the backlog.`,
-				action: `Revive the event handler for webhook '${liveBinding.name}' (thread ${group.ref_id}) — recreate its pending event task. Once a pending handler exists, the queued events drain on the next wakeup; no events are lost. (If the webhook itself should be retired, deregister it — that dead-letters the intake instead.)`,
-				impact:
-					"Inbound webhook events for this live webhook go unanswered until the handler is revived.",
-				evidence: JSON.stringify({
-					ref_id: group.ref_id,
-					webhook: liveBinding.name,
-					kind: group.kind,
-					count: group.count,
-					oldest_received_at: group.oldest_received_at,
-					stale_after_ms: staleAfterMs,
-				}),
-			},
-			siteId,
-		);
-		advisoriesRaised++;
 	}
 
 	return { advisoriesRaised, deadLettered };
 }
 
-function titleFor(refId: string): string {
-	return `Webhook intake not draining: handler thread ${refId} is dark`;
+/**
+ * One sweep config per passive intake kind owned by an external-source
+ * binding. The webhook `titleFor` string is byte-identical to the pre-RSS
+ * version — it is the advisory dedup key across all non-deleted statuses,
+ * so changing it would re-raise an advisory for every binding that already
+ * has an applied/dismissed one.
+ */
+interface IntakeSweep {
+	kind: "webhook_intake" | "rss_intake";
+	/** Operator-facing noun used in advisory prose ("webhook" / "RSS feed"). */
+	noun: string;
+	findBinding: (db: Database, threadId: string) => { id: string; name: string } | null;
+	titleFor: (refId: string) => string;
 }
+
+const INTAKE_SWEEPS: IntakeSweep[] = [
+	{
+		kind: WEBHOOK_INTAKE_KIND,
+		noun: "webhook",
+		findBinding: findActiveWebhookByThreadId,
+		titleFor: (refId) => `Webhook intake not draining: handler thread ${refId} is dark`,
+	},
+	{
+		kind: RSS_INTAKE_KIND,
+		noun: "RSS feed",
+		findBinding: findActiveRssFeedByThreadId,
+		titleFor: (refId) => `RSS intake not draining: handler thread ${refId} is dark`,
+	},
+];

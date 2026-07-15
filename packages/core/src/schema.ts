@@ -420,6 +420,34 @@ export function applySchema(db: Database): void {
 		ON webhooks(name) WHERE deleted = 0
 	`);
 
+	// 14a. rss_feeds (synced) — polled RSS/Atom feeds that trigger agent tasks.
+	// Mirrors the webhook three-row pattern (feed row + delivery thread + event
+	// task with trigger_spec `rss:<name>`), but items are PULLED by the
+	// leader-gated poller in @bound/platforms rather than pushed over HTTP.
+	// `seen_guids` is the durable dedup cursor (JSON array, newest last, capped)
+	// — relay_inbox idempotency keys are pruned with the inbox, so seen-state
+	// must live on the synced row to survive leader failover.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS rss_feeds (
+			id                    TEXT PRIMARY KEY,
+			name                  TEXT NOT NULL,
+			url                   TEXT NOT NULL,
+			description           TEXT,
+			poll_interval_seconds INTEGER NOT NULL DEFAULT 900,
+			seen_guids            TEXT,
+			task_id               TEXT NOT NULL,
+			thread_id             TEXT NOT NULL,
+			created_at            TEXT NOT NULL,
+			deleted               INTEGER NOT NULL DEFAULT 0,
+			modified_at           TEXT NOT NULL
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_feeds_name
+		ON rss_feeds(name) WHERE deleted = 0
+	`);
+
 	// 14b. client_sessions (synced) — tracks which host holds the live WS
 	// connection (boundless / external BoundClient) subscribed to a thread, so
 	// notify/introspect wakeups can be routed to the host that can actually

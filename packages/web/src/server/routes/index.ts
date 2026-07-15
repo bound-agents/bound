@@ -11,6 +11,7 @@ import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
 import { createPersonaRoutes } from "./persona";
+import { createRssFeedsRoutes } from "./rss";
 import { createSandboxRoutes } from "./sandbox";
 import { createSkillsRoutes } from "./skills";
 import { type ModelsConfig, createStatusRoutes } from "./status";
@@ -126,6 +127,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			hostName,
 			siteId,
 		}),
+		rssFeeds: createRssFeedsRoutes(db),
 		skills: createSkillsRoutes(db),
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),

@@ -100,9 +100,10 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 		return { content: fallback, processedIds: [] };
 	}
 
-	// Two passive intake kinds fold into the wakeup: `webhook_intake` (raw HTTP
-	// envelopes from /webhook/:name) and `connector_intake` (platform push-event
-	// batches from deliverBatch, e.g. Discord). Both are owned by this wakeup
+	// Three passive intake kinds fold into the wakeup: `webhook_intake` (raw HTTP
+	// envelopes from /webhook/:name), `connector_intake` (platform push-event
+	// batches from deliverBatch, e.g. Discord), and `rss_intake` (polled feed
+	// items from the leader-gated RSS poller). All are owned by this wakeup
 	// path, not the relay-processor. Reading each kind explicitly (rather than
 	// dropping the kind filter) keeps a stray platform-MCP `intake` row — whose
 	// payload schema is entirely different — from being folded as if it were an
@@ -111,6 +112,7 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 	const entries = [
 		...readUnprocessedInboxByRefId(db, task.thread_id, "webhook_intake"),
 		...readUnprocessedInboxByRefId(db, task.thread_id, "connector_intake"),
+		...readUnprocessedInboxByRefId(db, task.thread_id, "rss_intake"),
 	].sort((a, b) => (a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0));
 	if (entries.length === 0) {
 		return { content: fallback, processedIds: [] };

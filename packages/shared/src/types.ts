@@ -34,6 +34,7 @@ export type SyncedTableName =
 	| "memory_edges"
 	| "connector_handles"
 	| "webhooks"
+	| "rss_feeds"
 	| "client_sessions"
 	| "turns";
 
@@ -145,6 +146,39 @@ export interface Webhook extends SoftDeletable {
 	created_at: string;
 	modified_at: string;
 }
+
+/**
+ * A polled RSS/Atom feed bound to a thread + event task, mirroring the
+ * webhook three-row pattern (feed row + delivery thread + `event` task with
+ * `trigger_spec: rss:<name>`). Unlike webhooks (push), feeds are PULLED by
+ * the leader-gated poller in @bound/platforms, which writes one passive
+ * `rss_intake` relay_inbox row per new item and emits `connector:event` so
+ * the scheduler folds items into the task wakeup via buildEventWakeupContent.
+ */
+export interface RssFeed extends SoftDeletable {
+	id: string;
+	name: string;
+	/** Feed URL (http/https). */
+	url: string;
+	description: string | null;
+	/** Poll cadence in seconds (poller enforces a 60s floor). */
+	poll_interval_seconds: number;
+	/**
+	 * JSON array of item GUIDs already delivered, newest last, capped at
+	 * RSS_SEEN_GUIDS_CAP. This is the durable dedup cursor: relay_inbox
+	 * idempotency keys are pruned with the inbox, so seen-state must live on
+	 * the synced row to survive leader failover without re-delivering the
+	 * whole feed.
+	 */
+	seen_guids: string | null;
+	task_id: string;
+	thread_id: string;
+	created_at: string;
+	modified_at: string;
+}
+
+/** Cap on the seen_guids dedup window persisted per feed. */
+export const RSS_SEEN_GUIDS_CAP = 500;
 
 export type SignatureFormat = "github" | "stripe" | "slack" | "raw" | "none";
 
@@ -360,6 +394,7 @@ export interface SyncedTableRowMap {
 	memory_edges: MemoryEdge;
 	connector_handles: ConnectorHandleRow;
 	webhooks: Webhook;
+	rss_feeds: RssFeed;
 	client_sessions: ClientSession;
 	turns: Turn;
 }
@@ -419,6 +454,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	memory_edges: "lww",
 	connector_handles: "lww",
 	webhooks: "lww",
+	rss_feeds: "lww",
 	client_sessions: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
@@ -519,6 +555,15 @@ export const RELAY_KIND_REGISTRY = {
 	// Its payload is the connector's own batch content (opaque to bound),
 	// distinct from the platform-MCP `intake` shape (intakePayloadSchema).
 	connector_intake: { dispatch: "passive" },
+
+	// `rss_intake` carries one polled RSS/Atom feed item written by the
+	// leader-gated RSS poller (@bound/platforms rss-poller.ts). Same passive
+	// ownership contract as `webhook_intake`: the scheduler's event-task
+	// wakeup path (buildEventWakeupContent) folds + drains it; the
+	// relay-processor must leave it untouched. Payload shape is the poller's
+	// item envelope {feed, title, link, published, summary} — distinct from
+	// both the webhook HTTP envelope and the platform-MCP `intake` schema.
+	rss_intake: { dispatch: "passive" },
 
 	// Response kinds — stored in relay_inbox for polling loops
 	result: { dispatch: "response" },
