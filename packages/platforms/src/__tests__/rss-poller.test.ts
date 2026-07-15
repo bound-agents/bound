@@ -259,4 +259,102 @@ describe("RssPoller", () => {
 		expect(inboxRows().length).toBe(0);
 		expect(emitted.length).toBe(0);
 	});
+
+	it("retries a failed fetch after FAILURE_RETRY_MS instead of a full cadence", async () => {
+		// 4h cadence feed — the production case where one transient failure
+		// used to cost the entire interval.
+		seedFeed({ seen_guids: JSON.stringify(["guid-1"]), poll_interval_seconds: 14400 });
+		let fetches = 0;
+		let failFirst = true;
+		const flakyFetch = (async () => {
+			fetches++;
+			if (failFirst) {
+				failFirst = false;
+				throw new Error("connection refused");
+			}
+			return new Response(RSS_DOC, { status: 200 });
+		}) as unknown as typeof fetch;
+
+		let t = 1_000_000_000_000;
+		const poller = new RssPoller({ db, siteId, eventBus, fetchImpl: flakyFetch, now: () => t });
+
+		await poller.tick();
+		expect(fetches).toBe(1); // failed
+
+		// 4 minutes later — still inside the 5-minute retry window, no fetch.
+		t += 4 * 60_000;
+		await poller.tick();
+		expect(fetches).toBe(1);
+
+		// 5+ minutes after the failure — eligible again, long before the 4h cadence.
+		t += 90_000;
+		await poller.tick();
+		expect(fetches).toBe(2);
+		expect(inboxRows().length).toBe(1); // the retry delivered
+	});
+
+	it("warns and retries soon when an unseeded feed's body parses to zero items", async () => {
+		const feed = seedFeed({ poll_interval_seconds: 14400 }); // seen_guids null
+		const warns: string[] = [];
+		let serveHtml = true;
+		const flakyBody = (async () => {
+			if (serveHtml) {
+				serveHtml = false;
+				return new Response("<html><body>challenge page</body></html>", { status: 200 });
+			}
+			return new Response(RSS_DOC, { status: 200 });
+		}) as unknown as typeof fetch;
+
+		let t = 1_000_000_000_000;
+		const poller = new RssPoller({
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: flakyBody,
+			now: () => t,
+			logger: {
+				info: () => {},
+				warn: (msg) => warns.push(msg),
+			},
+		});
+
+		await poller.tick();
+		expect(warns.some((w) => w.includes("parsed to zero items"))).toBe(true);
+		// Cursor untouched — the HTML poll must not count as the seeding poll.
+		let row = db.query("SELECT seen_guids FROM rss_feeds WHERE id = ?").get(feed.id) as {
+			seen_guids: string | null;
+		};
+		expect(row.seen_guids).toBeNull();
+
+		// 5+ minutes later the retry fires (not 4h) and seeds the cursor.
+		t += 5 * 60_000 + 30_000;
+		await poller.tick();
+		row = db.query("SELECT seen_guids FROM rss_feeds WHERE id = ?").get(feed.id) as {
+			seen_guids: string | null;
+		};
+		expect(row.seen_guids).not.toBeNull();
+		expect(inboxRows().length).toBe(0); // seeding still delivers nothing
+	});
+
+	it("dedupes repeated guids within a single document", async () => {
+		// Bluesky-style: a repost re-lists the original post's URI in the same doc.
+		const doc = `<rss><channel>
+			<item><title>repost</title><guid>guid-dup</guid></item>
+			<item><title>original</title><guid>guid-dup</guid></item>
+			<item><title>other</title><guid>guid-other</guid></item>
+		</channel></rss>`;
+		const feed = seedFeed({ seen_guids: JSON.stringify([]) });
+		const poller = new RssPoller({ db, siteId, eventBus, fetchImpl: fetchReturning(doc) });
+
+		await poller.tick();
+
+		// One intake row per DISTINCT guid, and the cursor stores each once.
+		expect(inboxRows().length).toBe(2);
+		const row = db.query("SELECT seen_guids FROM rss_feeds WHERE id = ?").get(feed.id) as {
+			seen_guids: string;
+		};
+		const cursor = JSON.parse(row.seen_guids) as string[];
+		expect(cursor.filter((g) => g === "guid-dup").length).toBe(1);
+		expect(cursor.length).toBe(2);
+	});
 });
