@@ -458,8 +458,8 @@ function resetEventTask(
 		// failed before markProcessed, where the retry replays the actual
 		// payload.
 		//
-		// Kinds match buildEventWakeupContent's readers exactly: BOTH
-		// webhook_intake and connector_intake fold into the wakeup. Since the
+		// Kinds match buildEventWakeupContent's readers exactly: webhook_intake,
+		// connector_intake, AND rss_intake all fold into the wakeup. Since the
 		// single-delivery-vehicle change, connector_intake rows are the ONLY
 		// leader-local record of a platform event, so missing them here loses
 		// events outright (observed: Discord messages during an active loop
@@ -472,7 +472,7 @@ function resetEventTask(
 		// (retrying on its presence would be a phantom wakeup).
 		const unprocessed = db
 			.query(
-				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN ('webhook_intake', 'connector_intake')",
+				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN ('webhook_intake', 'connector_intake', 'rss_intake')",
 			)
 			.get(task.thread_id) as { c: number } | null;
 		if (unprocessed && unprocessed.c > 0) {

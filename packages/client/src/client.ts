@@ -20,6 +20,7 @@ import type {
 	ConnectionState,
 	ConnectorBindingsResponse,
 	ContextDebugTurn,
+	CreateRssFeedOptions,
 	CreateThreadOptions,
 	CreateWebhookOptions,
 	FileListEntry,
@@ -29,6 +30,7 @@ import type {
 	NetworkStatus,
 	RedactMessageResult,
 	RedactThreadResult,
+	RssFeedListEntry,
 	SendMessageOptions,
 	TaskListEntry,
 	ThreadDetail,
@@ -37,6 +39,7 @@ import type {
 	ToolCallRequest,
 	ToolCallResult,
 	ToolDefinition,
+	UpdateRssFeedOptions,
 	UpdateWebhookOptions,
 	WebhookCreateResponse,
 	WebhookListEntry,
@@ -818,6 +821,36 @@ export class BoundClient {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ allow_unauthenticated: allow }),
 		});
+	}
+
+	// ---- RSS feeds ----
+
+	async listRssFeeds(): Promise<RssFeedListEntry[]> {
+		return this.fetchJson("/api/rss-feeds");
+	}
+
+	async getRssFeed(id: string): Promise<RssFeedListEntry> {
+		return this.fetchJson(`/api/rss-feeds/${id}`);
+	}
+
+	async createRssFeed(options: CreateRssFeedOptions): Promise<RssFeedListEntry> {
+		return this.fetchJson("/api/rss-feeds", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
+	async updateRssFeed(id: string, options: UpdateRssFeedOptions): Promise<RssFeedListEntry> {
+		return this.fetchJson(`/api/rss-feeds/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
+	async deleteRssFeed(id: string): Promise<void> {
+		await this.fetchVoid(`/api/rss-feeds/${id}`, { method: "DELETE" });
 	}
 
 	// ---- Connector bindings ----

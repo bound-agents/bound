@@ -43,6 +43,7 @@ import {
 	type ConnectorToolContext,
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
+	RssPoller,
 	createConnectorTool,
 	getConnectorHandle,
 	isSubscriptionRejected,
@@ -1318,6 +1319,44 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		}
 	} else {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");
+	}
+
+	// 14. RSS feed poller — the pull-side counterpart of webhook ingestion.
+	// Runs its own leader election (platform_leader:rss) independent of the
+	// Discord connectors block above, so feeds poll even on clusters with no
+	// platforms.json. Exactly one host walks the feeds; dedup state
+	// (rss_feeds.seen_guids) is synced, so failover resumes without
+	// re-delivering the backlog. Items land in relay_inbox as passive
+	// `rss_intake` rows and ride the same connector:event → scheduler →
+	// buildEventWakeupContent track as webhooks.
+	{
+		const rssPoller = new RssPoller({
+			db: appContext.db,
+			siteId: appContext.siteId,
+			eventBus: appContext.eventBus,
+			logger: appContext.logger,
+		});
+		const rssLeaderElection = new PlatformLeaderElection(
+			{
+				platform: "rss",
+				connect: () => rssPoller.connect(),
+				disconnect: () => rssPoller.disconnect(),
+			},
+			{
+				platform: "rss",
+				allowed_users: [],
+				leadership: "auto",
+				failover_threshold_ms: 30_000,
+			},
+			appContext.db,
+			appContext.siteId,
+		);
+		await rssLeaderElection.start();
+		appContext.logger.info("[rss] Poller leader election started");
+		const stopRss = () => rssLeaderElection.stop();
+		process.on("exit", stopRss);
+		process.on("SIGINT", stopRss);
+		process.on("SIGTERM", stopRss);
 	}
 
 	return {

@@ -35,6 +35,7 @@ export * from "./connector-handles";
 export * from "./memory-edges";
 export * from "./client-sessions";
 export * from "./webhooks";
+export * from "./rss-feeds";
 
 export * from "./queries/attached-session-hosts";
 export * from "./queries/client-sessions-with-host";
@@ -45,6 +46,7 @@ export * from "./queries/file-modification-notices";
 export * from "./queries/find-dark-connector-handles";
 export * from "./queries/find-task-infra-binding";
 export * from "./queries/get-webhook-with-task";
+export * from "./queries/get-rss-feed-with-task";
 export * from "./queries/leader-host-liveness";
 export * from "./queries/memory-graph-neighbors";
 export * from "./queries/memory-graph-view";

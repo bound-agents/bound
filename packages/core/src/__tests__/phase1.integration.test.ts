@@ -78,14 +78,14 @@ describe("Phase 1 Integration", () => {
 		expect(ctx.logger).toBeDefined();
 		expect(ctx.siteId).toBeDefined();
 
-		// Step 2: Verify database has all 20 tables
+		// Step 2: Verify database has all 21 tables
 		const tables = ctx.db
 			.query(
 				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(29); // 17 main tables (incl. skills, memory_edges, connector_handles, webhooks, client_sessions) + 3 relay + dispatch_queue + 2 metrics - 1 (host_meta is local) + 1 FTS5 virtual + 5 FTS5 shadow = 29
+		expect(tables.length).toBe(30); // 18 main tables (incl. skills, memory_edges, connector_handles, webhooks, rss_feeds, client_sessions) + 3 relay + dispatch_queue + 2 metrics - 1 (host_meta is local) + 1 FTS5 virtual + 5 FTS5 shadow = 29
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [

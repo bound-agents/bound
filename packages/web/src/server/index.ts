@@ -188,6 +188,7 @@ export async function createWebApp(
 	app.route("/api/mcp-apps", routes.mcpApps);
 	app.route("/api/connectors", routes.connectors);
 	app.route("/api/webhooks", routes.webhooks);
+	app.route("/api/rss-feeds", routes.rssFeeds);
 	app.route("/api/skills", routes.skills);
 	app.route("/api/metrics", routes.metrics);
 	app.route("/api/sandbox", routes.sandbox);

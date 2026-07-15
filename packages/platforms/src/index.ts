@@ -30,3 +30,9 @@ export type {
 	PlatformCommandHandler,
 } from "./platform-commands.js";
 export { SUBSCRIPTION_REJECTED_CODE, isSubscriptionRejected } from "./subscription-errors.js";
+export {
+	RssPoller,
+	parseFeed,
+	MIN_POLL_INTERVAL_SECONDS,
+} from "./rss-poller.js";
+export type { RssItem, RssPollerDeps } from "./rss-poller.js";
