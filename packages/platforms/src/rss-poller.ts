@@ -48,6 +48,14 @@ const TICK_INTERVAL_MS = 30_000;
 /** Per-fetch timeout. */
 const FETCH_TIMEOUT_MS = 30_000;
 
+/**
+ * Retry window after a failed poll. A failed fetch used to wait the feed's
+ * FULL cadence before retrying — observed in production: a 4h-cadence feed's
+ * first fetch hiccuped once and the feed sat dark for the whole 4h. Failed
+ * polls now become eligible again in min(cadence, this window).
+ */
+const FAILURE_RETRY_MS = 5 * 60_000;
+
 function decodeEntities(text: string): string {
 	return text
 		.replace(/&lt;/g, "<")
@@ -203,14 +211,14 @@ export class RssPoller {
 				const intervalMs = Math.max(feed.poll_interval_seconds, MIN_POLL_INTERVAL_SECONDS) * 1000;
 				const state = this.runtime.get(feed.id);
 				if (state && nowMs - state.lastPolledMs < intervalMs) continue;
-				await this.pollFeed(feed, nowMs);
+				await this.pollFeed(feed, nowMs, intervalMs);
 			}
 		} finally {
 			this.tickInFlight = false;
 		}
 	}
 
-	private async pollFeed(feed: RssFeed, nowMs: number): Promise<void> {
+	private async pollFeed(feed: RssFeed, nowMs: number, intervalMs: number): Promise<void> {
 		const state = this.runtime.get(feed.id) ?? {
 			lastPolledMs: 0,
 			etag: null,
@@ -241,6 +249,7 @@ export class RssPoller {
 					url: feed.url,
 					status: resp.status,
 				});
+				this.scheduleRetry(state, nowMs, intervalMs);
 				return;
 			}
 
@@ -248,18 +257,37 @@ export class RssPoller {
 			state.lastModified = resp.headers.get("last-modified");
 			body = await resp.text();
 		} catch (error) {
-			// Transient network failure — the next due tick retries. Feeds are
-			// periodic by nature, so there is no retry backoff machinery here.
+			// Transient network failure — retry sooner than a long cadence (see
+			// scheduleRetry). Observed in production: a 4h-cadence feed's first
+			// fetch hiccuped once and the feed sat dark for the full 4h.
 			this.deps.logger?.warn("[rss-poller] Feed fetch threw", {
 				feed: feed.name,
 				url: feed.url,
 				error: error instanceof Error ? error.message : String(error),
 			});
+			this.scheduleRetry(state, nowMs, intervalMs);
 			return;
 		}
 
 		const items = parseFeed(body);
-		if (items.length === 0) return;
+		if (items.length === 0) {
+			// A 2xx body that parses to zero items is usually a wrong URL or a
+			// challenge/HTML page, not a legitimately empty feed — and this path
+			// used to return in total silence (production: it ate the first 4h of
+			// the first real feed with nothing in the logs). Warn with enough of
+			// the body to diagnose, and while the feed has never seeded (null
+			// cursor) retry soon; an established feed stays on its cadence.
+			this.deps.logger?.warn("[rss-poller] Feed body parsed to zero items", {
+				feed: feed.name,
+				url: feed.url,
+				bytes: body.length,
+				head: body.slice(0, 160),
+			});
+			if (feed.seen_guids === null) {
+				this.scheduleRetry(state, nowMs, intervalMs);
+			}
+			return;
+		}
 
 		let seen: string[];
 		try {
@@ -277,8 +305,17 @@ export class RssPoller {
 		const isFirstPoll = feed.seen_guids === null;
 
 		// Feed documents are newest-first; deliver oldest-first so the folded
-		// wakeup reads chronologically.
-		const fresh = items.filter((item) => !seenSet.has(item.guid)).reverse();
+		// wakeup reads chronologically. Dedupe within the batch as well — a
+		// single document can list the same guid twice (e.g. Bluesky reposts
+		// re-list the original post's URI), which would otherwise store
+		// duplicate cursor entries and burn idempotency-key inserts.
+		const fresh: RssItem[] = [];
+		const batchSeen = new Set<string>();
+		for (const item of items.filter((i) => !seenSet.has(i.guid)).reverse()) {
+			if (batchSeen.has(item.guid)) continue;
+			batchSeen.add(item.guid);
+			fresh.push(item);
+		}
 
 		let delivered = 0;
 		if (!isFirstPoll) {
@@ -313,6 +350,17 @@ export class RssPoller {
 			);
 		}
 
+		if (isFirstPoll) {
+			// Leave a visible trace of the seeding poll. Without this, a freshly
+			// created feed's entire setup phase is silent and "it doesn't seem to
+			// be working" is indistinguishable from "nothing new has been
+			// published since creation" (observed in production, 2026-07-15).
+			this.deps.logger?.info(
+				"[rss-poller] Seeded feed cursor (first poll delivers nothing by design)",
+				{ feed: feed.name, items: fresh.length },
+			);
+		}
+
 		if (delivered > 0) {
 			this.deps.logger?.info("[rss-poller] Delivered new feed items", {
 				feed: feed.name,
@@ -325,5 +373,16 @@ export class RssPoller {
 				batch_size: delivered,
 			});
 		}
+	}
+
+	/**
+	 * Back-date a failed poll's cadence stamp so the feed becomes eligible
+	 * again in min(cadence, FAILURE_RETRY_MS) instead of a full interval.
+	 * A transient fetch failure on a long-cadence feed otherwise costs the
+	 * whole interval — observed: a 4h feed's first fetch hiccuped once and
+	 * the feed sat dark, silently, for 4 hours.
+	 */
+	private scheduleRetry(state: FeedRuntimeState, nowMs: number, intervalMs: number): void {
+		state.lastPolledMs = nowMs - Math.max(0, intervalMs - FAILURE_RETRY_MS);
 	}
 }
