@@ -191,6 +191,64 @@ describe("PlatformLeaderElection", () => {
 		});
 	});
 
+	describe("Leader demotion when the seat is taken", () => {
+		it("should demote, disconnect, and later re-promote through standby", async () => {
+			const selfSiteId = "site-1";
+			const usurperSiteId = "usurper-site";
+			const config: PlatformConnectorConfig = {
+				platform: "discord",
+				failover_threshold_ms: 50,
+				allowed_users: [],
+			};
+
+			const now = new Date().toISOString();
+			// Usurper's heartbeat is pinned slightly in the future so it stays
+			// "fresh" through the demotion window — with a 50ms threshold, a
+			// once-stamped row would go stale mid-test and the demoted host
+			// would legitimately re-promote before we can assert standby.
+			const usurperFresh = new Date(Date.now() + 60_000).toISOString();
+			db.run(
+				"INSERT INTO hosts (site_id, host_name, sync_url, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[selfSiteId, "my-host", "https://localhost:3000", now, 0],
+			);
+			db.run(
+				"INSERT INTO hosts (site_id, host_name, sync_url, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[usurperSiteId, "usurper-host", "https://usurper:3000", usurperFresh, 0],
+			);
+
+			const election = new PlatformLeaderElection(mockConnector, config, db, selfSiteId);
+			await election.start();
+			expect(election.isLeader()).toBe(true);
+			expect(mockConnector.connectCallCount).toBe(1);
+
+			// Simulate the LWW takeover a returning sleeper observes: while this
+			// host was dark, another site claimed the seat and sync delivered it.
+			db.run("UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", [
+				usurperSiteId,
+				new Date().toISOString(),
+				"platform_leader:discord",
+			]);
+
+			// Ownership watch (threshold/3 ≈ 16ms) should notice and step down.
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			expect(election.isLeader()).toBe(false);
+			expect(mockConnector.disconnectCallCount).toBe(1);
+			// Usurper's host record is fresh — must stay in standby, not reclaim.
+			expect(mockConnector.connectCallCount).toBe(1);
+
+			// Now the usurper goes stale — the demoted host re-promotes through
+			// the normal standby staleness path, closing the failover cycle.
+			const staleTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+			db.run("UPDATE hosts SET modified_at = ? WHERE site_id = ?", [staleTime, usurperSiteId]);
+
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			expect(election.isLeader()).toBe(true);
+			expect(mockConnector.connectCallCount).toBe(2);
+
+			election.stop();
+		});
+	});
+
 	// AC5.4 (hosts.modified_at heartbeat) is now handled by startHostHeartbeat() in @bound/core.
 	// See packages/core/src/__tests__/host-heartbeat.test.ts for coverage.
 

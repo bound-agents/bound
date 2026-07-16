@@ -19,6 +19,7 @@ import type { PlatformConnectorConfig } from "@bound/shared";
 export class PlatformLeaderElection {
 	private isLeaderFlag = false;
 	private stalenessTimer: ReturnType<typeof setInterval> | null = null;
+	private ownershipTimer: ReturnType<typeof setInterval> | null = null;
 
 	constructor(
 		public readonly connector: {
@@ -51,6 +52,10 @@ export class PlatformLeaderElection {
 		if (this.stalenessTimer) {
 			clearInterval(this.stalenessTimer);
 			this.stalenessTimer = null;
+		}
+		if (this.ownershipTimer) {
+			clearInterval(this.ownershipTimer);
+			this.ownershipTimer = null;
 		}
 		if (this.isLeaderFlag) {
 			this.connector.disconnect?.().catch(() => {
@@ -87,6 +92,48 @@ export class PlatformLeaderElection {
 
 		this.isLeaderFlag = true;
 		await this.connector.connect?.(this.hostBaseUrl);
+		this.startOwnershipWatch(leaderKey);
+	}
+
+	/**
+	 * While leader, periodically verify this host still owns the seat.
+	 *
+	 * Without this, leadership loss is invisible to the deposed leader: a host
+	 * that sleeps past failover_threshold_ms gets replaced via the standby
+	 * staleness path, then wakes still believing it is leader — two hosts run
+	 * the platform concurrently (dual pollers racing LWW cursors, duplicate
+	 * intake). On loss, disconnect the connector and re-enter standby so this
+	 * host can promote again later through the normal staleness path.
+	 */
+	private startOwnershipWatch(leaderKey: string): void {
+		const checkInterval = Math.floor(this.config.failover_threshold_ms / 3);
+
+		this.ownershipTimer = setInterval(async () => {
+			const row = this.db
+				.query<{ value: string }, [string]>(
+					"SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1",
+				)
+				.get(leaderKey);
+
+			// Row missing or still naming us: keep serving. (A vanished row is
+			// not evidence of a rival — the next standby anywhere would simply
+			// claim; stepping down here would leave the platform leaderless.)
+			if (!row || row.value === this.siteId) return;
+
+			// Another site holds the seat — LWW replaced us while we weren't
+			// looking (typically: this host slept past the failover threshold).
+			if (this.ownershipTimer !== null) {
+				clearInterval(this.ownershipTimer);
+			}
+			this.ownershipTimer = null;
+			this.isLeaderFlag = false;
+			try {
+				await this.connector.disconnect?.();
+			} catch {
+				// Disconnect errors must not prevent re-entering standby.
+			}
+			this.startStalenessCheck(leaderKey);
+		}, checkInterval);
 	}
 
 	private startStalenessCheck(leaderKey: string): void {
