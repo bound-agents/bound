@@ -11,6 +11,15 @@ import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 
 const TOOL_RESULT_MAX_LINES = 5;
+/**
+ * Head/tail split of the body budget when a result truncates. Build/test
+ * output puts its verdict on the LAST lines (`0 fail`, `error: …`, exit
+ * summaries), so head-only truncation kept the preamble and cut the signal.
+ * 2 head + 3 tail rows spend the same 5-row budget, biased toward the tail
+ * where the verdict lives.
+ */
+const TOOL_RESULT_HEAD_ROWS = 2;
+const TOOL_RESULT_TAIL_ROWS = 3;
 /** Hard cap on rendered diff entries (after hunking) per edit call. */
 const EDIT_DIFF_MAX_LINES = 24;
 /** Preview lines shown under a `boundless_write` call. */
@@ -745,8 +754,33 @@ export function MessageBlock({
 		// gracefully degrades to plain text rendering.
 		const lang = !isError ? langFromPath(filePath) : undefined;
 		const baseName = filePath ? (filePath.split("/").pop() ?? null) : null;
-		const headerLabel = baseName ?? tildifyText(allLines[0] ?? "");
-		const rawBodyLines = (baseName ? allLines : allLines.slice(1)).map(tildifyText);
+		// JSON-shaped results (MCP/remote tools usually return one JSON blob):
+		// pretty-print so body truncation operates on meaningful lines instead
+		// of soft-wrapped fragments of a single giant line, and summarize the
+		// shape in the header instead of echoing the blob itself.
+		let jsonShape: { label: string; lines: string[] } | null = null;
+		if (!baseName && !isError) {
+			const trimmed = fullText.trim();
+			if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+				try {
+					const parsed: unknown = JSON.parse(trimmed);
+					if (parsed !== null && typeof parsed === "object") {
+						const label = Array.isArray(parsed)
+							? `JSON array · ${parsed.length} ${parsed.length === 1 ? "item" : "items"}`
+							: `JSON object · ${Object.keys(parsed).length} ${
+									Object.keys(parsed).length === 1 ? "key" : "keys"
+								}`;
+						jsonShape = { label, lines: JSON.stringify(parsed, null, 2).split("\n") };
+					}
+				} catch {
+					// Not valid JSON — fall through to plain rendering.
+				}
+			}
+		}
+		const headerLabel = baseName ?? jsonShape?.label ?? tildifyText(allLines[0] ?? "");
+		const rawBodyLines = (jsonShape?.lines ?? (baseName ? allLines : allLines.slice(1))).map(
+			tildifyText,
+		);
 
 		// Pre-wrap body lines at the measured visual width when there is no
 		// syntax highlighting active. Two regressions fall out of leaving Ink
@@ -769,11 +803,18 @@ export function MessageBlock({
 		// this fix.
 		const bodyWrapWidth = Math.max(10, stripeWidth - 6);
 		const expandedBodyLines = lang ? rawBodyLines : wrapLinesAtWidth(rawBodyLines, bodyWrapWidth);
-		const truncated = expandedBodyLines.length > TOOL_RESULT_MAX_LINES;
-		const bodyLines = truncated
-			? expandedBodyLines.slice(0, TOOL_RESULT_MAX_LINES)
+		// Head+tail split (see TOOL_RESULT_HEAD_ROWS): build/test output puts
+		// its verdict on the LAST lines, so head-only truncation kept the
+		// preamble and cut the signal.
+		const totalBodyRows = expandedBodyLines.length;
+		const truncated = totalBodyRows > TOOL_RESULT_MAX_LINES;
+		const headLines = truncated
+			? expandedBodyLines.slice(0, TOOL_RESULT_HEAD_ROWS)
 			: expandedBodyLines;
-		const truncatedRemainder = expandedBodyLines.length - TOOL_RESULT_MAX_LINES;
+		const tailLines = truncated
+			? expandedBodyLines.slice(totalBodyRows - TOOL_RESULT_TAIL_ROWS)
+			: [];
+		const truncatedRemainder = totalBodyRows - TOOL_RESULT_HEAD_ROWS - TOOL_RESULT_TAIL_ROWS;
 
 		const lineNumPattern = /^(\s*\d+)\t(.*)$/;
 		const renderResultLine = (line: string, idx: number): React.ReactElement => {
@@ -824,12 +865,13 @@ export function MessageBlock({
 						{showExit ? <Text color="red"> · exit {message.exit_code}</Text> : null}
 						{slow ? <Text dimColor> · {formatDuration(durationMs)}</Text> : null}
 					</Text>
-					{bodyLines.map((line, idx) => renderResultLine(line, idx))}
+					{headLines.map((line, idx) => renderResultLine(line, idx))}
 					{truncated && (
 						<Text dimColor>
-							{"  "}… {truncatedRemainder} more lines
+							{"  "}… {truncatedRemainder} more {truncatedRemainder === 1 ? "line" : "lines"}
 						</Text>
 					)}
+					{tailLines.map((line, idx) => renderResultLine(line, headLines.length + idx))}
 				</Box>
 			</StripeBox>
 		);
