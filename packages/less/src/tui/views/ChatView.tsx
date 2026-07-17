@@ -108,8 +108,15 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 					b.type === "tool_use" && typeof b.id === "string",
 			);
 			for (const block of uses) {
+				// boundless_* file tools carry `file_path`; the sandbox bms_* tools
+				// carry `path`. Missing this made a bms_read compact line dump its
+				// first hashline as the "target" instead of the file.
 				const filePath =
-					typeof block.input?.file_path === "string" ? block.input.file_path : undefined;
+					typeof block.input?.file_path === "string"
+						? block.input.file_path
+						: typeof block.input?.path === "string"
+							? block.input.path
+							: undefined;
 				const toolName = typeof block.name === "string" ? block.name : undefined;
 				toolUseToInfo.set(block.id, {
 					filePath,

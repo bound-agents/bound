@@ -729,3 +729,34 @@ describe("JSON-shaped tool_result rendering", () => {
 		expect(lastFrame() ?? "").toContain("{not json at all");
 	});
 });
+
+describe("offloaded tool_result rendering", () => {
+	it("keeps the operator facts (size, path) and drops agent coaching", async () => {
+		const content =
+			'[Tool result offloaded: 145445 characters from "boundless_bash"]\n' +
+			"The full output was too large for the context window and has been saved to: /var/folders/xx/bound-tool-results/abc.txt\n" +
+			"Use bash to read or filter it, e.g.:\n" +
+			"  cat /var/folders/xx/bound-tool-results/abc.txt | head -100";
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-off-1",
+					role: "tool_result",
+					content,
+					tool_name: "tooluse_b1",
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName: "boundless_bash",
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("output offloaded · 145,445 chars");
+		expect(frame).toContain("→ /var/folders/xx/bound-tool-results/abc.txt");
+		expect(frame).not.toContain("Use bash");
+		expect(frame).not.toContain("too large for the context window");
+	});
+});

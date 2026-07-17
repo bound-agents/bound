@@ -754,12 +754,30 @@ export function MessageBlock({
 		// gracefully degrades to plain text rendering.
 		const lang = !isError ? langFromPath(filePath) : undefined;
 		const baseName = filePath ? (filePath.split("/").pop() ?? null) : null;
+		// Offloaded results: everything after the marker line is usage coaching
+		// for the AGENT ("Use bash to read or filter it…"), not information for
+		// the operator. Keep the three facts a human needs — offloaded, how
+		// big, where — and drop the rest.
+		let offload: { label: string; lines: string[] } | null = null;
+		if (!baseName && !isError) {
+			const m = (allLines[0] ?? "").match(
+				/^\[Tool result offloaded: (\d+) characters from "[^"]+"\]/,
+			);
+			if (m) {
+				const chars = Number(m[1]).toLocaleString("en-US");
+				const pathMatch = fullText.match(/saved to:\s*(\S+)/);
+				offload = {
+					label: `output offloaded · ${chars} chars`,
+					lines: pathMatch ? [`→ ${pathMatch[1]}`] : [],
+				};
+			}
+		}
 		// JSON-shaped results (MCP/remote tools usually return one JSON blob):
 		// pretty-print so body truncation operates on meaningful lines instead
 		// of soft-wrapped fragments of a single giant line, and summarize the
 		// shape in the header instead of echoing the blob itself.
 		let jsonShape: { label: string; lines: string[] } | null = null;
-		if (!baseName && !isError) {
+		if (!baseName && !offload && !isError) {
 			const trimmed = fullText.trim();
 			if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
 				try {
@@ -777,10 +795,13 @@ export function MessageBlock({
 				}
 			}
 		}
-		const headerLabel = baseName ?? jsonShape?.label ?? tildifyText(allLines[0] ?? "");
-		const rawBodyLines = (jsonShape?.lines ?? (baseName ? allLines : allLines.slice(1))).map(
-			tildifyText,
-		);
+		const headerLabel =
+			baseName ?? offload?.label ?? jsonShape?.label ?? tildifyText(allLines[0] ?? "");
+		const rawBodyLines = (
+			offload?.lines ??
+			jsonShape?.lines ??
+			(baseName ? allLines : allLines.slice(1))
+		).map(tildifyText);
 
 		// Pre-wrap body lines at the measured visual width when there is no
 		// syntax highlighting active. Two regressions fall out of leaving Ink
