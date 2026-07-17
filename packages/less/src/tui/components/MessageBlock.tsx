@@ -227,11 +227,13 @@ function asHashlineEdits(raw: unknown): HashlineEditArg[] {
 
 /**
  * Render the body of a hashline `boundless_edit` tool call. Each edit shows
- * a dim anchor-range header (`12:a3f1 → 14:9c8a`) followed by the replacement
- * lines as green adds. The removed text isn't in the args by design — hashline
- * edits reference anchors instead of reproducing prior content — so there are
- * no red lines to show; the anchor header carries the "what was replaced"
- * signal. Rendering is hard-capped at EDIT_DIFF_MAX_LINES lines total.
+ * a removal header (`− 12:a3f1 → 14:9c8a · 3 lines`) followed by the
+ * replacement lines as green adds. The removed TEXT isn't in the args by
+ * design — hashline edits reference anchors instead of reproducing prior
+ * content — but the anchors encode the removed SPAN, so the header wears the
+ * red minus and the line count explicitly. That keeps the preview visually
+ * consistent with the result row's `+N −M` stat: every − the stat claims has
+ * a visible source line here. Hard-capped at EDIT_DIFF_MAX_LINES lines total.
  */
 function HashlineEditsBody({
 	edits,
@@ -257,10 +259,22 @@ function HashlineEditsBody({
 			continue;
 		}
 		budget--;
+		// Removed-span line count from the anchors (parseInt stops at ':').
+		const startLine = Number.parseInt(edit.start, 10);
+		const endLine = Number.parseInt(edit.end, 10);
+		const removedCount =
+			Number.isFinite(startLine) && Number.isFinite(endLine)
+				? Math.max(0, endLine - startLine + 1)
+				: null;
 		rows.push(
-			<Text key={`h${ei}`} dimColor>
-				@ {range}
-				{contentLines.length === 0 ? " (delete)" : ""}
+			<Text key={`h${ei}`}>
+				<Text color="red">− </Text>
+				<Text dimColor>
+					{range}
+					{removedCount != null
+						? ` · ${removedCount} ${removedCount === 1 ? "line" : "lines"}`
+						: ""}
+				</Text>
 			</Text>,
 		);
 
