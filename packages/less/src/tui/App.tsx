@@ -15,9 +15,15 @@ import { useConnectionState } from "./hooks/useConnectionState";
 import { useMcpServers } from "./hooks/useMcpServers";
 import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
+import { TerminalTitleController, formatThreadTitleForTerminal } from "./util/terminal-title";
 import { ChatView } from "./views/ChatView";
 import { McpView } from "./views/McpView";
 import { PickerView } from "./views/PickerView";
+
+const NULL_TERMINAL_TITLE = new TerminalTitleController(
+	{ isTTY: false, write: () => undefined },
+	{ TERM: "dumb" },
+);
 
 export type AppView = "chat" | "mcp" | "picker";
 export type PickerMode = "thread" | "model";
@@ -77,6 +83,10 @@ export interface AppProps {
 	initialMessages: Message[];
 	model: string | null;
 	toolHandlers: Map<string, ToolHandler>;
+	/** Initial title fetched during startup, used before the first refresh poll. */
+	initialThreadTitle?: string | null;
+	/** Terminal title controller owned by boundless.tsx so shutdown can restore it. */
+	terminalTitle?: TerminalTitleController;
 	/** Resolved shell for the bash-family tool (streaming + spawn invocation). */
 	shell: ResolvedShell;
 	/** Resolved filesystem sandbox policy for the bash-family tool. */
@@ -102,6 +112,8 @@ export function App({
 	initialMessages,
 	model: initialModel,
 	toolHandlers,
+	initialThreadTitle = null,
+	terminalTitle = NULL_TERMINAL_TITLE,
 	shell,
 	sandbox,
 }: AppProps): React.ReactElement {
@@ -175,6 +187,35 @@ export function App({
 			client.off("thread:status", handler);
 		};
 	}, [client, state.threadId]);
+
+	useEffect(() => {
+		let cancelled = false;
+		let lastTitle = state.threadId === initialThreadId ? initialThreadTitle : null;
+
+		if (lastTitle !== null) {
+			terminalTitle.set(formatThreadTitleForTerminal(lastTitle));
+		}
+
+		const refreshTitle = async () => {
+			if (!client) return;
+			try {
+				const thread = await client.getThread(state.threadId);
+				if (cancelled || thread.title === lastTitle) return;
+				lastTitle = thread.title;
+				terminalTitle.set(formatThreadTitleForTerminal(thread.title));
+			} catch {
+				// The terminal title is cosmetic; losing one refresh must not disturb chat.
+			}
+		};
+
+		void refreshTitle();
+		const interval = setInterval(refreshTitle, 15_000);
+
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
+		};
+	}, [client, initialThreadId, initialThreadTitle, state.threadId, terminalTitle]);
 
 	// Dispatch helpers
 	const handleSetView = (view: AppView, pickerMode?: PickerMode) => {
