@@ -9,6 +9,7 @@ import {
 	type ChatViewProps,
 	buildToolResultMetaMap,
 	buildTranscriptMargins,
+	buildTurnActivityMap,
 	partitionPendingMessage,
 } from "../tui/views/ChatView";
 
@@ -732,5 +733,67 @@ describe("buildToolResultMetaMap path-param extraction", () => {
 		];
 		const m = buildToolResultMetaMap(messages);
 		expect(m.get("r1")?.filePath).toBe("/home/user/notes.md");
+	});
+});
+
+/**
+ * Turn-activity summaries: each assistant message that concludes a run of
+ * tool activity gets a one-line journey summary (`14 tools · 1m 40s`),
+ * rendered dim after the `agent` header. Static-safe: depends only on
+ * messages preceding the assistant row.
+ */
+describe("buildTurnActivityMap", () => {
+	const at = (id: string, role: string, createdAt: string, extra: Record<string, unknown> = {}) =>
+		msg({ id, role, content: "x", created_at: createdAt, ...extra });
+
+	it("summarizes a qualifying run (≥3 tools) on the concluding assistant message", () => {
+		const messages = [
+			at("u1", "user", "2026-05-22T00:00:00Z"),
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:10Z", { tool_name: "tu1" }),
+			toolCall("c2", [{ id: "tu2", name: "boundless_read", input: {} }]),
+			at("r2", "tool_result", "2026-05-22T00:00:20Z", { tool_name: "tu2" }),
+			toolCall("c3", [{ id: "tu3", name: "boundless_read", input: {} }]),
+			at("r3", "tool_result", "2026-05-22T00:00:30Z", { tool_name: "tu3" }),
+			at("a1", "assistant", "2026-05-22T00:01:40Z"),
+		];
+		const m = buildTurnActivityMap(messages);
+		expect(m.get("a1")).toBe("3 tools · 1m 40s");
+	});
+
+	it("stays quiet for short fast runs and resets between turns", () => {
+		const messages = [
+			at("u1", "user", "2026-05-22T00:00:00Z"),
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:01Z", { tool_name: "tu1" }),
+			at("a1", "assistant", "2026-05-22T00:00:02Z"),
+			at("u2", "user", "2026-05-22T00:10:00Z"),
+			at("a2", "assistant", "2026-05-22T00:10:01Z"),
+		];
+		const m = buildTurnActivityMap(messages);
+		expect(m.get("a1")).toBeUndefined(); // 1 tool, 2s — not a journey
+		expect(m.get("a2")).toBeUndefined(); // no tools at all
+	});
+
+	it("qualifies a short but slow run on duration alone", () => {
+		const messages = [
+			at("u1", "user", "2026-05-22T00:00:00Z"),
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:30Z", { tool_name: "tu1" }),
+			at("a1", "assistant", "2026-05-22T00:00:31Z"),
+		];
+		expect(buildTurnActivityMap(messages).get("a1")).toBe("1 tool · 31.0s");
+	});
+
+	it("does not leak activity across a user interruption", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:10Z", { tool_name: "tu1" }),
+			at("r2", "tool_result", "2026-05-22T00:00:11Z", { tool_name: "tu1" }),
+			at("r3", "tool_result", "2026-05-22T00:00:12Z", { tool_name: "tu1" }),
+			at("u1", "user", "2026-05-22T00:00:20Z"),
+			at("a1", "assistant", "2026-05-22T00:00:21Z"),
+		];
+		expect(buildTurnActivityMap(messages).get("a1")).toBeUndefined();
 	});
 });

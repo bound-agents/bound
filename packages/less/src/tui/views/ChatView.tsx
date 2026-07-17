@@ -16,6 +16,7 @@ import {
 } from "../components";
 import {
 	analyzeToolCallContent,
+	formatDuration,
 	isCompactToolName,
 	summarizeToolArgs,
 } from "../components/MessageBlock";
@@ -229,6 +230,63 @@ export function buildTranscriptMargins(
 }
 
 /**
+ * Minimum activity for an assistant turn-header summary: a couple of quick
+ * tool calls aren't a journey worth narrating, but a long run (or a slow one)
+ * is — the header tells the reader what the turn cost at the moment they
+ * start reading its conclusion.
+ */
+const ACTIVITY_MIN_TOOLS = 3;
+const ACTIVITY_MIN_MS = 10_000;
+
+/**
+ * Walk messages once and, for each assistant message that concludes a run of
+ * tool activity, produce a one-line summary of that run (`14 tools · 1m 40s`).
+ * Rendered dim after the `agent` header by MessageBlock.
+ *
+ * Static-safe by the same argument as the margin map: a summary depends only
+ * on messages that PRECEDE the assistant message it annotates, so the row
+ * renders correctly the first time and never needs a repaint. Duration is
+ * wall-clock from the run's first tool_call commit to the assistant commit —
+ * both timestamps frozen before the assistant row exists.
+ */
+export function buildTurnActivityMap(messages: Message[]): Map<string, string> {
+	const out = new Map<string, string>();
+	let toolCount = 0;
+	let runStartMs: number | null = null;
+	for (const msg of messages) {
+		if (msg.role === "tool_call") {
+			if (runStartMs === null) runStartMs = Date.parse(msg.created_at);
+			continue;
+		}
+		if (msg.role === "tool_result") {
+			toolCount += 1;
+			continue;
+		}
+		if (msg.role === "assistant") {
+			if (toolCount > 0 && runStartMs !== null && Number.isFinite(runStartMs)) {
+				const ms = Date.parse(msg.created_at) - runStartMs;
+				const qualifies =
+					toolCount >= ACTIVITY_MIN_TOOLS || (Number.isFinite(ms) && ms >= ACTIVITY_MIN_MS);
+				if (qualifies && Number.isFinite(ms) && ms >= 0) {
+					out.set(
+						msg.id,
+						`${toolCount} ${toolCount === 1 ? "tool" : "tools"} · ${formatDuration(ms)}`,
+					);
+				}
+			}
+			toolCount = 0;
+			runStartMs = null;
+			continue;
+		}
+		// user / system / alert rows break the run: activity before them
+		// belongs to a different turn than any assistant message after.
+		toolCount = 0;
+		runStartMs = null;
+	}
+	return out;
+}
+
+/**
  * Discriminated-union item for the session-log Static.
  *
  * Ink's <Static> officially supports only one instance per render tree, so we
@@ -374,6 +432,10 @@ export function ChatView({
 	// keeping per-frame cost flat as scrollback grows.
 	const toolResultMeta = useMemo(() => buildToolResultMetaMap(messages), [messages]);
 
+	// Per-assistant-message activity summaries (`14 tools · 1m 40s`), rendered
+	// dim after the `agent` header. Same memoization rationale as the meta map.
+	const turnActivity = useMemo(() => buildTurnActivityMap(messages), [messages]);
+
 	// Split off the optimistic "sending…" placeholder: it renders in the
 	// dynamic area below, NOT in <Static>. See partitionPendingMessage / #134.
 	const { committed, pending } = useMemo(() => partitionPendingMessage(messages), [messages]);
@@ -502,6 +564,7 @@ export function ChatView({
 									toolInput={meta?.input}
 									showRequest={meta?.total != null && meta.total > 1}
 									callCreatedAt={meta?.callCreatedAt}
+									activitySummary={turnActivity.get(msg.id)}
 									terminalColumns={termColumns}
 								/>
 							</Box>

@@ -760,3 +760,57 @@ describe("offloaded tool_result rendering", () => {
 		expect(frame).not.toContain("too large for the context window");
 	});
 });
+
+describe("outcome fact fragments (creative round)", () => {
+	it("translates conventional exit codes on error results", async () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-exit-hint",
+					role: "tool_result",
+					content: "sh: nope: command not found",
+					tool_name: "tu1",
+					exit_code: 127,
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName: "boundless_bash",
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+		expect(lastFrame() ?? "").toContain("exit 127 (not found)");
+	});
+
+	it("renders a ±diff stat on edit results computed from hashline anchors", async () => {
+		// start 12 → end 14 = 3 lines out; 2 content lines in. Plus a
+		// single-line replacement: 1 out, 1 in. Total +3 −4.
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-diffstat",
+					role: "tool_result",
+					content: "Edited /x/y.ts: applied 2 edits",
+					tool_name: "tu1",
+					exit_code: 0,
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName: "boundless_edit",
+				filePath: "/x/y.ts",
+				toolInput: {
+					file_path: "/x/y.ts",
+					edits: [
+						{ start: "12:aaaa", end: "14:bbbb", content: "line one\nline two" },
+						{ start: "40:cccc", end: "40:cccc", content: "single" },
+					],
+				},
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("+3");
+		expect(frame).toContain("−4");
+	});
+});

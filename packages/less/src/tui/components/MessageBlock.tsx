@@ -118,11 +118,57 @@ function parseSearchSummary(lastLine: string): string | null {
 const SLOW_TOOL_MS = 2000;
 
 /** Format a tool duration for display: `2.4s` under a minute, `1m 12s` above. */
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
 	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
 	const m = Math.floor(ms / 60_000);
 	const s = Math.round((ms % 60_000) / 1000);
 	return `${m}m ${s}s`;
+}
+
+/**
+ * Duration fragment with magnitude color-grading: dim under 10s, yellow to a
+ * minute, red beyond. The thresholds are terminal-scale, not SLA-scale — the
+ * point is that the ONE slow call pops out of a wall of green ✓ rows without
+ * the reader parsing every number.
+ */
+function DurationFragment({ ms }: { ms: number }): React.ReactElement {
+	const color = ms >= 60_000 ? "red" : ms >= 10_000 ? "yellow" : undefined;
+	return color ? (
+		<Text color={color}> · {formatDuration(ms)}</Text>
+	) : (
+		<Text dimColor> · {formatDuration(ms)}</Text>
+	);
+}
+
+/**
+ * Human names for conventional shell exit codes. `exit 127` is trivia;
+ * `exit 127 (not found)` is diagnosis. Covers the POSIX shell conventions
+ * (126/127/2), GNU timeout (124), and the 128+n killed-by-signal family for
+ * the signals that actually show up in tool output (INT/KILL/SEGV/TERM).
+ * Returns null for everything else — an unmapped code renders bare rather
+ * than with a guessed name.
+ */
+function exitCodeHint(code: number): string | null {
+	switch (code) {
+		case 2:
+			return "usage error";
+		case 124:
+			return "timeout";
+		case 126:
+			return "not executable";
+		case 127:
+			return "not found";
+		case 130:
+			return "interrupted";
+		case 137:
+			return "killed";
+		case 139:
+			return "segfault";
+		case 143:
+			return "terminated";
+		default:
+			return null;
+	}
 }
 
 /** Summarize tool arguments for display, showing the most relevant arg value. Also
@@ -438,6 +484,14 @@ export interface MessageBlockProps {
 	 */
 	callCreatedAt?: string;
 	/**
+	 * One-line summary of the tool activity that led to this assistant
+	 * message (`14 tools · 1m 40s`), computed by ChatView's
+	 * `buildTurnActivityMap`. Rendered dim after the `agent` header so the
+	 * reader knows what the turn cost at the moment they start reading its
+	 * conclusion. Only set for assistant messages that follow tool activity.
+	 */
+	activitySummary?: string;
+	/**
 	 * Live terminal column count from `useTerminalSize()`. Forwarded into
 	 * `StripeBox`'s `width` so long lines wrap inside the colored stripe
 	 * instead of soft-wrapping at the terminal edge.
@@ -460,6 +514,7 @@ export function MessageBlock({
 	toolInput,
 	showRequest,
 	callCreatedAt,
+	activitySummary,
 	terminalColumns,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
@@ -524,8 +579,11 @@ export function MessageBlock({
 	if (message.role === "assistant") {
 		return (
 			<StripeBox color="cyan" width={stripeWidth}>
-				<Text bold color="cyan">
-					agent
+				<Text>
+					<Text bold color="cyan">
+						agent
+					</Text>
+					{activitySummary ? <Text dimColor> · {activitySummary}</Text> : null}
 				</Text>
 				{renderContent(parsedContent)}
 			</StripeBox>
@@ -677,11 +735,8 @@ export function MessageBlock({
 								{toolName}
 							</Text>
 							<Text> {target}</Text>
-							<Text dimColor>
-								{" "}
-								· {summary}
-								{slow ? ` · ${formatDuration(durationMs)}` : ""}
-							</Text>
+							<Text dimColor> · {summary}</Text>
+							{slow ? <DurationFragment ms={durationMs} /> : null}
 						</Text>
 					</Box>
 				</StripeBox>
@@ -700,6 +755,23 @@ export function MessageBlock({
 		) {
 			const isEdit = resolvedToolName.endsWith("_edit");
 			const editCount = Array.isArray(toolInput?.edits) ? toolInput.edits.length : null;
+			// Hashline anchors already encode the replaced span (`start: "12:aaaa",
+			// end: "14:bbbb"` = 3 lines out) and content encodes the lines in — so
+			// a real ±diff stat is computable from the args alone, no result
+			// parsing. Anchor line numbers parse leniently (parseInt stops at ':').
+			const hashEdits = isEdit ? asHashlineEdits(toolInput?.edits) : [];
+			let diffStat: { added: number; removed: number } | null = null;
+			if (hashEdits.length > 0) {
+				let added = 0;
+				let removed = 0;
+				for (const e of hashEdits) {
+					added += e.content === "" ? 0 : e.content.split("\n").length;
+					const s = Number.parseInt(e.start, 10);
+					const t = Number.parseInt(e.end, 10);
+					if (Number.isFinite(s) && Number.isFinite(t)) removed += Math.max(0, t - s + 1);
+				}
+				diffStat = { added, removed };
+			}
 			const writeLines =
 				typeof toolInput?.content === "string"
 					? toolInput.content.length === 0
@@ -731,11 +803,15 @@ export function MessageBlock({
 							</Text>
 							<Text dimColor> {toolName} · </Text>
 							<Text>{target}</Text>
-							<Text dimColor>
-								{" "}
-								· {summary}
-								{slow ? ` · ${formatDuration(durationMs)}` : ""}
-							</Text>
+							<Text dimColor> · {summary}</Text>
+							{diffStat ? (
+								<>
+									<Text dimColor> · </Text>
+									<Text color="green">+{diffStat.added}</Text>
+									<Text color="red"> −{diffStat.removed}</Text>
+								</>
+							) : null}
+							{slow ? <DurationFragment ms={durationMs} /> : null}
 						</Text>
 					</Box>
 				</StripeBox>
@@ -883,8 +959,14 @@ export function MessageBlock({
 							<Text> </Text>
 						)}
 						<Text>{headerLabel}</Text>
-						{showExit ? <Text color="red"> · exit {message.exit_code}</Text> : null}
-						{slow ? <Text dimColor> · {formatDuration(durationMs)}</Text> : null}
+						{showExit && message.exit_code != null ? (
+							<Text color="red">
+								{" "}
+								· exit {message.exit_code}
+								{exitCodeHint(message.exit_code) ? ` (${exitCodeHint(message.exit_code)})` : ""}
+							</Text>
+						) : null}
+						{slow ? <DurationFragment ms={durationMs} /> : null}
 					</Text>
 					{headLines.map((line, idx) => renderResultLine(line, idx))}
 					{truncated && (
