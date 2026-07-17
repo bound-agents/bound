@@ -343,11 +343,15 @@ describe("MessageBlock", () => {
 
 			const frame = lastFrame();
 			// First line is the header label; body is the remainder, truncated to
-			// the body cap (5 visual rows). 20 logical lines − 1 header = 19 body
-			// lines; first 5 visible, 14 deferred to the "… more lines" tail.
+			// the body cap (5 visual rows) as a head+tail split — 2 head rows,
+			// …-marker, 3 tail rows — so the verdict lines at the END of build/test
+			// output survive. 20 logical lines − 1 header = 19 body lines; lines
+			// 2–3 and 18–20 visible, 14 omitted at the marker.
 			expect(frame).toContain("line 1");
-			expect(frame).toContain("line 6");
+			expect(frame).toContain("line 3");
 			expect(frame).not.toContain("line 7");
+			expect(frame).toContain("line 18");
+			expect(frame).toContain("line 20");
 			expect(frame).toContain("… 14 more lines");
 		});
 
@@ -371,9 +375,13 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
+			// Head+tail split: header output 1; body outputs 2–12 → head 2–3,
+			// tail 10–12, 6 omitted at the marker.
 			expect(frame).toContain("output 1");
-			expect(frame).toContain("output 6");
+			expect(frame).toContain("output 3");
 			expect(frame).not.toContain("output 7");
+			expect(frame).toContain("output 10");
+			expect(frame).toContain("output 12");
 			expect(frame).toContain("… 6 more lines");
 		});
 
@@ -428,12 +436,14 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// Should show first content line as header + 5 body lines, not blank
-			// lines. 10 content lines − 1 header = 9 body lines; first 5 visible,
-			// 4 deferred to the tail.
+			// Should show first content line as header + head/tail body rows, not
+			// blank lines. 10 content lines − 1 header = 9 body lines; head
+			// content 2–3, tail content 8–10, 4 omitted at the marker.
 			expect(frame).toContain("content 1");
-			expect(frame).toContain("content 6");
-			expect(frame).not.toContain("content 7");
+			expect(frame).toContain("content 3");
+			expect(frame).not.toContain("content 6");
+			expect(frame).toContain("content 8");
+			expect(frame).toContain("content 10");
 			expect(frame).toContain("… 4 more lines");
 		});
 
@@ -659,5 +669,63 @@ describe("MessageBlock", () => {
 			expect(frame).not.toContain("sending");
 			expect(frame).toContain("deploy the thing");
 		});
+	});
+});
+
+describe("JSON-shaped tool_result rendering", () => {
+	it("summarizes a JSON object result in the header and pretty-prints the body", async () => {
+		// MCP/remote tools usually return one JSON blob on a single line;
+		// raw it soft-wraps across rows and becomes its own header label.
+		const content = JSON.stringify({
+			title: "Mixed-thread conversation state projection",
+			state: "open",
+			comments: 12,
+			body: "Long body text",
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-json-1",
+					role: "tool_result",
+					content,
+					tool_name: "tooluse_gh1",
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName: "github",
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("JSON object · 4 keys");
+		// Pretty-printed body lines, not the raw single-line blob. The 6-row
+		// pretty body truncates head+tail (2+3): `{` + title visible at the
+		// head, comments/body/`}` at the tail, state omitted at the marker —
+		// which also pins the singular "1 more line" form.
+		expect(frame).toContain('"title"');
+		expect(frame).toContain('"comments": 12');
+		expect(frame).toContain("… 1 more line");
+		expect(frame).not.toContain("1 more lines");
+		expect(frame).not.toContain('"state"');
+	});
+
+	it("leaves non-JSON results alone", async () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-json-2",
+					role: "tool_result",
+					content: "{not json at all",
+					tool_name: "tooluse_x",
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+		expect(lastFrame() ?? "").toContain("{not json at all");
 	});
 });
