@@ -196,6 +196,7 @@ describe("buildToolResultMetaMap", () => {
 			input: { file_path: "/a.ts" },
 			callMsgId: "c1",
 			total: 1,
+			callCreatedAt: "2026-05-22T00:00:00Z",
 		});
 	});
 
@@ -280,6 +281,7 @@ describe("buildToolResultMetaMap", () => {
 			input: { command: "echo hi" },
 			callMsgId: "c1",
 			total: 1,
+			callCreatedAt: "2026-05-22T00:00:00Z",
 		});
 	});
 
@@ -556,5 +558,168 @@ describe("MessageBlock compact read/search rendering", () => {
 			React.createElement(MessageBlock, { message: call, terminalColumns: 80 }),
 		);
 		expect((lastFrame() ?? "").trim()).toBe("");
+	});
+});
+
+/**
+ * Outcome facts on committed result rows: wall-clock duration for slow calls
+ * (call created_at → result created_at, both frozen at commit time), exit
+ * codes beyond the bare ✗ (127/124/2 carry diagnostic signal; exit 1 stays
+ * quiet), and one-line status for edit/write results whose call row already
+ * rendered the full diff/preview.
+ */
+describe("MessageBlock result outcome facts", () => {
+	it("shows duration on slow compact results, computed from the call timestamp", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "1:aaaa|line",
+			exit_code: 0,
+			created_at: "2026-05-22T00:00:05Z",
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				filePath: "/x/y.ts",
+				callCreatedAt: "2026-05-22T00:00:00Z",
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").toContain("5.0s");
+	});
+
+	it("omits duration on fast calls", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "1:aaaa|line",
+			exit_code: 0,
+			created_at: "2026-05-22T00:00:00.500Z",
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				filePath: "/x/y.ts",
+				callCreatedAt: "2026-05-22T00:00:00Z",
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").not.toContain("0.5s");
+	});
+
+	it("shows non-1 exit codes on error results", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "sh: nope: command not found",
+			exit_code: 127,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_bash",
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").toContain("exit 127");
+	});
+
+	it("stays quiet on exit 1 — the ✗ already says it failed", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "tests failed",
+			exit_code: 1,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_bash",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("✗");
+		expect(out).not.toContain("exit 1");
+	});
+
+	it("collapses an edit result to one status line — the call row carries the diff", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content:
+				"Edited /x/y.ts: applied 3 edits\n\nNew content (fresh anchors):\n1:aaaa|const a = 1;",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_edit",
+				filePath: "/x/y.ts",
+				toolInput: {
+					file_path: "/x/y.ts",
+					edits: [
+						{ start: "1:aa", end: "1:aa", content: "x" },
+						{ start: "2:bb", end: "2:bb", content: "y" },
+						{ start: "3:cc", end: "3:cc", content: "z" },
+					],
+				},
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("3 edits applied");
+		expect(out).toContain("y.ts");
+		expect(out).not.toContain("New content");
+	});
+
+	it("collapses a write result to one status line with the written line count", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "Wrote 42 bytes to /x/new.ts",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_write",
+				filePath: "/x/new.ts",
+				toolInput: { file_path: "/x/new.ts", content: "a\nb\nc" },
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("3 lines written");
+		expect(out).not.toContain("Wrote 42 bytes");
+	});
+
+	it("keeps full rendering for edit errors", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "Error: anchor mismatch at 12:a3f1",
+			exit_code: 1,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_edit",
+				filePath: "/x/y.ts",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("✗");
+		expect(out).toContain("anchor mismatch");
 	});
 });

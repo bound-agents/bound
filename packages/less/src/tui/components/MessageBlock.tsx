@@ -99,6 +99,23 @@ function parseSearchSummary(lastLine: string): string | null {
 	return m ? m[1] : null;
 }
 
+/**
+ * Threshold for showing a duration fragment on committed result rows. The
+ * spinner already shows elapsed time while a tool runs; the committed row
+ * used to forget it. Fast calls stay unannotated — a duration on every row
+ * would be noise — but slow ones carry the "where did this turn's time go"
+ * signal into scrollback.
+ */
+const SLOW_TOOL_MS = 2000;
+
+/** Format a tool duration for display: `2.4s` under a minute, `1m 12s` above. */
+function formatDuration(ms: number): string {
+	if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+	const m = Math.floor(ms / 60_000);
+	const s = Math.round((ms % 60_000) / 1000);
+	return `${m}m ${s}s`;
+}
+
 /** Summarize tool arguments for display, showing the most relevant arg value. */
 function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
 	// For common tools, show the primary argument. The shell tool is named for
@@ -403,6 +420,13 @@ export interface MessageBlockProps {
 	 */
 	showRequest?: boolean;
 	/**
+	 * `created_at` of the originating tool_call message, resolved by ChatView
+	 * through the correlation map. Paired with this result's own `created_at`
+	 * it yields the call's wall-clock duration — both timestamps are frozen by
+	 * the time the row commits, so the rendered fragment is Static-safe.
+	 */
+	callCreatedAt?: string;
+	/**
 	 * Live terminal column count from `useTerminalSize()`. Forwarded into
 	 * `StripeBox`'s `width` so long lines wrap inside the colored stripe
 	 * instead of soft-wrapping at the terminal edge.
@@ -424,6 +448,7 @@ export function MessageBlock({
 	toolName: resolvedToolName,
 	toolInput,
 	showRequest,
+	callCreatedAt,
 	terminalColumns,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
@@ -593,6 +618,20 @@ export function MessageBlock({
 		// (orphan result), show no label rather than echo the id.
 		const toolName = resolvedToolName ? displayToolName(resolvedToolName) : null;
 
+		// Wall-clock duration: result commit-time minus call commit-time. Both
+		// ISO timestamps are frozen by the time this row renders, so the
+		// fragment is Static-safe. Only slow calls render it — the spinner
+		// covers live elapsed; this carries "where the turn's time went" into
+		// scrollback without annotating every fast call.
+		const durationMs = callCreatedAt
+			? Date.parse(message.created_at) - Date.parse(callCreatedAt)
+			: Number.NaN;
+		const slow = Number.isFinite(durationMs) && durationMs >= SLOW_TOOL_MS;
+		// Exit codes carry diagnostic signal beyond the ✗ itself — 127 is
+		// command-not-found, 124 a timeout, 2 usage error. The generic `exit 1`
+		// stays quiet; it adds nothing over the indicator.
+		const showExit = isError && message.exit_code != null && message.exit_code !== 1;
+
 		// Compact read/search results render as ONE line per invocation: the ⏵
 		// call row was suppressed upstream, so this line is the invocation's
 		// whole committed footprint — target plus a volume summary (lines read /
@@ -627,7 +666,65 @@ export function MessageBlock({
 								{toolName}
 							</Text>
 							<Text> {target}</Text>
-							<Text dimColor> · {summary}</Text>
+							<Text dimColor>
+								{" "}
+								· {summary}
+								{slow ? ` · ${formatDuration(durationMs)}` : ""}
+							</Text>
+						</Text>
+					</Box>
+				</StripeBox>
+			);
+		}
+
+		// Edit/write results collapse to one status line: the ⏵ call row
+		// already rendered the full diff / content preview, so the result body
+		// ("Edited path: applied N edits / New content …") repeats what's
+		// already on screen. One line closes the request/result pair. Errors
+		// skip this branch and keep the full rendering below.
+		if (
+			resolvedToolName &&
+			(resolvedToolName.endsWith("_edit") || resolvedToolName.endsWith("_write")) &&
+			!isError
+		) {
+			const isEdit = resolvedToolName.endsWith("_edit");
+			const editCount = Array.isArray(toolInput?.edits) ? toolInput.edits.length : null;
+			const writeLines =
+				typeof toolInput?.content === "string"
+					? toolInput.content.length === 0
+						? 0
+						: toolInput.content.split("\n").length
+					: null;
+			const summary = isEdit
+				? editCount != null
+					? `${editCount} ${editCount === 1 ? "edit" : "edits"} applied`
+					: "applied"
+				: writeLines != null
+					? `${writeLines} ${writeLines === 1 ? "line" : "lines"} written`
+					: "written";
+			const target = filePath
+				? (filePath.split("/").pop() ?? tildifyPath(filePath))
+				: tildifyText(allLines[0] ?? "");
+			return (
+				<StripeBox color="cyan" width={stripeWidth}>
+					{/* Parallel groups: the call's listing is suppressed, so the
+					    diff/preview rides here with the request row — without it the
+					    change content would never commit at all. */}
+					{showRequest && (
+						<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} />
+					)}
+					<Box paddingLeft={2}>
+						<Text wrap="truncate-end">
+							<Text color={indicatorColor} bold>
+								{indicator}
+							</Text>
+							<Text dimColor> {toolName} · </Text>
+							<Text>{target}</Text>
+							<Text dimColor>
+								{" "}
+								· {summary}
+								{slow ? ` · ${formatDuration(durationMs)}` : ""}
+							</Text>
 						</Text>
 					</Box>
 				</StripeBox>
@@ -722,6 +819,8 @@ export function MessageBlock({
 							<Text> </Text>
 						)}
 						<Text>{headerLabel}</Text>
+						{showExit ? <Text color="red"> · exit {message.exit_code}</Text> : null}
+						{slow ? <Text dimColor> · {formatDuration(durationMs)}</Text> : null}
 					</Text>
 					{bodyLines.map((line, idx) => renderResultLine(line, idx))}
 					{truncated && (

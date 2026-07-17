@@ -48,6 +48,12 @@ export type ToolResultMeta = {
 	 * follows its request — the call's own listing is suppressed.
 	 */
 	total?: number;
+	/**
+	 * `created_at` of the owning tool_call message. Paired with the result's
+	 * own `created_at` it yields wall-clock duration for the completed call —
+	 * both frozen by the time the result row commits (Static-safe).
+	 */
+	callCreatedAt?: string;
 };
 
 /**
@@ -78,6 +84,7 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 			input?: Record<string, unknown>;
 			callMsgId: string;
 			total: number;
+			callCreatedAt: string;
 		}
 	>();
 	for (const msg of messages) {
@@ -106,6 +113,7 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 					input: block.input,
 					callMsgId: msg.id,
 					total: uses.length,
+					callCreatedAt: msg.created_at,
 				});
 			}
 		} catch {
@@ -130,6 +138,7 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 			input: info.input,
 			callMsgId: info.callMsgId,
 			total: info.total,
+			callCreatedAt: info.callCreatedAt,
 		});
 	}
 	return result;
@@ -478,6 +487,7 @@ export function ChatView({
 									toolName={meta?.toolName}
 									toolInput={meta?.input}
 									showRequest={meta?.total != null && meta.total > 1}
+									callCreatedAt={meta?.callCreatedAt}
 									terminalColumns={termColumns}
 								/>
 							</Box>
