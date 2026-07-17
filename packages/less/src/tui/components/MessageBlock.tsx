@@ -5,6 +5,7 @@ import type React from "react";
 import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tildifyPath, tildifyText } from "../util/path";
+import { stripTerminalControlSequences } from "../util/terminal-control";
 import { wrapLinesAtWidth } from "../util/wrap";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
@@ -342,7 +343,7 @@ export function MessageBlock({
 	// Helper to render content with markdown support
 	const renderContent = (content: string | ContentBlock[]): React.ReactElement => {
 		if (typeof content === "string") {
-			return <Markdown text={content} />;
+			return <Markdown text={stripTerminalControlSequences(content)} />;
 		}
 
 		// ContentBlock array - extract text blocks
@@ -352,7 +353,7 @@ export function MessageBlock({
 		}
 
 		const combinedText = textBlocks
-			.map((block) => (block as { type: "text"; text: string }).text)
+			.map((block) => stripTerminalControlSequences((block as { type: "text"; text: string }).text))
 			.join("\n\n");
 		return <Markdown text={combinedText} />;
 	};
@@ -382,7 +383,9 @@ export function MessageBlock({
 					you{isPending ? <Text dimColor> · sending…</Text> : null}
 				</Text>
 				{isPending ? (
-					<Text dimColor>{typeof parsedContent === "string" ? parsedContent : ""}</Text>
+					<Text dimColor>
+						{typeof parsedContent === "string" ? stripTerminalControlSequences(parsedContent) : ""}
+					</Text>
 				) : (
 					renderContent(parsedContent)
 				)}
@@ -417,7 +420,7 @@ export function MessageBlock({
 					text: string;
 				}>;
 				inlineText = textBlocks
-					.map((b) => b.text)
+					.map((b) => stripTerminalControlSequences(b.text))
 					.filter(Boolean)
 					.join("\n\n");
 			}
@@ -451,7 +454,7 @@ export function MessageBlock({
 					<Text color="cyan" bold>
 						{displayToolName(message.tool_name || "tool")}
 					</Text>
-					<Text dimColor>: {message.content}</Text>
+					<Text dimColor>: {stripTerminalControlSequences(message.content)}</Text>
 				</Text>
 			</StripeBox>
 		);
@@ -473,13 +476,14 @@ export function MessageBlock({
 		}
 
 		// Flatten all text into lines and truncate to keep the TUI compact
-		const fullText =
+		const fullText = stripTerminalControlSequences(
 			typeof filteredContent === "string"
 				? filteredContent
 				: filteredContent
 						.filter((b) => b.type === "text")
 						.map((b) => (b as { type: "text"; text: string }).text)
-						.join("\n");
+						.join("\n"),
+		);
 		// Strip leading/trailing blank lines so truncation shows meaningful content
 		const rawLines = fullText.split("\n");
 		const firstNonEmpty = rawLines.findIndex((l: string) => l.trim().length > 0);
@@ -608,7 +612,9 @@ export function MessageBlock({
 					alert
 				</Text>
 				<Text color="red">
-					{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}
+					{stripTerminalControlSequences(
+						typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent),
+					)}
 				</Text>
 			</StripeBox>
 		);
@@ -626,7 +632,9 @@ export function MessageBlock({
 					system
 				</Text>
 				<Text>
-					{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}
+					{stripTerminalControlSequences(
+						typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent),
+					)}
 				</Text>
 			</StripeBox>
 		);
@@ -636,7 +644,10 @@ export function MessageBlock({
 	return (
 		<Text dimColor>
 			[{message.role}:{" "}
-			{typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent)}]
+			{stripTerminalControlSequences(
+				typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent),
+			)}
+			]
 		</Text>
 	);
 }
