@@ -14,6 +14,7 @@ import {
 	ToolCallCard,
 	computeStdoutRowBudget,
 } from "../components";
+import { analyzeToolCallContent, isCompactToolName } from "../components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
@@ -37,6 +38,10 @@ export type ToolResultMeta = {
 	 * name, so without this the header would echo a useless id.
 	 */
 	toolName?: string;
+	/** The originating tool_use's `input` args — compact result lines render from these. */
+	input?: Record<string, unknown>;
+	/** id of the owning tool_call message — used for group-continuation margins. */
+	callMsgId?: string;
 };
 
 /**
@@ -61,7 +66,13 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 	// Each entry knows its parent call and the call's total tool_use count.
 	const toolUseToInfo = new Map<
 		string,
-		{ filePath?: string; toolName?: string; callMsgId: string; total: number }
+		{
+			filePath?: string;
+			toolName?: string;
+			input?: Record<string, unknown>;
+			callMsgId: string;
+			total: number;
+		}
 	>();
 	for (const msg of messages) {
 		if (msg.role !== "tool_call") continue;
@@ -83,7 +94,13 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 				const filePath =
 					typeof block.input?.file_path === "string" ? block.input.file_path : undefined;
 				const toolName = typeof block.name === "string" ? block.name : undefined;
-				toolUseToInfo.set(block.id, { filePath, toolName, callMsgId: msg.id, total: uses.length });
+				toolUseToInfo.set(block.id, {
+					filePath,
+					toolName,
+					input: block.input,
+					callMsgId: msg.id,
+					total: uses.length,
+				});
 			}
 		} catch {
 			// Non-parseable content — skip; not all tool_call messages parse cleanly.
@@ -104,9 +121,73 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 			filePath: info.filePath,
 			isLastInGroup: seen === info.total,
 			toolName: info.toolName,
+			input: info.input,
+			callMsgId: info.callMsgId,
 		});
 	}
 	return result;
+}
+
+/**
+ * Per-message layout margins for the session-log Static, plus whether the
+ * transcript currently ends inside a compact read/search run (the dynamic
+ * area below adds its own top gap in that case, since the run's rows carry
+ * no bottom margin).
+ *
+ * Compact tools (read/search) collapse to one line per invocation and
+ * consecutive invocations stack with no blank line between them — they
+ * dominate coding sessions, so the transcript stays scannable. Because
+ * Ink's <Static> commits each row exactly once and never repaints it, a
+ * row's margins may depend only on messages that precede it (its own
+ * suppressed call, the prior compact run) — never on what arrives later.
+ * That is why grouping is expressed as marginTop on the FOLLOWING row
+ * ("am I continuing a run?") rather than marginBottom on the last row of a
+ * run ("is anything after me?"), which would need the future.
+ */
+export function buildTranscriptMargins(
+	messages: Message[],
+	meta: Map<string, ToolResultMeta>,
+): { margins: Map<string, { top: number; bottom: number }>; endsInCompactRun: boolean } {
+	const margins = new Map<string, { top: number; bottom: number }>();
+	// Rolling state over already-committed rows: are we inside a compact
+	// run, and which tool_call message owns the most recent row?
+	let prev: { compactRun: boolean; callMsgId?: string } = { compactRun: false };
+	for (const msg of messages) {
+		if (msg.role === "tool_call") {
+			const { suppressed } = analyzeToolCallContent(msg.content);
+			if (suppressed) {
+				// Zero-height row — any margin would render as a stray blank line.
+				margins.set(msg.id, { top: 0, bottom: 0 });
+				prev = { compactRun: true, callMsgId: msg.id };
+			} else {
+				margins.set(msg.id, { top: prev.compactRun ? 1 : 0, bottom: 0 });
+				prev = { compactRun: false, callMsgId: msg.id };
+			}
+			continue;
+		}
+		if (msg.role === "tool_result") {
+			const m = meta.get(msg.id);
+			const isError = msg.exit_code != null && msg.exit_code !== 0;
+			const compact = m?.toolName != null && isCompactToolName(m.toolName) && !isError;
+			if (compact) {
+				margins.set(msg.id, { top: 0, bottom: 0 });
+				prev = { compactRun: true, callMsgId: m?.callMsgId };
+			} else {
+				// A non-compact result abuts its own call/siblings (same owning
+				// call), but takes a top gap when it interrupts a compact run.
+				const sameGroup = m?.callMsgId != null && m.callMsgId === prev.callMsgId;
+				margins.set(msg.id, {
+					top: prev.compactRun && !sameGroup ? 1 : 0,
+					bottom: m && !m.isLastInGroup ? 0 : 1,
+				});
+				prev = { compactRun: false, callMsgId: m?.callMsgId };
+			}
+			continue;
+		}
+		margins.set(msg.id, { top: prev.compactRun ? 1 : 0, bottom: 1 });
+		prev = { compactRun: false };
+	}
+	return { margins, endsInCompactRun: prev.compactRun };
 }
 
 /**
@@ -256,6 +337,15 @@ export function ChatView({
 	// dynamic area below, NOT in <Static>. See partitionPendingMessage / #134.
 	const { committed, pending } = useMemo(() => partitionPendingMessage(messages), [messages]);
 
+	// Per-message layout margins (compact read/search grouping) plus whether
+	// the transcript currently ends inside a compact run — the dynamic area
+	// below supplies the separating gap in that case, since compact rows
+	// carry no bottom margin of their own.
+	const layout = useMemo(
+		() => buildTranscriptMargins(committed, toolResultMeta),
+		[committed, toolResultMeta],
+	);
+
 	// Static items: discriminated union of [splash header sentinel, ...committed].
 	// Ink's <Static> tracks rendered indices internally and only renders items at
 	// indices >= its high-water mark on each update. Putting the splash sentinel
@@ -357,20 +447,18 @@ export function ChatView({
 						}
 						const msg = item.msg;
 						const meta = toolResultMeta.get(msg.id);
-						// Margin rule: collapse the gap inside a tool group so the cyan
-						// stripe runs continuously through call → results.
-						//   - tool_call → next: always 0 (touches its first result, or
-						//     in degenerate cases still fine to abut).
-						//   - tool_result, mid-group: 0 (touches sibling result).
-						//   - tool_result, last in group: 1 (separates from next turn).
-						//   - everything else: 1 (default turn-to-turn separation).
-						const marginBottom = msg.role === "tool_call" ? 0 : meta && !meta.isLastInGroup ? 0 : 1;
+						// Margins come from buildTranscriptMargins: tool groups render
+						// as one continuous cyan card, and compact read/search
+						// invocations stack one line each with no gap between them
+						// (see that function's contract for the Static-safety rationale).
+						const m = layout.margins.get(msg.id) ?? { top: 0, bottom: 1 };
 						return (
-							<Box key={msg.id} marginBottom={marginBottom}>
+							<Box key={msg.id} marginTop={m.top} marginBottom={m.bottom}>
 								<MessageBlock
 									message={msg}
 									filePath={meta?.filePath}
 									toolName={meta?.toolName}
+									toolInput={meta?.input}
 									terminalColumns={termColumns}
 								/>
 							</Box>
@@ -384,6 +472,9 @@ export function ChatView({
 			    preventing the splash header from re-rendering on return to ChatView. */}
 			{active && (
 				<>
+					{/* A compact read/search run carries no bottom margin (its rows
+					    stack); supply the turn-separating gap before the dynamic area. */}
+					{layout.endsInCompactRun && <Box height={1} />}
 					{/* Banners */}
 					{bannerMessage && bannerType && (
 						<Box marginBottom={1}>

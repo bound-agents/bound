@@ -23,6 +23,73 @@ function displayToolName(name: string): string {
 	return name;
 }
 
+/** One parsed tool_use block from a tool_call message's content JSON. */
+export type ToolUseBlockLite = { name: string; input: Record<string, unknown> };
+
+/**
+ * Compact tools (read/search) collapse to one committed line per invocation —
+ * the result row — instead of a ⏵ call row plus a multi-line result body.
+ * These calls dominate coding sessions, so halving their vertical cost keeps
+ * the transcript scannable. Matched by suffix so boundless_read / bms_read /
+ * boundless_search / bms_search are all covered without enumerating surfaces.
+ */
+export function isCompactToolName(name: string): boolean {
+	return name.endsWith("_read") || name.endsWith("_search");
+}
+
+/**
+ * Parse a tool_call message's content into tool_use blocks + inline text, and
+ * classify whether the whole call row is suppressed (every use is a compact
+ * read/search and there is no inline text to show). Shared between
+ * MessageBlock (rendering) and ChatView (margin layout) — the two must agree
+ * on suppression or a zero-height row would still carry a 1-row margin.
+ */
+export function analyzeToolCallContent(content: string): {
+	toolUses: ToolUseBlockLite[];
+	inlineText: string;
+	suppressed: boolean;
+} {
+	let toolUses: ToolUseBlockLite[] = [];
+	let inlineText = "";
+	try {
+		const blocks = JSON.parse(content);
+		if (Array.isArray(blocks)) {
+			toolUses = blocks.filter((b: { type?: string }) => b.type === "tool_use");
+			const textBlocks = blocks.filter((b: { type?: string }) => b.type === "text") as Array<{
+				type: "text";
+				text: string;
+			}>;
+			inlineText = textBlocks
+				.map((b) => stripTerminalControlSequences(b.text))
+				.filter(Boolean)
+				.join("\n\n");
+		}
+	} catch {
+		// Non-parseable content — caller falls back to raw display.
+	}
+	const suppressed =
+		toolUses.length > 0 && inlineText === "" && toolUses.every((b) => isCompactToolName(b.name));
+	return { toolUses, inlineText, suppressed };
+}
+
+/** Cap a compact-line target (path or search pattern) so the row stays one line. */
+function truncateCompactTarget(s: string, max = 64): string {
+	return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/**
+ * Parse the shared search-result footer ("N matches in M files (K files
+ * searched)" / "No matches found (K files searched).") into the compact
+ * summary fragment. Returns null when the line isn't the shared footer
+ * (an error result or a differently-shaped remote tool) so the caller can
+ * fall back to a plain line count.
+ */
+function parseSearchSummary(lastLine: string): string | null {
+	if (/^No matches found \(\d+ files? searched\)\.?/.test(lastLine)) return "no matches";
+	const m = lastLine.match(/^(\d+ match(?:es)? in \d+ files?) \(\d+ files? searched\)/);
+	return m ? m[1] : null;
+}
+
 /** Summarize tool arguments for display, showing the most relevant arg value. */
 function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
 	// For common tools, show the primary argument. The shell tool is named for
@@ -313,6 +380,12 @@ export interface MessageBlockProps {
 	 */
 	toolName?: string;
 	/**
+	 * The originating tool_use's `input` args, resolved by ChatView through the
+	 * same correlation map as `toolName`. Compact read/search result lines pull
+	 * their target (file path / search pattern) from here.
+	 */
+	toolInput?: Record<string, unknown>;
+	/**
 	 * Live terminal column count from `useTerminalSize()`. Forwarded into
 	 * `StripeBox`'s `width` so long lines wrap inside the colored stripe
 	 * instead of soft-wrapping at the terminal edge.
@@ -332,6 +405,7 @@ export function MessageBlock({
 	message,
 	filePath,
 	toolName: resolvedToolName,
+	toolInput,
 	terminalColumns,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
@@ -405,34 +479,24 @@ export function MessageBlock({
 	}
 
 	if (message.role === "tool_call") {
-		// Parse tool_use blocks and inline assistant text from the content JSON.
-		// The agent loop folds inline text ("I'll check that file") into the
-		// tool_call row's content blocks alongside tool_use entries, so we need
-		// to extract and render both.
-		let toolUseBlocks: Array<{ name: string; input: Record<string, unknown> }> = [];
-		let inlineText = "";
-		try {
-			const blocks = JSON.parse(message.content);
-			if (Array.isArray(blocks)) {
-				toolUseBlocks = blocks.filter((b: { type?: string }) => b.type === "tool_use");
-				const textBlocks = blocks.filter((b: { type?: string }) => b.type === "text") as Array<{
-					type: "text";
-					text: string;
-				}>;
-				inlineText = textBlocks
-					.map((b) => stripTerminalControlSequences(b.text))
-					.filter(Boolean)
-					.join("\n\n");
-			}
-		} catch {
-			// Non-parseable content — fall back to raw display
+		// Parse tool_use blocks + inline assistant text via the shared analyzer
+		// (ChatView uses the same one for margin layout, so suppression stays in
+		// lockstep). Compact read/search uses don't get ⏵ rows — each invocation
+		// renders as one line on its result instead — so they're filtered out.
+		const { toolUses, inlineText, suppressed } = analyzeToolCallContent(message.content);
+		if (suppressed) {
+			// Every use is a compact read/search with no inline text: commit
+			// nothing. The dynamic in-flight card covers the running state; the
+			// result row carries the whole invocation.
+			return <></>;
 		}
+		const toolUseBlocks = toolUses.filter((b) => !isCompactToolName(b.name));
 
-		if (toolUseBlocks.length > 0) {
+		if (toolUses.length > 0) {
 			return (
 				<StripeBox color="cyan" width={stripeWidth}>
 					{inlineText && (
-						<Box flexDirection="column" marginBottom={1}>
+						<Box flexDirection="column" marginBottom={toolUseBlocks.length > 0 ? 1 : 0}>
 							<Text bold color="cyan">
 								agent
 							</Text>
@@ -508,6 +572,43 @@ export function MessageBlock({
 		// tool_use_id, which is noise in the TUI. When the name can't be resolved
 		// (orphan result), show no label rather than echo the id.
 		const toolName = resolvedToolName ? displayToolName(resolvedToolName) : null;
+
+		// Compact read/search results render as ONE line per invocation: the ⏵
+		// call row was suppressed upstream, so this line is the invocation's
+		// whole committed footprint — target plus a volume summary (lines read /
+		// matches found) instead of a body preview. Errors skip this branch and
+		// keep the full rendering below so failures stay visible.
+		if (resolvedToolName && isCompactToolName(resolvedToolName) && !isError) {
+			const isSearch = resolvedToolName.endsWith("_search");
+			const lineCount = `${allLines.length} ${allLines.length === 1 ? "line" : "lines"}`;
+			const target = isSearch
+				? truncateCompactTarget(
+						typeof toolInput?.pattern === "string"
+							? toolInput.pattern
+							: tildifyText(allLines[0] ?? ""),
+					)
+				: truncateCompactTarget(filePath ? tildifyPath(filePath) : tildifyText(allLines[0] ?? ""));
+			const summary = isSearch
+				? (parseSearchSummary(allLines[allLines.length - 1] ?? "") ?? lineCount)
+				: lineCount;
+			return (
+				<StripeBox color="cyan" width={stripeWidth}>
+					<Box paddingLeft={2}>
+						<Text wrap="truncate-end">
+							<Text color={indicatorColor} bold>
+								{indicator}
+							</Text>
+							<Text color="cyan" bold>
+								{" "}
+								{toolName}
+							</Text>
+							<Text> {target}</Text>
+							<Text dimColor> · {summary}</Text>
+						</Text>
+					</Box>
+				</StripeBox>
+			);
+		}
 
 		// When this tool_result is for a tool that operated on a file (read,
 		// most importantly), the file path is resolved upstream via the
