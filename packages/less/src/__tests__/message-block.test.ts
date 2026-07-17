@@ -814,3 +814,38 @@ describe("outcome fact fragments (creative round)", () => {
 		expect(frame).toContain("−4");
 	});
 });
+
+describe("edit preview removal headers", () => {
+	it("wears the minus and removed-line count so the ±stat has a visible source", async () => {
+		// Kara's report: the preview showed ONLY green + lines while the
+		// result stat claimed −7 — the minus had no visible source. The
+		// anchor header now carries it: `− 7:f872 → 13:5ede · 7 lines`.
+		const content = JSON.stringify([
+			{
+				type: "tool_use",
+				id: "tu-1",
+				name: "boundless_edit",
+				input: {
+					file_path: "/x/y.ts",
+					edits: [{ start: "7:f872", end: "13:5ede", content: "a\nb" }],
+				},
+			},
+		]);
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-edit-minus",
+					role: "tool_call",
+					content,
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("− 7:f872 → 13:5ede · 7 lines");
+		expect(frame).not.toContain("@ 7:f872");
+	});
+});
