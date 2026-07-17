@@ -717,3 +717,23 @@ describe("TextInput Esc clear", () => {
 		expect(lastFrame()).toContain("hello");
 	});
 });
+
+describe("paste sanitization (tab/newline width desync)", () => {
+	it("expands pasted tabs and flattens newlines so row accounting stays exact", async () => {
+		// 2026-07-17: pasting a tab-bearing line made every subsequent
+		// keystroke re-emit the input box's top border — a literal \t is one
+		// character to breakLines but up to 8 columns to the terminal, so
+		// Ink's logical line count desynced from the physical rows and
+		// log-update under-erased. Tabs land as spaces; a multiline paste
+		// into this single-line input lands with single spaces.
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("\treturn { a: 1 }\nnext line");
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("\t");
+		expect(frame).toContain("    return { a: 1 } next line");
+	});
+});
