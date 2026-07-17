@@ -195,6 +195,7 @@ describe("buildToolResultMetaMap", () => {
 			toolName: "read",
 			input: { file_path: "/a.ts" },
 			callMsgId: "c1",
+			total: 1,
 		});
 	});
 
@@ -278,6 +279,7 @@ describe("buildToolResultMetaMap", () => {
 			toolName: "bash",
 			input: { command: "echo hi" },
 			callMsgId: "c1",
+			total: 1,
 		});
 	});
 

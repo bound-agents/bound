@@ -8,19 +8,13 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("MessageBlock", () => {
 	describe("tool_call rendering", () => {
-		it("formats multi-tool_use blocks with tool names, not raw JSON", async () => {
+		it("formats tool_use blocks with tool names, not raw JSON", async () => {
 			const content = JSON.stringify([
 				{
 					type: "tool_use",
 					id: "tooluse_aaa111",
 					name: "boundless_write",
 					input: { file_path: "/tmp/test.txt", content: "hello" },
-				},
-				{
-					type: "tool_use",
-					id: "tooluse_bbb222",
-					name: "boundless_bash",
-					input: { command: "echo hi" },
 				},
 			]);
 
@@ -41,26 +35,29 @@ describe("MessageBlock", () => {
 			const frame = lastFrame();
 			// Should show tool names with boundless_ prefix stripped
 			expect(frame).toContain("write");
-			expect(frame).toContain("bash");
 			expect(frame).not.toContain("boundless_");
 			// Should NOT dump raw JSON
 			expect(frame).not.toContain('"type":"tool_use"');
 			expect(frame).not.toContain("tool_use");
 		});
 
-		it("prefixes remote (non-boundless) tools with [remote]", async () => {
+		it("suppresses parallel multi-tool_use call rows — requests render on their results", async () => {
+			// <Static> commits the call row before any result exists, so pairing
+			// request with result is only possible by re-rendering the ⏵ row on
+			// each result (MessageBlock's showRequest prop). The call itself
+			// commits nothing.
 			const content = JSON.stringify([
 				{
 					type: "tool_use",
-					id: "tooluse_ccc333",
-					name: "bash",
-					input: { command: "ls -la" },
+					id: "tooluse_aaa111",
+					name: "boundless_bash",
+					input: { command: "echo one" },
 				},
 				{
 					type: "tool_use",
-					id: "tooluse_ddd444",
-					name: "memorize",
-					input: { key: "test", value: "hello" },
+					id: "tooluse_bbb222",
+					name: "boundless_bash",
+					input: { command: "echo two" },
 				},
 			]);
 
@@ -78,9 +75,32 @@ describe("MessageBlock", () => {
 			);
 			await tick();
 
-			const frame = lastFrame();
-			expect(frame).toContain("[remote] bash");
-			expect(frame).toContain("[remote] memorize");
+			expect((lastFrame() ?? "").trim()).toBe("");
+		});
+
+		it("prefixes remote (non-boundless) tools with [remote]", async () => {
+			// Single-use calls: multi-use (parallel) calls are suppressed — their
+			// ⏵ rows render on the results — so formatting is pinned per-use here.
+			const renderCall = (id: string, name: string, input: Record<string, unknown>) =>
+				render(
+					React.createElement(MessageBlock, {
+						message: {
+							id: "msg-1",
+							role: "tool_call",
+							content: JSON.stringify([{ type: "tool_use", id, name, input }]),
+							thread_id: "t-1",
+							created_at: new Date().toISOString(),
+						},
+						terminalColumns: 120,
+					}),
+				);
+
+			const bash = renderCall("tooluse_ccc333", "bash", { command: "ls -la" });
+			const memorize = renderCall("tooluse_ddd444", "memorize", { key: "test", value: "hello" });
+			await tick();
+
+			expect(bash.lastFrame()).toContain("[remote] bash");
+			expect(memorize.lastFrame()).toContain("[remote] memorize");
 		});
 
 		it("does not prefix boundless_ tools with [remote]", async () => {
@@ -180,41 +200,32 @@ describe("MessageBlock", () => {
 		it("summarizes non-bash shell commands (pwsh/cmd) as a bare command line", async () => {
 			// resolveShell mints boundless_pwsh / boundless_cmd for PowerShell and
 			// cmd.exe; the summary must render the command line directly, not fall
-			// through to the generic `command=...` key=value branch.
-			const content = JSON.stringify([
-				{
-					type: "tool_use",
-					id: "tooluse_pwsh01",
-					name: "boundless_pwsh",
-					input: { command: "Get-ChildItem -Recurse" },
-				},
-				{
-					type: "tool_use",
-					id: "tooluse_cmd001",
-					name: "boundless_cmd",
-					input: { command: "dir /s" },
-				},
-			]);
+			// through to the generic `command=...` key=value branch. Rendered as
+			// single-use calls — multi-use (parallel) calls are suppressed and
+			// their ⏵ rows ride the results instead.
+			const renderShellCall = (id: string, name: string, command: string) =>
+				render(
+					React.createElement(MessageBlock, {
+						message: {
+							id: "msg-1",
+							role: "tool_call",
+							content: JSON.stringify([{ type: "tool_use", id, name, input: { command } }]),
+							thread_id: "t-1",
+							created_at: new Date().toISOString(),
+						},
+						terminalColumns: 120,
+					}),
+				);
 
-			const { lastFrame } = render(
-				React.createElement(MessageBlock, {
-					message: {
-						id: "msg-1",
-						role: "tool_call",
-						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
-					terminalColumns: 120,
-				}),
-			);
+			const pwsh = renderShellCall("tooluse_pwsh01", "boundless_pwsh", "Get-ChildItem -Recurse");
+			const cmd = renderShellCall("tooluse_cmd001", "boundless_cmd", "dir /s");
 			await tick();
 
-			const frame = lastFrame();
-			expect(frame).toContain("Get-ChildItem -Recurse");
-			expect(frame).toContain("dir /s");
+			expect(pwsh.lastFrame()).toContain("Get-ChildItem -Recurse");
+			expect(cmd.lastFrame()).toContain("dir /s");
 			// Not the generic key=value fallback.
-			expect(frame).not.toContain("command=");
+			expect(pwsh.lastFrame()).not.toContain("command=");
+			expect(cmd.lastFrame()).not.toContain("command=");
 		});
 	});
 

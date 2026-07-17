@@ -42,6 +42,12 @@ export type ToolResultMeta = {
 	input?: Record<string, unknown>;
 	/** id of the owning tool_call message — used for group-continuation margins. */
 	callMsgId?: string;
+	/**
+	 * Number of tool_use blocks in the owning call. Results of PARALLEL groups
+	 * (total > 1) re-render their ⏵ request row so each result immediately
+	 * follows its request — the call's own listing is suppressed.
+	 */
+	total?: number;
 };
 
 /**
@@ -123,6 +129,7 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 			toolName: info.toolName,
 			input: info.input,
 			callMsgId: info.callMsgId,
+			total: info.total,
 		});
 	}
 	return result;
@@ -149,45 +156,56 @@ export function buildTranscriptMargins(
 	meta: Map<string, ToolResultMeta>,
 ): { margins: Map<string, { top: number; bottom: number }>; endsInCompactRun: boolean } {
 	const margins = new Map<string, { top: number; bottom: number }>();
-	// Rolling state over already-committed rows: are we inside a compact
-	// run, and which tool_call message owns the most recent row?
-	let prev: { compactRun: boolean; callMsgId?: string } = { compactRun: false };
+	// Rolling state over already-committed rows. `compactRun` means the last
+	// VISIBLE row is a compact one-liner; `visibleCallMsgId` is the owning
+	// call of the last visible tool row. Suppressed (zero-height) calls leave
+	// both untouched — they don't change what's on screen, so letting them
+	// flip the state would misplace gaps around rows they never rendered.
+	let compactRun = false;
+	let visibleCallMsgId: string | undefined;
 	for (const msg of messages) {
 		if (msg.role === "tool_call") {
 			const { suppressed } = analyzeToolCallContent(msg.content);
 			if (suppressed) {
-				// Zero-height row — any margin would render as a stray blank line.
+				// Zero-height row — any margin would render as a stray blank
+				// line, and the visible-row state is unaffected.
 				margins.set(msg.id, { top: 0, bottom: 0 });
-				prev = { compactRun: true, callMsgId: msg.id };
 			} else {
-				margins.set(msg.id, { top: prev.compactRun ? 1 : 0, bottom: 0 });
-				prev = { compactRun: false, callMsgId: msg.id };
+				margins.set(msg.id, { top: compactRun ? 1 : 0, bottom: 0 });
+				compactRun = false;
+				visibleCallMsgId = msg.id;
 			}
 			continue;
 		}
 		if (msg.role === "tool_result") {
 			const m = meta.get(msg.id);
 			const isError = msg.exit_code != null && msg.exit_code !== 0;
-			const compact = m?.toolName != null && isCompactToolName(m.toolName) && !isError;
-			if (compact) {
+			if (m?.toolName != null && isCompactToolName(m.toolName) && !isError) {
+				// Compact one-liner: stacks directly onto whatever visible row
+				// precedes it (a run sibling, or a full row whose own bottom
+				// margin supplies the gap).
 				margins.set(msg.id, { top: 0, bottom: 0 });
-				prev = { compactRun: true, callMsgId: m?.callMsgId };
+				compactRun = true;
+				visibleCallMsgId = m.callMsgId;
 			} else {
-				// A non-compact result abuts its own call/siblings (same owning
-				// call), but takes a top gap when it interrupts a compact run.
-				const sameGroup = m?.callMsgId != null && m.callMsgId === prev.callMsgId;
+				// Full-width result (or ⏵-paired result for parallel groups):
+				// abuts the group it visibly continues; takes the separating
+				// gap when it interrupts a compact run it doesn't belong to.
+				const continuesVisibleGroup = m?.callMsgId != null && m.callMsgId === visibleCallMsgId;
 				margins.set(msg.id, {
-					top: prev.compactRun && !sameGroup ? 1 : 0,
+					top: !continuesVisibleGroup && compactRun ? 1 : 0,
 					bottom: m && !m.isLastInGroup ? 0 : 1,
 				});
-				prev = { compactRun: false, callMsgId: m?.callMsgId };
+				compactRun = false;
+				visibleCallMsgId = m?.callMsgId;
 			}
 			continue;
 		}
-		margins.set(msg.id, { top: prev.compactRun ? 1 : 0, bottom: 1 });
-		prev = { compactRun: false };
+		margins.set(msg.id, { top: compactRun ? 1 : 0, bottom: 1 });
+		compactRun = false;
+		visibleCallMsgId = undefined;
 	}
-	return { margins, endsInCompactRun: prev.compactRun };
+	return { margins, endsInCompactRun: compactRun };
 }
 
 /**
@@ -459,6 +477,7 @@ export function ChatView({
 									filePath={meta?.filePath}
 									toolName={meta?.toolName}
 									toolInput={meta?.input}
+									showRequest={meta?.total != null && meta.total > 1}
 									terminalColumns={termColumns}
 								/>
 							</Box>
