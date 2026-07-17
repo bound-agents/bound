@@ -8,6 +8,7 @@ import {
 	ChatView,
 	type ChatViewProps,
 	buildToolResultMetaMap,
+	buildTranscriptMargins,
 	partitionPendingMessage,
 } from "../tui/views/ChatView";
 
@@ -188,7 +189,13 @@ describe("buildToolResultMetaMap", () => {
 		];
 		const m = buildToolResultMetaMap(messages);
 		expect(m.size).toBe(1);
-		expect(m.get("r1")).toEqual({ filePath: "/a.ts", isLastInGroup: true, toolName: "read" });
+		expect(m.get("r1")).toEqual({
+			filePath: "/a.ts",
+			isLastInGroup: true,
+			toolName: "read",
+			input: { file_path: "/a.ts" },
+			callMsgId: "c1",
+		});
 	});
 
 	it("marks all but the final sibling result as mid-group for parallel calls", () => {
@@ -269,6 +276,8 @@ describe("buildToolResultMetaMap", () => {
 			filePath: undefined,
 			isLastInGroup: true,
 			toolName: "bash",
+			input: { command: "echo hi" },
+			callMsgId: "c1",
 		});
 	});
 
@@ -369,5 +378,181 @@ describe("MessageBlock tool_result header", () => {
 			}),
 		);
 		expect(lastFrame() ?? "").not.toContain(toolUseId);
+	});
+});
+
+/**
+ * Compact read/search grouping: consecutive read/search invocations collapse
+ * to one line each with no blank lines between them. Because Ink's <Static>
+ * commits each row once and never repaints, all margins here are derived
+ * only from PRECEDING messages (marginTop on the follower, never a
+ * retroactive marginBottom on the last row of a run).
+ */
+describe("buildTranscriptMargins (compact read/search grouping)", () => {
+	function marginsFor(messages: Message[]) {
+		return buildTranscriptMargins(messages, buildToolResultMetaMap(messages));
+	}
+
+	it("stacks consecutive read/search invocations with no gaps and flags the open run", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			toolResult("r1", "tu1"),
+			toolCall("c2", [{ id: "tu2", name: "boundless_search", input: { pattern: "foo" } }]),
+			toolResult("r2", "tu2"),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		expect(margins.get("c1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("c2")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r2")).toEqual({ top: 0, bottom: 0 });
+		expect(endsInCompactRun).toBe(true);
+	});
+
+	it("separates the message after a compact run with a top margin", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			toolResult("r1", "tu1"),
+			msg({ id: "a1", role: "assistant", content: "done" }),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		expect(margins.get("a1")).toEqual({ top: 1, bottom: 1 });
+		expect(endsInCompactRun).toBe(false);
+	});
+
+	it("keeps legacy margins for non-compact tools (call abuts results, last result closes)", () => {
+		const messages = [
+			toolCall("c1", [
+				{ id: "tu1", name: "bash" },
+				{ id: "tu2", name: "bash" },
+			]),
+			toolResult("r1", "tu1"),
+			toolResult("r2", "tu2"),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		expect(margins.get("c1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r2")).toEqual({ top: 0, bottom: 1 });
+		expect(endsInCompactRun).toBe(false);
+	});
+
+	it("treats a compact-tool error result as full-width: closes the run, keeps group abutment", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			msg({
+				id: "r1",
+				role: "tool_result",
+				tool_name: "tu1",
+				content: "Error: ENOENT",
+				exit_code: 1,
+			}),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		// Same owning call as the suppressed row before it — no stray top gap.
+		expect(margins.get("r1")).toEqual({ top: 0, bottom: 1 });
+		expect(endsInCompactRun).toBe(false);
+	});
+
+	it("a tool_call with inline text is not suppressed and takes the gap after a run", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			toolResult("r1", "tu1"),
+			msg({
+				id: "c2",
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "text", text: "checking b too" },
+					{ type: "tool_use", id: "tu2", name: "boundless_read", input: { file_path: "/b.ts" } },
+				]),
+			}),
+			toolResult("r2", "tu2"),
+		];
+		const { margins } = marginsFor(messages);
+		expect(margins.get("c2")).toEqual({ top: 1, bottom: 0 });
+		// Its result is compact again and re-opens the run.
+		expect(margins.get("r2")).toEqual({ top: 0, bottom: 0 });
+	});
+});
+
+/**
+ * Compact read/search result rendering: one line per invocation carrying the
+ * target (path / pattern) and a volume summary (lines read / matches found).
+ * The ⏵ call row for compact-only calls is suppressed entirely.
+ */
+describe("MessageBlock compact read/search rendering", () => {
+	it("renders a read result as one line with path and line count, no body", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "1:aaaa|const a = 1;\n2:bbbb|const b = 2;\n3:cccc|const c = 3;",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				filePath: "/x/y.ts",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("read");
+		expect(out).toContain("y.ts");
+		expect(out).toContain("3 lines");
+		expect(out).not.toContain("const a");
+	});
+
+	it("renders a search result with the parsed match summary and pattern", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content:
+				"src/a.ts:1:ab12:foo\nsrc/b.ts:2:cd34:foo\n\n2 matches in 2 files (10 files searched)",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_search",
+				toolInput: { pattern: "foo" },
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("search");
+		expect(out).toContain("foo");
+		expect(out).toContain("2 matches in 2 files");
+		expect(out).not.toContain("files searched");
+	});
+
+	it("keeps the full rendering for compact-tool errors", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "Error: ENOENT: no such file or directory: /nope.ts",
+			exit_code: 1,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("✗");
+		expect(out).toContain("ENOENT");
+	});
+
+	it("suppresses a compact-only tool_call row entirely", () => {
+		const call = toolCall("c1", [
+			{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } },
+		]);
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, { message: call, terminalColumns: 80 }),
+		);
+		expect((lastFrame() ?? "").trim()).toBe("");
 	});
 });
