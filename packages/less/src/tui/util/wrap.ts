@@ -53,3 +53,21 @@ export function wrapLinesAtWidth(lines: readonly string[], width: number): strin
 	}
 	return out;
 }
+
+/**
+ * Expand tab characters to spaces for width-measured rendering.
+ *
+ * A literal `\t` is ONE character to every measuring layer in this stack
+ * (string-width, breakLines, wrapLineAtWidth's codepoint count) but the
+ * terminal advances to the next 8-column tab stop when it draws one — so any
+ * tab-bearing line is under-measured, wraps past its computed break point,
+ * and (in the input field) desyncs Ink's logical line count from the
+ * physical row count, making log-update under-erase and re-emit rows on
+ * every keystroke. Substituting a fixed run of spaces makes rendered width
+ * equal measured width; visual fidelity to the terminal's own tab stops is
+ * secondary to the accounting being right.
+ */
+export function expandTabs(s: string, tabWidth = 4): string {
+	if (!s.includes("\t")) return s;
+	return s.replaceAll("\t", " ".repeat(tabWidth));
+}

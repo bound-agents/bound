@@ -6,7 +6,7 @@ import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tildifyPath, tildifyText } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
-import { wrapLinesAtWidth } from "../util/wrap";
+import { expandTabs, wrapLinesAtWidth } from "../util/wrap";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 
@@ -182,7 +182,7 @@ export function summarizeToolArgs(toolName: string, input: Record<string, unknow
 		(isShellToolName(toolName) || toolName.endsWith("_bash")) &&
 		typeof input.command === "string"
 	) {
-		return input.command;
+		return expandTabs(input.command);
 	}
 	// File tools summarize as their file. Two gauges: boundless_* tools carry
 	// `file_path`, the sandbox bms_* tools carry `path`. Without the second,
@@ -195,7 +195,9 @@ export function summarizeToolArgs(toolName: string, input: Record<string, unknow
 	// For MCP/other tools, show every arg as key=value, values in full.
 	const entries = Object.entries(input);
 	if (entries.length === 0) return "";
-	return entries.map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+	return expandTabs(
+		entries.map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" "),
+	);
 }
 
 /** Shape of one hashline edit as carried in `boundless_edit` args. */
@@ -246,7 +248,7 @@ function HashlineEditsBody({
 	for (let ei = 0; ei < edits.length; ei++) {
 		const edit = edits[ei];
 		const range = edit.start === edit.end ? edit.start : `${edit.start} → ${edit.end}`;
-		const contentLines = edit.content === "" ? [] : edit.content.split("\n");
+		const contentLines = edit.content === "" ? [] : expandTabs(edit.content).split("\n");
 
 		if (budget <= 0) {
 			truncatedLines += contentLines.length + 1;
@@ -317,7 +319,7 @@ function WritePreviewBody({
 	if (content.length === 0) {
 		return null;
 	}
-	const lines = content.split("\n");
+	const lines = expandTabs(content).split("\n");
 	const truncated = lines.length > WRITE_PREVIEW_MAX_LINES;
 	const display = truncated ? lines.slice(0, WRITE_PREVIEW_MAX_LINES) : lines;
 	const lang = langFromPath(filePath);
@@ -907,7 +909,15 @@ export function MessageBlock({
 		// `read` output rarely contains the unbreakable lines that motivate
 		// this fix.
 		const bodyWrapWidth = Math.max(10, stripeWidth - 6);
-		const expandedBodyLines = lang ? rawBodyLines : wrapLinesAtWidth(rawBodyLines, bodyWrapWidth);
+		// Tabs expand to spaces on the plain-text path so measured width equals
+		// rendered width (see expandTabs). The `lang` path keeps its tabs: the
+		// hashline renderer's line-number regex keys on a literal \t separator.
+		const expandedBodyLines = lang
+			? rawBodyLines
+			: wrapLinesAtWidth(
+					rawBodyLines.map((l) => expandTabs(l)),
+					bodyWrapWidth,
+				);
 		// Head+tail split (see TOOL_RESULT_HEAD_ROWS): build/test output puts
 		// its verdict on the LAST lines, so head-only truncation kept the
 		// preamble and cut the signal.

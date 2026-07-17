@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { wrapLineAtWidth, wrapLinesAtWidth } from "../tui/util/wrap";
+import { expandTabs, wrapLineAtWidth, wrapLinesAtWidth } from "../tui/util/wrap";
 
 describe("wrapLineAtWidth", () => {
 	it("returns the line unchanged when shorter than width", () => {
@@ -74,5 +74,27 @@ describe("wrapLinesAtWidth", () => {
 
 	it("returns an empty array for an empty input", () => {
 		expect(wrapLinesAtWidth([], 10)).toEqual([]);
+	});
+});
+
+describe("expandTabs", () => {
+	it("replaces tabs with fixed-width space runs", () => {
+		expect(expandTabs("\tx")).toBe("    x");
+		expect(expandTabs("a\tb\tc", 2)).toBe("a  b  c");
+	});
+
+	it("returns the same string when no tabs are present", () => {
+		const s = "no tabs here";
+		expect(expandTabs(s)).toBe(s);
+	});
+
+	it("makes measured width equal rendered width for tab-bearing lines", () => {
+		// The root cause of both 2026-07-17 bugs: a tab is ONE character to
+		// every measuring layer but up to 8 columns to the terminal. After
+		// expansion, character count IS the rendered width.
+		const line = '\treturn { thread_id: "t1" }';
+		const expanded = expandTabs(line);
+		expect(expanded.includes("\t")).toBe(false);
+		expect(expanded.length).toBe(line.length + 3); // \t → 4 spaces
 	});
 });

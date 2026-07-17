@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useStdin } from "ink";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { expandTabs } from "../util/wrap";
 
 export interface TextInputProps {
 	onSubmit: (value: string) => void;
@@ -399,9 +400,17 @@ export function TextInput({
 				if (input.startsWith("[<") || input.startsWith("[M")) {
 					return;
 				}
+				// Sanitize pasted text: breakLines does its row accounting in plain
+				// character counts, but a literal tab renders as up to 8 columns and
+				// an embedded newline as a whole extra physical row — either desyncs
+				// Ink's logical line count from the physical rows, making log-update
+				// under-erase and re-emit the input box's top border on every
+				// keystroke. Tabs become spaces; newlines (multiline paste into a
+				// single-line input) become single spaces.
+				const sanitized = expandTabs(input).replace(/\r\n|\r|\n/g, " ");
 				setState((s) => ({
-					value: s.value.slice(0, s.pos) + input + s.value.slice(s.pos),
-					pos: s.pos + input.length,
+					value: s.value.slice(0, s.pos) + sanitized + s.value.slice(s.pos),
+					pos: s.pos + sanitized.length,
 				}));
 			}
 		},
