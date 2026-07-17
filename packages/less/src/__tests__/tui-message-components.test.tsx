@@ -122,6 +122,24 @@ describe("Message rendering components", () => {
 			expect(output).toMatch(/\ds\b/);
 		});
 
+		it("renders the args summary so parallel invocations are distinguishable", async () => {
+			// With parallel call rows suppressed in the committed transcript, the
+			// in-flight card is the only surface saying WHAT a running invocation
+			// is working on — without it, three parallel reads are three
+			// identical anonymous spinners.
+			const { lastFrame } = render(
+				<ToolCallCard
+					toolName="boundless_read"
+					startTime={Date.now()}
+					argsSummary="~/x/ChatView.tsx"
+					terminalColumns={80}
+				/>,
+			);
+			const output = lastFrame();
+			expect(output).toContain("read");
+			expect(output).toContain("~/x/ChatView.tsx");
+		});
+
 		it("AC9.2: renders badge with running status", async () => {
 			const now = Date.now();
 			const { lastFrame } = render(

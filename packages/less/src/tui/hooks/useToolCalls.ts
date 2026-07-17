@@ -10,6 +10,13 @@ export interface InFlightTool {
 	toolName: string;
 	startTime: number;
 	stdout?: string;
+	/**
+	 * The call's arguments, kept so the in-flight card can say WHAT the tool
+	 * is working on (`read …/x.ts`), not just which tool is running. With
+	 * parallel call rows suppressed in the committed transcript, this is the
+	 * only surface identifying concurrent invocations while they run.
+	 */
+	args: Record<string, unknown>;
 }
 
 export interface UseToolCallsResult {
@@ -53,6 +60,7 @@ export function useToolCalls(
 					toolName,
 					startTime,
 					stdout: undefined,
+					args: (args ?? {}) as Record<string, unknown>,
 				});
 				return updated;
 			});
