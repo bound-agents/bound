@@ -6,6 +6,7 @@ import { hostname as getHostname } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
 import {
+	type Thread,
 	getBuildInfo,
 	initTelemetry,
 	loadBuildInfo,
@@ -27,6 +28,7 @@ import { buildToolSet } from "./tools/registry";
 import { resolveSandboxConfig } from "./tools/sandbox";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
+import { TerminalTitleController, formatThreadTitleForTerminal } from "./tui/util/terminal-title";
 
 export interface ParsedArgs {
 	attachArg: string | null;
@@ -63,17 +65,23 @@ export function parseArgs(args: string[]): ParsedArgs {
 	return { attachArg, urlArg, acp };
 }
 
+export async function resolveThread(
+	client: BoundClient,
+	attachArg: string | null,
+): Promise<Thread> {
+	if (attachArg) {
+		return await client.getThread(attachArg);
+	}
+	// Tag new threads as `boundless` so the remote bound daemon can inject
+	// the right platform context into the agent's volatile state.
+	return await client.createThread({ interface: "boundless" });
+}
+
 export async function resolveThreadId(
 	client: BoundClient,
 	attachArg: string | null,
 ): Promise<string> {
-	if (attachArg) {
-		const thread = await client.getThread(attachArg);
-		return thread.id;
-	}
-	// Tag new threads as `boundless` so the remote bound daemon can inject
-	// the right platform context into the agent's volatile state.
-	const thread = await client.createThread({ interface: "boundless" });
+	const thread = await resolveThread(client, attachArg);
 	return thread.id;
 }
 
@@ -133,6 +141,7 @@ async function runAcpMode(args: {
 }
 
 async function main(): Promise<void> {
+	const terminalTitle = new TerminalTitleController();
 	try {
 		// Step 0: Telemetry. No-op unless OTEL_ENABLED is set. Done first so
 		// every subsequent operation that creates a span (sendMessage, tool
@@ -230,13 +239,14 @@ async function main(): Promise<void> {
 		}
 
 		// Step 4: Get or create thread
-		let threadId: string;
+		let initialThread: Thread;
 		try {
-			threadId = await resolveThreadId(client, attachArg);
+			initialThread = await resolveThread(client, attachArg);
 		} catch {
 			process.stderr.write(`Error: Thread not found: ${attachArg}\n`);
 			process.exit(1);
 		}
+		const threadId = initialThread.id;
 
 		// Step 5: Acquire lockfile
 		try {
@@ -303,6 +313,8 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
+		terminalTitle.set(formatThreadTitleForTerminal(initialThread.title));
+
 		const { waitUntilExit } = render(
 			<App
 				client={client}
@@ -317,6 +329,8 @@ async function main(): Promise<void> {
 				initialMessages={attachResult.messages}
 				model={attachResult.lastUsedModelId ?? config.model}
 				toolHandlers={toolSet.handlers}
+				initialThreadTitle={initialThread.title}
+				terminalTitle={terminalTitle}
 				shell={shell}
 				sandbox={sandbox}
 			/>,
@@ -331,6 +345,7 @@ async function main(): Promise<void> {
 			client.disconnect();
 			logger.close();
 			await shutdownTelemetry();
+			terminalTitle.restore();
 			process.exit(0);
 		});
 
@@ -344,7 +359,9 @@ async function main(): Promise<void> {
 		client.disconnect();
 		logger.close();
 		await shutdownTelemetry();
+		terminalTitle.restore();
 	} catch (error) {
+		terminalTitle.restore();
 		process.stderr.write(`Fatal error: ${(error as Error).message}\n`);
 		process.exit(1);
 	}
