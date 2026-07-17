@@ -90,11 +90,6 @@ export function analyzeToolCallContent(content: string): {
 	return { toolUses, inlineText, suppressed };
 }
 
-/** Cap a compact-line target (path or search pattern) so the row stays one line. */
-function truncateCompactTarget(s: string, max = 64): string {
-	return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-}
-
 /**
  * Parse the shared search-result footer ("N matches in M files (K files
  * searched)" / "No matches found (K files searched).") into the compact
@@ -171,9 +166,12 @@ function exitCodeHint(code: number): string | null {
 	}
 }
 
-/** Summarize tool arguments for display, showing the most relevant arg value. Also
- * used by ChatView for the in-flight tool cards, so a running invocation says WHAT
- * it's working on (`read …/x.ts`), not just which tool is running. */
+/** Summarize tool arguments for display, showing the most relevant arg value IN FULL.
+ * Rendered args are never character-capped: the ⏵ row's Text wraps inside the stripe,
+ * so a long command renders complete across rows instead of vanishing behind `...` —
+ * a truncated command line hides exactly the part that distinguishes this call from
+ * the last one. Also used by ChatView for the in-flight tool cards, where the CARD
+ * (not this summary) truncates to one line to respect the live viewport budget. */
 export function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
 	// For common tools, show the primary argument. The shell tool is named for
 	// its shell (boundless_bash / _pwsh / _cmd via resolveShell), so match the
@@ -184,24 +182,20 @@ export function summarizeToolArgs(toolName: string, input: Record<string, unknow
 		(isShellToolName(toolName) || toolName.endsWith("_bash")) &&
 		typeof input.command === "string"
 	) {
-		const cmd = input.command;
-		return cmd.length > 80 ? `${cmd.slice(0, 77)}...` : cmd;
+		return input.command;
 	}
-	if (
-		(toolName.endsWith("_read") || toolName.endsWith("_write") || toolName.endsWith("_edit")) &&
-		typeof input.file_path === "string"
-	) {
-		return tildifyPath(input.file_path);
+	// File tools summarize as their file. Two gauges: boundless_* tools carry
+	// `file_path`, the sandbox bms_* tools carry `path`. Without the second,
+	// bms_edit/bms_write fall through to the generic branch and dump their
+	// full edits/content JSON as the "summary".
+	if (toolName.endsWith("_read") || toolName.endsWith("_write") || toolName.endsWith("_edit")) {
+		if (typeof input.file_path === "string") return tildifyPath(input.file_path);
+		if (typeof input.path === "string") return tildifyPath(input.path);
 	}
-	// For MCP/other tools, show a compact key=value summary
+	// For MCP/other tools, show every arg as key=value, values in full.
 	const entries = Object.entries(input);
 	if (entries.length === 0) return "";
-	const parts = entries.slice(0, 3).map(([k, v]) => {
-		const str = typeof v === "string" ? v : JSON.stringify(v);
-		const truncated = str.length > 40 ? `${str.slice(0, 37)}...` : str;
-		return `${k}=${truncated}`;
-	});
-	return parts.join(" ");
+	return entries.map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
 }
 
 /** Shape of one hashline edit as carried in `boundless_edit` args. */
@@ -724,12 +718,12 @@ export function MessageBlock({
 			const isSearch = resolvedToolName.endsWith("_search");
 			const lineCount = `${allLines.length} ${allLines.length === 1 ? "line" : "lines"}`;
 			const target = isSearch
-				? truncateCompactTarget(
-						typeof toolInput?.pattern === "string"
-							? toolInput.pattern
-							: tildifyText(allLines[0] ?? ""),
-					)
-				: truncateCompactTarget(filePath ? tildifyPath(filePath) : tildifyText(allLines[0] ?? ""));
+				? typeof toolInput?.pattern === "string"
+					? toolInput.pattern
+					: tildifyText(allLines[0] ?? "")
+				: filePath
+					? tildifyPath(filePath)
+					: tildifyText(allLines[0] ?? "");
 			const summary = isSearch
 				? (parseSearchSummary(allLines[allLines.length - 1] ?? "") ?? lineCount)
 				: lineCount;
@@ -740,7 +734,7 @@ export function MessageBlock({
 					    like a result body made it read as an orphaned extra result
 					    of whatever call rendered above it. */}
 					<Box>
-						<Text wrap="truncate-end">
+						<Text wrap="wrap">
 							<Text color={indicatorColor} bold>
 								{indicator}
 							</Text>
@@ -811,7 +805,7 @@ export function MessageBlock({
 						<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} />
 					)}
 					<Box paddingLeft={2}>
-						<Text wrap="truncate-end">
+						<Text wrap="wrap">
 							<Text color={indicatorColor} bold>
 								{indicator}
 							</Text>
