@@ -37,7 +37,7 @@ export interface SessionHeaderProps {
  * accent throughout the rest of the chrome (status bar, key hints,
  * tool-call headers, slash commands, picker arrows), so the splash reads
  * as part of the same accent family the operator sees everywhere else in
- * the session. (The blue stripes on tool_call / tool_result blocks are a
+ * the session. (The cyan stripes on tool_call / tool_result blocks are a
  * separate visual layer for turn-grouping; the splash is chrome.)
  *
  * Right column:
