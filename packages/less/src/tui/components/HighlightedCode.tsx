@@ -1,6 +1,7 @@
 import { type ThemedToken, highlightToTokens, normalizeLang } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
+import { stripTerminalControlSequences } from "../util/terminal-control";
 
 /**
  * Per-token Ink rendering for shiki-tokenized output.
@@ -79,17 +80,18 @@ export function HighlightedLine({
 	color,
 	dim,
 }: HighlightedLineProps): React.ReactElement {
-	if (line.length === 0) {
+	const safeLine = stripTerminalControlSequences(line);
+	if (safeLine.length === 0) {
 		// Preserve blank-line layout — shiki returns no tokens for "" so
 		// we'd render nothing and collapse the row otherwise.
 		return <Text> </Text>;
 	}
-	const lines = highlightToTokens(line, normalizeLang(lang));
+	const lines = highlightToTokens(safeLine, normalizeLang(lang));
 	const tokens = lines[0] ?? [];
 	if (tokens.length === 0) {
 		return (
 			<Text color={color} dimColor={dim}>
-				{line}
+				{safeLine}
 			</Text>
 		);
 	}
@@ -112,7 +114,7 @@ export function HighlightedCodeBlock({
 	code,
 	lang,
 }: HighlightedCodeBlockProps): React.ReactElement {
-	const lines = highlightToTokens(code, normalizeLang(lang));
+	const lines = highlightToTokens(stripTerminalControlSequences(code), normalizeLang(lang));
 	return (
 		<Box flexDirection="column">
 			{lines.map((tokens, i) => (
