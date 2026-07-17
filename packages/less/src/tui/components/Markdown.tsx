@@ -280,7 +280,7 @@ function renderBlock(token: Token, index: number, width?: number): React.ReactEl
 	switch (token.type) {
 		case "heading": {
 			const t = token as Tokens.Heading;
-			const color = t.depth === 1 ? "magenta" : t.depth === 2 ? "blue" : "cyan";
+			const color = t.depth === 1 ? "magenta" : t.depth === 2 ? "cyan" : "cyan";
 			return renderProse(t.tokens, width, `block-${index}`, { bold: true, color });
 		}
 		case "paragraph": {

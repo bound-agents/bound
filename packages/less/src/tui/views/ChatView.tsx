@@ -25,7 +25,7 @@ import { createResizeRedrawHandler } from "../util/resizeRedraw";
  * - `isLastInGroup`: false when more sibling results from the same parallel
  *   tool_call are still expected; true for the final one. ChatView uses this
  *   to collapse the inter-result gap so a parallel-call group renders as one
- *   continuous blue-striped card.
+ *   continuous cyan-striped card.
  */
 export type ToolResultMeta = {
 	filePath?: string;
@@ -357,7 +357,7 @@ export function ChatView({
 						}
 						const msg = item.msg;
 						const meta = toolResultMeta.get(msg.id);
-						// Margin rule: collapse the gap inside a tool group so the blue
+						// Margin rule: collapse the gap inside a tool group so the cyan
 						// stripe runs continuously through call → results.
 						//   - tool_call → next: always 0 (touches its first result, or
 						//     in degenerate cases still fine to abut).
