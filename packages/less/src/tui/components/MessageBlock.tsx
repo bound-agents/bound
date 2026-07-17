@@ -39,10 +39,17 @@ export function isCompactToolName(name: string): boolean {
 
 /**
  * Parse a tool_call message's content into tool_use blocks + inline text, and
- * classify whether the whole call row is suppressed (every use is a compact
- * read/search and there is no inline text to show). Shared between
- * MessageBlock (rendering) and ChatView (margin layout) — the two must agree
- * on suppression or a zero-height row would still carry a 1-row margin.
+ * classify whether the whole call row is suppressed (commits nothing). Two
+ * suppression cases:
+ * - every use is a compact read/search (each invocation renders as one line
+ *   on its result instead), or
+ * - the call is a PARALLEL group (2+ uses): its ⏵ request rows render atop
+ *   each result so request/result pairs read adjacently — <Static> commits
+ *   the call row before any result exists, so pairing can only be achieved
+ *   by moving the request line onto the result message.
+ * Either way inline text still renders. Shared between MessageBlock
+ * (rendering) and ChatView (margin layout) — the two must agree on
+ * suppression or a zero-height row would still carry a 1-row margin.
  */
 export function analyzeToolCallContent(content: string): {
 	toolUses: ToolUseBlockLite[];
@@ -68,7 +75,9 @@ export function analyzeToolCallContent(content: string): {
 		// Non-parseable content — caller falls back to raw display.
 	}
 	const suppressed =
-		toolUses.length > 0 && inlineText === "" && toolUses.every((b) => isCompactToolName(b.name));
+		toolUses.length > 0 &&
+		inlineText === "" &&
+		(toolUses.length > 1 || toolUses.every((b) => isCompactToolName(b.name)));
 	return { toolUses, inlineText, suppressed };
 }
 
@@ -386,6 +395,14 @@ export interface MessageBlockProps {
 	 */
 	toolInput?: Record<string, unknown>;
 	/**
+	 * Render a ⏵ request row above this result, reconstructed from
+	 * `toolName` + `toolInput`. Set by ChatView for results whose originating
+	 * call was a PARALLEL group: the call's own ⏵ rows are suppressed there
+	 * (<Static> commits them before any result exists, so pairing request with
+	 * result is only possible by re-rendering the request on the result).
+	 */
+	showRequest?: boolean;
+	/**
 	 * Live terminal column count from `useTerminalSize()`. Forwarded into
 	 * `StripeBox`'s `width` so long lines wrap inside the colored stripe
 	 * instead of soft-wrapping at the terminal edge.
@@ -406,6 +423,7 @@ export function MessageBlock({
 	filePath,
 	toolName: resolvedToolName,
 	toolInput,
+	showRequest,
 	terminalColumns,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
@@ -481,16 +499,18 @@ export function MessageBlock({
 	if (message.role === "tool_call") {
 		// Parse tool_use blocks + inline assistant text via the shared analyzer
 		// (ChatView uses the same one for margin layout, so suppression stays in
-		// lockstep). Compact read/search uses don't get ⏵ rows — each invocation
-		// renders as one line on its result instead — so they're filtered out.
+		// lockstep). Two kinds of use don't get ⏵ rows here: compact read/search
+		// (one line on the result carries the invocation) and parallel groups
+		// (each request row renders atop its own result so pairs read adjacently).
 		const { toolUses, inlineText, suppressed } = analyzeToolCallContent(message.content);
 		if (suppressed) {
-			// Every use is a compact read/search with no inline text: commit
-			// nothing. The dynamic in-flight card covers the running state; the
-			// result row carries the whole invocation.
+			// Nothing to commit: all-compact or parallel with no inline text. The
+			// dynamic in-flight card covers the running state; the result rows
+			// carry the invocations.
 			return <></>;
 		}
-		const toolUseBlocks = toolUses.filter((b) => !isCompactToolName(b.name));
+		const toolUseBlocks =
+			toolUses.length > 1 ? [] : toolUses.filter((b) => !isCompactToolName(b.name));
 
 		if (toolUses.length > 0) {
 			return (
@@ -593,7 +613,11 @@ export function MessageBlock({
 				: lineCount;
 			return (
 				<StripeBox color="cyan" width={stripeWidth}>
-					<Box paddingLeft={2}>
+					{/* No paddingLeft: this line IS the invocation (the ⏵ call row
+					    was suppressed), so it sits at ⏵-column depth — indenting it
+					    like a result body made it read as an orphaned extra result
+					    of whatever call rendered above it. */}
+					<Box>
 						<Text wrap="truncate-end">
 							<Text color={indicatorColor} bold>
 								{indicator}
@@ -678,6 +702,13 @@ export function MessageBlock({
 
 		return (
 			<StripeBox color="cyan" width={stripeWidth}>
+				{/* Parallel-group results re-render their ⏵ request row here so
+				    each result immediately follows its request — the call row's
+				    own listing is suppressed because <Static> commits it before
+				    any result exists and can never reorder it afterward. */}
+				{showRequest && resolvedToolName && (
+					<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} />
+				)}
 				<Box flexDirection="column" paddingLeft={2}>
 					<Text>
 						<Text color={indicatorColor} bold>
