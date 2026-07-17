@@ -723,3 +723,14 @@ describe("MessageBlock result outcome facts", () => {
 		expect(out).toContain("anchor mismatch");
 	});
 });
+
+describe("buildToolResultMetaMap path-param extraction", () => {
+	it("resolves filePath from bms-style `path` input as well as `file_path`", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "bms_read", input: { path: "/home/user/notes.md" } }]),
+			toolResult("r1", "tu1"),
+		];
+		const m = buildToolResultMetaMap(messages);
+		expect(m.get("r1")?.filePath).toBe("/home/user/notes.md");
+	});
+});
