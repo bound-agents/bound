@@ -14,7 +14,11 @@ import {
 	ToolCallCard,
 	computeStdoutRowBudget,
 } from "../components";
-import { analyzeToolCallContent, isCompactToolName } from "../components/MessageBlock";
+import {
+	analyzeToolCallContent,
+	isCompactToolName,
+	summarizeToolArgs,
+} from "../components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
@@ -277,7 +281,10 @@ export interface ChatViewProps {
 	 */
 	commitHash: string;
 	messages: Message[];
-	inFlightTools: Map<string, { toolName: string; startTime: number; stdout?: string }>;
+	inFlightTools: Map<
+		string,
+		{ toolName: string; startTime: number; stdout?: string; args?: Record<string, unknown> }
+	>;
 	mcpServerCount: number;
 	bannerMessage: string | null;
 	bannerType: "error" | "info" | null;
@@ -550,17 +557,20 @@ export function ChatView({
 					    the whole dynamic region stays under the viewport — otherwise
 					    Ink's `outputHeight >= rows` branch strands the spinner card in
 					    scrollback (see computeStdoutRowBudget). */}
-					{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
-						<Box key={callId} marginBottom={1}>
-							<ToolCallCard
-								toolName={toolName}
-								startTime={startTime}
-								stdout={stdout}
-								terminalColumns={termColumns}
-								maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
-							/>
-						</Box>
-					))}
+					{Array.from(inFlightTools.entries()).map(
+						([callId, { toolName, startTime, stdout, args }]) => (
+							<Box key={callId} marginBottom={1}>
+								<ToolCallCard
+									toolName={toolName}
+									startTime={startTime}
+									stdout={stdout}
+									argsSummary={args ? summarizeToolArgs(toolName, args) : undefined}
+									terminalColumns={termColumns}
+									maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
+								/>
+							</Box>
+						),
+					)}
 
 					{/* Processing indicator */}
 					{isProcessing && inFlightTools.size === 0 && (

@@ -116,8 +116,10 @@ function formatDuration(ms: number): string {
 	return `${m}m ${s}s`;
 }
 
-/** Summarize tool arguments for display, showing the most relevant arg value. */
-function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
+/** Summarize tool arguments for display, showing the most relevant arg value. Also
+ * used by ChatView for the in-flight tool cards, so a running invocation says WHAT
+ * it's working on (`read …/x.ts`), not just which tool is running. */
+export function summarizeToolArgs(toolName: string, input: Record<string, unknown>): string {
 	// For common tools, show the primary argument. The shell tool is named for
 	// its shell (boundless_bash / _pwsh / _cmd via resolveShell), so match the
 	// canonical predicate, not a bare `_bash` suffix — which missed PowerShell

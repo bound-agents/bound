@@ -73,6 +73,14 @@ export interface ToolCallCardProps {
 	startTime: number;
 	stdout?: string;
 	/**
+	 * One-line summary of the call's arguments (`~/x.ts`, `bun test …`),
+	 * produced by `summarizeToolArgs` upstream. With parallel call rows
+	 * suppressed in the committed transcript, this is the only surface that
+	 * says WHAT a running invocation is working on — without it, three
+	 * parallel reads render as three identical anonymous spinners.
+	 */
+	argsSummary?: string;
+	/**
 	 * Live terminal column count from `useTerminalSize()` in the parent view.
 	 * Used to wrap long single-line stdout (e.g., a JSON dump from `cat`)
 	 * into deterministic visual rows so the truncation cap counts physical
@@ -101,6 +109,7 @@ export interface ToolCallCardProps {
 export function ToolCallCard({
 	toolName,
 	stdout,
+	argsSummary,
 	terminalColumns,
 	maxStdoutRows = MAX_STDOUT_ROWS,
 }: ToolCallCardProps): React.ReactElement {
@@ -130,7 +139,15 @@ export function ToolCallCard({
 
 	return (
 		<Box flexDirection="column">
-			<Spinner label={displayToolName(toolName)} />
+			<Box>
+				<Spinner label={displayToolName(toolName)} />
+				{argsSummary ? (
+					<Text dimColor wrap="truncate-end">
+						{" "}
+						{argsSummary}
+					</Text>
+				) : null}
+			</Box>
 			{stdoutDisplay !== undefined && (
 				<Collapsible header="Output" defaultOpen={true}>
 					<Text>{stdoutDisplay}</Text>
