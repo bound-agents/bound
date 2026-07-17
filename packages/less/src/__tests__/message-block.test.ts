@@ -849,3 +849,100 @@ describe("edit preview removal headers", () => {
 		expect(frame).not.toContain("@ 7:f872");
 	});
 });
+
+describe("full-length tool arguments (no truncation)", () => {
+	it("renders a long command in full, wrapped inside the stripe", async () => {
+		// Kara's report: truncated args hide exactly the part that
+		// distinguishes this call from the last one — heredoc commits all
+		// rendered as `git add -A && git commit --author="pol...`.
+		const longCmd = `git add -A packages/less && git commit -F - <<'MSG'\nfeat(less): a very long commit message body that continues well past any old eighty character cap\nMSG`;
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-long-cmd",
+					role: "tool_call",
+					content: JSON.stringify([
+						{ type: "tool_use", id: "tu-lc", name: "boundless_bash", input: { command: longCmd } },
+					]),
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				terminalColumns: 60,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		// The distinguishing tail must be visible, and no ellipsis marker.
+		expect(frame).toContain("eighty character cap");
+		expect(frame).not.toContain("...");
+		// Wrapped rows stay inside the stripe.
+		const lines = frame.split("\n").filter((l) => l.trim().length > 0);
+		for (const line of lines) {
+			expect(line.startsWith("│")).toBe(true);
+		}
+	});
+
+	it("renders MCP key=value args in full", async () => {
+		const bigValue = "x".repeat(120);
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-mcp-args",
+					role: "tool_call",
+					content: JSON.stringify([
+						{
+							type: "tool_use",
+							id: "tu-mcp",
+							name: "github",
+							input: {
+								subcommand: "issue_read",
+								owner: "bound-agents",
+								repo: "bound",
+								body: bigValue,
+							},
+						},
+					]),
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				terminalColumns: 200,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain(`body=${"x".repeat(120)}`);
+		expect(frame).not.toContain("...");
+		// All four args render (old code capped at 3 entries).
+		expect(frame).toContain("subcommand=issue_read");
+		expect(frame).toContain("owner=bound-agents");
+	});
+
+	it("summarizes bms_edit as its file, not an edits JSON dump", async () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-bms-edit",
+					role: "tool_call",
+					content: JSON.stringify([
+						{
+							type: "tool_use",
+							id: "tu-be",
+							name: "bms_edit",
+							input: {
+								path: "/home/user/notes.md",
+								edits: [{ start: "1:aaaa", end: "1:aaaa", content: "hello" }],
+							},
+						},
+					]),
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/home/user/notes.md");
+		expect(frame).not.toContain("edits=");
+	});
+});
