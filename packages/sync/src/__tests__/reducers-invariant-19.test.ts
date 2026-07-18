@@ -14,7 +14,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ChangeLogEntry, Logger } from "@bound/shared";
-import { applyAppendOnlyReducer, replayEvents } from "../reducers.js";
+import { applyAppendOnlyReducer, applySnapshotRows, replayEvents } from "../reducers.js";
 
 interface CapturedWarning {
 	msg: string;
@@ -150,5 +150,75 @@ describe("reducers — invariant #19 (role='system' forbidden in messages)", () 
 		expect(ids).toEqual(["ok-developer", "ok-user"]);
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0].ctx?.row_id).toBe("bad-system");
+	});
+
+	// The snapshot/row-pull apply path (`applySnapshotRows`) is a separate raw
+	// upsert from the changelog-replay reducer. It previously had no invariant #19
+	// guard, so a peer advertising role='system' rows could seed them locally via
+	// row-pull — where they then loop forever as remoteOnly against a filtered
+	// diff view (the non-converging backfill). The guard must match the replay
+	// path so both apply routes enforce the invariant identically.
+	function snapshotRow(id: string, role: string): Record<string, unknown> {
+		return {
+			id,
+			thread_id: "thread-1",
+			role,
+			content: "body",
+			created_at: "2026-04-26T21:00:00Z",
+			host_origin: "hub",
+		};
+	}
+
+	it("applySnapshotRows drops role='system' rows and logs a warn with the dropped count", () => {
+		const { logger, warnings } = captureWarnings();
+		const applied = applySnapshotRows(
+			db,
+			"messages",
+			[
+				snapshotRow("ok-user", "user"),
+				snapshotRow("bad-system-1", "system"),
+				snapshotRow("ok-assistant", "assistant"),
+				snapshotRow("bad-system-2", "system"),
+			],
+			logger,
+		);
+
+		expect(applied).toBe(2);
+		const ids = (db.query("SELECT id FROM messages ORDER BY id").all() as { id: string }[]).map(
+			(r) => r.id,
+		);
+		expect(ids).toEqual(["ok-assistant", "ok-user"]);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0].msg).toContain("role='system'");
+		expect(warnings[0].ctx).toMatchObject({ tableName: "messages", dropped: 2 });
+	});
+
+	it("applySnapshotRows returns 0 and writes nothing when every row is role='system'", () => {
+		const { logger, warnings } = captureWarnings();
+		const applied = applySnapshotRows(
+			db,
+			"messages",
+			[snapshotRow("bad-1", "system"), snapshotRow("bad-2", "system")],
+			logger,
+		);
+
+		expect(applied).toBe(0);
+		expect(db.query("SELECT COUNT(*) AS c FROM messages").get()).toMatchObject({ c: 0 });
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0].ctx).toMatchObject({ dropped: 2 });
+	});
+
+	it("applySnapshotRows applies a batch of legitimate roles unchanged (no false warn)", () => {
+		const { logger, warnings } = captureWarnings();
+		const applied = applySnapshotRows(
+			db,
+			"messages",
+			[snapshotRow("u", "user"), snapshotRow("a", "assistant"), snapshotRow("d", "developer")],
+			logger,
+		);
+
+		expect(applied).toBe(3);
+		expect(db.query("SELECT COUNT(*) AS c FROM messages").get()).toMatchObject({ c: 3 });
+		expect(warnings).toHaveLength(0);
 	});
 });

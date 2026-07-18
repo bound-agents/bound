@@ -455,12 +455,32 @@ export function applySnapshotRows(
 
 	if (rows.length === 0) return 0;
 
+	// Invariant #19: role='system' is forbidden in the `messages` table. The
+	// changelog-replay path drops these via `violatesMessageRoleInvariant`, but
+	// the snapshot/row-pull apply path is a separate raw upsert that bypassed
+	// that guard — which is how a peer advertising role='system' rows could seed
+	// them locally, where they then loop forever as remoteOnly (the sending side
+	// must also filter; see `syncableRowPredicate`). Drop them here too so the
+	// two apply paths enforce the invariant identically.
+	let applicableRows = rows;
+	if (tableName === "messages") {
+		applicableRows = rows.filter((row) => row.role !== "system");
+		const dropped = rows.length - applicableRows.length;
+		if (dropped > 0) {
+			logger?.warn(
+				"[snapshot] Dropping incoming messages rows with role='system' (invariant #19)",
+				{ tableName, dropped },
+			);
+		}
+		if (applicableRows.length === 0) return 0;
+	}
+
 	// Heal-on-receive (issue #105): rewrite non-canonical memory_edges relations
 	// before the INSERT OR REPLACE. Otherwise the canonical-relation trigger
 	// RAISE(ABORT)s, the whole batch rolls back to the slow per-row fallback, and
 	// the invalid rows are skipped + warned on every reseed.
 	if (tableName === "memory_edges") {
-		for (const row of rows) {
+		for (const row of applicableRows) {
 			if (typeof row.relation === "string") {
 				const healed = normalizeRelationValue(
 					row.relation,
@@ -475,7 +495,7 @@ export function applySnapshotRows(
 	}
 
 	// Gather column names from the first row (all rows in a table share columns).
-	const firstRow = rows[0];
+	const firstRow = applicableRows[0];
 	const columns = Object.keys(firstRow);
 
 	// Validate all column names
@@ -511,7 +531,7 @@ export function applySnapshotRows(
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		const stmt = db.prepare(sql);
-		for (const row of rows) {
+		for (const row of applicableRows) {
 			stmt.run(...coerceRowValues(columns, row));
 			applied++;
 		}
@@ -525,11 +545,11 @@ export function applySnapshotRows(
 		}
 		logger?.warn("[snapshot] Batch apply failed, retrying per-row", {
 			tableName,
-			rowCount: rows.length,
+			rowCount: applicableRows.length,
 			error: err instanceof Error ? err.message : String(err),
 		});
 		applied = 0;
-		for (const row of rows) {
+		for (const row of applicableRows) {
 			try {
 				db.run(sql, coerceRowValues(columns, row));
 				applied++;
@@ -537,11 +557,11 @@ export function applySnapshotRows(
 				// skip — trigger rejection or constraint violation
 			}
 		}
-		if (applied < rows.length) {
+		if (applied < applicableRows.length) {
 			logger?.warn("[snapshot] Per-row fallback: skipped rows", {
 				tableName,
 				applied,
-				skipped: rows.length - applied,
+				skipped: applicableRows.length - applied,
 			});
 		}
 		return applied;
