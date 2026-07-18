@@ -197,3 +197,47 @@ describe("metrics-schema — AC3 context debug persistence", () => {
 		expect(parsed).toEqual(debugInfo);
 	});
 });
+
+describe("metrics-schema — turns created_at index (daily-budget scan)", () => {
+	let dbPath: string;
+	let db: Database;
+
+	beforeEach(() => {
+		dbPath = join(tmpdir(), `bound-metrics-test-${randomBytes(4).toString("hex")}.db`);
+		db = new Database(dbPath);
+	});
+
+	afterEach(() => {
+		db.close();
+		try {
+			unlinkSync(dbPath);
+		} catch {
+			// File already deleted
+		}
+	});
+
+	it("creates idx_turns_created_at", () => {
+		applyMetricsSchema(db);
+		const indexes = (
+			db
+				.query("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='turns'")
+				.all() as Array<{ name: string }>
+		).map((r) => r.name);
+		expect(indexes).toContain("idx_turns_created_at");
+	});
+
+	it("the sargable daily-budget range query uses the index (SEARCH, not SCAN)", () => {
+		// Guards against a regression to the non-sargable `date(created_at) = ?`
+		// form, which forces a full SCAN of the ever-growing turns table on every
+		// budgeted scheduler tick.
+		applyMetricsSchema(db);
+		const plan = db
+			.query(
+				"EXPLAIN QUERY PLAN SELECT SUM(cost_usd) FROM turns WHERE created_at >= ? AND created_at < ?",
+			)
+			.all("2026-07-18T00:00:00.000Z", "2026-07-19T00:00:00.000Z") as Array<{ detail: string }>;
+		const detail = plan.map((p) => p.detail).join(" ");
+		expect(detail).toContain("idx_turns_created_at");
+		expect(detail).not.toContain("SCAN turns");
+	});
+});

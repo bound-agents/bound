@@ -265,6 +265,98 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM turns");
 			db.run("DELETE FROM daily_summary");
 		});
+
+		it("counts only today's turns toward the budget (sargable range excludes prior days)", async () => {
+			// The daily-budget query was rewritten from a non-sargable
+			// `date(created_at) = ?` full scan to a sargable half-open range
+			// `created_at >= dayStart AND created_at < dayEnd` (covered by
+			// idx_turns_created_at). This test pins the boundary behavior the
+			// rewrite must preserve: yesterday's spend must NOT count toward today.
+			const budget = 1.0;
+			const ctx = makeCtx({
+				config: {
+					allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
+					modelBackends: {
+						backends: [
+							{
+								id: "mock",
+								provider: "openai-compatible",
+								model: "mock",
+								base_url: "http://localhost:11434",
+								context_window: 8000,
+								tier: 1,
+								price_per_m_input: 0,
+								price_per_m_output: 0,
+							},
+						],
+						default: "mock",
+						daily_budget_usd: budget,
+					},
+				},
+			} as unknown as Partial<AppContext>);
+
+			// $5 of spend YESTERDAY (well over budget) + $0.10 today (under).
+			const yesterday = new Date(Date.now() - 86_400_000).toISOString();
+			recordTurn(db, {
+				thread_id: randomUUID(),
+				model_id: "mock",
+				tokens_in: 1000,
+				tokens_out: 1000,
+				cost_usd: 5.0,
+				created_at: yesterday,
+			});
+			recordTurn(db, {
+				thread_id: randomUUID(),
+				model_id: "mock",
+				tokens_in: 1000,
+				tokens_out: 1000,
+				cost_usd: 0.1,
+				created_at: new Date().toISOString(),
+			});
+
+			// An autonomous task should run: only today's $0.10 counts, under the $1 cap.
+			const taskId = randomUUID();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const nowStr = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, nowStr, nowStr],
+			);
+
+			let agentRunCalled = false;
+			const factory = () => ({
+				run: async () => {
+					agentRunCalled = true;
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(10);
+			await waitFor(() => agentRunCalled, 2000);
+			stop();
+
+			// Task ran because yesterday's over-budget spend was correctly excluded.
+			expect(agentRunCalled).toBe(true);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM turns");
+			db.run("DELETE FROM daily_summary");
+		});
 	});
 
 	// -----------------------------------------------------------------------
