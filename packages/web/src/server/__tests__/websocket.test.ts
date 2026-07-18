@@ -1133,6 +1133,92 @@ describe("ClientConnection type and WS message schemas", () => {
 			testHandler.cleanup();
 		});
 
+		it("accepts a late tool:result for a still-processing entry (no arrival-time TTL — regression: 5-min cutoff wedged long-running client tools)", () => {
+			const eventBus = new TypedEventEmitter();
+			// Entry dispatched 10 minutes ago but still 'processing' — nothing
+			// expired it (live session spared it from the TTL sweep, connection
+			// never closed). The old handler compared created_at against a fixed
+			// 5-minute cutoff and silently discarded this result, leaving the row
+			// wedged in 'processing' forever and the thread stalled.
+			const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+			const insertedMessages: Array<{ sql: string; values: unknown[] }> = [];
+			let acknowledged = false;
+
+			const mockDb = {
+				prepare: (sql: string) => ({
+					get: () => null,
+					all: () => {
+						if (sql.includes("status = 'expired'")) return [];
+						// getPendingClientToolCalls path
+						return [
+							{
+								message_id: "msg-1",
+								thread_id: "thread-123",
+								status: "processing",
+								claimed_by: "conn-1",
+								event_type: "client_tool_call",
+								event_payload: JSON.stringify({ call_id: "call-123" }),
+								created_at: oldTime,
+								modified_at: oldTime,
+							},
+						];
+					},
+					run: (..._values: unknown[]) => {
+						if (sql.includes("status = 'acknowledged'")) {
+							acknowledged = true;
+						}
+					},
+				}),
+				transaction: (fn: () => unknown) => () => {
+					fn();
+					return "mock-hlc";
+				},
+				run: (sql: string, values: unknown[]) => {
+					if (sql.includes("INSERT INTO messages")) {
+						insertedMessages.push({ sql, values });
+					}
+				},
+				query: (_sql: string) => ({
+					get: () => null,
+				}),
+				exec: () => {},
+			} as unknown as Database;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-123",
+					thread_id: "thread-123",
+					content: "Exit code: 137\nstdout:\n...",
+					is_error: true,
+				}),
+			);
+
+			// The late result is ACCEPTED: persisted as a tool_result message and
+			// the dispatch entry acknowledged, so the loop's resume barrier clears.
+			expect(insertedMessages).toHaveLength(1);
+			expect(acknowledged).toBe(true);
+			// No error frame back to the client.
+			const errorFrames = (mockWs as unknown as MockWebSocket).messages.filter(
+				(m) => (m as Record<string, unknown>).type === "error",
+			);
+			expect(errorFrames).toHaveLength(0);
+
+			testHandler.cleanup();
+		});
+
 		it("sets exit_code=1 when tool:result has is_error=true (error path)", () => {
 			const eventBus = new TypedEventEmitter();
 			const recentTime = new Date().toISOString();
