@@ -17,6 +17,7 @@ import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
 import { TerminalTitleController, formatThreadTitleForTerminal } from "./util/terminal-title";
 import { ChatView } from "./views/ChatView";
+import { InspectorView } from "./views/InspectorView";
 import { McpView } from "./views/McpView";
 import { PickerView } from "./views/PickerView";
 
@@ -25,7 +26,7 @@ const NULL_TERMINAL_TITLE = new TerminalTitleController(
 	{ TERM: "dumb" },
 );
 
-export type AppView = "chat" | "mcp" | "picker";
+export type AppView = "chat" | "mcp" | "picker" | "inspector";
 export type PickerMode = "thread" | "model";
 
 export interface AppState {
@@ -408,6 +409,7 @@ export function App({
 				onModelPicker={() => handleSetView("picker", "model")}
 				onAttachThread={() => handleSetView("picker", "thread")}
 				onMcpView={() => handleSetView("mcp")}
+				onInspect={() => handleSetView("inspector")}
 				onClear={handleClear}
 				onBannerDismiss={handleDismissBanner}
 				onSendMessage={handleSendMessage}
@@ -422,6 +424,9 @@ export function App({
 					}}
 					onCancel={() => handleSetView("chat")}
 				/>
+			)}
+			{state.view === "inspector" && (
+				<InspectorView messages={messages} onClose={() => handleSetView("chat")} />
 			)}
 			{state.view === "picker" && state.pickerMode && (
 				<PickerView

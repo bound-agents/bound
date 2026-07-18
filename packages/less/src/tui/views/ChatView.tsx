@@ -359,6 +359,8 @@ export interface ChatViewProps {
 	onModelPicker: () => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
+	/** Open the full-fidelity transcript inspector (`/inspect`). */
+	onInspect: () => void;
 	onClear: () => void;
 	onBannerDismiss: () => void;
 	onSendMessage: (message: string) => void;
@@ -398,6 +400,7 @@ export function ChatView({
 	onModelPicker,
 	onAttachThread,
 	onMcpView,
+	onInspect,
 	onClear,
 	onBannerDismiss,
 	onSendMessage,
@@ -520,6 +523,11 @@ export function ChatView({
 				return;
 			}
 
+			if (command === "inspect") {
+				onInspect();
+				return;
+			}
+
 			if (command === "clear") {
 				onClear();
 				return;
@@ -596,6 +604,7 @@ export function ChatView({
 								["/model [name]", "Switch model (opens picker if no name)"],
 								["/attach", "Switch to a different thread"],
 								["/mcp", "MCP server configuration"],
+								["/inspect", "Browse the transcript at full fidelity"],
 								["/clear", "Start a new thread"],
 							].map(([cmd, desc]) => (
 								<Box key={cmd}>
