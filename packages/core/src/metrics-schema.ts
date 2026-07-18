@@ -115,6 +115,17 @@ export function applyMetricsSchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_turns_thread
 		ON turns(thread_id, created_at DESC)
 	`);
+
+	// Performance index for turns by created_at. The scheduler's daily-budget
+	// check (shouldSkipDueToBudget) sums cost_usd over a single calendar day and
+	// runs per autonomous task on scheduler ticks. idx_turns_thread leads with
+	// thread_id, so a created_at-only range cannot use it — this index lets the
+	// sargable `created_at >= ? AND created_at < ?` bound SEARCH instead of SCAN
+	// the whole (growing) table.
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_turns_created_at
+		ON turns(created_at)
+	`);
 }
 
 function migrateTurnsIntToText(

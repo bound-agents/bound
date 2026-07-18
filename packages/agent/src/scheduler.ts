@@ -1240,11 +1240,19 @@ export class Scheduler {
 			return false;
 		}
 
-		// Query today's spend from turns table
-		const today = new Date().toISOString().split("T")[0];
+		// Query today's spend from turns table. Use a sargable half-open range on
+		// created_at rather than wrapping the column in date() — the latter is
+		// non-sargable and forces a full SCAN of the (ever-growing) turns table on
+		// every budgeted tick. created_at is an ISO-8601 UTC string that sorts
+		// lexicographically, so the bounds are computed in JS as ISO strings and
+		// compare correctly against the stored `2026-07-18T...Z` format (never
+		// SQLite's space-separated datetime()). Covered by idx_turns_created_at.
+		const now = Date.now();
+		const dayStart = `${new Date(now).toISOString().split("T")[0]}T00:00:00.000Z`;
+		const dayEnd = `${new Date(now + 86_400_000).toISOString().split("T")[0]}T00:00:00.000Z`;
 		const result = this.ctx.db
-			.query("SELECT SUM(cost_usd) as total FROM turns WHERE date(created_at) = ?")
-			.get(today) as { total: number | null } | null;
+			.query("SELECT SUM(cost_usd) as total FROM turns WHERE created_at >= ? AND created_at < ?")
+			.get(dayStart, dayEnd) as { total: number | null } | null;
 
 		const todaySpend = result?.total ?? 0;
 
