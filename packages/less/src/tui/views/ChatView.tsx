@@ -566,6 +566,7 @@ export function ChatView({
 									callCreatedAt={meta?.callCreatedAt}
 									activitySummary={turnActivity.get(msg.id)}
 									terminalColumns={termColumns}
+									cwd={cwd}
 								/>
 							</Box>
 						);
@@ -618,7 +619,7 @@ export function ChatView({
 					    repaints. See partitionPendingMessage / #134. */}
 					{pending && (
 						<Box marginBottom={1}>
-							<MessageBlock message={pending} terminalColumns={termColumns} />
+							<MessageBlock message={pending} terminalColumns={termColumns} cwd={cwd} />
 						</Box>
 					)}
 

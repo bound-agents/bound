@@ -946,3 +946,60 @@ describe("full-length tool arguments (no truncation)", () => {
 		expect(frame).not.toContain("edits=");
 	});
 });
+
+describe("clickable file paths (OSC 8)", () => {
+	const ESC = "\u001B";
+	const BEL = "\u0007";
+
+	it("renders a read target as an OSC 8 file:// hyperlink, resolving relative paths against cwd", async () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-osc8-read",
+					role: "tool_result",
+					content: "1:aaaa|line 0\n2:bbbb|line 1",
+					tool_name: "tu1",
+					exit_code: 0,
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName: "boundless_read",
+				toolInput: { file_path: "packages/less/src/x.ts" },
+				filePath: "packages/less/src/x.ts",
+				terminalColumns: 120,
+				cwd: "/repo",
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		// Open envelope carries the resolved absolute file URI; label is the
+		// (relative) display path; ` · N lines` stays outside the link.
+		expect(frame).toContain(`${ESC}]8;;file:///repo/packages/less/src/x.ts${BEL}`);
+		expect(frame).toContain("packages/less/src/x.ts");
+		expect(frame).toContain("· 2 lines");
+	});
+
+	it("degrades to plain text when no cwd anchors a relative path", async () => {
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-osc8-nocwd",
+					role: "tool_result",
+					content: "1:aaaa|x",
+					tool_name: "tu1",
+					exit_code: 0,
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName: "boundless_read",
+				toolInput: { file_path: "rel/x.ts" },
+				filePath: "rel/x.ts",
+				terminalColumns: 120,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain(`${ESC}]8;;`);
+		expect(frame).toContain("rel/x.ts");
+	});
+});

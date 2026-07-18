@@ -4,6 +4,7 @@ import { Box, Text } from "ink";
 import type React from "react";
 import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
+import { linkifyPath } from "../util/osc8";
 import { tildifyPath, tildifyText } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
 import { expandTabs, wrapLinesAtWidth } from "../util/wrap";
@@ -350,16 +351,20 @@ function WritePreviewBody({
  */
 function ToolCallRow({
 	block,
+	cwd,
 }: {
 	block: { name: string; input: Record<string, unknown> };
+	cwd?: string;
 }): React.ReactElement {
 	const isRemote = !block.name.startsWith("boundless_");
 	const name = displayToolName(block.name);
 	const filePath = typeof block.input.file_path === "string" ? block.input.file_path : null;
 	// `displayPath` is the tildified version for header rendering; we keep the
 	// original `filePath` for HashlineEditsBody / WritePreviewBody, which use it for
-	// syntax-highlighting language detection.
+	// syntax-highlighting language detection. `linkedPath` wraps the display
+	// label in an OSC 8 file:// hyperlink so it's clickable in supporting terminals.
 	const displayPath = filePath ? tildifyPath(filePath) : null;
+	const linkedPath = displayPath ? linkifyPath(displayPath, filePath, cwd) : null;
 
 	// boundless_edit: header + per-edit anchor ranges with added-line previews
 	if (block.name === "boundless_edit" && filePath) {
@@ -371,7 +376,7 @@ function ToolCallRow({
 					<Text color="cyan" bold>
 						{name}
 					</Text>
-					<Text dimColor> {displayPath}</Text>
+					<Text dimColor> {linkedPath}</Text>
 				</Text>
 				<HashlineEditsBody edits={edits} filePath={filePath} />
 			</Box>
@@ -391,7 +396,7 @@ function ToolCallRow({
 					</Text>
 					<Text dimColor>
 						{" "}
-						{displayPath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
+						{linkedPath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
 					</Text>
 				</Text>
 				<WritePreviewBody content={content} filePath={filePath} />
@@ -507,6 +512,13 @@ export interface MessageBlockProps {
 	 * instead of soft-wrapping at the terminal edge.
 	 */
 	terminalColumns: number;
+	/**
+	 * Working directory of the boundless session, forwarded from ChatView.
+	 * Used to resolve repo-relative tool paths into absolute `file://` URIs so
+	 * file targets render as clickable OSC 8 hyperlinks. Optional: without it,
+	 * only already-absolute paths linkify, and everything degrades to plain text.
+	 */
+	cwd?: string;
 }
 
 /**
@@ -526,6 +538,7 @@ export function MessageBlock({
 	callCreatedAt,
 	activitySummary,
 	terminalColumns,
+	cwd,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
 	// that reserve a column for cursor/scrollbar artifacts, and floor at
@@ -629,7 +642,7 @@ export function MessageBlock({
 					)}
 					{toolUseBlocks.map((block, idx) => (
 						// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable per render
-						<ToolCallRow key={idx} block={block} />
+						<ToolCallRow key={idx} block={block} cwd={cwd} />
 					))}
 				</StripeBox>
 			);
@@ -726,6 +739,9 @@ export function MessageBlock({
 				: filePath
 					? tildifyPath(filePath)
 					: tildifyText(allLines[0] ?? "");
+			// Read targets are file paths → clickable file:// links. Search targets
+			// are patterns, not paths, so they stay plain text.
+			const linkedTarget = !isSearch && filePath ? linkifyPath(target, filePath, cwd) : target;
 			const summary = isSearch
 				? (parseSearchSummary(allLines[allLines.length - 1] ?? "") ?? lineCount)
 				: lineCount;
@@ -744,7 +760,7 @@ export function MessageBlock({
 								{" "}
 								{toolName}
 							</Text>
-							<Text> {target}</Text>
+							<Text> {linkedTarget}</Text>
 							<Text dimColor> · {summary}</Text>
 							{slow ? <DurationFragment ms={durationMs} /> : null}
 						</Text>
@@ -798,13 +814,14 @@ export function MessageBlock({
 			const target = filePath
 				? (filePath.split("/").pop() ?? tildifyPath(filePath))
 				: tildifyText(allLines[0] ?? "");
+			const linkedTarget = filePath ? linkifyPath(target, filePath, cwd) : target;
 			return (
 				<StripeBox color="cyan" width={stripeWidth}>
 					{/* Parallel groups: the call's listing is suppressed, so the
 					    diff/preview rides here with the request row — without it the
 					    change content would never commit at all. */}
 					{showRequest && (
-						<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} />
+						<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} cwd={cwd} />
 					)}
 					<Box paddingLeft={2}>
 						<Text wrap="wrap">
@@ -812,7 +829,7 @@ export function MessageBlock({
 								{indicator}
 							</Text>
 							<Text dimColor> {toolName} · </Text>
-							<Text>{target}</Text>
+							<Text>{linkedTarget}</Text>
 							<Text dimColor> · {summary}</Text>
 							{diffStat ? (
 								<>
@@ -962,7 +979,7 @@ export function MessageBlock({
 				    own listing is suppressed because <Static> commits it before
 				    any result exists and can never reorder it afterward. */}
 				{showRequest && resolvedToolName && (
-					<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} />
+					<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} cwd={cwd} />
 				)}
 				<Box flexDirection="column" paddingLeft={2}>
 					<Text>
