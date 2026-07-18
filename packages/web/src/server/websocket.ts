@@ -929,8 +929,6 @@ export function createWebSocketHandler(
 
 		try {
 			const now = new Date().toISOString();
-			const TTL_MS = 5 * 60 * 1000; // 5 minutes
-			const cutoff = new Date(Date.now() - TTL_MS).toISOString();
 
 			// First check for expired entries with this call_id (AC3.4)
 			const expiredEntry = db
@@ -986,12 +984,19 @@ export function createWebSocketHandler(
 				return;
 			}
 
-			// Check if entry has expired based on TTL (AC3.4)
-			if (matchingEntry.created_at < cutoff) {
-				// Late tool:result for expired call is silently discarded
-				// (accepted but not persisted, no error response)
-				return;
-			}
+			// NO arrival-time TTL here (regression: bf3894b1 wedge, 2026-07-18).
+			// Expiry is owned by the two reapers — the TTL sweep (which deliberately
+			// spares threads with a live session, so a slow local exec or a human at
+			// a permission gate isn't reaped out from under a connected client) and
+			// the connection-close reaper. A result that arrives for an entry still
+			// pending/processing is by definition one nothing expired: discarding it
+			// here left the row wedged in 'processing' forever, and the client-side
+			// boundless_bash default timeout (300s) equals the old 5-minute cutoff,
+			// so any command running to its full timeout — git commit with slow
+			// pre-commit hooks being the canonical case — ALWAYS came back a few
+			// kill-grace seconds past the cutoff and was silently dropped, stalling
+			// the thread one turn per bump. Late results for genuinely canceled
+			// calls are handled by the expired-status check above (AC3.4).
 
 			// Persist the tool_result message
 			const messageId = randomUUID();
