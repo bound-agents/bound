@@ -285,6 +285,34 @@ export interface ContextDebugTurn {
 	created_at: string;
 }
 
+/**
+ * Payload of the `context:debug` WebSocket event. Matches the wire shape the
+ * server broadcasts (see `handleContextDebug` in web/src/server/websocket.ts
+ * and `BoundEvents["context:debug"]` in @bound/shared): the debug info for
+ * ONE just-recorded turn, not the full ContextDebugTurn REST row.
+ */
+export interface ContextDebugEvent {
+	thread_id: string;
+	turn_id: string;
+	debug: ContextDebugInfo;
+}
+
+/**
+ * Cluster-wide token/cost totals for a time range, as served by
+ * `GET /api/metrics` (the `tokens.totals` slice). The spoke's own web server
+ * aggregates these from the synced `turns` table, so the numbers cover the
+ * whole cluster without any hub round-trip.
+ */
+export interface MetricsTokenTotals {
+	tokens_in: number;
+	tokens_out: number;
+	cache_read: number;
+	cache_write: number;
+	cost_usd: number;
+	turn_count: number;
+	error_count: number;
+}
+
 // ---- Connector bindings ----
 
 export interface ConnectorBindingEntry {
@@ -522,7 +550,7 @@ export interface BoundClientEvents {
 	"message:created": (msg: Message) => void;
 	"task:updated": (data: { taskId: string; status: string }) => void;
 	"file:updated": (data: { path: string; operation: string }) => void;
-	"context:debug": (data: ContextDebugTurn) => void;
+	"context:debug": (data: ContextDebugEvent) => void;
 	"thread:status": (data: {
 		thread_id: string;
 		active: boolean;

@@ -33,6 +33,8 @@ export type {
 	CrossThreadSource,
 	ContextDebugInfo,
 	ContextDebugTurn,
+	ContextDebugEvent,
+	MetricsTokenTotals,
 	CacheMarker,
 	ApiErrorBody,
 	BoundClientEvents,

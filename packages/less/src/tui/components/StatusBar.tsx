@@ -1,6 +1,7 @@
 import type { ConnectionState } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
+import { type SessionHudState, formatTokens, formatUsd } from "../hooks/useSessionHud";
 import { tildifyPath } from "../util/path";
 import { Badge } from "./Badge";
 
@@ -10,6 +11,15 @@ export interface StatusBarProps {
 	connectionState: ConnectionState;
 	mcpServerCount: number;
 	cwd: string;
+	/** Live session HUD (context gauge + spend). Absent → those segments hide. */
+	hud?: SessionHudState;
+}
+
+/** Color for the context gauge: calm → caution → pressure. */
+export function contextGaugeColor(pct: number): string {
+	if (pct >= 0.85) return "red";
+	if (pct >= 0.6) return "yellow";
+	return "green";
 }
 
 /**
@@ -51,6 +61,7 @@ export function StatusBar({
 	connectionState,
 	mcpServerCount,
 	cwd,
+	hud,
 }: StatusBarProps): React.ReactElement {
 	// ConnectionState's three values ("connecting" | "connected" | "disconnected")
 	// are all valid BadgeStatus values, so the prop passes through directly.
@@ -60,24 +71,59 @@ export function StatusBar({
 
 	const sep = <Text dimColor> · </Text>;
 
+	// HUD segments render only once their signal exists — a fresh session
+	// shows nothing rather than a row of 0s pretending to be measurements.
+	const ctxPct = hud?.contextPct ?? null;
+	const showCtx = ctxPct != null && hud?.contextTokens != null;
+	const showCost = hud?.sessionCostUsd != null && hud?.todayCostUsd != null;
+
 	return (
-		<Box paddingX={1} flexDirection="row" width="100%">
-			<Box flexDirection="row">
-				<Badge status={badgeStatus} />
-				<Text> </Text>
-				<Text dimColor>{threadId}</Text>
-				{sep}
-				<Text color="cyan">{model || "default"}</Text>
-				{mcpServerCount > 0 && (
-					<>
-						{sep}
-						<Text dimColor>{mcpServerCount} MCP</Text>
-					</>
-				)}
-			</Box>
-			<Box flexGrow={1} />
-			<Box>
-				<Text dimColor>{shortCwd(cwd)}</Text>
+		<Box paddingX={1} flexDirection="column" width="100%">
+			{/* HUD row — its own line so it never fights the identity row for
+			    width (the full thread ID is copyable BY DESIGN and must not
+			    wrap). One truncate-end Text = at most one physical row, so the
+			    dynamic region's height stays predictable. */}
+			{(showCtx || showCost) && (
+				<Box>
+					<Text wrap="truncate-end">
+						{showCtx && (
+							<>
+								<Text color={contextGaugeColor(ctxPct)}>ctx {Math.round(ctxPct * 100)}%</Text>
+								<Text dimColor>
+									{" "}
+									({formatTokens(hud.contextTokens ?? 0)}
+									{hud.contextWindow != null ? `/${formatTokens(hud.contextWindow)}` : ""})
+								</Text>
+							</>
+						)}
+						{showCtx && showCost && sep}
+						{showCost && (
+							<Text dimColor>
+								{formatUsd(hud.sessionCostUsd ?? 0)} session · {formatUsd(hud.todayCostUsd ?? 0)}{" "}
+								today
+							</Text>
+						)}
+					</Text>
+				</Box>
+			)}
+			<Box flexDirection="row" width="100%">
+				<Box flexDirection="row">
+					<Badge status={badgeStatus} />
+					<Text> </Text>
+					<Text dimColor>{threadId}</Text>
+					{sep}
+					<Text color="cyan">{model || "default"}</Text>
+					{mcpServerCount > 0 && (
+						<>
+							{sep}
+							<Text dimColor>{mcpServerCount} MCP</Text>
+						</>
+					)}
+				</Box>
+				<Box flexGrow={1} />
+				<Box>
+					<Text dimColor>{shortCwd(cwd)}</Text>
+				</Box>
 			</Box>
 		</Box>
 	);
