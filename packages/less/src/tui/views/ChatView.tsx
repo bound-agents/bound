@@ -26,10 +26,21 @@ import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { readClipboardImage } from "../util/clipboard-image";
 import { renderHalfBlocks } from "../util/half-blocks";
-import { hashImageBytes, stampImageDescription, storeImagePreview } from "../util/image-preview";
+import {
+	hashImageBytes,
+	stampImageDescription,
+	storeImageGraphics,
+	storeImagePreview,
+} from "../util/image-preview";
 import { extractFullText } from "../util/message-text";
 import { decodePng } from "../util/png";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
+import {
+	detectGraphicsProtocol,
+	encodeItermImage,
+	encodeKittyImage,
+	fitCellBox,
+} from "../util/terminal-graphics";
 
 /**
  * Slash-command palette for the input's completion menu. Kept adjacent to
@@ -629,12 +640,27 @@ export function ChatView({
 			storeImagePreview(hash, preview);
 			const width = decoded?.width ?? 0;
 			const height = decoded?.height ?? 0;
+			const base64 = Buffer.from(img.bytes).toString("base64");
+			// Progressive enhancement: if the terminal speaks a graphics protocol,
+			// encode the real image ONCE, here, and park it beside the half-block
+			// preview. The committed render prefers it; terminals without a
+			// protocol never get a payload and fall back to half-blocks. Graphics
+			// live ONLY in the <Static> transcript (see terminal-graphics.ts).
+			const protocol = decoded ? detectGraphicsProtocol() : null;
+			if (decoded && protocol) {
+				const box = fitCellBox(width, height, Math.min(80, Math.max(20, termColumns - 4)), 24);
+				const graphicsEscape =
+					protocol === "kitty"
+						? encodeKittyImage(base64, box)
+						: encodeItermImage(base64, box, img.bytes.byteLength);
+				storeImageGraphics(hash, { escape: graphicsEscape, rows: box.rows, cols: box.cols });
+			}
 			const block: ContentBlock = {
 				type: "image",
 				source: {
 					type: "base64",
 					media_type: "image/png",
-					data: Buffer.from(img.bytes).toString("base64"),
+					data: base64,
 				},
 				description: stampImageDescription(width, height, hash),
 			};
