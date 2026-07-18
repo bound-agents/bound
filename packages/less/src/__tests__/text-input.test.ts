@@ -927,3 +927,50 @@ describe("slash-command completion menu", () => {
 		expect(lastFrame()).not.toContain("/help");
 	});
 });
+
+describe("image paste chords", () => {
+	it("Ctrl+V fires onPasteImage without touching the buffer", async () => {
+		let pastes = 0;
+		const { lastFrame, stdin } = render(
+			React.createElement(TextInput, {
+				onSubmit: () => {},
+				placeholder: "type here",
+				onPasteImage: () => {
+					pastes++;
+				},
+			}),
+		);
+		await tick();
+		stdin.write("h");
+		await tick();
+		stdin.write("\x16"); // Ctrl+V
+		await tick();
+		expect(pastes).toBe(1);
+		// Buffer unchanged — the chord is swallowed, not inserted.
+		expect(lastFrame()).toContain("h");
+		expect(lastFrame()).not.toContain("\x16");
+	});
+
+	it("Esc clears text first, then fires onEscapeEmpty on the second press", async () => {
+		let drops = 0;
+		const { lastFrame, stdin } = render(
+			React.createElement(TextInput, {
+				onSubmit: () => {},
+				placeholder: "type here",
+				onEscapeEmpty: () => {
+					drops++;
+				},
+			}),
+		);
+		await tick();
+		stdin.write("abc");
+		await tick();
+		stdin.write("\x1b"); // Esc #1: clears the buffer, no drop yet
+		await tick();
+		expect(lastFrame()).toContain("type here"); // placeholder back
+		expect(drops).toBe(0);
+		stdin.write("\x1b"); // Esc #2: buffer empty → drop fires
+		await tick();
+		expect(drops).toBe(1);
+	});
+});
