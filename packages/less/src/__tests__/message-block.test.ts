@@ -1073,4 +1073,36 @@ describe("image content blocks", () => {
 		);
 		expect(lastFrame() ?? "").toContain("[image]");
 	});
+
+	it("prefers the graphics escape over half-blocks when a payload is cached", async () => {
+		const { storeImagePreview, storeImageGraphics, clearImagePreviews } = await import(
+			"../tui/util/image-preview"
+		);
+		clearImagePreviews();
+		// Both representations cached for the same hash: half-block lines AND a
+		// graphics escape. Graphics must win.
+		storeImagePreview("beef1234", ["HALFBLOCK-ROW"]);
+		const sentinel = "<<KITTY-ESCAPE-SENTINEL>>";
+		storeImageGraphics("beef1234", { escape: sentinel, rows: 4, cols: 20 });
+		const message = createMessage({
+			role: "user",
+			content: JSON.stringify([
+				{
+					type: "image",
+					source: { type: "file_ref", file_id: "f4", media_type: "image/png" },
+					description: "pasted image 800×600 · pv:beef1234",
+				},
+			]),
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, { message, terminalColumns: 80 }),
+		);
+		const frame = lastFrame() ?? "";
+		// Graphics escape present; half-block row suppressed.
+		expect(frame).toContain(sentinel);
+		expect(frame).not.toContain("HALFBLOCK-ROW");
+		// Caption still rides underneath.
+		expect(frame).toContain("[pasted image 800×600]");
+		clearImagePreviews();
+	});
 });

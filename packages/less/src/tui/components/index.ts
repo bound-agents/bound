@@ -38,6 +38,8 @@ export { TextInput } from "./TextInput.js";
 export type { TextInputProps } from "./TextInput.js";
 
 export { MessageBlock } from "./MessageBlock.js";
+export { GraphicsImage } from "./GraphicsImage.js";
+export type { GraphicsImageProps } from "./GraphicsImage.js";
 export type { MessageBlockProps } from "./MessageBlock.js";
 
 export { computeStdoutRowBudget, ToolCallCard } from "./ToolCallCard.js";
