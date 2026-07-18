@@ -13,6 +13,7 @@
  * hosts) miss the cache and degrade to a text placeholder — correct: their
  * bytes were never on this terminal's clipboard.
  */
+import type { GraphicsCursorMode } from "./terminal-graphics";
 
 const cache = new Map<string, string[]>();
 /** Parallel cache: the graphics-protocol escape for a hash, when the terminal
@@ -27,10 +28,14 @@ export interface GraphicsPreview {
 	 *  <Static>-committed row. */
 	escape: string;
 	/** Terminal rows the image occupies — the layout engine must reserve
-	 *  exactly this many (explicit-height Box) so pixels and accounting agree. */
+	 *  exactly this many (explicit-height Box) so pixels and accounting agree
+	 *  (under `reserve` mode). */
 	rows: number;
 	/** Terminal columns the image occupies. */
 	cols: number;
+	/** Cursor-footprint strategy the escape was encoded for; GraphicsImage must
+	 *  render to match. Absent → `reserve` (the historical default). */
+	mode?: GraphicsCursorMode;
 }
 
 /** FNV-1a 32-bit over the raw bytes, hex-encoded. Identity, not security. */

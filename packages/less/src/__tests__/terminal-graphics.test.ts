@@ -90,13 +90,19 @@ describe("fitCellBox", () => {
 });
 
 describe("encodeKittyImage", () => {
-	it("emits a single APC escape for a small payload with control keys", () => {
+	it("emits a single APC escape for a small payload with control keys (reserve)", () => {
 		const out = encodeKittyImage("AAAA", { cols: 10, rows: 5 });
 		expect(out).toBe(`${ESC}_Ga=T,f=100,C=1,c=10,r=5;AAAA${ST}`);
 	});
 
-	it("sets C=1 (no cursor move) so layout reservation stays exact", () => {
-		expect(encodeKittyImage("AAAA", { cols: 2, rows: 1 })).toContain("C=1");
+	it("reserve mode sets C=1 (no cursor move) so the height Box owns the reservation", () => {
+		expect(encodeKittyImage("AAAA", { cols: 2, rows: 1 }, "reserve")).toContain("C=1");
+	});
+
+	it("advance mode omits C=1 so the terminal advances the cursor past the image", () => {
+		const out = encodeKittyImage("AAAA", { cols: 2, rows: 1 }, "advance");
+		expect(out).not.toContain("C=1");
+		expect(out).toBe(`${ESC}_Ga=T,f=100,c=2,r=1;AAAA${ST}`);
 	});
 
 	it("chunks payloads over 4096 base64 bytes: m=1 continuations, m=0 final", () => {
@@ -116,26 +122,29 @@ describe("encodeKittyImage", () => {
 });
 
 describe("encodeItermImage", () => {
-	it("emits the OSC 1337 inline-image escape bracketed in DECSC/DECRC", () => {
-		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561);
+	it("reserve mode brackets the OSC 1337 escape in DECSC/DECRC (net-zero cursor)", () => {
+		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561, "reserve");
 		expect(out).toBe(
 			`${ESC}7${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=1;size=2792561:AAAA${BEL}${ESC}8`,
 		);
 	});
 
-	it("preserves aspect ratio so the image never exceeds its reserved rows", () => {
-		expect(encodeItermImage("AAAA", { cols: 3, rows: 2 }, 100)).toContain("preserveAspectRatio=1");
-	});
-
-	it("nets zero cursor movement: save (ESC 7) before, restore (ESC 8) after the paint", () => {
-		// The advance-suppression that makes iTerm2 match kitty's C=1 so the
-		// card's borderLeft draws down the image's left edge instead of stacking
-		// a full-height empty column below it.
+	it("defaults to reserve mode", () => {
 		const out = encodeItermImage("AAAA", { cols: 4, rows: 3 }, 100);
 		expect(out.startsWith(`${ESC}7`)).toBe(true);
 		expect(out.endsWith(`${ESC}8`)).toBe(true);
-		// The paint sits strictly between the save and the restore.
-		expect(out.indexOf(`${ESC}]1337`)).toBeGreaterThan(0);
-		expect(out.indexOf(`${ESC}]1337`)).toBeLessThan(out.lastIndexOf(`${ESC}8`));
+	});
+
+	it("advance mode emits the bare escape so the terminal owns the cursor advance", () => {
+		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561, "advance");
+		expect(out).toBe(
+			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=1;size=2792561:AAAA${BEL}`,
+		);
+		expect(out.startsWith(`${ESC}7`)).toBe(false);
+		expect(out.endsWith(`${ESC}8`)).toBe(false);
+	});
+
+	it("preserves aspect ratio so the image never exceeds its reserved rows", () => {
+		expect(encodeItermImage("AAAA", { cols: 3, rows: 2 }, 100)).toContain("preserveAspectRatio=1");
 	});
 });

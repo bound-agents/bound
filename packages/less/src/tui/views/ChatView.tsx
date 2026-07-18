@@ -40,6 +40,7 @@ import {
 	encodeItermImage,
 	encodeKittyImage,
 	fitCellBox,
+	graphicsCursorMode,
 } from "../util/terminal-graphics";
 
 /**
@@ -649,11 +650,12 @@ export function ChatView({
 			const protocol = decoded ? detectGraphicsProtocol() : null;
 			if (decoded && protocol) {
 				const box = fitCellBox(width, height, Math.min(80, Math.max(20, termColumns - 4)), 24);
+				const mode = graphicsCursorMode();
 				const graphicsEscape =
 					protocol === "kitty"
-						? encodeKittyImage(base64, box)
-						: encodeItermImage(base64, box, img.bytes.byteLength);
-				storeImageGraphics(hash, { escape: graphicsEscape, rows: box.rows, cols: box.cols });
+						? encodeKittyImage(base64, box, mode)
+						: encodeItermImage(base64, box, img.bytes.byteLength, mode);
+				storeImageGraphics(hash, { escape: graphicsEscape, rows: box.rows, cols: box.cols, mode });
 			}
 			const block: ContentBlock = {
 				type: "image",
