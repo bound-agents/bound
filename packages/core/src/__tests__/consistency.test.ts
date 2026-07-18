@@ -3,8 +3,11 @@ import { describe, expect, test } from "bun:test";
 import {
 	type ConsistencyEntry,
 	getBackfillableEntriesSorted,
+	getBackfillablePksSorted,
 	hashRow,
 	mergeDiffEntries,
+	syncableRowPredicate,
+	syncableWhereClause,
 } from "../consistency.js";
 
 describe("hashRow", () => {
@@ -291,5 +294,66 @@ describe("getBackfillableEntriesSorted", () => {
 		db.exec(`UPDATE semantic_memory SET modified_at = '2026-12-31T23:59:59Z' WHERE id = 'r';`);
 		const after = getBackfillableEntriesSorted(db, "semantic_memory")[0].hash;
 		expect(before).toBe(after);
+	});
+});
+
+describe("syncable-row filter symmetry (invariant #19; non-converging backfill regression)", () => {
+	function makeMessagesDb(): Database {
+		const db = new Database(":memory:");
+		db.exec(`
+			CREATE TABLE messages (
+				id TEXT PRIMARY KEY,
+				role TEXT NOT NULL,
+				content TEXT,
+				modified_at TEXT NOT NULL,
+				deleted INTEGER NOT NULL DEFAULT 0
+			);
+		`);
+		// Two syncable rows and one unsyncable role='system' row.
+		db.exec(`
+			INSERT INTO messages (id, role, content, modified_at) VALUES ('m1', 'user', 'hi', '2026-01-01T00:00:00Z');
+			INSERT INTO messages (id, role, content, modified_at) VALUES ('m2', 'assistant', 'yo', '2026-01-02T00:00:00Z');
+			INSERT INTO messages (id, role, content, modified_at) VALUES ('sys', 'system', 'forbidden', '2026-01-03T00:00:00Z');
+		`);
+		return db;
+	}
+
+	test("predicate excludes role='system' for messages, null for other tables", () => {
+		expect(syncableRowPredicate("messages")).toBe("role != 'system'");
+		expect(syncableWhereClause("messages")).toBe(" WHERE role != 'system'");
+		expect(syncableRowPredicate("turns")).toBeNull();
+		expect(syncableWhereClause("turns")).toBe("");
+	});
+
+	test("comparing side (getBackfillable*) omits role='system' rows", () => {
+		const db = makeMessagesDb();
+		expect(getBackfillablePksSorted(db, "messages")).toEqual(["m1", "m2"]);
+		expect(getBackfillableEntriesSorted(db, "messages").map((e) => e.pk)).toEqual(["m1", "m2"]);
+	});
+
+	test("advertising side (shared WHERE clause) yields the SAME pk set as the comparing side", () => {
+		// The hub advertiser in ws-transport builds its query as
+		// `SELECT * FROM messages{whereClause} ORDER BY id`. Simulate it here and
+		// assert byte-for-byte agreement with the comparing side. Divergence is
+		// exactly the bug: advertised-but-not-compared rows loop as remoteOnly.
+		const db = makeMessagesDb();
+		const advertised = (
+			db
+				.query(`SELECT id FROM messages${syncableWhereClause("messages")} ORDER BY id ASC`)
+				.all() as Array<{ id: string }>
+		).map((r) => r.id);
+		const compared = getBackfillablePksSorted(db, "messages");
+		expect(advertised).toEqual(compared);
+
+		// The diff of the two identical sets must be empty — no phantom remoteOnly.
+		const localEntries = getBackfillableEntriesSorted(db, "messages");
+		const remoteEntries: ConsistencyEntry[] = advertised.map((pk) => {
+			const e = localEntries.find((x) => x.pk === pk);
+			if (!e) throw new Error(`advertised pk ${pk} missing from local entries`);
+			return e;
+		});
+		const diff = mergeDiffEntries(localEntries, remoteEntries);
+		expect(diff.remoteOnly).toEqual([]);
+		expect(diff.localOnly).toEqual([]);
 	});
 });

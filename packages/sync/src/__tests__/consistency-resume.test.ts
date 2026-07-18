@@ -78,6 +78,32 @@ function createTestSchema(db: Database): void {
 			deleted INTEGER DEFAULT 0
 		) STRICT
 	`);
+
+	db.run(`
+		CREATE TABLE messages (
+			id TEXT PRIMARY KEY,
+			thread_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			model_id TEXT,
+			tool_name TEXT,
+			exit_code INTEGER,
+			metadata TEXT,
+			created_at TEXT NOT NULL,
+			modified_at TEXT,
+			host_origin TEXT NOT NULL,
+			deleted INTEGER DEFAULT 0
+		) STRICT
+	`);
+}
+
+function insertMessageRole(db: Database, id: string, role: string): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin)
+		 VALUES (?, 'thread-1', ?, 'c', ?, ?, 'hub')`,
+		[id, role, now, now],
+	);
 }
 
 function insertMemory(db: Database, id: string, key: string): void {
@@ -256,6 +282,44 @@ describe("consistency exchange resume", () => {
 		expect(pending).toBeDefined();
 		expect(pending?.cursor.tableIndex).toBe(0);
 		expect(pending?.cursor.offset).toBe(5000);
+	});
+
+	it("advertiser excludes role='system' messages from pks and count (invariant #19; non-converging backfill regression)", () => {
+		// The advertiser (hub) previously enumerated ALL message rows, while the
+		// comparing side (spoke) filtered role='system'. The unsyncable rows then
+		// looked perpetually remoteOnly, so every backfill cycle re-pulled the
+		// same rows without converging — a hot full-table scan every ~10 min.
+		insertMessageRole(hubDb, "m-user", "user");
+		insertMessageRole(hubDb, "m-assistant", "assistant");
+		insertMessageRole(hubDb, "m-system", "system");
+
+		let response: Record<string, unknown> | null = null;
+		hub.addPeer(
+			"spoke",
+			(frame) => {
+				const decoded = decodeFrame(frame, key);
+				if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE) {
+					const p = decoded.value.payload as Record<string, unknown>;
+					if (p.table === "messages") response = p;
+				}
+				return true;
+			},
+			key,
+		);
+
+		hub.handleConsistencyRequest("spoke", {
+			tables: ["messages"],
+			request_id: "test-req",
+		});
+
+		expect(response).not.toBeNull();
+		const advertisedPks = response?.pks as string[];
+		const advertisedEntries = response?.entries as Array<{ pk: string }>;
+		// role='system' must NOT be advertised — only the two syncable rows.
+		expect(advertisedPks.sort()).toEqual(["m-assistant", "m-user"]);
+		expect(advertisedEntries.map((e) => e.pk).sort()).toEqual(["m-assistant", "m-user"]);
+		// count must match the filtered set so pagination stays consistent.
+		expect(response?.count).toBe(2);
 	});
 
 	it("clears resume state on successful completion", async () => {
