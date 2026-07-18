@@ -583,7 +583,7 @@ export function MessageBlock({
 				parts.push(
 					<Box key={`i-${key++}`} flexDirection="column">
 						{graphics ? (
-							<GraphicsImage escape={graphics.escape} rows={graphics.rows} />
+							<GraphicsImage escape={graphics.escape} rows={graphics.rows} mode={graphics.mode} />
 						) : (
 							preview?.map((line, i) => (
 								// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable per render

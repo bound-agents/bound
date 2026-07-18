@@ -28,6 +28,31 @@ const BEL = "\u0007";
 export type GraphicsProtocol = "kitty" | "iterm2";
 
 /**
+ * How the graphics escape and the layout engine split responsibility for the
+ * image's vertical footprint. The two protocols advance the cursor
+ * differently, and Ink can't see that an escape expands to N visual rows, so
+ * the two ends have to agree on who reserves the space:
+ *
+ *   - "reserve": the escape moves the cursor a NET ZERO (kitty C=1; iTerm2
+ *     bracketed in DECSC/DECRC), and GraphicsImage's explicit-height Box
+ *     supplies the `rows` reservation AND the per-row card border.
+ *   - "advance": the escape lets the TERMINAL advance the cursor by the
+ *     image's own height, and GraphicsImage emits a single line so Ink adds no
+ *     phantom rows for that advance to double against or overpaint.
+ *
+ * `reserve` is the default; `BOUND_TERM_IMAGE_MODE=advance` flips it. This is a
+ * diagnostic seam: real iTerm2/kitty cursor+scroll behavior can't be observed
+ * from ink-testing-library (it trims trailing whitespace and never emulates a
+ * cursor), so which strategy a given terminal actually wants is settled on
+ * that terminal, not in a frame assertion.
+ */
+export type GraphicsCursorMode = "reserve" | "advance";
+
+export function graphicsCursorMode(env: NodeJS.ProcessEnv = process.env): GraphicsCursorMode {
+	return env.BOUND_TERM_IMAGE_MODE === "advance" ? "advance" : "reserve";
+}
+
+/**
  * Decide which graphics protocol (if any) the current terminal speaks.
  * `env` is injectable for tests. Returns null when nothing is detected or
  * the user disabled it — callers then fall back to half-blocks.
@@ -98,9 +123,17 @@ export function fitCellBox(imgW: number, imgH: number, maxCols: number, maxRows:
  * carries all control keys, continuation chunks carry only m=1, the final
  * carries m=0.
  */
-export function encodeKittyImage(pngBase64: string, box: CellBox): string {
+export function encodeKittyImage(
+	pngBase64: string,
+	box: CellBox,
+	mode: GraphicsCursorMode = "reserve",
+): string {
 	const CHUNK = 4096;
-	const controls = `a=T,f=100,C=1,c=${box.cols},r=${box.rows}`;
+	// reserve: C=1 suppresses kitty's cursor advance so GraphicsImage's
+	// explicit-height Box owns the reservation. advance: omit it, letting kitty
+	// move the cursor past the image so the terminal owns the reservation.
+	const cursor = mode === "reserve" ? "C=1," : "";
+	const controls = `a=T,f=100,${cursor}c=${box.cols},r=${box.rows}`;
 	if (pngBase64.length <= CHUNK) {
 		return `${ESC}_G${controls};${pngBase64}${ST}`;
 	}
@@ -135,9 +168,17 @@ export function encodeKittyImage(pngBase64: string, box: CellBox): string {
  * `rows` reservation now matches the paint for both protocols, and Ink draws
  * the border down the left of the image like the half-block path does.
  */
-export function encodeItermImage(pngBase64: string, box: CellBox, byteLength: number): string {
+export function encodeItermImage(
+	pngBase64: string,
+	box: CellBox,
+	byteLength: number,
+	mode: GraphicsCursorMode = "reserve",
+): string {
 	const args = `inline=1;width=${box.cols};height=${box.rows};preserveAspectRatio=1;size=${byteLength}`;
-	// DECSC (ESC 7) save cursor → image → DECRC (ESC 8) restore: net-zero
-	// cursor movement so the layout reservation and the paint agree on `rows`.
-	return `${ESC}7${ESC}]1337;File=${args}:${pngBase64}${BEL}${ESC}8`;
+	const image = `${ESC}]1337;File=${args}:${pngBase64}${BEL}`;
+	// reserve: bracket in DECSC/DECRC (ESC 7 … ESC 8) so the cursor nets zero
+	// movement and GraphicsImage's height Box supplies the reservation + border.
+	// advance: emit the bare escape and let iTerm2 advance the cursor by the
+	// image's own height — GraphicsImage emits no phantom rows to fight it.
+	return mode === "reserve" ? `${ESC}7${image}${ESC}8` : image;
 }
