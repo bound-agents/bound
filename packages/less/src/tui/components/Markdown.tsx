@@ -1,22 +1,11 @@
 import { Box, Text } from "ink";
 import { Lexer, type Token, type Tokens } from "marked";
 import type React from "react";
+import { osc8Link } from "../util/osc8";
 import { type StyledRun, wrapStyledRuns } from "../util/wrap-styled";
 import { HighlightedCodeBlock } from "./HighlightedCode";
 
 const HR_WIDTH = 40;
-
-/**
- * Wrap visible text in an OSC 8 hyperlink so the terminal renders it as a real
- * clickable link instead of literal `[label](url)`. Format is
- * `ESC ] 8 ; ; <uri> BEL <label> ESC ] 8 ; ; BEL` — the empty params slot
- * between the two `;` is where a link id would go (omitted; terminals coalesce
- * adjacent same-URI cells without one). Terminals that don't grok OSC 8 ignore
- * the escapes and show the bare label, so this degrades cleanly.
- */
-function osc8Link(href: string, label: string): string {
-	return `\u001B]8;;${href}\u0007${label}\u001B]8;;\u0007`;
-}
 
 /**
  * Split a run sequence into logical lines at authored newlines (embedded `\n`
