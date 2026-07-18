@@ -133,4 +133,31 @@ describe("ToolCallCard stdout cap", () => {
 		expect(frame).toContain("row29");
 		expect(frame).not.toContain("row0\n");
 	});
+
+	it("flattens a multi-line args summary to a single spinner line (ghost-card guard)", async () => {
+		// 2026-07-17 incident: summarizeToolArgs renders args in FULL now, so a
+		// heredoc commit's `command` is a ~30-line string. Passed through the
+		// card's wrap="truncate-end" (which caps WIDTH, not embedded newlines),
+		// the spinner line ballooned to ~30 physical rows, blew
+		// computeStdoutRowBudget's one-row assumption, and stranded a ghost copy
+		// of the card on every tick (observed: the same commit stacked at
+		// 38s/39s/39s/61s). The card must render its args as ONE line.
+		const multiLine = "git commit -F - <<'EOF'\nfeat(x): a\nbody line\nEOF";
+		const { lastFrame } = render(
+			React.createElement(ToolCallCard, {
+				toolName: "boundless_bash",
+				startTime: Date.now(),
+				argsSummary: multiLine,
+				terminalColumns: 80,
+			}),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		// First line survives (with an ellipsis marking the elision); the
+		// subsequent heredoc-body lines must NOT appear as their own rows.
+		expect(frame).toContain("git commit -F - <<'EOF'");
+		expect(frame).toContain("…");
+		expect(frame).not.toContain("body line");
+		expect(frame).not.toContain("feat(x): a");
+	});
 });
