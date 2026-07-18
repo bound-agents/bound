@@ -1003,3 +1003,74 @@ describe("clickable file paths (OSC 8)", () => {
 		expect(frame).toContain("rel/x.ts");
 	});
 });
+
+describe("image content blocks", () => {
+	const createMessage = (overrides: { role: string; content: string }) =>
+		({
+			id: "msg-img",
+			thread_id: "t-1",
+			created_at: new Date().toISOString(),
+			...overrides,
+		}) as never;
+
+	it("renders a cached half-block preview for a pasted image", async () => {
+		const { storeImagePreview, clearImagePreviews } = await import("../tui/util/image-preview");
+		clearImagePreviews();
+		// Two fake preview rows — real ones are SGR-colored ▀ runs, but the
+		// renderer treats them as opaque text lines either way.
+		storeImagePreview("deadbeef", ["▀▀▀", "▀▀▀"]);
+		const message = createMessage({
+			role: "user",
+			content: JSON.stringify([
+				{ type: "text", text: "what do you see here?" },
+				{
+					type: "image",
+					source: { type: "file_ref", file_id: "f1", media_type: "image/png" },
+					description: "pasted image 640×480 · pv:deadbeef",
+				},
+			]),
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, { message, terminalColumns: 80 }),
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("what do you see here?");
+		expect(frame).toContain("▀▀▀");
+		// Caption keeps the human-readable label, sheds the pv: key.
+		expect(frame).toContain("[pasted image 640×480]");
+		expect(frame).not.toContain("pv:deadbeef");
+		clearImagePreviews();
+	});
+
+	it("renders a dim placeholder for a foreign image (no cached preview)", async () => {
+		const { clearImagePreviews } = await import("../tui/util/image-preview");
+		clearImagePreviews();
+		const message = createMessage({
+			role: "user",
+			content: JSON.stringify([
+				{
+					type: "image",
+					source: { type: "file_ref", file_id: "f2", media_type: "image/png" },
+					description: "a discord attachment",
+				},
+			]),
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, { message, terminalColumns: 80 }),
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("[a discord attachment]");
+		expect(frame).not.toContain("▀");
+	});
+
+	it("renders an undescribed image block as a generic [image] marker", () => {
+		const message = createMessage({
+			role: "user",
+			content: JSON.stringify([{ type: "image", source: { type: "file_ref", file_id: "f3" } }]),
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, { message, terminalColumns: 80 }),
+		);
+		expect(lastFrame() ?? "").toContain("[image]");
+	});
+});

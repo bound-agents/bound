@@ -1,8 +1,9 @@
 import type { BoundClient, ConnectionState } from "@bound/client";
+import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box, Static, Text, useStdout } from "ink";
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	ActionBar,
 	Banner,
@@ -23,7 +24,11 @@ import {
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { readClipboardImage } from "../util/clipboard-image";
+import { renderHalfBlocks } from "../util/half-blocks";
+import { hashImageBytes, stampImageDescription, storeImagePreview } from "../util/image-preview";
 import { extractFullText } from "../util/message-text";
+import { decodePng } from "../util/png";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
 
 /**
@@ -380,7 +385,7 @@ export interface ChatViewProps {
 	onInspect: () => void;
 	onClear: () => void;
 	onBannerDismiss: () => void;
-	onSendMessage: (message: string) => void;
+	onSendMessage: (message: string | ContentBlock[]) => void;
 	/**
 	 * When false, the dynamic interactive area (input, status bar, action bar,
 	 * banners) is suppressed while `<Static>` remains mounted. This preserves
@@ -425,6 +430,15 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
+	// Staged image attachment (Ctrl+V). Bytes, hash, and half-block preview
+	// are all prepared at paste time — the preview parks in the session cache
+	// under the content hash stamped into the block's description, so the
+	// committed message renders it synchronously (see util/image-preview.ts).
+	const [stagedImage, setStagedImage] = useState<{
+		block: ContentBlock;
+		label: string;
+		preview: string[];
+	} | null>(null);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
 	// Live HUD: context-window gauge (context:debug events) + cluster spend
 	// (spoke-local /api/metrics over the synced turns table).
@@ -572,8 +586,65 @@ export function ChatView({
 			return;
 		}
 
+		// Attach the staged image (if any): text rides as a leading text block,
+		// image after — caption order. Staging clears immediately so a slow
+		// send can't double-attach on a second Enter.
+		if (stagedImage) {
+			const blocks: ContentBlock[] =
+				input.trim().length > 0
+					? [{ type: "text", text: input }, stagedImage.block]
+					: [stagedImage.block];
+			setStagedImage(null);
+			onSendMessage(blocks);
+			return;
+		}
 		onSendMessage(input);
 	};
+
+	/**
+	 * Ctrl+V: read an image off the OS clipboard and stage it. Everything the
+	 * committed render needs is prepared HERE, while the bytes are in hand —
+	 * the half-block preview parks in the session cache under the content
+	 * hash stamped into the block's description (which survives the server's
+	 * base64→file_ref rewrite), so no async work ever runs against <Static>.
+	 */
+	const handlePasteImage = useCallback(() => {
+		void (async () => {
+			const img = await readClipboardImage();
+			if (!img) {
+				setCommandError("No image on the clipboard");
+				return;
+			}
+			const decoded = decodePng(img.bytes);
+			const hash = hashImageBytes(img.bytes);
+			// Preview sized for the chip + committed card: readable but never
+			// viewport-dominating. Every line is one real text row (half-block
+			// art is pure SGR), so the dynamic region's height stays counted.
+			const preview = decoded
+				? renderHalfBlocks(decoded, {
+						maxCols: Math.min(64, Math.max(20, termColumns - 8)),
+						maxRows: 9,
+					})
+				: [];
+			storeImagePreview(hash, preview);
+			const width = decoded?.width ?? 0;
+			const height = decoded?.height ?? 0;
+			const block: ContentBlock = {
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: Buffer.from(img.bytes).toString("base64"),
+				},
+				description: stampImageDescription(width, height, hash),
+			};
+			setStagedImage({
+				block,
+				label: decoded ? `image ${width}×${height}` : "image (unrecognized PNG variant)",
+				preview,
+			});
+		})();
+	}, [termColumns]);
 
 	return (
 		<Box flexDirection="column">
@@ -701,6 +772,20 @@ export function ChatView({
 						</Box>
 					)}
 
+					{/* Staged image chip (Ctrl+V): the half-block preview plus a
+					    caption line. Every preview line is one real text row (pure
+					    SGR half-block art), so the dynamic region's height stays
+					    fully counted by Ink — the ghost-card invariant holds. */}
+					{stagedImage && (
+						<Box flexDirection="column" marginBottom={0}>
+							{stagedImage.preview.map((line, i) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable once staged
+								<Text key={i}>{line}</Text>
+							))}
+							<Text dimColor>⧉ {stagedImage.label} staged · Enter sends · Esc removes</Text>
+						</Box>
+					)}
+
 					{/* Input area — frame color tracks connection health */}
 					<Box borderStyle="round" borderColor={frameColor} paddingX={1} flexDirection="row">
 						<Text color={frameColor}>{"❯ "}</Text>
@@ -713,6 +798,8 @@ export function ChatView({
 								hasFocus={!overlayCapturingInput}
 								history={inputHistory}
 								completions={CHAT_SLASH_COMPLETIONS}
+								onPasteImage={handlePasteImage}
+								onEscapeEmpty={() => setStagedImage(null)}
 							/>
 						</Box>
 					</Box>

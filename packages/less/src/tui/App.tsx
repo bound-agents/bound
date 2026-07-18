@@ -1,4 +1,5 @@
 import type { BoundClient } from "@bound/client";
+import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box } from "ink";
 import type React from "react";
@@ -369,12 +370,21 @@ export function App({
 		sandbox,
 	]);
 
-	const handleSendMessage = async (message: string) => {
+	const handleSendMessage = async (message: string | ContentBlock[]) => {
 		if (client) {
 			// Optimistically render the user's message immediately. The real
 			// `message:created` (sometimes >3s later) reconciles this placeholder;
-			// see #88 and useMessages.appendPendingUserMessage.
-			appendPendingUserMessage(state.threadId, message);
+			// see #88 and useMessages.appendPendingUserMessage. Block sends
+			// (image paste) flatten to a text sketch for the placeholder — the
+			// real message renders the preview when it arrives.
+			const placeholderText =
+				typeof message === "string"
+					? message
+					: message
+							.map((b) => (b.type === "text" ? b.text : b.type === "image" ? "[image]" : ""))
+							.filter((t) => t.length > 0)
+							.join(" ");
+			appendPendingUserMessage(state.threadId, placeholderText);
 			try {
 				await client.sendMessage(state.threadId, message, { modelId: state.model || undefined });
 			} catch (error) {

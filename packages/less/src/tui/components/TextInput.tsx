@@ -42,6 +42,18 @@ export interface TextInputProps {
 	 *  ↑/↓ select, Tab completes into the buffer, Enter submits the selected
 	 *  command directly. */
 	completions?: SlashCompletion[];
+	/** Fired on Ctrl+V. The terminal never delivers image bytes through
+	 *  stdin — bracketed paste only carries text — so an image paste MUST be
+	 *  an explicit chord that asks the OS clipboard directly. The input stays
+	 *  clipboard-agnostic: the parent owns the read (spawning pbpaste/osascript/
+	 *  wl-paste), staging, and send. Text pastes are unaffected — terminals
+	 *  deliver those as ordinary input, handled by the character branch. */
+	onPasteImage?: () => void;
+	/** Fired when Esc lands on an ALREADY-EMPTY buffer (the single-press
+	 *  clear had nothing to do). ChatView uses it to drop a staged image
+	 *  attachment — the same key that clears text clears the attachment,
+	 *  in the same order: text first, then the stage. */
+	onEscapeEmpty?: () => void;
 }
 
 /**
@@ -247,6 +259,8 @@ export function TextInput({
 	hasFocus = true,
 	history = [],
 	completions = [],
+	onPasteImage,
+	onEscapeEmpty,
 }: TextInputProps): React.ReactElement {
 	// Combine value + cursor position in a single state atom so that
 	// rapid-fire keystrokes (which all close over the same render's state)
@@ -429,6 +443,13 @@ export function TextInput({
 				return;
 			}
 
+			// Ctrl+V: image paste (see onPasteImage contract above). Checked
+			// before the generic ctrl swallow so the chord reaches the parent.
+			if (key.ctrl && input === "v") {
+				onPasteImage?.();
+				return;
+			}
+
 			// Tab: complete the selected menu entry into the buffer. Swallowed
 			// even with no menu open — a literal tab keypress in a single-line
 			// input is never intent (tabs in PASTED text are sanitized to spaces
@@ -501,9 +522,12 @@ export function TextInput({
 
 			// Esc clears the buffer (single press, no-op when empty). Bare ESC
 			// only — escape *sequences* (arrows, meta-combos) were consumed by the
-			// branches above, so key.escape here means the lone byte.
+			// branches above, so key.escape here means the lone byte. On an
+			// already-empty buffer the press falls through to onEscapeEmpty so
+			// the parent can drop a staged image attachment (text first, then
+			// the stage — two presses to clear both).
 			if (key.escape) {
-				clear();
+				if (!clear()) onEscapeEmpty?.();
 				return;
 			}
 

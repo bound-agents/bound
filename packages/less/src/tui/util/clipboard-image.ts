@@ -1,0 +1,100 @@
+import { execFile } from "node:child_process";
+
+/**
+ * Read an image off the system clipboard, dependency-free.
+ *
+ * macOS: `pngpaste -` when installed (fast path), else `osascript` asking for
+ * the clipboard as «class PNGf» and parsing the hex blob AppleScript prints.
+ * Linux: `wl-paste` (Wayland) then `xclip` (X11), both asking for image/png.
+ *
+ * Returns null when the clipboard holds no image (or no reader exists on
+ * this platform) — callers treat null as "nothing to paste", not an error.
+ */
+
+export interface ClipboardImage {
+	bytes: Uint8Array;
+	mediaType: "image/png";
+}
+
+/** Injectable process runner (binary-safe stdout). */
+export type CommandRunner = (
+	cmd: string,
+	args: string[],
+) => Promise<{ ok: boolean; stdout: Buffer }>;
+
+const defaultRunner: CommandRunner = (cmd, args) =>
+	new Promise((resolve) => {
+		execFile(
+			cmd,
+			args,
+			{ encoding: "buffer", maxBuffer: 64 * 1024 * 1024, timeout: 10_000 },
+			(err, stdout) => {
+				resolve({ ok: !err, stdout: stdout ?? Buffer.alloc(0) });
+			},
+		);
+	});
+
+/**
+ * Parse AppleScript's hex data literal: `«data PNGf89504E47…»` (possibly
+ * wrapped in whitespace/newline). Returns the decoded bytes or null.
+ */
+export function parseOsascriptPngHex(output: string): Uint8Array | null {
+	const m = output.match(/«data PNGf([0-9A-Fa-f]+)»/);
+	if (!m) return null;
+	const hex = m[1];
+	if (hex.length < 16 || hex.length % 2 !== 0) return null;
+	const bytes = new Uint8Array(hex.length / 2);
+	for (let i = 0; i < bytes.length; i++) {
+		const b = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+		if (Number.isNaN(b)) return null;
+		bytes[i] = b;
+	}
+	return bytes;
+}
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47];
+
+function looksLikePng(bytes: Uint8Array): boolean {
+	return bytes.length > 8 && PNG_MAGIC.every((b, i) => bytes[i] === b);
+}
+
+/**
+ * Try each platform reader in order; first PNG wins. `platform` and `run`
+ * are injectable for tests.
+ */
+export async function readClipboardImage(
+	platform: NodeJS.Platform = process.platform,
+	run: CommandRunner = defaultRunner,
+): Promise<ClipboardImage | null> {
+	if (platform === "darwin") {
+		// pngpaste (brew) writes PNG straight to stdout — cheapest path.
+		const png = await run("pngpaste", ["-"]);
+		if (png.ok && looksLikePng(png.stdout)) {
+			return { bytes: new Uint8Array(png.stdout), mediaType: "image/png" };
+		}
+		// Built-in fallback: AppleScript prints the PNG as a hex data literal.
+		// A 3MB screenshot round-trips as ~6MB of hex — chunky but bounded by
+		// maxBuffer, and it requires nothing installed.
+		const osa = await run("osascript", ["-e", "get the clipboard as «class PNGf»"]);
+		if (osa.ok) {
+			const bytes = parseOsascriptPngHex(osa.stdout.toString("utf8"));
+			if (bytes && looksLikePng(bytes)) return { bytes, mediaType: "image/png" };
+		}
+		return null;
+	}
+
+	if (platform === "linux") {
+		for (const [cmd, args] of [
+			["wl-paste", ["-t", "image/png"]],
+			["xclip", ["-selection", "clipboard", "-t", "image/png", "-o"]],
+		] as const) {
+			const res = await run(cmd, [...args]);
+			if (res.ok && looksLikePng(res.stdout)) {
+				return { bytes: new Uint8Array(res.stdout), mediaType: "image/png" };
+			}
+		}
+		return null;
+	}
+
+	return null;
+}

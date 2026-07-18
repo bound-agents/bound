@@ -4,6 +4,7 @@ import { Box, Text } from "ink";
 import type React from "react";
 import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
+import { getImagePreview, parseImageDescription } from "../util/image-preview";
 import { linkifyPath } from "../util/osc8";
 import { tildifyPath, tildifyText } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
@@ -552,16 +553,47 @@ export function MessageBlock({
 			return <Markdown text={stripTerminalControlSequences(content)} />;
 		}
 
-		// ContentBlock array - extract text blocks
-		const textBlocks = content.filter((block) => block.type === "text");
-		if (textBlocks.length === 0) {
+		// ContentBlock array — render text and image blocks in order. Image
+		// previews come from the session-local cache keyed by the pv: hash in
+		// the block description (stamped at paste time; survives the server's
+		// base64→file_ref rewrite). The preview lines are half-block art —
+		// pure SGR color runs, one physical row per line, so they render as
+		// ordinary Text rows (the ghost-card invariant holds by construction).
+		// Foreign images (other sessions/hosts) miss the cache and render as
+		// a dim placeholder instead — their bytes were never on this clipboard.
+		const parts: React.ReactNode[] = [];
+		let textRun: string[] = [];
+		let key = 0;
+		const flushText = () => {
+			if (textRun.length === 0) return;
+			parts.push(<Markdown key={`t-${key++}`} text={textRun.join("\n\n")} />);
+			textRun = [];
+		};
+		for (const block of content) {
+			if (block.type === "text") {
+				textRun.push(stripTerminalControlSequences((block as { type: "text"; text: string }).text));
+			} else if (block.type === "image") {
+				flushText();
+				const { label, hash } = parseImageDescription(
+					(block as { type: "image"; description?: string }).description,
+				);
+				const preview = hash ? getImagePreview(hash) : undefined;
+				parts.push(
+					<Box key={`i-${key++}`} flexDirection="column">
+						{preview?.map((line, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable per render
+							<Text key={i}>{line}</Text>
+						))}
+						<Text dimColor>[{label}]</Text>
+					</Box>,
+				);
+			}
+		}
+		flushText();
+		if (parts.length === 0) {
 			return <Text dimColor>[Non-text content]</Text>;
 		}
-
-		const combinedText = textBlocks
-			.map((block) => stripTerminalControlSequences((block as { type: "text"; text: string }).text))
-			.join("\n\n");
-		return <Markdown text={combinedText} />;
+		return <Box flexDirection="column">{parts}</Box>;
 	};
 
 	// Parse content if it's a JSON string
