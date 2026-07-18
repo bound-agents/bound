@@ -12,6 +12,7 @@ import {
 	mergeDiffEntries,
 	mergeDiffPks,
 	readUndelivered,
+	syncableWhereClause,
 	writeOutbox,
 } from "@bound/core";
 import type {
@@ -1712,7 +1713,17 @@ export class WsTransport {
 		const pkCol = getPkColumn(table);
 		const pageSize = WsTransport.CONSISTENCY_PAGE_SIZE;
 
-		const countRow = this.config.db.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as {
+		// Exclude unsyncable rows (invariant #19: role='system' messages) from
+		// both the count and the page. This MUST match the comparing side's
+		// `getBackfillable*` filter — advertising rows the peer's diff view
+		// excludes makes them perpetually `remoteOnly`, so every backfill cycle
+		// re-pulls the same rows without converging. Route through the shared
+		// `syncableWhereClause` so the two sides cannot drift apart again.
+		const whereClause = syncableWhereClause(table);
+
+		const countRow = this.config.db
+			.query(`SELECT COUNT(*) AS c FROM ${table}${whereClause}`)
+			.get() as {
 			c: number;
 		};
 
@@ -1721,7 +1732,7 @@ export class WsTransport {
 		// because tier flips, soft-delete tombstones, and value mutations on
 		// rows present on both sides are silently skipped.
 		const rows = this.config.db
-			.query(`SELECT * FROM ${table} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
+			.query(`SELECT * FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
 			.all(pageSize + 1, offset) as Array<Record<string, unknown>>;
 
 		const hasMore = rows.length > pageSize;

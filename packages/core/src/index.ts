@@ -22,6 +22,8 @@ export {
 	getPkColumn,
 } from "./change-log";
 export {
+	syncableRowPredicate,
+	syncableWhereClause,
 	getLocalPksSorted,
 	getBackfillablePksSorted,
 	getBackfillableEntriesSorted,
