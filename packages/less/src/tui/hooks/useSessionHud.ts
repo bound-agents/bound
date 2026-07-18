@@ -67,10 +67,20 @@ export function useSessionHud(
 
 	useEffect(() => {
 		if (!client) return;
+		// Same degradation contract as getMetricsTotals below: a partial client
+		// (older server build, minimal test mock) that can't carry event
+		// subscriptions gets no HUD rather than a crashed view.
+		if (typeof client.on !== "function" || typeof client.off !== "function") return;
 
 		let disposed = false;
 
 		const refreshCost = (force = false) => {
+			// Older servers / partial test mocks may not carry getMetricsTotals.
+			// The HUD is decoration — degrade to no cost segment rather than
+			// throwing inside a mount effect and unmounting the whole view (the
+			// .catch below only covers ASYNC rejections, not a synchronous
+			// TypeError from calling a missing method).
+			if (typeof client.getMetricsTotals !== "function") return;
 			const now = Date.now();
 			if (!force && now - lastFetchRef.current < costRefreshMinIntervalMs) return;
 			lastFetchRef.current = now;

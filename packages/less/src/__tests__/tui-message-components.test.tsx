@@ -346,3 +346,69 @@ describe("Session HUD", () => {
 		});
 	});
 });
+
+describe("ToolCallCard streamed-stdout sanitization (ghost-card class)", () => {
+	it("strips ANSI color/cursor escapes from streamed stdout", async () => {
+		// bun/biome progress output arrives with live escapes; raw escapes in
+		// the live region desync log-update's erase math (2026-07-17
+		// screenshot: one ghost spinner row stranded per 80ms tick).
+		const { lastFrame } = render(
+			<ToolCallCard
+				toolName="boundless_bash"
+				startTime={Date.now()}
+				terminalColumns={80}
+				stdout={"\u001b[32mChecked 1066 files\u001b[0m\r\u001b[2K$ bunx biome check ."}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("Checked 1066 files");
+		expect(frame).toContain("$ bunx biome check .");
+		expect(frame).not.toContain("\u001b[32m");
+		expect(frame).not.toContain("\u001b[2K");
+	});
+
+	it("expands tabs in streamed stdout so row accounting matches physical rows", async () => {
+		const { lastFrame } = render(
+			<ToolCallCard
+				toolName="boundless_bash"
+				startTime={Date.now()}
+				terminalColumns={80}
+				stdout={"a\tb"}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("\t");
+		expect(frame).toContain("a    b");
+	});
+
+	it("normalizes bare \\r to newline instead of leaking a live carriage return", async () => {
+		const { lastFrame } = render(
+			<ToolCallCard
+				toolName="boundless_bash"
+				startTime={Date.now()}
+				terminalColumns={80}
+				stdout={"25% done\r50% done\r75% done"}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("\r");
+		// Each progress snapshot lands on its own row.
+		expect(frame).toContain("25% done");
+		expect(frame).toContain("75% done");
+	});
+
+	it("sanitizes the args summary line too", async () => {
+		const { lastFrame } = render(
+			<ToolCallCard
+				toolName="boundless_bash"
+				startTime={Date.now()}
+				terminalColumns={80}
+				argsSummary={"bun\ttest \u001b[31mred\u001b[0m"}
+			/>,
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("\t");
+		expect(frame).not.toContain("\u001b[31m");
+		expect(frame).toContain("red");
+	});
+});
