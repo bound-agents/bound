@@ -137,14 +137,31 @@ export function ToolCallCard({
 		}
 	}
 
+	// Flatten the args summary to its FIRST line. The spinner card's job is
+	// identity ("which invocation is this"), not content — the committed ⏵
+	// row carries the full args. This is load-bearing, not cosmetic:
+	// wrap="truncate-end" caps WIDTH but embedded newlines still produce
+	// physical rows, and computeStdoutRowBudget reserves chrome assuming the
+	// spinner line is ONE row. A multi-line summary (heredoc commit → ~30
+	// lines) blows that arithmetic, the dynamic region outgrows what Ink can
+	// repaint, and every spinner tick strands a ghost copy of the card in
+	// scrollback (observed 2026-07-17: the same commit stacked at 38s/39s/
+	// 39s/61s).
+	const firstLine = argsSummary?.split("\n", 1)[0] ?? "";
+	const argsLine = argsSummary
+		? argsSummary.includes("\n")
+			? `${firstLine} …`
+			: firstLine
+		: undefined;
+
 	return (
 		<Box flexDirection="column">
 			<Box>
 				<Spinner label={displayToolName(toolName)} />
-				{argsSummary ? (
+				{argsLine ? (
 					<Text dimColor wrap="truncate-end">
 						{" "}
-						{argsSummary}
+						{argsLine}
 					</Text>
 				) : null}
 			</Box>
