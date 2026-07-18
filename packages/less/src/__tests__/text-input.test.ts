@@ -737,3 +737,193 @@ describe("paste sanitization (tab/newline width desync)", () => {
 		expect(frame).toContain("    return { a: 1 } next line");
 	});
 });
+
+describe("history recall (↑/↓)", () => {
+	function HistoryHarness({ history }: { history: string[] }) {
+		const [submitted, setSubmitted] = useState<string | null>(null);
+		return React.createElement(
+			React.Fragment,
+			null,
+			React.createElement(TextInput, {
+				onSubmit: (val: string) => setSubmitted(val),
+				placeholder: "type here",
+				history,
+			}),
+			submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
+		);
+	}
+
+	it("↑ recalls the newest entry, ↑ again walks older", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["oldest", "newest"] }),
+		);
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("newest");
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("oldest");
+	});
+
+	it("↓ walks forward and finally restores the interrupted draft", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["prior message"] }),
+		);
+		await tick();
+		stdin.write("dra");
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("prior message");
+		stdin.write("\x1B[B");
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("dra");
+		expect(frame).not.toContain("prior message");
+	});
+
+	it("↑ at the oldest entry stays put (no wrap)", async () => {
+		const { lastFrame, stdin } = render(React.createElement(HistoryHarness, { history: ["only"] }));
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("only");
+	});
+
+	it("recalled multi-line text is sanitized to a single line", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["line one\nline two"] }),
+		);
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("line one line two");
+	});
+
+	it("editing after recall detaches from history (typed char lands in recalled text)", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["recalled"] }),
+		);
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		stdin.write("!");
+		await tick();
+		expect(lastFrame()).toContain("recalled!");
+		// ↓ after detach is a no-op (not browsing anymore) — text stays.
+		stdin.write("\x1B[B");
+		await tick();
+		expect(lastFrame()).toContain("recalled!");
+	});
+
+	it("↑ with no history does nothing", async () => {
+		const { lastFrame, stdin } = render(React.createElement(HistoryHarness, { history: [] }));
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("type here");
+	});
+});
+
+describe("slash-command completion menu", () => {
+	const COMPLETIONS = [
+		{ value: "/help", description: "Show available commands" },
+		{ value: "/model", description: "Switch model", takesArgs: true },
+		{ value: "/mcp", description: "MCP server configuration" },
+	];
+
+	function MenuHarness() {
+		const [submitted, setSubmitted] = useState<string | null>(null);
+		return React.createElement(
+			React.Fragment,
+			null,
+			React.createElement(TextInput, {
+				onSubmit: (val: string) => setSubmitted(val),
+				placeholder: "type here",
+				completions: COMPLETIONS,
+			}),
+			submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
+		);
+	}
+
+	it("typing / opens the menu with all commands", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/");
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/help");
+		expect(frame).toContain("/model");
+		expect(frame).toContain("Show available commands");
+	});
+
+	it("narrowing the prefix filters the menu", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/m");
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/model");
+		expect(frame).toContain("/mcp");
+		expect(frame).not.toContain("/help");
+	});
+
+	it("a space closes the menu (arguments have begun)", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/model x");
+		await tick();
+		expect(lastFrame()).not.toContain("Switch model");
+	});
+
+	it("Tab completes the selected command; takesArgs appends a space", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/mo");
+		await tick();
+		stdin.write("\t");
+		await tick();
+		// Completed to "/model " — menu is gone (trailing space ends the bare-token state).
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/model");
+		expect(frame).not.toContain("Switch model");
+		// Keep typing the argument directly.
+		stdin.write("opus");
+		await tick();
+		expect(lastFrame()).toContain("/model opus");
+	});
+
+	it("Enter submits the SELECTED command, not the partial buffer", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/he");
+		await tick();
+		stdin.write("\r");
+		await tick();
+		expect(lastFrame()).toContain("submitted:/help");
+	});
+
+	it("↓ moves the selection before Enter submits it", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/m");
+		await tick();
+		stdin.write("\x1B[B");
+		await tick();
+		stdin.write("\r");
+		await tick();
+		// /m matches [/model, /mcp]; ↓ selects the second.
+		expect(lastFrame()).toContain("submitted:/mcp");
+	});
+
+	it("no menu for non-slash input; ↑/↓ keep their history meaning", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("hello");
+		await tick();
+		expect(lastFrame()).not.toContain("/help");
+	});
+});

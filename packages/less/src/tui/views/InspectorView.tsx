@@ -7,6 +7,7 @@ import { SelectList } from "../components";
 import { HighlightedLine, langFromPath } from "../components/HighlightedCode";
 import { summarizeToolArgs } from "../components/MessageBlock";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { extractFullText, parseBlocks } from "../util/message-text";
 import { tildifyPath } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
 import { expandTabs, wrapLinesAtWidth } from "../util/wrap";
@@ -38,46 +39,9 @@ export interface InspectorViewProps {
 	onClose: () => void;
 }
 
-type ContentBlockLite = {
-	type: string;
-	text?: string;
-	name?: string;
-	input?: unknown;
-};
-
-/** Parse a message's content column: JSON block array or raw string. */
-function parseBlocks(content: string): ContentBlockLite[] | string {
-	try {
-		const parsed: unknown = JSON.parse(content);
-		if (Array.isArray(parsed)) return parsed as ContentBlockLite[];
-	} catch {
-		// raw string content
-	}
-	return content;
-}
-
-/**
- * Flatten a message to its complete text — no truncation, no provenance
- * filtering. The transcript renderer strips `[boundless]` blocks as noise;
- * the inspector keeps them, because provenance is exactly the kind of thing
- * you open an inspector to check.
- */
-export function extractFullText(msg: Message): string {
-	const parsed = parseBlocks(msg.content);
-	if (typeof parsed === "string") return parsed;
-	const parts: string[] = [];
-	for (const block of parsed) {
-		if (block.type === "text" && typeof block.text === "string") {
-			parts.push(block.text);
-		} else if (block.type === "tool_use") {
-			const name = typeof block.name === "string" ? block.name : "(tool)";
-			parts.push(`⏵ ${name}\n${JSON.stringify(block.input ?? {}, null, 2)}`);
-		} else if (block.type === "image") {
-			parts.push("[image]");
-		}
-	}
-	return parts.join("\n");
-}
+// Re-exported for consumers that treat the inspector as the home of
+// full-fidelity extraction (tests, future callers).
+export { extractFullText };
 
 /**
  * Detect the oversized-result offload stub ("[Tool result offloaded: N

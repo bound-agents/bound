@@ -22,7 +22,23 @@ import {
 } from "../components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { extractFullText } from "../util/message-text";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
+
+/**
+ * Slash-command palette for the input's completion menu. Kept adjacent to
+ * handleSubmit's dispatch (below) and the /help listing — the three MUST
+ * agree; a command in one and not the others is either undiscoverable or a
+ * lie. takesArgs controls whether Tab-completion appends a trailing space.
+ */
+export const CHAT_SLASH_COMPLETIONS = [
+	{ value: "/help", description: "Show available commands" },
+	{ value: "/model", description: "Switch model (picker without a name)", takesArgs: true },
+	{ value: "/attach", description: "Switch to a different thread" },
+	{ value: "/mcp", description: "MCP server configuration" },
+	{ value: "/inspect", description: "Browse the transcript at full fidelity" },
+	{ value: "/clear", description: "Start a new thread" },
+];
 
 /**
  * Per-tool_result metadata derived from its originating tool_call:
@@ -443,6 +459,21 @@ export function ChatView({
 	// dynamic area below, NOT in <Static>. See partitionPendingMessage / #134.
 	const { committed, pending } = useMemo(() => partitionPendingMessage(messages), [messages]);
 
+	// Prior user submissions for ↑/↓ recall, oldest → newest. Includes the
+	// optimistic pending placeholder's text (it IS a submission) via the raw
+	// messages array; dedupes consecutive repeats the way readline does so
+	// hammering ↑ doesn't step through five identical "continue"s.
+	const inputHistory = useMemo(() => {
+		const out: string[] = [];
+		for (const m of messages) {
+			if (m.role !== "user") continue;
+			const text = extractFullText(m).trim();
+			if (text.length === 0) continue;
+			if (out[out.length - 1] !== text) out.push(text);
+		}
+		return out;
+	}, [messages]);
+
 	// Per-message layout margins (compact read/search grouping) plus whether
 	// the transcript currently ends inside a compact run — the dynamic area
 	// below supplies the separating gap in that case, since compact rows
@@ -676,6 +707,8 @@ export function ChatView({
 								disabled={connectionState !== "connected"}
 								columns={inputColumns}
 								hasFocus={!overlayCapturingInput}
+								history={inputHistory}
+								completions={CHAT_SLASH_COMPLETIONS}
 							/>
 						</Box>
 					</Box>
