@@ -55,7 +55,12 @@ export {
 	resolveAwsCredentials,
 } from "./drivers/aws-credential-cache";
 
-export { sniffImageMediaType, correctMediaType } from "./image-utils";
+export {
+	sniffImageMediaType,
+	correctMediaType,
+	PROVIDER_IMAGE_BASE64_MAX_BYTES,
+	PROVIDER_IMAGE_RAW_MAX_BYTES,
+} from "./image-utils";
 
 export { installAiSdkWarningHook, uninstallAiSdkWarningHook } from "./ai-sdk-warning-hook";
 

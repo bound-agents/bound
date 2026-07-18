@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { PROVIDER_IMAGE_RAW_MAX_BYTES } from "@bound/llm";
+import { fitPngToByteBudget } from "./png";
 
 /**
  * Read an image off the system clipboard, dependency-free.
@@ -59,6 +61,20 @@ function looksLikePng(bytes: Uint8Array): boolean {
 }
 
 /**
+ * Fit clipboard bytes under the provider image budget (Anthropic caps the
+ * BASE64 payload at 5 MB — raw budget is 3/4 of that). A 3200×2080 Retina
+ * screenshot exceeds it and the API rejects the whole request, so oversized
+ * pastes are downscaled HERE, before the bytes ever board a message. Returns
+ * null when the image can't be brought under budget (undecodable exotic
+ * PNG) — callers treat that as "nothing to paste" rather than staging a
+ * payload the provider is guaranteed to refuse.
+ */
+function fitToProviderBudget(bytes: Uint8Array): Uint8Array | null {
+	const fitted = fitPngToByteBudget(bytes, PROVIDER_IMAGE_RAW_MAX_BYTES);
+	return fitted ? fitted.bytes : null;
+}
+
+/**
  * Try each platform reader in order; first PNG wins. `platform` and `run`
  * are injectable for tests.
  */
@@ -70,7 +86,9 @@ export async function readClipboardImage(
 		// pngpaste (brew) writes PNG straight to stdout — cheapest path.
 		const png = await run("pngpaste", ["-"]);
 		if (png.ok && looksLikePng(png.stdout)) {
-			return { bytes: new Uint8Array(png.stdout), mediaType: "image/png" };
+			const fitted = fitToProviderBudget(new Uint8Array(png.stdout));
+			if (fitted) return { bytes: fitted, mediaType: "image/png" };
+			return null;
 		}
 		// Built-in fallback: AppleScript prints the PNG as a hex data literal.
 		// A 3MB screenshot round-trips as ~6MB of hex — chunky but bounded by
@@ -78,7 +96,10 @@ export async function readClipboardImage(
 		const osa = await run("osascript", ["-e", "get the clipboard as «class PNGf»"]);
 		if (osa.ok) {
 			const bytes = parseOsascriptPngHex(osa.stdout.toString("utf8"));
-			if (bytes && looksLikePng(bytes)) return { bytes, mediaType: "image/png" };
+			if (bytes && looksLikePng(bytes)) {
+				const fitted = fitToProviderBudget(bytes);
+				if (fitted) return { bytes: fitted, mediaType: "image/png" };
+			}
 		}
 		return null;
 	}
@@ -90,7 +111,9 @@ export async function readClipboardImage(
 		] as const) {
 			const res = await run(cmd, [...args]);
 			if (res.ok && looksLikePng(res.stdout)) {
-				return { bytes: new Uint8Array(res.stdout), mediaType: "image/png" };
+				const fitted = fitToProviderBudget(new Uint8Array(res.stdout));
+				if (fitted) return { bytes: fitted, mediaType: "image/png" };
+				return null;
 			}
 		}
 		return null;

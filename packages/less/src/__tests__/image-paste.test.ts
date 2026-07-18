@@ -10,7 +10,14 @@ import {
 	stampImageDescription,
 	storeImagePreview,
 } from "../tui/util/image-preview";
-import { decodePng, isPng, pngDimensions } from "../tui/util/png";
+import {
+	decodePng,
+	encodePng,
+	fitPngToByteBudget,
+	isPng,
+	pngDimensions,
+	resizeRgba,
+} from "../tui/util/png";
 
 /**
  * Build a minimal valid-enough PNG in-test (no encoder dependency): real
@@ -186,5 +193,83 @@ describe("image preview cache + description stamp", () => {
 		expect(getImagePreview("cafe0123")).toEqual(["line1", "line2"]);
 		expect(getImagePreview("deadbeef")).toBeUndefined();
 		clearImagePreviews();
+	});
+});
+
+describe("png encoder + budget fit", () => {
+	it("encode → decode round-trips pixels exactly (RGBA, valid CRCs)", () => {
+		const width = 5;
+		const height = 3;
+		const pixels = new Uint8Array(width * height * 4);
+		for (let i = 0; i < pixels.length; i++) pixels[i] = (i * 37 + 11) & 0xff;
+		const encoded = encodePng({ width, height, pixels });
+		expect(isPng(encoded)).toBe(true);
+		const back = decodePng(encoded);
+		expect(back).not.toBeNull();
+		expect(back?.width).toBe(width);
+		expect(back?.height).toBe(height);
+		expect(back?.pixels).toEqual(pixels);
+	});
+
+	it("bilinear resize halves dimensions and averages neighbors", () => {
+		// 2×2 checkerboard: black/white — the 1×1 output should land mid-gray.
+		const pixels = new Uint8Array([
+			0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255,
+		]);
+		const out = resizeRgba({ width: 2, height: 2, pixels }, 1, 1);
+		expect(out.width).toBe(1);
+		expect(out.height).toBe(1);
+		// All four corners blend equally → ~127/128 per channel, alpha 255.
+		expect(Math.abs(out.pixels[0] - 128)).toBeLessThanOrEqual(1);
+		expect(out.pixels[3]).toBe(255);
+	});
+
+	it("passthrough when already under budget", () => {
+		const png = buildPng(2, 2, 6, [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]);
+		const fit = fitPngToByteBudget(png, 1024 * 1024);
+		expect(fit).not.toBeNull();
+		expect(fit?.scaled).toBe(false);
+		expect(fit?.bytes).toBe(png);
+		expect(fit?.width).toBe(2);
+		expect(fit?.height).toBe(2);
+	});
+
+	it("downscales an over-budget PNG under the budget", () => {
+		// Random noise compresses terribly — a 200×200 noise PNG lands well
+		// over a 20 KB budget, forcing the downscale path.
+		const width = 200;
+		const height = 200;
+		const pixels = new Uint8Array(width * height * 4);
+		let seed = 0x2545f491;
+		for (let i = 0; i < pixels.length; i++) {
+			// xorshift32 — an LCG's LOW bits have period ≤ 2^k (bit 7 repeats
+			// every 256 samples), which deflate flattens; xorshift's full-width
+			// mixing keeps every byte position genuinely incompressible.
+			seed ^= seed << 13;
+			seed ^= seed >>> 17;
+			seed ^= seed << 5;
+			seed >>>= 0;
+			pixels[i] = (seed >>> 8) & 0xff;
+		}
+		const big = encodePng({ width, height, pixels });
+		const budget = 20 * 1024;
+		expect(big.length).toBeGreaterThan(budget);
+		const fit = fitPngToByteBudget(big, budget);
+		expect(fit).not.toBeNull();
+		expect(fit?.scaled).toBe(true);
+		expect(fit?.bytes.length).toBeLessThanOrEqual(budget);
+		// Still a decodable PNG with the reported (smaller) dimensions.
+		const back = fit ? decodePng(fit.bytes) : null;
+		expect(back).not.toBeNull();
+		expect(back?.width).toBe(fit?.width);
+		expect(back?.height).toBe(fit?.height);
+		expect((fit?.width ?? 0) < width).toBe(true);
+	});
+
+	it("returns null for an over-budget PNG the decoder can't handle", () => {
+		// Interlaced flag makes decodePng bail; over budget + undecodable → null.
+		const png = buildPng(2, 2, 6, [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]);
+		png[8 + 8 + 12] = 1; // IHDR interlace byte (sig 8 + len/type 8 + 12 offset)
+		expect(fitPngToByteBudget(png, 10)).toBeNull();
 	});
 });
