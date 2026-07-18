@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import type React from "react";
-import { wrapLineAtWidth } from "../util/wrap";
+import { stripTerminalControlSequences } from "../util/terminal-control";
+import { expandTabs, wrapLineAtWidth } from "../util/wrap";
 import { Collapsible } from "./Collapsible";
 import { Spinner } from "./Spinner";
 
@@ -124,10 +125,25 @@ export function ToolCallCard({
 		// and any ancestor padding so visual rows don't accidentally trigger
 		// the terminal's own soft-wrap.
 		const wrapColumn = Math.max(1, terminalColumns - 4);
+		// Sanitize BEFORE wrapping — streamed stdout is the one path that
+		// reaches the live region raw (committed results are stripped in
+		// MessageBlock). Two distinct hazards, one observed derailment
+		// (2026-07-17 screenshot: a ghost spinner row stranded per 80ms tick):
+		// - Raw \r / ANSI escapes: a carriage return inside the frame moves
+		//   the cursor outside Ink's knowledge, so log-update under-erases
+		//   and strands the frame's top rows in scrollback every repaint.
+		//   strip…Sequences also normalizes \r→\n and drops color/cursor
+		//   escapes (which char-count wrapping would otherwise slice mid-
+		//   sequence, leaking a live half-escape into the terminal).
+		// - Tabs: wrapLineAtWidth counts \t as one char but the terminal
+		//   renders up to 8 columns — same gauge mismatch as 4b7d394e — so
+		//   physical rows exceed counted rows and the row budget silently
+		//   overflows the viewport.
+		const sanitized = stripTerminalControlSequences(stdout);
 		// Flatten logical lines into visual rows.
 		const allVisualRows: string[] = [];
-		for (const line of stdout.split("\n")) {
-			allVisualRows.push(...wrapLineAtWidth(line, wrapColumn));
+		for (const line of sanitized.split("\n")) {
+			allVisualRows.push(...wrapLineAtWidth(expandTabs(line), wrapColumn));
 		}
 		if (allVisualRows.length > rowCap) {
 			const tail = allVisualRows.slice(-rowCap).join("\n");
@@ -147,7 +163,7 @@ export function ToolCallCard({
 	// repaint, and every spinner tick strands a ghost copy of the card in
 	// scrollback (observed 2026-07-17: the same commit stacked at 38s/39s/
 	// 39s/61s).
-	const firstLine = argsSummary?.split("\n", 1)[0] ?? "";
+	const firstLine = stripTerminalControlSequences(expandTabs(argsSummary?.split("\n", 1)[0] ?? ""));
 	const argsLine = argsSummary
 		? argsSummary.includes("\n")
 			? `${firstLine} …`
