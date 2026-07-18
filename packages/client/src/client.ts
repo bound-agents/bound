@@ -26,6 +26,7 @@ import type {
 	FileListEntry,
 	HostStatus,
 	MemoryGraphResponse,
+	MetricsTokenTotals,
 	ModelsResponse,
 	NetworkStatus,
 	RedactMessageResult,
@@ -555,6 +556,21 @@ export class BoundClient {
 
 	async getContextDebug(threadId: string): Promise<ContextDebugTurn[]> {
 		return this.fetchJson(`/api/threads/${threadId}/context-debug`);
+	}
+
+	/**
+	 * Cluster-wide token/cost totals for a time range, from `GET /api/metrics`.
+	 * The spoke's web server aggregates the synced `turns` table locally, so
+	 * this answers for the whole cluster without a hub round-trip. Returns just
+	 * the `tokens.totals` slice — the full response (timelines, relay stats)
+	 * stays a web-UI concern.
+	 */
+	async getMetricsTotals(from: Date, to: Date): Promise<MetricsTokenTotals> {
+		const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
+		const data = await this.fetchJson<{ tokens: { totals: MetricsTokenTotals } }>(
+			`/api/metrics?${params}`,
+		);
+		return data.tokens.totals;
 	}
 
 	// ---- Messages ----

@@ -285,3 +285,64 @@ describe("Message rendering components", () => {
 		});
 	});
 });
+
+describe("Session HUD", () => {
+	describe("StatusBar hud segments", () => {
+		const hud = {
+			contextTokens: 87_000,
+			contextWindow: 200_000,
+			contextPct: 0.435,
+			todayCostUsd: 12.34,
+			sessionCostUsd: 1.05,
+		};
+
+		it("renders the context gauge and spend when the hud carries data", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="t1"
+					model="opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/tmp/work"
+					hud={hud}
+				/>,
+			);
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("ctx 44%");
+			expect(frame).toContain("(87k/200k)");
+			expect(frame).toContain("$1.05");
+			expect(frame).toContain("$12.34 today");
+		});
+
+		it("hides HUD segments entirely when absent — no zeros pretending to be data", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="t1"
+					model="opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/tmp/work"
+				/>,
+			);
+			const frame = lastFrame() ?? "";
+			expect(frame).not.toContain("ctx ");
+			expect(frame).not.toContain("today");
+		});
+
+		it("hides the cost segment until BOTH windows have resolved", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="t1"
+					model="opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/tmp/work"
+					hud={{ ...hud, todayCostUsd: null }}
+				/>,
+			);
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("ctx 44%");
+			expect(frame).not.toContain("today");
+		});
+	});
+});

@@ -21,6 +21,7 @@ import {
 	summarizeToolArgs,
 } from "../components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
+import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { extractFullText } from "../util/message-text";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
@@ -425,6 +426,9 @@ export function ChatView({
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
+	// Live HUD: context-window gauge (context:debug events) + cluster spend
+	// (spoke-local /api/metrics over the synced turns table).
+	const hud = useSessionHud(_client, threadId);
 	const { stdout } = useStdout();
 	// Repaint nonce: bumped on a width change to force <Static> to remount and
 	// re-emit every committed item at the new width. See resizeRedraw.ts for the
@@ -720,6 +724,7 @@ export function ChatView({
 						connectionState={connectionState}
 						mcpServerCount={mcpServerCount}
 						cwd={cwd}
+						hud={hud}
 					/>
 					<ActionBar
 						actions={[
