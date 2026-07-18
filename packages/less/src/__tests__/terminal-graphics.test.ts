@@ -116,14 +116,26 @@ describe("encodeKittyImage", () => {
 });
 
 describe("encodeItermImage", () => {
-	it("emits the OSC 1337 inline-image escape with cell dims and size", () => {
+	it("emits the OSC 1337 inline-image escape bracketed in DECSC/DECRC", () => {
 		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561);
 		expect(out).toBe(
-			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=1;size=2792561:AAAA${BEL}`,
+			`${ESC}7${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=1;size=2792561:AAAA${BEL}${ESC}8`,
 		);
 	});
 
 	it("preserves aspect ratio so the image never exceeds its reserved rows", () => {
 		expect(encodeItermImage("AAAA", { cols: 3, rows: 2 }, 100)).toContain("preserveAspectRatio=1");
+	});
+
+	it("nets zero cursor movement: save (ESC 7) before, restore (ESC 8) after the paint", () => {
+		// The advance-suppression that makes iTerm2 match kitty's C=1 so the
+		// card's borderLeft draws down the image's left edge instead of stacking
+		// a full-height empty column below it.
+		const out = encodeItermImage("AAAA", { cols: 4, rows: 3 }, 100);
+		expect(out.startsWith(`${ESC}7`)).toBe(true);
+		expect(out.endsWith(`${ESC}8`)).toBe(true);
+		// The paint sits strictly between the save and the restore.
+		expect(out.indexOf(`${ESC}]1337`)).toBeGreaterThan(0);
+		expect(out.indexOf(`${ESC}]1337`)).toBeLessThan(out.lastIndexOf(`${ESC}8`));
 	});
 });

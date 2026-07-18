@@ -121,11 +121,23 @@ export function encodeKittyImage(pngBase64: string, box: CellBox): string {
 
 /**
  * iTerm2 inline-image escape: draw a PNG scaled into `cols`×`rows` cells,
- * aspect preserved. iTerm2 has no cursor-suppression key — it advances the
- * cursor past the image — so the caller still reserves `rows` rows in layout;
- * the reservation and the advance line up on `rows`.
+ * aspect preserved.
+ *
+ * iTerm2 (unlike kitty's C=1) ADVANCES the cursor past the image. Left
+ * unmanaged, that advance stacks on top of the layout engine's own `rows`
+ * reservation: Ink lays out a `rows`-tall bordered box AND iTerm2 pushes the
+ * cursor down `rows` more, so the card's `borderLeft` prints as an empty
+ * full-height column BELOW the image and the block eats 2×`rows`.
+ *
+ * The fix is to bracket the paint in DECSC/DECRC (ESC 7 … ESC 8): the image
+ * still rasterizes into the grid, but the cursor is saved before and restored
+ * after, netting zero movement — exactly kitty's C=1 semantics. The single
+ * `rows` reservation now matches the paint for both protocols, and Ink draws
+ * the border down the left of the image like the half-block path does.
  */
 export function encodeItermImage(pngBase64: string, box: CellBox, byteLength: number): string {
 	const args = `inline=1;width=${box.cols};height=${box.rows};preserveAspectRatio=1;size=${byteLength}`;
-	return `${ESC}]1337;File=${args}:${pngBase64}${BEL}`;
+	// DECSC (ESC 7) save cursor → image → DECRC (ESC 8) restore: net-zero
+	// cursor movement so the layout reservation and the paint agree on `rows`.
+	return `${ESC}7${ESC}]1337;File=${args}:${pngBase64}${BEL}${ESC}8`;
 }
