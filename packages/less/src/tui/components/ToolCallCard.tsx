@@ -164,11 +164,30 @@ export function ToolCallCard({
 	// scrollback (observed 2026-07-17: the same commit stacked at 38s/39s/
 	// 39s/61s).
 	const firstLine = stripTerminalControlSequences(expandTabs(argsSummary?.split("\n", 1)[0] ?? ""));
-	const argsLine = argsSummary
+	const argsFirstLine = argsSummary
 		? argsSummary.includes("\n")
 			? `${firstLine} …`
 			: firstLine
 		: undefined;
+	// Bound the args to ONE physical row. wrap="truncate-end" does NOT cap width
+	// when the flex row is unconstrained: Ink measures the text at full content
+	// width (counts it as 1 row) while the terminal's autowrap folds the overflow
+	// onto a 2nd physical row — logUpdate then under-erases and strands a ghost
+	// header every 80ms spinner tick (observed 2026-07-18: a bash
+	// typecheck+test+lint chain stacked at 31/32/33/34s). Hard-truncate at a
+	// column budget, mirroring the explicit-width discipline the stdout path
+	// already uses — the counted row and the physical row MUST agree. The full
+	// args still ride the committed ⏵ row; the live card only needs identity.
+	const headerPrefixWidth =
+		2 + // spinner glyph + space
+		6 + // elapsed up to "9999s "
+		displayToolName(toolName).length +
+		1; // JSX leading space before the args
+	const argsBudget = Math.max(8, terminalColumns - headerPrefixWidth);
+	const argsLine =
+		argsFirstLine && argsFirstLine.length > argsBudget
+			? `${argsFirstLine.slice(0, Math.max(1, argsBudget - 1))}…`
+			: argsFirstLine;
 
 	return (
 		<Box flexDirection="column">

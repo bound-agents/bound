@@ -140,6 +140,40 @@ describe("Message rendering components", () => {
 			expect(output).toContain("~/x/ChatView.tsx");
 		});
 
+		it("bounds the spinner header to one physical row so it can't strand per 80ms tick", async () => {
+			// A long bash command (the exact 2026-07-18 derailment: a
+			// typecheck+test+lint chain ~160 chars). wrap="truncate-end" alone does
+			// NOT cap width in an unconstrained flex row — Ink counts the line as 1
+			// row while the terminal autowraps it to 2, so logUpdate under-erases
+			// and strands a ghost header every spinner frame. The header MUST fit in
+			// terminalColumns.
+			const longCmd =
+				"bunx tsc -p packages/less --noEmit && echo TYPECHECK-OK && bun test packages/less/src/__tests__ 2>&1 | tail -4 && bun run lint:fix 2>&1 | tail -2 && bun run lint 2>&1 | tail -2";
+			const cols = 80;
+			const { lastFrame } = render(
+				<ToolCallCard
+					toolName="bash"
+					startTime={Date.now()}
+					argsSummary={longCmd}
+					terminalColumns={cols}
+				/>,
+			);
+			const frame = lastFrame() ?? "";
+			// Strip SGR escapes and measure each visible row.
+			const sgr = new RegExp(`${String.fromCharCode(27)}\[[0-9;]*m`, "g");
+			const rows = frame.split("\n").map((l) => l.replace(sgr, ""));
+			for (const row of rows) {
+				expect(row.length).toBeLessThanOrEqual(cols);
+			}
+			// The tail of the command must be dropped (truncated with an ellipsis),
+			// not rendered in full.
+			expect(frame).not.toContain("bun run lint 2>&1 | tail -2");
+			expect(frame).toContain("…");
+			// Identity is preserved: tool name + the head of the command survive.
+			expect(frame).toContain("bash");
+			expect(frame).toContain("bunx tsc");
+		});
+
 		it("AC9.2: renders badge with running status", async () => {
 			const now = Date.now();
 			const { lastFrame } = render(
