@@ -40,7 +40,7 @@
  *   T8 Empty input → empty output.
  */
 
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { Message } from "@bound/shared";
 import fc from "fast-check";
 import {
@@ -49,6 +49,74 @@ import {
 	hasUnclosedToolCall,
 	sanitizeToolPairs,
 } from "../index";
+import { reorderPass } from "../sanitize";
+
+/**
+ * Reference implementation: the ORIGINAL O(n^2) `reorderPass`, copied
+ * verbatim from the pre-optimization source. The O(n) rewrite in
+ * `sanitize.ts` must produce byte-identical output to this oracle over
+ * arbitrary inputs (parity test P1). Kept only in the test file; deleting
+ * or "cleaning up" this reference defeats the parity guarantee.
+ */
+function reorderPassReference(messages: ReadonlyArray<Message>): Message[] {
+	const reordered: Message[] = [];
+	const consumed = new Set<number>();
+
+	for (let i = 0; i < messages.length; i++) {
+		if (consumed.has(i)) continue;
+
+		const msg = messages[i];
+		if (msg.role !== "tool_call") {
+			reordered.push(msg);
+			continue;
+		}
+
+		const matchIndices: number[] = [];
+		const nonToolMessages: Message[] = [];
+		const nonToolIndices: number[] = [];
+
+		const pendingToolUseIds = new Set(extractToolUseIds(msg.content));
+
+		let crossedToolCallBoundary = false;
+		for (let j = i + 1; j < messages.length; j++) {
+			if (consumed.has(j)) continue;
+			const jMsg = messages[j];
+			if (jMsg.role === "tool_call") {
+				if (pendingToolUseIds.size === 0) break;
+				crossedToolCallBoundary = true;
+				continue;
+			}
+			if (jMsg.role === "tool_result") {
+				if (crossedToolCallBoundary) {
+					if (!jMsg.tool_name || !pendingToolUseIds.has(jMsg.tool_name)) continue;
+				}
+				matchIndices.push(j);
+				if (jMsg.tool_name) pendingToolUseIds.delete(jMsg.tool_name);
+			} else {
+				if (matchIndices.length > 0 && pendingToolUseIds.size === 0) break;
+				if (crossedToolCallBoundary) continue;
+				if (jMsg.role !== "assistant") {
+					nonToolMessages.push(jMsg);
+					nonToolIndices.push(j);
+				}
+			}
+		}
+
+		if (matchIndices.length > 0) {
+			for (const m of nonToolMessages) reordered.push(m);
+			for (const idx of nonToolIndices) consumed.add(idx);
+			for (const idx of matchIndices) consumed.add(idx);
+			reordered.push(msg);
+			for (const idx of matchIndices) reordered.push(messages[idx]);
+		} else {
+			for (const m of nonToolMessages) reordered.push(m);
+			for (const idx of nonToolIndices) consumed.add(idx);
+			reordered.push(msg);
+		}
+	}
+
+	return reordered;
+}
 
 const FIXED_NOW_ISO = "2026-05-25T12:00:00.000Z";
 const THREAD_ID = "test-thread";
@@ -296,6 +364,65 @@ describe("sanitizeToolPairs — property tests", () => {
 		if (out.length !== 0) {
 			throw new Error(`expected empty output, got ${out.length} messages`);
 		}
+	});
+
+	// P1: PARITY — the O(n) reorderPass is byte-identical to the original
+	// O(n^2) reference over arbitrary message sequences. This is the decisive
+	// gate for the performance rewrite: the behavioral T1-T8 use small arrays
+	// and cannot catch a subtle ordering divergence. The generator mixes
+	// tool_calls (single + multi-tool), tool_results (matched, orphaned,
+	// out-of-order, boundary-straggler), and non-tool messages so the
+	// crossedToolCallBoundary / hoist / straggler-claim branches are all hit.
+	it("P1: reorderPass parity with the O(n^2) reference (byte-equal)", () => {
+		// A pool of tool_use ids reused across calls/results so matches,
+		// mismatches, duplicates, and stragglers all occur.
+		const idPool = fc.constantFrom("a", "b", "c", "d", "e");
+		const msgArb: fc.Arbitrary<Message> = fc.oneof(
+			fc.record({ kind: fc.constant("user"), id: safeId, text: safeText }),
+			fc.record({ kind: fc.constant("assistant"), id: safeId, text: safeText }),
+			fc.record({ kind: fc.constant("developer"), id: safeId, text: safeText }),
+			fc.record({
+				kind: fc.constant("tool_call"),
+				id: safeId,
+				ids: fc.uniqueArray(idPool, { minLength: 0, maxLength: 3 }),
+			}),
+			fc.record({ kind: fc.constant("tool_result"), id: safeId, tid: idPool }),
+		) as fc.Arbitrary<Message>;
+
+		fc.assert(
+			fc.property(fc.array(msgArb, { maxLength: 40 }), (specs) => {
+				const msgs: Message[] = (specs as unknown as Array<Record<string, unknown>>).map((s) => {
+					if (s.kind === "tool_call") return toolCallMsg(s.id as string, s.ids as string[]);
+					if (s.kind === "tool_result") return toolResultMsg(s.id as string, s.tid as string);
+					if (s.kind === "assistant") return assistantMsg(s.id as string, s.text as string);
+					if (s.kind === "developer") return developerMsg(s.id as string, s.text as string);
+					return userMsg(s.id as string, s.text as string);
+				});
+				const expected = JSON.stringify(reorderPassReference(msgs));
+				const actual = JSON.stringify(reorderPass(msgs));
+				return actual === expected;
+			}),
+			{ numRuns: 2000 },
+		);
+	});
+
+	// P2: PERFORMANCE — a large thread of tool_calls with UNMATCHED ids (the
+	// exact shape that drove the original to O(n^2): pending set never empties,
+	// so the old inner loop scanned to end-of-array for every call). The rewrite
+	// must complete this in well under a second. Pre-fix this was multiple
+	// seconds at 4k messages and ~100s at the 39k-message production thread.
+	it("P2: large unmatched-id thread sanitizes in O(n) time", () => {
+		const msgs: Message[] = [];
+		for (let i = 0; i < 4000; i++) {
+			msgs.push(toolCallMsg(`tc-${i}`, [`live-${i}`]));
+			// A result whose id matches NOTHING — leaves the call's pending set
+			// non-empty, the worst case for the original scan-to-end path.
+			msgs.push(toolResultMsg(`tr-${i}`, "never-matches"));
+		}
+		const start = performance.now();
+		sanitizeToolPairs({ messages: msgs, threadId: THREAD_ID, nowIso: FIXED_NOW_ISO });
+		const elapsedMs = performance.now() - start;
+		expect(elapsedMs).toBeLessThan(500);
 	});
 
 	// Regression: extractToolUseIds is total and idempotent.
