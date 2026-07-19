@@ -31,14 +31,22 @@ function getEncoding(): Tiktoken {
  * Memoizing the count is lossless (token count is a pure function of the
  * string) and collapses those repeats to a single encode.
  *
- * The cache is bounded by entry count (Map insertion order = LRU; a hit
- * refreshes recency, overflow evicts the oldest). Entry count rather than
- * byte size keeps the bound simple; tool-result content is already capped
- * upstream (≤50k chars per stream / ≤256 KiB per result), so worst-case
- * footprint stays modest.
+ * The cache is bounded by total cached CONTENT BYTES (sum of key string
+ * lengths), not entry count. A prior 1024-ENTRY bound thrashed on large
+ * threads: a thread with >1024 distinct message contents (observed: 1,623
+ * distinct on a 1,640-message thread; 39k+ on the largest) overflowed the
+ * cache within a single full-history pass, dropping the hit rate to ~1%.
+ * Every one of the ~4-8 full-history token passes per cold assembly then
+ * re-encoded the entire multi-MB history from scratch (~1.5s/pass), pegging
+ * a CPU core for 80-110s. A byte bound sized above a realistic thread's
+ * distinct-content footprint keeps the whole working set resident so the hit
+ * rate stays high across every pass, while still capping worst-case memory
+ * (Map insertion order = LRU; a hit refreshes recency, overflow evicts oldest
+ * until back under budget).
  */
-const TOKEN_CACHE_MAX = 1024;
+const TOKEN_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const tokenCache = new Map<string, number>();
+let tokenCacheBytes = 0;
 let tokenCacheHits = 0;
 let tokenCacheMisses = 0;
 
@@ -53,10 +61,16 @@ function memoizedEncodeLength(text: string): number {
 	}
 	const count = getEncoding().encode(text).length;
 	tokenCache.set(text, count);
+	tokenCacheBytes += text.length;
 	tokenCacheMisses++;
-	if (tokenCache.size > TOKEN_CACHE_MAX) {
+	// Evict oldest entries until back under the byte budget. A single entry
+	// larger than the whole budget is still cached (then immediately evicted on
+	// the next insert) rather than looping forever.
+	while (tokenCacheBytes > TOKEN_CACHE_MAX_BYTES && tokenCache.size > 1) {
 		const oldest = tokenCache.keys().next().value;
-		if (oldest !== undefined) tokenCache.delete(oldest);
+		if (oldest === undefined) break;
+		tokenCache.delete(oldest);
+		tokenCacheBytes -= oldest.length;
 	}
 	return count;
 }
@@ -92,12 +106,16 @@ export function countContentTokens(content: string | TokenCountableBlock[]): num
  */
 export function __tokenCacheStats(): {
 	size: number;
+	bytes: number;
+	maxBytes: number;
 	hits: number;
 	misses: number;
 	has(text: string): boolean;
 } {
 	return {
 		size: tokenCache.size,
+		bytes: tokenCacheBytes,
+		maxBytes: TOKEN_CACHE_MAX_BYTES,
 		hits: tokenCacheHits,
 		misses: tokenCacheMisses,
 		has: (text: string) => tokenCache.has(text),
