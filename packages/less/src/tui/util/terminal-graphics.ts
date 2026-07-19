@@ -40,16 +40,33 @@ export type GraphicsProtocol = "kitty" | "iterm2";
  *     image's own height, and GraphicsImage emits a single line so Ink adds no
  *     phantom rows for that advance to double against or overpaint.
  *
- * `reserve` is the default; `BOUND_TERM_IMAGE_MODE=advance` flips it. This is a
- * diagnostic seam: real iTerm2/kitty cursor+scroll behavior can't be observed
- * from ink-testing-library (it trims trailing whitespace and never emulates a
- * cursor), so which strategy a given terminal actually wants is settled on
- * that terminal, not in a frame assertion.
+ * The default is PROTOCOL-AWARE, because the two protocols paint into
+ * different substrates and only one survives the reserve path's blank
+ * height-padding:
+ *   - iTerm2 inline images ARE character-cell content. Under `reserve`,
+ *     GraphicsImage's height Box pads rows 2..N with spaces, and — because the
+ *     DECSC/DECRC bracket restores the cursor to the top after the paint —
+ *     those spaces overwrite the image's own rows. Only row 1 survives, which
+ *     is the "worked but only for the first line" symptom. So iTerm2 defaults
+ *     to `advance`: the terminal owns the footprint and Ink emits no padding.
+ *   - kitty draws into a SEPARATE graphics plane, not the text cells, so the
+ *     blank padding can't erase it; `reserve` there also earns the per-row
+ *     card border down the image's left edge, so kitty stays on `reserve`.
+ * `BOUND_TERM_IMAGE_MODE=reserve|advance` forces either regardless of
+ * protocol — a diagnostic seam, since real cursor+scroll behavior can't be
+ * observed from ink-testing-library (it trims trailing whitespace and never
+ * emulates a cursor), so the strategy is settled on the terminal.
  */
 export type GraphicsCursorMode = "reserve" | "advance";
 
-export function graphicsCursorMode(env: NodeJS.ProcessEnv = process.env): GraphicsCursorMode {
-	return env.BOUND_TERM_IMAGE_MODE === "advance" ? "advance" : "reserve";
+export function graphicsCursorMode(
+	protocol: GraphicsProtocol,
+	env: NodeJS.ProcessEnv = process.env,
+): GraphicsCursorMode {
+	const override = env.BOUND_TERM_IMAGE_MODE;
+	if (override === "advance") return "advance";
+	if (override === "reserve") return "reserve";
+	return protocol === "iterm2" ? "advance" : "reserve";
 }
 
 /**

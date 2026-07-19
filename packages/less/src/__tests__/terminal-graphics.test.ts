@@ -4,6 +4,7 @@ import {
 	encodeItermImage,
 	encodeKittyImage,
 	fitCellBox,
+	graphicsCursorMode,
 } from "../tui/util/terminal-graphics";
 
 const ESC = "\u001b";
@@ -146,5 +147,28 @@ describe("encodeItermImage", () => {
 
 	it("preserves aspect ratio so the image never exceeds its reserved rows", () => {
 		expect(encodeItermImage("AAAA", { cols: 3, rows: 2 }, 100)).toContain("preserveAspectRatio=1");
+	});
+});
+
+describe("graphicsCursorMode (protocol-aware default)", () => {
+	it("defaults iTerm2 to advance — reserve's blank padding overwrites its cells", () => {
+		expect(graphicsCursorMode("iterm2", {})).toBe("advance");
+	});
+
+	it("defaults kitty to reserve — separate image plane survives the padding", () => {
+		expect(graphicsCursorMode("kitty", {})).toBe("reserve");
+	});
+
+	it("honors BOUND_TERM_IMAGE_MODE=reserve as a manual force over the iTerm2 default", () => {
+		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "reserve" })).toBe("reserve");
+	});
+
+	it("honors BOUND_TERM_IMAGE_MODE=advance as a manual force over the kitty default", () => {
+		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "advance" })).toBe("advance");
+	});
+
+	it("ignores an unrecognized override value and keeps the protocol default", () => {
+		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("advance");
+		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("reserve");
 	});
 });
