@@ -123,17 +123,23 @@ describe("encodeKittyImage", () => {
 });
 
 describe("encodeItermImage", () => {
-	it("reserve mode advances then nets zero with CUU (iTerm2 ignores DECSC/DECRC)", () => {
+	it("reserve mode advances then nets to the image top with CUU rows-1 (iTerm2 leaves the cursor on the last image row, not below it)", () => {
 		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561, "reserve");
 		expect(out).toBe(
-			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=0;size=2792561:AAAA${BEL}${ESC}[5A`,
+			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=0;size=2792561:AAAA${BEL}${ESC}[4A`,
 		);
 	});
 
-	it("defaults to reserve mode (trailing CUU by the row count)", () => {
+	it("defaults to reserve mode (trailing CUU by rows-1)", () => {
 		const out = encodeItermImage("AAAA", { cols: 4, rows: 3 }, 100);
-		expect(out.endsWith(`${ESC}[3A`)).toBe(true);
+		expect(out.endsWith(`${ESC}[2A`)).toBe(true);
 		expect(out.startsWith(`${ESC}]1337;`)).toBe(true);
+	});
+
+	it("emits NO CUU for a 1-row image (ESC[0A would move up one, not zero)", () => {
+		const out = encodeItermImage("AAAA", { cols: 4, rows: 1 }, 100);
+		expect(out.endsWith(`AAAA${BEL}`)).toBe(true);
+		expect(out).not.toContain(`${ESC}[`);
 	});
 
 	it("advance mode emits the bare escape so the terminal owns the cursor advance", () => {
