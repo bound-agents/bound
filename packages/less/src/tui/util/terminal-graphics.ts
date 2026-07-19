@@ -40,18 +40,22 @@ export type GraphicsProtocol = "kitty" | "iterm2";
  *     image's own height, and GraphicsImage emits a single line so Ink adds no
  *     phantom rows for that advance to double against or overpaint.
  *
- * The default is PROTOCOL-AWARE, because the two protocols paint into
- * different substrates and only one survives the reserve path's blank
- * height-padding:
- *   - iTerm2 inline images ARE character-cell content. Under `reserve`,
- *     GraphicsImage's height Box pads rows 2..N with spaces, and — because the
- *     DECSC/DECRC bracket restores the cursor to the top after the paint —
- *     those spaces overwrite the image's own rows. Only row 1 survives, which
- *     is the "worked but only for the first line" symptom. So iTerm2 defaults
- *     to `advance`: the terminal owns the footprint and Ink emits no padding.
- *   - kitty draws into a SEPARATE graphics plane, not the text cells, so the
- *     blank padding can't erase it; `reserve` there also earns the per-row
- *     card border down the image's left edge, so kitty stays on `reserve`.
+ * The default is `reserve` for BOTH protocols. `reserve` is the only mode
+ * whose cursor nets to zero (kitty C=1; iTerm2 DECSC/DECRC bracket), which is
+ * what keeps Ink's row-by-row emission aligned with the terminal — so the
+ * StripeBox card border draws continuously down ALL of the image's rows. Under
+ * `advance` the terminal walks the cursor N rows past where Ink thinks it is,
+ * a one-way trapdoor: nothing Ink lays out afterward can land beside the image,
+ * so the border comes up short (renders full-height BELOW the image instead of
+ * to its left). A continuous left border is therefore structurally impossible
+ * under `advance` and only available under `reserve`.
+ *
+ * The earlier iTerm2→advance default (403b8aa5) was justified by a claim that
+ * reserve's height Box pads rows 2..N with spaces that overwrite the image.
+ * A raw byte capture of Ink's <Static> output disproved that: the height Box
+ * emits the border glyph then an immediate LF on those rows — no content-region
+ * padding, and no ESC[K erase. So the space-fill the switch guarded never
+ * existed, and reserve is the correct default on both substrates.
  * `BOUND_TERM_IMAGE_MODE=reserve|advance` forces either regardless of
  * protocol — a diagnostic seam, since real cursor+scroll behavior can't be
  * observed from ink-testing-library (it trims trailing whitespace and never
@@ -60,13 +64,16 @@ export type GraphicsProtocol = "kitty" | "iterm2";
 export type GraphicsCursorMode = "reserve" | "advance";
 
 export function graphicsCursorMode(
-	protocol: GraphicsProtocol,
+	_protocol: GraphicsProtocol,
 	env: NodeJS.ProcessEnv = process.env,
 ): GraphicsCursorMode {
 	const override = env.BOUND_TERM_IMAGE_MODE;
 	if (override === "advance") return "advance";
 	if (override === "reserve") return "reserve";
-	return protocol === "iterm2" ? "advance" : "reserve";
+	// Both substrates default to reserve: it is the only mode whose net-zero
+	// cursor keeps Ink's flow aligned, which is what lets the card border draw
+	// continuously down the image's rows (see the doc comment above).
+	return "reserve";
 }
 
 /**
