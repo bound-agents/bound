@@ -650,7 +650,7 @@ export function ChatView({
 			const protocol = decoded ? detectGraphicsProtocol() : null;
 			if (decoded && protocol) {
 				const box = fitCellBox(width, height, Math.min(80, Math.max(20, termColumns - 4)), 24);
-				const mode = graphicsCursorMode();
+				const mode = graphicsCursorMode(protocol);
 				const graphicsEscape =
 					protocol === "kitty"
 						? encodeKittyImage(base64, box, mode)
