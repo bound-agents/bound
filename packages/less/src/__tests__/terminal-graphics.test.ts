@@ -123,30 +123,29 @@ describe("encodeKittyImage", () => {
 });
 
 describe("encodeItermImage", () => {
-	it("reserve mode brackets the OSC 1337 escape in DECSC/DECRC (net-zero cursor)", () => {
+	it("reserve mode advances then nets zero with CUU (iTerm2 ignores DECSC/DECRC)", () => {
 		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561, "reserve");
 		expect(out).toBe(
-			`${ESC}7${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=1;size=2792561:AAAA${BEL}${ESC}8`,
+			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=0;size=2792561:AAAA${BEL}${ESC}[5A`,
 		);
 	});
 
-	it("defaults to reserve mode", () => {
+	it("defaults to reserve mode (trailing CUU by the row count)", () => {
 		const out = encodeItermImage("AAAA", { cols: 4, rows: 3 }, 100);
-		expect(out.startsWith(`${ESC}7`)).toBe(true);
-		expect(out.endsWith(`${ESC}8`)).toBe(true);
+		expect(out.endsWith(`${ESC}[3A`)).toBe(true);
+		expect(out.startsWith(`${ESC}]1337;`)).toBe(true);
 	});
 
 	it("advance mode emits the bare escape so the terminal owns the cursor advance", () => {
 		const out = encodeItermImage("AAAA", { cols: 10, rows: 5 }, 2792561, "advance");
 		expect(out).toBe(
-			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=1;size=2792561:AAAA${BEL}`,
+			`${ESC}]1337;File=inline=1;width=10;height=5;preserveAspectRatio=0;size=2792561:AAAA${BEL}`,
 		);
-		expect(out.startsWith(`${ESC}7`)).toBe(false);
-		expect(out.endsWith(`${ESC}8`)).toBe(false);
+		expect(out.endsWith(BEL)).toBe(true);
 	});
 
-	it("preserves aspect ratio so the image never exceeds its reserved rows", () => {
-		expect(encodeItermImage("AAAA", { cols: 3, rows: 2 }, 100)).toContain("preserveAspectRatio=1");
+	it("pins preserveAspectRatio=0 so the paint is exactly `rows` tall (CUU up-count stays exact)", () => {
+		expect(encodeItermImage("AAAA", { cols: 3, rows: 2 }, 100)).toContain("preserveAspectRatio=0");
 	});
 });
 
