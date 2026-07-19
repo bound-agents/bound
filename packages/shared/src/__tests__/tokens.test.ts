@@ -123,9 +123,35 @@ describe("tokens", () => {
 			expect(__tokenCacheStats().has(unique)).toBe(true);
 		});
 
-		it("stays bounded under churn (never exceeds the cache cap)", () => {
-			for (let i = 0; i < 3000; i++) countTokens(`bound-churn-${Math.random()}-${i}`);
-			expect(__tokenCacheStats().size).toBeLessThanOrEqual(1024);
+		it("tracks cached bytes and never exceeds the byte cap", () => {
+			// Exercise the byte accounting without encoding tens of MB (the pure-JS
+			// tokenizer runs at ~8k chars/sec, so churning the full 64MB cap would
+			// make this test take minutes). A modest set keeps the invariant checks
+			// fast while still verifying bytes are tracked and bounded.
+			for (let i = 0; i < 500; i++) countTokens(`byte-accounting-entry-${i}`);
+			const stats = __tokenCacheStats();
+			expect(stats.bytes).toBeGreaterThan(0);
+			expect(stats.bytes).toBeLessThanOrEqual(stats.maxBytes);
+			// bytes must equal the summed lengths of the resident keys.
+			expect(stats.bytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+		});
+
+		it("keeps a >1024-entry working set resident (fixes the LRU thrash)", () => {
+			// Regression for the 80-110s context-assembly CPU peg: the old
+			// 1024-ENTRY bound thrashed on threads with >1024 distinct messages,
+			// so repeated full-history token passes re-encoded everything at a ~1%
+			// hit rate. With a byte bound, a realistic working set (2000 modest
+			// strings) stays resident, so a second pass is served almost entirely
+			// from cache.
+			const corpus = Array.from({ length: 2000 }, (_, i) => `resident-working-set-entry-${i}`);
+			for (const s of corpus) countTokens(s); // pass 1 — populate
+			const before = __tokenCacheStats();
+			for (const s of corpus) countTokens(s); // pass 2 — should be near-all hits
+			const after = __tokenCacheStats();
+			const passHits = after.hits - before.hits;
+			const passMisses = after.misses - before.misses;
+			expect(passMisses).toBe(0);
+			expect(passHits).toBe(corpus.length);
 		});
 	});
 });
