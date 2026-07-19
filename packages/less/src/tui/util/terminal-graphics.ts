@@ -180,17 +180,21 @@ export function encodeKittyImage(
  * iTerm2 inline-image escape: draw a PNG scaled into `cols`×`rows` cells,
  * aspect preserved.
  *
- * iTerm2 (unlike kitty's C=1) ADVANCES the cursor past the image. Left
- * unmanaged, that advance stacks on top of the layout engine's own `rows`
- * reservation: Ink lays out a `rows`-tall bordered box AND iTerm2 pushes the
- * cursor down `rows` more, so the card's `borderLeft` prints as an empty
- * full-height column BELOW the image and the block eats 2×`rows`.
+ * iTerm2 (unlike kitty's C=1) ADVANCES the cursor past the image, and does
+ * NOT honor a DECSC/DECRC (ESC 7 … ESC 8) bracket around it: the image still
+ * rasterizes, but the restore is a no-op, so the cursor ends `rows` below and
+ * the card's `borderLeft` prints as a column BELOW the image instead of down
+ * its left edge (the "border stops after the first row" symptom).
  *
- * The fix is to bracket the paint in DECSC/DECRC (ESC 7 … ESC 8): the image
- * still rasterizes into the grid, but the cursor is saved before and restored
- * after, netting zero movement — exactly kitty's C=1 semantics. The single
- * `rows` reservation now matches the paint for both protocols, and Ink draws
- * the border down the left of the image like the half-block path does.
+ * The fix nets the cursor to zero the reliable way: cursor-up (CUU, ESC[{n}A)
+ * IS honored universally, so we let the image advance its `rows` cells, then
+ * move the cursor back UP `rows`. That restores the image's top row, and
+ * GraphicsImage's height-`rows` Box then paints the border straight down over
+ * the image's own rows — matching kitty's C=1 net-zero semantics without
+ * relying on DECSC/DECRC. The up-count must be exact, so we pin
+ * preserveAspectRatio=0 to force the paint to EXACTLY `rows` cells tall
+ * (the box is already fitted to the image's aspect, so this is a negligible
+ * stretch, never a squash) instead of letting iTerm2 pick a shorter height.
  */
 export function encodeItermImage(
 	pngBase64: string,
@@ -198,11 +202,12 @@ export function encodeItermImage(
 	byteLength: number,
 	mode: GraphicsCursorMode = "reserve",
 ): string {
-	const args = `inline=1;width=${box.cols};height=${box.rows};preserveAspectRatio=1;size=${byteLength}`;
+	const args = `inline=1;width=${box.cols};height=${box.rows};preserveAspectRatio=0;size=${byteLength}`;
 	const image = `${ESC}]1337;File=${args}:${pngBase64}${BEL}`;
-	// reserve: bracket in DECSC/DECRC (ESC 7 … ESC 8) so the cursor nets zero
-	// movement and GraphicsImage's height Box supplies the reservation + border.
 	// advance: emit the bare escape and let iTerm2 advance the cursor by the
 	// image's own height — GraphicsImage emits no phantom rows to fight it.
-	return mode === "reserve" ? `${ESC}7${image}${ESC}8` : image;
+	if (mode === "advance") return image;
+	// reserve: image advances `rows`, then CUU back up `rows` nets the cursor to
+	// zero so the height Box's border draws down the image's left edge.
+	return `${image}${ESC}[${box.rows}A`;
 }
