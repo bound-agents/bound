@@ -150,25 +150,25 @@ describe("encodeItermImage", () => {
 	});
 });
 
-describe("graphicsCursorMode (protocol-aware default)", () => {
-	it("defaults iTerm2 to advance — reserve's blank padding overwrites its cells", () => {
-		expect(graphicsCursorMode("iterm2", {})).toBe("advance");
+describe("graphicsCursorMode (reserve default on both substrates)", () => {
+	it("defaults iTerm2 to reserve — the only mode whose net-zero cursor lets the card border draw down the full image", () => {
+		expect(graphicsCursorMode("iterm2", {})).toBe("reserve");
 	});
 
-	it("defaults kitty to reserve — separate image plane survives the padding", () => {
+	it("defaults kitty to reserve — separate image plane, net-zero cursor keeps the flow aligned", () => {
 		expect(graphicsCursorMode("kitty", {})).toBe("reserve");
 	});
 
-	it("honors BOUND_TERM_IMAGE_MODE=reserve as a manual force over the iTerm2 default", () => {
-		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "reserve" })).toBe("reserve");
+	it("honors BOUND_TERM_IMAGE_MODE=advance as a manual force over the reserve default", () => {
+		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "advance" })).toBe("advance");
 	});
 
-	it("honors BOUND_TERM_IMAGE_MODE=advance as a manual force over the kitty default", () => {
-		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "advance" })).toBe("advance");
+	it("honors BOUND_TERM_IMAGE_MODE=reserve as an explicit force", () => {
+		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "reserve" })).toBe("reserve");
 	});
 
-	it("ignores an unrecognized override value and keeps the protocol default", () => {
-		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("advance");
+	it("ignores an unrecognized override value and keeps the reserve default", () => {
+		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("reserve");
 		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("reserve");
 	});
 });
