@@ -207,7 +207,14 @@ export function encodeItermImage(
 	// advance: emit the bare escape and let iTerm2 advance the cursor by the
 	// image's own height — GraphicsImage emits no phantom rows to fight it.
 	if (mode === "advance") return image;
-	// reserve: image advances `rows`, then CUU back up `rows` nets the cursor to
-	// zero so the height Box's border draws down the image's left edge.
-	return `${image}${ESC}[${box.rows}A`;
+	// reserve: iTerm2 leaves the cursor on the image's LAST row (advance = rows-1,
+	// NOT rows — measured directly: a height-N image starting on row R lands the
+	// cursor on row R+N-1, not R+N). So CUU by rows-1 nets the cursor back to the
+	// image's TOP row; the height Box's next line-break then steps to row 2 and the
+	// border paints straight down all `rows`. A full `rows` CUU overshoots one row
+	// ABOVE the top, which walks the per-row border one short at the bottom and
+	// laps the label onto the image (the "stops after row 1, rest stacks below"
+	// symptom). A 1-row image needs no CUU (ESC[0A would move up one, not zero).
+	if (box.rows <= 1) return image;
+	return `${image}${ESC}[${box.rows - 1}A`;
 }
