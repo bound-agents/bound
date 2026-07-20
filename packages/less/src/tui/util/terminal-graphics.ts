@@ -96,8 +96,17 @@ export function detectGraphicsProtocol(
 	if (env.TERM_PROGRAM === "ghostty" || env.GHOSTTY_RESOURCES_DIR) return "kitty";
 	if (env.KONSOLE_VERSION) return "kitty";
 
-	// iTerm2 inline images.
-	if (env.TERM_PROGRAM === "iTerm.app" || env.LC_TERMINAL === "iTerm2") return "iterm2";
+	// iTerm2 (3.5+) and LC_TERMINAL=iTerm2 sessions. iTerm2 has its own inline-
+	// image escape (ESC]1337), but its cursor semantics there are a one-way
+	// advance that no DECSC/DECRC or CUU correction nets cleanly to zero — so a
+	// continuous card border down the image's left edge is structurally out of
+	// reach on that path (the whole 43decaae→6b897787 arc chased it and lost).
+	// iTerm2 ALSO speaks the kitty protocol, and a direct probe confirmed it
+	// honors kitty C=1 (image rasterizes full-height, cursor stays on the top
+	// row). So we route iTerm2 through kitty for the net-zero cursor. Anyone on a
+	// pre-3.5 iTerm2 without kitty support can force the old path with
+	// BOUND_TERM_GRAPHICS=iterm2.
+	if (env.TERM_PROGRAM === "iTerm.app" || env.LC_TERMINAL === "iTerm2") return "kitty";
 
 	// WezTerm speaks both; the iTerm2 protocol is a single escape (no
 	// chunking), so it's the simpler, more reliable choice there.
@@ -157,7 +166,11 @@ export function encodeKittyImage(
 	// explicit-height Box owns the reservation. advance: omit it, letting kitty
 	// move the cursor past the image so the terminal owns the reservation.
 	const cursor = mode === "reserve" ? "C=1," : "";
-	const controls = `a=T,f=100,${cursor}c=${box.cols},r=${box.rows}`;
+	// q=2 suppresses BOTH the OK and error responses kitty terminals emit after a
+	// transmit+display. We never read them, and in a raw-mode TUI an unread
+	// `ESC_G…OK ESC\` reply lands on stdin where Ink's input parser would choke on
+	// it (and it visibly leaks to the prompt — see the C=1 probe artifact).
+	const controls = `a=T,f=100,q=2,${cursor}c=${box.cols},r=${box.rows}`;
 	if (pngBase64.length <= CHUNK) {
 		return `${ESC}_G${controls};${pngBase64}${ST}`;
 	}
