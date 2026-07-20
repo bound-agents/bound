@@ -64,16 +64,20 @@ export type GraphicsProtocol = "kitty" | "iterm2";
 export type GraphicsCursorMode = "reserve" | "advance";
 
 export function graphicsCursorMode(
-	_protocol: GraphicsProtocol,
+	protocol: GraphicsProtocol,
 	env: NodeJS.ProcessEnv = process.env,
 ): GraphicsCursorMode {
 	const override = env.BOUND_TERM_IMAGE_MODE;
 	if (override === "advance") return "advance";
 	if (override === "reserve") return "reserve";
-	// Both substrates default to reserve: it is the only mode whose net-zero
-	// cursor keeps Ink's flow aligned, which is what lets the card border draw
-	// continuously down the image's rows (see the doc comment above).
-	return "reserve";
+	// Protocol-aware default. kitty's C=1 nets the cursor to zero, so `reserve`
+	// gives Ink a clean row-by-row footprint and the card border draws
+	// continuously down the image's rows. iTerm2's OSC advances the cursor with no
+	// net-zero mode Ink can rely on (DECSC/DECRC ignored; CUU arithmetic never
+	// converged across the 43decaae→6b897787 arc), so `advance` is the only mode
+	// that renders the full image without fighting Ink's flow — at the cost of a
+	// continuous left border, which is structurally out of reach on that path.
+	return protocol === "kitty" ? "reserve" : "advance";
 }
 
 /**
@@ -96,17 +100,19 @@ export function detectGraphicsProtocol(
 	if (env.TERM_PROGRAM === "ghostty" || env.GHOSTTY_RESOURCES_DIR) return "kitty";
 	if (env.KONSOLE_VERSION) return "kitty";
 
-	// iTerm2 (3.5+) and LC_TERMINAL=iTerm2 sessions. iTerm2 has its own inline-
-	// image escape (ESC]1337), but its cursor semantics there are a one-way
-	// advance that no DECSC/DECRC or CUU correction nets cleanly to zero — so a
-	// continuous card border down the image's left edge is structurally out of
-	// reach on that path (the whole 43decaae→6b897787 arc chased it and lost).
-	// iTerm2 ALSO speaks the kitty protocol, and a direct probe confirmed it
-	// honors kitty C=1 (image rasterizes full-height, cursor stays on the top
-	// row). So we route iTerm2 through kitty for the net-zero cursor. Anyone on a
-	// pre-3.5 iTerm2 without kitty support can force the old path with
-	// BOUND_TERM_GRAPHICS=iterm2.
-	if (env.TERM_PROGRAM === "iTerm.app" || env.LC_TERMINAL === "iTerm2") return "kitty";
+	// iTerm2 (3.5+) and LC_TERMINAL=iTerm2 sessions use iTerm2's OWN inline-image
+	// escape (ESC]1337 … OSC). We do NOT route iTerm2 through kitty: whatever the
+	// exact cause — Ink measures text width via string-width→strip-ansi, and
+	// strip-ansi's regex recognizes CSI and OSC but NOT APC (ESC _ … ESC\), so a
+	// kitty payload can measure at full width and get line-wrapped/shattered; and
+	// iTerm2's kitty support through this render path proved unreliable in the
+	// field — the observed result was the raw base64 leaking as text instead of
+	// rasterizing (the 1b4c6140 regression). iTerm2's OSC escape strips to zero
+	// width, so Ink never touches it and it reaches the terminal intact. The cost
+	// is iTerm2's OSC advances the cursor irreversibly (no net-zero mode), so a
+	// continuous card border down the image's left edge is out of reach there —
+	// but the image renders, which beats a clean border over leaked base64.
+	if (env.TERM_PROGRAM === "iTerm.app" || env.LC_TERMINAL === "iTerm2") return "iterm2";
 
 	// WezTerm speaks both; the iTerm2 protocol is a single escape (no
 	// chunking), so it's the simpler, more reliable choice there.

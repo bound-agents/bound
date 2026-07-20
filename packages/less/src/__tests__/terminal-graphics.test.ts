@@ -38,9 +38,9 @@ describe("detectGraphicsProtocol", () => {
 		expect(detectGraphicsProtocol({ KONSOLE_VERSION: "220370" })).toBe("kitty");
 	});
 
-	it("detects iTerm2 (3.5+) via the kitty protocol — it honors C=1 for a net-zero cursor", () => {
-		expect(detectGraphicsProtocol({ TERM_PROGRAM: "iTerm.app" })).toBe("kitty");
-		expect(detectGraphicsProtocol({ LC_TERMINAL: "iTerm2" })).toBe("kitty");
+	it("detects iTerm2 via its own OSC inline-image protocol (NOT kitty — Ink's string-width can't measure APC, so a kitty payload would wrap and shatter)", () => {
+		expect(detectGraphicsProtocol({ TERM_PROGRAM: "iTerm.app" })).toBe("iterm2");
+		expect(detectGraphicsProtocol({ LC_TERMINAL: "iTerm2" })).toBe("iterm2");
 	});
 
 	it("a pre-3.5 iTerm2 can force the legacy inline path with BOUND_TERM_GRAPHICS=iterm2", () => {
@@ -169,25 +169,25 @@ describe("encodeItermImage", () => {
 	});
 });
 
-describe("graphicsCursorMode (reserve default on both substrates)", () => {
-	it("defaults iTerm2 to reserve — the only mode whose net-zero cursor lets the card border draw down the full image", () => {
-		expect(graphicsCursorMode("iterm2", {})).toBe("reserve");
+describe("graphicsCursorMode (protocol-aware default: kitty=reserve, iTerm2=advance)", () => {
+	it("defaults iTerm2 to advance — its OSC advances the cursor with no net-zero mode, so advance is the only reliable render (continuous border out of reach)", () => {
+		expect(graphicsCursorMode("iterm2", {})).toBe("advance");
 	});
 
-	it("defaults kitty to reserve — separate image plane, net-zero cursor keeps the flow aligned", () => {
+	it("defaults kitty to reserve — C=1 nets the cursor to zero, keeping Ink's flow aligned for a continuous card border", () => {
 		expect(graphicsCursorMode("kitty", {})).toBe("reserve");
 	});
 
-	it("honors BOUND_TERM_IMAGE_MODE=advance as a manual force over the reserve default", () => {
-		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "advance" })).toBe("advance");
+	it("honors BOUND_TERM_IMAGE_MODE=advance as a manual force", () => {
+		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "advance" })).toBe("advance");
 	});
 
-	it("honors BOUND_TERM_IMAGE_MODE=reserve as an explicit force", () => {
-		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "reserve" })).toBe("reserve");
+	it("honors BOUND_TERM_IMAGE_MODE=reserve as a manual force", () => {
+		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "reserve" })).toBe("reserve");
 	});
 
-	it("ignores an unrecognized override value and keeps the reserve default", () => {
-		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("reserve");
+	it("ignores an unrecognized override value and keeps the protocol-aware default", () => {
+		expect(graphicsCursorMode("iterm2", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("advance");
 		expect(graphicsCursorMode("kitty", { BOUND_TERM_IMAGE_MODE: "bogus" })).toBe("reserve");
 	});
 });
