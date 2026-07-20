@@ -24,9 +24,14 @@ export interface GraphicsImageProps {
  * its own `height` cells — either way the reservation is `rows`, so nothing
  * below the image gets overpainted.
  *
- * ONLY valid inside <Static>. The dynamic region (in-flight card, staged
- * chip) must never mount this — a graphics escape there ghosts on the next
- * log-update erase. Callers gate on the committed-render path.
+ * VALID in <Static> (committed transcript) under either mode, and in the
+ * dynamic region (the composer's staged-image chip) under `reserve` ONLY.
+ * reserve nets the cursor to zero and reserves exactly `rows`, so Ink's line
+ * count matches the footprint and log-update's erase-by-line-count stays
+ * correct across repaints. `advance` walks the terminal cursor N rows past
+ * where Ink thinks it is — a one-way trapdoor safe only in the write-once
+ * <Static> stream; mounting it in the dynamic region ghosts on the next
+ * log-update erase. The composer chip therefore gates on reserve.
  */
 export function GraphicsImage({
 	escape: escapeSeq,
