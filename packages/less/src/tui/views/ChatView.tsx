@@ -7,7 +7,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	ActionBar,
 	Banner,
-	GraphicsImage,
 	MessageBlock,
 	SessionHeader,
 	Spinner,
@@ -28,7 +27,6 @@ import { useTerminalSize } from "../hooks/useTerminalSize";
 import { readClipboardImage } from "../util/clipboard-image";
 import { renderHalfBlocks } from "../util/half-blocks";
 import {
-	getImageGraphics,
 	hashImageBytes,
 	stampImageDescription,
 	storeImageGraphics,
@@ -452,9 +450,6 @@ export function ChatView({
 		block: ContentBlock;
 		label: string;
 		preview: string[];
-		/** Content hash — keys the graphics-escape cache for the progressive
-		 *  chip render (real pixels when the terminal speaks a protocol). */
-		hash: string;
 	} | null>(null);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
 	// Live HUD: context-window gauge (context:debug events) + cluster spend
@@ -675,7 +670,6 @@ export function ChatView({
 				block,
 				label: decoded ? `image ${width}×${height}` : "image (unrecognized PNG variant)",
 				preview,
-				hash,
 			});
 		})();
 	}, [termColumns]);
@@ -806,34 +800,23 @@ export function ChatView({
 						</Box>
 					)}
 
-					{/* Staged image chip (Ctrl+V): progressive render. When the
-					    terminal speaks a graphics protocol, the real image is drawn
-					    (same escape the committed card uses); otherwise the half-block
-					    preview lines carry it. Both were prepared at paste time and
-					    cached under the content hash. reserve-mode graphics net the
-					    cursor to zero and reserve exactly `rows`, so Ink's line count
-					    matches the footprint and log-update erases correctly. */}
-					{stagedImage &&
-						(() => {
-							const graphics = getImageGraphics(stagedImage.hash);
-							return (
-								<Box flexDirection="column" marginBottom={0}>
-									{graphics ? (
-										<GraphicsImage
-											escape={graphics.escape}
-											rows={graphics.rows}
-											mode={graphics.mode}
-										/>
-									) : (
-										stagedImage.preview.map((line, i) => (
-											// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable once staged
-											<Text key={i}>{line}</Text>
-										))
-									)}
-									<Text dimColor>⧉ {stagedImage.label} staged · Enter sends · Esc removes</Text>
-								</Box>
-							);
-						})()}
+					{/* Staged image chip (Ctrl+V): the half-block preview plus a
+					    caption line. Every preview line is one real text row (pure
+					    SGR half-block art), so the dynamic region's height stays
+					    fully counted by Ink and log-update can repaint it cleanly on
+					    every keystroke. Real graphics escapes CANNOT live here — see
+					    GraphicsImage's doc: the whole dynamic frame re-emits per
+					    keystroke, so each redraw blits a fresh image and stacks. Real
+					    pixels stay in the committed card (<Static>, emit-once). */}
+					{stagedImage && (
+						<Box flexDirection="column" marginBottom={0}>
+							{stagedImage.preview.map((line, i) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable once staged
+								<Text key={i}>{line}</Text>
+							))}
+							<Text dimColor>⧉ {stagedImage.label} staged · Enter sends · Esc removes</Text>
+						</Box>
+					)}
 
 					{/* Input area — frame color tracks connection health */}
 					<Box borderStyle="round" borderColor={frameColor} paddingX={1} flexDirection="row">
