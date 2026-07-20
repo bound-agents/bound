@@ -201,6 +201,7 @@ describe("Context Assembly OTEL Spans", () => {
 		// waterfall; here the same nesting holds via the test's parent span.) A
 		// detached span would have an undefined parentSpanId and float free.
 		const helperNames = [
+			"context.helper.load-memory-entries",
 			"context.helper.build-cross-thread-digest",
 			"context.helper.build-volatile-enrichment",
 			"context.helper.select-relevant-memory",
