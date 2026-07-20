@@ -466,13 +466,23 @@ function loadVolatileSectionInputs(args: {
 		hostName,
 	} = args;
 
-	const pinned = loadPinnedEntries(db);
-	const summaries = loadSummaryEntries(db, pinned.exclusionSet);
-	const detailEntries = loadDetailEntries(db);
-	const staleChildrenMap = buildStaleChildrenMap(db, summaries.entries);
-	const parentSummaryMap = buildParentSummaryMap(
-		db,
-		detailEntries.entries.map((e) => e.key),
+	const { pinned, summaries, detailEntries, staleChildrenMap, parentSummaryMap } = withChildSpan(
+		"context.helper.load-memory-entries",
+		() => {
+			const p = loadPinnedEntries(db);
+			const s = loadSummaryEntries(db, p.exclusionSet);
+			const d = loadDetailEntries(db);
+			return {
+				pinned: p,
+				summaries: s,
+				detailEntries: d,
+				staleChildrenMap: buildStaleChildrenMap(db, s.entries),
+				parentSummaryMap: buildParentSummaryMap(
+					db,
+					d.entries.map((e) => e.key),
+				),
+			};
+		},
 	);
 	const digest = withChildSpan("context.helper.build-cross-thread-digest", () =>
 		buildCrossThreadDigest(db, userId, threadId),
@@ -888,9 +898,17 @@ export function buildVolatileContext(params: {
 	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
 
 	// Load inputs for renderers
-	const pinned = loadPinnedEntries(params.db);
-	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
-	const detailEntries = loadDetailEntries(params.db);
+	const { pinned, summaries, detailEntries } = withChildSpan(
+		"context.helper.load-memory-entries",
+		() => {
+			const p = loadPinnedEntries(params.db);
+			return {
+				pinned: p,
+				summaries: loadSummaryEntries(params.db, p.exclusionSet),
+				detailEntries: loadDetailEntries(params.db),
+			};
+		},
+	);
 
 	// Bump last_accessed_at for detail entries that are about to
 	// be rendered into Discoverable Archive. The DA sort key and
@@ -902,12 +920,21 @@ export function buildVolatileContext(params: {
 	// one bump per entry per hour. Direct SQL write (not via the
 	// outbox) — see bumpRenderedDetailEntries for the documented
 	// exception to invariant #1.
-	bumpRenderedDetailEntries(params.db, detailEntries.entries, nowMs);
+	withChildSpan(
+		"context.helper.bump-rendered-detail-entries",
+		() => bumpRenderedDetailEntries(params.db, detailEntries.entries, nowMs),
+		{ entry_count: detailEntries.entries.length },
+	);
 
-	const staleChildrenMap = buildStaleChildrenMap(params.db, summaries.entries);
-	const parentSummaryMap = buildParentSummaryMap(
-		params.db,
-		detailEntries.entries.map((e) => e.key),
+	const { staleChildrenMap, parentSummaryMap } = withChildSpan(
+		"context.helper.build-summary-maps",
+		() => ({
+			staleChildrenMap: buildStaleChildrenMap(params.db, summaries.entries),
+			parentSummaryMap: buildParentSummaryMap(
+				params.db,
+				detailEntries.entries.map((e) => e.key),
+			),
+		}),
 	);
 	const digest = withChildSpan("context.helper.build-cross-thread-digest", () =>
 		buildCrossThreadDigest(params.db, params.userId, params.threadId),
