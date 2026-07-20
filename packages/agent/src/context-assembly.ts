@@ -2153,7 +2153,11 @@ Original output was too large for the context window. If you need the full conte
 			// `assembled` but still consumes window budget for the LLM call.
 			// Fold its token cost into the truncation calculation so the 15%
 			// headroom invariant holds regardless of stable-prefix size.
-			const stablePrefixTokens = countTokens(systemPrompt);
+			// Reuse the already-computed count — `systemPrompt` is a large string
+			// (schema + persona + volatile-prefix, ~20k tokens on active threads)
+			// rebuilt fresh each turn, so re-encoding it here is a redundant
+			// multi-hundred-ms tiktoken pass on the cold path.
+			const stablePrefixTokens = stablePrefixTokensForBudget;
 			const toolTokens = params.toolTokenEstimate ?? 0;
 			// The volatile tail is detached above (re-appended post-truncation), so
 			// it no longer competes inside `historyMessages` — subtract its fixed
