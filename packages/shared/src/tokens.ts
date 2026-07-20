@@ -86,15 +86,46 @@ export function countTokens(text: string): number {
 }
 
 /**
+ * Fixed token estimate for an inline image/document block, in lieu of running
+ * tiktoken over its base64 payload.
+ *
+ * A block's `source.data` holds base64 bytes (often multiple MB). Feeding that
+ * to the BPE tokenizer is BOTH wrong and catastrophically slow: base64
+ * tokenizes at roughly one token per character, so a 5 MB image would report
+ * ~5M "tokens" and take tens of seconds through the pure-JS encoder (observed:
+ * a single cold assembly with 37 hydrated file_ref blocks spent 51s here). The
+ * model does not bill an image by its base64 length anyway — vision models use
+ * a fixed per-image/tile formula. This flat estimate is a coarse stand-in that
+ * keeps the budget gate roughly honest without the pathological encode. The
+ * exact value is not load-bearing (the estimate already carries ±10-15%
+ * cl100k-vs-real variance and a downstream safety margin); it just must not be
+ * the base64 length.
+ */
+const IMAGE_BLOCK_TOKEN_ESTIMATE = 1_600;
+
+/**
  * Count tokens in message content (string or content block array).
  * For text blocks, counts tokens of the text content.
- * For other block types (tool_use, image, document), counts tokens of the JSON representation.
+ * For image/document blocks, uses a fixed estimate (see
+ * {@link IMAGE_BLOCK_TOKEN_ESTIMATE}) rather than tokenizing the base64 payload.
+ * For other block types (tool_use, etc.), counts tokens of the JSON representation.
  */
 export function countContentTokens(content: string | TokenCountableBlock[]): number {
 	if (typeof content === "string") return countTokens(content);
 	return content.reduce((sum, block) => {
 		if (block.type === "text" && typeof block.text === "string")
 			return sum + countTokens(block.text);
+		// Never tokenize an image/document base64 payload — see
+		// IMAGE_BLOCK_TOKEN_ESTIMATE. Count the small structural fields (type,
+		// media_type, title, filename, description) so those still register, but
+		// omit the `source`/`data` bytes.
+		if (block.type === "image" || block.type === "document") {
+			const { source, data, ...rest } = block as TokenCountableBlock & {
+				source?: unknown;
+				data?: unknown;
+			};
+			return sum + IMAGE_BLOCK_TOKEN_ESTIMATE + countTokens(JSON.stringify(rest));
+		}
 		return sum + countTokens(JSON.stringify(block));
 	}, 0);
 }
