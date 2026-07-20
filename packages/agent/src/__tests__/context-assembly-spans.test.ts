@@ -142,6 +142,80 @@ describe("Context Assembly OTEL Spans", () => {
 		}
 	});
 
+	it("emits per-helper child spans so the Jaeger waterfall attributes cold-assembly latency", async () => {
+		// These wrap the DB/tiktoken-heavy sub-helpers that dominate a cold
+		// rebuild (buildCrossThreadDigest, buildVolatileEnrichment,
+		// selectRelevantMemory, annotate-with-tokens, the budget-gate token
+		// passes, tiered truncation). Their durations are what pinpoint the
+		// production 48s that isolated profiling could not reproduce.
+		exporter.reset();
+		const threadId = randomUUID();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				threadId,
+				userId,
+				"web",
+				"local",
+				0,
+				"Span Thread",
+				null,
+				null,
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				new Date().toISOString(),
+				0,
+			],
+		);
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				"span-msg-1",
+				threadId,
+				"user",
+				"hello",
+				null,
+				null,
+				new Date().toISOString(),
+				new Date().toISOString(),
+				"local",
+				0,
+			],
+		);
+
+		const parentSpan = trace.getTracer("test").startSpan("agent-loop.assemble-context");
+		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
+			await assembleContext({ db, threadId, userId });
+		});
+		parentSpan.end();
+
+		const spans = exporter.getFinishedSpans();
+		const parent = spans.find((s) => s.name === "agent-loop.assemble-context");
+		expect(parent).toBeDefined();
+
+		// Each helper span must exist AND carry a parent — i.e. it is nested in the
+		// active trace, not detached. (Under the real agent loop the active parent
+		// is `agent-loop.assemble-context`, so these render in its Jaeger
+		// waterfall; here the same nesting holds via the test's parent span.) A
+		// detached span would have an undefined parentSpanId and float free.
+		const helperNames = [
+			"context.helper.build-cross-thread-digest",
+			"context.helper.build-volatile-enrichment",
+			"context.helper.select-relevant-memory",
+			"context.helper.annotate-with-tokens",
+			"context.helper.tokenize-system-prompt",
+			"context.helper.sum-history-tokens",
+		];
+		for (const name of helperNames) {
+			const span = spans.find((s) => s.name === name);
+			expect(span).toBeDefined(
+				`Helper span "${name}" should exist. Found: ${spans.map((s) => s.name).join(", ")}`,
+			);
+		}
+	});
+
 	it("should record message_count attribute on stage 1 span", async () => {
 		// Clear previous spans to prevent isolation issues
 		exporter.reset();

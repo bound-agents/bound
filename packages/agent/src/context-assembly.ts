@@ -25,7 +25,7 @@ import type {
 	RelevantMemoryDebugEntry,
 } from "@bound/shared";
 import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
-import { trace } from "@opentelemetry/api";
+import { context, trace } from "@opentelemetry/api";
 import { annotateMessagesWithTokens } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
 import { loadNotificationInputs, renderNotifications } from "./notifications";
@@ -86,6 +86,28 @@ import { buildVaryingPrefix } from "./varying-prefix";
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
 	return trace.getTracer("bound.context-assembly");
+}
+
+/**
+ * Time a synchronous sub-step under its own child span. Assembly is fully
+ * synchronous, so this just brackets `fn` with start/end and makes the span the
+ * active parent for anything `fn` starts. The child nests under whatever span is
+ * active (the agent loop's `agent-loop.assemble-context`), so the Jaeger
+ * waterfall attributes cold-rebuild wall-clock to the exact sub-helper. Added to
+ * localize the production cold-assembly latency that isolated profiling could not
+ * reproduce; keep these around the DB/tiktoken-heavy helpers.
+ */
+function withChildSpan<T>(
+	name: string,
+	fn: () => T,
+	attributes?: Record<string, string | number | boolean>,
+): T {
+	const span = getTracer().startSpan(name, attributes ? { attributes } : undefined);
+	try {
+		return context.with(trace.setSpan(context.active(), span), fn);
+	} finally {
+		span.end();
+	}
 }
 
 /**
@@ -452,7 +474,9 @@ function loadVolatileSectionInputs(args: {
 		db,
 		detailEntries.entries.map((e) => e.key),
 	);
-	const digest = buildCrossThreadDigest(db, userId, threadId);
+	const digest = withChildSpan("context.helper.build-cross-thread-digest", () =>
+		buildCrossThreadDigest(db, userId, threadId),
+	);
 
 	// #178: cross-thread summary injection (Scenario A: new thread seed +
 	// Scenario B: re-injection after inactivity with sibling content delta).
@@ -472,15 +496,19 @@ function loadVolatileSectionInputs(args: {
 	const advisories = loadAppliedAdvisoriesForLiveState(db, nowMs);
 	const fileEntries = loadFileModificationsForLiveState(db, threadId, siteId, hostName);
 
-	const { taskDigestEntries, taskDigestLines, tiers } = buildVolatileEnrichment(
-		db,
-		baseline,
-		maxMemory,
-		maxTasks,
-		undefined,
-		undefined,
-		undefined,
-		maxPinned,
+	const { taskDigestEntries, taskDigestLines, tiers } = withChildSpan(
+		"context.helper.build-volatile-enrichment",
+		() =>
+			buildVolatileEnrichment(
+				db,
+				baseline,
+				maxMemory,
+				maxTasks,
+				undefined,
+				undefined,
+				undefined,
+				maxPinned,
+			),
 	);
 
 	const allDeltaKeys = listMemoryDeltaKeysSince(db, baseline);
@@ -881,7 +909,9 @@ export function buildVolatileContext(params: {
 		params.db,
 		detailEntries.entries.map((e) => e.key),
 	);
-	const digest = buildCrossThreadDigest(params.db, params.userId, params.threadId);
+	const digest = withChildSpan("context.helper.build-cross-thread-digest", () =>
+		buildCrossThreadDigest(params.db, params.userId, params.threadId),
+	);
 
 	// #178: cross-thread summary injection (Scenario A + B).
 	const coldThreadState = findThreadSummaryStateById(params.db, params.threadId);
@@ -910,14 +940,16 @@ export function buildVolatileContext(params: {
 		taskDigestLines,
 		memoryDeltaLines,
 		tiers: enrichmentTiers,
-	} = buildVolatileEnrichment(
-		params.db,
-		enrichmentBaseline,
-		undefined,
-		undefined,
-		params.userMessageText,
-		params.threadSummary,
-		params.assistantMessageText,
+	} = withChildSpan("context.helper.build-volatile-enrichment", () =>
+		buildVolatileEnrichment(
+			params.db,
+			enrichmentBaseline,
+			undefined,
+			undefined,
+			params.userMessageText,
+			params.threadSummary,
+			params.assistantMessageText,
+		),
 	);
 	const fileEntries = loadFileModificationsForLiveState(
 		params.db,
@@ -937,11 +969,13 @@ export function buildVolatileContext(params: {
 	// Hoisted so the R-VC27 selection can ride onto the returned VolatileContext
 	// (and from there onto ContextDebugInfo.relevantMemory, #179) without
 	// re-running the keyword+graph pipeline at the debug-construction site.
-	const relevantMemorySelection = selectRelevantMemory(
-		flattenRecencyEntries(enrichmentTiers),
-		pinned.entries,
-		summaries.entries,
-		resolveVc27Cap(),
+	const relevantMemorySelection = withChildSpan("context.helper.select-relevant-memory", () =>
+		selectRelevantMemory(
+			flattenRecencyEntries(enrichmentTiers),
+			pinned.entries,
+			summaries.entries,
+			resolveVc27Cap(),
+		),
 	);
 	const { stableLines: enrichmentStableLines, varyingLines: enrichmentVaryingLines } =
 		composeVolatileSections({
@@ -1432,10 +1466,15 @@ Original output was too large for the context window. If you need the full conte
 	// keyed by each row's stable identity) so Stage 6/7 reuse it instead of
 	// re-tokenizing the full history 2-3x per cold rebuild — the fix for the
 	// ~100s cold-assembly CPU peg on large threads.
-	const { messages: annotated, perMessageTokens: annotatedTokens } = annotateMessagesWithTokens({
-		messages: sanitized,
-		nowMs: assemblyNowMs,
-	});
+	const { messages: annotated, perMessageTokens: annotatedTokens } = withChildSpan(
+		"context.helper.annotate-with-tokens",
+		() =>
+			annotateMessagesWithTokens({
+				messages: sanitized,
+				nowMs: assemblyNowMs,
+			}),
+		{ message_count: sanitized.length },
+	);
 	stage5Span.end();
 
 	// Stage 5b: CONTENT_SUBSTITUTION
@@ -1779,11 +1818,13 @@ Original output was too large for the context window. If you need the full conte
 
 		// R-VC27 selection for the no-history path (#179): hoisted so it can
 		// ride onto ContextDebugInfo.relevantMemory at the return sites below.
-		const nhRelevantMemory = selectRelevantMemory(
-			flattenRecencyEntries(inputs.tiers),
-			inputs.pinned.entries,
-			inputs.summaries.entries,
-			resolveVc27Cap(),
+		const nhRelevantMemory = withChildSpan("context.helper.select-relevant-memory", () =>
+			selectRelevantMemory(
+				flattenRecencyEntries(inputs.tiers),
+				inputs.pinned.entries,
+				inputs.summaries.entries,
+				resolveVc27Cap(),
+			),
 		);
 		relevantMemoryDebug = toRelevantMemoryDebug(nhRelevantMemory);
 
@@ -1943,11 +1984,13 @@ Original output was too large for the context window. If you need the full conte
 		// Even under pressure the agent needs to see fresh memory
 		// activity, so don't drop the section entirely — just trim.
 		// R-VC27: dedup against the full-body stable prefix first, then cap.
-		const recencyBP = selectRelevantMemory(
-			flattenRecencyEntries(inputs.tiers),
-			inputs.pinned.entries,
-			inputs.summaries.entries,
-			3,
+		const recencyBP = withChildSpan("context.helper.select-relevant-memory", () =>
+			selectRelevantMemory(
+				flattenRecencyEntries(inputs.tiers),
+				inputs.pinned.entries,
+				inputs.summaries.entries,
+				3,
+			),
 		);
 		const { stableLines: bpStable, varyingLines: bpVarying } = composeVolatileSections({
 			db,
@@ -2073,11 +2116,17 @@ Original output was too large for the context window. If you need the full conte
 	// `assembled` but still counts against the context window on the
 	// backend. Including it here keeps the budget gate honest regardless of
 	// stable-prefix size.
-	const stablePrefixTokensForBudget = countTokens(systemPrompt);
+	const stablePrefixTokensForBudget = withChildSpan(
+		"context.helper.tokenize-system-prompt",
+		() => countTokens(systemPrompt),
+		{ system_prompt_chars: systemPrompt.length },
+	);
 	const totalTokens =
-		assembled.reduce((sum, msg) => {
-			return sum + tokensForMessage(msg);
-		}, 0) +
+		withChildSpan(
+			"context.helper.sum-history-tokens",
+			() => assembled.reduce((sum, msg) => sum + tokensForMessage(msg), 0),
+			{ message_count: assembled.length },
+		) +
 		stablePrefixTokensForBudget +
 		toolTokensForBudget;
 
@@ -2208,14 +2257,19 @@ Original output was too large for the context window. If you need the full conte
 			// `progressive-fidelity/__tests__/tier-allocation.property.test.ts`.
 			const threadRow = findThreadSummaryById(params.db, params.threadId);
 
-			const tieredResult = tieredHistoryTruncation({
-				historyMessages,
-				historyTokenCounts: historyMessages.map(tokensForMessage),
-				historyBudget,
-				threadId: params.threadId,
-				threadSummary: threadRow?.summary ?? undefined,
-				recentHardCeiling,
-			});
+			const tieredResult = withChildSpan(
+				"context.helper.tiered-history-truncation",
+				() =>
+					tieredHistoryTruncation({
+						historyMessages,
+						historyTokenCounts: historyMessages.map(tokensForMessage),
+						historyBudget,
+						threadId: params.threadId,
+						threadSummary: threadRow?.summary ?? undefined,
+						recentHardCeiling,
+					}),
+				{ history_message_count: historyMessages.length },
+			);
 
 			const remaining = tieredResult.recentMessages;
 			truncatedCount = tieredResult.ancientDropped + tieredResult.middleFolded;
