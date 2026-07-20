@@ -77,6 +77,56 @@ describe("tokens", () => {
 			expect(countContentTokens(content)).toBe(expected);
 		});
 
+		it("does NOT tokenize an image block's base64 payload (perf: no multi-MB encode)", () => {
+			// Regression for a ~51s cold-assembly span (found via a Jaeger trace):
+			// countContentTokens ran tiktoken over the full base64 `source.data` of
+			// hydrated image/document blocks. base64 tokenizes at ~1 token/char, so a
+			// 5 MB image reported ~5M tokens and took tens of seconds. The count must
+			// be a cheap fixed estimate, NOT proportional to the base64 length.
+			const bigBase64 = "A".repeat(5_000_000); // ~5 MB, like a hydrated file_ref
+			const imageBlock = {
+				type: "image",
+				source: { type: "base64", media_type: "image/png", data: bigBase64 },
+			};
+			const start = performance.now();
+			const count = countContentTokens([imageBlock]);
+			const elapsedMs = performance.now() - start;
+			// Must be fast (no base64 encode). The old behavior tokenized the full
+			// 5 MB base64 (~1 token/char through the pure-JS BPE encoder) and took
+			// tens of SECONDS; the fix makes it a fixed estimate. A generous 500 ms
+			// ceiling still fails hard against the ~50,000 ms regression while
+			// tolerating the one-time 5 MB string allocation in this test.
+			expect(elapsedMs).toBeLessThan(500);
+			expect(count).toBeLessThan(10_000);
+			// Same block with a tiny payload counts the same — proves the base64
+			// bytes are excluded from the estimate.
+			const smallImage = {
+				type: "image",
+				source: { type: "base64", media_type: "image/png", data: "AAAA" },
+			};
+			expect(countContentTokens([imageBlock])).toBe(countContentTokens([smallImage]));
+		});
+
+		it("does NOT tokenize a document block's base64 payload", () => {
+			const bigBase64 = "B".repeat(3_000_000);
+			const docBlock = {
+				type: "document",
+				source: { type: "base64", media_type: "application/pdf", data: bigBase64 },
+				title: "big.pdf",
+			};
+			const start = performance.now();
+			const count = countContentTokens([docBlock]);
+			expect(performance.now() - start).toBeLessThan(500);
+			expect(count).toBeLessThan(10_000);
+			// The small structural field (title) still contributes, so a titled doc
+			// counts slightly more than an untitled one — structure is preserved.
+			const untitled = {
+				type: "document",
+				source: { type: "base64", media_type: "application/pdf", data: "BBBB" },
+			};
+			expect(countContentTokens([docBlock])).toBeGreaterThan(countContentTokens([untitled]));
+		});
+
 		it("AC1.2 (ContentBlock[]): mixed text and tool_use blocks", () => {
 			const content = [
 				{ type: "text", text: "hello" },
