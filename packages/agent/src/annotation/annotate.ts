@@ -4,6 +4,7 @@
 
 import type { ContentBlock, LLMMessage } from "@bound/llm";
 import type { Message } from "@bound/shared";
+import { countContentTokens, countContentTokensById } from "@bound/shared";
 import { formatInstant } from "../context-assembly";
 
 /** Hard cap on the number of injected `Model switched` developer messages. */
@@ -118,8 +119,32 @@ export interface AnnotateMessagesParams {
 	nowMs?: number;
 }
 
+/**
+ * Result of {@link annotateMessagesWithTokens}: the annotated wire messages plus
+ * an aligned per-message token count (same length and order as `messages`).
+ *
+ * The counts are computed here — the single place that still holds each row's
+ * stable `(id, modified_at)` identity before it is dropped at the `LLMMessage`
+ * boundary — so downstream stages (budget gate, tier allocation, history-section
+ * sizing) reuse them instead of re-tokenizing the full history 2-3x per cold
+ * rebuild. Real message rows go through `countContentTokensById` (identity-keyed,
+ * survives cross-thread cache churn); injected messages with no source row
+ * (e.g. "Model switched" developer markers) are tiny and counted live.
+ */
+export interface AnnotatedMessagesWithTokens {
+	messages: LLMMessage[];
+	perMessageTokens: number[];
+}
+
 export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
+	return annotateMessagesWithTokens(params).messages;
+}
+
+export function annotateMessagesWithTokens(
+	params: AnnotateMessagesParams,
+): AnnotatedMessagesWithTokens {
 	const { messages, nowMs } = params;
+	const perMessageTokens: number[] = [];
 
 	// Build a map from tool_call message ID to its first tool_use_id,
 	// plus a set of all known tool_use_ids for tool_result resolution.
@@ -158,10 +183,10 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 		if (m.role === "assistant" && m.model_id) {
 			if (lastAssistantModel && lastAssistantModel !== m.model_id) {
 				if (modelSwitchCount < MODEL_SWITCH_CAP) {
-					annotated.push({
-						role: "developer",
-						content: `Model switched from ${lastAssistantModel} to ${m.model_id}`,
-					});
+					const switchContent = `Model switched from ${lastAssistantModel} to ${m.model_id}`;
+					annotated.push({ role: "developer", content: switchContent });
+					// Injected marker — no source row identity; tiny, count live.
+					perMessageTokens.push(countContentTokens(switchContent));
 					modelSwitchCount++;
 				}
 			}
@@ -235,7 +260,11 @@ export function annotateMessages(params: AnnotateMessagesParams): LLMMessage[] {
 		}
 
 		annotated.push(msg);
+		// Identity-keyed count over the ANNOTATED content (what the wire/budget
+		// sees). Keyed by the source row's (id, modified_at) so it survives
+		// cross-thread content-cache churn and is computed once ever per message.
+		perMessageTokens.push(countContentTokensById(m.id, m.modified_at ?? "", annotatedContent));
 	}
 
-	return annotated;
+	return { messages: annotated, perMessageTokens };
 }

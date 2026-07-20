@@ -36,6 +36,14 @@ const MIN_MIDDLE_LINES = 3;
 
 export interface TieredHistoryParams {
 	historyMessages: ReadonlyArray<LLMMessage>;
+	/**
+	 * Precomputed per-message token counts, aligned 1:1 with `historyMessages`.
+	 * Supplied by context assembly (which computed them once, keyed by message
+	 * identity) so this function does not re-tokenize the full history — the hot
+	 * path that pegged a CPU core for ~100s on large cold rebuilds. When omitted
+	 * (legacy callers / tests), counts are computed live via `countContentTokens`.
+	 */
+	historyTokenCounts?: ReadonlyArray<number>;
 	historyBudget: number;
 	threadId: string;
 	threadSummary?: string;
@@ -91,7 +99,14 @@ export interface TieredHistoryResult {
  * Compute tiered history truncation. Pure function — no I/O, no LLM calls.
  */
 export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHistoryResult {
-	const { historyMessages, historyBudget, threadId, threadSummary, recentHardCeiling } = params;
+	const {
+		historyMessages,
+		historyTokenCounts,
+		historyBudget,
+		threadId,
+		threadSummary,
+		recentHardCeiling,
+	} = params;
 
 	if (historyMessages.length === 0) {
 		return {
@@ -120,7 +135,13 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 	// the recent-tier cost for any candidate slice start in O(1), reused by the
 	// backward-fill, the physical-window clamp, and the final `recentTokens`.
 	const n = historyMessages.length;
-	const msgTokenCounts = historyMessages.map((m) => countContentTokens(m.content));
+	// Reuse the caller's precomputed counts when provided (identity-cached, no
+	// re-tokenization); fall back to a live count only when aligned counts are
+	// absent (legacy callers / tests).
+	const msgTokenCounts =
+		historyTokenCounts && historyTokenCounts.length === n
+			? historyTokenCounts
+			: historyMessages.map((m) => countContentTokens(m.content));
 	const suffixTokens = new Array<number>(n + 1);
 	suffixTokens[n] = 0;
 	for (let i = n - 1; i >= 0; i--) {
