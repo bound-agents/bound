@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { __tokenCacheStats, countContentTokens, countTokens } from "../tokens";
+import {
+	__tokenCacheStats,
+	countContentTokens,
+	countContentTokensById,
+	countTokens,
+} from "../tokens";
 
 describe("tokens", () => {
 	describe("countTokens", () => {
@@ -152,6 +157,81 @@ describe("tokens", () => {
 			const passMisses = after.misses - before.misses;
 			expect(passMisses).toBe(0);
 			expect(passHits).toBe(corpus.length);
+		});
+	});
+
+	describe("countContentTokensById (per-message identity cache)", () => {
+		it("returns the same count as countContentTokens (lossless)", () => {
+			const content = `id-lossless-${Math.random()}-${"payload ".repeat(40)}`;
+			expect(countContentTokensById("msg-1", "2026-01-01T00:00:00Z", content)).toBe(
+				countContentTokens(content),
+			);
+		});
+
+		it("serves a repeat (id, modified_at) from cache without re-encoding", () => {
+			const id = `id-hit-${Math.random()}`;
+			const modifiedAt = "2026-01-01T00:00:00Z";
+			const content = `body-${Math.random()}-${"x ".repeat(30)}`;
+			expect(__tokenCacheStats().hasId(id, modifiedAt)).toBe(false);
+
+			const before = __tokenCacheStats();
+			const first = countContentTokensById(id, modifiedAt, content);
+			const afterMiss = __tokenCacheStats();
+			expect(afterMiss.idMisses).toBe(before.idMisses + 1);
+			expect(afterMiss.hasId(id, modifiedAt)).toBe(true);
+
+			// A second call with the SAME identity must be a pure id-cache hit — even
+			// though we pass different content bytes, the cached count is returned
+			// (identity is the key). This is what survives cross-thread content churn.
+			const second = countContentTokensById(id, modifiedAt, "totally different content");
+			const afterHit = __tokenCacheStats();
+			expect(second).toBe(first);
+			expect(afterHit.idHits).toBe(afterMiss.idHits + 1);
+			expect(afterHit.idMisses).toBe(afterMiss.idMisses);
+		});
+
+		it("invalidates when modified_at changes (redaction bumps modified_at)", () => {
+			const id = `id-redact-${Math.random()}`;
+			const original = `original body ${"y ".repeat(20)}`;
+			const firstCount = countContentTokensById(id, "2026-01-01T00:00:00Z", original);
+
+			// Redaction rewrites content to "[redacted]" AND bumps modified_at.
+			const before = __tokenCacheStats();
+			const redactedCount = countContentTokensById(id, "2026-06-01T00:00:00Z", "[redacted]");
+			const after = __tokenCacheStats();
+			// New modified_at => cache miss => recomputed against the redacted content.
+			expect(after.idMisses).toBe(before.idMisses + 1);
+			expect(redactedCount).toBe(countContentTokens("[redacted]"));
+			expect(redactedCount).not.toBe(firstCount);
+		});
+
+		it("a full-history second pass over the same messages hits the id-cache 100% (the fix)", () => {
+			// Regression for the ~100s cold-rebuild peg: even when the content cache
+			// is thrashed by other threads, re-counting the SAME messages by identity
+			// must be all hits. Simulate content-cache churn between the two passes.
+			const msgs = Array.from({ length: 1500 }, (_, i) => ({
+				id: `hist-${Math.random()}-${i}`,
+				modifiedAt: "2026-01-01T00:00:00Z",
+				content: `history message ${i} ${"tok ".repeat(10)}`,
+			}));
+			for (const m of msgs) countContentTokensById(m.id, m.modifiedAt, m.content); // pass 1
+			// Churn the CONTENT cache with unrelated strings (other threads). The
+			// id-cache hit does not depend on churn volume, so keep the strings small
+			// to stay fast against the ~8k chars/sec pure-JS tokenizer.
+			for (let i = 0; i < 500; i++) countTokens(`other-thread-${i}-${"z".repeat(50)}`);
+
+			const before = __tokenCacheStats();
+			for (const m of msgs) countContentTokensById(m.id, m.modifiedAt, m.content); // pass 2
+			const after = __tokenCacheStats();
+			expect(after.idMisses - before.idMisses).toBe(0);
+			expect(after.idHits - before.idHits).toBe(msgs.length);
+		});
+
+		it("stays bounded by entry count under churn", () => {
+			for (let i = 0; i < 60_000; i++) {
+				countContentTokensById(`bound-${i}`, "2026-01-01T00:00:00Z", `c${i}`);
+			}
+			expect(__tokenCacheStats().idSize).toBeLessThanOrEqual(__tokenCacheStats().idMaxEntries);
 		});
 	});
 });

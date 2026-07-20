@@ -24,4 +24,10 @@
  *   N8 Empty input → empty output.
  */
 
-export { annotateMessages, MODEL_SWITCH_CAP, type AnnotateMessagesParams } from "./annotate";
+export {
+	annotateMessages,
+	annotateMessagesWithTokens,
+	MODEL_SWITCH_CAP,
+	type AnnotateMessagesParams,
+	type AnnotatedMessagesWithTokens,
+} from "./annotate";

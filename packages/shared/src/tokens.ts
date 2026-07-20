@@ -100,7 +100,76 @@ export function countContentTokens(content: string | TokenCountableBlock[]): num
 }
 
 /**
- * Test-only introspection into the token-count memoization cache.
+ * Per-message token-count cache keyed by message IDENTITY — `${id} ${modifiedAt}`
+ * — rather than by content bytes.
+ *
+ * The content cache above is defeated by cross-thread churn: a large thread's
+ * distinct contents (multi-MB) get evicted from the 64 MB byte budget as soon
+ * as a few OTHER large threads are counted, so the next COLD context rebuild of
+ * that thread re-encodes its entire history from scratch (measured: hit rate
+ * back to ~1%, ~2s per full-history pass, pegging a core for ~100s on the
+ * biggest threads). Because assembly loads the full thread and tokenizes it to
+ * decide truncation, this fires on every cold rebuild.
+ *
+ * Keying on `(id, modifiedAt)` makes each entry tiny (a UUID + int, ~50 bytes
+ * vs multi-KB content), so this cache holds ~100x more messages in the same
+ * memory and survives cross-thread churn. Messages are append-only and their
+ * content is immutable EXCEPT redaction, which bumps `modified_at` (see
+ * redaction.ts) — so folding `modifiedAt` into the key auto-invalidates a
+ * redacted message. A message is thus tiktoken-encoded once ever (until
+ * redacted), not once per cold rebuild.
+ *
+ * Bounded by ENTRY COUNT (safe because entries are tiny and fixed-size, unlike
+ * variable-length content). LRU: a hit refreshes recency; overflow evicts the
+ * oldest.
+ *
+ * The cap must exceed the cluster's total live message count, or a single large
+ * thread's rebuild evicts another thread's entries and the cross-thread-churn
+ * survival property is lost. At ~60 bytes/entry (UUID key + int), 500k entries
+ * is ~30 MB worst case — comparable to the content cache but far more useful,
+ * since these entries are tiny and identity-stable rather than multi-KB content.
+ * (Observed live: ~309k total messages; the largest thread ~40k.)
+ */
+const TOKEN_ID_CACHE_MAX = 500_000;
+const tokenIdCache = new Map<string, number>();
+let tokenIdCacheHits = 0;
+let tokenIdCacheMisses = 0;
+
+/**
+ * Count tokens for a message's content, memoized by message identity.
+ * Lossless: on a miss it delegates to `countContentTokens` (which itself
+ * memoizes the raw encode by content), so the returned count is identical to
+ * calling `countContentTokens(content)` directly.
+ *
+ * `id` and `modifiedAt` come from the `messages` row. Callers that lack a
+ * stable identity (freshly-built injected messages) should call
+ * `countContentTokens` directly instead.
+ */
+export function countContentTokensById(
+	id: string,
+	modifiedAt: string,
+	content: string | TokenCountableBlock[],
+): number {
+	const key = `${id} ${modifiedAt}`;
+	const cached = tokenIdCache.get(key);
+	if (cached !== undefined) {
+		tokenIdCache.delete(key);
+		tokenIdCache.set(key, cached);
+		tokenIdCacheHits++;
+		return cached;
+	}
+	const count = countContentTokens(content);
+	tokenIdCache.set(key, count);
+	tokenIdCacheMisses++;
+	if (tokenIdCache.size > TOKEN_ID_CACHE_MAX) {
+		const oldest = tokenIdCache.keys().next().value;
+		if (oldest !== undefined) tokenIdCache.delete(oldest);
+	}
+	return count;
+}
+
+/**
+ * Test-only introspection into the token-count memoization caches.
  * Not part of the public token-counting contract; exposed so tests can
  * assert cache behavior deterministically rather than via flaky timing.
  */
@@ -111,6 +180,11 @@ export function __tokenCacheStats(): {
 	hits: number;
 	misses: number;
 	has(text: string): boolean;
+	idSize: number;
+	idMaxEntries: number;
+	idHits: number;
+	idMisses: number;
+	hasId(id: string, modifiedAt: string): boolean;
 } {
 	return {
 		size: tokenCache.size,
@@ -119,5 +193,10 @@ export function __tokenCacheStats(): {
 		hits: tokenCacheHits,
 		misses: tokenCacheMisses,
 		has: (text: string) => tokenCache.has(text),
+		idSize: tokenIdCache.size,
+		idMaxEntries: TOKEN_ID_CACHE_MAX,
+		idHits: tokenIdCacheHits,
+		idMisses: tokenIdCacheMisses,
+		hasId: (id: string, modifiedAt: string) => tokenIdCache.has(`${id} ${modifiedAt}`),
 	};
 }

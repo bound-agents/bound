@@ -26,7 +26,7 @@ import type {
 } from "@bound/shared";
 import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
-import { annotateMessages } from "./annotation";
+import { annotateMessagesWithTokens } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
 import { loadNotificationInputs, renderNotifications } from "./notifications";
 import {
@@ -1428,17 +1428,49 @@ Original output was too large for the context window. If you need the full conte
 	// annotation. See `annotation/` for the full contract;
 	// property-tested at annotation/__tests__/annotate.property.test.ts.
 	const stage5Span = getTracer().startSpan("context.stage-5-annotation");
-	const annotated = annotateMessages({ messages: sanitized, nowMs: assemblyNowMs });
+	// Annotation also returns an aligned per-message token count (computed once,
+	// keyed by each row's stable identity) so Stage 6/7 reuse it instead of
+	// re-tokenizing the full history 2-3x per cold rebuild — the fix for the
+	// ~100s cold-assembly CPU peg on large threads.
+	const { messages: annotated, perMessageTokens: annotatedTokens } = annotateMessagesWithTokens({
+		messages: sanitized,
+		nowMs: assemblyNowMs,
+	});
 	stage5Span.end();
 
 	// Stage 5b: CONTENT_SUBSTITUTION
 	// Replace image/document blocks in assembled messages when the target backend lacks vision support.
 	// This modifies the LLMMessage[] only — the persisted messages.content is never changed.
 	const stage5bSpan = getTracer().startSpan("context.stage-5b-content-substitution");
+	// `substituteUnsupportedBlocks` returns the SAME object reference when it
+	// makes no change (the common case), and a new object only when it actually
+	// rewrites content (image→text, file_ref→base64 hydration). Recount ONLY the
+	// rewritten messages so the token array stays exact without re-encoding the
+	// untouched history.
+	const finalTokens = annotatedTokens.slice();
 	const finalAnnotated = targetCapabilities
-		? annotated.map((msg) => substituteUnsupportedBlocks({ msg, targetCapabilities, db }))
+		? annotated.map((msg, i) => {
+				const substituted = substituteUnsupportedBlocks({ msg, targetCapabilities, db });
+				if (substituted !== msg) finalTokens[i] = countContentTokens(substituted.content);
+				return substituted;
+			})
 		: annotated;
 	stage5bSpan.end();
+
+	// Identity map from each annotated history message to its precomputed token
+	// count. Downstream stages (history sizing, budget gate, tier allocation) look
+	// up this map instead of re-tokenizing — collapsing the 2-3 full-history
+	// tiktoken passes per cold rebuild to zero. Messages NOT in the map (small
+	// injected developer/volatile tail messages built later) fall back to a live
+	// count via `tokensForMessage`, which is cheap for those short strings.
+	const historyTokenByMessage = new WeakMap<LLMMessage, number>();
+	for (let i = 0; i < finalAnnotated.length; i++) {
+		historyTokenByMessage.set(finalAnnotated[i], finalTokens[i]);
+	}
+	const tokensForMessage = (msg: LLMMessage): number => {
+		const cached = historyTokenByMessage.get(msg);
+		return cached !== undefined ? cached : countContentTokens(msg.content);
+	};
 
 	// Stage 6: ASSEMBLY
 	const stage6Span = getTracer().startSpan("context.stage-6-assembly");
@@ -1572,7 +1604,7 @@ Original output was too large for the context window. If you need the full conte
 	let toolResultTokens = 0;
 
 	for (const msg of finalAnnotated) {
-		const tokens = countContentTokens(msg.content);
+		const tokens = tokensForMessage(msg);
 		if (msg.role === "user") userTokens += tokens;
 		else if (msg.role === "assistant" || msg.role === "tool_call") assistantTokens += tokens;
 		else if (msg.role === "tool_result") toolResultTokens += tokens;
@@ -2010,7 +2042,7 @@ Original output was too large for the context window. If you need the full conte
 	) {
 		const systemTokens = assembled
 			.filter((m) => m.role === "system")
-			.reduce((sum, m) => sum + countContentTokens(m.content), 0);
+			.reduce((sum, m) => sum + tokensForMessage(m), 0);
 		const suffixTokens = suffixContent ? countTokens(suffixContent) : 0;
 		const nonHistoryTokens = systemTokens + suffixTokens + toolTokens;
 		const headroom = contextWindow - nonHistoryTokens;
@@ -2044,7 +2076,7 @@ Original output was too large for the context window. If you need the full conte
 	const stablePrefixTokensForBudget = countTokens(systemPrompt);
 	const totalTokens =
 		assembled.reduce((sum, msg) => {
-			return sum + countContentTokens(msg.content);
+			return sum + tokensForMessage(msg);
 		}, 0) +
 		stablePrefixTokensForBudget +
 		toolTokensForBudget;
@@ -2115,10 +2147,7 @@ Original output was too large for the context window. If you need the full conte
 		const historyMessages = bodyMessages.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			const systemMsgTokens = systemMessages.reduce(
-				(sum, m) => sum + countContentTokens(m.content),
-				0,
-			);
+			const systemMsgTokens = systemMessages.reduce((sum, m) => sum + tokensForMessage(m), 0);
 			// The stable system prompt (environment + concurrency + persona +
 			// orientation + schema + skill) is returned separately from
 			// `assembled` but still consumes window budget for the LLM call.
@@ -2177,6 +2206,7 @@ Original output was too large for the context window. If you need the full conte
 
 			const tieredResult = tieredHistoryTruncation({
 				historyMessages,
+				historyTokenCounts: historyMessages.map(tokensForMessage),
 				historyBudget,
 				threadId: params.threadId,
 				threadSummary: threadRow?.summary ?? undefined,
@@ -2214,7 +2244,7 @@ Original output was too large for the context window. If you need the full conte
 				let postTruncAssistantTokens = 0;
 				let postTruncToolResultTokens = 0;
 				for (const msg of remaining) {
-					const tokens = countContentTokens(msg.content);
+					const tokens = tokensForMessage(msg);
 					if (msg.role === "user") postTruncUserTokens += tokens;
 					else if (msg.role === "assistant" || msg.role === "tool_call")
 						postTruncAssistantTokens += tokens;

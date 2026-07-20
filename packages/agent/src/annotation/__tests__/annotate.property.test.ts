@@ -13,10 +13,11 @@
  *   N8 Empty input → empty output.
  */
 
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { Message } from "@bound/shared";
+import { countContentTokens } from "@bound/shared";
 import fc from "fast-check";
-import { MODEL_SWITCH_CAP, annotateMessages } from "../annotate";
+import { MODEL_SWITCH_CAP, annotateMessages, annotateMessagesWithTokens } from "../annotate";
 
 const NOW_ISO = "2026-05-25T12:00:00.000Z";
 const NOW_MS = new Date(NOW_ISO).getTime();
@@ -347,5 +348,76 @@ describe("annotateMessages — property tests", () => {
 	it("N8: empty input → empty output", () => {
 		const out = annotateMessages({ messages: [], nowMs: NOW_MS });
 		if (out.length !== 0) throw new Error("expected empty output");
+	});
+
+	// N9: perMessageTokens is aligned 1:1 with the annotated output AND each entry
+	// equals a from-scratch countContentTokens over that annotated message. This
+	// pins the identity-cache optimization to be lossless — the precomputed counts
+	// downstream stages reuse must equal what re-tokenizing would have produced.
+	it("N9: perMessageTokens aligns with output and equals countContentTokens", () => {
+		fc.assert(
+			fc.property(
+				fc.array(
+					fc.record({
+						role: fc.constantFrom("user", "assistant", "tool_result", "tool_call"),
+						id: fc
+							.string({ minLength: 1, maxLength: 12 })
+							.filter((s) => /^[a-zA-Z0-9_-]+$/.test(s)),
+						content: fc.string({ maxLength: 60 }).filter((s) => !/[\n\r]/.test(s)),
+						model: fc.constantFrom("m1", "m2"),
+					}),
+					{ maxLength: 12 },
+				),
+				(specs) => {
+					// Each message gets a globally-unique id so the identity cache's
+					// invariant holds — (id, modified_at) uniquely determines content, as
+					// it does in production (immutable rows). Reusing ids across
+					// fast-check runs with different content would (correctly) return a
+					// prior run's cached count.
+					const runTag = `${Math.random()}`;
+					const msgs: Message[] = specs.map((s, i) =>
+						msg(s.role as Message["role"], `${runTag}-${s.id}-${i}`, s.content, {
+							model_id: s.role === "assistant" ? s.model : null,
+							tool_name: s.role === "tool_result" ? "t" : null,
+						}),
+					);
+					const { messages: out, perMessageTokens } = annotateMessagesWithTokens({
+						messages: msgs,
+						nowMs: NOW_MS,
+					});
+					if (perMessageTokens.length !== out.length) return false;
+					for (let i = 0; i < out.length; i++) {
+						if (perMessageTokens[i] !== countContentTokens(out[i].content)) return false;
+					}
+					return true;
+				},
+			),
+			{ numRuns: 300 },
+		);
+	});
+
+	it("N9b: sum of perMessageTokens equals the old full-array reduce", () => {
+		// Unique ids per run: the identity cache is process-global and persists
+		// across tests, so fixed ids could collide with another test's entries
+		// (which map the same id to different content). Production ids are UUIDs.
+		const tag = `n9b-${Math.random()}`;
+		const msgs: Message[] = [
+			msg("user", `${tag}-u1`, "hello world this is a user message"),
+			msg("assistant", `${tag}-a1`, "assistant reply with some tokens", { model_id: "m1" }),
+			msg(
+				"tool_call",
+				`${tag}-tc1`,
+				JSON.stringify([{ type: "tool_use", id: "x", name: "n", input: {} }]),
+				{ model_id: "m1" },
+			),
+			msg("tool_result", `${tag}-tr1`, "the tool result body", { tool_name: "x" }),
+		];
+		const { messages: out, perMessageTokens } = annotateMessagesWithTokens({
+			messages: msgs,
+			nowMs: NOW_MS,
+		});
+		const sumViaCache = perMessageTokens.reduce((a, b) => a + b, 0);
+		const sumViaReduce = out.reduce((a, m) => a + countContentTokens(m.content), 0);
+		expect(sumViaCache).toBe(sumViaReduce);
 	});
 });
