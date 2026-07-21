@@ -269,10 +269,22 @@ export function toModelMessages(
 			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
 			if (text) {
 				if (opts.midConversationSystem) {
-					// Native mid-conversation system: emit as { role: "system" } at
-					// its natural position. Requires allowSystemInMessages:true
-					// on the streamText call (AI SDK v7, default-reject).
-					result.push({ role: "system", content: text });
+					const prev = result[result.length - 1];
+					// Anthropic's mid-conversation-system beta requires a system
+					// message to follow a user message (or be first). A developer
+					// tail arriving after an assistant turn — the common agent-
+					// loop shape — would become { role: "system" } following
+					// { role: "assistant" }, which Anthropic rejects with:
+					//   "role 'system' must follow a 'user' message"
+					// Fall back to the legacy pendingDev merge path when the
+					// placement would be illegal; that path correctly creates a
+					// trailing user message.
+					if (!prev || prev.role === "user") {
+						result.push({ role: "system", content: text });
+					} else {
+						if (pendingDev.length === 0) pendingDevStartedAtEmptyResult = result.length === 0;
+						pendingDev.push(text);
+					}
 				} else {
 					if (pendingDev.length === 0) pendingDevStartedAtEmptyResult = result.length === 0;
 					pendingDev.push(text);

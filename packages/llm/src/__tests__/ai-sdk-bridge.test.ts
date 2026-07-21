@@ -3255,23 +3255,25 @@ describe("mapError", () => {
 // ── midConversationSystem: native { role: "system" } emission ──
 
 describe("midConversationSystem", () => {
-	it('emits developer as native { role: "system" } at its natural position', () => {
+	it('emits developer as native { role: "system" } when it follows a user message', () => {
 		const out = toModelMessages(
 			[
 				{ role: "user", content: "hi" },
-				{ role: "assistant", content: "there" },
-				{ role: "developer", content: "enrichment tail" },
+				{ role: "developer", content: "enrichment" },
 			],
 			{ midConversationSystem: true },
 		);
 		expect(out).toEqual([
 			{ role: "user", content: "hi" },
-			{ role: "assistant", content: "there" },
-			{ role: "system", content: "enrichment tail" },
+			{ role: "system", content: "enrichment" },
 		]);
 	});
 
-	it("emits each developer message individually (no merge into one block)", () => {
+	it("emits a developer after user as system, but a second developer after system falls back to legacy merge", () => {
+		// Anthropic's beta requires system to follow user (or be first).
+		// The first developer follows user → native system. The second
+		// developer follows system → placement would be illegal, so it
+		// falls back to pendingDev and becomes a trailing user message.
 		const out = toModelMessages(
 			[
 				{ role: "user", content: "hi" },
@@ -3283,7 +3285,28 @@ describe("midConversationSystem", () => {
 		expect(out).toEqual([
 			{ role: "user", content: "hi" },
 			{ role: "system", content: "first" },
-			{ role: "system", content: "second" },
+			{ role: "user", content: "<system-context>\nsecond\n</system-context>" },
+		]);
+	});
+
+	it("falls back to legacy merge when developer follows assistant (Anthropic placement constraint)", () => {
+		// The agent loop appends a developer tail after every assistant
+		// turn. Anthropic's mid-conversation-system beta rejects system
+		// following assistant: "role 'system' must follow a 'user' message".
+		// The bridge must fall back to the legacy pendingDev merge path,
+		// which creates a trailing user message.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "there" },
+				{ role: "developer", content: "enrichment tail" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "there" },
+			{ role: "user", content: "<system-context>\nenrichment tail\n</system-context>" },
 		]);
 	});
 
