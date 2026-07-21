@@ -47,9 +47,9 @@ export function createInferenceRoutes(db: Database, modelRouter: ModelRouter | n
 			return c.json({ error: "Invalid JSON body" }, 400);
 		}
 
-		if (!body.model || typeof body.model !== "string") {
-			return c.json({ error: "Missing or invalid 'model' field" }, 400);
-		}
+		// Default to the router's configured default when model is omitted or empty.
+		const model =
+			body.model && typeof body.model === "string" ? body.model : modelRouter.getDefaultId();
 		if (!Array.isArray(body.messages) || body.messages.length === 0) {
 			return c.json(
 				{ error: "Missing or invalid 'messages' field (must be a non-empty array)" },
@@ -57,28 +57,28 @@ export function createInferenceRoutes(db: Database, modelRouter: ModelRouter | n
 			);
 		}
 
-		const backend = modelRouter.tryGetBackend(body.model);
+		const backend = modelRouter.tryGetBackend(model);
 		if (!backend) {
 			const available = modelRouter
 				.listEligible()
 				.map((b) => b.id)
 				.join(", ");
 			return c.json(
-				{ error: `Model '${body.model}' not available on this host. Available: ${available}` },
+				{ error: `Model '${model}' not available on this host. Available: ${available}` },
 				404,
 			);
 		}
 
 		// Apply defaults from the router — same pattern as relay-processor.executeInference.
-		const thinking = body.thinking ?? modelRouter.getThinkingConfig(body.model);
-		const effort = body.effort ?? modelRouter.getEffort(body.model);
-		const localMaxOutputTokens = modelRouter.getMaxOutputTokens(body.model);
+		const thinking = body.thinking ?? modelRouter.getThinkingConfig(model);
+		const effort = body.effort ?? modelRouter.getEffort(model);
+		const localMaxOutputTokens = modelRouter.getMaxOutputTokens(model);
 		const max_tokens = body.max_tokens
 			? localMaxOutputTokens
 				? Math.min(body.max_tokens, localMaxOutputTokens)
 				: body.max_tokens
 			: localMaxOutputTokens;
-		const cache_ttl = modelRouter.getCacheTtl(body.model);
+		const cache_ttl = modelRouter.getCacheTtl(model);
 
 		const chatStream = backend.chat({
 			messages: body.messages,
