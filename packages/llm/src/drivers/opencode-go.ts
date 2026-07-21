@@ -93,6 +93,7 @@ export class OpenCodeGoDriver implements LLMBackend {
 				// text and accumulate unboundedly across the thread (see the
 				// `thinking`-signature gotcha in CONTRIBUTING). "anthropic" drops them.
 				reasoningProviderOptions: "anthropic",
+				midConversationSystem: true,
 			});
 			yield* withEmptyRetry(
 				() =>
@@ -102,6 +103,7 @@ export class OpenCodeGoDriver implements LLMBackend {
 							streamText({
 								model: this.anthropicProvider.messages(modelId),
 								messages,
+								allowSystemInMessages: true,
 								...(params.system && { system: params.system }),
 								...(tools && { tools }),
 								...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
@@ -128,6 +130,7 @@ export class OpenCodeGoDriver implements LLMBackend {
 			// thousands of tokens of stale chain-of-thought. "openai" drops reasoning
 			// that lacks encrypted continuation state, matching the mantle driver.
 			reasoningProviderOptions: "openai",
+			midConversationSystem: true,
 		});
 		yield* withEmptyRetry(
 			() =>
@@ -137,6 +140,7 @@ export class OpenCodeGoDriver implements LLMBackend {
 						streamText({
 							model: this.openaiProvider.chatModel(modelId),
 							messages,
+							allowSystemInMessages: true,
 							...(params.system && { system: params.system }),
 							...(tools && { tools }),
 							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),

@@ -105,6 +105,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			// encrypted continuation state, matching the mantle and opencode-go
 			// openai-compatible legs.
 			reasoningProviderOptions: "openai",
+			midConversationSystem: true,
 		});
 		const tools = toToolSet(params.tools);
 
@@ -115,6 +116,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 				streamText({
 					model: this.provider.chatModel(modelId),
 					messages,
+					allowSystemInMessages: true,
 					...(params.system && { system: params.system }),
 					...(tools && { tools }),
 					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),

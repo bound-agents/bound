@@ -3251,3 +3251,99 @@ describe("mapError", () => {
 		expect(out.originalError).toBeInstanceOf(Error);
 	});
 });
+
+// ── midConversationSystem: native { role: "system" } emission ──
+
+describe("midConversationSystem", () => {
+	it('emits developer as native { role: "system" } at its natural position', () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "there" },
+				{ role: "developer", content: "enrichment tail" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "there" },
+			{ role: "system", content: "enrichment tail" },
+		]);
+	});
+
+	it("emits each developer message individually (no merge into one block)", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "first" },
+				{ role: "developer", content: "second" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "system", content: "first" },
+			{ role: "system", content: "second" },
+		]);
+	});
+
+	it("does NOT wrap content in <system-context> tags", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "note" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out[1]).toEqual({ role: "system", content: "note" });
+		expect(out[1].content).not.toContain("<system-context>");
+	});
+
+	it("does not prepend a <system-notification /> before a leading system message", () => {
+		// A developer message at position 0 becomes { role: "system" } at
+		// position 0. The conversation-start invariant must NOT inject a
+		// junk <system-notification /> user message before it.
+		const out = toModelMessages(
+			[
+				{ role: "developer", content: "wakeup" },
+				{ role: "assistant", content: "response" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out[0]).toEqual({ role: "system", content: "wakeup" });
+		expect(out).not.toContainEqual(expect.objectContaining({ content: "<system-notification />" }));
+	});
+
+	it("still prepends <system-notification /> when first message is assistant (not system)", () => {
+		const out = toModelMessages([{ role: "assistant", content: "stranded" }], {
+			midConversationSystem: true,
+		});
+		expect(out[0]).toEqual({ role: "user", content: "<system-notification />" });
+	});
+
+	it("falls back to legacy merge when midConversationSystem is false/omitted", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "hi" },
+			{ role: "developer", content: "note" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "hi\n\n<system-context>\nnote\n</system-context>" },
+		]);
+	});
+
+	it("extracts text from developer block content before emitting as system", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "developer",
+					content: [
+						{ type: "text", text: "part-a" },
+						{ type: "text", text: "part-b" },
+					],
+				},
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out[0]).toEqual({ role: "system", content: "part-apart-b" });
+	});
+});

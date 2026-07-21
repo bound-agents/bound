@@ -61,6 +61,21 @@ export interface ToModelMessagesOptions {
 	 * preserved instead of rewritten into model-foreign forms.
 	 */
 	targetEnvelope?: WireEnvelope;
+	/**
+	 * When true, `developer`-role messages are emitted as native
+	 * `{ role: "system" }` ModelMessages at their natural position in the
+	 * array, instead of being accumulated in `pendingDev` and merged into
+	 * adjacent user messages wrapped in `<system-context>` tags.
+	 *
+	 * Requires `allowSystemInMessages: true` on the `streamText` call so the
+	 * AI SDK v7 accepts mid-array system messages (it defaults to reject).
+	 *
+	 * Support: Anthropic Messages API (self-adds the
+	 * `mid-conversation-system-2026-04-07` beta), OpenAI Chat/Responses
+	 * (always supported). NOT supported on Bedrock Converse — omit on that
+	 * driver to keep the legacy merge path.
+	 */
+	midConversationSystem?: boolean;
 }
 
 /** Maximum length accepted by Bedrock Converse for toolUseId and toolUse.name.
@@ -253,8 +268,15 @@ export function toModelMessages(
 		if (msg.role === "developer") {
 			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
 			if (text) {
-				if (pendingDev.length === 0) pendingDevStartedAtEmptyResult = result.length === 0;
-				pendingDev.push(text);
+				if (opts.midConversationSystem) {
+					// Native mid-conversation system: emit as { role: "system" } at
+					// its natural position. Requires allowSystemInMessages:true
+					// on the streamText call (AI SDK v7, default-reject).
+					result.push({ role: "system", content: text });
+				} else {
+					if (pendingDev.length === 0) pendingDevStartedAtEmptyResult = result.length === 0;
+					pendingDev.push(text);
+				}
 			}
 			continue;
 		}
@@ -529,7 +551,11 @@ export function toModelMessages(
 	// history begins mid-turn). The old hand-rolled toBedrockMessages carried
 	// an equivalent guard; we preserve the "<system-notification />" shape
 	// for continuity with any operator tooling that looks for it.
-	if (result.length > 0 && result[0].role !== "user") {
+	if (
+		result.length > 0 &&
+		result[0].role !== "user" &&
+		!(opts.midConversationSystem && result[0].role === "system")
+	) {
 		result.unshift({ role: "user", content: "<system-notification />" });
 	}
 
