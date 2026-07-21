@@ -425,6 +425,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			requestConsistency: (tables: string[]) => wsTransportHolder.requestConsistency(tables),
 			handleMessageTracker,
 			clusterFs: clusterFsObj?.fs ?? null,
+			modelRouter,
 		});
 		await webServer.start();
 

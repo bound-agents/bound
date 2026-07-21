@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { ModelRouter } from "@bound/llm";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
@@ -87,6 +88,11 @@ export interface WebAppConfig {
 	 * sync router.
 	 */
 	mcpConfig?: McpConfig | null;
+	/**
+	 * In-process model router. When provided, exposes `POST /api/inference`
+	 * for direct LLM inference over HTTP (no agent loop, no context assembly).
+	 */
+	modelRouter?: ModelRouter | null;
 }
 
 export interface SyncAppConfig {
@@ -156,6 +162,7 @@ export async function createWebApp(
 		requestConsistency: config.requestConsistency,
 		clusterFs: config.clusterFs,
 		mcpConfig: config.mcpConfig,
+		modelRouter: config.modelRouter,
 	};
 
 	const app = new Hono();
@@ -193,6 +200,7 @@ export async function createWebApp(
 	app.route("/api/metrics", routes.metrics);
 	app.route("/api/sandbox", routes.sandbox);
 	app.route("/api/persona", routes.persona);
+	app.route("/api/inference", routes.inference);
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

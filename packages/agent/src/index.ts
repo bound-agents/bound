@@ -52,6 +52,7 @@ export {
 	insertThreadMessage,
 	calculateTurnCost,
 	estimateMaxTurnCost,
+	createFileRefResolver,
 } from "./agent-loop-utils";
 export {
 	HandleMessageTracker,
