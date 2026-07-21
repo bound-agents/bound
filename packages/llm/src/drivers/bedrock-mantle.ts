@@ -273,6 +273,7 @@ export class BedrockMantleDriver implements LLMBackend {
 				resolveFileRef: params.resolveFileRef,
 				targetEnvelope: ANTHROPIC_ENVELOPE,
 				reasoningProviderOptions: "anthropic",
+				midConversationSystem: true,
 			});
 			const runAttempt = (): AsyncIterable<StreamChunk> =>
 				mapProviderStream({
@@ -281,6 +282,7 @@ export class BedrockMantleDriver implements LLMBackend {
 						streamText({
 							model: provider.messages(modelId),
 							messages,
+							allowSystemInMessages: true,
 							...(params.system && { system: params.system }),
 							...(tools && { tools }),
 							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
@@ -319,6 +321,7 @@ export class BedrockMantleDriver implements LLMBackend {
 			// would skip the latter under store:false with a per-block warning, so
 			// dropping at the boundary is equivalent and silences the flood.
 			reasoningProviderOptions: "openai",
+			midConversationSystem: true,
 		});
 
 		// One streaming attempt — built fresh per retry so a re-issue is a clean
@@ -330,6 +333,7 @@ export class BedrockMantleDriver implements LLMBackend {
 					streamText({
 						model: provider.responses(modelId),
 						messages,
+						allowSystemInMessages: true,
 						...(params.system && { system: params.system }),
 						...(tools && { tools }),
 						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),

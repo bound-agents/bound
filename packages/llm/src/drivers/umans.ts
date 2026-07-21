@@ -481,6 +481,7 @@ export class UmansDriver implements LLMBackend {
 			targetEnvelope: ANTHROPIC_ENVELOPE,
 			cacheTtl: params.cache_ttl,
 			reasoningProviderOptions: "anthropic",
+			midConversationSystem: true,
 		});
 		// Resolve the reasoning_effort to inject as a top-level body field via a
 		// per-call provider whose fetch wrapper adds it (umans extension on the
@@ -536,6 +537,7 @@ export class UmansDriver implements LLMBackend {
 						streamText({
 							model: provider.messages(modelId),
 							messages,
+							allowSystemInMessages: true,
 							...(params.system && { system: params.system }),
 							...(tools && { tools }),
 							...(sendMaxTokens && { maxOutputTokens: sendMaxTokens }),
