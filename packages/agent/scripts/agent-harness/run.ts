@@ -52,6 +52,8 @@ async function main(): Promise<void> {
 		turns: args.turns,
 		budgetUsd: args.budget,
 		logger,
+		remote: args.remote,
+		dataDir: args.dataDir,
 	});
 
 	// Emit per-diagnostic reports.

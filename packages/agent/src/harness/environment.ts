@@ -91,6 +91,10 @@ export interface HarnessEnvironmentOptions {
 	threadSummary?: string | null;
 	/** Per-thread turn-state TTL. Default 55 minutes (matches production). */
 	turnStateTtlMs?: number;
+	/** Override the site ID (used by --remote mode to match the production keypair). */
+	siteId?: string;
+	/** Override the event bus (used by --remote mode for relay infrastructure). */
+	eventBus?: TypedEventEmitter;
 }
 
 /** Per-call overrides for one `MainAgentLoop` run. `threadId` / `userId` are
@@ -165,7 +169,7 @@ export function createHarnessEnvironment(opts: HarnessEnvironmentOptions): Harne
 	applySchema(db);
 	applyMetricsSchema(db);
 
-	const siteId = randomUUID();
+	const siteId = opts.siteId ?? randomUUID();
 	const userId = randomUUID();
 	const threadId = randomUUID();
 	const now = new Date().toISOString();
@@ -220,7 +224,7 @@ export function createHarnessEnvironment(opts: HarnessEnvironmentOptions): Harne
 			modelBackends: opts.rawBackends,
 		},
 		optionalConfig: {},
-		eventBus: silentEventBus(),
+		eventBus: opts.eventBus ?? silentEventBus(),
 		logger,
 		siteId,
 		hostName,
