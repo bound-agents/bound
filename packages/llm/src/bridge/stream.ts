@@ -294,9 +294,16 @@ export async function* mapChunks(
 				// Per-step cache-write metadata. Sum across steps because the
 				// terminal `finish` event carries no providerMetadata, and a
 				// single step's value may be null/zero on prefix-cache hits.
+				// AI SDK v7 surfaces per-step cache-write on the structured
+				// `usage.inputTokenDetails.cacheWriteTokens` (provider-agnostic);
+				// fall back to the v6 providerMetadata shape for adapters that
+				// don't populate the structured field.
+				const stepUsage = part.usage as FinishState["totalUsage"] | undefined;
 				const meta = part.providerMetadata as ProviderMetadata | undefined;
-				const stepCacheWrite = readStepCacheWriteTokens(meta, opts.usageProvider);
-				if (stepCacheWrite !== null) {
+				const stepCacheWrite =
+					stepUsage?.inputTokenDetails?.cacheWriteTokens ??
+					readStepCacheWriteTokens(meta, opts.usageProvider);
+				if (stepCacheWrite != null) {
 					cacheWriteAccum += stepCacheWrite;
 					cacheWriteSeen = true;
 				}
@@ -427,7 +434,9 @@ function extractUsage(
 	// and makes downstream cost/hit-rate metrics honest.
 	let inputTokens = u.inputTokenDetails?.noCacheTokens ?? u.inputTokens ?? 0;
 	let outputTokens = u.outputTokens ?? 0;
-	const cacheReadTokens = u.cachedInputTokens ?? null;
+	// AI SDK v7 moved cache-read onto the structured `inputTokenDetails.
+	// cacheReadTokens`; the flat `cachedInputTokens` is the v6 fallback.
+	const cacheReadTokens = u.inputTokenDetails?.cacheReadTokens ?? u.cachedInputTokens ?? null;
 	// Cache-write tokens are summed by the caller across all finish-step
 	// events because the terminal `finish` carries no providerMetadata and
 	// each step reports its own value (null on prefix-cache hits).
