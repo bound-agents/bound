@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { ModelRouter } from "@bound/llm";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import { createLogger } from "@bound/shared";
@@ -67,6 +68,11 @@ export interface WebServerConfig {
 	 * browser to them. Web-router only.
 	 */
 	mcpConfig?: McpConfig | null;
+	/**
+	 * In-process model router. When provided, exposes `POST /api/inference`
+	 * for direct LLM inference over HTTP.
+	 */
+	modelRouter?: ModelRouter | null;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -156,6 +162,7 @@ export async function createWebServer(
 		requestConsistency: config.requestConsistency,
 		clusterFs: config.clusterFs,
 		mcpConfig: config.mcpConfig,
+		modelRouter: config.modelRouter,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);
