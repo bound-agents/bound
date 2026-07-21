@@ -10,6 +10,7 @@ import {
 	resolveModel,
 	resolveModelTier,
 	resolveSameTierFallback,
+	resolveTargetCapabilities,
 } from "../model-resolution";
 
 // Test database setup
@@ -1472,5 +1473,123 @@ describe("required context window (no silent default)", () => {
 			expect(resolution.error).toMatch(/no context window/i);
 			expect(resolution.reason).toBe("transient-unavailable");
 		}
+	});
+});
+
+describe("resolveTargetCapabilities", () => {
+	const fullCaps = {
+		streaming: true,
+		tool_use: true,
+		system_prompt: true,
+		prompt_caching: true,
+		vision: true,
+		extended_thinking: false,
+		max_context: 200000,
+	};
+
+	function routerStub(caps: typeof fullCaps | null) {
+		return {
+			getEffectiveCapabilities: () => caps,
+		} as unknown as ModelRouter;
+	}
+
+	function remoteHost(capabilities?: {
+		streaming?: boolean;
+		tool_use?: boolean;
+		system_prompt?: boolean;
+		prompt_caching?: boolean;
+		vision?: boolean;
+		max_context?: number;
+	}) {
+		return {
+			site_id: "remote-site",
+			host_name: "remote-host",
+			sync_url: null,
+			online_at: null,
+			modified_at: null,
+			capabilities,
+		};
+	}
+
+	it("local: returns the router's effective capabilities verbatim", () => {
+		const res: ModelResolution = {
+			kind: "local",
+			// biome-ignore lint/suspicious/noExplicitAny: test stub
+			backend: {} as any,
+			modelId: "opus",
+			max_context: 200000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(fullCaps))).toEqual(fullCaps);
+	});
+
+	it("local: propagates null when the backend id is unregistered", () => {
+		const res: ModelResolution = {
+			kind: "local",
+			// biome-ignore lint/suspicious/noExplicitAny: test stub
+			backend: {} as any,
+			modelId: "ghost",
+			max_context: 200000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))).toBeNull();
+	});
+
+	it("remote: surfaces a non-vision backend's vision:false (the regression) so the substitution gate fires", () => {
+		// REGRESSION: this branch used to return `undefined`, skipping Stage 5b
+		// substitution and shipping raw image blocks to a text-only remote
+		// backend (e.g. umans-glm-5.2) — a hard "content.type invalid" failure.
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost({ vision: false, prompt_caching: true, max_context: 128000 })],
+			modelId: "umans-glm-5.2",
+			max_context: 128000,
+		};
+		const caps = resolveTargetCapabilities(res, routerStub(fullCaps));
+		expect(caps).not.toBeNull();
+		expect(caps?.vision).toBe(false);
+	});
+
+	it("remote: preserves an advertised vision:true", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost({ vision: true, max_context: 200000 })],
+			modelId: "opus",
+			max_context: 200000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))?.vision).toBe(true);
+	});
+
+	it("remote: defaults vision to false when the host advertised caps but no vision flag (never ship raw images to an unconfirmed backend)", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost({ prompt_caching: true, max_context: 128000 })],
+			modelId: "some-remote",
+			max_context: 128000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))?.vision).toBe(false);
+	});
+
+	it("remote: returns null when the chosen host advertised no capabilities", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost(undefined)],
+			modelId: "some-remote",
+			max_context: 128000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))).toBeNull();
+	});
+
+	it("remote: returns null when the hosts array is empty", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [],
+			modelId: "some-remote",
+			max_context: 128000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))).toBeNull();
+	});
+
+	it("error: returns null", () => {
+		const res: ModelResolution = { kind: "error", error: "no backends" };
+		expect(resolveTargetCapabilities(res, routerStub(fullCaps))).toBeNull();
 	});
 });

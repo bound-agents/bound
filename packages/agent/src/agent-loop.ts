@@ -25,6 +25,7 @@ import {
 	rebuildWarmSections,
 } from "./context-assembly";
 import { resolveAdaptiveTruncationTarget } from "./inflation-ratio";
+import { resolveTargetCapabilities } from "./model-resolution";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 import { extractAssistantSeedText, extractSummaryAndMemories } from "./summary-extraction";
 import { compactStoredMessagesInPlace, computeRecentWindow } from "./warm-compaction";
@@ -285,12 +286,8 @@ export class MainAgentLoop extends BoundAgentLoop {
 			};
 		}
 
-		const resolvedCaps =
-			resolution.kind === "local"
-				? this.modelRouter.getEffectiveCapabilities(resolution.modelId)
-				: undefined;
-		const cacheMarkerCaps =
-			resolution.kind === "local" ? resolvedCaps : resolution.hosts[0]?.capabilities;
+		const resolvedCaps = resolveTargetCapabilities(resolution, this.modelRouter);
+		const cacheMarkerCaps = resolvedCaps;
 		const contextWindow = resolution.max_context;
 		const mergedTools = this.getMergedTools();
 		const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;

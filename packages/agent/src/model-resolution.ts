@@ -62,6 +62,45 @@ export type ModelResolution =
 	  };
 
 /**
+ * Target backend capabilities for a resolution, used to gate Stage 5b
+ * content substitution (image→text when the backend lacks vision).
+ *
+ * The remote branch MUST return the serving host's advertised
+ * capabilities, not `undefined`: a remote non-vision backend that resolved
+ * to `undefined` here bypassed the vision substitution gate and shipped
+ * raw image blocks to a text-only provider, hard-failing the turn with
+ * "messages.content.type is invalid, allowed values: ['text']". This
+ * mirrors the fallback that `cacheMarkerCaps` already used in the loop.
+ */
+export function resolveTargetCapabilities(
+	resolution: ModelResolution,
+	modelRouter: Pick<ModelRouter, "getEffectiveCapabilities">,
+): BackendCapabilities | null {
+	if (resolution.kind === "local") {
+		return modelRouter.getEffectiveCapabilities(resolution.modelId);
+	}
+	if (resolution.kind === "remote") {
+		// The wire-advertised host caps are a partial shape (all fields
+		// optional, no extended_thinking). Normalize to a full
+		// BackendCapabilities, defaulting vision to false when unadvertised so
+		// we never ship raw image blocks to a backend we can't confirm
+		// supports them.
+		const caps = resolution.hosts[0]?.capabilities;
+		if (!caps) return null;
+		return {
+			streaming: caps.streaming ?? false,
+			tool_use: caps.tool_use ?? false,
+			system_prompt: caps.system_prompt ?? false,
+			prompt_caching: caps.prompt_caching ?? false,
+			vision: caps.vision ?? false,
+			extended_thinking: false,
+			max_context: caps.max_context,
+		};
+	}
+	return null;
+}
+
+/**
  * Checks whether caps satisfy all requirements. Returns an array of unmet requirement
  * field names (empty if all requirements are met).
  */
