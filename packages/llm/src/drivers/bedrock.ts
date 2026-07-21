@@ -279,6 +279,7 @@ export class BedrockDriver implements LLMBackend {
 				streamText({
 					model: this.provider.languageModel(modelId),
 					messages,
+					allowSystemInMessages: true,
 					...(tools && { tools }),
 					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 					// Reasoning requests disallow temperature on Anthropic; only set it
