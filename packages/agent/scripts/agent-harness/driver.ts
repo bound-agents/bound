@@ -64,13 +64,21 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { insertRow, loadConfigFile } from "@bound/core";
+import {
+	insertRow,
+	loadConfigFile,
+	setChangelogEventBus,
+	setRelayOutboxEventBus,
+} from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { ToolDefinition } from "@bound/llm";
 import {
 	type Logger,
 	type ModelBackendsConfig as RawBackendsConfig,
+	TypedEventEmitter,
+	keyringSchema,
 	modelBackendsSchema,
+	syncSchema,
 } from "@bound/shared";
 // `toRouterConfig` lives in the cli package; this is a known minor coupling
 // (the harness needs the same SharedModelBackendsConfig → ModelBackendsConfig
@@ -100,6 +108,10 @@ export interface HarnessRunOptions {
 	turns: number;
 	budgetUsd: number;
 	logger: Logger;
+	/** Enable remote (relay-backed) model resolution via the hub. */
+	remote: boolean;
+	/** Path to the data directory containing host.key/host.pub. */
+	dataDir: string;
 }
 
 export interface HarnessRunResult {
@@ -144,30 +156,52 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	}
 	const rawBackends = rawBackendsResult.value;
 
-	// 2. Pick the backend the operator selected (default → router default).
-	const pickedId = opts.backend || rawBackends.default;
-	const picked = rawBackends.backends.find((b: RawBackendConfig) => b.id === pickedId);
-	if (!picked) {
-		const known = rawBackends.backends.map((b: RawBackendConfig) => b.id).join(", ") || "(none)";
-		throw new Error(`backend "${pickedId}" not found in model_backends.json. Available: ${known}`);
+	// 2. Pick the backend / model the operator selected.
+	let picked: RawBackendConfig;
+	let modelId: string;
+	if (opts.remote) {
+		// Remote mode: --backend is the remote model ID (e.g. "umans-coder").
+		// The local router still needs a backend for auxiliary calls (summary
+		// extraction, title generation), so use the first local backend.
+		if (!opts.backend) {
+			throw new Error("--backend <model-id> is required with --remote");
+		}
+		picked = rawBackends.backends[0];
+		if (!picked) {
+			throw new Error("model_backends.json must have at least one backend for auxiliary calls");
+		}
+		modelId = opts.backend;
+	} else {
+		const pickedId = opts.backend || rawBackends.default;
+		const found = rawBackends.backends.find((b: RawBackendConfig) => b.id === pickedId);
+		if (!found) {
+			const known = rawBackends.backends.map((b: RawBackendConfig) => b.id).join(", ") || "(none)";
+			throw new Error(
+				`backend "${pickedId}" not found in model_backends.json. Available: ${known}`,
+			);
+		}
+		picked = found;
+		modelId = picked.id;
 	}
 
-	// 3. Pre-flight budget check — reject before any inference call when the
-	//    worst-case ceiling already exceeds the budget.
-	const maxTurnCost = estimateMaxTurnCost(picked);
-	const projectedTotal = maxTurnCost * opts.turns;
-	if (projectedTotal > opts.budgetUsd) {
-		return {
-			userTurnsCompleted: 0,
-			inferencesObserved: 0,
-			totalCostUsd: 0,
-			abortReason: "pre-flight-budget",
-			abortMessage: `pre-flight estimate ${projectedTotal.toFixed(4)} USD exceeds budget ${opts.budgetUsd.toFixed(2)} USD (per-turn ceiling ${maxTurnCost.toFixed(4)} × ${opts.turns} turns)`,
-			perDiagnosticReports: new Map(),
-			perDiagnosticRecords: new Map(),
-			rawTurnData: [],
-			unmatchedWires: [],
-		};
+	// 3. Pre-flight budget check (local mode only — can't estimate remote costs).
+	let maxTurnCost = 0;
+	if (!opts.remote) {
+		maxTurnCost = estimateMaxTurnCost(picked);
+		const projectedTotal = maxTurnCost * opts.turns;
+		if (projectedTotal > opts.budgetUsd) {
+			return {
+				userTurnsCompleted: 0,
+				inferencesObserved: 0,
+				totalCostUsd: 0,
+				abortReason: "pre-flight-budget",
+				abortMessage: `pre-flight estimate ${projectedTotal.toFixed(4)} USD exceeds budget ${opts.budgetUsd.toFixed(2)} USD (per-turn ceiling ${maxTurnCost.toFixed(4)} × ${opts.turns} turns)`,
+				perDiagnosticReports: new Map(),
+				perDiagnosticRecords: new Map(),
+				rawTurnData: [],
+				unmatchedWires: [],
+			};
+		}
 	}
 
 	// 4. Translate the picked backend through toRouterConfig — same path the
@@ -187,21 +221,140 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		fetchByBackendId: new Map([[picked.id, capturing.fetch]]),
 	});
 
-	// 6. Hermetic environment: in-memory DB with the full schema applied, a
-	//    seeded user + thread, a silent event bus, and an AppContext stub —
-	//    all shared with persona-lab via the harness core. The capturing
-	//    router built above is injected so wire bodies are recorded per
-	//    inference. Everything below (pre-seeded history, volatile-prefix
-	//    seeding, tool registry, budget, diagnostics) is driver-specific and
-	//    operates on the returned db / siteId / threadId / hostName.
+	// 6. Environment setup.
+	//    In remote mode, use the production keypair's siteId and a real
+	//    event bus so WsTransport can drain relay outbox entries to the hub.
+	let wsClient: { close: () => void } | null = null;
+	let wsTransport: { stop: () => void } | null = null;
+	let remoteSiteId: string | undefined;
+	let remoteEventBus: TypedEventEmitter | undefined;
+	let remoteKeypair: { publicKey: CryptoKey; privateKey: CryptoKey; siteId: string } | null = null;
+	if (opts.remote) {
+		const { ensureKeypair } = await import("@bound/sync");
+		remoteKeypair = await ensureKeypair(opts.dataDir);
+		remoteSiteId = remoteKeypair.siteId;
+		remoteEventBus = new TypedEventEmitter();
+		setChangelogEventBus(remoteEventBus);
+		setRelayOutboxEventBus(remoteEventBus);
+	}
 	const env = createHarnessEnvironment({
 		rawBackends,
 		router,
 		logger: opts.logger,
 		threadTitle: opts.fixture.name,
 		threadSummary: opts.fixture.threadSummary ?? null,
+		siteId: remoteSiteId,
+		eventBus: remoteEventBus,
 	});
 	const { db, siteId, threadId, hostName, now } = env;
+
+	// 6b. Remote sync: connect to the hub via WsSyncClient so relay outbox
+	//     entries (inference requests) are drained and sent to the hub. The
+	//     snapshot is filtered to only apply the `hosts` table — everything
+	//     else stays hermetic (harness-seeded data only).
+	if (opts.remote && remoteKeypair && remoteEventBus) {
+		const { KeyManager, WsSyncClient, WsTransport } = await import("@bound/sync");
+		const keyringResult = loadConfigFile(opts.configDir, "keyring.json", keyringSchema);
+		const syncResult = loadConfigFile(opts.configDir, "sync.json", syncSchema);
+		if (!keyringResult.ok) {
+			throw new Error(
+				`failed to load keyring.json from ${opts.configDir}: ${keyringResult.error.message}`,
+			);
+		}
+		if (!syncResult.ok) {
+			throw new Error(
+				`failed to load sync.json from ${opts.configDir}: ${syncResult.error.message}`,
+			);
+		}
+		const keyring = keyringResult.value;
+		const syncConfig = syncResult.value;
+		if (!syncConfig.hub) {
+			throw new Error("sync.json must have a 'hub' URL for --remote mode");
+		}
+		const hubUrl = new URL(syncConfig.hub).toString();
+		// Find the hub's siteId in the keyring by matching URL.
+		let hubSiteId: string | undefined;
+		for (const [sid, entry] of Object.entries(keyring.hosts)) {
+			if (new URL(entry.url).toString() === hubUrl) {
+				hubSiteId = sid;
+				break;
+			}
+		}
+		if (!hubSiteId) {
+			throw new Error(`hub URL ${hubUrl} not found in keyring.json hosts`);
+		}
+		const keyManager = new KeyManager(remoteKeypair, remoteKeypair.siteId);
+		await keyManager.init(keyring);
+		const wt = new WsTransport({
+			db,
+			siteId,
+			eventBus: remoteEventBus,
+			logger: opts.logger,
+			isHub: false,
+		});
+		wt.start();
+		wsTransport = wt;
+		// Filtered transport: relay functions delegate to the real WsTransport;
+		// snapshot is filtered to only the `hosts` table; changelog is no-op
+		// (harness data should not replicate to the hub).
+		const filtered = {
+			addPeer: wt.addPeer.bind(wt),
+			removePeer: wt.removePeer.bind(wt),
+			handleChangelogPush: () => {},
+			handleChangelogAck: () => {},
+			drainChangelog: () => {},
+			handleRelayDeliver: wt.handleRelayDeliver.bind(wt),
+			handleRelayAck: wt.handleRelayAck.bind(wt),
+			drainRelayOutbox: wt.drainRelayOutbox.bind(wt),
+			applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) =>
+				tableName === "hosts" ? wt.applySnapshotChunk(tableName, rows) : 0,
+			applyColumnChunk: (
+				tableName: string,
+				pkValue: string,
+				columnName: string,
+				chunkIndex: number,
+				chunkData: string,
+			) => {
+				if (tableName === "hosts") {
+					wt.applyColumnChunk(tableName, pkValue, columnName, chunkIndex, chunkData);
+				}
+			},
+		};
+		wsClient = new WsSyncClient({
+			hubUrl,
+			privateKey: remoteKeypair.privateKey,
+			siteId: remoteKeypair.siteId,
+			keyManager,
+			hubSiteId,
+			wsTransport: filtered,
+			logger: opts.logger,
+			backfillIntervalSeconds: 0,
+		});
+		await wsClient.connect();
+		// Wait for the hub's `hosts` row to arrive via the filtered snapshot.
+		opts.logger.info("[harness] Waiting for hub hosts row via snapshot...");
+		const deadline = Date.now() + 30_000;
+		let hostsReady = false;
+		while (Date.now() < deadline) {
+			const row = db
+				.query<{ c: number }, [string]>(
+					"SELECT COUNT(*) AS c FROM hosts WHERE site_id = ? AND deleted = 0",
+				)
+				.get(hubSiteId);
+			if (row && row.c > 0) {
+				hostsReady = true;
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		}
+		if (!hostsReady) {
+			throw new Error(
+				"Timed out waiting for hub hosts row (30s). " +
+					"Is the production daemon stopped? (same siteId can't connect twice)",
+			);
+		}
+		opts.logger.info("[harness] Hub hosts row received — relay path ready");
+	}
 
 	// Pre-seed messages when the fixture defines them. Used by fixtures
 	// that need a thread large enough to trigger truncation before turn 1.
@@ -233,10 +386,10 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		}
 	}
 
-	// `hosts` row would normally be bootstrapped via the daemon's start
-	// path (outbox-exempt — see bootstrap.ts). Context-assembly only reads
-	// `ctx.hostName` and `ctx.siteId` directly, so the harness can skip
-	// host seeding without breaking any read path.
+	// `hosts` row: in local mode, none is seeded (context-assembly only reads
+	// `ctx.hostName` and `ctx.siteId` directly). In remote mode, the `hosts`
+	// table is populated via the WsSyncClient snapshot (filtered to only apply
+	// the `hosts` table) so `findEligibleHostsByModel` can resolve the hub.
 
 	// Seed volatile-prefix data when the fixture asks for it. Without
 	// this, the volatile-prefix renders ~empty and `tokens_in` per
@@ -291,7 +444,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 
 		// Build the loop config and run it against the shared environment.
 		try {
-			await env.runLoop({ modelId: picked.id, toolRegistry });
+			await env.runLoop({ modelId, toolRegistry });
 		} catch (err) {
 			abortReason = "error";
 			abortMessage = `user-turn ${userTurn} threw: ${(err as Error).message}`;
@@ -360,6 +513,8 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	}
 
 	const totalCostUsd = sumTurnCosts(db, threadId);
+	if (wsClient) wsClient.close();
+	if (wsTransport) wsTransport.stop();
 	db.close();
 
 	return {

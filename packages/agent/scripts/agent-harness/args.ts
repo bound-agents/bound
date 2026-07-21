@@ -11,12 +11,15 @@
  *  - Positional arguments are not accepted.
  */
 
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export interface HarnessArgs {
 	/** Hard ceiling in USD; required, no default. */
 	budget: number;
 	/** Path to the directory containing `model_backends.json`. */
 	configDir: string;
-	/** Backend ID from `model_backends.json` to drive. Empty string → router default. */
+	/** Backend ID from `model_backends.json` (local) or a remote model ID. Empty string → router default. */
 	backend: string;
 	/** Fixture name; required. */
 	fixture: string;
@@ -28,6 +31,10 @@ export interface HarnessArgs {
 	logLevel: "silent" | "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 	/** If set, write each turn's wire bodies to `<dumpWire>/turn-N.json`. */
 	dumpWire: string | null;
+	/** Enable remote (relay-backed) model resolution via the hub. */
+	remote: boolean;
+	/** Path to the data directory containing host.key/host.pub. Default: ~/bound/data */
+	dataDir: string;
 }
 
 const USAGE = `\
@@ -42,7 +49,8 @@ Optional:
   --config-dir <path>       Directory containing model_backends.json.
                             Default: ./config
   --backend <id>            Backend ID from model_backends.json. Default: the
-                            router's configured default.
+                            router's configured default. With --remote, this is
+                            the model ID to resolve (can be a remote model).
   --diagnostic <names>      Comma-separated diagnostic plugin name(s) to run.
                             Default: cache
   --turns <n>               Number of turns to drive. Default: 5
@@ -51,6 +59,12 @@ Optional:
                             Default: silent
   --dump-wire <path>        If set, write each turn's wire bodies to
                             <path>/turn-N.json for offline inspection.
+  --remote                  Enable remote (relay-backed) model resolution.
+                            Loads keypair + sync config from --config-dir /
+                            --data-dir and connects to the hub via WsSyncClient.
+                            Stop the production daemon first (same site_id).
+  --data-dir <path>         Directory containing host.key/host.pub.
+                            Default: ~/bound/data
   -h, --help                Print this message and exit.
 `;
 
@@ -70,6 +84,8 @@ export function parseArgs(argv: ReadonlyArray<string>): HarnessArgs {
 		turns: 5,
 		logLevel: "silent" as HarnessArgs["logLevel"],
 		dumpWire: null as string | null,
+		remote: false,
+		dataDir: join(homedir(), "bound", "data"),
 	};
 
 	const tokens: string[] = [];
@@ -135,6 +151,12 @@ export function parseArgs(argv: ReadonlyArray<string>): HarnessArgs {
 			case "--dump-wire":
 				out.dumpWire = next();
 				break;
+			case "--remote":
+				out.remote = true;
+				break;
+			case "--data-dir":
+				out.dataDir = next();
+				break;
 			default:
 				fail(`unknown flag: ${tok}`);
 		}
@@ -152,6 +174,8 @@ export function parseArgs(argv: ReadonlyArray<string>): HarnessArgs {
 		turns: out.turns,
 		logLevel: out.logLevel,
 		dumpWire: out.dumpWire,
+		remote: out.remote,
+		dataDir: out.dataDir,
 	};
 }
 
