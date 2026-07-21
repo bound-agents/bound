@@ -19,6 +19,7 @@ export {
 	type RelayStreamDeps,
 	type RelayStreamOptions,
 } from "./relay-stream$.js";
+export { createRelayInferenceStream } from "./relay-inference-stream.js";
 export {
 	createRelayWait$,
 	type RelayWaitDeps,

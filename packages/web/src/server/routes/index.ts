@@ -140,6 +140,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),
 		persona: createPersonaRoutes(db),
-		inference: createInferenceRoutes(db, modelRouter ?? null),
+		inference: createInferenceRoutes(db, modelRouter ?? null, eventBus, siteId),
 	};
 }
