@@ -34,6 +34,18 @@ function buildUserMessageAttributes(m: Message, nowMsRef?: number): string {
 	if (from) {
 		attrs.push(`from="${escapeXmlAttr(from)}"`);
 	}
+	// `role` next, per the #201 sender-envelope schema `<message from role sent
+	// [thread]>`: one identity-aware envelope for every conversational sender,
+	// where `role` is the only variance (user→main, main→aux, main→main). Like
+	// `from`/`tz_offset` it is stamped once at insert and never mutated. Absent —
+	// every message written before this feature, and every plain user message the
+	// intake site chooses not to stamp — renders no `role` and keeps its
+	// pre-feature bytes, so the message-level cachePoint never thrashes. The
+	// implicit default when omitted is user.
+	const role = readSenderRole(m.metadata);
+	if (role) {
+		attrs.push(`role="${escapeXmlAttr(role)}"`);
+	}
 	if (m.created_at) {
 		attrs.push(`sent="${formatInstant(m.created_at, readTzOffsetMinutes(m.metadata), nowMsRef)}"`);
 	}
@@ -51,6 +63,29 @@ function readUserName(metadata: string | null): string | undefined {
 	try {
 		const parsed = JSON.parse(metadata) as Record<string, unknown>;
 		const v = parsed.user_name;
+		return typeof v === "string" && v.length > 0 ? v : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Reads the sender-relationship role from a user message's metadata bag, if the
+ * intake site stamped one at send time (`sender_role`). This is the #201
+ * sender-envelope `role` axis: `"main"` for a main-agent message written into an
+ * auxiliary conversation (or a notify/introspect message between main-agent
+ * threads); `"user"` for an operator message. Returns undefined when absent or
+ * not a non-empty string — every message written before this feature, and every
+ * plain user message the intake site leaves unstamped, so those envelopes render
+ * byte-identically as before (no retroactive cachePoint invalidation). Like
+ * `user_name`/`tz_offset`, written once at insert and never mutated, so the
+ * rendered attribute stays a pure function of the row.
+ */
+function readSenderRole(metadata: string | null): string | undefined {
+	if (!metadata) return undefined;
+	try {
+		const parsed = JSON.parse(metadata) as Record<string, unknown>;
+		const v = parsed.sender_role;
 		return typeof v === "string" && v.length > 0 ? v : undefined;
 	} catch {
 		return undefined;
