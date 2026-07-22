@@ -12,6 +12,7 @@
 	},
 	"dependencies": {
 		"@bound/agent": "workspace:*",
+		"@bound/core": "workspace:*",
 		"@bound/client": "workspace:*",
 		"@bound/llm": "workspace:*",
 		"@bound/shared": "workspace:*",
