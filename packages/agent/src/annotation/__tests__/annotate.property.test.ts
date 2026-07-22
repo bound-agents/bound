@@ -325,6 +325,81 @@ describe("annotateMessages — property tests", () => {
 		}
 	});
 
+	it('N11: user message carries a role="..." attribute when metadata stamps a sender_role', () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "diagnose run 1234", {
+					created_at: created,
+					metadata: JSON.stringify({ user_name: "Polaris", sender_role: "main" }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content;
+		if (typeof content !== "string") throw new Error("expected string content");
+		// #201 envelope attribute order is `from role sent`.
+		if (!/^<user-message from="Polaris" role="main" sent="[^"]+">\n/.test(content)) {
+			throw new Error(`missing or misordered role attribute on envelope: ${content}`);
+		}
+	});
+
+	it("N11b: role attribute appears with sent even when no from is stamped", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hi", {
+					created_at: created,
+					metadata: JSON.stringify({ sender_role: "user" }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content;
+		if (typeof content !== "string") throw new Error("expected string content");
+		if (!/^<user-message role="user" sent="[^"]+">\n/.test(content)) {
+			throw new Error(`missing role attribute without from: ${content}`);
+		}
+	});
+
+	it("N11c: no role attribute when metadata has no sender_role (old rows unchanged)", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		// A null-metadata row, a tz-only row, and a from-only row must all render
+		// with no role= so pre-feature envelopes keep their exact bytes (cachePoint).
+		for (const metadata of [
+			null,
+			JSON.stringify({ tz_offset: -420 }),
+			JSON.stringify({ user_name: "Kara" }),
+		]) {
+			const out = annotateMessages({
+				messages: [msg("user", "u1", "hello there", { created_at: created, metadata })],
+				nowMs: NOW_MS,
+			});
+			const content = out[0].content;
+			if (typeof content !== "string") throw new Error("expected string content");
+			if (content.includes(" role=")) {
+				throw new Error(`unexpected role attribute for metadata=${metadata}: ${content}`);
+			}
+		}
+	});
+
+	it("N11d: a sender_role with XML-significant characters is escaped in the attribute", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hi", {
+					created_at: created,
+					metadata: JSON.stringify({ sender_role: 'a&<"b>' }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content as string;
+		if (!content.includes('role="a&amp;&lt;&quot;b&gt;"')) {
+			throw new Error(`sender_role not escaped: ${content}`);
+		}
+	});
+
 	it("N7b (property): annotation is independent of nowMs for any user message", () => {
 		fc.assert(
 			fc.property(

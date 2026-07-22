@@ -743,12 +743,17 @@ export function createWebSocketHandler(
 			const now = new Date().toISOString();
 
 			// Stamp the sender's metadata bag once at insert — never mutated, so
-			// Stage-5 annotation stays byte-stable. Two fields ride here today:
+			// Stage-5 annotation stays byte-stable. Three fields ride here today:
 			//   - tz_offset: the client's UTC offset (minutes) when supplied, so
 			//     the timestamp prefix renders in the sender's local wall-clock.
 			//   - user_id / user_name: the sending user's identity, so the
 			//     <user-message> envelope can attribute the message (useful in
 			//     multi-user threads). The display name is frozen at send time.
+			//   - sender_role: the #201 sender-envelope role axis. A web-UI message
+			//     is always an operator message, so it stamps role="user" — the
+			//     explicit form of the envelope's implicit default. Main→aux and
+			//     notify/introspect (role="main") stamp this field at their own
+			//     intake sites as #201 lands; the renderer reads one field for all.
 			const senderName = defaultUserId
 				? findUserDisplayNameById(db, defaultUserId)?.display_name
 				: undefined;
