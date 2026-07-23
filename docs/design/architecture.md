@@ -214,4 +214,4 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 - [Inference Backends](inference-backends.md) -- LLM driver shims, capabilities, model routing
 - [Agent System](agent-system.md) -- agent loop, scheduler, commands, MCP bridge
 - [Web and Discord](web-and-discord.md) -- HTTP API, WebSocket, Svelte UI, Discord bot
-- [CLI and Operations](../cli-operations.md) -- init, start, management commands, binary build
+- [CLI and Operations](https://bound-agents.github.io/bound/guides/cli-operations/) -- init, start, management commands, binary build
