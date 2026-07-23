@@ -203,5 +203,5 @@ See the git log for commit message style — concise, conventional-commits-ish (
 - [docs/design/sandbox.md](docs/design/sandbox.md) — VFS, command framework, boundless filesystem sandbox
 - [docs/design/inference-backends.md](docs/design/inference-backends.md) — LLM driver shims, model routing
 - [docs/design/web-and-discord.md](docs/design/web-and-discord.md) — HTTP API, WS protocol, platform connectors
-- [docs/cli-operations.md](docs/cli-operations.md) — operator-facing CLI reference
-- [docs/config.md](docs/config.md) — per-field reference for every config file
+- [Docs site — CLI & Operations](https://bound-agents.github.io/bound/guides/cli-operations/) — operator-facing CLI reference
+- [Docs site — Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) — per-field reference for every config file

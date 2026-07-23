@@ -1,0 +1,19 @@
+{
+	"name": "@bound/docs",
+	"version": "0.0.1",
+	"description": "Starlight documentation site for the Bound agent system",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "astro dev",
+		"start": "astro dev",
+		"build": "astro build",
+		"preview": "astro preview",
+		"astro": "astro"
+	},
+	"dependencies": {
+		"@astrojs/starlight": "^0.41.4",
+		"astro": "^7.0.2",
+		"sharp": "^0.34.2"
+	}
+}

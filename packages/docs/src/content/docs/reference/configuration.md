@@ -1,13 +1,14 @@
-# Configuration Reference
+---
+title: Configuration Reference
+description: Per-field reference for every file Bound reads from its config directory.
+---
 
 Every file bound reads from its config directory (default `./config`, override with
 `--config-dir`), field by field. The schemas are the source of truth — see
-`packages/shared/src/config-schemas.ts`. Every schema is **strict**: unknown keys fail
-the parse loudly at startup with the offending key name, so a typo is a hard error, not a
-silent default. Add a field to the Zod schema before you use it.
-
-The [README config-file table](../README.md#config-files) is the one-line-per-file index;
-this is where the per-field detail lives.
+[`packages/shared/src/config-schemas.ts`](https://github.com/bound-agents/bound/blob/main/packages/shared/src/config-schemas.ts).
+Every schema is **strict**: unknown keys fail the parse loudly at startup with the
+offending key name, so a typo is a hard error, not a silent default. Add a field to the
+Zod schema before you use it.
 
 | File | Required | Purpose |
 |------|----------|---------|
@@ -29,14 +30,14 @@ The guest list. Anyone not here cannot interact with the agent.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `default_web_user` | string (non-empty) | — | The user id assumed for unauthenticated web-UI sessions. **Must** be a key in `users`. |
-| `users` | map<id, user> | — | At least one user required. Key is the user id; value is the user entry below. |
+| `users` | map&lt;id, user&gt; | — | At least one user required. Key is the user id; value is the user entry below. |
 
 **User entry:**
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `display_name` | string (non-empty) | — | Human-readable name. |
-| `platforms` | map<string, string> | absent | Per-platform identity, e.g. `{ "discord": "<discord-user-id>" }`. |
+| `platforms` | map&lt;string, string&gt; | absent | Per-platform identity, e.g. `{ "discord": "<discord-user-id>" }`. |
 
 > `discord_id` was removed. Use `platforms.discord` instead — the old key now fails the parse with a pointer to the replacement.
 
@@ -50,7 +51,7 @@ must be `""`.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `backends` | array<backend> | — | The backends this host can serve locally. May be empty (hub-only). |
+| `backends` | array&lt;backend&gt; | — | The backends this host can serve locally. May be empty (hub-only). |
 | `default` | string | `""` | Backend `id` used when a turn names no model. Must reference a real backend, or be `""` when `backends` is empty. |
 | `daily_budget_usd` | number ≥ 0 | absent | Optional soft daily spend ceiling. |
 | `cache_warming` | cache-warming block | absent | Cluster-level cache-warming driver toggle (see below). |
@@ -160,9 +161,9 @@ Outbound HTTP allowlist for sandboxed code. Absent means no outbound HTTP path.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `allowedUrlPrefixes` | array<string> | URL prefixes the sandbox may fetch. |
-| `allowedMethods` | array<string> | HTTP methods permitted. |
-| `transform` | array<{ url, headers }> | Optional per-URL header injection (e.g. auth headers). `headers` is a string→string map. |
+| `allowedUrlPrefixes` | array&lt;string&gt; | URL prefixes the sandbox may fetch. |
+| `allowedMethods` | array&lt;string&gt; | HTTP methods permitted. |
+| `transform` | array&lt;{ url, headers }&gt; | Optional per-URL header injection (e.g. auth headers). `headers` is a string→string map. |
 
 ---
 
@@ -173,7 +174,7 @@ subscriptions, with failover to standbys.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `connectors` | array<connector> | — | The configured connectors. |
+| `connectors` | array&lt;connector&gt; | — | The configured connectors. |
 
 **Connector entry:**
 
@@ -182,7 +183,7 @@ subscriptions, with failover to standbys.
 | `platform` | string (non-empty) | — | Platform name, e.g. `discord`. |
 | `token` | string | absent | Bot token / credential. |
 | `signing_secret` | string | absent | Webhook signing secret. |
-| `allowed_users` | array<string> | `[]` | Platform user ids permitted to reach the agent on this connector. |
+| `allowed_users` | array&lt;string&gt; | `[]` | Platform user ids permitted to reach the agent on this connector. |
 | `leadership` | enum | `auto` | `auto`, `leader`, `standby`, or `all` — this host's role in leader election. |
 | `failover_threshold_ms` | int > 0 | `30000` | How long a leader may be silent before a standby takes over. |
 
@@ -228,7 +229,7 @@ this.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `hosts` | map<host-name, { public_key, url }> | Each known host's Ed25519 `public_key` (non-empty string) and `url` (sync endpoint). |
+| `hosts` | map&lt;host-name, { public_key, url }&gt; | Each known host's Ed25519 `public_key` (non-empty string) and `url` (sync endpoint). |
 
 ---
 
@@ -239,13 +240,13 @@ commands.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `servers` | array<server> | Discriminated on `transport`. |
+| `servers` | array&lt;server&gt; | Discriminated on `transport`. |
 
 **Common to every server:** `name` (non-empty string), `allow_tools` (optional
-array<string> allowlist), `confirm` (optional array<string> of tools that require
+array&lt;string&gt; allowlist), `confirm` (optional array&lt;string&gt; of tools that require
 confirmation).
 
-**`transport: "stdio"`:** `command` (non-empty string), `args` (optional array<string>),
+**`transport: "stdio"`:** `command` (non-empty string), `args` (optional array&lt;string&gt;),
 `env` (optional string→string map).
 
 **`transport: "http"`:** `url` (url), `headers` (optional string→string map).

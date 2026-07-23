@@ -63,12 +63,12 @@ After `bound init`, `config/` contains:
 | `mcp.json` | No | MCP server connections (`stdio` or `http`; `io.modelcontextprotocol/ui` tools render inline in the web UI) |
 | `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
 
-All schemas are strict — unknown keys fail loudly. See [docs/config.md](docs/config.md) for the per-field reference.
+All schemas are strict — unknown keys fail loudly. See the [Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) for the per-field reference.
 
 ## Further reading
 
-- [docs/cli-operations.md](docs/cli-operations.md) — `bound init/start`, `boundctl`, `boundless`, build pipeline
-- [docs/config.md](docs/config.md) — per-field reference for every config file
+- [Docs site — CLI & Operations](https://bound-agents.github.io/bound/guides/cli-operations/) — `bound init/start`, `boundctl`, `boundless`, build pipeline
+- [Docs site — Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) — per-field reference for every config file
 - [docs/design/architecture.md](docs/design/architecture.md) — package dependency graph and data flow
 - [CONTRIBUTING.md](CONTRIBUTING.md) — testing conventions, critical invariants, contributor checklist
 

@@ -6,7 +6,16 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"ignore": ["node_modules", "dist", "*.db", "*.db-wal", "*.db-shm", ".claude", "*.generated.ts"]
+		"ignore": [
+			"node_modules",
+			"dist",
+			"**/.astro",
+			"*.db",
+			"*.db-wal",
+			"*.db-shm",
+			".claude",
+			"*.generated.ts"
+		]
 	},
 	"formatter": {
 		"enabled": true,
