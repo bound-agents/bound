@@ -25,6 +25,7 @@ export * from "./messages";
 export * from "./semantic-memory";
 export * from "./tasks";
 export * from "./skills";
+export * from "./agents";
 export * from "./advisories";
 export * from "./users";
 export * from "./files";
