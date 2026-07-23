@@ -19,6 +19,7 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"cluster_config",
 	"advisories",
 	"skills",
+	"agents",
 	"memory_edges",
 	"connector_handles",
 	"webhooks",

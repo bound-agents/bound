@@ -5276,8 +5276,11 @@ This skill reviews pull requests.`;
 				// concurrency + orientation + schema ≈ 1.5k tokens) plus
 				// some short messages, but small enough that the full 100
 				// retrieved messages won't fit — so truncation fires while
-				// still leaving > 10 messages in the kept set.
-				contextWindow: 3000,
+				// still leaving > 10 messages in the kept set. Sized with
+				// headroom above the bare prefix so the assertion tests the
+				// token-aware keep count, not the exact byte-width of the
+				// schema block (which grows as synced tables are added).
+				contextWindow: 3500,
 				// A realistic small-context model reserves a fraction of its
 				// window for output, not the 8000-token DEFAULT_OUTPUT_TOKEN_RESERVE
 				// (which would swamp a 3000-token window and collapse the base

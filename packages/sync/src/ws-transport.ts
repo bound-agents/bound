@@ -130,6 +130,7 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"files",
 	"advisories",
 	"skills",
+	"agents",
 ];
 
 /** Per-peer snapshot seeding progress (hub-side). */
