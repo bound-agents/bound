@@ -1,6 +1,7 @@
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { createAdvisoryTool } from "./advisory.js";
 import { createArchiveTool } from "./archive.js";
+import { createAuxTool } from "./aux.js";
 import { createCancelTool } from "./cancel.js";
 import { createHostinfoTool } from "./hostinfo.js";
 import { createIntrospectTool } from "./introspect.js";
@@ -28,6 +29,7 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		// Grouped (Phase 3)
 		createMemoryTool(ctx),
 		createSkillTool(ctx),
+		createAuxTool(ctx),
 	];
 }
 
@@ -43,3 +45,4 @@ export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
 export { createSkillTool } from "./skill.js";
+export { createAuxTool } from "./aux.js";
