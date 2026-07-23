@@ -105,6 +105,16 @@ Manage skills: `activate`, `list`, `read`, `deactivate`. Skills are reusable
 instruction sets; activating one makes its index entry appear in every turn and
 lets a task inject its body. See the `skill-authoring` skill for how to write one.
 
+### `aux`
+Manage auxiliary-agent identities: `define`, `update`, `retire`, `list`. An
+auxiliary agent is a durable, persona-scoped identity with its own memory
+namespace — a scoped someone to hand a side errand to without dragging your full
+context or identity along. The persona says who it IS (temperament, working
+style, standing habits), not what it's for; the job rides in the invocation's
+instructions. `define` refuses an existing active name (identity sprawl splits a
+namespace); `retire` hides it from list/invoke but keeps its memory namespace
+readable. Invocation (running one) is a separate slice.
+
 ## Built-in file and sandbox tools
 
 - **`bms_read`** — read a file from the virtual filesystem (head-truncated; use
