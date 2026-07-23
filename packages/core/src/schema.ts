@@ -358,6 +358,32 @@ export function applySchema(db: Database): void {
 			WHERE deleted = 0
 	`);
 
+	// 11b. agents (#201) — durable, persona-scoped auxiliary-agent identities.
+	// Shaped like `skills` (synced LWW, cluster-wide): an identity defined on one
+	// host is invocable from any thread on any host, and its memory namespace
+	// travels with it. `retired_at` is domain state (hidden from list/invoke,
+	// namespace still readable) and is deliberately distinct from `deleted`, which
+	// stays a pure sync tombstone — conflating them would make retirement
+	// indistinguishable from removal at the sync layer. `name` carries NO UNIQUE
+	// index (unlike skills): synced tables can't enforce cluster-wide uniqueness,
+	// so two hosts defining the same name offline must both converge, not break
+	// sync; dispatch resolves name → non-retired/non-deleted with a deterministic
+	// modified_at DESC tiebreak, and `list` surfaces duplicates for cleanup.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS agents (
+			id                TEXT PRIMARY KEY,
+			name              TEXT NOT NULL,
+			persona           TEXT NOT NULL,
+			tools             TEXT,
+			model_hint        TEXT,
+			retired_at        TEXT,
+			created_by_thread TEXT,
+			created_at        TEXT NOT NULL,
+			modified_at       TEXT NOT NULL,
+			deleted           INTEGER DEFAULT 0
+		) STRICT
+	`);
+
 	// 12. memory_edges (synced)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS memory_edges (
@@ -660,6 +686,35 @@ export function applySchema(db: Database): void {
 		db.run("ALTER TABLE advisories ADD COLUMN resolution_note TEXT");
 	} catch {
 		/* already exists */
+	}
+
+	// #201: auxiliary-agent columns. All nullable — NULL means the main agent, so
+	// every existing row keeps main-agent semantics and no behavior changes until
+	// the aux tool starts writing them. Idempotent ALTERs (older DBs gain them on
+	// next startup); STRICT tables accept nullable ADD COLUMN cleanly. No FK
+	// clauses (invariant #20 — referential integrity by convention on synced
+	// tables). Behavioral code identifies aux threads by `agent_id IS NOT NULL`,
+	// never by `threads.interface`.
+	//   - threads.agent_id / parent_thread_id: an aux conversation is a child
+	//     thread carrying its identity and its dispatching parent.
+	//   - semantic_memory.agent_id: the hard memory-namespace partition.
+	//   - memory_edges.agent_id: load-bearing, not decorative. Edges reference
+	//     source_key/target_key (key strings, not row ids), and namespacing
+	//     semantic_memory moves key uniqueness from `key` to `(agent_id, key)`;
+	//     without a namespace column on the edge, two aux' same-named keys are
+	//     indistinguishable at the edge layer. One column IS the
+	//     never-cross-namespaces rule, enforced by shape.
+	for (const [table, col] of [
+		["threads", "agent_id"],
+		["threads", "parent_thread_id"],
+		["semantic_memory", "agent_id"],
+		["memory_edges", "agent_id"],
+	] as const) {
+		try {
+			db.run(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`);
+		} catch {
+			/* already exists */
+		}
 	}
 
 	// Add platform_ids column to users (replaces discord_id)

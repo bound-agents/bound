@@ -31,6 +31,7 @@ export type SyncedTableName =
 	| "cluster_config"
 	| "advisories"
 	| "skills"
+	| "agents"
 	| "memory_edges"
 	| "connector_handles"
 	| "webhooks"
@@ -307,6 +308,29 @@ export interface Skill extends SoftDeletable {
 	modified_at: string;
 }
 
+/**
+ * A durable, persona-scoped auxiliary-agent identity (#201). Each invocation is
+ * ephemeral, but the identity — its persona, tool allowlist, default model, and
+ * memory namespace — persists across invocations and syncs cluster-wide (shaped
+ * like `Skill`). `retired_at` is domain state (hidden from list/invoke, its
+ * namespace still readable to the main agent) and is distinct from `deleted`,
+ * the pure sync tombstone. `tools` is a JSON array of allowed tool names, or
+ * null for unrestricted (structural denials still apply). `name` is not unique:
+ * synced tables can't enforce cluster-wide uniqueness, so dispatch resolves a
+ * name to its non-retired/non-deleted definition with a modified_at tiebreak.
+ */
+export interface Agent extends SoftDeletable {
+	id: string;
+	name: string;
+	persona: string;
+	tools: string | null;
+	model_hint: string | null;
+	retired_at: string | null;
+	created_by_thread: string | null;
+	created_at: string;
+	modified_at: string;
+}
+
 export interface SkillFileEntry {
 	path: string;
 	content: string;
@@ -391,6 +415,7 @@ export interface SyncedTableRowMap {
 	cluster_config: ClusterConfigEntry;
 	advisories: Advisory;
 	skills: Skill;
+	agents: Agent;
 	memory_edges: MemoryEdge;
 	connector_handles: ConnectorHandleRow;
 	webhooks: Webhook;
@@ -451,6 +476,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	cluster_config: "lww",
 	advisories: "lww",
 	skills: "lww",
+	agents: "lww",
 	memory_edges: "lww",
 	connector_handles: "lww",
 	webhooks: "lww",

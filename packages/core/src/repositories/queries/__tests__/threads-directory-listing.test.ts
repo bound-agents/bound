@@ -215,6 +215,8 @@ const THREAD_COLUMNS = [
 	"modified_at",
 	"deleted",
 	"model_hint",
+	"agent_id",
+	"parent_thread_id",
 ];
 const DERIVED_COLUMNS = ["messageCount", "lastModel", "attachedSessionHostsJson", "hasRunningTask"];
 
