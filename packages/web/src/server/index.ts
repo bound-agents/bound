@@ -89,8 +89,9 @@ export interface WebAppConfig {
 	 */
 	mcpConfig?: McpConfig | null;
 	/**
-	 * In-process model router. When provided, exposes `POST /api/inference`
-	 * for direct LLM inference over HTTP (no agent loop, no context assembly).
+	 * In-process model router. When provided, exposes `POST /v1/responses`
+	 * (OpenAI Responses-API-compatible inference over HTTP — no agent loop, no
+	 * context assembly).
 	 */
 	modelRouter?: ModelRouter | null;
 }
@@ -200,7 +201,7 @@ export async function createWebApp(
 	app.route("/api/metrics", routes.metrics);
 	app.route("/api/sandbox", routes.sandbox);
 	app.route("/api/persona", routes.persona);
-	app.route("/api/inference", routes.inference);
+	app.route("/v1/responses", routes.responses);
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

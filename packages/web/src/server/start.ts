@@ -69,8 +69,8 @@ export interface WebServerConfig {
 	 */
 	mcpConfig?: McpConfig | null;
 	/**
-	 * In-process model router. When provided, exposes `POST /api/inference`
-	 * for direct LLM inference over HTTP.
+	 * In-process model router. When provided, exposes `POST /v1/responses`
+	 * (OpenAI Responses-API-compatible inference over HTTP).
 	 */
 	modelRouter?: ModelRouter | null;
 }

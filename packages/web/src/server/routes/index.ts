@@ -6,13 +6,13 @@ import type { MountableFs } from "just-bash";
 import { createAdvisoriesRoutes } from "./advisories";
 import { createConnectorsRoutes } from "./connectors";
 import { createFilesRoutes } from "./files";
-import { createInferenceRoutes } from "./inference";
 import { createMcpRoutes } from "./mcp";
 import { createMcpAppsRoutes } from "./mcp-apps";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
 import { createPersonaRoutes } from "./persona";
+import { createResponsesRoutes } from "./responses";
 import { createRssFeedsRoutes } from "./rss";
 import { createSandboxRoutes } from "./sandbox";
 import { createSkillsRoutes } from "./skills";
@@ -140,6 +140,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),
 		persona: createPersonaRoutes(db),
-		inference: createInferenceRoutes(db, modelRouter ?? null, eventBus, siteId),
+		responses: createResponsesRoutes(db, modelRouter ?? null, eventBus, siteId),
 	};
 }
