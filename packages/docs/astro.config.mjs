@@ -13,6 +13,31 @@ export default defineConfig({
 		starlight({
 			title: "Bound",
 			description: "A personal agent that maintains state across multiple hosts.",
+			customCss: ["./src/styles/theme.css"],
+			head: [
+				{
+					tag: "link",
+					attrs: {
+						rel: "preconnect",
+						href: "https://fonts.googleapis.com",
+					},
+				},
+				{
+					tag: "link",
+					attrs: {
+						rel: "preconnect",
+						href: "https://fonts.gstatic.com",
+						crossorigin: "",
+					},
+				},
+				{
+					tag: "link",
+					attrs: {
+						rel: "stylesheet",
+						href: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap",
+					},
+				},
+			],
 			social: [
 				{
 					icon: "github",
