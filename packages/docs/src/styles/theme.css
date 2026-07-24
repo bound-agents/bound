@@ -208,14 +208,14 @@ dd {
 	line-height: 1.65 !important;
 }
 
-/* Links in content */
-a[href] {
+/* Links in content (but not buttons) */
+:where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]) {
 	color: var(--bound-accent) !important;
 	text-decoration: none !important;
 	transition: color 0.1s ease !important;
 }
 
-a[href]:hover {
+:where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]):hover {
 	color: var(--bound-accent-2) !important;
 	text-decoration: underline !important;
 }
@@ -322,32 +322,36 @@ aside[data-type="danger"] {
 	color: var(--bound-ink-3) !important;
 }
 
-/* Hero action buttons */
-.hero-actions a {
+/* Hero action buttons — use Starlight's actual class names, not data-variant */
+.sl-link-button {
 	font-family: "Space Grotesk", sans-serif !important;
 	font-weight: 600 !important;
 	border-radius: 4px !important;
 	transition: all 0.12s ease !important;
+	text-decoration: none !important;
 }
 
-.hero-actions a[href][data-variant="primary"] {
+/* Primary button: vermilion background, paper text */
+.sl-link-button.primary {
 	background: var(--bound-accent) !important;
 	color: var(--bound-paper) !important;
 	border: 1px solid var(--bound-accent) !important;
 }
 
-.hero-actions a[href][data-variant="primary"]:hover {
+.sl-link-button.primary:hover {
 	background: var(--bound-accent-2) !important;
 	border-color: var(--bound-accent-2) !important;
+	color: var(--bound-paper) !important;
 }
 
-.hero-actions a[href][data-variant="minimal"] {
+/* Minimal button: transparent with ink border */
+.sl-link-button.minimal {
 	color: var(--bound-ink-3) !important;
 	border: 1px solid var(--bound-rule) !important;
 	background: transparent !important;
 }
 
-.hero-actions a[href][data-variant="minimal"]:hover {
+.sl-link-button.minimal:hover {
 	color: var(--bound-ink) !important;
 	border-color: var(--bound-ink-3) !important;
 }
