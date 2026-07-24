@@ -1,7 +1,7 @@
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { createAdvisoryTool } from "./advisory.js";
 import { createArchiveTool } from "./archive.js";
-import { createAuxTool } from "./aux.js";
+import { createAuxTool } from "./auxiliary.js";
 import { createCancelTool } from "./cancel.js";
 import { createHostinfoTool } from "./hostinfo.js";
 import { createIntrospectTool } from "./introspect.js";
@@ -45,4 +45,4 @@ export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
 export { createSkillTool } from "./skill.js";
-export { createAuxTool } from "./aux.js";
+export { createAuxTool } from "./auxiliary.js";

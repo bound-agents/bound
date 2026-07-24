@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema } from "@bound/core";
 import type { ToolContext } from "../../types";
-import { createAuxTool } from "../aux";
+import { createAuxTool } from "../auxiliary";
 
 function getExecute(tool: ReturnType<typeof createAuxTool>) {
 	const execute = tool.execute;
