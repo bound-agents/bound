@@ -274,41 +274,17 @@ hub-spoke replication.
 
 ## Build pipeline
 
-The Bound CLIs are built as standalone binaries via `bun build --compile`, eliminating
-runtime dependency on Node.js or Bun. The pipeline is defined in `scripts/build.ts`:
+The Bound CLIs are built as standalone single-file binaries — no runtime dependency on Node.js or Bun. Each binary embeds the CLI/server code, all compiled dependencies, the web assets (in `bound`), and the Bun runtime. Binaries are ~45–50 MB, platform-native (ELF / Mach-O / PE), and built on one platform for the same OS/architecture.
 
-1. **Generate build metadata** (`scripts/generate-build-info.ts`) — commit hash + timestamp.
-2. **Build web assets** — `cd packages/web && bun run build`, then embed via
-   `scripts/embed-assets.ts`.
-3. **Compile binaries** — three standalone executables:
+Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/bound-agents/bound/releases).
 
-```bash
-bun build --compile packages/cli/src/bound.ts --outfile dist/bound
-bun build --compile packages/cli/src/boundctl.ts --outfile dist/boundctl
-bun build --compile packages/less/src/boundless.tsx --outfile dist/boundless
-```
-
-Run the whole pipeline with:
+If you need to build from source, the pipeline is defined in `scripts/build.ts`:
 
 ```bash
 bun scripts/build.ts
 ```
 
-Each binary embeds the CLI/server code, all compiled dependencies, the web assets (in
-`bound`), and the Bun runtime — no external runtime or static file hosting required.
-Binaries are single-file, self-contained, ~45–50 MB, and platform-native (ELF / Mach-O /
-PE). Built on one platform, deployable to the same OS/architecture.
-
-### Development alternative
-
-If binary compilation isn't available, run directly with Bun:
-
-```bash
-bun packages/cli/src/bound.ts --help
-bun packages/cli/src/bound.ts init --ollama
-bun packages/cli/src/bound.ts start
-bun packages/cli/src/boundctl.ts set-hub primary-host
-```
+This produces three binaries in `dist/`: `bound`, `boundctl`, and `boundless`.
 
 ---
 
@@ -371,5 +347,6 @@ initialization failure, database error, etc.).
 - **Anthropic API key missing** — `export ANTHROPIC_API_KEY="sk-ant-..."` before init.
 - **Bedrock authentication fails** — verify credentials with `aws sts get-caller-identity`
   and ensure the region supports Claude models.
-- **Binary compilation fails** — expected without native build tools; use the development
-  runner (`bun packages/cli/src/bound.ts start`).
+- **Binary won't start** — ensure you downloaded the correct platform build from the
+  [releases page](https://github.com/bound-agents/bound/releases) and made it executable
+  (`chmod +x bound`).

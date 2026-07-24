@@ -9,10 +9,7 @@ description: The terminal coding-agent client — connect to bound, get filesyst
 
 ```bash
 # If bound is running locally:
-bun run packages/cli/src/boundless.ts
-
-# Or after building:
-./dist/boundless
+boundless
 
 # Connect to a non-default server:
 boundless --url http://my-server:3001
