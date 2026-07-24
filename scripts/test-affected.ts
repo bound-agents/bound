@@ -137,6 +137,18 @@ export function toTestPathArg(dir: string): string {
 }
 
 /**
+ * True if a package directory contains any test files (files with `.test`,
+ * `_test_`, `.spec`, or `_spec_` in the name). Package dirs without test files
+ * (e.g. `packages/docs`) are skipped so `bun test` doesn't exit non-zero
+ * on "did not match any test files".
+ */
+export function hasTestFiles(dir: string, root: string): boolean {
+	const glob = new Glob("**/*.{test,spec}.{ts,tsx,js,jsx}");
+	for (const _ of glob.scanSync({ cwd: resolve(root, dir) })) return true;
+	return false;
+}
+
+/**
  * Given the changed files and the workspace graph, returns the set of package
  * dirs whose tests should run. A global file change returns every package.
  * Otherwise, directly-changed packages are expanded across transitive
@@ -201,19 +213,26 @@ export function run(): void {
 	const dirs = [...affected].sort();
 	if (shouldRunScriptsTests(changed)) dirs.push("scripts");
 
-	if (dirs.length === 0) {
+	const testableDirs = dirs.filter((d) => hasTestFiles(d, root));
+
+	if (testableDirs.length === 0) {
 		console.log("test-affected: no testable sources staged — skipping tests.");
 		process.exit(0);
 	}
 
 	const pkgCount = affected.size;
 	const isFull = pkgCount === graph.deps.size;
+	const skipped = dirs.filter((d) => !testableDirs.includes(d));
 	console.log(
-		`test-affected: ${dirs.length} test dir(s)${
+		`test-affected: ${testableDirs.length} test dir(s)${
 			isFull ? " (full package suite — a global file changed)" : ""
 		}:`,
 	);
-	for (const dir of dirs) console.log(`  - ${dir}`);
+	for (const dir of testableDirs) console.log(`  - ${dir}`);
+	if (skipped.length > 0) {
+		console.log(`test-affected: ${skipped.length} dir(s) skipped (no test files):`);
+		for (const dir of skipped) console.log(`  - ${dir}`);
+	}
 
 	if (dryRun) {
 		process.exit(0);
@@ -228,7 +247,7 @@ export function run(): void {
 		// matches. Per-dir exit code is preserved; the partial case (3
 		// packages) is unaffected — it never trips the global-file branch.
 		let lastExit = 0;
-		for (const dir of dirs) {
+		for (const dir of testableDirs) {
 			const proc = Bun.spawnSync(["bun", "test", toTestPathArg(dir)], {
 				cwd: root,
 				stdout: "inherit",
@@ -239,7 +258,7 @@ export function run(): void {
 		process.exit(lastExit);
 	}
 
-	const proc = Bun.spawnSync(["bun", "test", ...dirs.map(toTestPathArg)], {
+	const proc = Bun.spawnSync(["bun", "test", ...testableDirs.map(toTestPathArg)], {
 		cwd: root,
 		stdout: "inherit",
 		stderr: "inherit",
