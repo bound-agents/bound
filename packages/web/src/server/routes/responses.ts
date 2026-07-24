@@ -78,6 +78,21 @@ export function createResponsesRoutes(
 			return c.json(errorObject("Invalid JSON body", "invalid_request_error"), 400);
 		}
 
+		// Stateless endpoint: no server-side response store, so server-side
+		// conversation chaining can't be honored. A client that opted into it
+		// (previous_response_id / conversation) must instead re-send full history
+		// in `input` under store:false — the default pattern for Codex and OpenCode.
+		// Reject explicitly rather than silently dropping prior-turn context.
+		if (body.previous_response_id || body.conversation) {
+			return c.json(
+				errorObject(
+					"This endpoint is stateless: server-side conversation state (previous_response_id / conversation) is not supported. Send the full conversation in 'input' instead.",
+					"invalid_request_error",
+				),
+				400,
+			);
+		}
+
 		let messages: LLMMessage[];
 		try {
 			messages = inputToMessages(body.input);
@@ -99,6 +114,16 @@ export function createResponsesRoutes(
 		const effort = body.reasoning?.effort;
 		const requestedMaxTokens = body.max_output_tokens;
 		const temperature = body.temperature;
+		// Echoed back on the Response object / final event so strict SDK parsers
+		// (which mark these non-optional) don't reject. tool_choice defaults to
+		// "auto"; we don't yet forward it to the driver (follow-up), so echo the
+		// requested value if present, else the default. parallel_tool_calls is
+		// likewise not yet forwarded; echo the request or the API default (true).
+		const echo: ResponseEcho = {
+			tools: body.tools ?? [],
+			toolChoice: body.tool_choice ?? "auto",
+			parallelToolCalls: body.parallel_tool_calls ?? true,
+		};
 
 		// resolveModel checks local backends first, then remote hosts.
 		// Handles "default"/undefined → default model, same as the agent loop.
@@ -170,14 +195,14 @@ export function createResponsesRoutes(
 
 		if (body.stream) {
 			return streamSSE(c, async (sse) => {
-				const emitter = new SseEmitter(sse, modelId);
+				const emitter = new SseEmitter(sse, modelId, echo);
 				await emitter.run(stream);
 			});
 		}
 
 		// Non-streaming: collect the full stream, then serialize one Response object.
 		try {
-			const collected = await collectResponse(stream, modelId);
+			const collected = await collectResponse(stream, modelId, echo);
 			return c.json(collected);
 		} catch (err) {
 			return c.json(
@@ -201,6 +226,12 @@ interface ResponsesRequestBody {
 	max_output_tokens?: number;
 	temperature?: number;
 	stream?: boolean;
+	top_p?: number;
+	tool_choice?: unknown;
+	parallel_tool_calls?: boolean;
+	// Stateless endpoint rejects these (see route body).
+	previous_response_id?: string;
+	conversation?: unknown;
 }
 
 type ResponsesInput = string | ResponsesInputItem[];
@@ -435,6 +466,39 @@ interface UsageOut {
 	input_tokens: number;
 	output_tokens: number;
 	total_tokens: number;
+	cache_read_tokens: number;
+}
+
+/**
+ * Request fields echoed back onto the Response object / final event. The
+ * OpenAI SDK marks `tools`, `tool_choice`, and `parallel_tool_calls` as
+ * non-optional on the Response model, so a strict parser rejects a response
+ * that omits them. We don't yet forward tool_choice / parallel_tool_calls to
+ * the driver (that's the driver-spanning follow-up), so these are pure echoes.
+ */
+interface ResponseEcho {
+	tools: unknown[];
+	toolChoice: unknown;
+	parallelToolCalls: boolean;
+}
+
+/**
+ * Shape a UsageOut into the ResponseUsage object the SDK expects, including the
+ * required `input_tokens_details` / `output_tokens_details` sub-objects (their
+ * fields are non-optional on the SDK model). We don't track reasoning-token or
+ * cache-write splits here, so those report 0.
+ */
+function usageToResponsesShape(usage: UsageOut): Record<string, unknown> {
+	return {
+		input_tokens: usage.input_tokens,
+		input_tokens_details: {
+			cached_tokens: usage.cache_read_tokens,
+			cache_write_tokens: 0,
+		},
+		output_tokens: usage.output_tokens,
+		output_tokens_details: { reasoning_tokens: 0 },
+		total_tokens: usage.total_tokens,
+	};
 }
 
 const FINISH_TO_STATUS: Record<string, string> = {
@@ -462,7 +526,12 @@ function assembleOutput(chunks: StreamChunk[]): {
 	const argsById = new Map<string, string>();
 	const nameById = new Map<string, string>();
 	const order: string[] = [];
-	let usage: UsageOut = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+	let usage: UsageOut = {
+		input_tokens: 0,
+		output_tokens: 0,
+		total_tokens: 0,
+		cache_read_tokens: 0,
+	};
 	let finishReason: string | null = null;
 
 	for (const chunk of chunks) {
@@ -485,6 +554,7 @@ function assembleOutput(chunks: StreamChunk[]): {
 					input_tokens: chunk.usage.input_tokens,
 					output_tokens: chunk.usage.output_tokens,
 					total_tokens: chunk.usage.input_tokens + chunk.usage.output_tokens,
+					cache_read_tokens: chunk.usage.cache_read_tokens ?? 0,
 				};
 				finishReason = chunk.finish_reason ?? null;
 				break;
@@ -532,6 +602,7 @@ function buildOutputItems(text: string, toolCalls: AssembledToolCall[]): unknown
 async function collectResponse(
 	stream: AsyncIterable<StreamChunk>,
 	modelId: string,
+	echo: ResponseEcho,
 ): Promise<Record<string, unknown>> {
 	const chunks: StreamChunk[] = [];
 	for await (const chunk of stream) chunks.push(chunk);
@@ -544,11 +615,10 @@ async function collectResponse(
 		status,
 		model: modelId,
 		output: buildOutputItems(text, toolCalls),
-		usage: {
-			input_tokens: usage.input_tokens,
-			output_tokens: usage.output_tokens,
-			total_tokens: usage.total_tokens,
-		},
+		tools: echo.tools,
+		tool_choice: echo.toolChoice,
+		parallel_tool_calls: echo.parallelToolCalls,
+		usage: usageToResponsesShape(usage),
 	};
 }
 
@@ -580,12 +650,18 @@ class SseEmitter {
 		{ itemId: string; callId: string; name: string; args: string; outputIndex: number }
 	>();
 
-	private usage: UsageOut = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+	private usage: UsageOut = {
+		input_tokens: 0,
+		output_tokens: 0,
+		total_tokens: 0,
+		cache_read_tokens: 0,
+	};
 	private finishReason: string | null = null;
 
 	constructor(
 		private readonly sse: SseWriter,
 		private readonly modelId: string,
+		private readonly echo: ResponseEcho,
 	) {}
 
 	private async emit(type: string, payload: Record<string, unknown>): Promise<void> {
@@ -603,6 +679,9 @@ class SseEmitter {
 			status,
 			model: this.modelId,
 			output: [],
+			tools: this.echo.tools,
+			tool_choice: this.echo.toolChoice,
+			parallel_tool_calls: this.echo.parallelToolCalls,
 			usage: null,
 		};
 	}
@@ -644,11 +723,7 @@ class SseEmitter {
 			response: {
 				...this.responseEnvelope(status),
 				output: buildOutputItems(this.text, toolCalls),
-				usage: {
-					input_tokens: this.usage.input_tokens,
-					output_tokens: this.usage.output_tokens,
-					total_tokens: this.usage.total_tokens,
-				},
+				usage: usageToResponsesShape(this.usage),
 			},
 		});
 	}
@@ -672,6 +747,7 @@ class SseEmitter {
 					input_tokens: chunk.usage.input_tokens,
 					output_tokens: chunk.usage.output_tokens,
 					total_tokens: chunk.usage.input_tokens + chunk.usage.output_tokens,
+					cache_read_tokens: chunk.usage.cache_read_tokens ?? 0,
 				};
 				this.finishReason = chunk.finish_reason ?? null;
 				break;
