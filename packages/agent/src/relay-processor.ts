@@ -1749,6 +1749,8 @@ export class RelayProcessor {
 				system: payload.system,
 				max_tokens: effectiveMaxTokens,
 				temperature: payload.temperature,
+				top_p: payload.top_p,
+				tool_choice: payload.tool_choice,
 				thinking: effectiveThinking,
 				effort: effectiveEffort,
 				cache_ttl: payload.cache_ttl ?? this.modelRouter.getCacheTtl(payload.model),

@@ -114,6 +114,10 @@ export function createResponsesRoutes(
 		const effort = body.reasoning?.effort;
 		const requestedMaxTokens = body.max_output_tokens;
 		const temperature = body.temperature;
+		const topP = body.top_p;
+		// Responses tool_choice wire shape → AI-SDK-neutral ChatParams.tool_choice.
+		// Only forwarded to the driver when tools are actually present.
+		const toolChoice = tools ? responsesToolChoiceToChatParam(body.tool_choice) : undefined;
 		// Echoed back on the Response object / final event so strict SDK parsers
 		// (which mark these non-optional) don't reject. tool_choice defaults to
 		// "auto"; we don't yet forward it to the driver (follow-up), so echo the
@@ -158,6 +162,8 @@ export function createResponsesRoutes(
 				system,
 				max_tokens,
 				temperature,
+				top_p: topP,
+				tool_choice: toolChoice,
 				thinking,
 				effort: localEffort,
 				cache_ttl: resolution.cacheTtl,
@@ -175,6 +181,8 @@ export function createResponsesRoutes(
 				segments,
 				nowMs: Date.now(),
 				tools,
+				top_p: topP,
+				tool_choice: toolChoice,
 				system,
 				max_tokens: requestedMaxTokens,
 				temperature,
@@ -451,6 +459,26 @@ function responsesToolsToDefinitions(
 		});
 	}
 	return out.length > 0 ? out : undefined;
+}
+
+/**
+ * Translate a Responses `tool_choice` into the AI-SDK-neutral ChatParams shape.
+ *   "auto" / "none" / "required"        → same string
+ *   { type: "function", name }           → { type: "tool", toolName: name }
+ *   { type: "allowed_tools", ... } etc.  → dropped (unset → provider default)
+ * Unset / unrecognized → undefined so the driver omits toolChoice entirely.
+ */
+function responsesToolChoiceToChatParam(
+	tc: unknown,
+): "auto" | "none" | "required" | { type: "tool"; toolName: string } | undefined {
+	if (tc === "auto" || tc === "none" || tc === "required") return tc;
+	if (tc && typeof tc === "object") {
+		const obj = tc as { type?: string; name?: string };
+		if (obj.type === "function" && typeof obj.name === "string") {
+			return { type: "tool", toolName: obj.name };
+		}
+	}
+	return undefined;
 }
 
 // ── Output assembly (shared by streaming + non-streaming) ──────────────────

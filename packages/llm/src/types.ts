@@ -97,6 +97,26 @@ export interface ChatParams {
 	tools?: ToolDefinition[];
 	max_tokens?: number;
 	temperature?: number;
+	/**
+	 * Nucleus-sampling cutoff (0–1). Forwarded verbatim to the AI SDK's top-level
+	 * `topP` on every driver that passes sampling params (same treatment as
+	 * `temperature`). OpenAI's own guidance is to alter this OR temperature, not
+	 * both; we don't enforce that — a caller sending both gets both on the wire
+	 * and the provider resolves it. Unset → omitted (provider default).
+	 */
+	top_p?: number;
+	/**
+	 * Tool-selection strategy, in the AI SDK's provider-neutral shape:
+	 *  - "auto"     — model decides (SDK/provider default when tools present)
+	 *  - "none"     — never call a tool this turn
+	 *  - "required" — must call some tool
+	 *  - { type: "tool", toolName } — must call exactly that tool
+	 * Forwarded to `streamText`'s `toolChoice`, which each provider adapter maps
+	 * to its own wire form. Only meaningful alongside `tools`; drivers omit it
+	 * when no tools are present (a bare `toolChoice` with no tools is rejected by
+	 * some providers). Unset → omitted (provider default, i.e. "auto").
+	 */
+	tool_choice?: "auto" | "none" | "required" | { type: "tool"; toolName: string };
 	system?: string;
 	/**
 	 * Extended thinking configuration. When set, the model produces
@@ -453,6 +473,11 @@ export interface InferenceRequestPayload {
 	system?: string;
 	max_tokens?: number;
 	temperature?: number;
+	// Mirrors ChatParams.top_p.
+	top_p?: number;
+	// Mirrors ChatParams.tool_choice (AI-SDK-neutral). Forwarded over the relay;
+	// the executing driver omits it when no tools are present.
+	tool_choice?: "auto" | "none" | "required" | { type: "tool"; toolName: string };
 	thinking?:
 		| { type: "enabled"; budget_tokens: number }
 		| { type: "adaptive"; display?: "omitted" | "summarized" };
