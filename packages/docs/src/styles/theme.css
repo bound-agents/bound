@@ -144,7 +144,7 @@ header[data-theme] {
 }
 
 /* Sidebar group labels (Start Here, Guides, Concepts, Reference) */
-.sidebar-group-label {
+.group-label {
 	font-family: "Space Grotesk", sans-serif !important;
 	font-weight: 600 !important;
 	font-size: 0.75rem !important;
@@ -153,20 +153,30 @@ header[data-theme] {
 	color: var(--bound-ink-3) !important;
 }
 
-/* Sidebar links */
-.sidebar-link {
+.group-label .large {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 600 !important;
+	font-size: 0.75rem !important;
+	letter-spacing: 0.08em !important;
+	text-transform: uppercase !important;
+	color: var(--bound-ink-3) !important;
+}
+
+/* Sidebar links — target the actual <a> tags inside sidebar <li> elements.
+   Starlight uses scoped astro-* classes, not .sidebar-link. */
+.sidebar a[href] {
 	font-size: 0.875rem !important;
 	color: var(--bound-ink-2) !important;
+	text-decoration: none !important;
 	transition: background 0.12s ease, color 0.12s ease !important;
 }
 
-.sidebar-link:hover {
+.sidebar a[href]:hover {
 	background: var(--bound-rule-faint) !important;
 	color: var(--bound-ink) !important;
 }
 
-.sidebar-link[aria-current="page"],
-.sidebar-link.is-active {
+.sidebar a[aria-current="page"] {
 	color: var(--bound-accent) !important;
 	font-weight: 600 !important;
 	border-left: 3px solid var(--bound-accent) !important;
@@ -208,14 +218,14 @@ dd {
 	line-height: 1.65 !important;
 }
 
-/* Links in content (but not buttons) */
-:where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]) {
+/* Links in content (scoped to main so sidebar links are unaffected) */
+main :where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]) {
 	color: var(--bound-accent) !important;
 	text-decoration: none !important;
 	transition: color 0.1s ease !important;
 }
 
-:where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]):hover {
+main :where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]):hover {
 	color: var(--bound-accent-2) !important;
 	text-decoration: underline !important;
 }
