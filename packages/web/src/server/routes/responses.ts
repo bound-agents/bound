@@ -26,9 +26,11 @@ import { streamSSE } from "hono/streaming";
  *
  * REQUEST (subset of the Responses schema that maps onto bound's inputs):
  *   - `model` (optional → router default)
- *   - `input`: string, OR an array of message items
- *       ({ role, content }, content string or a parts array of
- *        { type: "input_text" | "output_text" | "text", text }).
+ *   - `input`: string, OR an array of input items. Message items carry
+ *       { role, content } (content string or parts array of
+ *       { type: "input_text" | "output_text" | "text", text });
+ *       function_call items carry { type, call_id, name, arguments };
+ *       function_call_output items carry { type, call_id, output }.
  *   - `instructions` → system prompt
  *   - `tools`: Responses-flat function tools
  *       ({ type: "function", name, description?, parameters }) → ToolDefinition
@@ -248,6 +250,12 @@ interface ResponsesInputItem {
 	role?: "user" | "assistant" | "system" | "developer";
 	content?: string | ResponsesContentPart[];
 	type?: string;
+	// function_call items: { type: "function_call", call_id, name, arguments }
+	call_id?: string;
+	name?: string;
+	arguments?: string;
+	// function_call_output items: { type: "function_call_output", call_id, output }
+	output?: string;
 }
 
 interface ResponsesContentPart {
@@ -275,15 +283,31 @@ interface ResponsesTool {
 
 /**
  * Translate a Responses `input` into bound `LLMMessage[]`. A bare string is a
- * single user turn. An item array maps each `{ role, content }` — content is
- * either a string (→ text) or a parts array. Text parts (input_text /
- * output_text / text) become text; `input_image` and `input_file` parts with
- * inline `data:` payloads become image / document ContentBlocks. Parts that
- * reference an external store (file_id / file_url / an http image_url) are
- * dropped with a text placeholder, since this endpoint is stateless and has no
- * files store behind it.
+ * single user turn. An item array maps each item by its `type`:
+ *
+ *  - Message items ({ role, content }) → bound LLMMessage with the mapped
+ *    role. Content is either a string (→ text) or a parts array. Text parts
+ *    (input_text / output_text / text) become text; `input_image` and
+ *    `input_file` parts with inline `data:` payloads become image / document
+ *    ContentBlocks. Parts that reference an external store (file_id /
+ *    file_url / an http image_url) are dropped with a text placeholder, since
+ *    this endpoint is stateless and has no files store behind it.
+ *
+ *  - `function_call` items ({ type: "function_call", call_id, name, arguments })
+ *    → bound `{ role: "tool_call", content: [{ type: "tool_use", ... }] }`.
+ *    The arguments JSON string is parsed into the tool_use input object.
+ *
+ *  - `function_call_output` items ({ type: "function_call_output", call_id,
+ *    output }) → bound `{ role: "tool_result", tool_use_id, content: output }`.
+ *
+ * The Responses API separates tool calls and results into standalone item
+ * types with no `role` field. They must map to bound's tool_call /
+ * tool_result LLMMessage roles — otherwise the assistant's preceding message
+ * sits at the tail of the array with no following user/tool turn, triggering
+ * an "assistant message prefill" rejection on Anthropic-strict and several
+ * GLM endpoints.
  */
-function inputToMessages(input: ResponsesInput | undefined): LLMMessage[] {
+export function inputToMessages(input: ResponsesInput | undefined): LLMMessage[] {
 	if (input === undefined) return [];
 	if (typeof input === "string") {
 		return input.length > 0 ? [{ role: "user", content: input }] : [];
@@ -293,6 +317,37 @@ function inputToMessages(input: ResponsesInput | undefined): LLMMessage[] {
 	}
 	const messages: LLMMessage[] = [];
 	for (const item of input) {
+		// Responses API separates tool calls and results into standalone item
+		// types (no `role`). Map them to bound's tool_call / tool_result
+		// LLMMessage roles so the bridge produces the correct assistant→tool
+		// message sequence on the wire.
+		const itemType = item.type ?? "";
+		if (itemType === "function_call") {
+			if (!item.call_id || !item.name) continue;
+			let parsedArgs: Record<string, unknown> = {};
+			if (item.arguments) {
+				try {
+					parsedArgs = JSON.parse(item.arguments) as Record<string, unknown>;
+				} catch {
+					parsedArgs = { _raw: item.arguments };
+				}
+			}
+			messages.push({
+				role: "tool_call",
+				content: [{ type: "tool_use", id: item.call_id, name: item.name, input: parsedArgs }],
+			});
+			continue;
+		}
+		if (itemType === "function_call_output") {
+			if (!item.call_id) continue;
+			messages.push({
+				role: "tool_result",
+				tool_use_id: item.call_id,
+				content: item.output ?? "",
+			});
+			continue;
+		}
+		// Role-based message item (user / assistant / system / developer).
 		const role = mapInputRole(item.role);
 		const content = partsToContent(item.content);
 		// Empty when the item carried no renderable text or media.
