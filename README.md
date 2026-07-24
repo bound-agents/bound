@@ -9,7 +9,6 @@ Bound is a personal agent that maintains state across multiple hosts. Messages, 
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) 1.2+
 - An LLM backend (one of):
   - [Ollama](https://ollama.com) running locally — easiest to start
   - AWS Bedrock access
@@ -18,30 +17,31 @@ Bound is a personal agent that maintains state across multiple hosts. Messages, 
 
 ## Quick start
 
+Download the latest `bound` binary from the [releases page](https://github.com/bound-agents/bound/releases) for your platform (macOS, Linux, Windows). Make it executable and put it on your `PATH`:
+
 ```bash
-git clone https://github.com/bound-agents/bound.git
-cd bound
-bun install
+chmod +x bound
+sudo mv bound /usr/local/bin/
+```
 
+```bash
 # Pick a backend
-bun run packages/cli/src/bound.ts init --ollama
-bun run packages/cli/src/bound.ts init --bedrock --region us-east-1
-bun run packages/cli/src/bound.ts init --opencode-go
-bun run packages/cli/src/bound.ts init --umans          # needs UMANS_API_KEY; self-configuring
+bound init --ollama
+bound init --bedrock --region us-east-1
+bound init --opencode-go
+bound init --umans          # needs UMANS_API_KEY; self-configuring
 
-bun run packages/cli/src/bound.ts start
+bound start
 ```
 
 Open [http://localhost:3001](http://localhost:3001). The sync protocol listens on port 3000 (`PORT`); the web UI on port 3001 (`WEB_PORT`).
-
-Build a single binary instead: `bun run build`, then `./dist/bound init --ollama && ./dist/bound start`.
 
 ## Boundless — terminal coding agent
 
 `boundless` connects to a running bound server and registers local filesystem and shell tools into the agent's tool set. The agent reads and edits files and runs commands in your working directory; all messages, memory, and tool calls live in bound, so every other interface sees the same state.
 
 ```bash
-bun run packages/cli/src/boundless.ts    # or ./dist/boundless after a build
+boundless
 boundless --url http://localhost:3001    # non-default server
 boundless --attach <thread-id>           # resume an existing thread
 ```
