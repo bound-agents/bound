@@ -1514,7 +1514,6 @@ describe("resolveTargetCapabilities", () => {
 	it("local: returns the router's effective capabilities verbatim", () => {
 		const res: ModelResolution = {
 			kind: "local",
-			// biome-ignore lint/suspicious/noExplicitAny: test stub
 			backend: {} as any,
 			modelId: "opus",
 			max_context: 200000,
@@ -1525,7 +1524,6 @@ describe("resolveTargetCapabilities", () => {
 	it("local: propagates null when the backend id is unregistered", () => {
 		const res: ModelResolution = {
 			kind: "local",
-			// biome-ignore lint/suspicious/noExplicitAny: test stub
 			backend: {} as any,
 			modelId: "ghost",
 			max_context: 200000,
