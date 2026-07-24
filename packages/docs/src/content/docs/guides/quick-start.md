@@ -5,46 +5,47 @@ description: Get a local Bound instance running against your LLM backend of choi
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) 1.2+
 - An LLM backend (one of):
   - [Ollama](https://ollama.com) running locally — easiest to start
   - AWS Bedrock access
   - Any OpenAI-compatible endpoint (Cerebras, z.AI, OpenCode Go, etc.)
   - [umans.ai](https://code.umans.ai) — self-configuring, needs `UMANS_API_KEY`
 
-## Install and run
+## Install
+
+Download the latest `bound` binary from the [releases page](https://github.com/bound-agents/bound/releases) for your platform (macOS, Linux, Windows). Make it executable and put it on your `PATH`:
 
 ```bash
-git clone https://github.com/bound-agents/bound.git
-cd bound
-bun install
+# macOS / Linux
+chmod +x bound
+sudo mv bound /usr/local/bin/
 
+# Or just run it from wherever you downloaded it
+```
+
+## Initialize and start
+
+```bash
 # Pick a backend
-bun run packages/cli/src/bound.ts init --ollama
-bun run packages/cli/src/bound.ts init --bedrock --region us-east-1
-bun run packages/cli/src/bound.ts init --opencode-go
-bun run packages/cli/src/bound.ts init --umans          # needs UMANS_API_KEY
+bound init --ollama
+bound init --bedrock --region us-east-1
+bound init --opencode-go
+bound init --umans          # needs UMANS_API_KEY
 
-bun run packages/cli/src/bound.ts start
+bound start
 ```
 
 Open [http://localhost:3001](http://localhost:3001). The sync protocol listens
 on port 3000 (`PORT`); the web UI on port 3001 (`WEB_PORT`).
 
-Build a single binary instead:
-
-```bash
-bun run build
-./dist/bound init --ollama && ./dist/bound start
-```
-
 ## Boundless — terminal coding agent
 
-`boundless` connects to a running bound server and registers local filesystem
+`boundless` is a separate binary (also on the [releases page](https://github.com/bound-agents/bound/releases)).
+It connects to a running bound server and registers local filesystem
 and shell tools into the agent's tool set:
 
 ```bash
-bun run packages/cli/src/boundless.ts    # or ./dist/boundless after a build
+boundless
 boundless --url http://localhost:3001    # non-default server
 boundless --attach <thread-id>           # resume an existing thread
 ```
