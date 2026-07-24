@@ -80,6 +80,19 @@ export const inferenceRequestPayloadSchema = z.object({
 	system: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
 	temperature: z.number().optional(),
+	// Mirrors ChatParams.top_p — nucleus-sampling cutoff, forwarded verbatim.
+	top_p: z.number().optional(),
+	// Mirrors ChatParams.tool_choice — AI-SDK-neutral tool-selection strategy.
+	// Only meaningful alongside `tools`; the executing driver omits it when no
+	// tools are present.
+	tool_choice: z
+		.union([
+			z.literal("auto"),
+			z.literal("none"),
+			z.literal("required"),
+			z.object({ type: z.literal("tool"), toolName: z.string() }),
+		])
+		.optional(),
 	// Mirrors ChatParams.thinking in @bound/llm — both the legacy
 	// `{type:"enabled", budget_tokens}` shape (pre-4.7) and the adaptive
 	// shape (Opus 4.6+, required on 4.7) are supported over the wire.

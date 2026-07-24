@@ -121,6 +121,8 @@ export class OpenAICompatibleDriver implements LLMBackend {
 					...(tools && { tools }),
 					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 					...(params.temperature !== undefined && { temperature: params.temperature }),
+					...(params.top_p !== undefined && { topP: params.top_p }),
+					...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 					abortSignal: params.signal,
 					// Reasoning effort: @ai-sdk/openai-compatible maps `reasoningEffort`
 					// → `reasoning_effort` on the wire body (index.js:551) and routes it
