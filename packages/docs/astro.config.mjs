@@ -32,19 +32,21 @@ export default defineConfig({
 						{ label: "Boundless", slug: "guides/boundless" },
 						{ label: "Multi-Host Setup", slug: "guides/multi-host" },
 						{ label: "MCP Servers", slug: "guides/mcp-servers" },
+						{ label: "Webhooks", slug: "guides/webhooks" },
+						{ label: "RSS Feeds", slug: "guides/rss-feeds" },
 						{ label: "CLI & Operations", slug: "guides/cli-operations" },
 					],
 				},
 				{
 					label: "Concepts",
 					items: [
+						{ label: "Web UI Tour", slug: "concepts/web-ui" },
 						{ label: "Agent System", slug: "concepts/agent-system" },
 						{ label: "Sync & Multi-Host", slug: "concepts/sync" },
 						{ label: "Sandbox & Filesystem", slug: "concepts/sandbox" },
 						{ label: "Inference & Model Routing", slug: "concepts/inference" },
 						{ label: "Memory & Knowledge Graph", slug: "concepts/memory" },
 						{ label: "Skills", slug: "concepts/skills" },
-						{ label: "Web UI & Platforms", slug: "concepts/web-and-platforms" },
 					],
 				},
 				{
