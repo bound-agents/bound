@@ -177,7 +177,8 @@ header[data-theme] {
 }
 
 .sidebar a[aria-current="page"] {
-	color: var(--bound-accent) !important;
+	color: var(--bound-paper) !important;
+	background: var(--bound-accent) !important;
 	font-weight: 600 !important;
 	border-left: 3px solid var(--bound-accent) !important;
 }
@@ -269,6 +270,8 @@ table {
 	border: 1px solid var(--bound-rule) !important;
 	border-radius: 4px !important;
 	overflow: hidden;
+	display: table !important;
+	width: 100% !important;
 }
 
 th {
