@@ -215,10 +215,9 @@ export function createResponsesRoutes(
 			const collected = await collectResponse(stream, modelId, echo);
 			return c.json(collected);
 		} catch (err) {
-			return c.json(
-				errorObject(err instanceof Error ? err.message : String(err), "server_error"),
-				502,
-			);
+			const message = err instanceof Error ? err.message : String(err);
+			const type = classifyErrorType(message);
+			return c.json(errorObject(message, type), type === "invalid_request_error" ? 400 : 502);
 		}
 	});
 
@@ -794,12 +793,13 @@ class SseEmitter {
 			}
 		} catch (err) {
 			await this.closeOpenItems();
+			const message = err instanceof Error ? err.message : String(err);
 			await this.emit("response.failed", {
 				response: {
 					...this.responseEnvelope("failed"),
 					error: {
-						code: "server_error",
-						message: err instanceof Error ? err.message : String(err),
+						code: classifyErrorType(message),
+						message,
 					},
 				},
 			});
@@ -979,6 +979,29 @@ class SseEmitter {
 	private async closeOpenItems(): Promise<void> {
 		await this.closeTextItem();
 	}
+}
+
+// ── Error classification ─────────────────────────────────────────────────
+
+/**
+ * Classify an error message from the upstream model into an OpenAI-style error
+ * type. Context-length and message-ordering rejections are client errors
+ * (invalid_request_error / 400), not server errors — the caller sent a
+ * malformed request and retrying won't help.
+ */
+export function classifyErrorType(message: string): string {
+	const lower = message.toLowerCase();
+	if (
+		lower.includes("prompt is too long") ||
+		lower.includes("context length") ||
+		lower.includes("context window") ||
+		lower.includes("does not support assistant message prefill") ||
+		lower.includes("must end with a user") ||
+		lower.includes("must end with a tool")
+	) {
+		return "invalid_request_error";
+	}
+	return "server_error";
 }
 
 // ── Error object ────────────────────────────────────────────────────────
