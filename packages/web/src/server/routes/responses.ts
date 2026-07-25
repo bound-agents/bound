@@ -773,8 +773,23 @@ class SseEmitter {
 		await this.emit("response.created", { response: this.responseEnvelope("in_progress") });
 		await this.emit("response.in_progress", { response: this.responseEnvelope("in_progress") });
 
+		// Heartbeat: send keepalive events while waiting for the first model
+		// token. Large models (Opus with 155K input tokens) can take 10+ seconds
+		// to TTFT, which exceeds Bun's default idleTimeout (10s). Once chunks
+		// start flowing, the connection is no longer idle and the heartbeat stops.
+		let firstChunkReceived = false;
+		const heartbeat = setInterval(async () => {
+			if (firstChunkReceived) return;
+			try {
+				await this.emit("response.in_progress", { response: this.responseEnvelope("in_progress") });
+			} catch {
+				// Connection may have closed; the for-await will fail next
+			}
+		}, 5000);
+
 		try {
 			for await (const chunk of stream) {
+				firstChunkReceived = true;
 				await this.handleChunk(chunk);
 			}
 		} catch (err) {
@@ -789,6 +804,8 @@ class SseEmitter {
 				},
 			});
 			return;
+		} finally {
+			clearInterval(heartbeat);
 		}
 
 		await this.closeOpenItems();
