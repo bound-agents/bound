@@ -187,9 +187,10 @@ export async function createWebServer(
 				// SSE streaming (e.g. /v1/responses) can have long gaps between
 				// the initial events and the first model token — Opus with 155K
 				// input tokens has a TTFT well over 10s. Bun's default
-				// idleTimeout (10s) kills the connection mid-stream. 300s
-				// matches the relay inference timeout.
-				idleTimeout: 300,
+				// idleTimeout (10s) kills the connection mid-stream. 255 is
+				// Bun's hard cap; the SSE heartbeat in SseEmitter keeps the
+				// connection alive during the TTFT gap.
+				idleTimeout: 255,
 				fetch(request: Request, server) {
 					const url = new URL(request.url);
 					if (url.pathname === "/ws" && request.headers.get("upgrade") === "websocket") {
