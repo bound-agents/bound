@@ -79,6 +79,7 @@ export default defineConfig({
 					items: [
 						{ label: "Architecture", slug: "reference/architecture" },
 						{ label: "Configuration", slug: "reference/configuration" },
+						{ label: "Responses API", slug: "reference/responses-api" },
 					],
 				},
 			],
