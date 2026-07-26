@@ -1,4 +1,4 @@
-import { insertRow, softDelete, updateRow } from "@bound/core";
+import { findActiveAgentByName, insertRow, softDelete, updateRow } from "@bound/core";
 import {
 	BOUND_NAMESPACE,
 	DEFAULT_PINNED_COUNT_CAP,
@@ -50,6 +50,12 @@ const memorySchema = z.object({
 		.enum(["out", "in", "both"])
 		.optional()
 		.describe("Neighbor direction (for neighbors; default 'both')"),
+	agent_name: z
+		.string()
+		.optional()
+		.describe(
+			"Target auxiliary-agent namespace for this operation (main agent only; ignored when running as an aux). Lets the main agent read and write an aux identity's memory.",
+		),
 });
 
 type MemoryInput = z.infer<typeof memorySchema>;
@@ -112,6 +118,29 @@ export function resolveTierForKey(_key: string, explicitTier?: MemoryTier): Memo
 	return explicitTier ?? "default";
 }
 
+/**
+ * #201: Resolve the agent namespace for a memory operation.
+ * - Aux agent (ctx.agentId non-null): walled to own namespace; agent_name ignored.
+ * - Main agent (ctx.agentId null) + agent_name provided: scope to that aux's namespace.
+ * - Main agent + no agent_name: own (null) namespace.
+ */
+function resolveNamespace(
+	ctx: ToolContext,
+	agentName?: string,
+): { agentId: string | null; error?: string } {
+	const ctxAgentId = ctx.agentId ?? null;
+	if (ctxAgentId !== null) return { agentId: ctxAgentId };
+	if (!agentName) return { agentId: null };
+	const agent = findActiveAgentByName(ctx.db, agentName);
+	if (!agent) {
+		return {
+			agentId: null,
+			error: `Error: no active auxiliary agent named '${agentName}'. Use the aux tool (action: list) to see defined identities.`,
+		};
+	}
+	return { agentId: agent.id };
+}
+
 function handleStore(args: MemoryInput, ctx: ToolContext): string {
 	const key = args.key;
 	const value = args.value;
@@ -119,7 +148,9 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 		return "Error: store requires 'key' and 'value' parameters";
 	}
 	const source = args.source_tag || ctx.taskId || ctx.threadId || "agent";
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	// #201: null agentId preserves the original seed (backward compat for
 	// all existing main-agent memories). Non-null appends \x00 + agentId.
 	const memoryId = deterministicUUID(
@@ -217,7 +248,9 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 }
 
 function handleForget(args: MemoryInput, ctx: ToolContext): string {
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
 	const nsParams = agentId === null ? [] : [agentId];
 	const prefix = args.prefix;
@@ -332,7 +365,9 @@ function handleSearch(args: MemoryInput, ctx: ToolContext): string {
 		return `No memories matched: ${queryText}`;
 	}
 
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	const nsClause = agentId === null ? "AND m.agent_id IS NULL" : "AND m.agent_id = ?";
 	const nsParams = agentId === null ? [] : [agentId];
 
@@ -373,7 +408,9 @@ function handleConnect(args: MemoryInput, ctx: ToolContext): string {
 	const rel = args.relation;
 	const weight = args.weight ?? 1.0;
 	const context = args.context;
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
 	const nsParams = agentId === null ? [] : [agentId];
 
@@ -418,7 +455,9 @@ function handleDisconnect(args: MemoryInput, ctx: ToolContext): string {
 	const src = args.source_key;
 	const tgt = args.target_key;
 	const rel = args.relation;
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
 	const nsParams = agentId === null ? [] : [agentId];
 
@@ -464,7 +503,9 @@ function handleTraverse(args: MemoryInput, ctx: ToolContext): string {
 		return "Error: depth must be a positive integer (1-3)";
 	}
 
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	const results = traverseGraph(ctx.db, key, depth, relation, agentId);
 
 	if (results.length === 0) {
@@ -485,7 +526,9 @@ function handleNeighbors(args: MemoryInput, ctx: ToolContext): string {
 	}
 
 	const dir = args.direction ?? "both";
-	const agentId = ctx.agentId ?? null;
+	const ns = resolveNamespace(ctx, args.agent_name);
+	if (ns.error) return ns.error;
+	const agentId = ns.agentId;
 	const results = getNeighbors(ctx.db, key, dir, agentId);
 
 	if (results.length === 0) {
@@ -514,7 +557,8 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 					"- search: before answering or starting work that prior knowledge might bear on, rather than researching from scratch — also pulls a detail-tier entry's body by key.\n" +
 					"- connect / disconnect: link related entries so retrieval surfaces them together; relation must be one of CANONICAL_RELATIONS, with any bespoke phrasing in 'context' rather than the relation.\n" +
 					"- traverse / neighbors: walk the graph outward from a known entry to gather related context.\n" +
-					"- forget: retire an entry that is obsolete or wrong.",
+					"- forget: retire an entry that is obsolete or wrong.\n" +
+					"- agent_name: optional. Target an auxiliary agent's memory namespace (main agent only; ignored when running as an aux). Lets the main agent read and write an aux identity's memory.",
 				parameters: jsonSchema,
 			},
 		},

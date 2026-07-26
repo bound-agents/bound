@@ -278,7 +278,10 @@ export function createAgentLoopFactory(
 		// for an auxiliary agent invocation. Shares the VFS and underlying
 		// sandbox, but has its own snapshot state to avoid collision with
 		// the parent loop's FS persist.
-		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+		const MAX_CONCURRENT_AUX = 20;
+		let activeAuxInvocations = 0;
+
+		const rawAuxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
 			let auxPreSnapshot: Map<string, string> | null = null;
 
 			const auxSandbox = {
@@ -401,6 +404,24 @@ export function createAgentLoopFactory(
 				summary: lastAssistant?.content ?? "(no response)",
 				error: loopResult.error,
 			};
+		};
+
+		// #201: wrap the runner with a concurrent-invocation cap so an agent
+		// cannot spawn unbounded nested loops. The counter lives in this
+		// closure and is shared across all invocations on this host.
+		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+			if (activeAuxInvocations >= MAX_CONCURRENT_AUX) {
+				return {
+					summary: `Error: concurrent auxiliary agent cap reached (${MAX_CONCURRENT_AUX}). Wait for in-flight invocations to complete before invoking again.`,
+					error: "concurrent-cap",
+				};
+			}
+			activeAuxInvocations++;
+			try {
+				return await rawAuxLoopRunner(params);
+			} finally {
+				activeAuxInvocations--;
+			}
 		};
 
 		const toolCtx: ToolContext = {
