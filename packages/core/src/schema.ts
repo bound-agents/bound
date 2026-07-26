@@ -213,13 +213,18 @@ export function applySchema(db: Database): void {
 			created_at      TEXT NOT NULL,
 			modified_at     TEXT NOT NULL,
 			last_accessed_at TEXT,
-			deleted         INTEGER DEFAULT 0
+			deleted         INTEGER DEFAULT 0,
+			agent_id        TEXT -- #201: NULL = main agent; auxiliary-agent namespace partition
 		) STRICT
 	`);
 
+	// #201: uniqueness moves from `key` alone to `(agent_id, key)` so two
+	// namespaces can reuse the same key. Drop the old single-column index on
+	// existing installations, then create the composite.
+	db.run("DROP INDEX IF EXISTS idx_memory_key");
 	db.run(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_key ON semantic_memory(key)
-		WHERE deleted = 0
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_key
+		ON semantic_memory(agent_id, key) WHERE deleted = 0
 	`);
 
 	// 5. tasks
@@ -394,13 +399,19 @@ export function applySchema(db: Database): void {
 			weight      REAL DEFAULT 1.0,
 			created_at  TEXT NOT NULL,
 			modified_at TEXT NOT NULL,
-			deleted     INTEGER DEFAULT 0
+			deleted     INTEGER DEFAULT 0,
+			agent_id    TEXT, -- #201: NULL = main agent; edges never cross namespaces
+			context     TEXT
 		) STRICT
 	`);
 
+	// #201: uniqueness moves from (source, target, relation) to
+	// (source, target, relation, agent_id) so two namespaces can have the
+	// same edge triple. Drop the old index on existing installs.
+	db.run("DROP INDEX IF EXISTS idx_edges_triple");
 	db.run(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_triple
-		ON memory_edges(source_key, target_key, relation) WHERE deleted = 0
+		ON memory_edges(source_key, target_key, relation, agent_id) WHERE deleted = 0
 	`);
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_key) WHERE deleted = 0
@@ -832,6 +843,16 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_memory_modified ON semantic_memory(modified_at DESC)
 	`);
 
+	// #201: namespace-scoped lookups — dispatch resolves (agent_id, key), and
+	// aux context injection filters by agent_id on every memory read.
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_memory_agent_key
+		ON semantic_memory(agent_id, key) WHERE deleted = 0
+	`);
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_edges_agent ON memory_edges(agent_id) WHERE deleted = 0
+	`);
+
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_tasks_last_run ON tasks(last_run_at DESC)
 		WHERE deleted = 0 AND last_run_at IS NOT NULL
@@ -1008,42 +1029,59 @@ export function applySchema(db: Database): void {
 	// ── FTS5 full-text search index for semantic_memory ─────────────────────────
 	// Local-only index (NOT synced). Each node rebuilds from semantic_memory data.
 	// Uses porter stemmer for morphological matching and unicode61 for non-ASCII.
+	//
+	// #201: agent_id is an UNINDEXED column used for namespace-scoped searches.
+	// The triggers scope DELETE by (key, agent_id) so two namespaces using the
+	// same key don't clobber each other's FTS5 entries.
 
 	db.run(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memory_fts
-		USING fts5(key, value, tokenize='porter unicode61')
+		USING fts5(key, value, agent_id UNINDEXED, tokenize='porter unicode61')
 	`);
+
+	// #201: Add agent_id to existing FTS5 tables. FTS5 ALTER TABLE ADD COLUMN
+	// always creates an unindexed column, matching the CREATE definition above.
+	try {
+		db.run("ALTER TABLE semantic_memory_fts ADD COLUMN agent_id");
+	} catch {
+		/* column already exists */
+	}
 
 	// Triggers to keep FTS5 in sync with semantic_memory writes.
 	// All writes go through insertRow/updateRow/softDelete, which hit the base
 	// table — triggers fire automatically, including on sync replay.
+	// #201: DROP+CREATE (not IF NOT EXISTS) so trigger definitions pick up
+	// the agent_id scoping on existing installations.
+	db.run("DROP TRIGGER IF EXISTS memory_fts_insert");
+	db.run("DROP TRIGGER IF EXISTS memory_fts_update");
+	db.run("DROP TRIGGER IF EXISTS memory_fts_delete");
 
 	db.run(`
-		CREATE TRIGGER IF NOT EXISTS memory_fts_insert
+		CREATE TRIGGER memory_fts_insert
 		AFTER INSERT ON semantic_memory
 		WHEN NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%'
 		BEGIN
-			INSERT INTO semantic_memory_fts(key, value) VALUES (NEW.key, NEW.value);
+			INSERT INTO semantic_memory_fts(key, value, agent_id) VALUES (NEW.key, NEW.value, NEW.agent_id);
 		END
 	`);
 
 	db.run(`
-		CREATE TRIGGER IF NOT EXISTS memory_fts_update
+		CREATE TRIGGER memory_fts_update
 		AFTER UPDATE ON semantic_memory
 		BEGIN
-			DELETE FROM semantic_memory_fts WHERE key = OLD.key;
-			INSERT INTO semantic_memory_fts(key, value)
-				SELECT NEW.key, NEW.value
+			DELETE FROM semantic_memory_fts WHERE key = OLD.key AND agent_id IS OLD.agent_id;
+			INSERT INTO semantic_memory_fts(key, value, agent_id)
+				SELECT NEW.key, NEW.value, NEW.agent_id
 				WHERE NEW.deleted = 0 AND NEW.key NOT LIKE '_internal.%';
 		END
 	`);
 
 	db.run(`
-		CREATE TRIGGER IF NOT EXISTS memory_fts_delete
+		CREATE TRIGGER memory_fts_delete
 		AFTER UPDATE OF deleted ON semantic_memory
 		WHEN NEW.deleted = 1
 		BEGIN
-			DELETE FROM semantic_memory_fts WHERE key = OLD.key;
+			DELETE FROM semantic_memory_fts WHERE key = OLD.key AND agent_id IS OLD.agent_id;
 		END
 	`);
 
@@ -1067,8 +1105,8 @@ export function applySchema(db: Database): void {
 	).n;
 	if (ftsCount === 0) {
 		db.run(`
-			INSERT INTO semantic_memory_fts(key, value)
-			SELECT key, value FROM semantic_memory
+			INSERT INTO semantic_memory_fts(key, value, agent_id)
+			SELECT key, value, agent_id FROM semantic_memory
 			WHERE deleted = 0 AND key NOT LIKE '_internal.%'
 		`);
 	}

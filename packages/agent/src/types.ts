@@ -39,4 +39,10 @@ export interface ToolContext {
 	 * `sync_state` read misidentifies the hub as one of its own spokes.
 	 */
 	topologyRole?: import("./topology.js").TopologyRole;
+	/**
+	 * #201: auxiliary-agent namespace. NULL (or undefined) = main agent; a
+	 * non-null value scopes all memory reads/writes to the aux identity's
+	 * namespace. Set by the nested loop when running an aux thread.
+	 */
+	agentId?: string | null;
 }
