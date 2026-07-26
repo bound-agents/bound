@@ -3,7 +3,13 @@
  * isolated snapshot state and full sandbox/tool wiring.
  */
 
-import { AuxAgentLoop, MainAgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
+import {
+	AuxAgentLoop,
+	ConcurrentCap,
+	MainAgentLoop,
+	createAgentTools,
+	createBuiltInTools,
+} from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
@@ -278,8 +284,7 @@ export function createAgentLoopFactory(
 		// for an auxiliary agent invocation. Shares the VFS and underlying
 		// sandbox, but has its own snapshot state to avoid collision with
 		// the parent loop's FS persist.
-		const MAX_CONCURRENT_AUX = 20;
-		let activeAuxInvocations = 0;
+		const auxCap = new ConcurrentCap(20);
 
 		const rawAuxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
 			let auxPreSnapshot: Map<string, string> | null = null;
@@ -407,20 +412,19 @@ export function createAgentLoopFactory(
 		};
 
 		// #201: wrap the runner with a concurrent-invocation cap so an agent
-		// cannot spawn unbounded nested loops. The counter lives in this
-		// closure and is shared across all invocations on this host.
+		// cannot spawn unbounded nested loops. The cap lives in this closure
+		// and is shared across all invocations on this host.
 		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
-			if (activeAuxInvocations >= MAX_CONCURRENT_AUX) {
+			if (!auxCap.acquire()) {
 				return {
-					summary: `Error: concurrent auxiliary agent cap reached (${MAX_CONCURRENT_AUX}). Wait for in-flight invocations to complete before invoking again.`,
+					summary: `Error: concurrent auxiliary agent cap reached (${auxCap.capacity}). Wait for in-flight invocations to complete before invoking again.`,
 					error: "concurrent-cap",
 				};
 			}
-			activeAuxInvocations++;
 			try {
 				return await rawAuxLoopRunner(params);
 			} finally {
-				activeAuxInvocations--;
+				auxCap.release();
 			}
 		};
 

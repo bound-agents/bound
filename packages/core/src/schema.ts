@@ -1042,7 +1042,9 @@ export function applySchema(db: Database): void {
 	// while triggers referenced it, causing runtime errors on aux memory writes.
 	// Fix: detect the missing column and DROP+CREATE (safe — FTS is local-only,
 	// rebuilt from the base semantic_memory table).
-	const ftsColumns = db.query("PRAGMA table_info(semantic_memory_fts)").all() as Array<{ name: string }>;
+	const ftsColumns = db.query("PRAGMA table_info(semantic_memory_fts)").all() as Array<{
+		name: string;
+	}>;
 	const ftsHasAgentId = ftsColumns.some((c) => c.name === "agent_id");
 	if (!ftsHasAgentId) {
 		db.run("DROP TABLE IF EXISTS semantic_memory_fts");
