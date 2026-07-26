@@ -145,6 +145,28 @@ function migrateSyncStateToHlc(db: Database): void {
 	}
 }
 
+/**
+ * Add a column to an existing table if it is absent.
+ *
+ * `CREATE TABLE IF NOT EXISTS` is a no-op on an existing database, so a column
+ * declared inline in the CREATE never materializes on an upgrade path. Any index
+ * or trigger created later in `applySchema` that references such a column then
+ * fails with "no such column" — on existing installs only, while fresh installs
+ * stay green. #201 hit exactly that: `agent_id` was declared inline on
+ * semantic_memory / memory_edges / threads and the composite unique indexes
+ * referencing it are created immediately after the CREATE, ~500 lines before the
+ * ALTER migration block near the end of this function.
+ *
+ * Detect via PRAGMA table_info rather than try/catch so a genuine failure still
+ * throws instead of being swallowed as "already exists".
+ */
+function ensureColumn(db: Database, table: string, column: string, type = "TEXT"): void {
+	const cols = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+	if (cols.length === 0) return; // table doesn't exist yet — CREATE will carry the column
+	if (cols.some((c) => c.name === column)) return;
+	db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
 export function applySchema(db: Database): void {
 	// 1. users
 	db.run(`
@@ -223,6 +245,11 @@ export function applySchema(db: Database): void {
 	// #201: uniqueness moves from `key` alone to `(agent_id, key)` so two
 	// namespaces can reuse the same key. Drop the old single-column index on
 	// existing installations, then create the composite.
+	//
+	// ensureColumn FIRST: on an upgrade the CREATE above was a no-op, so the
+	// inline agent_id never materialized and the composite index below would
+	// fail with "no such column: agent_id".
+	ensureColumn(db, "semantic_memory", "agent_id");
 	db.run("DROP INDEX IF EXISTS idx_memory_key");
 	db.run(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_key
@@ -410,6 +437,11 @@ export function applySchema(db: Database): void {
 	// #201: uniqueness moves from (source, target, relation) to
 	// (source, target, relation, agent_id) so two namespaces can have the
 	// same edge triple. Drop the old index on existing installs.
+	//
+	// ensureColumn FIRST for the same reason as semantic_memory above: the
+	// CREATE is a no-op on an upgrade, so the inline agent_id never lands and
+	// the composite index below fails with "no such column: agent_id".
+	ensureColumn(db, "memory_edges", "agent_id");
 	db.run("DROP INDEX IF EXISTS idx_edges_triple");
 	db.run(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_triple

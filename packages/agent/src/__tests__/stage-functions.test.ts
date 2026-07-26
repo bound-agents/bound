@@ -25,7 +25,8 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE memory_edges (
@@ -37,7 +38,8 @@ describe("Stage Functions - L0 Pinned Entries", () => {
 				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
@@ -164,7 +166,8 @@ describe("Stage Functions - L1 Summary Entries", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE memory_edges (
@@ -176,7 +179,8 @@ describe("Stage Functions - L1 Summary Entries", () => {
 				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
@@ -457,7 +461,8 @@ describe("loadPinnedEntries function", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
@@ -546,7 +551,8 @@ describe("loadSummaryEntries function", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE memory_edges (
@@ -558,7 +564,8 @@ describe("loadSummaryEntries function", () => {
 				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
@@ -734,7 +741,8 @@ describe("Stage Functions - L2 Graph Entries", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE memory_edges (
@@ -746,7 +754,8 @@ describe("Stage Functions - L2 Graph Entries", () => {
 				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
@@ -1052,7 +1061,8 @@ describe("Stage Functions - L3 Recency Entries", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE memory_edges (
@@ -1064,7 +1074,8 @@ describe("Stage Functions - L3 Recency Entries", () => {
 				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
@@ -1216,7 +1227,8 @@ describe("Deterministic ordering for cross-thread cache reuse", () => {
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
 				last_accessed_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE memory_edges (
@@ -1228,7 +1240,8 @@ describe("Deterministic ordering for cross-thread cache reuse", () => {
 				context TEXT,
 				created_at TEXT NOT NULL,
 				modified_at TEXT NOT NULL,
-				deleted INTEGER DEFAULT 0
+				deleted INTEGER DEFAULT 0,
+				agent_id TEXT
 			);
 
 			CREATE TABLE tasks (
