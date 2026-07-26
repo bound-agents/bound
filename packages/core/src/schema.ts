@@ -1036,18 +1036,21 @@ export function applySchema(db: Database): void {
 	// The triggers scope DELETE by (key, agent_id) so two namespaces using the
 	// same key don't clobber each other's FTS5 entries.
 
+	// #201: FTS5 virtual tables do NOT support ALTER TABLE ADD COLUMN.
+	// The previous migration tried ALTER inside try/catch, which silently
+	// failed on existing databases — leaving the FTS table without agent_id
+	// while triggers referenced it, causing runtime errors on aux memory writes.
+	// Fix: detect the missing column and DROP+CREATE (safe — FTS is local-only,
+	// rebuilt from the base semantic_memory table).
+	const ftsColumns = db.query("PRAGMA table_info(semantic_memory_fts)").all() as Array<{ name: string }>;
+	const ftsHasAgentId = ftsColumns.some((c) => c.name === "agent_id");
+	if (!ftsHasAgentId) {
+		db.run("DROP TABLE IF EXISTS semantic_memory_fts");
+	}
 	db.run(`
 		CREATE VIRTUAL TABLE IF NOT EXISTS semantic_memory_fts
 		USING fts5(key, value, agent_id UNINDEXED, tokenize='porter unicode61')
 	`);
-
-	// #201: Add agent_id to existing FTS5 tables. FTS5 ALTER TABLE ADD COLUMN
-	// always creates an unindexed column, matching the CREATE definition above.
-	try {
-		db.run("ALTER TABLE semantic_memory_fts ADD COLUMN agent_id");
-	} catch {
-		/* column already exists */
-	}
 
 	// Triggers to keep FTS5 in sync with semantic_memory writes.
 	// All writes go through insertRow/updateRow/softDelete, which hit the base
