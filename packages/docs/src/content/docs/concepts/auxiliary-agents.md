@@ -7,15 +7,25 @@ An auxiliary agent is a durable, named identity the main agent can hand an erran
 
 This exists because subagents don't map cleanly onto bound's threading model. Every ordinary thread is a *view* of one agent that spans all of them — same identity, same memory, peers by construction. A subagent breaks that: it takes instructions from another instance of itself and gets discarded when it's done, which is not a peer relationship. Auxiliary agents make that authority split explicit instead of pretending it isn't there.
 
+## You ask; the agent dispatches
+
+There is no CLI command, config file, or UI panel for auxiliary agents. The entire surface is the agent's `aux` tool, and the agent is its only caller — so your side of this is conversation:
+
+> Set up a scout identity for codebase spelunking — terse, reports what it found and what it couldn't, no speculation.
+
+> Have the scout figure out which call sites of `resolveModel()` outside `packages/llm` ignore the error branch.
+
+The agent decides when an errand is worth delegating, defines an identity when it needs one it doesn't have, and folds the result back into the conversation. Everything below describes what the agent controls on your behalf — worth reading so you know what's available to ask for, and so you can follow what the agent tells you it did.
+
 ## Identity, not job description
 
 The persona says who the aux **is** — temperament, working style, standing habits. It does not say what the aux is for. The job arrives per-invocation in `instructions`.
 
 That split is what makes an identity reusable. An aux defined as "brief and methodical; investigates a narrow question and reports what it found and what it couldn't find" can be handed a dozen unrelated errands. An aux defined as "the agent that audits our CI logs" can only ever do that one thing, and you end up with a sprawl of near-duplicate identities.
 
-## The aux tool
+## Actions
 
-The agent manages auxiliary agents through the `aux` tool:
+Five actions on the `aux` tool, all agent-invoked:
 
 | Action | What it does |
 | --- | --- |
@@ -27,6 +37,8 @@ The agent manages auxiliary agents through the `aux` tool:
 
 ### define
 
+What the agent supplies when creating an identity:
+
 | Parameter | Required | Notes |
 | --- | --- | --- |
 | `name` | Yes | kebab-case, matching `^[a-z0-9]+(-[a-z0-9]+)*$`, up to 64 chars |
@@ -34,9 +46,11 @@ The agent manages auxiliary agents through the `aux` tool:
 | `tools` | No | Allowlist of tool names. Omit for unrestricted (structural denials still apply) |
 | `model_hint` | No | Default model for this identity |
 
-Defining over an existing active name fails rather than silently overwriting it — an identity-sprawl guard. Use `update` to change one, or pick a different name.
+Defining over an existing active name fails rather than silently overwriting it — an identity-sprawl guard. The agent updates the existing identity or picks a different name.
 
 ### invoke
+
+What the agent supplies when dispatching an errand:
 
 | Parameter | Required | Notes |
 | --- | --- | --- |
@@ -44,7 +58,7 @@ Defining over an existing active name fails rather than silently overwriting it 
 | `instructions` | Yes | The errand — what to do this invocation |
 | `model` | No | Override the definition's `model_hint` for this call only |
 
-`invoke` is synchronous. It creates the child thread, seeds the instructions, runs the nested loop to completion, and returns the aux's final response as the result. The main agent's turn blocks until the aux finishes.
+`invoke` is synchronous. It creates the child thread, seeds the instructions, runs the nested loop to completion, and returns the aux's final response as the result. The main agent's turn blocks until the aux finishes — from your side, one pause in the conversation and then the answer.
 
 ### retire
 
@@ -57,15 +71,11 @@ Every memory entry carries an owning identity. The main agent's entries have no 
 The visibility rule is deliberately asymmetric:
 
 - An **aux cannot read the main agent's memory.** It only sees its own namespace.
-- The **main agent can read and write any aux's memory**, by passing `agent_name` to the `memory` tool.
-
-```json
-{ "action": "search", "key": "findings", "agent_name": "scout" }
-```
+- The **main agent can read and write any aux's memory**, by naming the identity on a memory call. So "what did the scout turn up?" is answerable in your main conversation later, without re-running the errand.
 
 The asymmetry is the point. A memory written from the main agent's vantage can mean something different read from a subordinate one — a workflow note that ends in "then discard yourself" is coherent for the aux and alarming for the leader. Walling the aux off keeps its context small and its framing consistent; leaving the main agent's view unrestricted means nothing an aux learns is lost to you.
 
-Passing `agent_name` while already running as an aux is ignored, not honored — an aux can't reach a sibling's namespace by naming it.
+That reach is one-directional by construction: an aux naming a sibling identity on a memory call gets its own namespace anyway, so no aux can read another's findings.
 
 ## Capability boundary
 
@@ -85,25 +95,13 @@ Concurrent invocations are capped at 20 per host. Past that, `invoke` returns an
 
 ## Worked example
 
-Define the identity once:
+You ask for the identity once:
 
-```json
-{
-  "action": "define",
-  "name": "scout",
-  "persona": "Brief and methodical. Investigate a narrow question and report what you found and what you couldn't find. Never speculate. Under 200 words."
-}
-```
+> Define a scout aux — brief and methodical, investigates a narrow question, reports what it found and what it couldn't find, never speculates. Keep it under 200 words.
 
 Then hand it errands, as many times as you like:
 
-```json
-{
-  "action": "invoke",
-  "name": "scout",
-  "instructions": "Find every call site of resolveModel() outside packages/llm and report which ones ignore the error branch."
-}
-```
+> Ask the scout to find every call site of `resolveModel()` outside `packages/llm` and report which ones ignore the error branch.
 
 The scout runs in its own thread, greps around, and reports back. Its intermediate reasoning — every file it opened, every dead end — never enters the main thread's context. Only the result does.
 
