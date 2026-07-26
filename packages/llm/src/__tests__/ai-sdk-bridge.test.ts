@@ -3255,7 +3255,7 @@ describe("mapError", () => {
 // ── midConversationSystem: native { role: "system" } emission ──
 
 describe("midConversationSystem", () => {
-	it('emits developer as native { role: "system" } when it follows a user message', () => {
+	it('emits developer as native { role: "system" } when it ends the array', () => {
 		const out = toModelMessages(
 			[
 				{ role: "user", content: "hi" },
@@ -3269,11 +3269,7 @@ describe("midConversationSystem", () => {
 		]);
 	});
 
-	it("emits a developer after user as system, but a second developer after system falls back to legacy merge", () => {
-		// Anthropic's beta requires system to follow user (or be first).
-		// The first developer follows user → native system. The second
-		// developer follows system → placement would be illegal, so it
-		// falls back to pendingDev and becomes a trailing user message.
+	it("coalesces consecutive developer directives into one trailing system message", () => {
 		const out = toModelMessages(
 			[
 				{ role: "user", content: "hi" },
@@ -3284,16 +3280,29 @@ describe("midConversationSystem", () => {
 		);
 		expect(out).toEqual([
 			{ role: "user", content: "hi" },
-			{ role: "system", content: "first" },
-			{ role: "user", content: "<system-context>\nsecond\n</system-context>" },
+			{ role: "system", content: "first\n\nsecond" },
 		]);
 	});
 
-	it("falls back to legacy merge when developer follows assistant (Anthropic placement constraint)", () => {
+	it("falls back to legacy merge when developer before a following user would be illegal", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "between users" },
+				{ role: "user", content: "next" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "user", content: "<system-context>\nbetween users\n</system-context>\n\nnext" },
+		]);
+	});
+
+	it("falls back to legacy merge when developer follows assistant (directive placement constraint)", () => {
 		// The agent loop appends a developer tail after every assistant
-		// turn. Anthropic's mid-conversation-system beta rejects system
-		// following assistant: "role 'system' must follow a 'user' message".
-		// The bridge must fall back to the legacy pendingDev merge path,
+		// turn. A contentful system message after assistant is not a legal
+		// directive slot, so the bridge keeps the legacy pendingDev merge path,
 		// which creates a trailing user message.
 		const out = toModelMessages(
 			[
@@ -3323,8 +3332,8 @@ describe("midConversationSystem", () => {
 	});
 
 	it("does not prepend a <system-notification /> before a leading system message", () => {
-		// A developer message at position 0 becomes { role: "system" } at
-		// position 0. The conversation-start invariant must NOT inject a
+		// A developer message before an assistant becomes { role: "system" }
+		// at position 0. The conversation-start invariant must NOT inject a
 		// junk <system-notification /> user message before it.
 		const out = toModelMessages(
 			[
@@ -3364,6 +3373,7 @@ describe("midConversationSystem", () => {
 						{ type: "text", text: "part-b" },
 					],
 				},
+				{ role: "assistant", content: "response" },
 			],
 			{ midConversationSystem: true },
 		);
