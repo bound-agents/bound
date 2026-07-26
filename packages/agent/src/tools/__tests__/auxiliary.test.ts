@@ -229,8 +229,8 @@ describe("Native Aux Tool (define/list/retire slice)", () => {
 	describe("strict action dispatch", () => {
 		it("rejects an unknown action via schema validation", async () => {
 			const exec = getExecute(createAuxTool(ctx));
-			const out = await exec({ action: "invoke", name: "tama" });
-			// invoke is not in this slice's enum — schema rejects it, no branch runs.
+			const out = await exec({ action: "frobnicate" });
+			// Unknown action — schema rejects it, no branch runs.
 			expect(out).toContain("invalid parameters");
 		});
 
