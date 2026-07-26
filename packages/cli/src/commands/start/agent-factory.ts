@@ -3,7 +3,7 @@
  * isolated snapshot state and full sandbox/tool wiring.
  */
 
-import { MainAgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
+import { AuxAgentLoop, MainAgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
@@ -274,6 +274,135 @@ export function createAgentLoopFactory(
 		const syncResult = appContext.optionalConfig.sync;
 		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
 		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
+		// #201 Car C: aux loop runner — constructs and runs an AuxAgentLoop
+		// for an auxiliary agent invocation. Shares the VFS and underlying
+		// sandbox, but has its own snapshot state to avoid collision with
+		// the parent loop's FS persist.
+		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+			let auxPreSnapshot: Map<string, string> | null = null;
+
+			const auxSandbox = {
+				exec: sandbox
+					? async (cmd: string, opts?: Record<string, unknown>) => {
+							const store = {
+								threadId: params.threadId,
+								taskId: undefined as string | undefined,
+								relayRequest: undefined as unknown | undefined,
+								mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
+							};
+							const result = await loopContextStorage.run(store, () =>
+								sandbox.bash.exec(cmd, opts),
+							);
+							if (store.relayRequest && isRelayRequest(store.relayRequest)) {
+								const req = store.relayRequest;
+								store.relayRequest = undefined;
+								return req;
+							}
+							if (store.mcpApp) {
+								return { ...(result as object), mcpApp: store.mcpApp };
+							}
+							return result;
+						}
+					: undefined,
+				checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
+				rehydrateFs,
+				writeFile: clusterFsObj
+					? async (path: string, content: string): Promise<void> => {
+							await clusterFsObj.fs.writeFile(path, content);
+						}
+					: undefined,
+				capturePreSnapshot: async (): Promise<void> => {
+					if (!clusterFsObj) return;
+					auxPreSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+						paths: clusterFsObj.getInMemoryPaths(),
+					});
+				},
+				persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
+					if (!clusterFsObj || !auxPreSnapshot) {
+						return { changes: 0 };
+					}
+					const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+						paths: clusterFsObj.getInMemoryPaths(),
+					});
+					const changedPaths = diffWorkspace(auxPreSnapshot, postSnapshot).map((c) => c.path);
+					const result = await persistWorkspaceChanges(
+						appContext.db,
+						appContext.siteId,
+						auxPreSnapshot,
+						postSnapshot,
+						appContext.eventBus,
+						undefined,
+						clusterFsObj.fs,
+					);
+					auxPreSnapshot = postSnapshot;
+					if (!result.ok) {
+						return { changes: 0 };
+					}
+					return { changes: result.value.changes, changedPaths };
+				},
+				builtInTools,
+			};
+
+			// Aux ToolContext with agentId set for memory namespace scoping
+			const auxToolCtx: ToolContext = {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				threadId: params.threadId,
+				modelRouter,
+				fs: clusterFsObj?.fs,
+				memoryLimits,
+				topologyRole,
+				agentId: params.agentId,
+			};
+
+			// Capability boundary — always excluded from aux toolset
+			const EXCLUDED_TOOLS = new Set(["aux", "task", "cancel", "notify", "introspect"]);
+			let filteredAgentTools = createAgentTools(auxToolCtx).filter(
+				(t) => !EXCLUDED_TOOLS.has(t.toolDefinition.function.name),
+			);
+			if (params.allowlistedTools) {
+				const allow = new Set(params.allowlistedTools);
+				filteredAgentTools = filteredAgentTools.filter((t) =>
+					allow.has(t.toolDefinition.function.name),
+				);
+			}
+
+			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
+			const auxToolRegistry = createToolRegistry(
+				builtInTools,
+				undefined,
+				filteredAgentTools,
+				appContext.logger,
+				undefined,
+			);
+
+			const auxLoop = new AuxAgentLoop(appContext, auxSandbox, modelRouter, {
+				threadId: params.threadId,
+				userId: params.userId,
+				modelId: params.modelHint ?? undefined,
+				systemPromptAddition: params.persona,
+				platform: "aux",
+				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs],
+				toolRegistry: auxToolRegistry,
+			});
+
+			const loopResult = await auxLoop.run();
+
+			// Extract the last assistant message as the summary
+			const lastAssistant = appContext.db
+				.prepare(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(params.threadId) as { content: string } | null;
+
+			return {
+				summary: lastAssistant?.content ?? "(no response)",
+				error: loopResult.error,
+			};
+		};
+
 		const toolCtx: ToolContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -285,6 +414,7 @@ export function createAgentLoopFactory(
 			fs: clusterFsObj?.fs,
 			memoryLimits,
 			topologyRole,
+			auxLoopRunner,
 		};
 		const agentTools = createAgentTools(toolCtx);
 

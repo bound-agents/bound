@@ -45,4 +45,20 @@ export interface ToolContext {
 	 * namespace. Set by the nested loop when running an aux thread.
 	 */
 	agentId?: string | null;
+	/**
+	 * #201 Car C: factory that constructs and runs an AuxAgentLoop for an aux
+	 * invocation. Provided by agent-factory where AppContext/sandbox/ModelRouter
+	 * are available. When absent, invoke creates + seeds the thread but cannot
+	 * run the nested loop (returns the thread handle for later execution).
+	 */
+	auxLoopRunner?: (params: {
+		threadId: string;
+		agentId: string;
+		persona: string;
+		modelHint: string | null;
+		allowlistedTools: string[] | null;
+		instructions: string;
+		userId: string;
+		parentThreadId: string;
+	}) => Promise<{ summary: string; error?: string }>;
 }
