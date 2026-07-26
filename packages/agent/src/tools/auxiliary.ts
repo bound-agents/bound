@@ -358,8 +358,25 @@ async function handleInvoke(ctx: ToolContext, input: AuxInput): Promise<string> 
 		ctx.siteId,
 	);
 
-	// Car C will wire the nested loop execution and block for the result.
-	// Until then, return the thread handle so the caller knows where the
-	// conversation lives.
-	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}.`;
+	// If a loop runner is available, execute the nested loop synchronously
+	// and return the result. Otherwise, return the thread handle.
+	if (ctx.auxLoopRunner) {
+		const allowlistedTools = agent.tools ? (JSON.parse(agent.tools) as string[]) : null;
+		const result = await ctx.auxLoopRunner({
+			threadId,
+			agentId: agent.id,
+			persona: agent.persona,
+			modelHint: input.model ?? agent.model_hint ?? null,
+			allowlistedTools,
+			instructions: input.instructions,
+			userId: parentInfo.user_id,
+			parentThreadId: ctx.threadId,
+		});
+		if (result.error) {
+			return `Auxiliary agent '${input.name}' completed with error: ${result.error}\n\nThread: ${threadId}`;
+		}
+		return result.summary;
+	}
+
+	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}. Loop runner not available — thread is ready for manual execution.`;
 }

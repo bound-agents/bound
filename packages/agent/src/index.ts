@@ -46,6 +46,7 @@ export {
 // Export agent loop
 export { MainAgentLoop } from "./agent-loop";
 export { BoundAgentLoop } from "./bound-agent-loop";
+export { AuxAgentLoop } from "./aux-agent-loop";
 export type { BoundPreparedFrame, BashLike } from "./bound-agent-loop";
 export { persistImageBlocksAsFileRefs, persistBinaryResource } from "./tool-result-images";
 export {
