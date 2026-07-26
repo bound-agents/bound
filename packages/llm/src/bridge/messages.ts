@@ -63,16 +63,16 @@ export interface ToModelMessagesOptions {
 	targetEnvelope?: WireEnvelope;
 	/**
 	 * When true, `developer`-role messages are emitted as native
-	 * `{ role: "system" }` ModelMessages at their natural position in the
-	 * array, instead of being accumulated in `pendingDev` and merged into
-	 * adjacent user messages wrapped in `<system-context>` tags.
+	 * `{ role: "system" }` ModelMessages only when that placement is legal for
+	 * directive-style system messages: immediately before an assistant message,
+	 * or at the end of the message array. Other developer messages are folded
+	 * into adjacent user messages wrapped in `<system-context>` tags.
 	 *
 	 * Requires `allowSystemInMessages: true` on the `streamText` call so the
 	 * AI SDK v7 accepts mid-array system messages (it defaults to reject).
 	 *
-	 * Support: Anthropic Messages API (self-adds the
-	 * `mid-conversation-system-2026-04-07` beta), OpenAI Chat/Responses
-	 * (always supported). NOT supported on Bedrock Converse — omit on that
+	 * Support: Anthropic/Mantle-style message APIs that accept system directives
+	 * in the message array. NOT supported on Bedrock Converse — omit on that
 	 * driver to keep the legacy merge path.
 	 */
 	midConversationSystem?: boolean;
@@ -264,22 +264,24 @@ export function toModelMessages(
 	// `hasUser` check conflated and which truncation can strip from the window.
 	let pendingDevStartedAtEmptyResult = false;
 
-	for (const msg of messages) {
+	for (let i = 0; i < messages.length; i++) {
+		const msg = messages[i];
 		if (msg.role === "developer") {
 			const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
 			if (text) {
 				if (opts.midConversationSystem) {
 					const prev = result[result.length - 1];
-					// Anthropic's mid-conversation-system beta requires a system
-					// message to follow a user message (or be first). A developer
-					// tail arriving after an assistant turn — the common agent-
-					// loop shape — would become { role: "system" } following
-					// { role: "assistant" }, which Anthropic rejects with:
-					//   "role 'system' must follow a 'user' message"
-					// Fall back to the legacy pendingDev merge path when the
-					// placement would be illegal; that path correctly creates a
-					// trailing user message.
-					if (!prev || prev.role === "user") {
+					const nextRole = nextEmittedRoleAfter(messages, i);
+					// Native system messages here are provider directives, not normal
+					// conversational turns. The live provider contract is stricter
+					// than the old Anthropic beta note: a contentful system message
+					// must immediately precede an assistant message or end the array
+					// (directive-only system blocks are the exception, but we do not
+					// emit those here). If a developer message is really enrichment
+					// for a following user/tool turn, keep the legacy user-merge path.
+					if (prev?.role === "system") {
+						appendTextToSystem(prev, text);
+					} else if ((!prev || prev.role === "user") && (!nextRole || nextRole === "assistant")) {
 						result.push({ role: "system", content: text });
 					} else {
 						if (pendingDev.length === 0) pendingDevStartedAtEmptyResult = result.length === 0;
@@ -665,8 +667,27 @@ function enforceToolPairCompleteness(messages: ModelMessage[]): ModelMessage[] {
 	return out;
 }
 
+function nextEmittedRoleAfter(
+	messages: LLMMessage[],
+	index: number,
+): "user" | "assistant" | "system" | "tool_call" | "tool_result" | null {
+	for (let i = index + 1; i < messages.length; i++) {
+		const role = messages[i]?.role;
+		if (role && role !== "developer" && role !== "cache") return role;
+	}
+	return null;
+}
+
 function wrapDev(lines: string[]): string {
 	return `<system-context>\n${lines.join("\n\n")}\n</system-context>`;
+}
+
+function appendTextToSystem(systemMsg: ModelMessage, text: string): void {
+	if (typeof systemMsg.content === "string") {
+		systemMsg.content = `${systemMsg.content}\n\n${text}`;
+		return;
+	}
+	(systemMsg.content as Array<Record<string, unknown>>).push({ type: "text", text });
 }
 
 function appendDevToUser(userMsg: ModelMessage, devLines: string[]): void {
