@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
 	findActiveAgentByName,
 	findAgentByNameIncludingRetired,
+	findThreadUserAndInterfaceById,
 	insertRow,
 	listAgentsForToolView,
 	updateRow,
@@ -35,9 +36,9 @@ const MAX_PERSONA_LENGTH = 8192;
 
 const auxSchema = z.object({
 	action: z
-		.enum(["define", "update", "retire", "list"])
+		.enum(["define", "update", "retire", "list", "invoke"])
 		.describe("Auxiliary-agent operation to perform"),
-	name: z.string().optional().describe("Identity name (for define, update, retire)"),
+	name: z.string().optional().describe("Identity name (for define, update, retire, invoke)"),
 	persona: z
 		.string()
 		.optional()
@@ -54,6 +55,16 @@ const auxSchema = z.object({
 		.string()
 		.optional()
 		.describe("Default model for this identity (for define / update)"),
+	instructions: z
+		.string()
+		.optional()
+		.describe(
+			"The errand to run — what the aux should do this invocation. Arrives as a user-role message with sender_role='main' in the aux thread. (for invoke)",
+		),
+	model: z
+		.string()
+		.optional()
+		.describe("Override the definition's model_hint for this invocation only. (for invoke)"),
 });
 
 type AuxInput = z.infer<typeof auxSchema>;
@@ -68,7 +79,7 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "aux",
 				description:
-					"Manage auxiliary-agent identities: define, update, retire, or list. An auxiliary agent is a durable, persona-scoped identity with its own memory namespace, invoked to handle side errands without dragging the main agent's context or identity along. The persona says who it IS, not what it's for.",
+					"Manage auxiliary-agent identities: define, update, retire, list, or invoke. An auxiliary agent is a durable, persona-scoped identity with its own memory namespace, invoked to handle side errands without dragging the main agent's context or identity along. The persona says who it IS, not what it's for.",
 				parameters: jsonSchema,
 			},
 		},
@@ -82,6 +93,9 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 					// Each converges to the same final state on replay: define by
 					// deterministic name-keyed check, update/retire by LWW on the row.
 					return { idempotent: true, readOnly: false };
+				case "invoke":
+					// Not idempotent — each invocation creates a new thread.
+					return { idempotent: false, readOnly: false };
 				default:
 					return {};
 			}
@@ -99,10 +113,12 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 						return handleUpdate(ctx, input);
 					case "retire":
 						return handleRetire(ctx, input);
+					case "invoke":
+						return await handleInvoke(ctx, input);
 					case "list":
 						return handleList(ctx);
 					default:
-						return `Error: Invalid action '${input.action}'. Valid actions: define, update, retire, list`;
+						return `Error: Invalid action '${input.action}'. Valid actions: define, update, retire, list, invoke`;
 				}
 			} catch (error) {
 				return `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -248,4 +264,102 @@ function handleList(ctx: ToolContext): string {
 		lines.push(`${name} ${model} ${persona}`);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * #201 Car B: create the child thread + seed the instructions.
+ *
+ * The thread carries agent_id (the aux identity) and parent_thread_id (the
+ * dispatching thread). The instructions arrive as a user-role message with
+ * sender_role='main' in metadata — the envelope role axis from step zero.
+ *
+ * interface='aux' is descriptive only: it must NOT join CLIENT_TOOL_INTERFACES
+ * (which gate boundless client-tool relays). Behavioral code identifies aux
+ * threads by `agent_id IS NOT NULL`, never by interface.
+ *
+ * Car C (the nested loop execution) wires the actual agent loop over this
+ * thread and blocks for the result. Until then, invoke creates + seeds the
+ * thread and returns the handle.
+ */
+async function handleInvoke(ctx: ToolContext, input: AuxInput): Promise<string> {
+	if (!input.name) return "Error: 'name' is required for invoke action";
+	if (!input.instructions) return "Error: 'instructions' is required for invoke action";
+
+	const nameErr = validateName(input.name);
+	if (nameErr) return nameErr;
+
+	// The identity must exist and be active (non-retired).
+	const agent = findActiveAgentByName(ctx.db, input.name);
+	if (!agent) {
+		return `Error: no active auxiliary agent named '${input.name}'. Use action 'define' to create it, or 'list' to see existing identities.`;
+	}
+
+	// Resolve the owning human from the parent thread. The aux thread inherits
+	// the same user_id so ownership cascades naturally (archive/delete on the
+	// parent cascades to children).
+	if (!ctx.threadId) {
+		return "Error: invoke requires a parent thread context (ctx.threadId is undefined)";
+	}
+	const parentInfo = findThreadUserAndInterfaceById(ctx.db, ctx.threadId);
+	if (!parentInfo) {
+		return `Error: parent thread '${ctx.threadId}' not found`;
+	}
+
+	const now = new Date().toISOString();
+	const threadId = randomUUID();
+	const messageId = randomUUID();
+
+	// Create the child thread with the aux identity and parent linkage.
+	insertRow(
+		ctx.db,
+		"threads",
+		{
+			id: threadId,
+			user_id: parentInfo.user_id,
+			interface: "aux",
+			host_origin: ctx.siteId,
+			color: 0,
+			title: `aux: ${input.name}`,
+			summary: null,
+			summary_through: null,
+			summary_model_id: null,
+			extracted_through: null,
+			created_at: now,
+			last_message_at: now,
+			modified_at: now,
+			deleted: 0,
+			model_hint: input.model ?? agent.model_hint ?? null,
+			agent_id: agent.id,
+			parent_thread_id: ctx.threadId,
+		},
+		ctx.siteId,
+	);
+
+	// Seed the instructions as a user-role message with sender_role='main'.
+	// The #201 sender-envelope role axis stamps this as a main→aux dispatch,
+	// distinguishable from user→aux messages (which carry sender_role='user').
+	insertRow(
+		ctx.db,
+		"messages",
+		{
+			id: messageId,
+			thread_id: threadId,
+			role: "user",
+			content: input.instructions,
+			model_id: null,
+			tool_name: null,
+			created_at: now,
+			modified_at: now,
+			host_origin: ctx.siteId,
+			deleted: 0,
+			exit_code: null,
+			metadata: JSON.stringify({ sender_role: "main" }),
+		},
+		ctx.siteId,
+	);
+
+	// Car C will wire the nested loop execution and block for the result.
+	// Until then, return the thread handle so the caller knows where the
+	// conversation lives.
+	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}.`;
 }

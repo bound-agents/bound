@@ -174,7 +174,9 @@ export function applySchema(db: Database): void {
 			created_at       TEXT NOT NULL,
 			last_message_at  TEXT NOT NULL,
 			modified_at      TEXT NOT NULL,
-			deleted          INTEGER DEFAULT 0
+			deleted          INTEGER DEFAULT 0,
+			agent_id         TEXT, -- #201: NULL = main agent; non-null = aux identity
+			parent_thread_id TEXT  -- #201: dispatching parent thread for aux conversations
 		) STRICT
 	`);
 
