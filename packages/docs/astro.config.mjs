@@ -72,6 +72,7 @@ export default defineConfig({
 						{ label: "Inference & Model Routing", slug: "concepts/inference" },
 						{ label: "Memory & Knowledge Graph", slug: "concepts/memory" },
 						{ label: "Skills", slug: "concepts/skills" },
+						{ label: "Auxiliary Agents", slug: "concepts/auxiliary-agents" },
 					],
 				},
 				{
