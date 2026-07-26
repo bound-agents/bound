@@ -94,15 +94,17 @@ const SYSTEM_MEMORY_KEYS = new Set<string>([
  * the denominator for the count cap — system keys are excluded so they never
  * consume an operator's pinned budget.
  */
-function countNonSystemPinned(ctx: ToolContext): number {
+function countNonSystemPinned(ctx: ToolContext, agentId: string | null = null): number {
 	const systemKeys = [...SYSTEM_MEMORY_KEYS];
 	const placeholders = systemKeys.map(() => "?").join(", ");
 	const notInClause = systemKeys.length > 0 ? ` AND key NOT IN (${placeholders})` : "";
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const nsParams = agentId === null ? [] : [agentId];
 	const row = ctx.db
 		.prepare(
-			`SELECT COUNT(*) as n FROM semantic_memory WHERE tier = 'pinned' AND deleted = 0${notInClause}`,
+			`SELECT COUNT(*) as n FROM semantic_memory WHERE tier = 'pinned' AND deleted = 0${notInClause} ${nsClause}`,
 		)
-		.get(...systemKeys) as { n: number };
+		.get(...systemKeys, ...nsParams) as { n: number };
 	return row.n;
 }
 
@@ -117,16 +119,24 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 		return "Error: store requires 'key' and 'value' parameters";
 	}
 	const source = args.source_tag || ctx.taskId || ctx.threadId || "agent";
-	const memoryId = deterministicUUID(BOUND_NAMESPACE, key);
+	const agentId = ctx.agentId ?? null;
+	// #201: null agentId preserves the original seed (backward compat for
+	// all existing main-agent memories). Non-null appends \x00 + agentId.
+	const memoryId = deterministicUUID(
+		BOUND_NAMESPACE,
+		agentId === null ? key : `${key}\x00${agentId}`,
+	);
 	const now = new Date().toISOString();
 
 	// Determine tier: explicit argument wins, else "default".
 	const resolvedTier = resolveTierForKey(key, args.tier);
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const nsParams = agentId === null ? [] : [agentId];
 	const existing = ctx.db
-		.prepare("SELECT id, deleted, tier FROM semantic_memory WHERE key = ?")
-		.get(key) as { id: string; deleted: number; tier: MemoryTier } | null;
+		.prepare(`SELECT id, deleted, tier FROM semantic_memory WHERE key = ? ${nsClause}`)
+		.get(key, ...nsParams) as { id: string; deleted: number; tier: MemoryTier } | null;
 
 	// Pinned-memory caps (issue #101). Enforced at creation, modification, and
 	// promotion; never on demotion (so existing setups that already violate the
@@ -166,7 +176,7 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 		// already-pinned entry in place does not consume additional budget.
 		const isCountIncreasing = !wasPinned;
 		if (isCountIncreasing && !isSystemKey) {
-			const currentPinned = countNonSystemPinned(ctx);
+			const currentPinned = countNonSystemPinned(ctx, agentId);
 			if (currentPinned >= countCap) {
 				return `Error: pinned-memory count cap reached (${currentPinned}/${countCap}). Pinned memory is a limited resource — consolidate, rewrite, demote (re-store an existing pinned entry at a lower tier), or forget an existing pinned entry before creating or promoting another. Demoting an existing pinned memory is always allowed, even when over the cap.`;
 			}
@@ -192,6 +202,7 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 				key,
 				value,
 				source,
+				agent_id: agentId,
 				created_at: now,
 				modified_at: now,
 				last_accessed_at: now,
@@ -206,11 +217,14 @@ function handleStore(args: MemoryInput, ctx: ToolContext): string {
 }
 
 function handleForget(args: MemoryInput, ctx: ToolContext): string {
+	const agentId = ctx.agentId ?? null;
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const nsParams = agentId === null ? [] : [agentId];
 	const prefix = args.prefix;
 	if (prefix) {
 		const entries = ctx.db
-			.prepare("SELECT id, key FROM semantic_memory WHERE key LIKE ? AND deleted = 0")
-			.all(`${prefix}%`) as Array<{ id: string; key: string }>;
+			.prepare(`SELECT id, key FROM semantic_memory WHERE key LIKE ? AND deleted = 0 ${nsClause}`)
+			.all(`${prefix}%`, ...nsParams) as Array<{ id: string; key: string }>;
 
 		if (entries.length === 0) {
 			return `No memories found with prefix: ${prefix}`;
@@ -219,7 +233,7 @@ function handleForget(args: MemoryInput, ctx: ToolContext): string {
 		let totalEdges = 0;
 		for (const entry of entries) {
 			softDelete(ctx.db, "semantic_memory", entry.id, ctx.siteId);
-			totalEdges += cascadeDeleteEdges(ctx.db, entry.key, ctx.siteId);
+			totalEdges += cascadeDeleteEdges(ctx.db, entry.key, ctx.siteId, agentId);
 		}
 
 		const edgeSuffix = totalEdges > 0 ? ` (${totalEdges} edge(s) also removed)` : "";
@@ -231,27 +245,25 @@ function handleForget(args: MemoryInput, ctx: ToolContext): string {
 		return "Error: forget requires 'key' parameter (or use 'prefix' for batch deletion)";
 	}
 
-	// bun:sqlite .get() returns null (not undefined) when no row found
 	const existing = ctx.db
-		.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get(key) as { id: string; tier: MemoryTier } | null;
+		.prepare(`SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0 ${nsClause}`)
+		.get(key, ...nsParams) as { id: string; tier: MemoryTier } | null;
 
 	if (!existing) {
 		return `Error: Memory not found: ${key}`;
 	}
 
-	// If forgetting a summary, promote detail children to default
 	if (existing.tier === "summary") {
 		const children = ctx.db
 			.prepare(
-				"SELECT target_key FROM memory_edges WHERE source_key = ? AND relation = 'summarizes' AND deleted = 0",
+				`SELECT target_key FROM memory_edges WHERE source_key = ? AND relation = 'summarizes' AND deleted = 0 ${nsClause}`,
 			)
-			.all(key) as Array<{ target_key: string }>;
+			.all(key, ...nsParams) as Array<{ target_key: string }>;
 
 		for (const child of children) {
 			const childRow = ctx.db
-				.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
-				.get(child.target_key) as { id: string; tier: MemoryTier } | null;
+				.prepare(`SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0 ${nsClause}`)
+				.get(child.target_key, ...nsParams) as { id: string; tier: MemoryTier } | null;
 
 			if (childRow && childRow.tier === "detail") {
 				updateRow(ctx.db, "semantic_memory", childRow.id, { tier: "default" }, ctx.siteId);
@@ -259,12 +271,9 @@ function handleForget(args: MemoryInput, ctx: ToolContext): string {
 		}
 	}
 
-	// Use existing.id — not deterministicUUID — because entries created by
-	// thread fact extraction, heartbeat, or research evaluator use random UUIDs.
 	softDelete(ctx.db, "semantic_memory", existing.id, ctx.siteId);
 
-	// Cascade: soft-delete all edges referencing this key (as source or target)
-	const edgesCascaded = cascadeDeleteEdges(ctx.db, key, ctx.siteId);
+	const edgesCascaded = cascadeDeleteEdges(ctx.db, key, ctx.siteId, agentId);
 
 	const edgeSuffix = edgesCascaded > 0 ? ` (${edgesCascaded} edge(s) also removed)` : "";
 	return `Memory deleted: ${key}${edgeSuffix}`;
@@ -323,19 +332,21 @@ function handleSearch(args: MemoryInput, ctx: ToolContext): string {
 		return `No memories matched: ${queryText}`;
 	}
 
-	// Use FTS5 full-text search with BM25 ranking.
-	// FTS5 handles tokenization, stemming, and relevance scoring internally.
+	const agentId = ctx.agentId ?? null;
+	const nsClause = agentId === null ? "AND m.agent_id IS NULL" : "AND m.agent_id = ?";
+	const nsParams = agentId === null ? [] : [agentId];
+
 	try {
 		const results = ctx.db
 			.prepare(
 				`SELECT m.key, m.value, m.source, m.modified_at
 				 FROM semantic_memory_fts fts
 				 JOIN semantic_memory m ON m.key = fts.key AND m.deleted = 0
-				 WHERE semantic_memory_fts MATCH ?
+				 WHERE semantic_memory_fts MATCH ? ${nsClause}
 				 ORDER BY fts.rank
 				 LIMIT 20`,
 			)
-			.all(ftsQuery) as Array<{
+			.all(ftsQuery, ...nsParams) as Array<{
 			key: string;
 			value: string;
 			source: string | null;
@@ -352,7 +363,6 @@ function handleSearch(args: MemoryInput, ctx: ToolContext): string {
 		);
 		return `Found ${results.length} memories:\n${lines.join("\n")}`;
 	} catch {
-		// FTS5 query syntax error (unbalanced quotes, etc.) — return no-match
 		return `No memories matched: ${queryText}`;
 	}
 }
@@ -363,6 +373,9 @@ function handleConnect(args: MemoryInput, ctx: ToolContext): string {
 	const rel = args.relation;
 	const weight = args.weight ?? 1.0;
 	const context = args.context;
+	const agentId = ctx.agentId ?? null;
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const nsParams = agentId === null ? [] : [agentId];
 
 	if (!src || !tgt || !rel) {
 		return "Error: connect requires 'source_key', 'target_key', and 'relation' parameters";
@@ -372,32 +385,29 @@ function handleConnect(args: MemoryInput, ctx: ToolContext): string {
 		return "Error: weight must be a number between 0 and 10";
 	}
 
-	// Validate both memory keys exist (active, not soft-deleted)
 	const srcExists = ctx.db
-		.prepare("SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get(src);
+		.prepare(`SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0 ${nsClause}`)
+		.get(src, ...nsParams);
 	if (!srcExists) {
 		return `Error: source memory not found: ${src}`;
 	}
 
 	const tgtExists = ctx.db
-		.prepare("SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get(tgt);
+		.prepare(`SELECT id FROM semantic_memory WHERE key = ? AND deleted = 0 ${nsClause}`)
+		.get(tgt, ...nsParams);
 	if (!tgtExists) {
 		return `Error: target memory not found: ${tgt}`;
 	}
 
-	const id = upsertEdge(ctx.db, src, tgt, rel, weight, ctx.siteId, context);
+	const id = upsertEdge(ctx.db, src, tgt, rel, weight, ctx.siteId, context, agentId);
 
-	// Handle tier transitions for summarizes edges
 	if (rel === "summarizes") {
 		const target = ctx.db
-			.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
-			.get(tgt) as { id: string; tier: MemoryTier } | null;
+			.prepare(`SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0 ${nsClause}`)
+			.get(tgt, ...nsParams) as { id: string; tier: MemoryTier } | null;
 		if (target && target.tier === "default") {
 			updateRow(ctx.db, "semantic_memory", target.id, { tier: "detail" }, ctx.siteId);
 		}
-		// pinned and summary targets are NOT demoted
 	}
 
 	const contextSuffix = context ? `, context="${context}"` : "";
@@ -408,30 +418,30 @@ function handleDisconnect(args: MemoryInput, ctx: ToolContext): string {
 	const src = args.source_key;
 	const tgt = args.target_key;
 	const rel = args.relation;
+	const agentId = ctx.agentId ?? null;
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const nsParams = agentId === null ? [] : [agentId];
 
 	if (!src || !tgt) {
 		return "Error: disconnect requires 'source_key' and 'target_key' parameters";
 	}
 
-	const count = removeEdges(ctx.db, src, tgt, rel, ctx.siteId);
+	const count = removeEdges(ctx.db, src, tgt, rel, ctx.siteId, agentId);
 	if (count === 0) {
 		return `Error: no edges found between ${src} and ${tgt}${rel ? ` with relation ${rel}` : ""}`;
 	}
 
-	// Handle orphan promotion for summarizes edges
-	// Check if this was (or could have been) a summarizes edge
 	if (rel === "summarizes" || !rel) {
-		// Check if target has any remaining incoming summarizes edges
 		const remaining = ctx.db
 			.prepare(
-				"SELECT COUNT(*) as cnt FROM memory_edges WHERE target_key = ? AND relation = 'summarizes' AND deleted = 0",
+				`SELECT COUNT(*) as cnt FROM memory_edges WHERE target_key = ? AND relation = 'summarizes' AND deleted = 0 ${nsClause}`,
 			)
-			.get(tgt) as { cnt: number };
+			.get(tgt, ...nsParams) as { cnt: number };
 
 		if (remaining.cnt === 0) {
 			const target = ctx.db
-				.prepare("SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0")
-				.get(tgt) as { id: string; tier: MemoryTier } | null;
+				.prepare(`SELECT id, tier FROM semantic_memory WHERE key = ? AND deleted = 0 ${nsClause}`)
+				.get(tgt, ...nsParams) as { id: string; tier: MemoryTier } | null;
 			if (target && target.tier === "detail") {
 				updateRow(ctx.db, "semantic_memory", target.id, { tier: "default" }, ctx.siteId);
 			}
@@ -454,7 +464,8 @@ function handleTraverse(args: MemoryInput, ctx: ToolContext): string {
 		return "Error: depth must be a positive integer (1-3)";
 	}
 
-	const results = traverseGraph(ctx.db, key, depth, relation);
+	const agentId = ctx.agentId ?? null;
+	const results = traverseGraph(ctx.db, key, depth, relation, agentId);
 
 	if (results.length === 0) {
 		return `No connected entries found from: ${key}`;
@@ -474,8 +485,8 @@ function handleNeighbors(args: MemoryInput, ctx: ToolContext): string {
 	}
 
 	const dir = args.direction ?? "both";
-
-	const results = getNeighbors(ctx.db, key, dir);
+	const agentId = ctx.agentId ?? null;
+	const results = getNeighbors(ctx.db, key, dir, agentId);
 
 	if (results.length === 0) {
 		return `No neighbors found for: ${key}`;

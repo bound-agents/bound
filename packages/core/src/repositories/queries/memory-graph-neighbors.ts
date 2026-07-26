@@ -39,7 +39,10 @@ export function traverseMemoryGraph(
 	startKey: string,
 	effectiveDepth: number,
 	relationParam: string | null,
+	agentId: string | null = null,
 ): GraphTraversalRow[] {
+	const ns = agentId === null ? "IS NULL" : "= ?";
+	const nsParams = agentId === null ? [] : [agentId];
 	return db
 		.prepare(
 			`WITH RECURSIVE reachable(key, depth, path, via_relation, via_weight, via_context) AS (
@@ -52,17 +55,26 @@ export function traverseMemoryGraph(
 				JOIN reachable r ON e.source_key = r.key
 				WHERE r.depth < ?
 				  AND e.deleted = 0
+				  AND e.agent_id ${ns}
 				  AND INSTR(r.path, '/' || e.target_key || '/') = 0
 				  AND (? IS NULL OR e.relation = ?)
 			)
 			SELECT r.key, r.depth, r.via_relation, r.via_weight, r.via_context,
 				   m.value, m.modified_at, m.source, m.tier
 			FROM reachable r
-			JOIN semantic_memory m ON m.key = r.key AND m.deleted = 0
+			JOIN semantic_memory m ON m.key = r.key AND m.deleted = 0 AND m.agent_id ${ns}
 			WHERE r.depth > 0
 			ORDER BY r.depth ASC, m.modified_at DESC`,
 		)
-		.all(startKey, startKey, effectiveDepth, relationParam, relationParam) as GraphTraversalRow[];
+		.all(
+			startKey,
+			startKey,
+			effectiveDepth,
+			...nsParams,
+			relationParam,
+			relationParam,
+			...nsParams,
+		) as GraphTraversalRow[];
 }
 
 /**
@@ -83,16 +95,23 @@ export interface GraphNeighborRow {
  * resolved against the live target `semantic_memory` row. Ordered
  * `e.weight DESC, m.modified_at DESC`.
  */
-export function listOutgoingNeighbors(db: Database, key: string): GraphNeighborRow[] {
+export function listOutgoingNeighbors(
+	db: Database,
+	key: string,
+	agentId: string | null = null,
+): GraphNeighborRow[] {
+	const ns = agentId === null ? "IS NULL" : "= ?";
+	const nsParams = agentId === null ? [] : [agentId];
 	return db
 		.prepare(
 			`SELECT e.target_key AS key, e.relation, e.weight, e.context, m.value, m.modified_at
 			 FROM memory_edges e
 			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-			 WHERE e.source_key = ? AND e.deleted = 0
+			 WHERE e.source_key = ? AND e.deleted = 0 AND e.agent_id ${ns}
+			   AND m.agent_id ${ns}
 			 ORDER BY e.weight DESC, m.modified_at DESC`,
 		)
-		.all(key) as GraphNeighborRow[];
+		.all(key, ...nsParams, ...nsParams) as GraphNeighborRow[];
 }
 
 /**
@@ -100,14 +119,21 @@ export function listOutgoingNeighbors(db: Database, key: string): GraphNeighborR
  * resolved against the live source `semantic_memory` row. Ordered
  * `e.weight DESC, m.modified_at DESC`.
  */
-export function listIncomingNeighbors(db: Database, key: string): GraphNeighborRow[] {
+export function listIncomingNeighbors(
+	db: Database,
+	key: string,
+	agentId: string | null = null,
+): GraphNeighborRow[] {
+	const ns = agentId === null ? "IS NULL" : "= ?";
+	const nsParams = agentId === null ? [] : [agentId];
 	return db
 		.prepare(
 			`SELECT e.source_key AS key, e.relation, e.weight, e.context, m.value, m.modified_at
 			 FROM memory_edges e
 			 JOIN semantic_memory m ON m.key = e.source_key AND m.deleted = 0
-			 WHERE e.target_key = ? AND e.deleted = 0
+			 WHERE e.target_key = ? AND e.deleted = 0 AND e.agent_id ${ns}
+			   AND m.agent_id ${ns}
 			 ORDER BY e.weight DESC, m.modified_at DESC`,
 		)
-		.all(key) as GraphNeighborRow[];
+		.all(key, ...nsParams, ...nsParams) as GraphNeighborRow[];
 }

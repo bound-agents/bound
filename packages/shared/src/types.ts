@@ -100,6 +100,8 @@ export interface SemanticMemory extends SoftDeletable {
 	modified_at: string;
 	last_accessed_at: string | null;
 	tier: MemoryTier;
+	/** #201: NULL = main agent; auxiliary-agent namespace partition. */
+	agent_id?: string | null;
 }
 
 export interface Task extends SoftDeletable {
@@ -354,6 +356,8 @@ export interface MemoryEdge extends SoftDeletable {
 	modified_at: string;
 	/** Optional free-text context for the edge (added via ALTER TABLE migration). */
 	context: string | null;
+	/** #201: NULL = main agent; edges never cross namespaces. */
+	agent_id?: string | null;
 }
 
 export interface ConnectorHandleRow extends SoftDeletable {

@@ -28,22 +28,30 @@ export function listActiveEdgeIdsBySourceAndTarget(
 	db: Database,
 	sourceKey: string,
 	targetKey: string,
+	agentId: string | null = null,
 ): Array<{ id: string }> {
-	return db
-		.prepare("SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND deleted = 0")
-		.all(sourceKey, targetKey) as Array<{ id: string }>;
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const stmt = db.prepare(
+		`SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND deleted = 0 ${nsClause}`,
+	);
+	return (
+		agentId === null ? stmt.all(sourceKey, targetKey) : stmt.all(sourceKey, targetKey, agentId)
+	) as Array<{ id: string }>;
 }
-
 /** List active edge ids referencing a key as either source OR target. */
 export function listActiveEdgeIdsReferencingKey(
 	db: Database,
 	memoryKey: string,
+	agentId: string | null = null,
 ): Array<{ id: string }> {
-	return db
-		.prepare("SELECT id FROM memory_edges WHERE (source_key = ? OR target_key = ?) AND deleted = 0")
-		.all(memoryKey, memoryKey) as Array<{ id: string }>;
+	const nsClause = agentId === null ? "AND agent_id IS NULL" : "AND agent_id = ?";
+	const stmt = db.prepare(
+		`SELECT id FROM memory_edges WHERE (source_key = ? OR target_key = ?) AND deleted = 0 ${nsClause}`,
+	);
+	return (
+		agentId === null ? stmt.all(memoryKey, memoryKey) : stmt.all(memoryKey, memoryKey, agentId)
+	) as Array<{ id: string }>;
 }
-
 /** List target keys of active `summarizes` edges outgoing from a source key. */
 export function listSummarizesChildKeysBySource(
 	db: Database,
