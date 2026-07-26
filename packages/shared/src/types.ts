@@ -75,6 +75,10 @@ export interface Thread extends SoftDeletable {
 	last_message_at: string;
 	modified_at: string;
 	model_hint: string | null;
+	/** #201: NULL = main agent; non-null = auxiliary-agent identity */
+	agent_id?: string | null;
+	/** #201: dispatching parent thread for aux conversations */
+	parent_thread_id?: string | null;
 }
 
 export interface Message extends SoftDeletable {
