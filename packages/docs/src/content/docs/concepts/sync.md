@@ -17,7 +17,7 @@ Conflicts are resolved deterministically: most data uses last-writer-wins by tim
 
 ## Inference relay
 
-When a model lives on a different host than the one processing a message, inference streams over the relay transport. The requesting host sends the context; the target host runs the LLM and streams tokens back. Tool calls to remote MCP servers work the same way. This is transparent — the agent just works, regardless of which host holds which backend.
+When a model lives on a different host than the one processing a message, inference streams over the relay transport. The requesting host sends the context; the target host runs the LLM and streams tokens back. Tool calls to remote MCP servers work the same way. Nothing in your config names a host — you pick a model, and routing follows from which host advertises it. What you do notice is latency: a remote model pays a network round-trip per turn that a local one doesn't.
 
 ## Setting up a cluster
 

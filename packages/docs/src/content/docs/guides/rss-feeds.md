@@ -3,7 +3,7 @@ title: RSS Feeds
 description: Poll RSS and Atom feeds and deliver new items to the agent.
 ---
 
-Bound can poll RSS and Atom feeds on your behalf. When a new item appears, the agent receives it as a task — just like a webhook delivery, but pull-based instead of push-based.
+Bound can poll RSS and Atom feeds on your behalf. When a new item appears, the agent receives it as a task — the same delivery path as a webhook, but pull-based instead of push-based.
 
 ## Creating an RSS feed
 

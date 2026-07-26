@@ -38,12 +38,13 @@ Three surfaces, all sharing the same import logic:
 
 ## Activating skills
 
-Once imported, a skill exists in the cluster but isn't active on any thread. Activate it:
+Once imported, a skill exists in the cluster but isn't active on any thread. The agent activates it — there's no button for this, and no CLI verb. Ask it to follow a convention you've imported a skill for, and it picks up the relevant one:
 
-- **Agent tool**: the agent can activate skills itself via the `skill` tool (`action: activate`)
-- **From the web UI**: the agent does this when needed — you typically just ask it to follow certain conventions and it activates the relevant skill
+> Use our commit conventions for this.
 
-Deactivation is per-thread — dropping a skill from one thread doesn't affect others. The agent can deactivate skills via the `skill` tool (`action: deactivate`).
+Activation is per-thread, so a skill running in one conversation doesn't leak into another.
+
+Dropping a skill works the same way — tell the agent to stop following a convention and it deactivates that skill for the current thread only.
 
 ## Managing skills
 

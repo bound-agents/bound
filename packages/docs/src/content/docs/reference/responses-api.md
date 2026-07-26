@@ -27,7 +27,7 @@ The endpoint accepts a subset of the Responses schema that maps onto Bound's inp
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `model` | string | router default | Model id to resolve. `"default"` and omitted both fall to the default local backend. Remote cluster models relay transparently. |
+| `model` | string | router default | Model id to resolve. `"default"` and omitted both fall to the default local backend. A model held by another host relays over the cluster transport. |
 | `input` | string \| item[] | — | A bare string is a single user turn. An array of items carries the full conversation (see below). |
 | `instructions` | string | — | Maps to the system prompt. |
 | `tools` | tool[] | — | Responses-flat function tools (`{ type: "function", name, description?, parameters }`). |
@@ -87,7 +87,7 @@ Omit `stream` or set it to `false`. The endpoint collects the full stream intern
 
 ## Model resolution
 
-The endpoint uses the same `resolveModel()` as the agent loop. Local backends are checked first; if the requested model lives on another host, inference streams over the relay transport transparently. Unknown models return `404`; unavailable models return `503`.
+The endpoint uses the same `resolveModel()` as the agent loop. Local backends are checked first; if the requested model lives on another host, inference streams over the relay transport — the response shape is identical either way, so a client can't tell which host served it. Unknown models return `404`; unavailable models return `503`.
 
 ## Pointing a client at it
 

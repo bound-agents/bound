@@ -23,9 +23,9 @@ Configure backends in `model_backends.json`. See the [Configuration Reference](/
 
 ## Model selection
 
-Each host advertises its available models to the cluster. The web UI's model selector shows all cluster models with annotations for which host holds them. When you send a message, the model is resolved cluster-wide — if the requested model is on another host, inference streams over the relay transport transparently.
+Each host advertises its available models to the cluster. The web UI's model selector shows all cluster models, annotated with which host holds them. Resolution is cluster-wide: pick a model, and if it lives on another host, inference streams over the relay transport — no per-host configuration on your end.
 
-You can set a default model per thread, or let the cluster default handle it. The `model_hint` tool lets the agent switch models mid-task.
+You can set a default model per thread, or let the cluster default handle it. The agent can also switch models mid-task on its own — useful when a cheap model hits something it should hand to a stronger one.
 
 ## Prompt caching
 

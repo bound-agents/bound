@@ -37,7 +37,7 @@ Agent loop activates:
   7. Check for more queued messages → loop or idle
 ```
 
-If the model is on another host, inference streams over the relay transport transparently. If a tool call targets a remote MCP server, it relays too. The agent doesn't know or care where things physically run.
+If the model is on another host, inference streams over the relay transport. If a tool call targets a remote MCP server, it relays too. Neither the loop nor the agent branches on host — placement is resolved at the routing layer, so the same loop runs identically wherever the backend physically lives.
 
 ## Sync
 

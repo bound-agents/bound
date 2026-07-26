@@ -1,13 +1,13 @@
 ---
 title: Memory & Knowledge Graph
-description: How the agent remembers things across sessions, and how to use the memory tool.
+description: How the agent remembers things across sessions, and what surfaces in context automatically.
 ---
 
 Bound accumulates a knowledge graph across sessions. Memory entries persist in the database and replicate across hosts. The agent doesn't need to actively search its memory every turn — relevant entries surface in context automatically.
 
 ## The memory tool
 
-The agent interacts with memory through the `memory` tool:
+The agent stores and retrieves memory itself, through the `memory` tool. You don't call this — you ask, and it decides what's worth keeping:
 
 | Action | What it does |
 | --- | --- |
@@ -32,7 +32,7 @@ Each memory entry has a tier that controls how it surfaces in context:
 | `default` | Same as summary — title in the catalog, searchable body. |
 | `detail` | Title-only, grouped under a summary parent. |
 
-Pass `tier: "pinned"` when storing to make an entry durable. There's a cap on pinned entries (configurable in `memory.json` — default 10 entries, 2000 chars each).
+Pinning is the agent's call, but you can direct it — "remember that permanently" or "that's a standing rule" is the operator-side version of `tier: "pinned"`. Pinned space is capped, configurable in `memory.json` (default 10 entries, 2000 chars each), so the agent has to spend it deliberately.
 
 ## Knowledge graph edges
 
@@ -45,5 +45,3 @@ The agent doesn't manually search its memory every turn. Three things happen aut
 - **Pinned entries** appear in full in the system prompt
 - **Archive catalog** lists all entries by title so the agent knows what's available to search
 - **Relevant entries** are matched to the current conversation by keyword and graph traversal, and surfaced as titles
-
-This means the most relevant memory is already in context when the agent responds, and the full archive is one search away.
