@@ -465,12 +465,9 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 				"hashline anchors from a prior bms_read. Each edit replaces the inclusive line range " +
 				'[start..end] with new content; anchors are "LINE:HASH" tags as shown by bms_read. ' +
 				"Anchors survive line drift: if the file changed since the read, the hash is matched " +
-				"by proximity to the line hint. The line number is a HINT, not a constraint: a hash " +
-				"that matches a line you did not name is still edited, and identical lines share one " +
-				"hash. On files with repeated lines (case labels, bare braces) pass an anchor copied " +
-				"verbatim from a read of that exact line — never one assembled from a grep line number " +
-				"plus a hash seen elsewhere. If a returned anchor's line differs from the one you " +
-				"requested, the anchor mismatched: stop and re-read. " +
+				"by proximity to the line hint. A unique hash resolves regardless of the line " +
+				"number; the number only breaks ties between lines with identical content. Take " +
+				"both halves from the same read. " +
 				"All edits are validated against the pre-edit content " +
 				"and applied atomically; if any anchor fails to resolve, no changes are written. " +
 				"Returns a unified diff on success.",

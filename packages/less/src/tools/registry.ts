@@ -105,12 +105,8 @@ export function buildToolSet(
 					"inclusive line range [start..end] with new content; anchors are LINE:HASH tags " +
 					'(e.g. "12:a3f1") as shown by boundless_read. Anchors survive line drift: if the ' +
 					"file shifted since the read, the hash is matched by proximity to the line hint. " +
-					"The line number is a HINT, not a constraint: a hash that matches a line you did " +
-					"not name is still edited, and identical lines share a hash. On files with " +
-					"repeated lines (case labels, bare braces) pass an anchor copied verbatim from " +
-					"a read of that exact line — never one assembled from a grep line number plus a " +
-					"hash seen elsewhere. If the returned anchor's line differs from the one you " +
-					"requested, the anchor mismatched: stop and re-read. " +
+					"A unique hash resolves regardless of the line number; the number only breaks " +
+					"ties between lines with identical content. Take both halves from the same read. " +
 					"All edits in one call are validated together and applied atomically.",
 				parameters: {
 					type: "object",
