@@ -7,7 +7,7 @@
  * extractUsage folds provider usage metadata into the terminal `done` chunk.
  */
 
-import { createLogger } from "@bound/shared";
+import { createLogger, formatError } from "@bound/shared";
 import type { LLMFinishReason, LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import { MAX_TOOL_USE_ID_LENGTH } from "./messages";
@@ -359,8 +359,16 @@ export async function* mapChunks(
 				// catch then flows to the non-retryable alert path, so operators
 				// see the failure in logs + as a role:"alert" DB message instead
 				// of watching a task quietly complete with zero output tokens.
+				// The AI SDK does NOT guarantee an Error here — it forwards whatever
+				// the provider surfaced, including bare objects like
+				// `{ statusCode: 403 }`. `String(err)` on those renders
+				// "[object Object]", which then becomes the LLMError message and
+				// travels verbatim out through /v1/responses to external clients
+				// (observed as `provider error server_error: [object Object]`).
+				// formatError digs a real message (or at minimum an HTTP status) out
+				// of the carrier shapes providers actually use.
 				const err = part.error;
-				const message = err instanceof Error ? err.message : String(err);
+				const message = formatError(err, "provider stream error with no message");
 				throw err instanceof LLMError
 					? err
 					: new LLMError(message, "ai-sdk", undefined, err instanceof Error ? err : undefined);

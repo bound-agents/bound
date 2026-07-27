@@ -10,7 +10,7 @@ import type {
 	ToolDefinition,
 } from "@bound/llm";
 import type { ContextSegment, Logger, TypedEventEmitter } from "@bound/shared";
-import { createLogger } from "@bound/shared";
+import { createLogger, formatError } from "@bound/shared";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 
@@ -641,7 +641,11 @@ function assembleOutput(chunks: StreamChunk[]): {
 				finishReason = chunk.finish_reason ?? null;
 				break;
 			case "error":
-				throw new Error(chunk.error);
+				// chunk.error is typed string, but the value originates from an AI SDK
+				// fullStream error event that forwards arbitrary provider objects.
+				// formatError keeps a bare `{statusCode: 403}` from rendering as
+				// "[object Object]" in response.failed.error.message.
+				throw new Error(formatError(chunk.error, "provider stream error with no message"));
 			default:
 				break;
 		}
@@ -852,7 +856,7 @@ class SseEmitter {
 				this.finishReason = chunk.finish_reason ?? null;
 				break;
 			case "error":
-				throw new Error(chunk.error);
+				throw new Error(formatError(chunk.error, "provider stream error with no message"));
 			default:
 				// thinking / heartbeat: not surfaced on the Responses text channel.
 				break;

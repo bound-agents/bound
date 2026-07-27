@@ -3179,6 +3179,41 @@ describe("mapChunks — finish / usage", () => {
 		expect(threw).toBe(true);
 	});
 
+	it("does NOT render a non-Error carrier as [object Object]", async () => {
+		// The gap that let this ship: the assertion above only checks THAT we
+		// throw, never what the message says. `String({statusCode: 403})` is
+		// "[object Object]", and that string became the LLMError message, which
+		// /v1/responses copies verbatim into response.failed.error.message and
+		// external clients print. Observed live via polytoken:
+		//   provider error server_error: [object Object]
+		const iter = mapChunks(events({ type: "error", error: { statusCode: 403 } }));
+		let message = "";
+		try {
+			await collect(iter);
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).not.toContain("[object Object]");
+		expect(message).toContain("403");
+	});
+
+	it("surfaces the provider message out of a status-bearing carrier", async () => {
+		const iter = mapChunks(
+			events({
+				type: "error",
+				error: { statusCode: 403, message: "AccessDeniedException" },
+			}),
+		);
+		let message = "";
+		try {
+			await collect(iter);
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).toContain("AccessDeniedException");
+		expect(message).toContain("403");
+	});
+
 	it("ignores events we don't model (start, text-start, reasoning-end, etc.)", async () => {
 		const out = await collect(
 			mapChunks(
