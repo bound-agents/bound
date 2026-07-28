@@ -14,7 +14,14 @@ import { LLMError } from "../types";
  */
 export function mapError(err: unknown, provider: string): LLMError {
 	if (err instanceof LLMError) return err;
-	const e = err as
+	// The AI SDK wraps the final error in a RetryError after exhausting its
+	// internal retry budget (default 2 attempts). The RetryError itself carries
+	// no statusCode — the HTTP status lives on its .lastError (an APICallError).
+	// Unwrap before extracting so 529 Overloaded / 403 AccessDenied etc. survive
+	// onto the LLMError and downstream retry logic (isTransientLLMError,
+	// isRateLimitStatus) can classify them correctly.
+	const source = (err as { lastError?: unknown } | null)?.lastError ?? err;
+	const e = source as
 		| {
 				statusCode?: number;
 				status?: number;

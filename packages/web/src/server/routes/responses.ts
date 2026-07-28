@@ -9,6 +9,7 @@ import type {
 	StreamChunk,
 	ToolDefinition,
 } from "@bound/llm";
+import { LLMError } from "@bound/llm";
 import type { ContextSegment, Logger, TypedEventEmitter } from "@bound/shared";
 import { createLogger, formatError } from "@bound/shared";
 import { Hono } from "hono";
@@ -147,32 +148,32 @@ export function createResponsesRoutes(
 
 		const modelId = resolution.modelId;
 
-		let stream: AsyncIterable<StreamChunk>;
-		if (resolution.kind === "local") {
-			const thinking = resolution.thinkingConfig;
-			const localEffort = effort ?? resolution.effort;
-			const maxOutputCap = resolution.maxOutputTokens;
-			const max_tokens = requestedMaxTokens
-				? maxOutputCap
-					? Math.min(requestedMaxTokens, maxOutputCap)
-					: requestedMaxTokens
-				: maxOutputCap;
+		const createStream = (): AsyncIterable<StreamChunk> => {
+			if (resolution.kind === "local") {
+				const thinking = resolution.thinkingConfig;
+				const localEffort = effort ?? resolution.effort;
+				const maxOutputCap = resolution.maxOutputTokens;
+				const max_tokens = requestedMaxTokens
+					? maxOutputCap
+						? Math.min(requestedMaxTokens, maxOutputCap)
+						: requestedMaxTokens
+					: maxOutputCap;
 
-			stream = resolution.backend.chat({
-				messages,
-				tools,
-				system,
-				max_tokens,
-				temperature,
-				top_p: topP,
-				tool_choice: toolChoice,
-				thinking,
-				effort: localEffort,
-				cache_ttl: resolution.cacheTtl,
-				resolveFileRef: createFileRefResolver(db),
-				signal: c.req.raw.signal,
-			});
-		} else {
+				return resolution.backend.chat({
+					messages,
+					tools,
+					system,
+					max_tokens,
+					temperature,
+					top_p: topP,
+					tool_choice: toolChoice,
+					thinking,
+					effort: localEffort,
+					cache_ttl: resolution.cacheTtl,
+					resolveFileRef: createFileRefResolver(db),
+					signal: c.req.raw.signal,
+				});
+			}
 			// Remote: relay through the cluster to a host that has this model.
 			const segments: ContextSegment[] = messages.map((msg) => ({
 				kind: "inline",
@@ -195,13 +196,19 @@ export function createResponsesRoutes(
 				model: modelId,
 				hosts: resolution.hosts.map((h) => h.host_name),
 			});
-			stream = createRelayInferenceStream(
+			return createRelayInferenceStream(
 				{ db, eventBus, siteId, logger: log },
 				payload,
 				resolution.hosts,
 				c.req.raw.signal,
 			);
-		}
+		};
+
+		const stream = withTransientRetry(createStream, {
+			maxRetries: RESPONSES_MAX_TRANSIENT_RETRIES,
+			signal: c.req.raw.signal,
+			log,
+		});
 
 		if (body.stream) {
 			return streamSSE(c, async (sse) => {
@@ -982,6 +989,72 @@ class SseEmitter {
 	 */
 	private async closeOpenItems(): Promise<void> {
 		await this.closeTextItem();
+	}
+}
+
+// ── Transient retry ───────────────────────────────────────────────────────
+
+const RESPONSES_MAX_TRANSIENT_RETRIES = 2;
+const RESPONSES_RETRY_BASE_MS = 1000;
+
+function isTransientStatus(statusCode?: number): boolean {
+	if (statusCode === undefined) return false;
+	return (
+		statusCode === 429 ||
+		statusCode === 500 ||
+		statusCode === 502 ||
+		statusCode === 503 ||
+		statusCode === 529
+	);
+}
+
+/**
+ * Wrap a stream factory with bounded retry for transient upstream errors
+ * (429, 500, 502, 503, 529). Only retries if NO chunks have been yielded
+ * yet — a mid-stream error cannot be retried without duplicating partial
+ * output, so it re-throws. Respects Retry-After headers when present.
+ */
+async function* withTransientRetry(
+	createStream: () => AsyncIterable<StreamChunk>,
+	opts: { maxRetries: number; signal?: AbortSignal; log: Logger },
+): AsyncIterable<StreamChunk> {
+	let attempt = 0;
+	let chunksYielded = false;
+	while (true) {
+		const stream = createStream();
+		try {
+			for await (const chunk of stream) {
+				chunksYielded = true;
+				yield chunk;
+			}
+			return;
+		} catch (err) {
+			if (chunksYielded) throw err;
+			if (attempt >= opts.maxRetries) throw err;
+			const llmErr = err instanceof LLMError ? err : null;
+			if (!isTransientStatus(llmErr?.statusCode)) throw err;
+			if (opts.signal?.aborted) throw err;
+			const retryAfter = llmErr?.retryAfterMs;
+			const backoff = retryAfter ?? RESPONSES_RETRY_BASE_MS * 2 ** attempt + Math.random() * 500;
+			opts.log.warn("RESPONSES_RETRY: transient error, retrying", {
+				attempt: attempt + 1,
+				maxRetries: opts.maxRetries,
+				statusCode: llmErr?.statusCode,
+				backoffMs: Math.round(backoff),
+			});
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, backoff);
+				opts.signal?.addEventListener(
+					"abort",
+					() => {
+						clearTimeout(timer);
+						reject(opts.signal?.reason ?? new Error("aborted"));
+					},
+					{ once: true },
+				);
+			});
+			attempt++;
+		}
 	}
 }
 
