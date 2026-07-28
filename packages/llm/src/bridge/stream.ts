@@ -7,9 +7,10 @@
  * extractUsage folds provider usage metadata into the terminal `done` chunk.
  */
 
-import { createLogger, formatError } from "@bound/shared";
+import { createLogger } from "@bound/shared";
 import type { LLMFinishReason, LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
+import { mapError } from "./errors";
 import { MAX_TOOL_USE_ID_LENGTH } from "./messages";
 
 const logger = createLogger("llm", "ai-sdk-bridge");
@@ -368,10 +369,13 @@ export async function* mapChunks(
 				// formatError digs a real message (or at minimum an HTTP status) out
 				// of the carrier shapes providers actually use.
 				const err = part.error;
-				const message = formatError(err, "provider stream error with no message");
-				throw err instanceof LLMError
-					? err
-					: new LLMError(message, "ai-sdk", undefined, err instanceof Error ? err : undefined);
+				// Route through mapError so the HTTP status code (e.g. 529 Overloaded,
+				// 403 AccessDenied) is extracted from the AI SDK's carrier shapes and
+				// preserved on the LLMError. The previous bare `new LLMError(..., undefined)`
+				// dropped the status code, so downstream retry logic (isTransientLLMError,
+				// isRateLimitStatus) couldn't classify 5xx/529 as retryable — the Responses
+				// endpoint and agent loop both saw it as an opaque string error.
+				throw err instanceof LLMError ? err : mapError(err, "ai-sdk");
 			}
 			case "reasoning-end": {
 				// OpenAI Responses (GPT-5.x on Mantle) surfaces encrypted reasoning
