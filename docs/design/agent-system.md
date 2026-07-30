@@ -52,7 +52,7 @@ type AgentLoopState =
 | `ASSEMBLE_CONTEXT` | Runs the 8-stage context assembly pipeline (see below). Model resolution also happens here. |
 | `LLM_CALL` | Streams tokens from the LLM backend (local) or enters `RELAY_STREAM` (remote). |
 | `PARSE_RESPONSE` | Iterates accumulated chunks to extract text content and detect tool-use starts. |
-| `TOOL_EXECUTE` | Dispatches tool calls via the sandbox. Remote MCP tools enter `RELAY_WAIT`. |
+| `TOOL_EXECUTE` | Dispatches tool calls via the sandbox. Remote MCP tools enter `RELAY_WAIT`. A tool returning a `DeferredToolResult` gets a placeholder `tool_result` and the loop continues without blocking (see Deferred Tool Results below). |
 | `RELAY_WAIT` | Polls `relay_inbox` for a tool result from a remote host (event-driven with 500ms fallback polls, 30s timeout per host, automatic failover). |
 | `RELAY_STREAM` | Polls `relay_inbox` for streaming inference chunks from a remote host. Reorders by `seq`, handles gaps, fails over after `inference_timeout_ms` (default 300s) per host. |
 | `TOOL_PERSIST` | Writes tool call and tool result messages to the database. |
@@ -140,6 +140,29 @@ loop.cancel();
 | Any other unhandled throw | `ERROR_PERSIST` | No alert row; result returned with `error` field |
 
 The `alert` role is a reserved message role visible in the thread but excluded from LLM context during subsequent calls.
+
+### Deferred Tool Results — Backgrounding (#76)
+
+**Source:** `packages/loop/src/types.ts` (`DeferredToolResult` / `isDeferredToolResult`), `packages/agent/src/bound-agent-loop.ts` (`executeToolCall`, `executeToolRoundTrip`), `packages/core/src/dispatch.ts` (`resolveDeferredToolResult`)
+
+A tool's `execute` may return `{ deferred: true, description? }` instead of a result. The loop then writes a **placeholder** `tool_result` (content = `description`, `exit_code = 0`) and **continues** — no block, no `RELAY_WAIT`. The tool owns its background work; when that work lands it calls `resolveDeferredToolResult(db, threadId, callId, content, isError, siteId)`, which overwrites the placeholder's content in place (via `updateRow`, so the edit syncs) and re-wakes the loop through `enqueueToolResult`.
+
+This is distinct from `ClientToolCallRequest`, which also defers but *stops* the turn to wait for a WS round-trip. A `DeferredToolResult` defers **and continues**: the model sees the placeholder on the next LLM call and can keep working while the tool runs.
+
+| Concern | Resolution |
+|---|---|
+| Wire legality | The placeholder pairs the `tool_call` immediately, so Stage 3 (`TOOL_PAIR_SANITIZATION`) never sees an orphan and never drops the call. |
+| Parallelism | N deferrals in one turn each get their own placeholder; all N run concurrently and resolve independently. |
+| `call_id` reuse | Resolution targets the newest live `tool_result` for `(thread_id, tool_name = callId)`, since boundless reuses `call_1`, `call_2`, … every turn. |
+| Result arrives before the placeholder | `resolveDeferredToolResult` still enqueues the re-wake, so the loop never stalls waiting on a row it already passed. |
+| Repeat resolution | `enqueueToolResult` is idempotent on `(thread_id, call_id)` while a re-drive is in flight (R-UD9). |
+| Failure | A rejected background promise resolves the placeholder with `exit_code = 1`, so the model reads the error rather than a permanent "still running". |
+| Restart | Not durable. The placeholder and any child thread persist, but nothing re-drives an in-flight background promise across a process restart. |
+
+**Which tools can defer is the tool's call, not the loop's.** The loop never injects, merges, or strips a `background` parameter — a tool that supports deferral declares the parameter in **its own** schema, so an MCP Task tool arriving with its own `background` field keeps it unmolested, and a tool like `write` (where fire-and-forget would race the model's next read) simply never offers the option. The per-call decision is then the model's: the same tool can be deferred on one call and awaited on the next.
+
+First consumer: the `aux` tool's `invoke` action (`packages/agent/src/tools/auxiliary.ts`). With `background: true` and a `callId` in hand it seeds the child thread, fires `auxLoopRunner` unawaited, and returns a `DeferredToolResult`; without either it falls back to the blocking path.
+
 
 ---
 

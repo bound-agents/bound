@@ -57,8 +57,20 @@ What the agent supplies when dispatching an errand:
 | `name` | Yes | Must be an active (non-retired) identity |
 | `instructions` | Yes | The errand — what to do this invocation |
 | `model` | No | Override the definition's `model_hint` for this call only |
+| `background` | No | Don't block on the result — dispatch and keep going |
 
-`invoke` is synchronous. It creates the child thread, seeds the instructions, runs the nested loop to completion, and returns the aux's final response as the result. The main agent's turn blocks until the aux finishes — from your side, one pause in the conversation and then the answer.
+By default `invoke` is synchronous. It creates the child thread, seeds the instructions, runs the nested loop to completion, and returns the aux's final response as the result. The main agent's turn blocks until the aux finishes — from your side, one pause in the conversation and then the answer.
+
+### Backgrounding an errand
+
+With `background: true`, `invoke` returns the moment the child thread is seeded. The main agent gets a placeholder result — *this is running, the answer will arrive later* — and carries on with the rest of its turn. When the aux finishes, its result replaces the placeholder and the main agent wakes to read it.
+
+The practical difference is parallelism. Three synchronous invocations run one after another and you wait for the sum; three backgrounded ones leave together and you wait for the slowest. When the agent has several independent questions to farm out, that's the difference between one long pause and one short one.
+
+The agent picks per call, not per identity. The same scout can be backgrounded for a broad survey whose answer isn't needed until later in the turn, and awaited synchronously when the next step depends on what it found. Deciding which is which is the agent's judgment call — if it needs the answer to choose its next move, blocking is correct.
+
+A backgrounded errand that fails surfaces as a failed tool result rather than vanishing: an aux that reports an error, or a nested loop that throws, both land as the result the main agent reads on wake. What a background invocation does *not* survive is the server restarting mid-flight — the child thread and its seeded instructions persist in the database, but nothing re-drives the loop, so the errand needs re-dispatching.
+
 
 ### retire
 
