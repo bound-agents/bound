@@ -54,6 +54,20 @@ Boundless registers host-side file tools that operate on the real working direct
 
 The hashline format gives the LLM stable 4-character anchors to address specific lines without reproducing their text. The anchors survive line drift, so edits land correctly even if the file shifted since the read.
 
+## Status bar
+
+The bar under the input line carries the session's live state. The identity row is always present — connection badge, full thread ID (rendered untruncated so you can select and copy it for `--attach`), model, MCP server count, and the working directory on the right edge.
+
+Above it, a measurements row appears only once it has something real to report:
+
+| Segment | Meaning |
+| --- | --- |
+| `ctx 44% (87k/200k)` | Context-window pressure after the last turn, colored green → yellow → red as it climbs. Provider-reported tokens, not a local estimate. |
+| `$1.05 session · $12.34 today` | Cluster-wide spend since you started this session and since local midnight. |
+| `● 3 background` | Background tool calls in flight on this thread (see [Backgrounding an errand](/bound/concepts/auxiliary-agents/#backgrounding-an-errand)). |
+
+Each segment hides rather than showing a zero, so a fresh session reports nothing instead of a row of placeholder numbers. The background count in particular only appears while work is actually running, and it reflects server state rather than a local tally — attaching to a thread that already has background work shows the count immediately, and a dropped frame corrects itself on the next update instead of drifting.
+
 ## ACP mode
 
 `boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio, letting ACP-compatible editors (Zed, others) drive bound as their backend agent.

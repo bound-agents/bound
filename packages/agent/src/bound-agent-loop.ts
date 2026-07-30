@@ -1,5 +1,6 @@
 import type { AppContext } from "@bound/core";
 import {
+	countBackgroundToolCallsByThread,
 	enqueueClientToolCall,
 	enqueueToolResult,
 	findMessageById,
@@ -1151,6 +1152,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			let resultContent = "";
 			let exitCode = 0;
 			let mcpAppBinding: McpAppBinding | undefined;
+			let deferredPlaceholder = false;
 			const toolStartTime = Date.now();
 
 			if (toolCall.truncated) {
@@ -1254,6 +1256,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 								dispatchResult.description ??
 								`[Background: tool "${toolCall.name}" deferred \u2014 result will arrive when complete.]`;
 							exitCode = 0;
+							deferredPlaceholder = true;
 							break;
 						}
 						resultContent = dispatchResult.content;
@@ -1280,6 +1283,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					exitCode,
 					durationMs: toolDurationMs,
 					mcpApp: mcpAppBinding,
+					deferred: deferredPlaceholder || undefined,
 				},
 			});
 			this.config.onActivity?.();
@@ -1387,13 +1391,15 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				},
 				this.ctx.siteId,
 			);
-			if (result.mcpApp) {
-				writeMessageMetadata(
-					this.ctx.db,
-					toolResultMsgId,
-					{ mcp_app: result.mcpApp },
-					this.ctx.siteId,
-				);
+			// Stamp the background marker so the in-flight count is derivable from
+			// DB state (countBackgroundToolCallsByThread) rather than tallied by
+			// event arithmetic on a client, which drifts on any dropped frame.
+			// resolveDeferredToolResult clears the key when the real result lands.
+			const extraMetadata: Record<string, unknown> = {};
+			if (result.mcpApp) extraMetadata.mcp_app = result.mcpApp;
+			if (result.deferred) extraMetadata.background = true;
+			if (Object.keys(extraMetadata).length > 0) {
+				writeMessageMetadata(this.ctx.db, toolResultMsgId, extraMetadata, this.ctx.siteId);
 			}
 			this.broadcastMessage(toolResultMsgId);
 			this.messagesCreated++;
@@ -1401,6 +1407,15 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				role: "tool_result",
 				content: parseContentBlocks(result.content),
 				tool_use_id: toolCall.id,
+			});
+		}
+
+		// A placeholder just became in-flight — push the recomputed count so the
+		// client's indicator lights up on dispatch, not only on completion.
+		if (batch.results.some((r) => r.result.deferred)) {
+			this.ctx.eventBus.emit("background:count", {
+				thread_id: this.config.threadId,
+				count: countBackgroundToolCallsByThread(this.ctx.db, this.config.threadId),
 			});
 		}
 	}

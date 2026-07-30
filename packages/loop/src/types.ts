@@ -158,4 +158,12 @@ export interface ToolExecutionResult {
 	exitCode: number;
 	durationMs?: number;
 	mcpApp?: McpAppBinding;
+	/**
+	 * True when this result is the PLACEHOLDER for a tool that deferred (#76).
+	 * The persistence layer stamps `metadata.background` on the row so the
+	 * in-flight count is derivable from DB state rather than tallied by event
+	 * arithmetic on a client (which drifts permanently on a dropped frame).
+	 * Cleared by `resolveDeferredToolResult` when the real result lands.
+	 */
+	deferred?: boolean;
 }

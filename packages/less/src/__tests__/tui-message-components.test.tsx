@@ -378,6 +378,63 @@ describe("Session HUD", () => {
 			expect(frame).toContain("ctx 44%");
 			expect(frame).not.toContain("today");
 		});
+
+		// #76 — background-tool indicator. The count is server-recomputed state,
+		// not a local tally, so the bar renders whatever number arrives.
+		it("renders the background indicator when work is in flight", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="t1"
+					model="opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/tmp/work"
+					hud={{ ...hud, backgroundCount: 3 }}
+				/>,
+			);
+			expect(lastFrame() ?? "").toContain("3 background");
+		});
+
+		// An idle thread must not carry a permanent "bg 0" — unlike ctx/cost there is
+		// no "not yet measured" state worth distinguishing from "none running".
+		it("hides the background indicator at zero", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="t1"
+					model="opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/tmp/work"
+					hud={{ ...hud, backgroundCount: 0 }}
+				/>,
+			);
+			expect(lastFrame() ?? "").not.toContain("background");
+		});
+
+		// The HUD row must appear for background work alone: a thread can dispatch a
+		// background tool before any turn has recorded context or cost.
+		it("renders the HUD row for background work even with no ctx or cost signal", async () => {
+			const { lastFrame } = render(
+				<StatusBar
+					threadId="t1"
+					model="opus"
+					connectionState="connected"
+					mcpServerCount={0}
+					cwd="/tmp/work"
+					hud={{
+						contextTokens: null,
+						contextWindow: null,
+						contextPct: null,
+						todayCostUsd: null,
+						sessionCostUsd: null,
+						backgroundCount: 1,
+					}}
+				/>,
+			);
+			const frame = lastFrame() ?? "";
+			expect(frame).toContain("1 background");
+			expect(frame).not.toContain("ctx ");
+		});
 	});
 });
 

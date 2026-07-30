@@ -21,6 +21,13 @@ export interface SessionHudState {
 	todayCostUsd: number | null;
 	/** Cluster-wide spend since this TUI session started (USD). */
 	sessionCostUsd: number | null;
+	/**
+	 * Background (deferred, #76) tool calls in flight on this thread. Server-
+	 * recomputed on every change and seeded on subscribe, so this is state rather
+	 * than a local tally — a missed frame resyncs instead of drifting. 0 hides the
+	 * segment; there is no "unknown" state worth distinguishing from "none".
+	 */
+	backgroundCount: number;
 }
 
 const EMPTY: SessionHudState = {
@@ -29,6 +36,7 @@ const EMPTY: SessionHudState = {
 	contextPct: null,
 	todayCostUsd: null,
 	sessionCostUsd: null,
+	backgroundCount: 0,
 };
 
 /** Local midnight — "today" as the operator's calendar sees it, not UTC's. */
@@ -62,8 +70,20 @@ export function useSessionHud(
 
 	// The thread we're gauging switches with /attach; keep the ref fresh so
 	// the stable event handler filters on the CURRENT thread.
+	//
+	// The switch also has to zero the in-flight background count: the
+	// subscription effect below deliberately does NOT re-run per thread, so
+	// otherwise an /attach would carry the previous thread's count until the next
+	// event — reporting work in flight on a thread that has none. Adjusting state
+	// during render on a prop change (guarded, so it runs once per switch) is the
+	// documented React pattern and keeps the reset off the effect's dep list. The
+	// server re-seeds on subscribe, so a thread that genuinely has background work
+	// lights up again immediately.
 	const threadIdRef = useRef(threadId);
-	threadIdRef.current = threadId;
+	if (threadIdRef.current !== threadId) {
+		threadIdRef.current = threadId;
+		setState((s) => (s.backgroundCount === 0 ? s : { ...s, backgroundCount: 0 }));
+	}
 
 	useEffect(() => {
 		if (!client) return;
@@ -124,14 +144,23 @@ export function useSessionHud(
 			if (!data.active) refreshCost();
 		};
 
+		const onBackgroundCount = (data: { thread_id: string; count: number }) => {
+			if (data.thread_id !== threadIdRef.current) return;
+			// Assign, never accumulate: the server sends a freshly recomputed count,
+			// so a client that missed a frame lands back on truth here.
+			setState((s) => ({ ...s, backgroundCount: data.count }));
+		};
+
 		client.on("context:debug", onContextDebug);
 		client.on("thread:status", onThreadStatus);
+		client.on("background:count", onBackgroundCount);
 		refreshCost(true);
 
 		return () => {
 			disposed = true;
 			client.off("context:debug", onContextDebug);
 			client.off("thread:status", onThreadStatus);
+			client.off("background:count", onBackgroundCount);
 		};
 	}, [client, costRefreshMinIntervalMs]);
 

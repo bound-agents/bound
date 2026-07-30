@@ -76,6 +76,11 @@ export function StatusBar({
 	const ctxPct = hud?.contextPct ?? null;
 	const showCtx = ctxPct != null && hud?.contextTokens != null;
 	const showCost = hud?.sessionCostUsd != null && hud?.todayCostUsd != null;
+	// Background work shows only while something is actually in flight. A steady
+	// "bg 0" would be noise on every idle thread, and unlike ctx/cost there is no
+	// "not yet measured" state worth distinguishing from "none running".
+	const bgCount = hud?.backgroundCount ?? 0;
+	const showBg = bgCount > 0;
 
 	return (
 		<Box paddingX={1} flexDirection="column" width="100%">
@@ -83,7 +88,7 @@ export function StatusBar({
 			    width (the full thread ID is copyable BY DESIGN and must not
 			    wrap). One truncate-end Text = at most one physical row, so the
 			    dynamic region's height stays predictable. */}
-			{(showCtx || showCost) && (
+			{(showCtx || showCost || showBg) && (
 				<Box>
 					<Text wrap="truncate-end">
 						{showCtx && (
@@ -103,6 +108,8 @@ export function StatusBar({
 								today
 							</Text>
 						)}
+						{(showCtx || showCost) && showBg && sep}
+						{showBg && <Text color="magenta">● {bgCount} background</Text>}
 					</Text>
 				</Box>
 			)}

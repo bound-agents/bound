@@ -559,6 +559,12 @@ export interface BoundClientEvents {
 		model: string | null;
 	}) => void;
 	"stream:chunk": (data: { thread_id: string; chunk: WsStreamChunk }) => void;
+	/**
+	 * Number of background (deferred, #76) tool calls in flight on a thread.
+	 * Server-recomputed on every change, so a client that missed a frame resyncs
+	 * to truth rather than drifting the way local tallying would.
+	 */
+	"background:count": (data: { thread_id: string; count: number }) => void;
 	"tool:call": (call: ToolCallRequest) => void;
 	"tool:cancel": (event: ToolCancelEvent) => void;
 	error: (err: Event | Error | { code: string; message: string }) => void;

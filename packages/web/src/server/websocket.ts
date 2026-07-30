@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { persistImageBlocksAsFileRefs } from "@bound/agent";
 import {
 	acknowledgeClientToolCall,
+	countBackgroundToolCallsByThread,
 	enqueueToolResult,
 	expireClientToolCallsForConnection,
 	findClientSessionIdById,
@@ -402,6 +403,28 @@ export function createWebSocketHandler(
 		}
 	};
 
+	/**
+	 * Push the in-flight background-tool count (#76) to a thread's subscribers.
+	 *
+	 * The count arrives already recomputed from `messages` by the emitter, so a
+	 * client that missed a frame resyncs to truth on the next event instead of
+	 * drifting the way increment/decrement bookkeeping would.
+	 */
+	const handleBackgroundCount = (data: { thread_id: string; count: number }): void => {
+		for (const [ws, conn] of clients) {
+			if (conn.subscriptions.has(data.thread_id)) {
+				const message = JSON.stringify({
+					type: "background:count",
+					thread_id: data.thread_id,
+					count: data.count,
+				});
+				if (ws.readyState === 1) {
+					ws.send(message);
+				}
+			}
+		}
+	};
+
 	function handleSessionConfigure(
 		conn: ClientConnection,
 		msg: z.infer<typeof sessionConfigureSchema>,
@@ -466,6 +489,17 @@ export function createWebSocketHandler(
 		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
 		// In case session:configure happened before thread:subscribe
 		redeliverPendingToolCalls(conn, msg.thread_id);
+
+		// Seed the background-tool count for the newly subscribed thread. Without
+		// this a client attaching to a thread that already has work in flight shows
+		// nothing until the next completion — the indicator must reflect state on
+		// arrival, not only on transition.
+		if (db) {
+			const count = countBackgroundToolCallsByThread(db, msg.thread_id);
+			if (count > 0 && conn.ws.readyState === 1) {
+				conn.ws.send(JSON.stringify({ type: "background:count", thread_id: msg.thread_id, count }));
+			}
+		}
 	}
 
 	function handleThreadUnsubscribe(
@@ -1368,6 +1402,7 @@ export function createWebSocketHandler(
 	eventBus.on("client_tool_call:created", handleClientToolCallCreated);
 	eventBus.on("status:forward", handleStatusForward);
 	eventBus.on("stream:chunk", handleStreamChunk);
+	eventBus.on("background:count", handleBackgroundCount);
 
 	/**
 	 * Reap a connection's in-flight client tool calls and drop its session

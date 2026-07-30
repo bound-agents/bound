@@ -399,6 +399,7 @@ async function handleInvoke(
 						: result.summary,
 					!!result.error,
 					ctx.siteId,
+					ctx.eventBus,
 				);
 			},
 			(error) => {
@@ -409,6 +410,7 @@ async function handleInvoke(
 					`Error: auxiliary agent '${input.name}' failed: ${error instanceof Error ? error.message : String(error)}`,
 					true,
 					ctx.siteId,
+					ctx.eventBus,
 				);
 			},
 		);
