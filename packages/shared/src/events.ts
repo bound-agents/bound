@@ -47,4 +47,10 @@ export interface EventMap {
 		batch_size: number;
 	};
 	"connector:handle_synced": { handle_id: string; server_name: string };
+	/**
+	 * Number of background (deferred, #76) tool calls currently in flight on a
+	 * thread. Recomputed from `messages` on every change rather than incremented,
+	 * so a client that missed a frame resyncs to truth on the next event.
+	 */
+	"background:count": { thread_id: string; count: number };
 }

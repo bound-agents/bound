@@ -80,6 +80,26 @@ export function countLiveMessagesByThread(db: Database, threadId: string): numbe
 	return row?.count ?? 0;
 }
 
+/**
+ * Count live background (deferred, #76) tool calls in flight on a thread.
+ *
+ * A deferred tool's placeholder `tool_result` carries `metadata.background =
+ * true`; `resolveDeferredToolResult` strips the key when the real result lands.
+ * So the count of rows still carrying it IS the in-flight count — derived from
+ * state, never tallied, which is what lets a reconnecting client resync instead
+ * of drifting.
+ */
+export function countBackgroundToolCallsByThread(db: Database, threadId: string): number {
+	const row = db
+		.query(
+			`SELECT COUNT(*) as count FROM messages
+			 WHERE thread_id = ? AND role = 'tool_result' AND deleted = 0
+			   AND json_extract(metadata, '$.background') = 1`,
+		)
+		.get(threadId) as { count: number } | null;
+	return row?.count ?? 0;
+}
+
 /** `SELECT COUNT(*) FROM messages WHERE thread_id = ?` — count including soft-deleted rows. */
 export function countMessagesByThread(db: Database, threadId: string): number {
 	const row = db

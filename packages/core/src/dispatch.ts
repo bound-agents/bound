@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { updateRow } from "./change-log";
+import type { TypedEventEmitter } from "@bound/shared";
+import { readMessageMetadata, updateRow } from "./change-log";
+import { countBackgroundToolCallsByThread } from "./repositories/messages";
 
 export interface DispatchEntry {
 	message_id: string;
@@ -118,13 +120,18 @@ export function enqueueToolResult(db: Database, threadId: string, callId: string
  *
  * The placeholder was written by the loop when the tool returned a
  * `DeferredToolResult`. This function finds it by `(thread_id, tool_name=callId,
- * role='tool_result')`, updates the content, and enqueues a dispatch entry to
- * re-wake the loop.
+ * role='tool_result')`, updates the content, clears the `background` marker so
+ * the row stops counting as in-flight, and enqueues a dispatch entry to re-wake
+ * the loop.
  *
  * If the placeholder is not found (race: background work completed before the
  * loop persisted the placeholder), this is a no-op beyond the enqueue — the
  * loop will write the placeholder on its current iteration and the model will
  * see it then.
+ *
+ * Pass `eventBus` to push the recomputed in-flight count to subscribers
+ * (`background:count`). The count is always re-derived from `messages`, never
+ * decremented, so a client that missed a frame resyncs rather than drifting.
  */
 export function resolveDeferredToolResult(
 	db: Database,
@@ -133,6 +140,7 @@ export function resolveDeferredToolResult(
 	content: string,
 	isError: boolean,
 	siteId: string,
+	eventBus?: TypedEventEmitter,
 ): void {
 	const row = db
 		.prepare(
@@ -143,6 +151,12 @@ export function resolveDeferredToolResult(
 		.get(threadId, callId) as { id: string } | null;
 
 	if (row) {
+		// Drop the `background` key rather than setting it false: the in-flight
+		// query counts rows that CARRY the marker, and writeMessageMetadata merges
+		// (so it could never remove a key). Any sibling metadata is preserved.
+		const { background: _wasBackground, ...rest } = readMessageMetadata(db, row.id) ?? {};
+		const remaining = Object.keys(rest).length > 0 ? JSON.stringify(rest) : null;
+
 		updateRow(
 			db,
 			"messages",
@@ -150,12 +164,20 @@ export function resolveDeferredToolResult(
 			{
 				content,
 				exit_code: isError ? 1 : 0,
+				metadata: remaining,
 			},
 			siteId,
 		);
 	}
 
 	enqueueToolResult(db, threadId, callId);
+
+	if (eventBus) {
+		eventBus.emit("background:count", {
+			thread_id: threadId,
+			count: countBackgroundToolCallsByThread(db, threadId),
+		});
+	}
 }
 
 /**
