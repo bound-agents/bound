@@ -6,6 +6,32 @@ import type { Context } from "@opentelemetry/api";
 export type BuiltInToolResult = string | ContentBlock[];
 
 /**
+ * Signal from a tool's execute that it has scheduled its own background work
+ * and the loop should write a placeholder tool_result and continue without
+ * blocking. The tool is responsible for delivering the real result later via
+ * `enqueueToolResult(db, threadId, callId)`.
+ *
+ * Unlike `ClientToolCallRequest` (which defers AND stops the loop to wait
+ * for a WS round-trip), a `DeferredToolResult` defers AND continues — the
+ * loop proceeds to the next LLM call with a placeholder in context. The tool
+ * fires its background work (a task, a poll loop, etc.) and re-wakes the loop
+ * when the real result lands.
+ */
+export interface DeferredToolResult {
+	deferred: true;
+	description?: string;
+}
+
+export function isDeferredToolResult(result: unknown): result is DeferredToolResult {
+	return (
+		result != null &&
+		typeof result === "object" &&
+		"deferred" in result &&
+		(result as { deferred: unknown }).deferred === true
+	);
+}
+
+/**
  * Signal from a client tool that indicates the tool execution should be
  * deferred outside the loop process, for example over WebSocket.
  */
@@ -118,7 +144,10 @@ export interface ToolAnnotations {
 export interface RegisteredTool {
 	kind: "platform" | "client" | "builtin" | "sandbox";
 	toolDefinition: ToolDefinition;
-	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult | string>;
+	execute?: (
+		input: Record<string, unknown>,
+		callId?: string,
+	) => Promise<BuiltInToolResult | string | DeferredToolResult>;
 	idempotent?: boolean;
 	readOnly?: boolean;
 	resolveAnnotations?: (args: Record<string, unknown>) => ToolAnnotations;

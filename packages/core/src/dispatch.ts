@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { updateRow } from "./change-log";
 
 export interface DispatchEntry {
 	message_id: string;
@@ -109,6 +110,52 @@ export function enqueueToolResult(db: Database, threadId: string, callId: string
 		 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
 	).run(messageId, threadId, TOOL_RESULT, payload, now, now);
 	return messageId;
+}
+
+/**
+ * Resolve a deferred tool result by updating the placeholder tool_result message
+ * with the real content and re-waking the loop via `enqueueToolResult`.
+ *
+ * The placeholder was written by the loop when the tool returned a
+ * `DeferredToolResult`. This function finds it by `(thread_id, tool_name=callId,
+ * role='tool_result')`, updates the content, and enqueues a dispatch entry to
+ * re-wake the loop.
+ *
+ * If the placeholder is not found (race: background work completed before the
+ * loop persisted the placeholder), this is a no-op beyond the enqueue — the
+ * loop will write the placeholder on its current iteration and the model will
+ * see it then.
+ */
+export function resolveDeferredToolResult(
+	db: Database,
+	threadId: string,
+	callId: string,
+	content: string,
+	isError: boolean,
+	siteId: string,
+): void {
+	const row = db
+		.prepare(
+			`SELECT id FROM messages
+			 WHERE thread_id = ? AND tool_name = ? AND role = 'tool_result' AND deleted = 0
+			 ORDER BY created_at DESC LIMIT 1`,
+		)
+		.get(threadId, callId) as { id: string } | null;
+
+	if (row) {
+		updateRow(
+			db,
+			"messages",
+			row.id,
+			{
+				content,
+				exit_code: isError ? 1 : 0,
+			},
+			siteId,
+		);
+	}
+
+	enqueueToolResult(db, threadId, callId);
 }
 
 /**

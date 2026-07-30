@@ -4,12 +4,13 @@ export type {
 	AgentLoopState,
 	BuiltInToolResult,
 	ClientToolCallRequest,
+	DeferredToolResult,
 	DispatchSpanTracker,
 	RegisteredTool,
 	ToolAnnotations,
 	ToolExecutionResult,
 } from "@bound/loop";
-export { VALID_TRANSITIONS, isClientToolCallRequest } from "@bound/loop";
+export { VALID_TRANSITIONS, isClientToolCallRequest, isDeferredToolResult } from "@bound/loop";
 
 /**
  * Context passed to native agent tool factories.

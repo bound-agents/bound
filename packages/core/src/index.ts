@@ -110,6 +110,7 @@ export {
 	updateClaimedBy,
 	CLIENT_TOOL_CALL,
 	TOOL_RESULT,
+	resolveDeferredToolResult,
 	type DispatchEntry,
 } from "./dispatch";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
