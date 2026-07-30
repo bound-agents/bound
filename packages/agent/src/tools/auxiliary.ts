@@ -5,11 +5,12 @@ import {
 	findThreadUserAndInterfaceById,
 	insertRow,
 	listAgentsForToolView,
+	resolveDeferredToolResult,
 	updateRow,
 } from "@bound/core";
 import type { Agent } from "@bound/shared";
 import { z } from "zod";
-import type { RegisteredTool, ToolContext } from "../types";
+import type { DeferredToolResult, RegisteredTool, ToolContext } from "../types";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 /**
@@ -65,6 +66,12 @@ const auxSchema = z.object({
 		.string()
 		.optional()
 		.describe("Override the definition's model_hint for this invocation only. (for invoke)"),
+	background: z
+		.boolean()
+		.optional()
+		.describe(
+			"Run the auxiliary agent in the background without blocking the current loop. Only valid for 'invoke' action. The tool returns immediately with a placeholder; the real result arrives when the aux agent completes. (for invoke)",
+		),
 });
 
 type AuxInput = z.infer<typeof auxSchema>;
@@ -100,7 +107,10 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 					return {};
 			}
 		},
-		execute: async (raw: Record<string, unknown>): Promise<string> => {
+		execute: async (
+			raw: Record<string, unknown>,
+			callId?: string,
+		): Promise<string | DeferredToolResult> => {
 			const parsed = parseToolInput(auxSchema, raw, "aux");
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
@@ -114,7 +124,7 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 					case "retire":
 						return handleRetire(ctx, input);
 					case "invoke":
-						return await handleInvoke(ctx, input);
+						return await handleInvoke(ctx, input, callId);
 					case "list":
 						return handleList(ctx);
 					default:
@@ -281,7 +291,11 @@ function handleList(ctx: ToolContext): string {
  * thread and blocks for the result. Until then, invoke creates + seeds the
  * thread and returns the handle.
  */
-async function handleInvoke(ctx: ToolContext, input: AuxInput): Promise<string> {
+async function handleInvoke(
+	ctx: ToolContext,
+	input: AuxInput,
+	callId?: string,
+): Promise<string | DeferredToolResult> {
 	if (!input.name) return "Error: 'name' is required for invoke action";
 	if (!input.instructions) return "Error: 'instructions' is required for invoke action";
 
@@ -300,6 +314,7 @@ async function handleInvoke(ctx: ToolContext, input: AuxInput): Promise<string> 
 	if (!ctx.threadId) {
 		return "Error: invoke requires a parent thread context (ctx.threadId is undefined)";
 	}
+	const parentThreadId = ctx.threadId;
 	const parentInfo = findThreadUserAndInterfaceById(ctx.db, ctx.threadId);
 	if (!parentInfo) {
 		return `Error: parent thread '${ctx.threadId}' not found`;
@@ -358,8 +373,52 @@ async function handleInvoke(ctx: ToolContext, input: AuxInput): Promise<string> 
 		ctx.siteId,
 	);
 
-	// If a loop runner is available, execute the nested loop synchronously
-	// and return the result. Otherwise, return the thread handle.
+	// Background mode: fire and forget \u2014 don't block the parent loop.
+	// The placeholder tool_result is written by the loop; when the aux
+	// loop completes, resolveDeferredToolResult updates it and re-wakes.
+	if (input.background && ctx.auxLoopRunner && callId) {
+		const allowlistedTools = agent.tools ? (JSON.parse(agent.tools) as string[]) : null;
+		const runnerParams = {
+			threadId,
+			agentId: agent.id,
+			persona: agent.persona,
+			modelHint: input.model ?? agent.model_hint ?? null,
+			allowlistedTools,
+			instructions: input.instructions,
+			userId: parentInfo.user_id,
+			parentThreadId: parentThreadId,
+		};
+		void ctx.auxLoopRunner(runnerParams).then(
+			(result) => {
+				resolveDeferredToolResult(
+					ctx.db,
+					parentThreadId,
+					callId,
+					result.error
+						? `Auxiliary agent '${input.name}' completed with error: ${result.error}\n\nThread: ${threadId}`
+						: result.summary,
+					!!result.error,
+					ctx.siteId,
+				);
+			},
+			(error) => {
+				resolveDeferredToolResult(
+					ctx.db,
+					parentThreadId,
+					callId,
+					`Error: auxiliary agent '${input.name}' failed: ${error instanceof Error ? error.message : String(error)}`,
+					true,
+					ctx.siteId,
+				);
+			},
+		);
+		return {
+			deferred: true,
+			description: `Auxiliary agent '${input.name}' invoked on thread ${threadId} \u2014 running in background. Result will arrive when complete.`,
+		};
+	}
+
+	// Synchronous mode: execute the nested loop and block for the result.
 	if (ctx.auxLoopRunner) {
 		const allowlistedTools = agent.tools ? (JSON.parse(agent.tools) as string[]) : null;
 		const result = await ctx.auxLoopRunner({

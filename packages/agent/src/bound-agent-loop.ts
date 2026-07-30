@@ -109,8 +109,9 @@ import type {
 	AgentLoopResult,
 	AgentLoopState,
 	ClientToolCallRequest,
+	DeferredToolResult,
 } from "./types";
-import { isClientToolCallRequest } from "./types";
+import { isClientToolCallRequest, isDeferredToolResult } from "./types";
 // Thinking-block compaction now lives exclusively in context-assembly.ts (Stage 1.7).
 // The warm path no longer mutates stored messages — see agent-loop.ts step 3a comment.
 
@@ -1248,6 +1249,13 @@ export class BoundAgentLoop extends ModularAgentLoop {
 							exitCode = 0;
 							break;
 						}
+						if (isDeferredToolResult(dispatchResult)) {
+							resultContent =
+								dispatchResult.description ??
+								`[Background: tool "${toolCall.name}" deferred \u2014 result will arrive when complete.]`;
+							exitCode = 0;
+							break;
+						}
 						resultContent = dispatchResult.content;
 						exitCode = dispatchResult.exitCode;
 						mcpAppBinding = dispatchResult.mcpApp;
@@ -1843,6 +1851,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		| { content: string; exitCode: number; mcpApp?: McpAppBinding }
 		| RelayToolCallRequest
 		| ClientToolCallRequest
+		| DeferredToolResult
 	> {
 		// Registry-based dispatch (new path)
 		if (this.config.toolRegistry) {
@@ -1892,7 +1901,10 @@ export class BoundAgentLoop extends ModularAgentLoop {
 							break;
 						}
 						// biome-ignore lint/suspicious/noExplicitAny: tool.execute result type is either string or BuiltInToolResult
-						const platformResult = await (tool.execute as any)(toolCall.input);
+						const platformResult = await (tool.execute as any)(toolCall.input, toolCall.id);
+						if (isDeferredToolResult(platformResult)) {
+							return platformResult;
+						}
 						// Platform tools return strings, but handle both just like builtin does
 						if (Array.isArray(platformResult)) {
 							const hasError = platformResult.some(
@@ -1963,7 +1975,10 @@ export class BoundAgentLoop extends ModularAgentLoop {
 							};
 							break;
 						}
-						const builtinResult = await tool.execute(toolCall.input);
+						const builtinResult = await tool.execute(toolCall.input, toolCall.id);
+						if (isDeferredToolResult(builtinResult)) {
+							return builtinResult;
+						}
 						if (Array.isArray(builtinResult)) {
 							const hasError = builtinResult.some(
 								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
