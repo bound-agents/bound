@@ -23,6 +23,7 @@ import {
 	pruneAcknowledged,
 	resetProcessing,
 	resetProcessingForThread,
+	resolveDeferredToolResult,
 	updateClaimedBy,
 } from "../dispatch";
 import { applySchema } from "../schema";
@@ -1229,5 +1230,184 @@ describe("expireClientToolCallsForConnection", () => {
 			"other",
 		);
 		expect(expireClientToolCallsForConnection(db, "ws-conn-empty")).toHaveLength(0);
+	});
+});
+
+// #76 — tool backgrounding. A tool that returns a DeferredToolResult gets a
+// placeholder tool_result written by the loop; when its background work lands,
+// resolveDeferredToolResult swaps the placeholder content for the real result
+// and re-wakes the loop through the same enqueueToolResult path the WS
+// client-tool track uses.
+describe("resolveDeferredToolResult", () => {
+	const siteId = "test-site";
+
+	function insertPlaceholder(
+		threadId: string,
+		callId: string,
+		content = "[Background: running]",
+		opts: { deleted?: number; role?: string; createdAt?: string } = {},
+	): string {
+		const id = randomUUID();
+		const now = opts.createdAt ?? new Date().toISOString();
+		db.run(
+			`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted, exit_code, metadata)
+			 VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL)`,
+			[
+				id,
+				threadId,
+				opts.role ?? "tool_result",
+				content,
+				callId,
+				now,
+				now,
+				siteId,
+				opts.deleted ?? 0,
+			],
+		);
+		return id;
+	}
+
+	function contentOf(id: string): { content: string; exit_code: number | null } {
+		return db.query("SELECT content, exit_code FROM messages WHERE id = ?").get(id) as {
+			content: string;
+			exit_code: number | null;
+		};
+	}
+
+	it("swaps the placeholder content for the real result and enqueues a re-wake", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-1";
+		const placeholderId = insertPlaceholder(threadId, callId);
+
+		resolveDeferredToolResult(db, threadId, callId, "aux found 3 files", false, siteId);
+
+		const row = contentOf(placeholderId);
+		expect(row.content).toBe("aux found 3 files");
+		expect(row.exit_code).toBe(0);
+
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND event_payload = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT, JSON.stringify({ call_id: callId })) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	it("marks exit_code 1 when the background work failed", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-err";
+		const placeholderId = insertPlaceholder(threadId, callId);
+
+		resolveDeferredToolResult(db, threadId, callId, "Error: aux blew up", true, siteId);
+
+		const row = contentOf(placeholderId);
+		expect(row.content).toBe("Error: aux blew up");
+		expect(row.exit_code).toBe(1);
+	});
+
+	// Race: background work can finish before the loop has persisted the
+	// placeholder. The enqueue must still happen so the loop wakes and reads
+	// whatever it wrote on its own iteration — dropping it would stall the thread.
+	it("still enqueues the re-wake when no placeholder exists yet", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-race";
+
+		resolveDeferredToolResult(db, threadId, callId, "result arrived early", false, siteId);
+
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	// call_ids are reused across turns (boundless emits call_1, call_2, … every
+	// turn), so the newest row for a given (thread, call_id) is the live one.
+	it("resolves the most recent placeholder when a call_id was reused", () => {
+		const threadId = randomUUID();
+		const callId = "call_1";
+		const oldId = insertPlaceholder(threadId, callId, "[old turn placeholder]", {
+			createdAt: "2026-01-01T00:00:00.000Z",
+		});
+		const newId = insertPlaceholder(threadId, callId, "[current turn placeholder]", {
+			createdAt: "2026-06-01T00:00:00.000Z",
+		});
+
+		resolveDeferredToolResult(db, threadId, callId, "fresh result", false, siteId);
+
+		expect(contentOf(newId).content).toBe("fresh result");
+		expect(contentOf(oldId).content).toBe("[old turn placeholder]");
+	});
+
+	it("ignores soft-deleted placeholders", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-deleted";
+		const deletedId = insertPlaceholder(threadId, callId, "[tombstoned]", { deleted: 1 });
+
+		resolveDeferredToolResult(db, threadId, callId, "should not land here", false, siteId);
+
+		expect(contentOf(deletedId).content).toBe("[tombstoned]");
+	});
+
+	it("does not touch rows of other roles that share the tool_name", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-role";
+		const toolCallId = insertPlaceholder(threadId, callId, "[the tool_call row]", {
+			role: "tool_call",
+		});
+
+		resolveDeferredToolResult(db, threadId, callId, "real result", false, siteId);
+
+		expect(contentOf(toolCallId).content).toBe("[the tool_call row]");
+	});
+
+	it("scopes resolution to the owning thread", () => {
+		const threadA = randomUUID();
+		const threadB = randomUUID();
+		const callId = "call-shared";
+		const aId = insertPlaceholder(threadA, callId, "[thread A placeholder]");
+		const bId = insertPlaceholder(threadB, callId, "[thread B placeholder]");
+
+		resolveDeferredToolResult(db, threadA, callId, "A's result", false, siteId);
+
+		expect(contentOf(aId).content).toBe("A's result");
+		expect(contentOf(bId).content).toBe("[thread B placeholder]");
+	});
+
+	// The re-wake rides enqueueToolResult, which is idempotent on
+	// (thread_id, call_id) while a prior re-drive is still in flight.
+	it("is idempotent on repeat resolution while the re-wake is still pending", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-dup";
+		insertPlaceholder(threadId, callId);
+
+		resolveDeferredToolResult(db, threadId, callId, "first", false, siteId);
+		resolveDeferredToolResult(db, threadId, callId, "second", false, siteId);
+
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	it("routes the placeholder update through the change-log outbox", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-sync";
+		const placeholderId = insertPlaceholder(threadId, callId);
+		const before = db.query("SELECT COUNT(*) AS c FROM change_log").get() as { c: number };
+
+		resolveDeferredToolResult(db, threadId, callId, "synced result", false, siteId);
+
+		const after = db.query("SELECT COUNT(*) AS c FROM change_log").get() as { c: number };
+		expect(after.c).toBeGreaterThan(before.c);
+		const entry = db
+			.query(
+				"SELECT table_name, row_id FROM change_log WHERE row_id = ? ORDER BY rowid DESC LIMIT 1",
+			)
+			.get(placeholderId) as { table_name: string; row_id: string } | null;
+		expect(entry?.table_name).toBe("messages");
 	});
 });
