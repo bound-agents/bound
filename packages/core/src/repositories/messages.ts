@@ -516,3 +516,26 @@ export function findLatestAssistantMessageContent(db: Database): { content: stri
 		)
 		.get() as { content: string } | null;
 }
+
+/**
+ * Read a client tool's persisted result for one `(thread_id, call_id)`.
+ *
+ * The WS layer persists a client tool result as a `tool_result` row with
+ * `tool_name = call_id` (host-parity with the native dispatch return), so this
+ * is the durable handoff a caller polls when it dispatched a client tool and
+ * needs the answer inline rather than via a loop re-wake. Newest row wins:
+ * `call_id`s are only unique within a turn, not across a thread's lifetime.
+ */
+export function findToolResultByThreadAndCallId(
+	db: Database,
+	threadId: string,
+	callId: string,
+): { content: string; exit_code: number | null } | null {
+	return db
+		.query(
+			`SELECT content, exit_code FROM messages
+			 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
+			 ORDER BY created_at DESC LIMIT 1`,
+		)
+		.get(threadId, callId) as { content: string; exit_code: number | null } | null;
+}

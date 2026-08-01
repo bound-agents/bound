@@ -9,6 +9,7 @@ import {
 	TOOL_RESULT,
 	acknowledgeBatch,
 	acknowledgeClientToolCall,
+	acknowledgeToolResultForCall,
 	cancelClientToolCalls,
 	claimPending,
 	enqueueClientToolCall,
@@ -1409,5 +1410,118 @@ describe("resolveDeferredToolResult", () => {
 			)
 			.get(placeholderId) as { table_name: string; row_id: string } | null;
 		expect(entry?.table_name).toBe("messages");
+	});
+});
+// #201 — a NESTED (aux) loop resolves client tools inline and keeps running, so
+// nothing will ever claim the re-wake `enqueueToolResult` queued. Left pending it
+// becomes a phantom wakeup that crash recovery re-dispatches on the next boot.
+describe("acknowledgeToolResultForCall", () => {
+	function statusesFor(threadId: string): string[] {
+		return (
+			db
+				.query(
+					"SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = ? ORDER BY created_at",
+				)
+				.all(threadId, TOOL_RESULT) as Array<{ status: string }>
+		).map((r) => r.status);
+	}
+
+	it("acknowledges a pending tool_result entry for the call", () => {
+		const threadId = randomUUID();
+		enqueueToolResult(db, threadId, "call-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+	});
+
+	it("acknowledges an entry already claimed into processing", () => {
+		const threadId = randomUUID();
+		const entryId = enqueueToolResult(db, threadId, "call-1");
+		updateClaimedBy(db, entryId, "conn-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+	});
+
+	it("leaves other call_ids on the same thread untouched", () => {
+		const threadId = randomUUID();
+		enqueueToolResult(db, threadId, "call-1");
+		enqueueToolResult(db, threadId, "call-2");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		const rows = db
+			.query(
+				"SELECT event_payload, status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?",
+			)
+			.all(threadId, TOOL_RESULT) as Array<{ event_payload: string; status: string }>;
+		const byCall = new Map(
+			rows.map((r) => [(JSON.parse(r.event_payload) as { call_id: string }).call_id, r.status]),
+		);
+		expect(byCall.get("call-1")).toBe("acknowledged");
+		expect(byCall.get("call-2")).toBe("pending");
+	});
+
+	it("scopes to the owning thread", () => {
+		const threadA = randomUUID();
+		const threadB = randomUUID();
+		enqueueToolResult(db, threadA, "call-1");
+		enqueueToolResult(db, threadB, "call-1");
+
+		acknowledgeToolResultForCall(db, threadA, "call-1");
+
+		expect(statusesFor(threadA)).toEqual(["acknowledged"]);
+		expect(statusesFor(threadB)).toEqual(["pending"]);
+	});
+
+	// The inline resolver calls this unconditionally, including on paths where no
+	// entry was ever queued (e.g. no live session), so it must not throw.
+	it("is a no-op when no matching entry exists", () => {
+		const threadId = randomUUID();
+		expect(() => acknowledgeToolResultForCall(db, threadId, "never")).not.toThrow();
+		expect(statusesFor(threadId)).toEqual([]);
+	});
+
+	it("is idempotent on repeat calls", () => {
+		const threadId = randomUUID();
+		enqueueToolResult(db, threadId, "call-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+	});
+
+	// Acknowledging clears the in-flight guard, so a later turn reusing the same
+	// call_id enqueues a fresh row rather than colliding with the closed one.
+	it("frees the call_id for a later turn to re-enqueue", () => {
+		const threadId = randomUUID();
+		const first = enqueueToolResult(db, threadId, "call_1");
+		acknowledgeToolResultForCall(db, threadId, "call_1");
+
+		const second = enqueueToolResult(db, threadId, "call_1");
+
+		expect(second).not.toBe(first);
+		expect(statusesFor(threadId).sort()).toEqual(["acknowledged", "pending"]);
+	});
+
+	it("does not touch client_tool_call entries for the same thread", () => {
+		const threadId = randomUUID();
+		enqueueClientToolCall(
+			db,
+			threadId,
+			{ call_id: "call-1", tool_name: "boundless_read", arguments: {} },
+			"conn-1",
+		);
+		enqueueToolResult(db, threadId, "call-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		const ct = db
+			.query("SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?")
+			.get(threadId, CLIENT_TOOL_CALL) as { status: string };
+		expect(ct.status).toBe("pending");
 	});
 });

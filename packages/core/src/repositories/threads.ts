@@ -138,3 +138,13 @@ export function findLatestThreadColorExcludingInterfaces(
 		)
 		.get(...excludedInterfaces) as { color: number } | null;
 }
+
+/** `SELECT parent_thread_id FROM threads WHERE id = ?` — one link up the ancestry chain. */
+export function findThreadParentIdById(
+	db: Database,
+	id: string,
+): { parent_thread_id: string | null } | null {
+	return db.query("SELECT parent_thread_id FROM threads WHERE id = ? AND deleted = 0").get(id) as {
+		parent_thread_id: string | null;
+	} | null;
+}

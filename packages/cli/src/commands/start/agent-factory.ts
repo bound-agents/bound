@@ -377,10 +377,29 @@ export function createAgentLoopFactory(
 				);
 			}
 
+			// Inherit the dispatching thread's client (WS) tools so an aux running
+			// under a boundless session can actually reach the operator's working
+			// directory. Without this an aux only ever sees the sandboxed VFS and
+			// cannot read the repo it was asked to investigate. Delivery works
+			// because the WS layer falls back to the PARENT thread's subscriptions
+			// (nothing ever subscribes to an aux thread), and AuxAgentLoop resolves
+			// these inline instead of deferring — a nested loop has no re-wake path.
+			const parentClientTools = config.clientTools;
+			const auxClientTools = (() => {
+				if (!parentClientTools) return undefined;
+				if (!params.allowlistedTools) return parentClientTools;
+				const allow = new Set(params.allowlistedTools);
+				const scoped = new Map(
+					Array.from(parentClientTools.entries()).filter(([name]) => allow.has(name)),
+				);
+				return scoped.size > 0 ? scoped : undefined;
+			})();
+			const auxClientToolDefs = auxClientTools ? Array.from(auxClientTools.values()) : [];
+
 			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
 			const auxToolRegistry = createToolRegistry(
 				builtInTools,
-				undefined,
+				auxClientTools,
 				filteredAgentTools,
 				appContext.logger,
 				undefined,
@@ -392,8 +411,12 @@ export function createAgentLoopFactory(
 				modelId: params.modelHint ?? undefined,
 				systemPromptAddition: params.persona,
 				platform: "aux",
-				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs],
+				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
 				toolRegistry: auxToolRegistry,
+				clientTools: auxClientTools,
+				// Carries the parent's WS connection so the inline client-tool
+				// dispatch takes the local path rather than resolving a relay host.
+				connectionId: config.connectionId,
 			});
 
 			const loopResult = await auxLoop.run();
