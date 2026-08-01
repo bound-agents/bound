@@ -95,6 +95,7 @@ export {
 	enqueueClientToolCall,
 	enqueueToolResult,
 	acknowledgeClientToolCall,
+	acknowledgeToolResultForCall,
 	claimPending,
 	acknowledgeBatch,
 	resetProcessing,

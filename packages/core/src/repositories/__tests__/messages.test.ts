@@ -19,6 +19,7 @@ import {
 	findMessageMetadataById,
 	findMessageRoleById,
 	findPairedToolResultId,
+	findToolResultByThreadAndCallId,
 	getLatestChangeLogHlcForRows,
 	listDistinctToolNamesByThread,
 	listLiveAssistantMessagesWithMetadataByThreadSince,
@@ -838,6 +839,83 @@ describe("messages repository finders", () => {
 		it("miss: null with no assistant messages", () => {
 			seed(db, { id: "u1", role: "user" });
 			expect(findLatestAssistantMessageContent(db)).toBeNull();
+		});
+	});
+	// #201 — the inline client-tool resolver an aux (nested) loop uses. The WS
+	// layer persists a client tool result as role='tool_result' with
+	// tool_name=call_id, so this is the lookup that stands in for a loop re-wake.
+	describe("findToolResultByThreadAndCallId", () => {
+		it("finds the result for a (thread, call_id) pair", () => {
+			seed(db, {
+				id: "tr1",
+				role: "tool_result",
+				tool_name: "call_1",
+				content: "file contents",
+			});
+			expect(findToolResultByThreadAndCallId(db, THREAD, "call_1")).toEqual({
+				content: "file contents",
+				exit_code: null,
+			});
+		});
+
+		it("carries a non-zero exit_code through so callers can flag an error", () => {
+			seed(db, {
+				id: "tr-err",
+				role: "tool_result",
+				tool_name: "call_2",
+				content: "Error: nope",
+				exit_code: 1,
+			});
+			expect(findToolResultByThreadAndCallId(db, THREAD, "call_2")?.exit_code).toBe(1);
+		});
+
+		// call_ids are only unique WITHIN a turn — boundless reuses call_1, call_2,
+		// … every turn — so the newest row is the live one.
+		it("returns the newest row when a call_id was reused across turns", () => {
+			seed(db, {
+				id: "tr-old",
+				role: "tool_result",
+				tool_name: "call_1",
+				content: "stale turn",
+				created_at: "2026-01-01T00:00:00.000Z",
+			});
+			seed(db, {
+				id: "tr-new",
+				role: "tool_result",
+				tool_name: "call_1",
+				content: "current turn",
+				created_at: "2026-06-01T00:00:00.000Z",
+			});
+			expect(findToolResultByThreadAndCallId(db, THREAD, "call_1")?.content).toBe("current turn");
+		});
+
+		it("ignores rows of other roles that share the tool_name", () => {
+			seed(db, { id: "tc1", role: "tool_call", tool_name: "call_1", content: "the call" });
+			expect(findToolResultByThreadAndCallId(db, THREAD, "call_1")).toBeNull();
+		});
+
+		it("ignores soft-deleted rows", () => {
+			seed(db, { id: "tr-del", role: "tool_result", tool_name: "call_1", content: "gone" });
+			softDelete(db, "messages", "tr-del", SITE);
+			expect(findToolResultByThreadAndCallId(db, THREAD, "call_1")).toBeNull();
+		});
+
+		it("scopes to the owning thread", () => {
+			seed(db, {
+				id: "tr-other",
+				thread_id: OTHER_THREAD,
+				role: "tool_result",
+				tool_name: "call_1",
+				content: "other thread",
+			});
+			expect(findToolResultByThreadAndCallId(db, THREAD, "call_1")).toBeNull();
+			expect(findToolResultByThreadAndCallId(db, OTHER_THREAD, "call_1")?.content).toBe(
+				"other thread",
+			);
+		});
+
+		it("misses cleanly when no result exists yet", () => {
+			expect(findToolResultByThreadAndCallId(db, THREAD, "never")).toBeNull();
 		});
 	});
 });

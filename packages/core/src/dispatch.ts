@@ -500,3 +500,24 @@ export function pruneAcknowledged(db: Database, cutoff: string): number {
 	const row = db.query("SELECT changes() as c").get() as { c: number } | null;
 	return row?.c ?? 0;
 }
+
+/**
+ * Acknowledge any pending/processing `tool_result` dispatch entries for one
+ * `(thread_id, call_id)`.
+ *
+ * The normal client-tool track leaves this to the generic dispatcher: the loop
+ * stops, `enqueueToolResult` queues a re-wake, and `claimPending` consumes it.
+ * A NESTED loop (an aux invocation, #201) has no re-wake path — it resolves the
+ * tool inline and keeps running — so nothing would ever claim the row. Left
+ * pending it becomes a phantom wakeup that crash-recovery re-dispatches on the
+ * next boot. The inline resolver calls this to close the entry it will never use.
+ */
+export function acknowledgeToolResultForCall(db: Database, threadId: string, callId: string): void {
+	const now = new Date().toISOString();
+	db.prepare(
+		`UPDATE dispatch_queue
+		 SET status = 'acknowledged', modified_at = ?
+		 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
+		   AND status IN ('pending', 'processing')`,
+	).run(now, threadId, TOOL_RESULT, JSON.stringify({ call_id: callId }));
+}

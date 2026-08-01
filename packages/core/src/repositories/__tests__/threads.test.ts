@@ -11,6 +11,7 @@ import {
 	findThreadCreatedAtById,
 	findThreadIdById,
 	findThreadModelHintById,
+	findThreadParentIdById,
 	findThreadSummaryById,
 	findThreadSummaryStateById,
 	findThreadTitleById,
@@ -381,6 +382,33 @@ describe("threads repository", () => {
 
 		it("returns null on an empty table", () => {
 			expect(findLatestThreadColorExcludingInterfaces(db, ["scheduler"])).toBeNull();
+		});
+	});
+	// #201 — the aux ancestry link. The WS layer walks it to route a client tool
+	// called from an aux thread to the DISPATCHING thread's session, since nothing
+	// ever subscribes to an aux thread.
+	describe("findThreadParentIdById", () => {
+		it("returns the parent id for a child (aux) thread", () => {
+			seedThread(db, { id: "parent" });
+			seedThread(db, { id: "child", parent_thread_id: "parent", interface: "aux" });
+			expect(findThreadParentIdById(db, "child")).toEqual({ parent_thread_id: "parent" });
+		});
+
+		// Ordinary threads must resolve to a null parent so the WS fallback is a
+		// no-op for every non-child thread rather than widening delivery.
+		it("returns a null parent for an ordinary thread", () => {
+			seedThread(db, { id: "solo" });
+			expect(findThreadParentIdById(db, "solo")).toEqual({ parent_thread_id: null });
+		});
+
+		it("returns null for an unknown thread", () => {
+			expect(findThreadParentIdById(db, "nope")).toBeNull();
+		});
+
+		it("returns null for a soft-deleted thread", () => {
+			seedThread(db, { id: "gone", parent_thread_id: "parent" });
+			softDelete(db, "threads", "gone", SITE_ID);
+			expect(findThreadParentIdById(db, "gone")).toBeNull();
 		});
 	});
 });

@@ -12,6 +12,7 @@ import {
 	findLiveThreadById,
 	findLiveThreadIdById,
 	findMessageById,
+	findThreadParentIdById,
 	findUserDisplayNameById,
 	getPendingClientToolCalls,
 	hasInFlightClientToolCallsForConnection,
@@ -1140,6 +1141,28 @@ export function createWebSocketHandler(
 		}
 	}
 
+	/**
+	 * Thread ids a connection's subscriptions may match when dispatching a client
+	 * tool for `threadId`.
+	 *
+	 * Nothing ever subscribes to an aux thread (#201) — an aux runs as a nested
+	 * loop under the thread that dispatched it, and only that parent has a live WS
+	 * session. So a client tool called from an aux thread has to reach the PARENT's
+	 * session or it has no route at all. Ordinary threads resolve to just
+	 * themselves, so this is a no-op for every non-child thread.
+	 *
+	 * One hop only: an aux cannot invoke another aux, so the chain is never deeper.
+	 */
+	const subscriptionCandidates = (threadId: string): string[] => {
+		if (!db) return [threadId];
+		try {
+			const row = findThreadParentIdById(db, threadId);
+			return row?.parent_thread_id ? [threadId, row.parent_thread_id] : [threadId];
+		} catch {
+			return [threadId];
+		}
+	};
+
 	const handleClientToolCallCreated = (data: {
 		threadId: string;
 		callId: string;
@@ -1152,8 +1175,12 @@ export function createWebSocketHandler(
 		// data.traceContext is captured by the agent loop while its tool-execute span is
 		// active. We can't call injectTraceContext() here — this listener runs outside the
 		// emitter's OTel context and would observe no active span.
+		const candidates = subscriptionCandidates(data.threadId);
 		for (const [, conn] of clients) {
-			if (conn.subscriptions.has(data.threadId) && conn.clientTools.has(data.toolName)) {
+			if (
+				candidates.some((t) => conn.subscriptions.has(t)) &&
+				conn.clientTools.has(data.toolName)
+			) {
 				const toolCallMessage = JSON.stringify({
 					type: "tool:call",
 					call_id: data.callId,
@@ -1370,8 +1397,12 @@ export function createWebSocketHandler(
 		},
 
 		getConnectionForTool(threadId: string, toolName: string): string | undefined {
+			// Same parent fallback as handleClientToolCallCreated: an aux thread has no
+			// subscriptions of its own, so its client tools resolve against the
+			// dispatching thread's live session.
+			const candidates = subscriptionCandidates(threadId);
 			for (const [, conn] of clients) {
-				if (conn.subscriptions.has(threadId) && conn.clientTools.has(toolName)) {
+				if (candidates.some((t) => conn.subscriptions.has(t)) && conn.clientTools.has(toolName)) {
 					return conn.connectionId;
 				}
 			}

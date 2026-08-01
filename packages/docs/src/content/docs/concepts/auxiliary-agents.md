@@ -97,6 +97,10 @@ An aux never receives the orchestration tools, regardless of its allowlist:
 
 No aux can define or invoke another aux, schedule work, or message other threads. Delegation is one level deep by construction, and the main agent stays the only scheduler. An explicit `tools` allowlist narrows things further from whatever remains.
 
+What an aux *does* inherit is the dispatching thread's **client tools** — the host-side file and shell tools a boundless session registers. An aux dispatched from a terminal session can read the repo you're working in; one dispatched from the web UI, where no such session exists, gets only the sandboxed filesystem. This is why a scout can be sent to investigate real code rather than only what's already in the database. The allowlist applies here too: name a subset and the aux sees only those.
+
+The orchestration exclusions above are absolute and unaffected by inheritance — no client tool grants an aux the ability to delegate or schedule.
+
 ## Threading
 
 An aux invocation creates a child thread with a strict parent relationship: it records the dispatching thread as its parent and inherits that thread's owning user, so archival and deletion cascade naturally from parent to children. The thread is tagged with the `aux` interface and titled `aux: <name>`.
@@ -104,6 +108,8 @@ An aux invocation creates a child thread with a strict parent relationship: it r
 The seeded instructions arrive as a user-role message marked as sent by the main agent, so the aux can distinguish an errand dispatched by the leader from a message sent by a human.
 
 Concurrent invocations are capped at 20 per host. Past that, `invoke` returns an error rather than queueing — an agent can't spawn unbounded nested loops.
+
+Because an aux runs as a nested loop inside the dispatching thread's turn, its inherited client tools resolve **inline**: the aux waits for each result rather than suspending the way the main agent does. Delivery reaches your client through the parent thread's session, since nothing subscribes to an aux thread directly. A client tool called by an aux whose parent has no live session fails with an explanatory result rather than hanging.
 
 ## Worked example
 

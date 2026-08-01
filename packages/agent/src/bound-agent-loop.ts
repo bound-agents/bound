@@ -1528,7 +1528,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	 * session drop mid-call, AC.7b) the failure is surfaced as the tool result so
 	 * the loop resumes and the model can react, rather than wedging the turn.
 	 */
-	private async relayDeferredClientTool(
+	protected async relayDeferredClientTool(
 		toolCall: ParsedToolCall,
 		sessionHost: EligibleHost,
 	): Promise<void> {
@@ -1672,7 +1672,11 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	 * re-wake the loop via `enqueueToolResult`. Idempotent re-drive is safe:
 	 * `enqueueToolResult` is a no-op on a duplicate `(thread_id, call_id)`.
 	 */
-	private persistRelayedClientToolResult(callId: string, content: string, isError: boolean): void {
+	protected persistRelayedClientToolResult(
+		callId: string,
+		content: string,
+		isError: boolean,
+	): void {
 		const capped = capToolResultContent(content);
 		const messageId = insertThreadMessage(
 			this.ctx.db,
