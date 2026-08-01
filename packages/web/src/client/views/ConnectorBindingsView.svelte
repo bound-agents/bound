@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { ConnectorBindingEntry } from "@bound/client";
+import type { ClusterModelInfo, ConnectorBindingEntry } from "@bound/client";
 import { onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import DataTable from "../components/DataTable.svelte";
@@ -17,17 +17,36 @@ let selectedBinding = $state<ConnectorBindingEntry | null>(null);
 let actionInProgress = $state<string | null>(null);
 let detailError = $state<string | null>(null);
 
+// Cluster model catalogue for the picker. Empty = fall back to cluster default.
+let availableModels: ClusterModelInfo[] = $state([]);
+let defaultModel = $state("");
+// "" means "use the cluster default" — sent as null on PATCH.
+let editModel = $state("");
+
 const columns = [
 	{ key: "server_name", label: "Server", width: "1fr", mono: true },
 	{ key: "event_name", label: "Event", width: "1.5fr", mono: true },
 	{ key: "event_args_display", label: "Args", width: "2.2fr", mono: true },
 	{ key: "task_status", label: "Task", width: "0.8fr" },
+	{ key: "model_display", label: "Model", width: "1fr", mono: true },
 	{ key: "created_at", label: "Created", width: "1.2fr" },
 ];
 
 onMount(() => {
 	loadBindings();
+	loadModels();
 });
+
+async function loadModels(): Promise<void> {
+	// Best-effort: the picker still offers "cluster default" if /models fails.
+	try {
+		const resp = await client.listModels();
+		availableModels = resp.models;
+		defaultModel = resp.default;
+	} catch (err: unknown) {
+		console.error("Failed to load models for connector binding dropdown:", err);
+	}
+}
 
 async function loadBindings(): Promise<void> {
 	try {
@@ -38,7 +57,11 @@ async function loadBindings(): Promise<void> {
 		if (selectedBinding) {
 			const updated = response.bindings.find((b) => b.id === selectedBinding?.id);
 			selectedBinding = updated ?? null;
-			if (!updated) view = "list";
+			if (updated) {
+				editModel = updated.model_hint ?? "";
+			} else {
+				view = "list";
+			}
 		}
 	} catch (err: unknown) {
 		console.error("Failed to load connector bindings:", err);
@@ -50,6 +73,7 @@ async function loadBindings(): Promise<void> {
 
 function handleSelectBinding(binding: ConnectorBindingEntry): void {
 	selectedBinding = binding;
+	editModel = binding.model_hint ?? "";
 	detailError = null;
 	view = "detail";
 }
@@ -57,7 +81,25 @@ function handleSelectBinding(binding: ConnectorBindingEntry): void {
 function handleBackToList(): void {
 	view = "list";
 	selectedBinding = null;
+	editModel = "";
 	detailError = null;
+}
+
+// "" → null clears the override back to the cluster default; the route treats
+// both the same, but sending null states the intent explicitly.
+async function handleUpdateModel(id: string): Promise<void> {
+	actionInProgress = `model:${id}`;
+	detailError = null;
+
+	try {
+		await client.updateConnectorBinding(id, { model_hint: editModel || null });
+		await loadBindings();
+	} catch (err: unknown) {
+		console.error("Failed to update connector binding model:", err);
+		detailError = err instanceof Error ? err.message : "Failed to update the binding's model.";
+	} finally {
+		actionInProgress = null;
+	}
 }
 
 async function handleDetach(id: string): Promise<void> {
@@ -156,6 +198,7 @@ function formatArgs(args: unknown): string {
 							...binding,
 							event_args_display: formatArgs(binding.event_args),
 							task_status: binding.task_status ?? "missing",
+							model_display: binding.model_hint ?? "default",
 							created_at: formatDate(binding.created_at),
 						}))}
 						onRowClick={(row) => {
@@ -223,6 +266,49 @@ function formatArgs(args: unknown): string {
 							<p class="muted">No backing task recorded.</p>
 						</div>
 					{/if}
+
+					<!-- Model lives on the backing event task, so a binding without one
+					     has nowhere to record it. Explain rather than offer a dead control. -->
+					<div class="detail-section">
+						<div class="section-label">Model</div>
+						{#if selectedBinding.task_id}
+							<div class="model-row">
+								<select
+									id="binding-model"
+									aria-label="Model for this connector binding"
+									bind:value={editModel}
+									disabled={actionInProgress !== null}
+								>
+									<option value=""
+										>Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
+									>
+									{#each availableModels as m (`${m.host}/${m.id}`)}
+										<option value={m.id}
+											>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
+											"offline?"
+												? " (offline?)"
+												: ""}</option
+										>
+									{/each}
+								</select>
+								<Btn
+									variant="default"
+									size="sm"
+									disabled={actionInProgress !== null ||
+										editModel === (selectedBinding.model_hint ?? "")}
+									onclick={() => handleUpdateModel(selectedBinding!.id)}
+								>
+									{#snippet children()}
+										{actionInProgress?.startsWith("model:") ? "Saving…" : "Save"}
+									{/snippet}
+								</Btn>
+							</div>
+						{:else}
+							<p class="muted">
+								No backing task, so no model can be set for this binding.
+							</p>
+						{/if}
+					</div>
 
 					<div class="action-section">
 						<Btn
@@ -398,6 +484,30 @@ function formatArgs(args: unknown): string {
 	.muted {
 		color: var(--ink-3) !important;
 		font-style: italic;
+	}
+
+	/* Picker + Save sit on one line; the select takes the slack so long model
+	   ids (relay entries carry a host suffix) don't clip the button. */
+	.model-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.model-row select {
+		flex: 1;
+		min-width: 0;
+		padding: 6px 8px;
+		background: var(--paper);
+		border: 1px solid var(--rule);
+		color: var(--ink);
+		font-family: var(--font-mono);
+		font-size: 12px;
+	}
+
+	.model-row select:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.action-section {

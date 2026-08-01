@@ -329,11 +329,27 @@ export interface ConnectorBindingEntry {
 	task_status: string | null;
 	task_thread_id: string | null;
 	task_trigger_spec: string | null;
+	/**
+	 * Model that runs deliveries for this binding. Stored on the backing event
+	 * task's `model_hint` (mirrored onto its delivery thread), since
+	 * `connector_handles` has no model column. Null means "use the cluster default".
+	 */
+	model_hint: string | null;
 	thread_title: string | null;
 }
 
 export interface ConnectorBindingsResponse {
 	bindings: ConnectorBindingEntry[];
+}
+
+export interface UpdateConnectorBindingOptions {
+	/**
+	 * Three-state, matching the webhook and RSS PATCH contract:
+	 *   omitted        → leave the existing model alone
+	 *   null or ""     → clear back to the cluster default
+	 *   non-empty str  → set the model
+	 */
+	model_hint?: string | null;
 }
 
 // ---- Webhooks ----

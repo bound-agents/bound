@@ -18,6 +18,7 @@ import type {
 	BoundClientEvents,
 	CancelResult,
 	ConnectionState,
+	ConnectorBindingEntry,
 	ConnectorBindingsResponse,
 	ContextDebugTurn,
 	CreateRssFeedOptions,
@@ -40,6 +41,7 @@ import type {
 	ToolCallRequest,
 	ToolCallResult,
 	ToolDefinition,
+	UpdateConnectorBindingOptions,
 	UpdateRssFeedOptions,
 	UpdateWebhookOptions,
 	WebhookCreateResponse,
@@ -877,6 +879,22 @@ export class BoundClient {
 
 	async detachConnectorBinding(id: string): Promise<void> {
 		await this.fetchVoid(`/api/connectors/bindings/${id}`, { method: "DELETE" });
+	}
+
+	/**
+	 * Update a connector binding's model. The model lives on the binding's backing
+	 * event task (mirrored onto its delivery thread), since `connector_handles` has
+	 * no model column of its own.
+	 */
+	async updateConnectorBinding(
+		id: string,
+		options: UpdateConnectorBindingOptions,
+	): Promise<ConnectorBindingEntry> {
+		return this.fetchJson(`/api/connectors/bindings/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
 	}
 
 	// ---- Status ----

@@ -41,6 +41,7 @@ export type {
 	ConnectionState,
 	ConnectorBindingEntry,
 	ConnectorBindingsResponse,
+	UpdateConnectorBindingOptions,
 	ToolDefinition,
 	ToolCallRequest,
 	ToolCallResult,
