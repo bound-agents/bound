@@ -51,6 +51,8 @@ See [RSS Feeds](/bound/guides/rss-feeds/) for details.
 
 Platform event subscriptions — shows which Discord channels (or other platform events) the agent is subscribed to, and which tasks handle them. Detach a binding to stop the agent from receiving those events.
 
+Each binding also carries the model that runs its deliveries, shown in the list and editable from the detail pane. Leave it on the cluster default or pin a specific model — a high-traffic channel can be routed to something cheap while a binding whose events need real reasoning gets a stronger model. The setting lives on the binding's backing event task, so a binding whose task is missing shows no picker rather than a control that can't save.
+
 ### Skills
 
 Manage the agent's skills — import, view, and delete SKILL.md files. See [Skills](/bound/concepts/skills/) for the skill format.

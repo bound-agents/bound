@@ -18,6 +18,12 @@ export interface ConnectorBindingWithTaskRow {
 	task_status: string | null;
 	task_thread_id: string | null;
 	task_trigger_spec: string | null;
+	/**
+	 * `tasks.model_hint` for the backing event task; null means "use the cluster
+	 * default model". Lives on the task rather than the handle — `connector_handles`
+	 * has no model column, matching how webhooks and RSS feeds carry theirs.
+	 */
+	model_hint: string | null;
 	thread_title: string | null;
 }
 
@@ -35,8 +41,9 @@ export function listConnectorBindingsWithTask(db: Database): ConnectorBindingWit
 			        h.modified_at,
 			        t.status AS task_status,
 			        t.thread_id AS task_thread_id,
-			        t.trigger_spec AS task_trigger_spec,
-			        th.title AS thread_title
+		        t.trigger_spec AS task_trigger_spec,
+		        t.model_hint AS model_hint,
+		        th.title AS thread_title
 			 FROM connector_handles h
 			 LEFT JOIN tasks t ON t.id = h.task_id AND t.deleted = 0
 			 LEFT JOIN threads th ON th.id = t.thread_id AND th.deleted = 0
