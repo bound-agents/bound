@@ -148,3 +148,19 @@ export function findThreadParentIdById(
 		parent_thread_id: string | null;
 	} | null;
 }
+
+/**
+ * `SELECT agent_id FROM threads WHERE id = ?` — the owning aux identity, or null
+ * for a main-agent thread.
+ *
+ * Behavioral code identifies aux threads by `agent_id IS NOT NULL`, never by the
+ * `interface` tag (#201) — `interface='aux'` is descriptive only.
+ */
+export function findThreadAgentIdById(
+	db: Database,
+	id: string,
+): { agent_id: string | null } | null {
+	return db.query("SELECT agent_id FROM threads WHERE id = ? AND deleted = 0").get(id) as {
+		agent_id: string | null;
+	} | null;
+}

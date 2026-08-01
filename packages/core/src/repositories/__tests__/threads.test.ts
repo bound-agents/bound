@@ -7,6 +7,7 @@ import {
 	findLiveThreadById,
 	findLiveThreadIdById,
 	findLiveThreadInterfaceById,
+	findThreadAgentIdById,
 	findThreadById,
 	findThreadCreatedAtById,
 	findThreadIdById,
@@ -409,6 +410,39 @@ describe("threads repository", () => {
 			seedThread(db, { id: "gone", parent_thread_id: "parent" });
 			softDelete(db, "threads", "gone", SITE_ID);
 			expect(findThreadParentIdById(db, "gone")).toBeNull();
+		});
+	});
+	// #201 — the aux-thread discriminator. The generic dispatcher consults this to
+	// refuse claiming an aux thread: it builds a MainAgentLoop, which on an aux
+	// thread would drop the persona, the agent_id memory scoping, and the
+	// EXCLUDED_TOOLS capability boundary.
+	describe("findThreadAgentIdById", () => {
+		it("returns the owning identity for an aux thread", () => {
+			seedThread(db, { id: "aux-1", interface: "aux", agent_id: "agent-abc" });
+			expect(findThreadAgentIdById(db, "aux-1")).toEqual({ agent_id: "agent-abc" });
+		});
+
+		// Main-agent threads must report null so the dispatcher keeps serving them.
+		it("returns a null agent_id for a main-agent thread", () => {
+			seedThread(db, { id: "main-1" });
+			expect(findThreadAgentIdById(db, "main-1")).toEqual({ agent_id: null });
+		});
+
+		// Keyed on agent_id, never the interface tag — `interface` is descriptive
+		// only, so an aux-tagged thread without an identity is still dispatchable.
+		it("does not infer an identity from the interface tag alone", () => {
+			seedThread(db, { id: "tagged-only", interface: "aux" });
+			expect(findThreadAgentIdById(db, "tagged-only")).toEqual({ agent_id: null });
+		});
+
+		it("returns null for an unknown thread", () => {
+			expect(findThreadAgentIdById(db, "nope")).toBeNull();
+		});
+
+		it("returns null for a soft-deleted thread", () => {
+			seedThread(db, { id: "gone", agent_id: "agent-abc" });
+			softDelete(db, "threads", "gone", SITE_ID);
+			expect(findThreadAgentIdById(db, "gone")).toBeNull();
 		});
 	});
 });

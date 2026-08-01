@@ -28,6 +28,7 @@ import {
 	enqueueNotification,
 	expireClientToolCalls,
 	findFreshPlatformHost,
+	findThreadAgentIdById,
 	hasPendingClientToolCalls,
 	insertRow,
 	markProcessed,
@@ -486,6 +487,30 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		const handleThread = async (thread_id: string, traceContext?: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
+				return;
+			}
+
+			// An aux thread (#201) is driven ONLY by the nested AuxAgentLoop that owns
+			// it for the invocation's lifetime. Never claim one here: this dispatcher
+			// builds a MainAgentLoop, which on an aux thread would lose the persona, the
+			// agent_id memory scoping, AND the EXCLUDED_TOOLS capability boundary
+			// (aux/task/cancel/notify/introspect) — a capability breach, not just a
+			// behavioral regression.
+			//
+			// This fires because an aux's inherited client tools persist a `tool_result`
+			// row, and the `message:created` listener below resumes any thread that gets
+			// one. Observed live: two concurrent loops on one aux thread, seven invalid
+			// state transitions, and two contradictory final answers. The inline resolver
+			// in AuxAgentLoop already consumes those results, and
+			// `acknowledgeToolResultForCall` closes the queue entry nothing will claim.
+			//
+			// Keyed on `agent_id IS NOT NULL`, never the `interface` tag — `interface`
+			// is descriptive only.
+			if (findThreadAgentIdById(appContext.db, thread_id)?.agent_id) {
+				appContext.logger.debug(
+					"[agent] Skipping dispatch for aux thread — its nested loop owns it",
+					{ threadId: thread_id },
+				);
 				return;
 			}
 
