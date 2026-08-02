@@ -8,7 +8,7 @@ import { countTokens, injectTraceContext } from "@bound/shared";
 import type { ContextDebugInfo, SyncConfig } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 
-import { getResolvedModelId } from "./agent-loop-utils";
+import { getResolvedModelId, parseContentBlocks } from "./agent-loop-utils";
 import { BoundAgentLoop, type BoundPreparedFrame } from "./bound-agent-loop";
 import { selectCacheTtl } from "./cache-prediction";
 import { assembleContext, computeBaseTruncationTarget, realTimeClock } from "./context-assembly";
@@ -165,13 +165,43 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			});
 
 			const resolved = await this.awaitClientToolResultInline(toolCall.id);
-			if (!resolved) {
-				this.persistRelayedClientToolResult(
-					toolCall.id,
-					`Error: client tool "${toolCall.name}" timed out or the session dropped before returning a result`,
-					true,
-				);
+			let content: string;
+			let isError: boolean;
+			if (resolved) {
+				content = resolved.content;
+				isError = resolved.isError;
+			} else {
+				content = `Error: client tool "${toolCall.name}" timed out or the session dropped before returning a result`;
+				isError = true;
+				this.persistRelayedClientToolResult(toolCall.id, content, isError);
 			}
+
+			// Pair the result into the IN-MEMORY frame, not just the DB.
+			//
+			// `persistToolMessages` pushes a tool_result onto `frame.messages` only
+			// for `batch.results`; deferred calls live in `batch.deferred` and never
+			// enter `results`. The main-agent track gets away with that because it
+			// returns {action:"stop"} and the next turn re-assembles from the DB,
+			// discarding this frame. We CONTINUE on the same frame, so an unpaired
+			// tool_call reaches the provider and the bridge's orphan repair
+			// (packages/llm/src/bridge/messages.ts) substitutes "[no tool result
+			// recorded: the call did not complete]". Observed live: a scout read the
+			// probe file three times, every call returned exit_code 0 with correct
+			// content, and the model still reported total failure — because its
+			// context said so.
+			frame.messages.push({
+				role: "tool_result",
+				content: parseContentBlocks(content),
+				tool_use_id: toolCall.id,
+			});
+			this.ctx.logger.debug("[aux-agent-loop] Client tool resolved inline", {
+				threadId: this.config.threadId,
+				tool: toolCall.name,
+				callId: toolCall.id,
+				isError,
+				timedOut: !resolved,
+			});
+
 			// The result row is already persisted (by the WS handler on success, or
 			// by the branch above on failure) and the loop continues in-process, so
 			// nothing will ever claim the queued re-wake. Close it here or crash
@@ -179,8 +209,8 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			acknowledgeToolResultForCall(this.ctx.db, this.config.threadId, toolCall.id);
 		}
 
-		// Every deferred call now has a persisted result, so the wire-legal
-		// tool_call/tool_result pairing holds and the loop can take another turn.
+		// Every deferred call now has a persisted result AND an in-frame pairing,
+		// so the loop can take another turn on this frame.
 		return { action: "continue" };
 	}
 
