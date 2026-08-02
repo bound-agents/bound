@@ -111,6 +111,30 @@ export class AuxAgentLoop extends BoundAgentLoop {
 	}
 
 	/**
+	 * Per-turn reset + phase entry for the aux path.
+	 *
+	 * `setPhase("LLM_CALL")` lives in `MainAgentLoop.beforeTurn`, and AuxAgentLoop
+	 * extends BoundAgentLoop directly — the base hook is a no-op, so the aux loop
+	 * was jumping ASSEMBLE_CONTEXT/TOOL_PERSIST → PARSE_RESPONSE and logging an
+	 * "Invalid state transition" warning on every single turn.
+	 *
+	 * The resets matter beyond the warning: without them `currentTurnId` and
+	 * `relayMetadataRef` leak across turns, and `onActivity` never fires, so the
+	 * caller's silence-timeout heartbeat gets no pulse while an aux is working.
+	 *
+	 * Deliberately NOT copied from MainAgentLoop: the turn>1 volatile-tail refresh
+	 * and rolling cache-marker maintenance. Aux frames are always assembled cold
+	 * (`cachePath: "cold"`, `selectCacheTtl("aux")`) and carry no cached turn
+	 * state, so there is nothing for either to update.
+	 */
+	protected override beforeTurn(_turn: number, _frame: BoundPreparedFrame): void {
+		this.currentTurnId = null;
+		this.relayMetadataRef = {};
+		this.config.onActivity?.();
+		this.setPhase("LLM_CALL");
+	}
+
+	/**
 	 * Resolve client (WS) tools INLINE instead of deferring the turn.
 	 *
 	 * The main-agent track defers: it enqueues the call, returns `{action:"stop"}`,
