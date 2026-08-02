@@ -1386,8 +1386,11 @@ export function createWebSocketHandler(
 					};
 				}
 			>();
+			// Aux children are never directly subscribed by boundless. Resolve their
+			// definitions through the parent subscription, matching delivery below.
+			const candidates = subscriptionCandidates(threadId);
 			for (const [, conn] of clients) {
-				if (conn.subscriptions.has(threadId)) {
+				if (candidates.some((candidate) => conn.subscriptions.has(candidate))) {
 					for (const [name, def] of conn.clientTools) {
 						merged.set(name, def);
 					}
