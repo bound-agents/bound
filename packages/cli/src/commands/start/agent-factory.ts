@@ -54,7 +54,15 @@ export const sandboxTool: ToolDefinition = {
 	},
 };
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
+export interface AuxLoopParentContext {
+	clientTools?: AgentLoopConfig["clientTools"];
+	connectionId?: string;
+}
+
+export interface AgentLoopFactory {
+	(config: AgentLoopConfig): MainAgentLoop;
+	createAuxLoopRunner(parent: AuxLoopParentContext): NonNullable<ToolContext["auxLoopRunner"]>;
+}
 
 /**
  * Create a unified tool registry from all tool sources.
@@ -156,7 +164,201 @@ export function createAgentLoopFactory(
 		? createVfsRehydrator(clusterFsObj.fs, appContext.db)
 		: undefined;
 
-	return (config: AgentLoopConfig): MainAgentLoop => {
+	const createAuxLoopRunner = (
+		parent: AuxLoopParentContext,
+	): NonNullable<ToolContext["auxLoopRunner"]> => {
+		const builtInTools = clusterFsObj ? createBuiltInTools(clusterFsObj.fs) : undefined;
+		const builtInToolDefs = builtInTools
+			? Array.from(builtInTools.values(), (tool) => tool.toolDefinition)
+			: [];
+		const memoryConfigResult = appContext.optionalConfig.memory;
+		const memoryLimits =
+			memoryConfigResult?.ok && memoryConfigResult.value
+				? {
+						pinnedCountCap: (memoryConfigResult.value as { pinned_count_cap: number })
+							.pinned_count_cap,
+						pinnedSizeCap: (memoryConfigResult.value as { pinned_size_cap: number })
+							.pinned_size_cap,
+					}
+				: undefined;
+		const syncResult = appContext.optionalConfig.sync;
+		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
+		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
+		// #201 Car C: aux loop runner — constructs and runs an AuxAgentLoop
+		// for an auxiliary agent invocation. Shares the VFS and underlying
+		// sandbox, but has its own snapshot state to avoid collision with
+		// the parent loop's FS persist.
+		const auxCap = new ConcurrentCap(20);
+
+		const rawAuxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+			let auxPreSnapshot: Map<string, string> | null = null;
+
+			const auxSandbox = {
+				exec: sandbox
+					? async (cmd: string, opts?: Record<string, unknown>) => {
+							const store = {
+								threadId: params.threadId,
+								taskId: undefined as string | undefined,
+								relayRequest: undefined as unknown | undefined,
+								mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
+							};
+							const result = await loopContextStorage.run(store, () =>
+								sandbox.bash.exec(cmd, opts),
+							);
+							if (store.relayRequest && isRelayRequest(store.relayRequest)) {
+								const req = store.relayRequest;
+								store.relayRequest = undefined;
+								return req;
+							}
+							if (store.mcpApp) {
+								return { ...(result as object), mcpApp: store.mcpApp };
+							}
+							return result;
+						}
+					: undefined,
+				checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
+				rehydrateFs,
+				writeFile: clusterFsObj
+					? async (path: string, content: string): Promise<void> => {
+							await clusterFsObj.fs.writeFile(path, content);
+						}
+					: undefined,
+				capturePreSnapshot: async (): Promise<void> => {
+					if (!clusterFsObj) return;
+					auxPreSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+						paths: clusterFsObj.getInMemoryPaths(),
+					});
+				},
+				persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
+					if (!clusterFsObj || !auxPreSnapshot) {
+						return { changes: 0 };
+					}
+					const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+						paths: clusterFsObj.getInMemoryPaths(),
+					});
+					const changedPaths = diffWorkspace(auxPreSnapshot, postSnapshot).map((c) => c.path);
+					const result = await persistWorkspaceChanges(
+						appContext.db,
+						appContext.siteId,
+						auxPreSnapshot,
+						postSnapshot,
+						appContext.eventBus,
+						undefined,
+						clusterFsObj.fs,
+					);
+					auxPreSnapshot = postSnapshot;
+					if (!result.ok) {
+						return { changes: 0 };
+					}
+					return { changes: result.value.changes, changedPaths };
+				},
+				builtInTools,
+			};
+
+			// Aux ToolContext with agentId set for memory namespace scoping
+			const auxToolCtx: ToolContext = {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				threadId: params.threadId,
+				modelRouter,
+				fs: clusterFsObj?.fs,
+				memoryLimits,
+				topologyRole,
+				agentId: params.agentId,
+			};
+
+			// Capability boundary — always excluded from aux toolset
+			const EXCLUDED_TOOLS = new Set(["aux", "task", "cancel", "notify", "introspect"]);
+			let filteredAgentTools = createAgentTools(auxToolCtx).filter(
+				(t) => !EXCLUDED_TOOLS.has(t.toolDefinition.function.name),
+			);
+			if (params.allowlistedTools) {
+				const allow = new Set(params.allowlistedTools);
+				filteredAgentTools = filteredAgentTools.filter((t) =>
+					allow.has(t.toolDefinition.function.name),
+				);
+			}
+
+			// Inherit the dispatching thread's client (WS) tools so an aux running
+			// under a boundless session can actually reach the operator's working
+			// directory. Without this an aux only ever sees the sandboxed VFS and
+			// cannot read the repo it was asked to investigate. Delivery works
+			// because the WS layer falls back to the PARENT thread's subscriptions
+			// (nothing ever subscribes to an aux thread), and AuxAgentLoop resolves
+			// these inline instead of deferring — a nested loop has no re-wake path.
+			const parentClientTools = parent.clientTools;
+			const auxClientTools = (() => {
+				if (!parentClientTools) return undefined;
+				if (!params.allowlistedTools) return parentClientTools;
+				const allow = new Set(params.allowlistedTools);
+				const scoped = new Map(
+					Array.from(parentClientTools.entries()).filter(([name]) => allow.has(name)),
+				);
+				return scoped.size > 0 ? scoped : undefined;
+			})();
+			const auxClientToolDefs = auxClientTools ? Array.from(auxClientTools.values()) : [];
+
+			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
+			const auxToolRegistry = createToolRegistry(
+				builtInTools,
+				auxClientTools,
+				filteredAgentTools,
+				appContext.logger,
+				undefined,
+			);
+
+			const auxLoop = new AuxAgentLoop(appContext, auxSandbox, modelRouter, {
+				threadId: params.threadId,
+				userId: params.userId,
+				modelId: params.modelHint ?? undefined,
+				systemPromptAddition: params.persona,
+				platform: "aux",
+				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
+				toolRegistry: auxToolRegistry,
+				clientTools: auxClientTools,
+				// Carries the parent's WS connection so the inline client-tool
+				// dispatch takes the local path rather than resolving a relay host.
+				connectionId: parent.connectionId,
+			});
+
+			const loopResult = await auxLoop.run();
+
+			// Extract the last assistant message as the summary
+			const lastAssistant = appContext.db
+				.prepare(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(params.threadId) as { content: string } | null;
+
+			return {
+				summary: lastAssistant?.content ?? "(no response)",
+				error: loopResult.error,
+			};
+		};
+
+		// #201: wrap the runner with a concurrent-invocation cap so an agent
+		// cannot spawn unbounded nested loops. The cap lives in this closure
+		// and is shared across all invocations on this host.
+		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+			if (!auxCap.acquire()) {
+				return {
+					summary: `Error: concurrent auxiliary agent cap reached (${auxCap.capacity}). Wait for in-flight invocations to complete before invoking again.`,
+					error: "concurrent-cap",
+				};
+			}
+			try {
+				return await rawAuxLoopRunner(params);
+			} finally {
+				auxCap.release();
+			}
+		};
+
+		return auxLoopRunner;
+	};
+
+	const factory = (config: AgentLoopConfig): MainAgentLoop => {
 		// Per-invocation snapshot state. Each call gets its own
 		// closure so concurrent agent loops do not share preSnapshot.
 		let preSnapshot: Map<string, string> | null = null;
@@ -280,176 +482,10 @@ export function createAgentLoopFactory(
 		const syncResult = appContext.optionalConfig.sync;
 		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
 		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
-		// #201 Car C: aux loop runner — constructs and runs an AuxAgentLoop
-		// for an auxiliary agent invocation. Shares the VFS and underlying
-		// sandbox, but has its own snapshot state to avoid collision with
-		// the parent loop's FS persist.
-		const auxCap = new ConcurrentCap(20);
-
-		const rawAuxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
-			let auxPreSnapshot: Map<string, string> | null = null;
-
-			const auxSandbox = {
-				exec: sandbox
-					? async (cmd: string, opts?: Record<string, unknown>) => {
-							const store = {
-								threadId: params.threadId,
-								taskId: undefined as string | undefined,
-								relayRequest: undefined as unknown | undefined,
-								mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
-							};
-							const result = await loopContextStorage.run(store, () =>
-								sandbox.bash.exec(cmd, opts),
-							);
-							if (store.relayRequest && isRelayRequest(store.relayRequest)) {
-								const req = store.relayRequest;
-								store.relayRequest = undefined;
-								return req;
-							}
-							if (store.mcpApp) {
-								return { ...(result as object), mcpApp: store.mcpApp };
-							}
-							return result;
-						}
-					: undefined,
-				checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
-				rehydrateFs,
-				writeFile: clusterFsObj
-					? async (path: string, content: string): Promise<void> => {
-							await clusterFsObj.fs.writeFile(path, content);
-						}
-					: undefined,
-				capturePreSnapshot: async (): Promise<void> => {
-					if (!clusterFsObj) return;
-					auxPreSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
-						paths: clusterFsObj.getInMemoryPaths(),
-					});
-				},
-				persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
-					if (!clusterFsObj || !auxPreSnapshot) {
-						return { changes: 0 };
-					}
-					const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
-						paths: clusterFsObj.getInMemoryPaths(),
-					});
-					const changedPaths = diffWorkspace(auxPreSnapshot, postSnapshot).map((c) => c.path);
-					const result = await persistWorkspaceChanges(
-						appContext.db,
-						appContext.siteId,
-						auxPreSnapshot,
-						postSnapshot,
-						appContext.eventBus,
-						undefined,
-						clusterFsObj.fs,
-					);
-					auxPreSnapshot = postSnapshot;
-					if (!result.ok) {
-						return { changes: 0 };
-					}
-					return { changes: result.value.changes, changedPaths };
-				},
-				builtInTools,
-			};
-
-			// Aux ToolContext with agentId set for memory namespace scoping
-			const auxToolCtx: ToolContext = {
-				db: appContext.db,
-				siteId: appContext.siteId,
-				eventBus: appContext.eventBus,
-				logger: appContext.logger,
-				threadId: params.threadId,
-				modelRouter,
-				fs: clusterFsObj?.fs,
-				memoryLimits,
-				topologyRole,
-				agentId: params.agentId,
-			};
-
-			// Capability boundary — always excluded from aux toolset
-			const EXCLUDED_TOOLS = new Set(["aux", "task", "cancel", "notify", "introspect"]);
-			let filteredAgentTools = createAgentTools(auxToolCtx).filter(
-				(t) => !EXCLUDED_TOOLS.has(t.toolDefinition.function.name),
-			);
-			if (params.allowlistedTools) {
-				const allow = new Set(params.allowlistedTools);
-				filteredAgentTools = filteredAgentTools.filter((t) =>
-					allow.has(t.toolDefinition.function.name),
-				);
-			}
-
-			// Inherit the dispatching thread's client (WS) tools so an aux running
-			// under a boundless session can actually reach the operator's working
-			// directory. Without this an aux only ever sees the sandboxed VFS and
-			// cannot read the repo it was asked to investigate. Delivery works
-			// because the WS layer falls back to the PARENT thread's subscriptions
-			// (nothing ever subscribes to an aux thread), and AuxAgentLoop resolves
-			// these inline instead of deferring — a nested loop has no re-wake path.
-			const parentClientTools = config.clientTools;
-			const auxClientTools = (() => {
-				if (!parentClientTools) return undefined;
-				if (!params.allowlistedTools) return parentClientTools;
-				const allow = new Set(params.allowlistedTools);
-				const scoped = new Map(
-					Array.from(parentClientTools.entries()).filter(([name]) => allow.has(name)),
-				);
-				return scoped.size > 0 ? scoped : undefined;
-			})();
-			const auxClientToolDefs = auxClientTools ? Array.from(auxClientTools.values()) : [];
-
-			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
-			const auxToolRegistry = createToolRegistry(
-				builtInTools,
-				auxClientTools,
-				filteredAgentTools,
-				appContext.logger,
-				undefined,
-			);
-
-			const auxLoop = new AuxAgentLoop(appContext, auxSandbox, modelRouter, {
-				threadId: params.threadId,
-				userId: params.userId,
-				modelId: params.modelHint ?? undefined,
-				systemPromptAddition: params.persona,
-				platform: "aux",
-				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
-				toolRegistry: auxToolRegistry,
-				clientTools: auxClientTools,
-				// Carries the parent's WS connection so the inline client-tool
-				// dispatch takes the local path rather than resolving a relay host.
-				connectionId: config.connectionId,
-			});
-
-			const loopResult = await auxLoop.run();
-
-			// Extract the last assistant message as the summary
-			const lastAssistant = appContext.db
-				.prepare(
-					"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-				)
-				.get(params.threadId) as { content: string } | null;
-
-			return {
-				summary: lastAssistant?.content ?? "(no response)",
-				error: loopResult.error,
-			};
-		};
-
-		// #201: wrap the runner with a concurrent-invocation cap so an agent
-		// cannot spawn unbounded nested loops. The cap lives in this closure
-		// and is shared across all invocations on this host.
-		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
-			if (!auxCap.acquire()) {
-				return {
-					summary: `Error: concurrent auxiliary agent cap reached (${auxCap.capacity}). Wait for in-flight invocations to complete before invoking again.`,
-					error: "concurrent-cap",
-				};
-			}
-			try {
-				return await rawAuxLoopRunner(params);
-			} finally {
-				auxCap.release();
-			}
-		};
+		const auxLoopRunner = createAuxLoopRunner({
+			clientTools: config.clientTools,
+			connectionId: config.connectionId,
+		});
 
 		const toolCtx: ToolContext = {
 			db: appContext.db,
@@ -482,4 +518,6 @@ export function createAgentLoopFactory(
 			toolRegistry,
 		});
 	};
+	factory.createAuxLoopRunner = createAuxLoopRunner;
+	return factory;
 }
