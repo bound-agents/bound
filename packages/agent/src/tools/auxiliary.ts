@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+	enqueueMessage,
 	findActiveAgentByName,
 	findAgentByNameIncludingRetired,
 	findThreadUserAndInterfaceById,
 	insertRow,
 	listAgentsForToolView,
-	resolveDeferredToolResult,
 	updateRow,
 } from "@bound/core";
 import type { Agent } from "@bound/shared";
@@ -353,6 +353,20 @@ async function handleInvoke(
 	// Seed the instructions as a user-role message with sender_role='main'.
 	// The #201 sender-envelope role axis stamps this as a main→aux dispatch,
 	// distinguishable from user→aux messages (which carry sender_role='user').
+	//
+	// #76: a background invocation additionally stamps the parent correlation
+	// (parent thread + placeholder call_id) on the seed. The correlation lives on
+	// durable state — never in this process's memory — so whichever process
+	// finishes the run (this one, or the next daemon after a restart) knows
+	// exactly which placeholder to resolve.
+	const seedMetadata: Record<string, unknown> = { sender_role: "main" };
+	if (input.background && callId) {
+		seedMetadata.background_parent = {
+			thread_id: parentThreadId,
+			call_id: callId,
+			agent_name: input.name,
+		};
+	}
 	insertRow(
 		ctx.db,
 		"messages",
@@ -368,55 +382,25 @@ async function handleInvoke(
 			host_origin: ctx.siteId,
 			deleted: 0,
 			exit_code: null,
-			metadata: JSON.stringify({ sender_role: "main" }),
+			metadata: JSON.stringify(seedMetadata),
 		},
 		ctx.siteId,
 	);
 
-	// Background mode: fire and forget \u2014 don't block the parent loop.
-	// The placeholder tool_result is written by the loop; when the aux
-	// loop completes, resolveDeferredToolResult updates it and re-wakes.
-	if (input.background && ctx.auxLoopRunner && callId) {
-		const allowlistedTools = agent.tools ? (JSON.parse(agent.tools) as string[]) : null;
-		const runnerParams = {
-			threadId,
-			agentId: agent.id,
-			persona: agent.persona,
-			modelHint: input.model ?? agent.model_hint ?? null,
-			allowlistedTools,
-			instructions: input.instructions,
-			userId: parentInfo.user_id,
-			parentThreadId: parentThreadId,
-		};
-		void ctx.auxLoopRunner(runnerParams).then(
-			(result) => {
-				resolveDeferredToolResult(
-					ctx.db,
-					parentThreadId,
-					callId,
-					result.error
-						? `Auxiliary agent '${input.name}' completed with error: ${result.error}\n\nThread: ${threadId}`
-						: result.summary,
-					!!result.error,
-					ctx.siteId,
-					ctx.eventBus,
-				);
-			},
-			(error) => {
-				resolveDeferredToolResult(
-					ctx.db,
-					parentThreadId,
-					callId,
-					`Error: auxiliary agent '${input.name}' failed: ${error instanceof Error ? error.message : String(error)}`,
-					true,
-					ctx.siteId,
-					ctx.eventBus,
-				);
-			},
-		);
+	// Background mode (#76): durable, dispatcher-owned execution. The original
+	// shape fired an untracked in-process promise, which died with the process
+	// and stranded the parent's placeholder forever. Instead, the seed message is
+	// enqueued through dispatch_queue and the thread handed to the server
+	// dispatcher, which recognizes the correlation stamped on the seed, runs an
+	// AuxAgentLoop over the child thread, and resolves the placeholder on
+	// completion. Restart recovery is the ordinary dispatch machinery: bootstrap
+	// resets interrupted entries to pending; recovery re-dispatches the thread.
+	if (input.background && callId) {
+		enqueueMessage(ctx.db, messageId, threadId);
+		ctx.eventBus.emit("notify:enqueued", { thread_id: threadId });
 		return {
 			deferred: true,
-			description: `Auxiliary agent '${input.name}' invoked on thread ${threadId} \u2014 running in background. Result will arrive when complete.`,
+			description: `Auxiliary agent '${input.name}' queued on thread ${threadId} — running in background. Result will arrive when complete.`,
 		};
 	}
 

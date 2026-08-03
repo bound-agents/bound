@@ -17,7 +17,7 @@ import {
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
 } from "@bound/agent";
-import type { AgentLoopConfig, ClientToolResolver, MainAgentLoop } from "@bound/agent";
+import type { ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	type DispatchEntry,
@@ -27,12 +27,18 @@ import {
 	enqueueMessage,
 	enqueueNotification,
 	expireClientToolCalls,
+	findAgentById,
+	findBackgroundAuxSeed,
 	findFreshPlatformHost,
 	findThreadAgentIdById,
+	findThreadModelHintById,
+	findThreadUserAndInterfaceById,
+	findUnresolvedBackgroundPlaceholder,
 	hasPendingClientToolCalls,
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
+	resolveDeferredToolResult,
 	softDelete,
 	updateRow,
 	writeMessageMetadata,
@@ -66,8 +72,9 @@ import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
+import type { AgentLoopFactory } from "./agent-factory.js";
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
+export type { AgentLoopFactory } from "./agent-factory.js";
 
 const getTracer = () => trace.getTracer("bound.web");
 
@@ -482,6 +489,122 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		// runs locally on the trigger host and relays only inference. There is no
 		// dispatch-and-poll-for-remote-completion anymore (R-UD1).
 
+		// #76: dispatcher-owned background aux execution. See the ownership comment
+		// in handleThread. Runs under the same thread-exclusive executor lock as
+		// ordinary dispatch, so a straggler tool_result wakeup (an inline client
+		// tool acking late) cannot start a second loop on the thread mid-run.
+		const runBackgroundAuxThread = async (
+			thread_id: string,
+			agentId: string,
+			seed: { parentThreadId: string; parentCallId: string; instructions: string },
+		): Promise<void> => {
+			await threadExecutor.execute(thread_id, async () => {
+				const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
+				if (claimed.length === 0) return {};
+				const claimedIds = claimed.map((e) => e.message_id);
+
+				// Guard on the unresolved marker: a spurious re-wake after the
+				// placeholder already resolved must not clobber a delivered result
+				// with a duplicate (or a "not found" error).
+				const finishParent = (content: string, isError: boolean): void => {
+					if (
+						findUnresolvedBackgroundPlaceholder(
+							appContext.db,
+							seed.parentThreadId,
+							seed.parentCallId,
+						)
+					) {
+						resolveDeferredToolResult(
+							appContext.db,
+							seed.parentThreadId,
+							seed.parentCallId,
+							content,
+							isError,
+							appContext.siteId,
+							appContext.eventBus,
+						);
+					}
+				};
+
+				try {
+					const agent = findAgentById(appContext.db, agentId);
+					if (!agent) {
+						finishParent(
+							`Error: auxiliary agent identity ${agentId} not found for background invocation`,
+							true,
+						);
+						acknowledgeBatch(appContext.db, claimedIds);
+						return { claimedIds };
+					}
+					const threadInfo = findThreadUserAndInterfaceById(appContext.db, thread_id);
+					const modelHint =
+						findThreadModelHintById(appContext.db, thread_id)?.model_hint ??
+						agent.model_hint ??
+						null;
+
+					// Client tools resolve through the PARENT thread's live session
+					// (the registry's subscriptionCandidates fallback), so a background
+					// aux keeps boundless reach while the session is connected and
+					// degrades to an inline error result when it is not.
+					const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(thread_id);
+					const clientTools =
+						clientToolsFromRegistry && clientToolsFromRegistry.size > 0
+							? clientToolsFromRegistry
+							: undefined;
+					const firstToolName = clientTools?.keys().next().value;
+					const connectionId = firstToolName
+						? wsRegistry?.getConnectionForTool(thread_id, firstToolName)
+						: undefined;
+
+					const runner = agentLoopFactory.createAuxLoopRunner?.({ clientTools, connectionId });
+					if (!runner) {
+						finishParent(
+							"Error: this host's agent loop factory cannot construct auxiliary loops",
+							true,
+						);
+						acknowledgeBatch(appContext.db, claimedIds);
+						return { claimedIds };
+					}
+
+					appContext.logger.info("[agent] Running background aux thread", {
+						threadId: thread_id,
+						agentId,
+						parentThreadId: seed.parentThreadId,
+						parentCallId: seed.parentCallId,
+					});
+					const result = await runner({
+						threadId: thread_id,
+						agentId: agent.id,
+						persona: agent.persona,
+						modelHint,
+						allowlistedTools: agent.tools ? (JSON.parse(agent.tools) as string[]) : null,
+						instructions: seed.instructions,
+						userId: threadInfo?.user_id ?? operatorUserId,
+						parentThreadId: seed.parentThreadId,
+					});
+					finishParent(
+						result.error
+							? `Auxiliary agent errand failed: ${result.error}\n\nThread: ${thread_id}`
+							: result.summary,
+						!!result.error,
+					);
+					acknowledgeBatch(appContext.db, claimedIds);
+					return { claimedIds };
+				} catch (error) {
+					finishParent(
+						`Error: background auxiliary invocation failed: ${formatError(error)}`,
+						true,
+					);
+					try {
+						acknowledgeBatch(appContext.db, claimedIds);
+					} catch {
+						// claimed entries reset via executor error path
+					}
+					return {};
+				}
+			});
+		};
+
 		// handleThread delegates to the shared ThreadExecutor.
 		// The executor owns the thread-exclusive lock and drain loop.
 		const handleThread = async (thread_id: string, traceContext?: string) => {
@@ -490,27 +613,41 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				return;
 			}
 
-			// An aux thread (#201) is driven ONLY by the nested AuxAgentLoop that owns
-			// it for the invocation's lifetime. Never claim one here: this dispatcher
-			// builds a MainAgentLoop, which on an aux thread would lose the persona, the
-			// agent_id memory scoping, AND the EXCLUDED_TOOLS capability boundary
-			// (aux/task/cancel/notify/introspect) — a capability breach, not just a
-			// behavioral regression.
+			// An aux thread (#201) has two ownership modes, distinguished by durable
+			// state on its seed message (#76):
 			//
-			// This fires because an aux's inherited client tools persist a `tool_result`
-			// row, and the `message:created` listener below resumes any thread that gets
-			// one. Observed live: two concurrent loops on one aux thread, seven invalid
-			// state transitions, and two contradictory final answers. The inline resolver
-			// in AuxAgentLoop already consumes those results, and
-			// `acknowledgeToolResultForCall` closes the queue entry nothing will claim.
+			// FOREGROUND (no background_parent correlation on the seed): a nested
+			// AuxAgentLoop inside the dispatching thread's turn owns it for the
+			// invocation's lifetime. Never claim one here: this dispatcher would
+			// build a MainAgentLoop, losing the persona, the agent_id memory
+			// scoping, AND the EXCLUDED_TOOLS capability boundary
+			// (aux/task/cancel/notify/introspect) — a capability breach, not just a
+			// behavioral regression. Its inherited client tools persist tool_result
+			// rows that fire this listener; the inline resolver in AuxAgentLoop
+			// consumes those, and `acknowledgeToolResultForCall` closes the entry.
+			//
+			// BACKGROUND (seed stamped with metadata.background_parent): the
+			// dispatcher owns it. aux.invoke(background) enqueued the seed through
+			// dispatch_queue and returned a placeholder to the parent; this branch
+			// runs the capability-scoped AuxAgentLoop over the child thread and
+			// resolves the parent's placeholder on completion. Restart durability is
+			// the ordinary dispatch machinery — bootstrap resets interrupted entries
+			// to pending, recovery re-dispatches the thread, and the errand re-runs
+			// from its durable seed.
 			//
 			// Keyed on `agent_id IS NOT NULL`, never the `interface` tag — `interface`
 			// is descriptive only.
-			if (findThreadAgentIdById(appContext.db, thread_id)?.agent_id) {
-				appContext.logger.debug(
-					"[agent] Skipping dispatch for aux thread — its nested loop owns it",
-					{ threadId: thread_id },
-				);
+			const auxOwner = findThreadAgentIdById(appContext.db, thread_id);
+			if (auxOwner?.agent_id) {
+				const seed = findBackgroundAuxSeed(appContext.db, thread_id);
+				if (!seed) {
+					appContext.logger.debug(
+						"[agent] Skipping dispatch for aux thread — its nested loop owns it",
+						{ threadId: thread_id },
+					);
+					return;
+				}
+				await runBackgroundAuxThread(thread_id, auxOwner.agent_id, seed);
 				return;
 			}
 

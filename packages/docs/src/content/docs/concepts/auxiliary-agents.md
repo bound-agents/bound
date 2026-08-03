@@ -69,7 +69,9 @@ The practical difference is parallelism. Three synchronous invocations run one a
 
 The agent picks per call, not per identity. The same scout can be backgrounded for a broad survey whose answer isn't needed until later in the turn, and awaited synchronously when the next step depends on what it found. Deciding which is which is the agent's judgment call — if it needs the answer to choose its next move, blocking is correct.
 
-A backgrounded errand that fails surfaces as a failed tool result rather than vanishing: an aux that reports an error, or a nested loop that throws, both land as the result the main agent reads on wake. What a background invocation does *not* survive is the server restarting mid-flight — the child thread and its seeded instructions persist in the database, but nothing re-drives the loop, so the errand needs re-dispatching.
+A backgrounded errand that fails surfaces as a failed tool result rather than vanishing: an aux that reports an error, or a loop that throws, both land as the result the main agent reads on wake.
+
+Background invocations also survive a server restart. The errand's instructions are enqueued through the same durable dispatch queue that carries ordinary messages, with the parent correlation stamped on the seed message itself. If the daemon dies mid-errand, startup recovery resets the interrupted queue entry and re-dispatches the child thread; the errand re-runs from its seed and the result still lands in the parent's placeholder. What restarts cost is progress, not the errand — a half-finished run starts over.
 
 
 ### retire
