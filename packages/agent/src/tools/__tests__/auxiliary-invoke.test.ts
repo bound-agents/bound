@@ -346,23 +346,6 @@ describe("invoke with background: true", () => {
 	const siteId = "test-site";
 	let ctx: ToolContext;
 
-	function insertPlaceholder(threadId: string, callId: string): string {
-		const id = `msg-${callId}`;
-		db.run(
-			`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted, exit_code, metadata)
-			 VALUES (?, ?, 'tool_result', '[Background: running]', NULL, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', ?, 0, NULL, NULL)`,
-			[id, threadId, callId, siteId],
-		);
-		return id;
-	}
-
-	function placeholderOf(id: string): { content: string; exit_code: number | null } | null {
-		return db.query("SELECT content, exit_code FROM messages WHERE id = ?").get(id) as {
-			content: string;
-			exit_code: number | null;
-		} | null;
-	}
-
 	beforeEach(() => {
 		db = new Database(":memory:");
 		applySchema(db);
@@ -433,84 +416,70 @@ describe("invoke with background: true", () => {
 		released?.();
 	});
 
-	it("resolves the placeholder with the aux summary once the loop finishes", async () => {
-		const placeholderId = insertPlaceholder("parent-thread", "call-done");
-		let settle: ((v: { summary: string }) => void) | undefined;
-		const exec = getExecute(
-			createAuxTool({
-				...ctx,
-				auxLoopRunner: () =>
-					new Promise<{ summary: string }>((resolve) => {
-						settle = resolve;
-					}),
-			}),
+	it("stamps the parent correlation on the child's seed message", async () => {
+		const exec = getExecute(createAuxTool(ctx));
+		await exec({ action: "define", name: "tama", persona: "test" });
+
+		await exec(
+			{ action: "invoke", name: "tama", instructions: "dig through the logs", background: true },
+			"call-corr",
 		);
+
+		const agent = db.query("SELECT id FROM agents WHERE name = ?").get("tama") as { id: string };
+		const thread = db
+			.query("SELECT id FROM threads WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1")
+			.get(agent.id) as { id: string };
+		const seed = db
+			.query(
+				"SELECT content, metadata FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1",
+			)
+			.get(thread.id) as { content: string; metadata: string };
+
+		const metadata = JSON.parse(seed.metadata);
+		expect(seed.content).toBe("dig through the logs");
+		expect(metadata.sender_role).toBe("main");
+		expect(metadata.background_parent).toEqual({
+			thread_id: "parent-thread",
+			call_id: "call-corr",
+			agent_name: "tama",
+		});
+	});
+
+	it("enqueues the seed through dispatch_queue for the server dispatcher", async () => {
+		const exec = getExecute(createAuxTool(ctx));
 		await exec({ action: "define", name: "tama", persona: "test" });
 
 		await exec(
 			{ action: "invoke", name: "tama", instructions: "work", background: true },
-			"call-done",
+			"call-queue",
 		);
-		expect(placeholderOf(placeholderId)?.content).toBe("[Background: running]");
 
-		settle?.({ summary: "found 7 matches" });
-		await new Promise((r) => setTimeout(r, 10));
+		const agent = db.query("SELECT id FROM agents WHERE name = ?").get("tama") as { id: string };
+		const thread = db
+			.query("SELECT id FROM threads WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1")
+			.get(agent.id) as { id: string };
+		const entry = db
+			.query(
+				"SELECT status, event_type FROM dispatch_queue WHERE thread_id = ? ORDER BY created_at ASC LIMIT 1",
+			)
+			.get(thread.id) as { status: string; event_type: string } | null;
 
-		const row = placeholderOf(placeholderId);
-		expect(row?.content).toBe("found 7 matches");
-		expect(row?.exit_code).toBe(0);
+		expect(entry).not.toBeNull();
+		expect(entry?.status).toBe("pending");
+		expect(entry?.event_type).toBe("user_message");
 	});
 
-	it("resolves the placeholder as an error when the aux reports one", async () => {
-		const placeholderId = insertPlaceholder("parent-thread", "call-err");
+	it("emits notify:enqueued for the child thread so dispatch wakes immediately", async () => {
+		const emitted: Array<{ event: string; payload: unknown }> = [];
 		const exec = getExecute(
 			createAuxTool({
 				...ctx,
-				auxLoopRunner: async () => ({ summary: "", error: "model unavailable" }),
-			}),
-		);
-		await exec({ action: "define", name: "tama", persona: "test" });
-
-		await exec(
-			{ action: "invoke", name: "tama", instructions: "work", background: true },
-			"call-err",
-		);
-		await new Promise((r) => setTimeout(r, 10));
-
-		const row = placeholderOf(placeholderId);
-		expect(row?.content).toContain("model unavailable");
-		expect(row?.exit_code).toBe(1);
-	});
-
-	it("resolves the placeholder as an error when the loop runner throws", async () => {
-		const placeholderId = insertPlaceholder("parent-thread", "call-throw");
-		const exec = getExecute(
-			createAuxTool({
-				...ctx,
-				auxLoopRunner: async () => {
-					throw new Error("nested loop exploded");
-				},
-			}),
-		);
-		await exec({ action: "define", name: "tama", persona: "test" });
-
-		await exec(
-			{ action: "invoke", name: "tama", instructions: "work", background: true },
-			"call-throw",
-		);
-		await new Promise((r) => setTimeout(r, 10));
-
-		const row = placeholderOf(placeholderId);
-		expect(row?.content).toContain("nested loop exploded");
-		expect(row?.exit_code).toBe(1);
-	});
-
-	it("enqueues a tool_result dispatch entry to re-wake the parent loop", async () => {
-		insertPlaceholder("parent-thread", "call-wake");
-		const exec = getExecute(
-			createAuxTool({
-				...ctx,
-				auxLoopRunner: async () => ({ summary: "done" }),
+				eventBus: {
+					on: () => {},
+					off: () => {},
+					emit: (event: string, payload: unknown) => emitted.push({ event, payload }),
+					once: () => {},
+				} as any,
 			}),
 		);
 		await exec({ action: "define", name: "tama", persona: "test" });
@@ -519,47 +488,68 @@ describe("invoke with background: true", () => {
 			{ action: "invoke", name: "tama", instructions: "work", background: true },
 			"call-wake",
 		);
-		await new Promise((r) => setTimeout(r, 10));
 
-		const pending = db
-			.query(
-				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = 'tool_result' AND status = 'pending'",
-			)
-			.get("parent-thread") as { c: number };
-		expect(pending.c).toBe(1);
+		const agent = db.query("SELECT id FROM agents WHERE name = ?").get("tama") as { id: string };
+		const thread = db
+			.query("SELECT id FROM threads WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1")
+			.get(agent.id) as { id: string };
+		const wake = emitted.find((e) => e.event === "notify:enqueued");
+		expect(wake).toBeDefined();
+		expect((wake?.payload as { thread_id: string }).thread_id).toBe(thread.id);
 	});
 
-	// Split/merge consist: three sections leave the junction together and run
-	// their own schedules. All three runners must be in flight concurrently.
-	it("runs several background invocations concurrently", async () => {
-		let inFlight = 0;
-		let peak = 0;
-		const gates: Array<() => void> = [];
+	it("does not run the in-process loop runner for a background invocation", async () => {
+		let runnerCalls = 0;
 		const exec = getExecute(
 			createAuxTool({
 				...ctx,
 				auxLoopRunner: async () => {
-					inFlight++;
-					peak = Math.max(peak, inFlight);
-					await new Promise<void>((resolve) => gates.push(resolve));
-					inFlight--;
-					return { summary: "ok" };
+					runnerCalls++;
+					return { summary: "should not run inline" };
 				},
 			}),
 		);
 		await exec({ action: "define", name: "tama", persona: "test" });
 
-		for (const callId of ["c1", "c2", "c3"]) {
-			const out = await exec(
-				{ action: "invoke", name: "tama", instructions: "work", background: true },
-				callId,
-			);
-			expect((out as any).deferred).toBe(true);
-		}
+		const out = await exec(
+			{ action: "invoke", name: "tama", instructions: "work", background: true },
+			"call-noinline",
+		);
 		await new Promise((r) => setTimeout(r, 10));
 
-		expect(peak).toBe(3);
-		for (const release of gates) release();
+		expect((out as any).deferred).toBe(true);
+		expect(runnerCalls).toBe(0);
+	});
+
+	it("does not stamp foreground invocations with a parent correlation", async () => {
+		const exec = getExecute(
+			createAuxTool({
+				...ctx,
+				auxLoopRunner: async () => ({ summary: "fg done" }),
+			}),
+		);
+		await exec({ action: "define", name: "tama", persona: "test" });
+
+		await exec({ action: "invoke", name: "tama", instructions: "fg work" }, "call-fg");
+
+		const agent = db.query("SELECT id FROM agents WHERE name = ?").get("tama") as { id: string };
+		const thread = db
+			.query("SELECT id FROM threads WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1")
+			.get(agent.id) as { id: string };
+		const seed = db
+			.query(
+				"SELECT metadata FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1",
+			)
+			.get(thread.id) as { metadata: string };
+
+		const metadata = JSON.parse(seed.metadata);
+		expect(metadata.sender_role).toBe("main");
+		expect(metadata.background_parent).toBeUndefined();
+
+		const queued = db
+			.query("SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ?")
+			.get(thread.id) as { c: number };
+		expect(queued.c).toBe(0);
 	});
 
 	it("creates one child thread per background invocation", async () => {

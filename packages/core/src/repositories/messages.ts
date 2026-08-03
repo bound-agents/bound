@@ -539,3 +539,60 @@ export function findToolResultByThreadAndCallId(
 		)
 		.get(threadId, callId) as { content: string; exit_code: number | null } | null;
 }
+/**
+ * #76: durable correlation for a dispatcher-owned background aux invocation.
+ *
+ * A background `aux.invoke` stamps `metadata.background_parent` (parent thread
+ * id + placeholder call_id) on the child thread's seed message. Server dispatch
+ * reads it back to decide ownership: a seed WITH the correlation marks the
+ * thread as dispatcher-owned (run an AuxAgentLoop, resolve the parent's
+ * placeholder on completion); a seed without it belongs to a foreground nested
+ * loop and must never be claimed by the dispatcher.
+ */
+export function findBackgroundAuxSeed(
+	db: Database,
+	threadId: string,
+): { parentThreadId: string; parentCallId: string; instructions: string } | null {
+	const row = db
+		.query(
+			`SELECT content,
+				json_extract(metadata, '$.background_parent.thread_id') AS parent_thread_id,
+				json_extract(metadata, '$.background_parent.call_id') AS parent_call_id
+			 FROM messages
+			 WHERE thread_id = ? AND role = 'user' AND deleted = 0
+				AND json_extract(metadata, '$.background_parent.call_id') IS NOT NULL
+			 ORDER BY created_at ASC LIMIT 1`,
+		)
+		.get(threadId) as {
+		content: string;
+		parent_thread_id: string;
+		parent_call_id: string;
+	} | null;
+	if (!row) return null;
+	return {
+		parentThreadId: row.parent_thread_id,
+		parentCallId: row.parent_call_id,
+		instructions: row.content,
+	};
+}
+
+/**
+ * #76: the placeholder row for (thread, call_id) IF it still carries the
+ * `background` metadata marker — i.e. the deferred call is still unresolved.
+ * `resolveDeferredToolResult` drops the marker on resolution, so this guards a
+ * completed aux thread's spurious re-wake from clobbering a delivered result.
+ */
+export function findUnresolvedBackgroundPlaceholder(
+	db: Database,
+	threadId: string,
+	callId: string,
+): { id: string } | null {
+	return db
+		.query(
+			`SELECT id FROM messages
+			 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
+				AND json_extract(metadata, '$.background') = 1
+			 ORDER BY created_at DESC LIMIT 1`,
+		)
+		.get(threadId, callId) as { id: string } | null;
+}
