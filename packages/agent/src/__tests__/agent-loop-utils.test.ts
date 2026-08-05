@@ -11,6 +11,7 @@ import {
 	clampMaxOutputTokens,
 	convertDeltaMessages,
 	createFileRefResolver,
+	deltaRequiresColdReassembly,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	hasOrphanedToolCall,
@@ -720,6 +721,21 @@ describe("convertDeltaMessages", () => {
 		expect(out[1].role).toBe("developer");
 		expect(out[1].content).toBe("[system alert] Failed after 3 attempts. Last error: undefined");
 		expect(out[2].role).toBe("user");
+	});
+
+	it("marks purge deltas for cold reassembly instead of exposing the DB-only role", () => {
+		const rows = [
+			mkRow({ role: "user", content: "before" }),
+			mkRow({
+				role: "purge",
+				content: JSON.stringify({ target_ids: ["old-message"], summary: "cleared" }),
+			}),
+		];
+
+		expect(deltaRequiresColdReassembly(rows)).toBe(true);
+		expect(
+			convertDeltaMessages(rows).some((message) => (message as { role: string }).role === "purge"),
+		).toBe(false);
 	});
 });
 
