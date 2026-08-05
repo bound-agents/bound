@@ -507,11 +507,46 @@ export function streamChunkToSessionUpdate(chunk: WsStreamChunk): SessionUpdate 
 
 /**
  * Best-effort parse of a persisted `Message.content` string into the
- * LlmContentBlock[] it was serialized from. Assistant / tool_call rows persist
- * their content as a JSON array of blocks (thinking / text / tool_use / …);
- * plain user and string-content rows are not JSON arrays. Returns null when the
- * content is not a block array so callers can fall back to treating it as text.
+ * LlmContentBlock[] it was serialized from. Assistant and tool_call rows
+ * persist their content as a JSON array of blocks (thinking / text / tool_use /
+ * …); plain user and string-content rows are not JSON arrays. Returns null
+ * when the content is not a block array so callers can treat it as text.
  */
+
+/**
+ * Rebuild the visible ACP event runs from a structured assistant row.
+ *
+ * Live streaming gives thoughts and prose distinct message ids, while adjacent
+ * chunks of the same kind share one id. Persisted assistant rows collapse
+ * those chunks into one ContentBlock[] JSON value, so replay has to recover the
+ * boundaries instead of forwarding that JSON as literal assistant prose.
+ */
+function structuredAssistantUpdates(message: Message): SessionUpdate[] | null {
+	const blocks = parseContentBlocks(message.content);
+	if (!blocks) return null;
+
+	const updates: SessionUpdate[] = [];
+	let activeKind: "thought" | "message" | null = null;
+	let run = 0;
+	for (const block of blocks) {
+		const kind = block.type === "thinking" ? "thought" : block.type === "text" ? "message" : null;
+		const text =
+			block.type === "thinking" ? block.thinking : block.type === "text" ? block.text : "";
+		// Empty reasoning blocks carry provider replay state but no display content;
+		// the live path suppresses them without breaking the current message run.
+		if (!kind || !text) continue;
+		if (kind !== activeKind) {
+			activeKind = kind;
+			run += 1;
+		}
+		updates.push({
+			sessionUpdate: kind === "thought" ? "agent_thought_chunk" : "agent_message_chunk",
+			content: { type: "text", text },
+			messageId: `${message.id}-${kind}-${run}`,
+		});
+	}
+	return updates;
+}
 /**
  * Translates a persisted bound Message into the SessionUpdates used to replay
  * history during session/load, mirroring the sequence the live path emits for
@@ -565,7 +600,9 @@ export function messageToSessionUpdate(
 					messageId: message.id,
 				},
 			];
-		case "assistant":
+		case "assistant": {
+			const structured = structuredAssistantUpdates(message);
+			if (structured) return structured;
 			return [
 				{
 					sessionUpdate: "agent_message_chunk",
@@ -573,6 +610,7 @@ export function messageToSessionUpdate(
 					messageId: message.id,
 				},
 			];
+		}
 		case "alert":
 			// Daemon alerts (inference timeouts, non-retryable LLM errors, fatal
 			// loop/task errors, plus informational notices like a same-tier model
