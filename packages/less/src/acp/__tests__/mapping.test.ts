@@ -506,6 +506,63 @@ describe("messageToSessionUpdate", () => {
 		]);
 	});
 
+	it("replays structured assistant content as thought and message events", () => {
+		const content = JSON.stringify([
+			{ type: "thinking", thinking: "checking the route" },
+			{ type: "text", text: "Arriving at the answer." },
+		]);
+
+		expect(
+			messageToSessionUpdate({ ...base, role: "assistant", content, tool_name: null }),
+		).toEqual([
+			{
+				sessionUpdate: "agent_thought_chunk",
+				content: { type: "text", text: "checking the route" },
+				messageId: "m1-thought-1",
+			},
+			{
+				sessionUpdate: "agent_message_chunk",
+				content: { type: "text", text: "Arriving at the answer." },
+				messageId: "m1-message-2",
+			},
+		]);
+	});
+
+	it("keeps adjacent structured assistant blocks in the same message run", () => {
+		const content = JSON.stringify([
+			{ type: "thinking", thinking: "first" },
+			{ type: "thinking", thinking: "second" },
+			{ type: "text", text: "part one" },
+			{ type: "text", text: "part two" },
+			{ type: "thinking", thinking: "reconsider" },
+		]);
+
+		const updates = messageToSessionUpdate({
+			...base,
+			role: "assistant",
+			content,
+			tool_name: null,
+		});
+		expect(updates.map((update) => update.messageId)).toEqual([
+			"m1-thought-1",
+			"m1-thought-1",
+			"m1-message-2",
+			"m1-message-2",
+			"m1-thought-3",
+		]);
+	});
+
+	it("does not mistake a user-authored JSON block array for replay structure", () => {
+		const content = '[{"type":"text","text":"literal user payload"}]';
+		expect(messageToSessionUpdate({ ...base, role: "user", content, tool_name: null })).toEqual([
+			{
+				sessionUpdate: "user_message_chunk",
+				content: { type: "text", text: content },
+				messageId: "m1",
+			},
+		]);
+	});
+
 	it("replays an alert row as an agent_message_chunk, mirroring the live handleAlert path", () => {
 		// Live, an alert (inference timeout / non-retryable LLM error) is surfaced
 		// via AcpSession.handleAlert as an agent_message_chunk. On session/load the
