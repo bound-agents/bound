@@ -7,7 +7,12 @@ import type { ContextDebugInfo, ContextSection, SyncConfig } from "@bound/shared
 import { countContentTokens, countTokens, formatError } from "@bound/shared";
 import { context, trace } from "@opentelemetry/api";
 
-import { convertDeltaMessages, getResolvedModelId, hasOrphanedToolCall } from "./agent-loop-utils";
+import {
+	convertDeltaMessages,
+	deltaRequiresColdReassembly,
+	getResolvedModelId,
+	hasOrphanedToolCall,
+} from "./agent-loop-utils";
 import {
 	buildCacheMarkers,
 	coldPathPlaceCacheMarker,
@@ -343,6 +348,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 				this.config.threadId,
 				cached.lastMessageCreatedAt,
 			);
+			const deltaRequiresCold = deltaRequiresColdReassembly(deltaRows);
 			const deltaMessages = convertDeltaMessages(deltaRows);
 			const storedMessages: import("@bound/llm").LLMMessage[] = [];
 			for (let i = 0; i < cached.messages.length; i++) {
@@ -355,7 +361,12 @@ export class MainAgentLoop extends BoundAgentLoop {
 			}
 			storedMessages.push(...deltaMessages);
 
-			if (hasOrphanedToolCall(storedMessages)) {
+			if (deltaRequiresCold) {
+				cachePathReason = "purge-message";
+				assembleContextSpan.setAttribute("context.warm_bail_reason", cachePathReason);
+				this.clearCachedTurnState();
+				assembleContextSpan.end();
+			} else if (hasOrphanedToolCall(storedMessages)) {
 				cachePathReason = "orphaned-tool-call";
 				assembleContextSpan.setAttribute("context.warm_bail_reason", cachePathReason);
 				this.clearCachedTurnState();

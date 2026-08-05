@@ -547,12 +547,25 @@ interface DbMessageRow {
  * been seen via the `toolCallSeen` flag so the predicate is accurate even
  * when the delta contains many consecutive `tool_result` rows.
  */
+export function deltaRequiresColdReassembly(rows: DbMessageRow[]): boolean {
+	// A purge row is an instruction over the entire history, not an LLM turn.
+	// The warm path only appends new rows to an already-materialized prefix, so
+	// it cannot remove the targeted cached messages or place the replacement
+	// summary correctly. Force the full purge-substitution stage to run.
+	return rows.some((row) => row.role === "purge");
+}
+
 export function convertDbRowToLLMMessage(
 	row: DbMessageRow,
 	previousRole?: string,
 	toolCallSeen?: boolean,
 ): LLMMessage | null {
 	const { role, content, tool_name, model_id, host_origin } = row;
+
+	// These roles only have meaning in the DB context pipeline. `purge` is
+	// consumed by purge substitution, and persisted `system` rows are forbidden
+	// legacy/corrupt input. Neither is legal in the AI SDK ModelMessage schema.
+	if (role === "purge" || role === "system") return null;
 
 	// Validate tool pairs. `tool_result` must follow `tool_call` directly OR
 	// be part of a run of `tool_result` messages responding to that call

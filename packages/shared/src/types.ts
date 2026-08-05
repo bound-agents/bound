@@ -974,6 +974,8 @@ export interface ContextDebugInfo {
 	 *   and bailed so Stage 3 sanitization could synthesize the missing
 	 *   `tool_result`. Distinct from `"budget-exceeded"` because the remedy
 	 *   is structural, not size-driven.
+	 * - `"purge-message"` — the delta contained a purge instruction, requiring
+	 *   cold Stage 2 substitution to remove cached targets and insert its summary.
 	 * - `"budget-exceeded"` — warm-path estimate exceeded
 	 *   `truncationTargetTokens` even after in-place compaction fired (or
 	 *   none was applicable).
@@ -989,6 +991,7 @@ export interface ContextDebugInfo {
 		| "cache-expired"
 		| "tool-change"
 		| "orphaned-tool-call"
+		| "purge-message"
 		| "budget-exceeded"
 		| "no-history"
 		| "warm-eligible";

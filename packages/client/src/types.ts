@@ -217,8 +217,8 @@ export interface ContextDebugInfo {
 	/**
 	 * Why `cachePath` resolved as it did — the same signal the agent loop logs.
 	 * Cold reasons explain a rebuild (`budget-exceeded`, `tool-change`,
-	 * `cache-expired`, `orphaned-tool-call`, `no-stored-state`, `no-history`);
-	 * `warm-eligible` means the warm path completed within budget. Optional on
+	 * `cache-expired`, `orphaned-tool-call`, `purge-message`, `no-stored-state`,
+	 * `no-history`); `warm-eligible` means the warm path completed within budget. Optional on
 	 * older rows.
 	 */
 	cachePathReason?:
@@ -226,6 +226,7 @@ export interface ContextDebugInfo {
 		| "cache-expired"
 		| "tool-change"
 		| "orphaned-tool-call"
+		| "purge-message"
 		| "budget-exceeded"
 		| "no-history"
 		| "warm-eligible";

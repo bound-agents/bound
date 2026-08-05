@@ -16,6 +16,7 @@ const CACHE_REASON_LABEL: Record<string, string> = {
 	"cache-expired": "the prompt-cache TTL elapsed since the last turn",
 	"tool-change": "the available tool set changed, invalidating the cached prefix",
 	"orphaned-tool-call": "an unanswered tool call forced a structural rebuild",
+	"purge-message": "a purge instruction forced full history substitution",
 	"budget-exceeded": "the estimate exceeded the budget even after in-place compaction",
 	"no-history": "no-history task threads always cold-assemble",
 	"warm-eligible": "the warm path completed within budget — cached prefix reused",
