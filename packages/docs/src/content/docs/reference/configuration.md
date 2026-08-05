@@ -219,6 +219,8 @@ Multi-host sync. Absent means single-host.
 | `backpressure_limit` | int > 0 | `2097152` | Buffered-bytes ceiling before applying backpressure. |
 | `idle_timeout` | int > 0 | `120` | Seconds before an idle WS connection is closed. |
 | `reconnect_max_interval` | int > 0 | `60` | Max seconds between reconnect attempts (backoff ceiling). |
+| `receive_timeout_ms` | int ≥ 0 | `300000` (5m) | Receive-side liveness timeout. A spoke that gets no frame from the hub inside this window tears the connection down and reconnects — the changelog drain can stall while pings keep the socket alive. `0` disables. |
+| `handshake_timeout_ms` | int ≥ 0 | `20000` (20s) | Handshake deadline. A socket that reaches neither `open` nor `close` inside this window is torn down and retried. A stalled upgrade fires no close event, so without this deadline the sync client stops attempting reconnects entirely and every remote host ages into `STALE` while the daemon keeps running. `0` disables. |
 
 ---
 

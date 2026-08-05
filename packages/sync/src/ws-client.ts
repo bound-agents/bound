@@ -1,5 +1,7 @@
+import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
+import { incrementSyncErrors, resetSyncErrors } from "./peer-cursor.js";
 import { signRequest } from "./signing.js";
 import type {
 	ChangelogAckPayload,
@@ -52,6 +54,16 @@ export interface WsClientConfig {
 	 *  0 = disabled, default 300000 (5 min). The hub heartbeat writes every
 	 *  ~2 min, so 5 min of silence means 2+ missed cycles = stuck drain. */
 	receiveTimeoutMs?: number;
+	/** Handshake deadline in ms. A socket that reaches neither `open` nor
+	 *  `close` within this window is torn down and reconnected. Without it a
+	 *  half-open CONNECTING socket latches the client dark forever: the only
+	 *  paths that re-arm the reconnect timer are `handleClose()` and `connect()`'s
+	 *  synchronous catch, and a stalled upgrade reaches neither.
+	 *  0 = disabled, default 20000 (20s). */
+	handshakeTimeoutMs?: number;
+	/** Local DB, used to record handshake failures on `sync_state.sync_errors`
+	 *  so `hostinfo` / the web UI stop reporting a clean mesh over a dark link. */
+	db?: Database;
 	/** If true, sends RESEED_REQUEST to the hub after connecting. */
 	reseed?: boolean;
 }
@@ -88,6 +100,11 @@ export class WsSyncClient {
 	 *  though the TCP connection (kept alive by pings) looks fine. */
 	private lastReceivedAt = 0;
 	private livenessTimer: Timer | null = null;
+
+	/** Handshake deadline: armed when a socket is created, cleared on the first
+	 *  `open` or `close`. If it fires, the socket reached neither — a half-open
+	 *  CONNECTING zombie that no other path will ever reconnect. */
+	private handshakeTimer: Timer | null = null;
 
 	onMessage: ((data: Uint8Array) => void) | null = null;
 	onConnected: (() => void) | null = null;
@@ -142,10 +159,17 @@ export class WsSyncClient {
 			this.ws.onmessage = (event) => this.handleMessage(event);
 			this.ws.onclose = () => this.handleClose();
 			this.ws.onerror = (event) => this.handleError(event);
+
+			// Step 6: Arm the handshake deadline. A stalled upgrade produces no
+			// open AND no close, so without this the client latches dark.
+			this.startHandshakeTimer();
 		} catch (error) {
 			this.config.logger?.error("WsSyncClient: failed to establish connection", {
 				error: error instanceof Error ? error.message : String(error),
 			});
+			// A throw before the socket exists is still a failed attempt against the
+			// hub peer — count it, or the mesh reports 0 errors over a dark link.
+			this.recordHandshakeFailure(error instanceof Error ? error.message : String(error));
 			// Schedule reconnection on connection failure
 			this.scheduleReconnect();
 		}
@@ -186,6 +210,7 @@ export class WsSyncClient {
 		this.stopped = true;
 		this.stopBackfillTimer();
 		this.stopLivenessTimer();
+		this.stopHandshakeTimer();
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
@@ -249,6 +274,11 @@ export class WsSyncClient {
 
 	private handleOpen(): void {
 		this.config.logger?.debug("WsSyncClient: connection opened");
+
+		// The handshake completed — disarm the deadline before it can tear down
+		// a socket that is now healthy.
+		this.stopHandshakeTimer();
+		this.recordHandshakeSuccess();
 
 		// Reset reconnect interval on successful connection
 		this.reconnectInterval = 1;
@@ -416,6 +446,9 @@ export class WsSyncClient {
 		this.ws = null;
 		this.stopBackfillTimer();
 		this.stopLivenessTimer();
+		// A close observed before the handshake landed is already a full teardown;
+		// disarm the deadline so it can't fire against the next socket.
+		this.stopHandshakeTimer();
 
 		// Reset snapshot state — a reconnection starts a fresh seeding session.
 		this.snapshotHlc = null;
@@ -595,6 +628,93 @@ export class WsSyncClient {
 		if (this.livenessTimer) {
 			clearInterval(this.livenessTimer);
 			this.livenessTimer = null;
+		}
+	}
+
+	/**
+	 * Handshake deadline. A WebSocket that stalls mid-upgrade reaches neither
+	 * `open` nor `close` — the TCP connection is accepted, the request is read,
+	 * and no response ever comes back. Both re-arm paths for the reconnect timer
+	 * (`handleClose()` and `connect()`'s synchronous catch) are therefore unreachable,
+	 * and `startLivenessTimer()` only runs from `handleOpen()`, so the receive-side
+	 * watchdog never covers this state either. Without this deadline the client
+	 * latches dark until the process restarts.
+	 */
+	private startHandshakeTimer(): void {
+		this.stopHandshakeTimer();
+		const timeoutMs = this.config.handshakeTimeoutMs ?? 20_000;
+		if (timeoutMs <= 0) return;
+		this.handshakeTimer = setTimeout(() => {
+			this.handshakeTimer = null;
+			// Already open (or already gone) — nothing half-open to tear down.
+			if (!this.ws || this.ws.readyState === WebSocket.OPEN) return;
+
+			this.config.logger?.warn(
+				"WsSyncClient: handshake deadline exceeded — tearing down half-open socket",
+				{ timeoutMs, readyState: this.ws.readyState },
+			);
+			this.recordHandshakeFailure("handshake deadline exceeded");
+
+			// Drop our handlers before closing: a CONNECTING socket may never emit
+			// close, so we cannot rely on handleClose() to schedule the retry.
+			const dead = this.ws;
+			this.ws = null;
+			dead.onopen = null;
+			dead.onmessage = null;
+			dead.onclose = null;
+			dead.onerror = null;
+			try {
+				dead.close();
+			} catch {
+				// best effort — the socket may not be far enough along to close
+			}
+
+			this.stopBackfillTimer();
+			this.stopLivenessTimer();
+			if (this.config.wsTransport) {
+				this.config.wsTransport.removePeer(this.config.hubSiteId);
+			}
+			this.onDisconnected?.();
+
+			if (!this.stopped) {
+				this.scheduleReconnect();
+			}
+		}, timeoutMs);
+	}
+
+	private stopHandshakeTimer(): void {
+		if (this.handshakeTimer) {
+			clearTimeout(this.handshakeTimer);
+			this.handshakeTimer = null;
+		}
+	}
+
+	/**
+	 * Record a failed connection attempt against the hub peer. `hostinfo` and the
+	 * web UI read `sync_state.sync_errors`, which only ever counted frame-level
+	 * failures — a transport that never completes a handshake left the mesh
+	 * reporting "0 errors" over a day of total silence.
+	 */
+	private recordHandshakeFailure(reason: string): void {
+		if (!this.config.db) return;
+		try {
+			incrementSyncErrors(this.config.db, this.config.hubSiteId);
+		} catch (error) {
+			this.config.logger?.debug("WsSyncClient: failed to record sync error", {
+				reason,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	private recordHandshakeSuccess(): void {
+		if (!this.config.db) return;
+		try {
+			resetSyncErrors(this.config.db, this.config.hubSiteId);
+		} catch (error) {
+			this.config.logger?.debug("WsSyncClient: failed to reset sync errors", {
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 
