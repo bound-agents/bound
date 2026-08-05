@@ -13,7 +13,7 @@
 		"@bound/sandbox": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",
-		"@modelcontextprotocol/sdk": "^1.27.1",
+		"@modelcontextprotocol/sdk": "^1.30.0",
 		"@opentelemetry/api": "^1.9.0",
 		"rxjs": "^7.8.2",
 		"zod": "^4.0.0"
