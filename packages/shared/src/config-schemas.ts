@@ -386,6 +386,12 @@ export const wsSchema = z
 		 *  — the changelog drain may be stuck even though pings keep the socket
 		 *  alive. 0 = disabled, default 300000 (5 min). */
 		receive_timeout_ms: z.number().int().min(0).default(300_000),
+		/** Handshake deadline in ms. A spoke socket that reaches neither `open` nor
+		 *  `close` within this window is torn down and reconnected — a stalled
+		 *  upgrade fires no close event, so nothing else re-arms the reconnect
+		 *  timer and the client would latch dark until restart.
+		 *  0 = disabled, default 20000 (20s). */
+		handshake_timeout_ms: z.number().int().min(0).default(20_000),
 	})
 	.strict();
 

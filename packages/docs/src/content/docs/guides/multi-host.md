@@ -97,7 +97,9 @@ Under the `ws` block:
     "backfill_interval": 300,
     "backpressure_limit": 2097152,
     "idle_timeout": 120,
-    "reconnect_max_interval": 60
+    "reconnect_max_interval": 60,
+    "receive_timeout_ms": 300000,
+    "handshake_timeout_ms": 20000
   }
 }
 ```

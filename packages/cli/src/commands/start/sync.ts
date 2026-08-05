@@ -83,6 +83,7 @@ export async function initSync(
 						const backpressureLimit = wsConfig.backpressure_limit;
 						const backfillIntervalSeconds = wsConfig.backfill_interval;
 						const receiveTimeoutMs = wsConfig.receive_timeout_ms;
+						const handshakeTimeoutMs = wsConfig.handshake_timeout_ms;
 
 						const wsClientInstance = new WsSyncClient({
 							hubUrl,
@@ -96,6 +97,10 @@ export async function initSync(
 							backpressureLimit,
 							backfillIntervalSeconds,
 							receiveTimeoutMs,
+							handshakeTimeoutMs,
+							// Surfaces handshake failures on sync_state.sync_errors so hostinfo
+							// and the web UI stop reporting a clean mesh over a dark link.
+							db: appContext.db,
 							reseed,
 						});
 
