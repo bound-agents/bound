@@ -322,8 +322,8 @@ describe("MessageBlock", () => {
 			expect(frame).toContain("✗");
 		});
 
-		it("truncates tool_result string content to 5 lines", async () => {
-			const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+		it("shows a terminal-sized excerpt of tool_result string content", async () => {
+			const lines = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`);
 			const content = lines.join("\n");
 
 			const { lastFrame } = render(
@@ -342,21 +342,43 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// First line is the header label; body is the remainder, truncated to
-			// the body cap (5 visual rows) as a head+tail split — 2 head rows,
-			// …-marker, 3 tail rows — so the verdict lines at the END of build/test
-			// output survive. 20 logical lines − 1 header = 19 body lines; lines
-			// 2–3 and 18–20 visible, 14 omitted at the marker.
+			// The first line is the header. The remaining 49 body rows retain a
+			// 16-row head and 16-row tail; 17 rows sit behind the elision marker.
 			expect(frame).toContain("line 1");
-			expect(frame).toContain("line 3");
-			expect(frame).not.toContain("line 7");
-			expect(frame).toContain("line 18");
-			expect(frame).toContain("line 20");
-			expect(frame).toContain("… 14 more lines");
+			expect(frame).toContain("line 17");
+			expect(frame).not.toContain("line 18");
+			expect(frame).toContain("line 35");
+			expect(frame).toContain("line 50");
+			expect(frame).toContain("… 17 more lines");
 		});
 
-		it("truncates tool_result ContentBlock[] to 5 lines", async () => {
-			const lines = Array.from({ length: 12 }, (_, i) => `output ${i + 1}`);
+		it("shows ordinary bounded shell output without elision", async () => {
+			// This mirrors commands such as `tail -25`: one header row and up to
+			// 32 result rows must remain inspectable directly in the transcript.
+			const content = Array.from({ length: 33 }, (_, i) => `line ${i + 1}`).join("\n");
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-preview-fit",
+						role: "tool_result",
+						content,
+						tool_name: "boundless_bash",
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 120,
+				}),
+			);
+			await tick();
+
+			const frame = lastFrame();
+			expect(frame).toContain("line 1");
+			expect(frame).toContain("line 33");
+			expect(frame).not.toContain("more lines");
+		});
+
+		it("truncates ContentBlock[] results using the same 16-row head/tail split", async () => {
+			const lines = Array.from({ length: 50 }, (_, i) => `output ${i + 1}`);
 			const content = JSON.stringify([{ type: "text", text: lines.join("\n") }]);
 
 			const { lastFrame } = render(
@@ -375,49 +397,16 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// Head+tail split: header output 1; body outputs 2–12 → head 2–3,
-			// tail 10–12, 6 omitted at the marker.
 			expect(frame).toContain("output 1");
-			expect(frame).toContain("output 3");
-			expect(frame).not.toContain("output 7");
-			expect(frame).toContain("output 10");
-			expect(frame).toContain("output 12");
-			expect(frame).toContain("… 6 more lines");
-		});
-
-		it("does not truncate tool_result with 5 or fewer lines", async () => {
-			const content = "line 1\nline 2\nline 3";
-
-			const { lastFrame } = render(
-				React.createElement(MessageBlock, {
-					message: {
-						id: "msg-trunc-3",
-						role: "tool_result",
-						content,
-						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
-					terminalColumns: 120,
-				}),
-			);
-			await tick();
-
-			const frame = lastFrame();
-			expect(frame).toContain("line 1");
-			expect(frame).toContain("line 3");
-			expect(frame).not.toContain("more lines");
+			expect(frame).toContain("output 17");
+			expect(frame).not.toContain("output 18");
+			expect(frame).toContain("output 35");
+			expect(frame).toContain("output 50");
+			expect(frame).toContain("… 17 more lines");
 		});
 
 		it("strips leading/trailing blank lines before truncating", async () => {
-			const lines = [
-				"",
-				"",
-				"",
-				...Array.from({ length: 10 }, (_, i) => `content ${i + 1}`),
-				"",
-				"",
-			];
+			const lines = ["", "", ...Array.from({ length: 50 }, (_, i) => `content ${i + 1}`), "", ""];
 			const content = lines.join("\n");
 
 			const { lastFrame } = render(
@@ -436,26 +425,19 @@ describe("MessageBlock", () => {
 			await tick();
 
 			const frame = lastFrame();
-			// Should show first content line as header + head/tail body rows, not
-			// blank lines. 10 content lines − 1 header = 9 body lines; head
-			// content 2–3, tail content 8–10, 4 omitted at the marker.
 			expect(frame).toContain("content 1");
-			expect(frame).toContain("content 3");
-			expect(frame).not.toContain("content 6");
-			expect(frame).toContain("content 8");
-			expect(frame).toContain("content 10");
-			expect(frame).toContain("… 4 more lines");
+			expect(frame).toContain("content 17");
+			expect(frame).not.toContain("content 18");
+			expect(frame).toContain("content 35");
+			expect(frame).toContain("content 50");
+			expect(frame).toContain("… 17 more lines");
 		});
 
 		it("counts visual rows, not logical lines, when truncating long unbroken bodies", async () => {
-			// Issues #74 + #75: a single 800-char body line previously counted as
-			// one logical line and slipped past the line-count truncation, blowing
-			// out the terminal at render time and dropping the left stripe on the
-			// first wrapped continuation. After the fix, body lines are pre-wrapped
-			// at the measured visual width (stripeWidth − 6 for terminalColumns=120
-			// = 113), so an 800-char body produces ⌈800 / 113⌉ = 8 visual rows;
-			// only TOOL_RESULT_MAX_LINES (5) are visible, the rest go to the tail.
-			const longBody = "x".repeat(800);
+			// Issues #74 + #75: a single long body line must be pre-wrapped before
+			// the row budget is applied. At 120 columns, 4,000 chars make 36 visual
+			// rows; the 32-row preview therefore defers four rows.
+			const longBody = "x".repeat(4000);
 			const content = `header line\n${longBody}`;
 
 			const { lastFrame } = render(
@@ -475,8 +457,7 @@ describe("MessageBlock", () => {
 
 			const frame = lastFrame() ?? "";
 			expect(frame).toContain("header line");
-			// 8 visual rows from the wrap, 5 visible, 3 deferred.
-			expect(frame).toContain("… 3 more lines");
+			expect(frame).toContain("… 4 more lines");
 			// At least one wrapped chunk must appear in the body (the row is the
 			// "x" run, which by construction never appears in the header).
 			expect(frame.match(/x{50,}/g)?.length ?? 0).toBeGreaterThan(0);
@@ -700,15 +681,12 @@ describe("JSON-shaped tool_result rendering", () => {
 
 		const frame = lastFrame() ?? "";
 		expect(frame).toContain("JSON object · 4 keys");
-		// Pretty-printed body lines, not the raw single-line blob. The 6-row
-		// pretty body truncates head+tail (2+3): `{` + title visible at the
-		// head, comments/body/`}` at the tail, state omitted at the marker —
-		// which also pins the singular "1 more line" form.
+		// The entire small object stays visible: JSON is pretty-printed first, then
+		// consumes the same 32-row result budget as ordinary tool output.
 		expect(frame).toContain('"title"');
+		expect(frame).toContain('"state": "open"');
 		expect(frame).toContain('"comments": 12');
-		expect(frame).toContain("… 1 more line");
-		expect(frame).not.toContain("1 more lines");
-		expect(frame).not.toContain('"state"');
+		expect(frame).not.toContain("more lines");
 	});
 
 	it("leaves non-JSON results alone", async () => {

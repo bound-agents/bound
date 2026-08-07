@@ -13,16 +13,19 @@ import { GraphicsImage } from "./GraphicsImage";
 import { HighlightedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 
-const TOOL_RESULT_MAX_LINES = 5;
+// Keep a full terminal-sized excerpt for shell output. A five-row preview hid the
+// useful part of ordinary commands (for example, a deliberately bounded `tail
+// -25`), while the 256 KiB dispatch cap still prevents unbounded transcript growth.
+const TOOL_RESULT_MAX_LINES = 32;
 /**
  * Head/tail split of the body budget when a result truncates. Build/test
  * output puts its verdict on the LAST lines (`0 fail`, `error: …`, exit
  * summaries), so head-only truncation kept the preamble and cut the signal.
- * 2 head + 3 tail rows spend the same 5-row budget, biased toward the tail
- * where the verdict lives.
+ * An even 16+16 split preserves enough setup for diagnostics without losing
+ * the result summary at the end.
  */
-const TOOL_RESULT_HEAD_ROWS = 2;
-const TOOL_RESULT_TAIL_ROWS = 3;
+const TOOL_RESULT_HEAD_ROWS = 16;
+const TOOL_RESULT_TAIL_ROWS = 16;
 /** Hard cap on rendered diff entries (after hunking) per edit call. */
 const EDIT_DIFF_MAX_LINES = 24;
 /** Preview lines shown under a `boundless_write` call. */
