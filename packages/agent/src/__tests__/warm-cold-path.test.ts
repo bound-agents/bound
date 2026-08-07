@@ -589,6 +589,7 @@ describe("warm-cold-path", () => {
 	describe("integration: multi-invocation warm/cold cycles", () => {
 		// Mock LLM Backend for testing
 		class MockLLMBackend implements LLMBackend {
+			constructor(private readonly vision = false) {}
 			private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
 			private callCount = 0;
 			private capturedParams: ChatParams[] = [];
@@ -690,7 +691,7 @@ describe("warm-cold-path", () => {
 					tool_use: true,
 					system_prompt: true,
 					prompt_caching: true,
-					vision: false,
+					vision: this.vision,
 					max_context: 200000,
 				};
 			}
@@ -1273,6 +1274,142 @@ describe("warm-cold-path", () => {
 
 			// Both should have completed successfully
 			expect(mockBackend.getCallCount()).toBeGreaterThanOrEqual(2);
+		});
+
+		it("keeps an earlier image attached to its original user turn when a warm delta adds a later prompt", async () => {
+			globalDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					globalThreadId,
+					globalUserId,
+					"web",
+					"local",
+					0,
+					"Warm image chronology",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const earlierPrompt = "OLDER_IMAGE_PROMPT";
+			const laterPrompt = "LATER_TEXT_PROMPT";
+			const earlierContent = JSON.stringify([
+				{ type: "text", text: earlierPrompt },
+				{
+					type: "image",
+					source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+					description: "chronology sentinel",
+				},
+			]);
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					earlierContent,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const mockBackend = new MockLLMBackend(true);
+			for (const text of ["first reply", "second reply"]) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: text };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 5,
+							cache_write_tokens: 100,
+							cache_read_tokens: 0,
+							estimated: false,
+						},
+					};
+				});
+			}
+
+			const sharedStore = new InMemoryTurnStateStore();
+			const firstPathLogs: CachePathLog[] = [];
+			const firstLoop = new MainAgentLoop(
+				makeCtx(firstPathLogs, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await firstLoop.run();
+			expect(firstPathLogs[0]?.path).toBe("cold");
+
+			const callsBeforeSecondLoop = mockBackend.getCallCount();
+
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					laterPrompt,
+					null,
+					null,
+					new Date(Date.now() + 1_000).toISOString(),
+					new Date(Date.now() + 1_000).toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const secondPathLogs: CachePathLog[] = [];
+			const secondLoop = new MainAgentLoop(
+				makeCtx(secondPathLogs, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await secondLoop.run();
+			expect(secondPathLogs[0]?.path).toBe("warm");
+
+			const secondInference =
+				mockBackend.getCapturedParams()[callsBeforeSecondLoop]?.messages ?? [];
+			const earlierIdx = secondInference.findIndex(
+				(message) =>
+					message.role === "user" &&
+					Array.isArray(message.content) &&
+					message.content.some(
+						(block) =>
+							block.type === "text" &&
+							typeof block.text === "string" &&
+							block.text.includes(earlierPrompt),
+					),
+			);
+			const laterIdx = secondInference.findIndex(
+				(message) =>
+					message.role === "user" &&
+					(typeof message.content === "string"
+						? message.content.includes(laterPrompt)
+						: message.content.some(
+								(block) =>
+									block.type === "text" &&
+									typeof block.text === "string" &&
+									block.text.includes(laterPrompt),
+							)),
+			);
+
+			expect(earlierIdx).toBeGreaterThanOrEqual(0);
+			expect(laterIdx).toBeGreaterThan(earlierIdx);
+			const earlierMessage = secondInference[earlierIdx];
+			expect(Array.isArray(earlierMessage?.content)).toBe(true);
+			expect((earlierMessage?.content as Array<{ type: string }>)[2]?.type).toBe("image");
 		});
 
 		it("falls back to cold reassembly when warm-path delta would leave an orphaned tool_call", async () => {
