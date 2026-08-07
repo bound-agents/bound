@@ -192,19 +192,18 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 
 /**
  * Per-message layout margins for the session-log Static, plus whether the
- * transcript currently ends inside a compact read/search run (the dynamic
- * area below adds its own top gap in that case, since the run's rows carry
- * no bottom margin).
+ * transcript currently ends inside a compact read/search/query run (the dynamic
+ * area below adds its own top gap in that case, since the run's rows carry no
+ * bottom margin).
  *
- * Compact tools (read/search) collapse to one line per invocation and
- * consecutive invocations stack with no blank line between them — they
- * dominate coding sessions, so the transcript stays scannable. Because
- * Ink's <Static> commits each row exactly once and never repaints it, a
- * row's margins may depend only on messages that precede it (its own
- * suppressed call, the prior compact run) — never on what arrives later.
- * That is why grouping is expressed as marginTop on the FOLLOWING row
- * ("am I continuing a run?") rather than marginBottom on the last row of a
- * run ("is anything after me?"), which would need the future.
+ * Compact tools collapse to one line per invocation and consecutive calls stack
+ * with no blank line between them — they dominate coding sessions, so the
+ * transcript stays scannable. Because Ink's <Static> commits each row exactly
+ * once and never repaints it, a row's margins may depend only on messages that
+ * precede it (its own suppressed call, the prior compact run) — never on what
+ * arrives later. That is why grouping is expressed as marginTop on the
+ * FOLLOWING row ("am I continuing a run?") rather than marginBottom on the last
+ * row ("is anything after me?"), which would need the future.
  */
 export function buildTranscriptMargins(
 	messages: Message[],

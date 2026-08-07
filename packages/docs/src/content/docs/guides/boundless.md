@@ -58,6 +58,8 @@ The hashline format gives the LLM stable 4-character anchors to address specific
 
 Shell results retain up to 32 visual rows in the transcript, so ordinary bounded commands such as `tail -25` remain directly inspectable. Larger results show the first 16 and last 16 rows with an elision marker; the universal 256 KiB result cap still offloads exceptionally large output before it reaches the transcript.
 
+Consecutive reads, searches, and database `query` calls collapse into one shared group of result rows. Read/search lines show their target and volume; query lines show the SQL and the returned row and column counts. Failed calls keep their full diagnostic output.
+
 ## Status bar
 
 The bar under the input line carries the session's live state. The identity row is always present — connection badge, full thread ID (rendered untruncated so you can select and copy it for `--attach`), model, MCP server count, and the working directory on the right edge.

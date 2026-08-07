@@ -42,14 +42,15 @@ function displayToolName(name: string): string {
 export type ToolUseBlockLite = { name: string; input: Record<string, unknown> };
 
 /**
- * Compact tools (read/search) collapse to one committed line per invocation —
- * the result row — instead of a ⏵ call row plus a multi-line result body.
- * These calls dominate coding sessions, so halving their vertical cost keeps
- * the transcript scannable. Matched by suffix so boundless_read / bms_read /
- * boundless_search / bms_search are all covered without enumerating surfaces.
+ * Compact tools (read/search/query) collapse to one committed line per
+ * invocation — the result row — instead of a ⏵ call row plus a multi-line
+ * result body. These calls dominate coding sessions, so halving their vertical
+ * cost keeps the transcript scannable. Read/search match by suffix so
+ * boundless_read / bms_read / boundless_search / bms_search are covered; query
+ * is the built-in database tool's exact name.
  */
 export function isCompactToolName(name: string): boolean {
-	return name.endsWith("_read") || name.endsWith("_search");
+	return name === "query" || name.endsWith("_read") || name.endsWith("_search");
 }
 
 /**
@@ -107,6 +108,18 @@ function parseSearchSummary(lastLine: string): string | null {
 	if (/^No matches found \(\d+ files? searched\)\.?/.test(lastLine)) return "no matches";
 	const m = lastLine.match(/^(\d+ match(?:es)? in \d+ files?) \(\d+ files? searched\)/);
 	return m ? m[1] : null;
+}
+
+/** Summarize the tab-separated table emitted by the read-only `query` tool. */
+function parseQuerySummary(lines: string[]): string {
+	const header = lines[0] ?? "";
+	if (header.trim() === "") return "no rows";
+	const columns = header.split("\t").length;
+	const rows = Math.max(0, lines.length - 1);
+	const columnLabel = `${columns} ${columns === 1 ? "column" : "columns"}`;
+	return rows === 0
+		? `no rows · ${columnLabel}`
+		: `${rows} ${rows === 1 ? "row" : "rows"} · ${columnLabel}`;
 }
 
 /**
@@ -765,27 +778,35 @@ export function MessageBlock({
 		// stays quiet; it adds nothing over the indicator.
 		const showExit = isError && message.exit_code != null && message.exit_code !== 1;
 
-		// Compact read/search results render as ONE line per invocation: the ⏵
-		// call row was suppressed upstream, so this line is the invocation's
-		// whole committed footprint — target plus a volume summary (lines read /
-		// matches found) instead of a body preview. Errors skip this branch and
-		// keep the full rendering below so failures stay visible.
+		// Compact read/search/query results render as ONE line per invocation: the
+		// ⏵ call row was suppressed upstream, so this line is the invocation's
+		// whole committed footprint — target plus a useful volume summary instead
+		// of a body preview. Errors skip this branch and keep the full rendering
+		// below so failures stay visible.
 		if (resolvedToolName && isCompactToolName(resolvedToolName) && !isError) {
 			const isSearch = resolvedToolName.endsWith("_search");
+			const isQuery = resolvedToolName === "query";
 			const lineCount = `${allLines.length} ${allLines.length === 1 ? "line" : "lines"}`;
 			const target = isSearch
 				? typeof toolInput?.pattern === "string"
 					? toolInput.pattern
 					: tildifyText(allLines[0] ?? "")
-				: filePath
-					? tildifyPath(filePath)
-					: tildifyText(allLines[0] ?? "");
-			// Read targets are file paths → clickable file:// links. Search targets
-			// are patterns, not paths, so they stay plain text.
-			const linkedTarget = !isSearch && filePath ? linkifyPath(target, filePath, cwd) : target;
+				: isQuery
+					? typeof toolInput?.sql === "string"
+						? toolInput.sql
+						: "query"
+					: filePath
+						? tildifyPath(filePath)
+						: tildifyText(allLines[0] ?? "");
+			// Read targets are file paths → clickable file:// links. Search patterns
+			// and SQL statements are plain text.
+			const linkedTarget =
+				!isSearch && !isQuery && filePath ? linkifyPath(target, filePath, cwd) : target;
 			const summary = isSearch
 				? (parseSearchSummary(allLines[allLines.length - 1] ?? "") ?? lineCount)
-				: lineCount;
+				: isQuery
+					? parseQuerySummary(allLines)
+					: lineCount;
 			return (
 				<StripeBox color="cyan" width={stripeWidth}>
 					{/* No paddingLeft: this line IS the invocation (the ⏵ call row
