@@ -387,29 +387,33 @@ describe("MessageBlock tool_result header", () => {
 });
 
 /**
- * Compact read/search grouping: consecutive read/search invocations collapse
+ * Compact read/search/query grouping: consecutive compact invocations collapse
  * to one line each with no blank lines between them. Because Ink's <Static>
  * commits each row once and never repaints, all margins here are derived
  * only from PRECEDING messages (marginTop on the follower, never a
  * retroactive marginBottom on the last row of a run).
  */
-describe("buildTranscriptMargins (compact read/search grouping)", () => {
+describe("buildTranscriptMargins (compact read/search/query grouping)", () => {
 	function marginsFor(messages: Message[]) {
 		return buildTranscriptMargins(messages, buildToolResultMetaMap(messages));
 	}
 
-	it("stacks consecutive read/search invocations with no gaps and flags the open run", () => {
+	it("stacks consecutive read/search/query invocations with no gaps and flags the open run", () => {
 		const messages = [
 			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
 			toolResult("r1", "tu1"),
 			toolCall("c2", [{ id: "tu2", name: "boundless_search", input: { pattern: "foo" } }]),
 			toolResult("r2", "tu2"),
+			toolCall("c3", [{ id: "tu3", name: "query", input: { sql: "SELECT id FROM threads" } }]),
+			toolResult("r3", "tu3"),
 		];
 		const { margins, endsInCompactRun } = marginsFor(messages);
 		expect(margins.get("c1")).toEqual({ top: 0, bottom: 0 });
 		expect(margins.get("r1")).toEqual({ top: 0, bottom: 0 });
 		expect(margins.get("c2")).toEqual({ top: 0, bottom: 0 });
 		expect(margins.get("r2")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("c3")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r3")).toEqual({ top: 0, bottom: 0 });
 		expect(endsInCompactRun).toBe(true);
 	});
 
@@ -479,11 +483,12 @@ describe("buildTranscriptMargins (compact read/search grouping)", () => {
 });
 
 /**
- * Compact read/search result rendering: one line per invocation carrying the
- * target (path / pattern) and a volume summary (lines read / matches found).
- * The ⏵ call row for compact-only calls is suppressed entirely.
+ * Compact read/search/query result rendering: one line per invocation carrying
+ * the target (path / pattern / SQL) and a useful volume summary (lines read /
+ * matches found / rows × columns). The ⏵ call row for compact-only calls is
+ * suppressed entirely.
  */
-describe("MessageBlock compact read/search rendering", () => {
+describe("MessageBlock compact read/search/query rendering", () => {
 	it("renders a read result as one line with path and line count, no body", () => {
 		const message = msg({
 			id: "r1",
@@ -529,6 +534,50 @@ describe("MessageBlock compact read/search rendering", () => {
 		expect(out).toContain("foo");
 		expect(out).toContain("2 matches in 2 files");
 		expect(out).not.toContain("files searched");
+	});
+
+	it("renders a query result as one line with SQL and a row/column summary", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "id\ttitle\n1\tFirst\n2\tSecond\n3\tThird\n",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "query",
+				toolInput: { sql: "SELECT id, title FROM threads" },
+				terminalColumns: 100,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("query");
+		expect(out).toContain("SELECT id, title FROM threads");
+		expect(out).toContain("3 rows · 2 columns");
+		expect(out).not.toContain("First");
+	});
+
+	it("renders an empty query result as no rows", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "query",
+				toolInput: { sql: "SELECT id FROM threads WHERE 0" },
+				terminalColumns: 100,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("SELECT id FROM threads WHERE 0");
+		expect(out).toContain("no rows");
 	});
 
 	it("keeps the full rendering for compact-tool errors", () => {
