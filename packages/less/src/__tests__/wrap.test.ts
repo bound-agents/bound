@@ -72,6 +72,21 @@ describe("wrapLinesAtWidth", () => {
 		expect(wrapLinesAtWidth(["one", "", "three"], 10)).toEqual(["one", "", "three"]);
 	});
 
+	it("hangs coverage-table continuations beneath the final cell", () => {
+		const prefix = "packages/agent/src/agent-loop-utils.ts | 53.57 | 35.71 | ";
+		const width = [...prefix].length + 10;
+		const rows = wrapLinesAtWidth([`${prefix}45-46,62-69,118-130`], width);
+
+		expect(rows).toEqual([
+			`${prefix}45-46,`,
+			`${" ".repeat([...prefix].length)}62-69,`,
+			`${" ".repeat([...prefix].length)}118-130`,
+		]);
+		for (const row of rows) {
+			expect([...row].length).toBeLessThanOrEqual(width);
+		}
+	});
+
 	it("returns an empty array for an empty input", () => {
 		expect(wrapLinesAtWidth([], 10)).toEqual([]);
 	});
