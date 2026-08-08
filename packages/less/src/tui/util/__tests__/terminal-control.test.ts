@@ -25,4 +25,16 @@ describe("stripTerminalControlSequences", () => {
 
 		expect(stripTerminalControlSequences(input)).toBe("red\nnext\tcol");
 	});
+
+	it("collapses a CR run followed by LF into one line ending", () => {
+		// Bun's coverage reporter emits `\r\r\n`; treating each CR as a
+		// newline produces a phantom blank row between every report row.
+		expect(stripTerminalControlSequences("first\r\r\nsecond\r\r\nthird")).toBe(
+			"first\nsecond\nthird",
+		);
+	});
+
+	it("preserves an intentional blank line between CRLF-terminated rows", () => {
+		expect(stripTerminalControlSequences("first\r\n\r\nsecond")).toBe("first\n\nsecond");
+	});
 });

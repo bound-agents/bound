@@ -56,7 +56,7 @@ The hashline format gives the LLM stable 4-character anchors to address specific
 
 ## Tool output
 
-Shell results retain up to 32 visual rows in the transcript, so ordinary bounded commands such as `tail -25` remain directly inspectable. Larger results show the first 16 and last 16 rows with an elision marker; the universal 256 KiB result cap still offloads exceptionally large output before it reaches the transcript. Wrapped pipe-delimited tables keep continuation rows under their final column, so coverage ranges and similar long values do not masquerade as new file rows.
+Shell results retain up to 32 visual rows in the transcript, so ordinary bounded commands such as `tail -25` remain directly inspectable. Larger results show the first 16 and last 16 rows with an elision marker; the universal 256 KiB result cap still offloads exceptionally large output before it reaches the transcript. Wrapped pipe-delimited tables keep continuation rows under their final column, so coverage ranges and similar long values do not masquerade as new file rows. Terminal carriage-return line endings are normalized, so reporters such as Bun's coverage output retain their intended single-row spacing.
 
 Consecutive reads, searches, and database `query` calls collapse into one shared group of result rows. Read/search lines show their target and volume; query lines show the SQL and the returned row and column counts. Failed calls keep their full diagnostic output.
 
