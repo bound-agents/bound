@@ -39,12 +39,21 @@ export function stripTerminalControlSequences(input: string): string {
 			continue;
 		}
 
-		// Preserve layout whitespace, normalize CR/CRLF to LF, strip every other
-		// C0/C1 control byte so untrusted output cannot move the cursor, ring the
-		// bell, or leave the terminal in a mode/state.
+		// Preserve layout whitespace, normalize CRLF (including Bun's `\r\r\n`
+		// reporter output) to LF, strip every other C0/C1 control byte so
+		// untrusted output cannot move the cursor, ring the bell, or leave the
+		// terminal in a mode/state. A bare CR remains one newline; only a run
+		// terminated by LF is collapsed into one line ending.
 		if (code === 0x0d) {
+			let crEnd = i;
+			while (input.charCodeAt(crEnd) === 0x0d) crEnd++;
+			if (input.charCodeAt(crEnd) === 0x0a) {
+				output += "\n";
+				i = crEnd + 1;
+				continue;
+			}
 			output += "\n";
-			i += input.charCodeAt(i + 1) === 0x0a ? 2 : 1;
+			i++;
 			continue;
 		}
 		if (code === 0x0a || code === 0x09) {
