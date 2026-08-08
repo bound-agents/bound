@@ -38,7 +38,7 @@ Open [http://localhost:3001](http://localhost:3001). The sync protocol listens o
 
 ## Boundless — terminal coding agent
 
-`boundless` connects to a running bound server and registers local filesystem and shell tools into the agent's tool set. The agent reads and edits files and runs commands in your working directory; all messages, memory, and tool calls live in bound, so every other interface sees the same state. Shell results show up to 32 visual rows directly in the transcript; longer output keeps a 16-row head and tail around an elision marker. Consecutive reads, searches, and database queries collapse into one shared result group, with query rows reporting the SQL and returned row and column counts. Wrapped pipe-delimited tables retain their final-column alignment across continuation rows, and carriage-return line endings retain their intended row spacing.
+`boundless` connects to a running bound server and registers local filesystem and shell tools into the agent's tool set. The agent reads and edits files and runs commands in your working directory; all messages, memory, and tool calls live in bound, so every other interface sees the same state. Shell results show up to 32 visual rows directly in the transcript; longer output keeps a 16-row head and tail around an elision marker. Consecutive reads, searches, and database queries collapse into one shared result group, with query rows reporting the SQL and returned row and column counts. Wrapped pipe-delimited tables retain their final-column alignment across continuation rows, and terminal-control-only reporter rows do not create phantom spacing.
 
 ```bash
 boundless

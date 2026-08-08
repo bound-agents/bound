@@ -27,10 +27,17 @@ describe("stripTerminalControlSequences", () => {
 	});
 
 	it("collapses a CR run followed by LF into one line ending", () => {
-		// Bun's coverage reporter emits `\r\r\n`; treating each CR as a
-		// newline produces a phantom blank row between every report row.
 		expect(stripTerminalControlSequences("first\r\r\nsecond\r\r\nthird")).toBe(
 			"first\nsecond\nthird",
+		);
+	});
+
+	it("drops a reporter row that contains only terminal controls", () => {
+		// Bun places an SGR reset on its own CRLF-terminated row between some
+		// report rows. After stripping SGR, preserving that row makes a phantom
+		// blank line in the result card.
+		expect(stripTerminalControlSequences("\x1b[0m\r\nfirst\r\n\x1b[0m\r\nsecond")).toBe(
+			"first\nsecond",
 		);
 	});
 
