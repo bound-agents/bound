@@ -1,69 +1,73 @@
 ---
-title: Web UI Tour
-description: The eight tabs of the Bound web interface — what each one does and when to use it.
+title: Web UI reference
+description: Find conversations, tasks, hosts, connections, files, metrics, and persona settings.
 ---
 
-The Bound web UI runs at `http://localhost:3001` by default. It's a real-time single-page app — live chat, thread management, task scheduling, and cluster monitoring, all in one place.
+The Bound web UI runs on the web server, which defaults to
+`http://localhost:3001`. Its top navigation contains eight primary views; individual
+threads open in the Line view.
 
 ## System Map
 
-The landing page. Shows all conversation threads (web, Discord, boundless, scheduled tasks) with search and live activity indicators. Click a thread to open it in the Line view. Create new threads here.
+Use **System Map** to search threads, inspect live activity, create a thread, and open an
+existing thread in the Line view.
 
-A memory graph visualization is available — it renders the agent's knowledge graph as an interactive node-link diagram.
+The page also provides an interactive memory graph.
 
 ## Timetable
 
-The task scheduler view. Shows all scheduled tasks — cron, deferred, event-driven, and heartbeat — with their status, next run time, and trigger type. Filter by status, expand a task to see details.
-
-Think of it as a departure board for the agent's autonomous work: what's running, what's queued, what's coming up.
+Use **Timetable** to inspect cron, deferred, event-driven, and heartbeat tasks. You can
+filter by status and expand a task for scheduling and execution details.
 
 ## Network
 
-Cluster network status. Shows all known hosts, their sync state, online/offline status, and which models each host advertises. Use this to verify your cluster is healthy and see which hosts are available for inference.
+Use **Network** to inspect hosts, synchronization state, connectivity, and advertised
+models.
 
 ## Advisories
 
-Operational advisories — cost alerts, frequency anomalies, model issues. Each advisory has a lifecycle: `proposed` → `approved` → `applied` (or `dismissed`/`deferred`). Every state change requires a note explaining why.
-
-Advisories are how the agent flags things that need your attention. Check here if something seems off.
+Use **Advisories** to review operational findings. Advisories move through `proposed`,
+`approved`, and `applied`, or end as `dismissed` or `deferred`. State changes require a
+note.
 
 ## Files
 
-File browser for the agent's virtual filesystem. Shows all files the agent has created or modified, organized by path. Preview files inline. Files replicate across hosts via sync.
+Use **Files** to browse and preview the agent's replicated virtual filesystem.
 
 ## Connections
 
-A consolidated tab with five sub-sections:
+**Connections** contains five sections:
 
 ### Webhooks
 
-Create and manage webhook endpoints. Each webhook has a name, a signature format (GitHub, Stripe, Slack, raw HMAC, or unauthenticated), and optional settings: a custom prompt, a model hint, and a no-history flag. The cluster-wide unauthenticated-webhook kill switch is here too — it's off by default, and must be explicitly enabled before unsigned webhooks can be created or receive deliveries.
+Create webhook endpoints, inspect deliveries, rotate secrets, and control the cluster-wide
+unauthenticated-webhook switch.
 
 See [Webhooks](/bound/guides/webhooks/) for details.
 
 ### RSS feeds
 
-Create and manage RSS/Atom feed subscriptions. Each feed polls on a configurable interval (minimum 60 seconds, default 900). Like webhooks, feeds support custom prompts, model hints, and no-history. A brand-new feed's first poll seeds without delivering — creating a feed doesn't dump its backlog.
+Create RSS or Atom subscriptions and configure their polling and task behavior.
 
 See [RSS Feeds](/bound/guides/rss-feeds/) for details.
 
 ### Connector bindings
 
-Platform event subscriptions — shows which Discord channels (or other platform events) the agent is subscribed to, and which tasks handle them. Detach a binding to stop the agent from receiving those events.
-
-Each binding also carries the model that runs its deliveries, shown in the list and editable from the detail pane. Leave it on the cluster default or pin a specific model — a high-traffic channel can be routed to something cheap while a binding whose events need real reasoning gets a stronger model. The setting lives on the binding's backing event task, so a binding whose task is missing shows no picker rather than a control that can't save.
+Inspect platform event subscriptions, their backing tasks, and their model settings. Detach
+a binding to stop receiving its events.
 
 ### Skills
 
-Manage the agent's skills — import, view, and delete SKILL.md files. See [Skills](/bound/concepts/skills/) for the skill format.
+Import, inspect, and delete skills. See [Skills](/bound/concepts/skills/) for activation
+behavior.
 
-### MCP Servers
+### MCP servers
 
-Cluster MCP tool inventory. Shows all connected MCP servers across all hosts, their tools, and which host holds each server. Use this to verify your MCP connections are live.
+Inspect MCP servers, their tools, and the host that owns each connection.
 
 ## Metrics
 
-Usage analytics with a date range selector:
+Use **Metrics** to inspect:
 
 - **Cost timeline** — spending over time, per model
 - **Token charts** — input, output, cache-read, cache-write tokens
@@ -71,10 +75,11 @@ Usage analytics with a date range selector:
 - **Latency** — per-model response latency
 - **Relay cycles** — cross-host relay timing and success rates
 
-Polls automatically when the date range includes "now".
+The page refreshes automatically when the selected range includes the current time.
 
 ## Persona
 
-Cluster-wide persona editor. The persona is free-form Markdown that becomes the agent's voice — personality, working style, habits. Changes propagate to every host and take effect on the next turn. Capped at 64 KB.
+Use **Persona** to edit the cluster-wide Markdown persona. Changes replicate to every host
+and apply on the next turn. The value is capped at 64 KB.
 
 You can also set the persona from the CLI: `boundctl set-persona --file my-persona.md`.

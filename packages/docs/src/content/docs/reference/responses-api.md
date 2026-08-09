@@ -1,13 +1,15 @@
 ---
 title: Responses API
-description: OpenAI Responses-API-compatible inference endpoint for driving any cluster model over HTTP.
+description: Request and response formats for Bound's stateless OpenAI-compatible inference endpoint.
 ---
 
-Bound exposes a `POST /v1/responses` endpoint on the web server (port 3001) that speaks the OpenAI Responses wire format. Any application that can talk to OpenAI — SDKs, LangChain's Responses adapter, `curl` — can point at a bound host instead and drive any model the cluster can resolve, local or relayed.
+`POST /v1/responses` is a stateless OpenAI Responses-compatible endpoint on Bound's web
+server. It can resolve any cluster model, including models served by another host.
 
-It's a thin translation shim over `resolveModel()` + `backend.chat()`. It does **not** go through context assembly, tool execution, or the agent loop — there's no persona, no memory, no skills, no tool dispatch. You send messages, you get a model response back.
+The endpoint calls the model router directly. It does not run the Bound agent loop, load
+persona or memory, activate skills, or execute tools on the caller's behalf.
 
-## Quick start
+## Request example
 
 ```bash
 curl http://localhost:3001/v1/responses \
@@ -19,9 +21,10 @@ curl http://localhost:3001/v1/responses \
   }'
 ```
 
-No API key required. The endpoint is localhost-only (gated by the same Host-header DNS-rebinding middleware as every other route). If your client sends a bearer token, it's accepted and silently ignored — so OpenAI SDKs that mandate an API key work without configuration.
+The default web server is loopback-only. Bound accepts and ignores a bearer token so
+clients that require an API-key value can still connect.
 
-## Request
+## Request fields
 
 The endpoint accepts a subset of the Responses schema that maps onto Bound's inputs. Unrecognized fields are ignored (forward-compatible with richer clients).
 
@@ -58,15 +61,17 @@ Message `content` is either a string or a parts array. Supported part types:
 | `input_file` with inline `data:` URL | → document content block |
 | `input_image` / `input_file` with `file_id` / `file_url` / http `image_url` | Dropped with a text placeholder (endpoint is stateless, no files store) |
 
-### Stateless by design
+### Stateless operation
 
-There's no server-side response store. `previous_response_id` and `conversation` are rejected with a `400` — send the full conversation history in `input` instead. This is the default pattern for stateless clients like Codex and OpenCode.
+Bound does not store Responses API conversations. Requests containing
+`previous_response_id` or `conversation` return `400`. Send the complete conversation in
+`input`.
 
 ## Streaming
 
 Set `"stream": true` to get an SSE event stream. Each event is `event: <type>` + `data: <json>` with a monotonic `sequence_number`.
 
-```
+```text
 response.created → response.in_progress
   → (text)     output_item.added → content_part.added
                → response.output_text.delta (×N)
@@ -81,7 +86,7 @@ response.created → response.in_progress
 
 A 5-second SSE heartbeat keeps the connection alive during long time-to-first-token gaps (e.g. large context windows on Opus). The HTTP server's `idleTimeout` is set to 255 seconds (Bun's hard cap) to accommodate extended generation.
 
-## Non-streaming
+## Non-streaming responses
 
 Omit `stream` or set it to `false`. The endpoint collects the full stream internally and returns a single `Response` object with a populated `output` array and `usage`.
 
@@ -89,11 +94,12 @@ Omit `stream` or set it to `false`. The endpoint collects the full stream intern
 
 The endpoint uses the same `resolveModel()` as the agent loop. Local backends are checked first; if the requested model lives on another host, inference streams over the relay transport — the response shape is identical either way, so a client can't tell which host served it. Unknown models return `404`; unavailable models return `503`.
 
-## Pointing a client at it
+## Client configuration
 
 Most OpenAI-compatible clients work by setting a base URL and a dummy API key:
 
-**OpenAI Python SDK:**
+### OpenAI Python SDK
+
 ```python
 from openai import OpenAI
 
@@ -109,7 +115,8 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
-**Polytoken config (`custom_open_ai_compatible` provider):**
+### Polytoken
+
 ```yaml
 providers:
   bound-responses:
@@ -118,7 +125,8 @@ providers:
       name: openai
     url: http://localhost:3001
     auth:
-      type: none
+      type: no_auth
+    protocol: openai_responses
 ```
 
 Then point model entries at the `bound-responses` provider.

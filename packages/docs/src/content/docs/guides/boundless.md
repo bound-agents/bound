@@ -1,35 +1,48 @@
 ---
-title: Boundless
-description: The terminal coding-agent client — connect to bound, get filesystem and shell tools in your agent's toolset.
+title: Use the boundless terminal client
+description: Connect a terminal workspace to Bound and expose local file, shell, and MCP tools.
 ---
 
-`boundless` is a terminal coding-agent client. It connects to a running bound server over a client-tool WebSocket interface, attaches to one thread, and registers host-side filesystem and shell tools (plus optional MCP servers) into that thread's tool set. Session messages, tool calls, and memory operations are written to bound, so other surfaces observe the work.
+The `boundless` terminal client connects one working directory to a Bound thread. It adds
+host-side file and shell tools while keeping messages, memory, and tool calls in the shared
+Bound state.
 
-## Getting started
+## Prerequisites
+
+- A running Bound server
+- The `boundless` binary on your `PATH`
+
+## Start a session
 
 ```bash
-# If bound is running locally:
 boundless
+```
 
-# Connect to a non-default server:
+By default, the client connects to `http://localhost:3001` and creates a thread for the
+current working directory.
+
+Connect to another server:
+
+```bash
 boundless --url http://my-server:3001
+```
 
-# Resume an existing thread:
+Resume an existing thread:
+
+```bash
 boundless --attach <thread-id>
 ```
 
-A running bound server (`bound start`) is required. Boundless connects to the web server port (default 3001).
-
-## Configuration
+## Configure the client
 
 Configuration lives in `~/.bound/less/`:
 
 | File | Purpose |
 | --- | --- |
-| `config.json` | Server URL, default model, injected context files, shell override |
+| `config.json` | Server URL, default model, injected context files, and shell override |
 | `mcp.json` | Local MCP servers (separate from the server's `mcp.json`) |
 
-## Filesystem sandbox
+## Understand filesystem access
 
 Shell commands run in an OS-level write-confinement sandbox:
 
@@ -39,42 +52,45 @@ Shell commands run in an OS-level write-confinement sandbox:
 | Linux | `bubblewrap` (`bwrap`) |
 | Windows | `IsolationSession` |
 
-The whole filesystem is readable — the agent can inspect any file on your machine. But writes are confined to the current working directory and `/tmp`. This lets the agent explore your codebase freely while preventing accidental writes outside the project.
+The agent can read the host filesystem. Writes are confined to the working directory and
+temporary directories allowed by the platform sandbox.
 
-## File tools
+The client registers these tools against the real working directory:
 
-Boundless registers host-side file tools that operate on the real working directory:
+- `boundless_read` reads files with stable line anchors.
+- `boundless_write` creates or replaces files atomically.
+- `boundless_edit` applies anchored edits from a prior read.
+- `boundless_search` searches files with regular expressions.
+- `boundless_bash` executes a command in the sandbox.
+- `boundless_copy` copies a file between the host and Bound's virtual filesystem.
 
-- **`boundless_read`** — read a file in hashline format (line:hash|content), with offset/limit paging
-- **`boundless_write`** — create or overwrite a file (atomic, creates parents)
-- **`boundless_edit`** — edit a file using hashline anchors from a prior read; ranges validated atomically
-- **`boundless_search`** — regex search across files, returning grep-style matches with hashline anchors
-- **`boundless_bash`** — execute a shell command in the sandbox
-- **`boundless_copy`** — copy a file between the satellite (host) and main (VFS) environments
+Anchored reads let the agent address exact lines without reproducing their full text.
 
-The hashline format gives the LLM stable 4-character anchors to address specific lines without reproducing their text. The anchors survive line drift, so edits land correctly even if the file shifted since the read.
+## Read tool output
 
-## Tool output
+Shell results show up to 32 visual rows. Larger results retain the first and last 16 rows
+around an elision marker. Results that exceed the universal 256 KiB cap are offloaded
+before they reach the transcript.
 
-Shell results retain up to 32 visual rows in the transcript, so ordinary bounded commands such as `tail -25` remain directly inspectable. Larger results show the first 16 and last 16 rows with an elision marker; the universal 256 KiB result cap still offloads exceptionally large output before it reaches the transcript. Wrapped pipe-delimited tables keep continuation rows under their final column, so coverage ranges and similar long values do not masquerade as new file rows. Terminal-control-only reporter rows are removed after sanitization, preventing phantom spacing in output such as Bun's coverage report.
+Consecutive reads, searches, and database queries share one compact result group. Failed
+calls retain their diagnostic output.
 
-Consecutive reads, searches, and database `query` calls collapse into one shared group of result rows. Read/search lines show their target and volume; query lines show the SQL and the returned row and column counts. Failed calls keep their full diagnostic output.
+## Monitor the session
 
-## Status bar
+The status area shows the connection state, thread ID, selected model, MCP server count,
+and working directory. Copy the full thread ID when you need to reconnect with `--attach`.
 
-The bar under the input line carries the session's live state. The identity row is always present — connection badge, full thread ID (rendered untruncated so you can select and copy it for `--attach`), model, MCP server count, and the working directory on the right edge.
-
-Above it, a measurements row appears only once it has something real to report:
+An additional row appears when measurements are available:
 
 | Segment | Meaning |
 | --- | --- |
-| `ctx 44% (87k/200k)` | Context-window pressure after the last turn, colored green → yellow → red as it climbs. Provider-reported tokens, not a local estimate. |
-| `$1.05 session · $12.34 today` | Cluster-wide spend since you started this session and since local midnight. |
-| `● 3 background` | Background tool calls in flight on this thread (see [Backgrounding an errand](/bound/concepts/auxiliary-agents/#backgrounding-an-errand)). |
+| `ctx 44% (87k/200k)` | Provider-reported context-window use after the last turn. |
+| `$1.05 session / $12.34 today` | Cluster-wide session and daily spend. |
+| `● 3 background` | Background tool calls in flight on this thread (see [Run an errand in the background](/bound/concepts/auxiliary-agents/#run-an-errand-in-the-background)). |
 
-Each segment hides rather than showing a zero, so a fresh session reports nothing instead of a row of placeholder numbers. The background count in particular only appears while work is actually running, and it reflects server state rather than a local tally — attaching to a thread that already has background work shows the count immediately, and a dropped frame corrects itself on the next update instead of drifting.
+Segments remain hidden until they have a value.
 
-## ACP mode
+## Connect an ACP editor
 
 `boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio, letting ACP-compatible editors (Zed, others) drive bound as their backend agent.
 
@@ -82,7 +98,7 @@ The editor spawns `boundless --acp` as a subprocess and speaks JSON-RPC over std
 
 Existing bound threads can be resumed via the protocol's `session/load`.
 
-### Zed configuration
+### Configure Zed
 
 ```json
 {
@@ -97,9 +113,11 @@ Existing bound threads can be resumed via the protocol's `session/load`.
 }
 ```
 
-In ACP mode, stdout is the JSON-RPC channel — boundless writes nothing else to stdout. Diagnostics go to the file logger at `~/.bound/less/logs/` and to stderr for fatal startup errors. `--attach` is ignored in ACP mode; ACP clients open sessions via `session/new` and `session/load`.
+In ACP mode, stdout is reserved for JSON-RPC. Diagnostics go to
+`~/.bound/less/logs/`, with fatal startup errors also written to stderr. ACP clients open
+sessions through `session/new` and `session/load`; `--attach` does not apply.
 
-## Command-line options
+## Command-line reference
 
 | Option | Description |
 | --- | --- |

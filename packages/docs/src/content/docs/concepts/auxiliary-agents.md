@@ -1,25 +1,31 @@
 ---
-title: Auxiliary Agents
-description: Scoped side identities with their own memory namespace, invoked to run errands without dragging the main agent's context along.
+title: Auxiliary agents
+description: How durable side identities run isolated errands and return narrow results to the main agent.
 ---
 
-An auxiliary agent is a durable, named identity the main agent can hand an errand to. It runs in its own thread with its own memory namespace, reports back a result, and the conversation is thrown away. The identity persists; each invocation is ephemeral.
+An auxiliary agent is a durable, named identity that the main agent can invoke for a
+bounded errand. Each invocation runs in a child thread with an isolated memory namespace
+and returns its result to the parent.
 
-This exists because subagents don't map cleanly onto bound's threading model. Every ordinary thread is a *view* of one agent that spans all of them — same identity, same memory, peers by construction. A subagent breaks that: it takes instructions from another instance of itself and gets discarded when it's done, which is not a peer relationship. Auxiliary agents make that authority split explicit instead of pretending it isn't there.
+Ordinary Bound threads are peer views of one agent identity. Auxiliary agents make the
+different authority relationship explicit: the main agent dispatches work, the auxiliary
+identity runs it, and the invocation thread is disposable.
 
-## You ask; the agent dispatches
+## Operator interaction
 
-There is no CLI command, config file, or UI panel for auxiliary agents. The entire surface is the agent's `aux` tool, and the agent is its only caller — so your side of this is conversation:
+Only the agent calls the `aux` tool. There is no operator-facing CLI or web UI for
+auxiliary identities. Ask for the identity or result in conversation:
 
-> Set up a scout identity for codebase spelunking — terse, reports what it found and what it couldn't, no speculation.
+- "Define a terse, methodical scout that reports evidence without speculation."
+- "Ask the scout which `resolveModel()` call sites ignore the error branch."
 
-> Have the scout figure out which call sites of `resolveModel()` outside `packages/llm` ignore the error branch.
+The main agent decides whether to invoke an existing identity, define a new one, or complete
+the work in the current thread.
 
-The agent decides when an errand is worth delegating, defines an identity when it needs one it doesn't have, and folds the result back into the conversation. Everything below describes what the agent controls on your behalf — worth reading so you know what's available to ask for, and so you can follow what the agent tells you it did.
+## Identity and invocation
 
-## Identity, not job description
-
-The persona says who the aux **is** — temperament, working style, standing habits. It does not say what the aux is for. The job arrives per-invocation in `instructions`.
+The persona defines the identity's working style. The `instructions` argument defines the
+specific job for one invocation.
 
 That split is what makes an identity reusable. An aux defined as "brief and methodical; investigates a narrow question and reports what it found and what it couldn't find" can be handed a dozen unrelated errands. An aux defined as "the agent that audits our CI logs" can only ever do that one thing, and you end up with a sprawl of near-duplicate identities.
 
@@ -35,7 +41,7 @@ Five actions on the `aux` tool, all agent-invoked:
 | `list` | Show active identities |
 | `invoke` | Hand an errand to an identity and wait for the result |
 
-### define
+### Define an identity
 
 What the agent supplies when creating an identity:
 
@@ -48,7 +54,7 @@ What the agent supplies when creating an identity:
 
 Defining over an existing active name fails rather than silently overwriting it — an identity-sprawl guard. The agent updates the existing identity or picks a different name.
 
-### invoke
+### Invoke an identity
 
 What the agent supplies when dispatching an errand:
 
@@ -61,7 +67,7 @@ What the agent supplies when dispatching an errand:
 
 By default `invoke` is synchronous. It creates the child thread, seeds the instructions, runs the nested loop to completion, and returns the aux's final response as the result. The main agent's turn blocks until the aux finishes — from your side, one pause in the conversation and then the answer.
 
-### Backgrounding an errand
+### Run an errand in the background
 
 With `background: true`, `invoke` returns the moment the child thread is seeded. The main agent gets a placeholder result — *this is running, the answer will arrive later* — and carries on with the rest of its turn. When the aux finishes, its result replaces the placeholder and the main agent wakes to read it.
 
@@ -73,12 +79,11 @@ A backgrounded errand that fails surfaces as a failed tool result rather than va
 
 Background invocations also survive a server restart. The errand's instructions are enqueued through the same durable dispatch queue that carries ordinary messages, with the parent correlation stamped on the seed message itself. If the daemon dies mid-errand, startup recovery resets the interrupted queue entry and re-dispatches the child thread; the errand re-runs from its seed and the result still lands in the parent's placeholder. What restarts cost is progress, not the errand — a half-finished run starts over.
 
-
-### retire
+### Retire an identity
 
 Retiring is domain state, not deletion. The identity drops out of `list` and can no longer be invoked, but its memory namespace stays readable to the main agent — a retired aux's findings don't evaporate. Retiring an already-retired identity is a no-op, not an error. A later `define` under the same name starts a genuinely fresh identity.
 
-## Memory namespaces
+## Memory isolation
 
 Every memory entry carries an owning identity. The main agent's entries have no owner; an aux's entries are tagged with its identity. Key uniqueness is per-namespace, so two auxes can both store `findings` without colliding.
 
@@ -91,7 +96,7 @@ The asymmetry is the point. A memory written from the main agent's vantage can m
 
 That reach is one-directional by construction: an aux naming a sibling identity on a memory call gets its own namespace anyway, so no aux can read another's findings.
 
-## Capability boundary
+## Capability boundaries
 
 An aux never receives the orchestration tools, regardless of its allowlist:
 
@@ -103,7 +108,7 @@ What an aux *does* inherit is the dispatching thread's **client tools** — the 
 
 The orchestration exclusions above are absolute and unaffected by inheritance — no client tool grants an aux the ability to delegate or schedule.
 
-## Threading
+## Thread and execution model
 
 An aux invocation creates a child thread with a strict parent relationship: it records the dispatching thread as its parent and inherits that thread's owning user, so archival and deletion cascade naturally from parent to children. The thread is tagged with the `aux` interface and titled `aux: <name>`.
 
@@ -113,13 +118,13 @@ Concurrent invocations are capped at 20 per host. Past that, `invoke` returns an
 
 Because an aux runs as a nested loop inside the dispatching thread's turn, its inherited client tools resolve **inline**: the aux waits for each result rather than suspending the way the main agent does. Delivery reaches your client through the parent thread's session, since nothing subscribes to an aux thread directly. A client tool called by an aux whose parent has no live session fails with an explanatory result rather than hanging.
 
-## Worked example
+## Example workflow
 
 You ask for the identity once:
 
 > Define a scout aux — brief and methodical, investigates a narrow question, reports what it found and what it couldn't find, never speculates. Keep it under 200 words.
 
-Then hand it errands, as many times as you like:
+Then assign a specific errand:
 
 > Ask the scout to find every call site of `resolveModel()` outside `packages/llm` and report which ones ignore the error branch.
 

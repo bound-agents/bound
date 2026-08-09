@@ -3,9 +3,9 @@ title: Bound
 description: A personal agent that maintains state across multiple hosts.
 template: splash
 hero:
-  tagline: A personal agent that maintains state across multiple hosts — one agent, one context, every interface.
+  tagline: One persistent agent context across hosts, models, and interfaces.
   actions:
-    - text: Quick Start
+    - text: Quick start
       link: /bound/guides/quick-start/
       icon: right-arrow
       variant: primary
@@ -16,39 +16,40 @@ hero:
 ---
 
 :::caution[Experimental]
-Bound is still very experimental and has approximately negative stability
-guarantees. You're free to play with it, but relying on it in production is not
-yet advised.
+Bound is experimental and does not yet provide production stability guarantees.
 :::
 
-## What is Bound?
+## What Bound does
 
-Bound is a personal agent that maintains state across multiple hosts. Messages,
-memory, files, and tasks replicate between a laptop and a cloud VM over an
-encrypted sync protocol, so every interface sees the same agent with the same
-context. Model selection is cluster-wide — inference is routed to the right
-backend and host automatically, with fallback. The scheduler runs tasks on cron
-schedules, time delays, or events, and the agent accumulates a knowledge graph
-across sessions that surfaces in context automatically.
+Bound runs a persistent personal agent across one or more hosts. Messages, memory, files,
+skills, and tasks replicate through an encrypted sync protocol, so the web UI, Discord,
+and the `boundless` terminal client share the same state.
 
-## Key features
+Each host can expose different models and tools. Bound resolves the requested model across
+the cluster, relays inference or tool calls when necessary, and keeps the agent loop on the
+host that received the trigger.
 
-- **Stateful across hosts** — SQLite database replicates via encrypted sync with Ed25519 identity
-- **Model-agnostic** — Ollama, Anthropic, Bedrock, Cerebras, z.AI, umans, any OpenAI-compatible endpoint
-- **Cluster-wide inference routing** — capability-aware model resolution with automatic fallback
-- **Multiple interfaces** — web UI, Discord, boundless terminal client, ACP for editor integration
-- **Persistent memory** — tiered knowledge graph that surfaces relevant context automatically
-- **Task scheduler** — cron, deferred, and event-driven tasks with dependency chains
-- **Webhooks & RSS** — receive external events and poll feeds; custom prompts and model hints per source
-- **MCP integration** — connect external tool servers; UI-bearing tools render inline in the web UI
-- **Sandboxed execution** — in-memory VFS for the agent; OS-level write confinement for boundless
+## Core capabilities
+
+- **Replicated state:** Each host maintains a SQLite database and exchanges signed,
+  encrypted changes through the cluster hub.
+- **Model routing:** Local and remote backends participate in one cluster-wide model
+  inventory with capability-aware fallback.
+- **Persistent memory:** A tiered knowledge graph carries durable knowledge across
+  conversations and hosts.
+- **Scheduled and event-driven work:** Tasks can run on cron schedules, after a delay, or
+  in response to connector, webhook, and RSS events.
+- **Tool integration:** MCP servers, platform connectors, and `boundless` client tools use
+  the same tool-dispatch system.
+- **Constrained execution:** The built-in filesystem is virtual, while `boundless` shell
+  commands use OS-level write confinement.
 
 ## Next steps
 
-- **[Quick Start](/bound/guides/quick-start/)** — get a local instance running
-- **[Web UI Tour](/bound/concepts/web-ui/)** — the eight tabs of the web interface
-- **[Boundless](/bound/guides/boundless/)** — terminal coding-agent client
-- **[Multi-Host Setup](/bound/guides/multi-host/)** — configure a cluster with encrypted sync
-- **[Webhooks](/bound/guides/webhooks/)** — receive external events via HTTP
-- **[RSS Feeds](/bound/guides/rss-feeds/)** — poll RSS/Atom feeds and deliver to the agent
-- **[Configuration](/bound/reference/configuration/)** — per-field reference for every config file
+- [Complete the quick start](/bound/guides/quick-start/) to run a local instance.
+- [Use the `boundless` terminal client](/bound/guides/boundless/) for coding workflows.
+- [Configure a multi-host cluster](/bound/guides/multi-host/) when models or interfaces
+  need to run on different machines.
+- [Review the web UI reference](/bound/concepts/web-ui/) to find operational views.
+- [Use the configuration reference](/bound/reference/configuration/) for every supported
+  config field.

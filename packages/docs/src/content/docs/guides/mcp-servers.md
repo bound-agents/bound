@@ -1,13 +1,19 @@
 ---
-title: MCP Servers
-description: Connect MCP servers for tool access, and use MCP Apps for inline interactive UI in the web interface.
+title: Connect MCP servers
+description: Add local or remote Model Context Protocol servers to Bound's tool inventory.
 ---
 
-Bound connects to external [Model Context Protocol](https://modelcontextprotocol.io) servers and registers their tools as agent commands. MCP server tools are auto-registered — the agent can call them like any built-in tool.
+This guide connects a [Model Context Protocol](https://modelcontextprotocol.io) server and
+controls which of its tools Bound exposes.
 
-## Configuration
+## Prerequisites
 
-MCP servers are configured in `mcp.json`:
+- A running Bound installation
+- A local MCP command or remote MCP endpoint
+
+## Add a server
+
+Add the server to `mcp.json`:
 
 ```json
 {
@@ -29,40 +35,24 @@ MCP servers are configured in `mcp.json`:
 }
 ```
 
-### Common fields
+Restart Bound after changing this file, or reload MCP configuration:
 
-Every server entry has: `name` (non-empty string), `allow_tools` (optional array of tool names to allowlist), `confirm` (optional array of tools that require confirmation before execution).
+```bash
+boundctl config reload mcp
+```
 
-### stdio transport
+## Choose a transport
 
-Runs a local process and communicates over stdin/stdout. Fields: `command` (required), `args` (optional array), `env` (optional string→string map).
+Use `stdio` for a process that runs on the Bound host. Set `command`, and optionally set
+`args` and `env`.
 
-### http transport
+Use `http` for a remote endpoint. Set `url`, and optionally set `headers`.
 
-Connects to a remote HTTP endpoint. Fields: `url` (required), `headers` (optional string→string map).
+Each transport schema is strict. Unknown fields cause configuration loading to fail.
 
-Each transport variant is strict independently — unknown keys on one transport don't slip through via the other.
+## Restrict exposed tools
 
-## Tool registration
-
-MCP server tools are registered as subcommand-dispatched commands through the sandbox: one `CommandDefinition` per MCP server (named by the server name, e.g. `github`), with a `subcommand` parameter selecting the individual tool. This reduces the LLM tool definition count and simplifies cross-host delegation tracking.
-
-The agent calls MCP tools like any other tool. The LLM sees them as structured JSON schemas — no string parsing.
-
-## Cross-host tool calls
-
-When an MCP tool lives on a remote host (because the server process only runs on one machine), the tool call relays through the sync transport:
-
-1. The requesting host writes a `tool_call` relay message
-2. The target host receives it, executes the tool locally
-3. The target writes a `result` response back via the relay
-4. The requesting host's agent loop picks it up
-
-Client tools (boundless filesystem/shell) relay as `client_tool` → `client_result` through the WS session host.
-
-## Allowlisting tools
-
-Use `allow_tools` to restrict which tools from a server are exposed to the agent:
+Set `allow_tools` to expose only named tools:
 
 ```json
 {
@@ -74,7 +64,7 @@ Use `allow_tools` to restrict which tools from a server are exposed to the agent
 }
 ```
 
-Use `confirm` to require explicit approval before a tool executes:
+Set `confirm` to require approval for selected tools:
 
 ```json
 {
@@ -82,10 +72,20 @@ Use `confirm` to require explicit approval before a tool executes:
 }
 ```
 
-## MCP Apps
+## Verify the connection
 
-When an `http`/`sse` MCP server advertises the [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) `io.modelcontextprotocol/ui` capability, its UI-bearing tool results render inline as interactive apps in the web UI.
+Open **Connections > MCP Servers**. Confirm that the server, host, and expected tools appear
+in the cluster inventory.
 
-There is no separate config for MCP Apps — app-bearing servers are discovered automatically by joining `mcp.json` against the synced capability inventory (captured at connect time). The web router serves the browser-reachable subset via `GET /api/mcp-apps`.
+Bound represents each MCP server as one command with a `subcommand` parameter. If the
+server runs on another host, Bound relays the tool call to that host.
 
-The agent still calls these tools server-side as normal. The browser is purely a renderer: it reads the server's `ui://` resources and routes the app's callbacks. It is never a second tool provider.
+## Use MCP Apps
+
+When an HTTP MCP server advertises the
+[MCP Apps](https://github.com/modelcontextprotocol/ext-apps)
+`io.modelcontextprotocol/ui` capability, supported tool results render as interactive apps
+in the web UI.
+
+MCP Apps require no separate Bound configuration. The server remains the tool provider;
+the browser renders its `ui://` resources.

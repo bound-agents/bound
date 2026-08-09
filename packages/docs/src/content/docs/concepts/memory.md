@@ -1,13 +1,15 @@
 ---
-title: Memory & Knowledge Graph
-description: How the agent remembers things across sessions, and what surfaces in context automatically.
+title: Memory and knowledge graph
+description: How durable memory is stored, connected, and selected for each agent turn.
 ---
 
-Bound accumulates a knowledge graph across sessions. Memory entries persist in the database and replicate across hosts. The agent doesn't need to actively search its memory every turn — relevant entries surface in context automatically.
+Bound stores durable memory entries in a replicated knowledge graph. Context assembly
+combines stable working knowledge, an archive catalog, live state, and turn-relevant memory
+without loading every entry body.
 
 ## The memory tool
 
-The agent stores and retrieves memory itself, through the `memory` tool. You don't call this — you ask, and it decides what's worth keeping:
+The agent uses the `memory` tool to manage entries:
 
 | Action | What it does |
 | --- | --- |
@@ -19,7 +21,8 @@ The agent stores and retrieves memory itself, through the `memory` tool. You don
 | `traverse` | Walk the edge graph from a key |
 | `neighbors` | List edges connected to a key |
 
-Memory keys are namespaced — `curiosity:*` for research findings, `person:*` for people, `_standing:*` for operational rules, etc.
+Keys can use descriptive namespaces such as `curiosity:*` or `person:*`. Key names do not
+control pinning; the `tier` field is the only pinning signal.
 
 ## Memory tiers
 
@@ -27,21 +30,26 @@ Each memory entry has a tier that controls how it surfaces in context:
 
 | Tier | How it appears |
 | --- | --- |
-| `pinned` | Full body in the system prompt, survives context compaction. Use for rules, corrections, and critical facts. |
-| `summary` | Title in the archive catalog; body retrieved via search. |
-| `default` | Same as summary — title in the catalog, searchable body. |
-| `detail` | Title-only, grouped under a summary parent. |
+| `pinned` | Full body in working knowledge; intended for durable rules and corrections |
+| `summary` | Condensed working knowledge when selected within the summary budget |
+| `default` | Searchable memory eligible for relevance retrieval |
+| `detail` | Archive detail, normally represented by title until retrieved |
 
-Pinning is the agent's call, but you can direct it — "remember that permanently" or "that's a standing rule" is the operator-side version of `tier: "pinned"`. Pinned space is capped, configurable in `memory.json` (default 10 entries, 2000 chars each), so the agent has to spend it deliberately.
+Pinned space is capped by `memory.json`, with defaults of 10 entries and 2,000 characters
+per entry. Ask the agent to remember a rule permanently when it should use the pinned tier.
 
 ## Knowledge graph edges
 
-Memory entries can be connected with typed edges. The agent traverses these edges at context-assembly time to surface conversation-relevant entries. Edges carry a weight (0–10) and an optional context phrase.
+Edges use canonical relation types, a weight from 0 through 10, and optional context.
+Keyword matching and graph traversal can both contribute turn-relevant entries.
 
-## How memory enters context
+## Context tiers
 
-The agent doesn't manually search its memory every turn. Three things happen automatically:
+Memory appears through four context sections:
 
-- **Pinned entries** appear in full in the system prompt
-- **Archive catalog** lists all entries by title so the agent knows what's available to search
-- **Relevant entries** are matched to the current conversation by keyword and graph traversal, and surfaced as titles
+- **Working Knowledge:** Pinned bodies and selected summaries in the stable prompt prefix.
+- **Working Knowledge updates:** Changed entries on the varying side of context.
+- **Discoverable Archive:** Compressed titles that tell the agent what it can retrieve.
+- **Relevant memory:** Titles selected for the current turn by keyword and graph matching.
+
+The agent can call `memory search` when it needs an entry's full body.
