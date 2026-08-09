@@ -165,7 +165,7 @@ function renderLiveStateBlock(
 
 function renderCrossThreadLine(e: CrossThreadEntryView): string {
 	return (
-		`<thread title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
+		`<thread id="${escapeXmlAttr(e.threadId)}" title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
 		` updated="${escapeXmlAttr(e.lastUpdatedAt)}" local="false"/>`
 	);
 }
@@ -189,5 +189,5 @@ function renderFileLine(f: FileEntryView): string {
 }
 
 function renderAdvisoryLine(a: AdvisoryEntryView, nowMs: number): string {
-	return `<advisory title="${escapeXmlAttr(a.title)}" applied="${escapeXmlAttr(relativeTimeAt(a.appliedAt, nowMs))}"/>`;
+	return `<advisory id="${escapeXmlAttr(a.advisoryId)}" title="${escapeXmlAttr(a.title)}" applied="${escapeXmlAttr(relativeTimeAt(a.appliedAt, nowMs))}"/>`;
 }

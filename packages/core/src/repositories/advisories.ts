@@ -115,16 +115,16 @@ export function listActionableAdvisories(db: Database, now: string): Advisory[] 
 		.all(now) as Advisory[];
 }
 
-/** Title/resolved_at of applied, non-deleted advisories resolved at or after a cutoff. */
+/** IDs, titles, and resolved_at of applied, non-deleted advisories resolved at or after a cutoff. */
 export function listAppliedAdvisoriesResolvedSince(
 	db: Database,
 	resolvedSince: string,
-): Array<{ title: string; resolved_at: string }> {
+): Array<{ id: string; title: string; resolved_at: string }> {
 	return db
 		.query(
-			"SELECT title, resolved_at FROM advisories WHERE status = 'applied' AND deleted = 0 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
+			"SELECT id, title, resolved_at FROM advisories WHERE status = 'applied' AND deleted = 0 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
 		)
-		.all(resolvedSince) as Array<{ title: string; resolved_at: string }>;
+		.all(resolvedSince) as Array<{ id: string; title: string; resolved_at: string }>;
 }
 
 /** Ids of non-deleted advisories whose id starts with a prefix (capped at 2 for ambiguity check). */

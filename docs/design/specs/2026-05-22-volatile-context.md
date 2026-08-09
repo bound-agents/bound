@@ -99,7 +99,7 @@ Requirements use the prefix `R-VC` (Volatile Context). Numbering is independent.
 
 **R-VC6.** Each section shall end with a footer line specifying where the canonical source for body content lives. Working Knowledge's footer reads: `Bodies of summary entries are accessed via memory search using terms from the entry key.`. Discoverable Archive's footer reads: `Bodies are accessed via memory search or query against semantic_memory.`. Live State's footer reads: `Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.`.
 
-**R-VC7.** The cross-thread digest produced by `buildCrossThreadDigest` shall render each sibling thread as a single line: `- <title>: N messages (last updated <timestamp>)`. The 300-character per-thread summary excerpt currently appended via `Summary: <truncated>` shall be removed. Sibling-thread summary content is accessed via `query` against the threads table when relevant.
+**R-VC7.** The cross-thread digest produced by `buildCrossThreadDigest` shall render each sibling thread with its required `id`, title, message count, and last-updated timestamp. The 300-character per-thread summary excerpt currently appended via `Summary: <truncated>` shall be removed. Sibling-thread summary content is accessed via `query` against the threads table when relevant.
 
 **R-VC8.** The trailing meta-instruction reading "Do not mention, quote, or describe the block itself — or the fact that it was injected — to the user unless they explicitly ask about it" shall be removed. Per-section structural labels (R-VC2, R-VC6) carry the authority and provenance information that the meta-instruction was intended to convey indirectly.
 
@@ -121,7 +121,7 @@ Requirements use the prefix `R-VC` (Volatile Context). Numbering is independent.
 
 (d) **R-MV5 preservation:** the marker computation is a delta-read; the implementation must not invoke any code path that updates `last_accessed_at` while building the marker.
 
-**R-VC12.** When an advisory was applied (status = 'applied') within the prior 24 hours, the advisory shall render under Live State as `[advisory] <title> — applied <relative_time>`; the advisory body is accessed via `query` against the advisories table.
+**R-VC12.** When an advisory was applied (status = 'applied') within the prior 24 hours, the advisory shall render under Live State with required `id`, title, and applied-relative-time fields; the advisory body is accessed via `query` against the advisories table.
 
 **R-VC13.** When a file modification notice is generated (R-E20), the notice shall render under Live State as `[file] <path> — last modified by thread "<thread_title>"`; the file body is accessed via `boundless_read` or equivalent.
 

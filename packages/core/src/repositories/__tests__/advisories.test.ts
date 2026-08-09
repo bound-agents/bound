@@ -378,8 +378,8 @@ describe("advisories repository finders", () => {
 			seed(db, { id: "wrong", status: "approved", resolved_at: "2026-05-10T00:00:00.000Z" });
 
 			expect(listAppliedAdvisoriesResolvedSince(db, "2026-05-01T00:00:00.000Z")).toEqual([
-				{ title: "A", resolved_at: "2026-05-10T00:00:00.000Z" },
-				{ title: "B", resolved_at: "2026-05-01T00:00:00.000Z" },
+				{ id: "after", title: "A", resolved_at: "2026-05-10T00:00:00.000Z" },
+				{ id: "boundary", title: "B", resolved_at: "2026-05-01T00:00:00.000Z" },
 			]);
 		});
 	});
