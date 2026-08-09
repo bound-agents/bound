@@ -34,6 +34,10 @@ export interface ThreadsDirectoryRow extends Thread {
  *
  * Semantics preserved exactly from the route:
  *  - Filters `t.deleted = 0 AND t.user_id = ?`.
+ *  - Excludes auxiliary-agent child threads (`t.agent_id IS NOT NULL`) — aux
+ *    invocations are internal errands dispatched by the main agent, not user
+ *    conversations, so they never appear in the web directory. Keyed on
+ *    `agent_id`, never the descriptive `interface` tag.
  *  - `includeEmpty = false` additionally requires the thread to have ≥ 1 live
  *    `role = 'user'` message.
  *  - Optional `(last_message_at, id)` keyset cursor: pass both `beforeTs` and
@@ -83,7 +87,7 @@ export function listThreadsDirectory(
 				WHERE thread_id = t.id AND status = 'running' AND deleted = 0
 			) as hasRunningTask
 		FROM threads t
-		WHERE t.deleted = 0 AND t.user_id = ?
+		WHERE t.deleted = 0 AND t.user_id = ? AND t.agent_id IS NULL
 			AND (
 				? = 1
 				OR EXISTS(
@@ -109,7 +113,9 @@ export function listThreadsDirectory(
 
 /**
  * Total count of threads matching the same filter as {@link listThreadsDirectory},
- * independent of the cursor/limit window. Drives the `X-Total-Count` header.
+ * independent of the cursor/limit window — including the aux-thread exclusion
+ * (`agent_id IS NULL`), so the directory's "N threads" total always agrees with
+ * the visible list. Drives the `X-Total-Count` header.
  *
  * Returns `null` only if the aggregate yields no row (never, in practice — a
  * COUNT(*) always returns one row).
@@ -122,7 +128,7 @@ export function countThreadsDirectory(
 		.query(`
 			SELECT COUNT(*) as total
 			FROM threads t
-			WHERE t.deleted = 0 AND t.user_id = ?
+			WHERE t.deleted = 0 AND t.user_id = ? AND t.agent_id IS NULL
 				AND (
 					? = 1
 					OR EXISTS(
