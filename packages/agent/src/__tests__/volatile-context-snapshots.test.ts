@@ -480,7 +480,7 @@ describe("volatile-context snapshots", () => {
 		db.close();
 	});
 
-	it("Memory state with task digest entries rendering under Live State alongside cross-thread / file / advisory entries (verifying R-VC5's four subsystems render in their fixed order with correct source labels).", async () => {
+	it("Memory state with task digest entries, sibling-thread metadata, and a boundless host attachment rendering under Live State alongside file / advisory entries.", async () => {
 		const db = createTempDb();
 		const userId = "test-user";
 		const threadId = deterministicUUID(BOUND_NAMESPACE, "test:scenario:11");
@@ -500,6 +500,34 @@ describe("volatile-context snapshots", () => {
 		// They're created with the same userId as the agent so they show in the digest
 		const siblingThread1 = makeSiblingThread(ctx, "Related Thread 1", 2, "Thread summary 1");
 		const siblingThread2 = makeSiblingThread(ctx, "Related Thread 2", 2, "Thread summary 2");
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: "boundless-snapshot-host-site",
+				host_name: "boundless-snapshot-host",
+				// Live-state session liveness uses the wall clock, so keep this
+				// fixture host fresh regardless of when the suite executes.
+				online_at: "2099-01-01T00:00:00.000Z",
+				modified_at: "2099-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id: deterministicUUID(BOUND_NAMESPACE, "snapshot:boundless-session"),
+				connection_id: "snapshot-boundless-connection",
+				thread_id: siblingThread2,
+				site_id: "boundless-snapshot-host-site",
+				created_at: new Date(nowMs).toISOString(),
+				modified_at: new Date(nowMs).toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
 
 		// Add file modifications (stored as _internal.file_thread.* entries pointing to thread IDs)
 		makeFileMod(ctx, "/src/main.ts", siblingThread1);
