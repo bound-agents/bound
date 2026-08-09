@@ -63,8 +63,9 @@ limits in the broader trust model.
 
 Each invocation creates a child thread associated with the parent and the auxiliary
 identity. Its instructions are marked as work dispatched by the main agent rather than as a
-human message. The auxiliary agent performs the errand and returns a result through the
-parent relationship.
+human message. Aux child threads do not appear in the web UI thread directory because they
+are internal errands rather than operator conversations; the invoking chat turn carries the
+result and the navigable link into the child transcript.
 
 This structure keeps exploratory steps out of the main conversation's immediate context.
 The parent receives the answer it needs rather than every intermediate search, tool result,
