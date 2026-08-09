@@ -434,6 +434,7 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 }
 
 export interface CrossThreadDigestEntry {
+	threadId: string;
 	title: string;
 	messageCount: number;
 	lastUpdatedAt: string; // ISO-8601 from threads table
@@ -493,6 +494,7 @@ export function buildCrossThreadDigest(
 			// Populate structured entry for Live State
 			const sessions = sessionsByThread.get(thread.id);
 			entries.push({
+				threadId: thread.id,
 				title,
 				messageCount,
 				lastUpdatedAt: thread.last_message_at,
@@ -2042,6 +2044,7 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
  * Advisories where status = 'applied' within the prior 24 hours.
  */
 export interface LiveStateAdvisory {
+	advisoryId: string;
 	title: string;
 	/** ISO-8601 timestamp of the apply-status transition. */
 	appliedAt: string;
@@ -2064,7 +2067,7 @@ export function loadAppliedAdvisoriesForLiveState(
 ): LiveStateAdvisory[] {
 	const cutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
 	const rows = listAppliedAdvisoriesResolvedSince(db, cutoff);
-	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
+	return rows.map((r) => ({ advisoryId: r.id, title: r.title, appliedAt: r.resolved_at }));
 }
 
 /**
@@ -2247,7 +2250,7 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 		const sessions = e.sessions ?? [];
 		const threadLocal = host !== undefined && sessions.some((s) => s.live && s.hostName === host);
 		const open =
-			`<thread title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
+			`<thread id="${escapeXmlAttr(e.threadId)}" title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
 			` updated="${escapeXmlAttr(e.lastUpdatedAt)}" local="${threadLocal}"`;
 		if (sessions.length === 0) {
 			lines.push(`${open}/>`);
@@ -2255,10 +2258,7 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 		}
 		lines.push(`${open}>`);
 		for (const s of sessions) {
-			lines.push(
-				`<session host="${escapeXmlAttr(s.hostName)}" live="${s.live}"` +
-					` local="${host !== undefined && s.hostName === host}"/>`,
-			);
+			lines.push(`<session host="${escapeXmlAttr(s.hostName)}" live="${s.live}"/>`);
 		}
 		lines.push("</thread>");
 	}
@@ -2286,8 +2286,8 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 	// §5.3 step 4 — applied advisories (R-VC12).
 	for (const a of cap(input.advisories) as LiveStateAdvisory[]) {
 		lines.push(
-			`<advisory title="${escapeXmlAttr(a.title)}"` +
-				` applied="${escapeXmlAttr(relativeTimeFragment(a.appliedAt, input.nowMs))}"/>`,
+			`<advisory id="${escapeXmlAttr(a.advisoryId)}" title="${escapeXmlAttr(a.title)}` +
+				`" applied="${escapeXmlAttr(relativeTimeFragment(a.appliedAt, input.nowMs))}"/>`,
 		);
 	}
 

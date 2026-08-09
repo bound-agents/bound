@@ -69,17 +69,17 @@ User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
 - _summary:topic-3 [changed since last turn]
 - _summary:topic-4 [changed since last turn]
 <live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
-<thread title="sibling-4" messages="2" updated="2026-05-21T23:59:59.000Z" local="false"/>
-<thread title="sibling-3" messages="4" updated="2026-05-21T23:59:59.000Z" local="false"/>
-<thread title="sibling-2" messages="1" updated="2026-05-21T23:59:59.000Z" local="false"/>
+<thread id="3f5e1184-c60c-54e5-9764-39efbe973c0a" title="sibling-4" messages="2" updated="2026-05-21T23:59:59.000Z" local="false"/>
+<thread id="c294e4c1-3c15-5896-9d61-d31fe3ce2b01" title="sibling-3" messages="4" updated="2026-05-21T23:59:59.000Z" local="false"/>
+<thread id="50777cb5-6d75-5280-9d9a-b8c803869883" title="sibling-2" messages="1" updated="2026-05-21T23:59:59.000Z" local="false"/>
 <task id="a56f31a5-3fa2-5c84-8474-674377678c76" type="deploy" runs="1" last-run="2026-05-21T23:54:00.000Z" status="ran"/>
 <task id="cf187721-8d56-5a24-9658-593c95ea62e0" type="analyze" runs="1" last-run="2026-05-21T23:30:00.000Z" status="ran"/>
 <task id="690e8dbc-5fc2-5494-a117-763231b71469" type="debug" runs="1" last-run="2026-05-21T23:00:00.000Z" status="ran"/>
 <file path="src/main.ts" thread="sibling-0" host="fixture-host" local="false"/>
 <file path="docs/README.md" thread="sibling-1" host="fixture-host" local="false"/>
 <file path="config/settings.json" thread="sibling-2" host="fixture-host" local="false"/>
-<advisory title="Advisory D" applied="30m ago"/>
-<advisory title="Advisory B" applied="1h ago"/>
-<advisory title="Advisory A" applied="2h ago"/>
+<advisory id="747628de-4351-5dd0-9084-813287b4e552" title="Advisory D" applied="30m ago"/>
+<advisory id="478687d3-8e13-54f1-ae77-451ab4bfc044" title="Advisory B" applied="1h ago"/>
+<advisory id="b267ac06-00bd-59fc-b64d-afc5580c7f10" title="Advisory A" applied="2h ago"/>
 </live-state>
 </volatile-context>

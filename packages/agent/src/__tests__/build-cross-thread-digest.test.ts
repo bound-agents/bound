@@ -182,12 +182,14 @@ describe("buildCrossThreadDigest", () => {
 		const entry2 = result.entries[1];
 
 		expect(entry1).toEqual({
+			threadId: threadId2,
 			title: "Second Thread",
 			messageCount: 3,
 			lastUpdatedAt: ts2New,
 		});
 
 		expect(entry2).toEqual({
+			threadId: threadId1,
 			title: "First Thread",
 			messageCount: 5,
 			lastUpdatedAt: ts1Old,

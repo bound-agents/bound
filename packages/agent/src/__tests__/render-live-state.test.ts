@@ -32,11 +32,13 @@ describe("renderLiveState", () => {
 	it("renders cross-thread entries with [thread] label", () => {
 		const entries: CrossThreadDigestEntry[] = [
 			{
+				threadId: "thread-alpha",
 				title: "Project Alpha",
 				messageCount: 42,
 				lastUpdatedAt: "2026-05-23T10:30:00Z",
 			},
 			{
+				threadId: "thread-beta",
 				title: "Project Beta",
 				messageCount: 15,
 				lastUpdatedAt: "2026-05-23T09:00:00Z",
@@ -57,10 +59,10 @@ describe("renderLiveState", () => {
 		const lines = result.lines;
 
 		expect(lines).toContain(
-			'<thread title="Project Alpha" messages="42" updated="2026-05-23T10:30:00Z" local="false"/>',
+			'<thread id="thread-alpha" title="Project Alpha" messages="42" updated="2026-05-23T10:30:00Z" local="false"/>',
 		);
 		expect(lines).toContain(
-			'<thread title="Project Beta" messages="15" updated="2026-05-23T09:00:00Z" local="false"/>',
+			'<thread id="thread-beta" title="Project Beta" messages="15" updated="2026-05-23T09:00:00Z" local="false"/>',
 		);
 	});
 
@@ -68,18 +70,21 @@ describe("renderLiveState", () => {
 	it("appends the client-session host tag to a [thread] line when the thread has a session", () => {
 		const entries: CrossThreadDigestEntry[] = [
 			{
+				threadId: "thread-on-mac",
 				title: "On Mac",
 				messageCount: 7,
 				lastUpdatedAt: "2026-05-23T10:30:00Z",
 				sessions: [{ hostName: "mac-studio", live: true }],
 			},
 			{
+				threadId: "thread-stale",
 				title: "Stale Elsewhere",
 				messageCount: 3,
 				lastUpdatedAt: "2026-05-23T09:00:00Z",
 				sessions: [{ hostName: "old-laptop", live: false }],
 			},
 			{
+				threadId: "thread-no-session",
 				title: "No Session",
 				messageCount: 1,
 				lastUpdatedAt: "2026-05-23T08:00:00Z",
@@ -100,17 +105,17 @@ describe("renderLiveState", () => {
 
 		// Live session: thread carries a <session> child with live="true".
 		expect(lines).toContain(
-			'<thread title="On Mac" messages="7" updated="2026-05-23T10:30:00Z" local="false">',
+			'<thread id="thread-on-mac" title="On Mac" messages="7" updated="2026-05-23T10:30:00Z" local="false">',
 		);
-		expect(lines).toContain('<session host="mac-studio" live="true" local="false"/>');
+		expect(lines).toContain('<session host="mac-studio" live="true"/>');
 		// Stale session: same shape, live="false" so it isn't mistaken for live.
 		expect(lines).toContain(
-			'<thread title="Stale Elsewhere" messages="3" updated="2026-05-23T09:00:00Z" local="false">',
+			'<thread id="thread-stale" title="Stale Elsewhere" messages="3" updated="2026-05-23T09:00:00Z" local="false">',
 		);
-		expect(lines).toContain('<session host="old-laptop" live="false" local="false"/>');
+		expect(lines).toContain('<session host="old-laptop" live="false"/>');
 		// No session: self-closing thread element, no children.
 		expect(lines).toContain(
-			'<thread title="No Session" messages="1" updated="2026-05-23T08:00:00Z" local="false"/>',
+			'<thread id="thread-no-session" title="No Session" messages="1" updated="2026-05-23T08:00:00Z" local="false"/>',
 		);
 	});
 
@@ -227,10 +232,12 @@ describe("renderLiveState", () => {
 		const nowMs = 1000000;
 		const advisories: LiveStateAdvisory[] = [
 			{
+				advisoryId: "advisory-rate-limit",
 				title: "Rate limit warning",
 				appliedAt: new Date(nowMs - 30 * 60 * 1000).toISOString(), // 30m ago
 			},
 			{
+				advisoryId: "advisory-memory-pressure",
 				title: "Memory pressure alert",
 				appliedAt: new Date(nowMs - 6 * 60 * 60 * 1000).toISOString(), // 6h ago
 			},
@@ -249,14 +256,19 @@ describe("renderLiveState", () => {
 		const result = renderLiveState(input);
 		const text = result.lines.join("\n");
 
-		expect(text).toContain('<advisory title="Rate limit warning" applied="30m ago"/>');
-		expect(text).toContain('<advisory title="Memory pressure alert" applied="6h ago"/>');
+		expect(text).toContain(
+			'<advisory id="advisory-rate-limit" title="Rate limit warning" applied="30m ago"/>',
+		);
+		expect(text).toContain(
+			'<advisory id="advisory-memory-pressure" title="Memory pressure alert" applied="6h ago"/>',
+		);
 	});
 
 	// Test 6: All four subsystems composed in fixed order
 	it("renders all four subsystems in fixed order: cross-thread → task → file → advisory", () => {
 		const crossThreadEntries: CrossThreadDigestEntry[] = [
 			{
+				threadId: "thread-1",
 				title: "Thread 1",
 				messageCount: 10,
 				lastUpdatedAt: "2026-05-23T10:00:00Z",
@@ -279,6 +291,7 @@ describe("renderLiveState", () => {
 		];
 		const advisories: LiveStateAdvisory[] = [
 			{
+				advisoryId: "advisory-1",
 				title: "Advisory 1",
 				appliedAt: new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString(),
 			},
@@ -345,6 +358,7 @@ describe("renderLiveState", () => {
 	// Test 9: Budget pressure caps each subsystem to 3
 	it("caps each subsystem to 3 most-recent entries when budgetPressure is true", () => {
 		const crossThreadEntries: CrossThreadDigestEntry[] = Array.from({ length: 5 }, (_, i) => ({
+			threadId: `thread-${i + 1}`,
 			title: `Thread ${i + 1}`,
 			messageCount: 10 + i,
 			lastUpdatedAt: `2026-05-23T${String(10 + i).padStart(2, "0")}:00:00Z`,
@@ -361,6 +375,7 @@ describe("renderLiveState", () => {
 			threadTitle: `Thread ${i + 1}`,
 		}));
 		const advisories: LiveStateAdvisory[] = Array.from({ length: 5 }, (_, i) => ({
+			advisoryId: `advisory-${i + 1}`,
 			title: `Advisory ${i + 1}`,
 			appliedAt: new Date(Date.now() - (i + 1) * 60 * 60 * 1000).toISOString(),
 		}));
@@ -434,6 +449,7 @@ describe("renderLiveState", () => {
 		const nowMs = Date.now();
 		const advisories: LiveStateAdvisory[] = [
 			{
+				advisoryId: "test-advisory",
 				title: "Test Advisory",
 				appliedAt: new Date(nowMs - 30 * 60 * 1000).toISOString(),
 			},

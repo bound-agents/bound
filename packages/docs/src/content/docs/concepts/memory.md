@@ -53,3 +53,13 @@ Memory appears through four context sections:
 - **Relevant memory:** Titles selected for the current turn by keyword and graph matching.
 
 The agent can call `memory search` when it needs an entry's full body.
+
+## Live State pointers
+
+Each assembled turn also carries a Live State block for short-lived operational pointers:
+cross-thread activity, task runs, file changes, and recently applied advisories.
+
+Thread and advisory entries include their canonical database `id`, so the agent can retrieve the
+backing row with `query` instead of treating the rendered pointer as authoritative. A thread with
+an attached web or boundless client renders nested session metadata naming the host and whether
+that session is live; the thread's `local` attribute carries the locality verdict for the attachment.

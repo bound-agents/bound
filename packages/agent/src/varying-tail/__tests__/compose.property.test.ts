@@ -68,6 +68,7 @@ const recentMemoryEntry: fc.Arbitrary<RecentMemoryEntryView> = fc.record({
 });
 
 const crossThreadEntry: fc.Arbitrary<CrossThreadEntryView> = fc.record({
+	threadId: safeKey,
 	title: safeKey,
 	messageCount: fc.integer({ min: 0, max: 1000 }),
 	lastUpdatedAt: isoTimestamp,
@@ -89,6 +90,7 @@ const fileEntry: fc.Arbitrary<FileEntryView> = fc.record({
 });
 
 const advisoryEntry: fc.Arbitrary<AdvisoryEntryView> = fc.record({
+	advisoryId: safeKey,
 	title: safeKey,
 	appliedAt: isoTimestamp,
 });

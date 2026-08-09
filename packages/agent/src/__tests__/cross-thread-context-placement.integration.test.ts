@@ -160,9 +160,7 @@ describe("cross-thread summary context placement", () => {
 		expect(developerTail(result)).not.toContain(siblingSummary);
 		// The sibling summary is stable, but its live boundless attachment remains
 		// live-state metadata in the varying developer tail.
-		expect(developerTail(result)).toContain(
-			'<session host="boundless-host" live="true" local="false"/>',
-		);
+		expect(developerTail(result)).toContain('<session host="boundless-host" live="true"/>');
 	});
 
 	it("places idle-thread sibling-summary deltas in the varying developer tail", () => {

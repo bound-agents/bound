@@ -167,10 +167,15 @@ describe("composeVolatileVarying — parity with production renderers", () => {
 			recentMemoryEntries: [],
 			liveState: {
 				crossThreadEntries: [
-					{ title: "T1", messageCount: 1, lastUpdatedAt: "2026-05-25T11:00:00Z" },
-					{ title: "T2", messageCount: 2, lastUpdatedAt: "2026-05-25T11:01:00Z" },
-					{ title: "T3", messageCount: 3, lastUpdatedAt: "2026-05-25T11:02:00Z" },
-					{ title: "T4-CAPPED", messageCount: 4, lastUpdatedAt: "2026-05-25T11:03:00Z" },
+					{ threadId: "t1", title: "T1", messageCount: 1, lastUpdatedAt: "2026-05-25T11:00:00Z" },
+					{ threadId: "t2", title: "T2", messageCount: 2, lastUpdatedAt: "2026-05-25T11:01:00Z" },
+					{ threadId: "t3", title: "T3", messageCount: 3, lastUpdatedAt: "2026-05-25T11:02:00Z" },
+					{
+						threadId: "t4",
+						title: "T4-CAPPED",
+						messageCount: 4,
+						lastUpdatedAt: "2026-05-25T11:03:00Z",
+					},
 				],
 				taskEntries: [],
 				fileEntries: [],
@@ -197,7 +202,12 @@ describe("composeVolatileVarying — parity with production renderers", () => {
 			recentMemoryEntries: [],
 			liveState: {
 				crossThreadEntries: [
-					{ title: "Sibling Thread", messageCount: 8, lastUpdatedAt: "2026-05-25T10:00:00Z" },
+					{
+						threadId: "sibling-thread",
+						title: "Sibling Thread",
+						messageCount: 8,
+						lastUpdatedAt: "2026-05-25T10:00:00Z",
+					},
 				],
 				taskEntries: [
 					{
@@ -211,7 +221,13 @@ describe("composeVolatileVarying — parity with production renderers", () => {
 				fileEntries: [
 					{ path: "src/foo.ts", threadTitle: "Editor Thread", host: "MSI", isLocal: false },
 				],
-				advisories: [{ title: "Switch to opus", appliedAt: "2026-05-25T11:55:00Z" }],
+				advisories: [
+					{
+						advisoryId: "advisory-switch",
+						title: "Switch to opus",
+						appliedAt: "2026-05-25T11:55:00Z",
+					},
+				],
 				synthesisBacklogCount: 75,
 			},
 			budgetPressure: false,
@@ -321,6 +337,7 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 	const liveInput: LiveStateInput = {
 		crossThreadEntries: inputs.liveState.crossThreadEntries.map(
 			(e): CrossThreadDigestEntry => ({
+				threadId: e.threadId,
 				title: e.title,
 				messageCount: e.messageCount,
 				lastUpdatedAt: e.lastUpdatedAt,
@@ -345,6 +362,7 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 		),
 		advisories: inputs.liveState.advisories.map(
 			(a): LiveStateAdvisory => ({
+				advisoryId: a.advisoryId,
 				title: a.title,
 				appliedAt: a.appliedAt,
 			}),

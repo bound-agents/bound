@@ -82,6 +82,7 @@ export interface StaleChildView {
 
 /** Cross-thread digest line (R-VC7). */
 export interface CrossThreadEntryView {
+	threadId: string;
 	title: string;
 	messageCount: number;
 	/** ISO-8601 from `threads.last_message_at`. Rendered verbatim. */
@@ -110,6 +111,7 @@ export interface FileEntryView {
 
 /** Applied-advisory line (R-VC12). */
 export interface AdvisoryEntryView {
+	advisoryId: string;
 	title: string;
 	/** ISO-8601 of the apply-status transition. Used for relative-time fragment. */
 	appliedAt: string;
