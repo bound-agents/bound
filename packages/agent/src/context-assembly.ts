@@ -346,6 +346,8 @@ export interface VolatileContext {
 	 * window).
 	 */
 	stableContent: string;
+	/** True when Scenario A added a frozen sibling-summary seed to stableContent. */
+	hasStableCrossThreadSummarySeed: boolean;
 	/**
 	 * Varying lines: per-thread / per-turn content. Working Knowledge update
 	 * markers, Live State (cross-thread digest, task digest, file
@@ -419,7 +421,10 @@ interface VolatileSectionInputs {
 	detailEntries: ReturnType<typeof loadDetailEntries>;
 	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
-	crossThreadSummaries: CrossThreadSummaryRow[];
+	/** Scenario A: frozen sibling-summary seed placed on the stable channel. */
+	stableCrossThreadSummaries: CrossThreadSummaryRow[];
+	/** Scenario B: sibling-summary delta placed on the varying developer tail. */
+	varyingCrossThreadSummaries: CrossThreadSummaryRow[];
 	digest: ReturnType<typeof buildCrossThreadDigest>;
 	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
 	taskDigestEntries: LiveStateTaskEntry[];
@@ -427,6 +432,33 @@ interface VolatileSectionInputs {
 	tiers: TieredEnrichment;
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
 	deltaKeys: Set<string>;
+}
+
+/**
+ * Scenario A starts an un-compacted thread with a frozen sibling-summary seed
+ * on the stable channel. Scenario B is a freshness delta after idle time, so
+ * it remains on the varying tail.
+ */
+function splitCrossThreadSummaryPlacement(
+	threadState: ReturnType<typeof findThreadSummaryStateById>,
+	nowMs: number,
+	siblingSummaries: CrossThreadSummaryRow[],
+): Pick<VolatileSectionInputs, "stableCrossThreadSummaries" | "varyingCrossThreadSummaries"> {
+	if (
+		!threadState ||
+		!shouldInjectCrossThreadSummaries({
+			threadSummaryThrough: threadState.summary_through,
+			threadLastMessageAt: threadState.last_message_at ?? new Date(nowMs).toISOString(),
+			nowMs,
+			siblingSummaries,
+		})
+	) {
+		return { stableCrossThreadSummaries: [], varyingCrossThreadSummaries: [] };
+	}
+
+	return threadState.summary_through === null
+		? { stableCrossThreadSummaries: siblingSummaries, varyingCrossThreadSummaries: [] }
+		: { stableCrossThreadSummaries: [], varyingCrossThreadSummaries: siblingSummaries };
 }
 
 /**
@@ -488,21 +520,13 @@ function loadVolatileSectionInputs(args: {
 		buildCrossThreadDigest(db, userId, threadId),
 	);
 
-	// #178: cross-thread summary injection (Scenario A: new thread seed +
-	// Scenario B: re-injection after inactivity with sibling content delta).
+	// #178: Scenario A seeds a new thread's stable prefix; Scenario B injects
+	// a freshness delta after inactivity on the varying developer tail.
 	const threadState = findThreadSummaryStateById(db, threadId);
 	const recencyCutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
 	const allSiblingSummaries = listCrossThreadSummaries(db, userId, threadId, recencyCutoff);
-	const crossThreadSummaries =
-		threadState &&
-		shouldInjectCrossThreadSummaries({
-			threadSummaryThrough: threadState.summary_through,
-			threadLastMessageAt: threadState.last_message_at ?? new Date(nowMs).toISOString(),
-			nowMs,
-			siblingSummaries: allSiblingSummaries,
-		})
-			? allSiblingSummaries
-			: [];
+	const { stableCrossThreadSummaries, varyingCrossThreadSummaries } =
+		splitCrossThreadSummaryPlacement(threadState, nowMs, allSiblingSummaries);
 	const advisories = loadAppliedAdvisoriesForLiveState(db, nowMs);
 	const fileEntries = loadFileModificationsForLiveState(db, threadId, siteId, hostName);
 
@@ -530,7 +554,8 @@ function loadVolatileSectionInputs(args: {
 		detailEntries,
 		staleChildrenMap,
 		parentSummaryMap,
-		crossThreadSummaries,
+		stableCrossThreadSummaries,
+		varyingCrossThreadSummaries,
 		digest,
 		advisories,
 		taskDigestEntries,
@@ -558,6 +583,7 @@ function computeStablePrefixInputFingerprint(args: {
 	budgetPressure: boolean;
 	activeSkills: ReadonlyArray<{ name: string; description: string }>;
 	clusterModels: ReadonlyArray<ClusterModelView>;
+	stableCrossThreadSummaries: CrossThreadSummaryRow[];
 }): string {
 	// Route every fingerprint computation through the same pure
 	// projector (`projectStableVolatileInputs` in `stable-prefix/`).
@@ -565,7 +591,7 @@ function computeStablePrefixInputFingerprint(args: {
 	// inline and silently diverged — the drift detector's "leak in
 	// compose" classification would then false-positive when paths
 	// disagreed.
-	return hashStableVolatileInputs(
+	const baseFingerprint = hashStableVolatileInputs(
 		projectStableVolatileInputs({
 			pinned: args.pinned,
 			summaries: args.summaries,
@@ -577,6 +603,11 @@ function computeStablePrefixInputFingerprint(args: {
 			tunables: resolveVc15Tunables(),
 			clusterModels: args.clusterModels,
 		}),
+	);
+
+	if (args.stableCrossThreadSummaries.length === 0) return baseFingerprint;
+	return hashSystemPromptString(
+		`${baseFingerprint}\n${renderCrossThreadSummaries(args.stableCrossThreadSummaries).lines.join("\n")}`,
 	);
 }
 
@@ -625,7 +656,10 @@ interface ComposeVolatileSectionsParams {
 	includeStaleChildren: boolean;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
 	deltaKeys: Set<string>;
-	crossThreadSummaries: CrossThreadSummaryRow[];
+	/** Scenario A's frozen new-thread seed, rendered before history. */
+	stableCrossThreadSummaries: CrossThreadSummaryRow[];
+	/** Scenario B's idle-thread delta, rendered in the developer tail. */
+	varyingCrossThreadSummaries: CrossThreadSummaryRow[];
 	digest: ReturnType<typeof buildCrossThreadDigest>;
 	taskDigestEntries: LiveStateTaskEntry[];
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
@@ -751,8 +785,13 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 		}
 	}
 
-	if (params.crossThreadSummaries.length > 0) {
-		varyingLines.push(...renderCrossThreadSummaries(params.crossThreadSummaries).lines);
+	if (params.stableCrossThreadSummaries.length > 0) {
+		stableLines.push("");
+		stableLines.push(...renderCrossThreadSummaries(params.stableCrossThreadSummaries).lines);
+	}
+
+	if (params.varyingCrossThreadSummaries.length > 0) {
+		varyingLines.push(...renderCrossThreadSummaries(params.varyingCrossThreadSummaries).lines);
 	}
 
 	const ls = renderLiveState({
@@ -940,7 +979,8 @@ export function buildVolatileContext(params: {
 		buildCrossThreadDigest(params.db, params.userId, params.threadId),
 	);
 
-	// #178: cross-thread summary injection (Scenario A + B).
+	// #178: Scenario A gets a frozen stable seed; Scenario B gets a varying
+	// freshness delta after inactivity.
 	const coldThreadState = findThreadSummaryStateById(params.db, params.threadId);
 	const coldRecencyCutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
 	const coldAllSiblingSummaries = listCrossThreadSummaries(
@@ -949,16 +989,8 @@ export function buildVolatileContext(params: {
 		params.threadId,
 		coldRecencyCutoff,
 	);
-	const coldThreadSummaries =
-		coldThreadState &&
-		shouldInjectCrossThreadSummaries({
-			threadSummaryThrough: coldThreadState.summary_through,
-			threadLastMessageAt: coldThreadState.last_message_at ?? new Date(nowMs).toISOString(),
-			nowMs,
-			siblingSummaries: coldAllSiblingSummaries,
-		})
-			? coldAllSiblingSummaries
-			: [];
+	const { stableCrossThreadSummaries, varyingCrossThreadSummaries } =
+		splitCrossThreadSummaryPlacement(coldThreadState, nowMs, coldAllSiblingSummaries);
 	const advisories = loadAppliedAdvisoriesForLiveState(params.db, nowMs);
 
 	// Compute task and file entries
@@ -1015,7 +1047,8 @@ export function buildVolatileContext(params: {
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap,
 			deltaKeys,
-			crossThreadSummaries: coldThreadSummaries,
+			stableCrossThreadSummaries,
+			varyingCrossThreadSummaries,
 			digest,
 			taskDigestEntries,
 			fileEntries,
@@ -1159,11 +1192,13 @@ export function buildVolatileContext(params: {
 		budgetPressure: false,
 		activeSkills,
 		clusterModels: loadClusterModels(params.db, params.siteId),
+		stableCrossThreadSummaries,
 	});
 
 	return {
 		content,
 		stableContent,
+		hasStableCrossThreadSummarySeed: stableCrossThreadSummaries.length > 0,
 		varyingContent,
 		tokenEstimate,
 		stableTokenEstimate,
@@ -1745,23 +1780,21 @@ Original output was too large for the context window. If you need the full conte
 		// Sits behind the system-level cache breakpoint, so steady-state runs reuse
 		// the prefix across turns and across threads.
 		//
-		// When `stableSubsectionCache` is supplied (production path), pull the
-		// rendered bytes from the per-thread memoization layer instead of using
-		// the fresh `volatileCtx.stableContent`. This insulates the on-wire bytes
-		// from within-TTL `last_accessed_at` bumps and other collect-side
-		// mutations the change_log doesn't track — the K1 invariant of
-		// `stable-prefix/cache.ts`. Tests omit the cache and fall back to the
-		// freshly-rendered content (preserving existing test semantics).
-		const stableContentForWire = params.stableSubsectionCache
-			? params.stableSubsectionCache
-					.get({
-						db,
-						threadId,
-						budgetPressure: false,
-						siteId,
-					})
-					.join("\n")
-			: volatileCtx.stableContent;
+		// The per-thread stable cache intentionally covers only the thread-agnostic
+		// R-VC24 subsection. Scenario A's sibling-summary seed is a distinct,
+		// frozen per-thread snapshot, so send the freshly rendered stable content
+		// when present rather than dropping it behind the cache seam.
+		const stableContentForWire =
+			params.stableSubsectionCache && !volatileCtx.hasStableCrossThreadSummarySeed
+				? params.stableSubsectionCache
+						.get({
+							db,
+							threadId,
+							budgetPressure: false,
+							siteId,
+						})
+						.join("\n")
+				: volatileCtx.stableContent;
 		if (stableContentForWire.length > 0) {
 			// `<volatile-context half="stable">` envelope (ask #3). Applied here,
 			// at the channel boundary, NOT inside the cached subsection: the inner
@@ -1772,9 +1805,10 @@ Original output was too large for the context window. If you need the full conte
 			systemParts.push(wrappedStable);
 			sections[volatilePrefixSectionIndex] = {
 				name: "volatile-prefix",
-				tokens: params.stableSubsectionCache
-					? countTokens(wrappedStable)
-					: volatileCtx.stableTokenEstimate,
+				tokens:
+					params.stableSubsectionCache && !volatileCtx.hasStableCrossThreadSummarySeed
+						? countTokens(wrappedStable)
+						: volatileCtx.stableTokenEstimate,
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
@@ -1869,7 +1903,8 @@ Original output was too large for the context window. If you need the full conte
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
-			crossThreadSummaries: inputs.crossThreadSummaries,
+			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
+			varyingCrossThreadSummaries: inputs.varyingCrossThreadSummaries,
 			digest: inputs.digest,
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
@@ -1895,6 +1930,7 @@ Original output was too large for the context window. If you need the full conte
 			budgetPressure: false,
 			activeSkills: [],
 			clusterModels: loadClusterModels(db, siteId),
+			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
 		});
 
 		const varyingTailLines: string[] = [];
@@ -2029,7 +2065,8 @@ Original output was too large for the context window. If you need the full conte
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
-			crossThreadSummaries: inputs.crossThreadSummaries,
+			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
+			varyingCrossThreadSummaries: inputs.varyingCrossThreadSummaries,
 			digest: inputs.digest,
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
