@@ -1,15 +1,29 @@
 ---
-title: RSS Feeds
-description: Poll RSS and Atom feeds and deliver new items to the agent.
+title: Add an RSS feed
+description: Configure Bound to poll an RSS or Atom feed and process new items as tasks.
 ---
 
-Bound can poll RSS and Atom feeds on your behalf. When a new item appears, the agent receives it as a task — the same delivery path as a webhook, but pull-based instead of push-based.
+Use an RSS feed connection when Bound should poll a source and process each new item as an
+agent task.
 
-## Creating an RSS feed
+## Prerequisites
 
-From the web UI: **Connections → RSS feeds → Create**.
+- A running Bound instance
+- An HTTP or HTTPS RSS 2.0 or Atom feed URL
 
-From the API:
+## Create the feed in the web UI
+
+1. Open **Connections > RSS feeds**.
+2. Select **Create**.
+3. Enter a unique name and the feed URL.
+4. Set the polling interval and optional task settings.
+5. Save the feed.
+
+The minimum polling interval is 60 seconds. The default is 900 seconds.
+
+## Create the feed through the API
+
+Send a request to the web server:
 
 ```bash
 curl -X POST http://localhost:3001/api/rss-feeds \
@@ -22,30 +36,31 @@ curl -X POST http://localhost:3001/api/rss-feeds \
   }'
 ```
 
-Feed names must match `^[a-z0-9][a-z0-9_-]{0,63}$` — lowercase, digits, underscores, dashes, 1–64 chars.
+Feed names must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
 
-## How polling works
+## Configure task behavior
 
-A leader-gated poller fetches each feed on its `poll_interval_seconds` cadence (minimum 60 seconds, default 900). It parses RSS 2.0 and Atom feeds, and writes one task per new item.
+Each feed can set:
 
-A brand-new feed's first poll seeds without delivering — creating a feed doesn't dump its entire backlog into the agent. Only items published after the feed was created are delivered. If you change a feed's URL, the cursor resets for the same reason.
+- A custom prompt added to the task's system prompt
+- A model hint, or the cluster default when omitted
+- A no-history flag for stateless processing
 
-Deduplication is durable: `seen_guids` is stored on the synced feed row (capped at 500 items) so leader failover never re-delivers old items.
+## Verify delivery
 
-## Per-feed options
+The first poll initializes the feed cursor without delivering existing items. Publish or
+wait for a new feed item, then confirm that the linked task runs in **Timetable**.
 
-Each feed supports the same options as webhooks:
+## Manage the feed
 
-- **Custom prompt** — a system-prompt addition injected when processing this feed's items
-- **Model hint** — route feed tasks to a specific model (empty = cluster default)
-- **No history** — skip loading conversation history for the feed's tasks
+Open **Connections > RSS feeds** to edit or delete a feed. Changing the URL resets the
+cursor, so the first poll of the replacement URL also seeds without delivering its backlog.
 
-## Managing feeds
+The API provides `GET /api/rss-feeds`, `GET /api/rss-feeds/:id`,
+`PATCH /api/rss-feeds/:id`, and `DELETE /api/rss-feeds/:id`.
 
-From the web UI: Connections → RSS feeds. View, edit (URL, interval, prompt, model, history flag), and delete feeds. The detail view shows the linked task.
+## Delivery and failover behavior
 
-From the API: `GET /api/rss-feeds` (list), `GET /api/rss-feeds/:id` (detail), `PATCH /api/rss-feeds/:id` (edit), `DELETE /api/rss-feeds/:id` (delete).
-
-## Multi-host
-
-In a cluster, the poller runs on the leader host (elected under `platform_leader:rss`). If the leader goes down, a standby takes over automatically. The `seen_guids` cursor is synced, so failover doesn't cause re-delivery.
+Only the elected RSS leader polls feeds. Bound stores up to 500 seen item identifiers on
+the synced feed row, allowing a replacement leader to continue without replaying recent
+items.

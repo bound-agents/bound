@@ -1,14 +1,12 @@
 ---
-title: Configuration Reference
-description: Per-field reference for every file Bound reads from its config directory.
+title: Configuration reference
+description: Fields, defaults, validation rules, and examples for every Bound configuration file.
 ---
 
-Every file bound reads from its config directory (default `./config`, override with
-`--config-dir`), field by field. The schemas are the source of truth — see
+Bound reads host-local configuration from `./config` by default. Use `--config-dir` to
+select another directory. The schemas are the source of truth; see
 [`packages/shared/src/config-schemas.ts`](https://github.com/bound-agents/bound/blob/main/packages/shared/src/config-schemas.ts).
-Every schema is **strict**: unknown keys fail the parse loudly at startup with the
-offending key name, so a typo is a hard error, not a silent default. Add a field to the
-Zod schema before you use it.
+Every schema is strict, so startup rejects unknown keys instead of ignoring them.
 
 | File | Required | Purpose |
 |------|----------|---------|
@@ -97,7 +95,7 @@ object:
 | `budget_tokens` | int > 0 | Legacy fixed thinking budget. Rejected (400) on Opus 4.7. |
 | `display` | `omitted`\|`summarized` | Opt into visible reasoning text on Opus 4.7 (default `omitted`). |
 
-**Cache-warming block** (`cache_warming`, issue #10) — opt-in periodic "warm poke" that
+**Cache-warming block** (`cache_warming`) — opt-in periodic "warm poke" that
 keeps the prompt cache hot on active threads so the next real message lands on a
 cache-read instead of a cache-write. Off by default.
 

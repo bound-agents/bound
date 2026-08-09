@@ -1,55 +1,81 @@
 ---
-title: Quick Start
-description: Get a local Bound instance running against your LLM backend of choice.
+title: Quick start
+description: Install Bound, configure one model backend, and verify a local instance.
 ---
+
+This tutorial installs Bound, configures one inference backend, and starts the web UI on
+your local machine.
 
 ## Prerequisites
 
-- An LLM backend (one of):
-  - [Ollama](https://ollama.com) running locally — easiest to start
-  - AWS Bedrock access
-  - Any OpenAI-compatible endpoint (Cerebras, z.AI, OpenCode Go, etc.)
-  - [umans.ai](https://code.umans.ai) — self-configuring, needs `UMANS_API_KEY`
+- macOS, Linux, or Windows
+- Access to one supported model backend
 
-## Install
+For a local setup without API credentials, install and start
+[Ollama](https://ollama.com). Other presets support AWS Bedrock, Cerebras, z.AI,
+OpenCode Go, and [umans.ai](https://code.umans.ai).
 
-Download the latest `bound` binary from the [releases page](https://github.com/bound-agents/bound/releases) for your platform (macOS, Linux, Windows). Make it executable and put it on your `PATH`:
+## 1. Install the binary
+
+Download the `bound` binary for your platform from the
+[GitHub releases page](https://github.com/bound-agents/bound/releases). On macOS or Linux,
+make it executable and place it on your `PATH`:
 
 ```bash
-# macOS / Linux
 chmod +x bound
 sudo mv bound /usr/local/bin/
-
-# Or just run it from wherever you downloaded it
 ```
 
-## Initialize and start
+Verify the installation:
 
 ```bash
-# Pick a backend
+bound --help
+```
+
+## 2. Initialize configuration
+
+Choose one backend preset. The following example configures a local Ollama backend:
+
+```bash
 bound init --ollama
+```
+
+Other common presets include:
+
+```bash
 bound init --bedrock --region us-east-1
 bound init --opencode-go
-bound init --umans          # needs UMANS_API_KEY
+bound init --umans
+```
 
+The `--umans` preset requires `UMANS_API_KEY`. API-backed presets read their documented
+credentials from the environment.
+
+## 3. Start Bound
+
+Run:
+
+```bash
 bound start
 ```
 
-Open [http://localhost:3001](http://localhost:3001). The sync protocol listens
-on port 3000 (`PORT`); the web UI on port 3001 (`WEB_PORT`).
+Keep this process running. Bound serves the web UI on port `3001` and the sync protocol on
+port `3000` by default.
 
-## Boundless — terminal coding agent
+## 4. Verify the instance
 
-`boundless` is a separate binary (also on the [releases page](https://github.com/bound-agents/bound/releases)).
-It connects to a running bound server and registers local filesystem
-and shell tools into the agent's tool set:
+Open [the local web UI](http://localhost:3001). Create a thread and send a message. A
+successful response confirms that the server, database, and selected model backend are
+working.
+
+## Add the terminal client
+
+Download the separate `boundless` binary from the same releases page to use Bound from a
+terminal:
 
 ```bash
 boundless
-boundless --url http://localhost:3001    # non-default server
-boundless --attach <thread-id>           # resume an existing thread
 ```
 
-Shell commands run in a write-confinement sandbox (seatbelt on macOS,
-bubblewrap on Linux, IsolationSession on Windows): the whole filesystem is
-readable but writes are confined to the working directory and `/tmp`.
+Continue with [Use the `boundless` terminal client](/bound/guides/boundless/) for server
+URLs, existing threads, filesystem tools, and Agent Client Protocol (ACP) mode.

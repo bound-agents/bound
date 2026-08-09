@@ -1,52 +1,61 @@
 ---
-title: Agent System
-description: The tools the agent has, what the scheduler does, and how tasks work.
+title: Agent system
+description: How Bound coordinates conversations, built-in tools, scheduled work, and event intake.
 ---
 
-Bound's agent has built-in tools, a scheduler that runs tasks on your behalf, and an MCP bridge for connecting external tool servers. Every interface — web UI, Discord, boundless — talks to the same agent with the same tools and the same memory.
+Bound presents one persistent agent across threads and interfaces. The agent loop assembles
+context, calls a model, executes tools, persists the result, and checks for queued work
+before returning to idle.
 
 ## Built-in tools
 
-The agent has a set of native tools it can call during a conversation. You don't configure these — they're always available.
+The native tools are always registered:
 
 | Tool | What it does |
 | --- | --- |
 | `memory` | Store, search, and forget facts across sessions |
-| `task` | Schedule tasks — deferred, recurring (cron), or event-driven |
+| `task` | Schedule or update deferred, recurring, and event-driven tasks |
+| `cancel` | Cancel a scheduled task |
 | `query` | Run read-only SQL against the database |
+| `purge` | Mark distracting or unnecessary messages for context substitution |
 | `skill` | Activate, list, read, or deactivate skills |
 | `advisory` | Create and manage operational advisories |
 | `notify` | Send a reminder to a thread |
 | `introspect` | Ask another thread for reflection |
 | `archive` | Archive old threads |
 | `model_hint` | Switch the model for the current task |
+| `hostinfo` | Inspect hosts, topology, and host capabilities |
 | `aux` | Create and manage auxiliary agent identities |
-| `connector` | Subscribe to platform events (Discord, etc.) |
-| `cancel` | Cancel scheduled tasks |
 
-MCP server tools appear alongside these as subcommand-dispatched commands — one per server, named by the server (e.g. `github`).
+Platform connectors add the `connector` tool where it is available. MCP servers and
+`boundless` sessions contribute additional tools through the unified registry.
 
-## Scheduler
+## Scheduled work
 
-The scheduler processes messages and runs tasks. Three trigger types:
+The scheduler supports:
 
-- **Cron** — recurring tasks on a schedule (`0,30 * * * *` for every 30 minutes)
-- **Deferred** — one-shot tasks with a time delay (`5m`, `2h`, `1d`)
-- **Event-driven** — tasks triggered by external events (Discord messages, webhooks, RSS items)
+- **Cron tasks:** Recurring work described by a cron expression.
+- **Deferred tasks:** One-time work scheduled after a delay.
+- **Event tasks:** Work woken by connector, webhook, or RSS intake.
 
-Tasks can depend on one another — a deferred task can specify `--after` another task, and the result of the first task can be injected into the second. In a multi-host cluster, a task runs on exactly one host.
+Tasks can depend on earlier tasks and receive the earlier result as input. In a multi-host
+cluster, task claiming ensures that one host runs a given task.
 
-## Webhooks and RSS
+## Event intake
 
-Bound can receive external events and turn them into agent tasks. Two paths:
+External events use the same scheduler wakeup path:
 
-- **Webhooks** — external services POST to a URL on your bound instance; the agent processes the payload. Supports GitHub, Stripe, Slack, and raw HMAC signature formats. See [Webhooks](/bound/guides/webhooks/).
-- **RSS feeds** — bound polls RSS/Atom feeds on a schedule and delivers new items to the agent. See [RSS Feeds](/bound/guides/rss-feeds/).
+- [Webhooks](/bound/guides/webhooks/) accept pushed HTTP events.
+- [RSS feeds](/bound/guides/rss-feeds/) poll for new feed items.
+- Platform connectors subscribe to events such as Discord messages.
 
-Both support custom prompts, model selection, and history control per feed/webhook.
+The scheduler folds each intake envelope into the task wakeup context.
 
 ## Platform connectors
 
-Bound connects to chat platforms (Discord) via in-process MCP servers. You configure them in `platforms.json`, and the agent can send and receive messages through them. In a cluster, only the leader host runs active subscriptions, with automatic failover to standbys.
+Platform connectors are in-process MCP servers managed by Bound. Event-bound threads
+receive the connector's scoped tools, while ordinary threads receive read-only platform
+tools and the connector-management tool.
 
-See [Multi-Host Setup](/bound/guides/multi-host/) for cluster configuration and the [Configuration Reference](/bound/reference/configuration/) for `platforms.json` fields.
+Only the elected connector leader maintains active subscriptions. Synced connector handles
+allow another host to reconnect them after failover.

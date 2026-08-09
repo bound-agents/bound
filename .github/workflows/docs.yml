@@ -25,6 +25,7 @@ on:
 # Least-privilege token plus the OIDC id-token the deploy-pages action needs.
 permissions:
   contents: read
+  checks: write
   pages: write
   id-token: write
 
@@ -54,9 +55,19 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build Astro site
+      - name: Check documentation
         working-directory: packages/docs
-        run: bun run build
+        run: bun run check
+
+      - name: Review prose with Vale
+        continue-on-error: true
+        uses: vale-cli/vale-action@v2.1.2
+        with:
+          version: 3.17.1
+          files: packages/docs/src/content/docs
+          reporter: github-check
+          filter_mode: nofilter
+          vale_flags: "--config=packages/docs/.vale.ini"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

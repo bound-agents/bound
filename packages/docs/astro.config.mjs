@@ -1,6 +1,7 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
+import { sidebar } from "./src/sidebar";
 
 // Deployed as a GitHub Pages *project site* at
 // https://bound-agents.github.io/bound/ — so the base path is the repo name.
@@ -45,45 +46,7 @@ export default defineConfig({
 					href: "https://github.com/bound-agents/bound",
 				},
 			],
-			sidebar: [
-				{
-					label: "Start Here",
-					items: [{ label: "Introduction", slug: "index" }],
-				},
-				{
-					label: "Guides",
-					items: [
-						{ label: "Quick Start", slug: "guides/quick-start" },
-						{ label: "Boundless", slug: "guides/boundless" },
-						{ label: "Multi-Host Setup", slug: "guides/multi-host" },
-						{ label: "MCP Servers", slug: "guides/mcp-servers" },
-						{ label: "Webhooks", slug: "guides/webhooks" },
-						{ label: "RSS Feeds", slug: "guides/rss-feeds" },
-						{ label: "CLI & Operations", slug: "guides/cli-operations" },
-					],
-				},
-				{
-					label: "Concepts",
-					items: [
-						{ label: "Web UI Tour", slug: "concepts/web-ui" },
-						{ label: "Agent System", slug: "concepts/agent-system" },
-						{ label: "Sync & Multi-Host", slug: "concepts/sync" },
-						{ label: "Sandbox & Filesystem", slug: "concepts/sandbox" },
-						{ label: "Inference & Model Routing", slug: "concepts/inference" },
-						{ label: "Memory & Knowledge Graph", slug: "concepts/memory" },
-						{ label: "Skills", slug: "concepts/skills" },
-						{ label: "Auxiliary Agents", slug: "concepts/auxiliary-agents" },
-					],
-				},
-				{
-					label: "Reference",
-					items: [
-						{ label: "Architecture", slug: "reference/architecture" },
-						{ label: "Configuration", slug: "reference/configuration" },
-						{ label: "Responses API", slug: "reference/responses-api" },
-					],
-				},
-			],
+			sidebar,
 		}),
 	],
 });

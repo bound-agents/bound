@@ -1,15 +1,16 @@
 ---
-title: Inference & Model Routing
-description: Supported LLM backends, model selection, prompt caching, and extended thinking.
+title: Inference and model routing
+description: How Bound resolves models across hosts, relays inference, and manages prompt caching.
 ---
 
-Bound supports multiple LLM providers and routes inference cluster-wide to the right backend automatically. If the primary backend is unavailable or lacks a required capability (vision, tool use), it falls back to eligible alternatives.
+Bound resolves each requested model against the backends advertised by the cluster. It
+prefers an eligible local backend, then considers remote hosts and configured fallbacks.
 
 ## Supported backends
 
 | Provider | Auth | Notes |
 | --- | --- | --- |
-| Ollama | None (local) | Easiest to start; no API key |
+| Ollama | None | Local inference |
 | Anthropic | `ANTHROPIC_API_KEY` | Claude models; prompt caching, extended thinking |
 | AWS Bedrock | AWS SDK chain | Converse API; SigV4 auth |
 | Bedrock Mantle | AWS SDK chain | Region-scoped; Anthropic Messages or OpenAI Responses protocol |
@@ -19,23 +20,30 @@ Bound supports multiple LLM providers and routes inference cluster-wide to the r
 | umans.ai | `UMANS_API_KEY` | Self-configuring — model lineup fetched at runtime |
 | OpenAI-compatible | Varies | Any endpoint speaking the OpenAI API |
 
-Configure backends in `model_backends.json`. See the [Configuration Reference](/bound/reference/configuration/) for all fields.
+Configure backends in `model_backends.json`. See the
+[configuration reference](/bound/reference/configuration/#model_backendsjson) for every
+field.
 
 ## Model selection
 
-Each host advertises its available models to the cluster. The web UI's model selector shows all cluster models, annotated with which host holds them. Resolution is cluster-wide: pick a model, and if it lives on another host, inference streams over the relay transport — no per-host configuration on your end.
+Each host advertises its available models and capabilities. The model selector combines
+these advertisements into one cluster-wide inventory.
 
-You can set a default model per thread, or let the cluster default handle it. The agent can also switch models mid-task on its own — useful when a cheap model hits something it should hand to a stronger one.
+`"default"` and an omitted model both resolve to the default local backend. When a named
+model exists only on another host, Bound relays the assembled context and streams the
+response back to the loop host.
 
 ## Prompt caching
 
-For providers that support it (Anthropic, Bedrock), Bound automatically places prompt cache breakpoints to maximize cache hits across turns. The system prompt is cached so it doesn't need to be re-processed on every message.
+For providers that support prompt caching, Bound separates stable context from turn-varying
+context and places provider cache breakpoints around the stable prefix.
 
-Cache TTL can be set per-backend: `5m` (default) or `1h` (extended; supported on Claude Opus/Sonnet/Haiku 4.5+ on Bedrock).
+Set `cache_ttl` to `5m` or `1h` on a backend. Unsupported extended TTL settings fall back
+to the provider's standard behavior.
 
 ### Cache warming
 
-You can opt in to periodic cache-warming pokes that keep the prompt cache hot on active threads, so the next real message lands on a cache-read instead of a cache-write:
+Cache warming can refresh an active thread's prompt cache before it expires:
 
 ```json
 {
@@ -46,14 +54,15 @@ You can opt in to periodic cache-warming pokes that keep the prompt cache hot on
 }
 ```
 
-`max_pokes` controls how many warm pokes fire per thread since its last real activity. The economic break-even depends on your backend's cache-write vs cache-read price ratio — cheap-read backends tolerate more pokes.
+`max_pokes` limits refreshes since the thread's last real activity. Warming trades
+additional requests for a higher chance that the next turn reads from cache.
 
-## Extended thinking
+## Reasoning controls
 
-Anthropic and Bedrock drivers support extended thinking / reasoning. Configure per-backend:
+Backends can expose provider-specific reasoning controls:
 
-- `effort` — reasoning depth. Canonical Anthropic set: `low`, `medium`, `high`, `xhigh`, `max`. Other providers advertise their own levels.
-- `thinking` — `adaptive` (model decides, depth set by `effort`) or legacy fixed budget.
+- `effort` sets a provider-supported reasoning level.
+- `thinking` selects adaptive reasoning or a legacy fixed budget where supported.
 
 ```json
 {

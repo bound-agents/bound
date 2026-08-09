@@ -1,9 +1,10 @@
 ---
 title: Architecture
-description: How Bound is organized and how data flows through the system.
+description: How Bound's packages, agent loop, persistence, sync, and relay layers fit together.
 ---
 
-Bound is a Bun workspace monorepo. All state lives in a SQLite database that replicates across hosts via an encrypted sync protocol. Every interface — web UI, Discord, boundless — talks to the same agent with the same state.
+Bound is a Bun workspace whose packages separate persistence, sync, inference, agent
+execution, platform integration, and user interfaces.
 
 ## Packages
 
@@ -22,9 +23,9 @@ Bound is a Bun workspace monorepo. All state lives in a SQLite database that rep
 | `less` | boundless terminal client |
 | `cli` | `bound` / `boundctl` / `boundless` binaries |
 
-## How a message flows
+## Message flow
 
-```
+```text
 User sends message (web UI / Discord / boundless / webhook / RSS)
   ↓
 Agent loop activates:
@@ -37,20 +38,26 @@ Agent loop activates:
   7. Check for more queued messages → loop or idle
 ```
 
-If the model is on another host, inference streams over the relay transport. If a tool call targets a remote MCP server, it relays too. Neither the loop nor the agent branches on host — placement is resolved at the routing layer, so the same loop runs identically wherever the backend physically lives.
+The trigger host owns the loop and assembles context. Model resolution and tool dispatch
+can relay individual operations without moving the loop.
 
 ## Sync
 
-Every write to the database is recorded in a change log and pushed to peers immediately over an encrypted WebSocket. The hub is the central sync point; spokes sync to it. Conflicts resolve by timestamp (last-writer-wins) for most data, and messages are append-only (never modified, so no conflicts).
+Writes to synced tables use the change-log outbox. After commit, the sync transport pushes
+changes through the hub. Most tables use last-writer-wins reduction; append-only tables
+deduplicate inserts.
 
-See [Sync & Multi-Host](/bound/concepts/sync/) for the concept and [Multi-Host Setup](/bound/guides/multi-host/) for configuration.
+See [Sync and multi-host behavior](/bound/concepts/sync/) for the concept and
+[Configure a multi-host cluster](/bound/guides/multi-host/) for setup.
 
 ## Design principles
 
-- **SQLite, not Postgres** — single-file database, WAL mode, no external process to manage. Sync handles distribution.
-- **Event-sourced replication** — the change log is an append-only event stream. Replaying it rebuilds state.
-- **Sandboxed execution** — the agent works in a virtual filesystem, not on your real disk. boundless adds OS-level write confinement on top.
-- **Cluster-wide model routing** — inference goes to whichever host has the right backend, with automatic fallback.
-- **One delegation path** — the agent loop always runs on the host that received the message. Only inference and tool calls are relayed, never the full context.
+- **Local-first state:** Each host uses SQLite in WAL mode.
+- **Outbox replication:** Synced writes produce change-log entries in the same transaction.
+- **Constrained execution:** Built-in file operations use a virtual filesystem;
+  `boundless` adds OS-level confinement for host commands.
+- **Cluster-wide routing:** Models and tools can execute on a different host.
+- **One loop owner:** The trigger host assembles context and runs the loop; only inference
+  and tool calls relay.
 
 For the full design treatment (dependency graphs, protocol details, database schema), see the `docs/design/` directory in the repository.

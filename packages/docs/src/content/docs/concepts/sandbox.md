@@ -1,6 +1,6 @@
 ---
-title: Sandbox & Filesystem
-description: How the agent reads and writes files, and how boundless confines shell commands.
+title: Sandbox and filesystem
+description: How Bound separates its virtual files from host files exposed through boundless.
 ---
 
 Bound has two filesystem layers that serve different purposes.
@@ -11,9 +11,10 @@ The agent works in an in-memory virtual filesystem — not your real disk. When 
 
 Files the agent creates are stored in the `files` table and replicated across hosts via sync. When a new agent loop starts, previously persisted files are loaded back into the virtual filesystem.
 
-## Boundless filesystem sandbox
+## Host filesystem access
 
-When using `boundless` (the terminal client), the agent gets real filesystem tools that operate on your actual working directory. Shell commands run in an OS-level write-confinement sandbox:
+The `boundless` terminal client can expose host file and shell tools for its working
+directory. Shell commands run in an OS-level write-confinement sandbox:
 
 | Platform | Mechanism |
 | --- | --- |
@@ -21,8 +22,10 @@ When using `boundless` (the terminal client), the agent gets real filesystem too
 | Linux | `bubblewrap` (`bwrap`) |
 | Windows | `IsolationSession` |
 
-The whole filesystem is readable — the agent can inspect any file on your machine. But writes are confined to the current working directory and `/tmp`. This lets the agent explore your codebase freely while preventing accidental writes outside the project.
+The agent can read the host filesystem. Writes are confined to the working directory and
+allowed temporary directories.
 
 File operations through `boundless_read`, `boundless_write`, and `boundless_edit` go through the boundless client's own I/O. Shell commands via `boundless_bash` run inside the sandbox.
 
-See [Boundless](/bound/guides/boundless/) for more on the terminal client.
+See [Use the `boundless` terminal client](/bound/guides/boundless/) for the complete
+workflow.

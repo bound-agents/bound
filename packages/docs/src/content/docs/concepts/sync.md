@@ -1,24 +1,37 @@
 ---
-title: Sync & Multi-Host
-description: How Bound replicates state across hosts with encrypted sync.
+title: Sync and multi-host behavior
+description: How Bound replicates state and relays inference and tools between hosts.
 ---
 
-Bound runs as a hub-and-spoke cluster. Each host maintains its own SQLite database and exchanges changes with a designated hub over an encrypted WebSocket connection. Messages, memory, files, tasks, skills — everything replicates. Every interface on every host sees the same agent state.
+Each Bound host owns a local SQLite database. In a cluster, hosts exchange selected state
+through a designated hub while continuing to execute agent loops locally.
 
-## How it works
+## Replication topology
 
-One host is the **hub** — the central sync point. Every other host is a **spoke** that syncs to it. Spokes never sync directly with each other; all replication flows through the hub.
+One host is the hub. Each spoke maintains one WebSocket sync connection to that hub; spokes
+do not replicate directly with one another.
 
-Sync is encrypted end-to-end. Each host has an Ed25519 keypair generated on first startup. The WebSocket handshake is signed with the private key; subsequent frames are encrypted with XChaCha20-Poly1305. No pre-shared passwords or TLS client certificates required.
+Each host has an Ed25519 identity. The signed handshake establishes host identity, and sync
+frames use XChaCha20-Poly1305 encryption.
 
-When a write happens locally (a new message, a memory entry, a file change), it's recorded in a change log and pushed to peers immediately — sync is event-driven, not polled. On reconnection, anything missed while disconnected is drained automatically.
+Writes to synced tables create change-log entries. The transport pushes new entries after
+commit and drains missed entries after reconnection.
 
-Conflicts are resolved deterministically: most data uses last-writer-wins by timestamp. Messages are append-only (never modified), so there are no conflicts on conversation history.
+Most tables use last-writer-wins resolution based on a hybrid logical clock. Append-only
+tables, including messages, deduplicate inserts by identifier.
 
 ## Inference relay
 
-When a model lives on a different host than the one processing a message, inference streams over the relay transport. The requesting host sends the context; the target host runs the LLM and streams tokens back. Tool calls to remote MCP servers work the same way. Nothing in your config names a host — you pick a model, and routing follows from which host advertises it. What you do notice is latency: a remote model pays a network round-trip per turn that a local one doesn't.
+The host that receives a trigger owns the agent loop and assembles its context. If the
+selected model is remote, that host sends context segments to the inference host and
+receives a streamed response. The remote host does not rebuild context from its replica.
 
-## Setting up a cluster
+## Tool relay
 
-See [Multi-Host Setup](/bound/guides/multi-host/) for a step-by-step walkthrough.
+Any tool kind can execute locally or through relay. MCP calls route to the host that owns
+the server, and client-tool calls route to the host that owns the live client session.
+
+Placement is an optimization rather than a correctness requirement: the loop remains on
+the trigger host, while inference and individual tool calls move when needed.
+
+Follow [Configure a multi-host cluster](/bound/guides/multi-host/) for setup steps.

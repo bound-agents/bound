@@ -1,0 +1,9 @@
+extends: existence
+message: "Avoid '%s'; state the action or requirement directly."
+level: suggestion
+ignorecase: true
+tokens:
+  - obviously
+  - simply
+  - easily
+  - just

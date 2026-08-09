@@ -1,11 +1,12 @@
 ---
 title: Skills
-description: Operator-defined instruction sets that customize agent behavior.
+description: How reusable instruction sets are imported, activated per thread, and removed.
 ---
 
-Skills are operator-defined prompt modules. When activated on a thread, a skill's body is injected into the agent's context — giving it domain-specific instructions, conventions, or working habits without bloating the base system prompt.
+Skills are reusable instruction sets stored with their supporting files. Activation adds a
+skill's body to one thread's stable prompt prefix; importing a skill does not activate it.
 
-## SKILL.md format
+## Skill format
 
 A skill is a Markdown file with YAML frontmatter:
 
@@ -19,39 +20,42 @@ Use conventional commits: `feat(scope):`, `fix(scope):`, `docs:`, `chore:`, etc.
 Present tense, imperative mood. Keep the subject line under 72 characters.
 ```
 
-### Rules
+### Validation rules
 
 - **Name**: kebab-case, 1–64 chars, matching `^[a-z0-9]+(-[a-z0-9]+)*$`
 - **Description**: up to 1024 chars
 - **Body**: up to 500 lines, 64 KB max file size
-- One skill per file
+- One `SKILL.md` entry point per skill directory
 
 ## Importing skills
 
-Three surfaces, all sharing the same import logic:
+Importing copies the skill into Bound's replicated files and creates or reactivates its
+skill record:
 
 | Surface | How |
 | --- | --- |
-| Web UI | Connections → Skills → import |
+| Web UI | **Connections > Skills > Import** |
 | CLI | `boundctl skill import <path>` |
 | API | `POST /api/skills` |
 
 ## Activating skills
 
-Once imported, a skill exists in the cluster but isn't active on any thread. The agent activates it — there's no button for this, and no CLI verb. Ask it to follow a convention you've imported a skill for, and it picks up the relevant one:
+The agent controls activation through its `skill` tool. Ask it to use an imported skill:
 
 > Use our commit conventions for this.
 
-Activation is per-thread, so a skill running in one conversation doesn't leak into another.
+Activation is per-thread. There is no global active-skill cap; deactivate skills that a
+thread no longer needs to reduce context cost.
 
-Dropping a skill works the same way — tell the agent to stop following a convention and it deactivates that skill for the current thread only.
+Ask the agent to stop using a skill to deactivate it for the current thread.
 
 ## Managing skills
 
 | Action | Web UI | CLI | API |
 | --- | --- | --- | --- |
-| List | Connections → Skills | `boundctl skill list` | `GET /api/skills` |
+| List | **Connections > Skills** | `boundctl skill list` | `GET /api/skills` |
 | View | Click a skill | `boundctl skill view <name>` | `GET /api/skills/:id` |
 | Delete | Delete button | `boundctl skill delete <name>` | `DELETE /api/skills/:id` |
 
-Deleting a skill soft-deletes it cluster-wide and files an advisory for any task referencing it. Deletion is reversible — re-importing a deleted skill re-activates it.
+Deletion is the only removal operation. It soft-deletes the skill and its files, then files
+an advisory for tasks that reference it. Re-importing the same name restores the skill.
