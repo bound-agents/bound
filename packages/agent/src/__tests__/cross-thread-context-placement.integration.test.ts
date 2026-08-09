@@ -14,6 +14,7 @@ function seedThread(
 	args: {
 		id: string;
 		title: string;
+		interface?: string;
 		summary: string | null;
 		summaryThrough: string | null;
 		lastMessageAt: string;
@@ -25,7 +26,7 @@ function seedThread(
 		{
 			id: args.id,
 			user_id: USER_ID,
-			interface: "web",
+			interface: args.interface ?? "web",
 			host_origin: SITE_ID,
 			color: 0,
 			title: args.title,
@@ -51,6 +52,37 @@ function seedMessage(db: Database, id: string, threadId: string): void {
 			content: "seed message",
 			host_origin: SITE_ID,
 			created_at: NOW,
+			deleted: 0,
+		},
+		SITE_ID,
+	);
+}
+
+function seedBoundlessAttachment(db: Database, threadId: string): void {
+	const hostSiteId = "boundless-host-site";
+	insertRow(
+		db,
+		"hosts",
+		{
+			site_id: hostSiteId,
+			host_name: "boundless-host",
+			// Keep this session live regardless of the wall clock when the test runs.
+			online_at: "2099-01-01T00:00:00.000Z",
+			modified_at: "2099-01-01T00:00:00.000Z",
+			deleted: 0,
+		},
+		SITE_ID,
+	);
+	insertRow(
+		db,
+		"client_sessions",
+		{
+			id: `session-${threadId}`,
+			connection_id: `connection-${threadId}`,
+			thread_id: threadId,
+			site_id: hostSiteId,
+			created_at: NOW,
+			modified_at: NOW,
 			deleted: 0,
 		},
 		SITE_ID,
@@ -102,11 +134,13 @@ describe("cross-thread summary context placement", () => {
 		seedThread(db, {
 			id: "sibling-thread-a",
 			title: "Sibling A",
+			interface: "boundless",
 			summary: siblingSummary,
 			summaryThrough: "2026-08-09T11:58:00.000Z",
 			lastMessageAt: "2026-08-09T11:58:00.000Z",
 		});
 		seedMessage(db, "sibling-message-a", "sibling-thread-a");
+		seedBoundlessAttachment(db, "sibling-thread-a");
 
 		const result = assembleContext({
 			db,
@@ -124,6 +158,11 @@ describe("cross-thread summary context placement", () => {
 		expect(result.systemPrompt).toContain("### Sibling A");
 		expect(result.systemPrompt).toContain(siblingSummary);
 		expect(developerTail(result)).not.toContain(siblingSummary);
+		// The sibling summary is stable, but its live boundless attachment remains
+		// live-state metadata in the varying developer tail.
+		expect(developerTail(result)).toContain(
+			'<session host="boundless-host" live="true" local="false"/>',
+		);
 	});
 
 	it("places idle-thread sibling-summary deltas in the varying developer tail", () => {
