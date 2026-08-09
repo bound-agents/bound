@@ -1,9 +1,11 @@
 <script lang="ts">
 import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
 import { untrack } from "svelte";
+import { extractAuxInvokeRefs } from "../lib/aux-invoke-cards";
 import { renderMarkdown } from "../lib/markdown";
 import { mermaid } from "../lib/mermaid";
 import { extractScheduledTaskRefs } from "../lib/scheduled-task-cards";
+import AuxInvokeCard from "./AuxInvokeCard.svelte";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 import TaskCard from "./TaskCard.svelte";
 
@@ -118,6 +120,7 @@ const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null)
 const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
 const totalCount = $derived(allToolUses.length);
 const scheduledTaskRefs = $derived(extractScheduledTaskRefs(allToolUses, resultsByToolUseId));
+const auxInvokeRefs = $derived(extractAuxInvokeRefs(allToolUses, resultsByToolUseId));
 
 const summaryNames = $derived.by(() => {
 	const names = allToolUses.map((t) => t.name);
@@ -234,6 +237,19 @@ function previewInput(input: unknown): string {
 		<div class="scheduled-tasks">
 			{#each scheduledTaskRefs as ref (ref.toolUseId)}
 				<TaskCard taskId={ref.taskId} {lineColor} />
+			{/each}
+		</div>
+	{/if}
+
+	{#if auxInvokeRefs.length > 0}
+		<div class="aux-invokes">
+			{#each auxInvokeRefs as ref (ref.toolUseId)}
+				<AuxInvokeCard
+					agentName={ref.agentName}
+					threadId={ref.threadId}
+					status={ref.status}
+					{lineColor}
+				/>
 			{/each}
 		</div>
 	{/if}

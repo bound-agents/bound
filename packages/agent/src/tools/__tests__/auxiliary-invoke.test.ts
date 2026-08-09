@@ -221,7 +221,10 @@ describe("Native Aux Tool (invoke slice)", () => {
 				instructions: "count files",
 			});
 
-			expect(out).toBe("aux completed: found 3 files");
+			// The summary carries a `Thread: <uuid>` trailer — the web chat view
+			// parses it to render the aux-invocation card's thread link.
+			expect(out).toContain("aux completed: found 3 files");
+			expect(out).toMatch(/\n\nThread: [0-9a-f-]{36}$/);
 		});
 
 		it("returns error summary when loop runner errors", async () => {
@@ -590,7 +593,8 @@ describe("invoke with background: true", () => {
 			background: true,
 		});
 
-		expect(out).toBe("sync summary");
+		expect(out).toContain("sync summary");
+		expect(out).toMatch(/\n\nThread: [0-9a-f-]{36}$/);
 	});
 
 	it("still blocks when background is omitted", async () => {
@@ -604,7 +608,8 @@ describe("invoke with background: true", () => {
 
 		const out = await exec({ action: "invoke", name: "tama", instructions: "work" }, "call-sync");
 
-		expect(out).toBe("blocking summary");
+		expect(out).toContain("blocking summary");
+		expect(out).toMatch(/\n\nThread: [0-9a-f-]{36}$/);
 	});
 
 	it("validates the identity before deferring", async () => {

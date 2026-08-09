@@ -420,7 +420,12 @@ async function handleInvoke(
 		if (result.error) {
 			return `Auxiliary agent '${input.name}' completed with error: ${result.error}\n\nThread: ${threadId}`;
 		}
-		return result.summary;
+		// The thread reference trailer is load-bearing beyond the LLM: the web
+		// chat view parses `Thread: <uuid>` out of the persisted tool_result to
+		// render an inline card linking to the aux thread (which is excluded
+		// from the thread directory, so this card is its only door). Every
+		// invoke result shape carries it — keep that property when editing.
+		return `${result.summary}\n\nThread: ${threadId}`;
 	}
 
 	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}. Loop runner not available — thread is ready for manual execution.`;
