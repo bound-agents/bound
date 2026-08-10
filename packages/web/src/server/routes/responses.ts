@@ -31,7 +31,9 @@ import { streamSSE } from "hono/streaming";
  *       { role, content } (content string or parts array of
  *       { type: "input_text" | "output_text" | "text", text });
  *       function_call items carry { type, call_id, name, arguments };
- *       function_call_output items carry { type, call_id, output }.
+ *       function_call_output items carry { type, call_id, output };
+ *       reasoning items carry { type, summary, encrypted_content? } and are
+ *       re-attached to the assistant turn that follows them.
  *   - `instructions` → system prompt
  *   - `tools`: Responses-flat function tools
  *       ({ type: "function", name, description?, parameters }) → ToolDefinition
@@ -48,6 +50,9 @@ import { streamSSE } from "hono/streaming";
  * STREAM (stream:true) — SSE events matching the Responses streaming contract,
  * each `event: <type>` + `data: <json>` with a monotonic `sequence_number`:
  *   response.created → response.in_progress
+ *   → (reasoning)     output_item.added(reasoning)
+ *                     → response.reasoning_summary_text.delta*
+ *                     → response.reasoning_summary_text.done → output_item.done
  *   → (text)          output_item.added → content_part.added
  *                     → response.output_text.delta* → response.output_text.done
  *                     → content_part.done → output_item.done
@@ -262,6 +267,10 @@ interface ResponsesInputItem {
 	arguments?: string;
 	// function_call_output items: { type: "function_call_output", call_id, output }
 	output?: string;
+	// reasoning items: { type: "reasoning", id, summary: [{ type: "summary_text",
+	// text }], encrypted_content? } — summary text + provider-encrypted state.
+	summary?: Array<{ type?: string; text?: string }>;
+	encrypted_content?: string;
 }
 
 interface ResponsesContentPart {
@@ -306,6 +315,18 @@ interface ResponsesTool {
  *  - `function_call_output` items ({ type: "function_call_output", call_id,
  *    output }) → bound `{ role: "tool_result", tool_use_id, content: output }`.
  *
+ *  - `reasoning` items ({ type: "reasoning", summary, encrypted_content? })
+ *    → thinking ContentBlocks attached to the NEXT assistant-side item (the
+ *    function_call or assistant message they justify). `encrypted_content`
+ *    rides on the block as `reasoning_encrypted_content`, which the bridge
+ *    replays via providerOptions.openai.reasoningEncryptedContent — GPT-5.x
+ *    under store:false reconstructs its prior chain-of-thought from it.
+ *    Dropping these instead severs reasoning continuity on every shim turn,
+ *    which degrades deep tool loops (observed as turn-ending degeneration
+ *    loops in long goal-driver sessions). Reasoning orphaned by an
+ *    intervening user/developer item, or trailing with no assistant item
+ *    after it, is dropped.
+ *
  * The Responses API separates tool calls and results into standalone item
  * types with no `role` field. They must map to bound's tool_call /
  * tool_result LLMMessage roles — otherwise the assistant's preceding message
@@ -322,12 +343,26 @@ export function inputToMessages(input: ResponsesInput | undefined): LLMMessage[]
 		throw new Error("'input' must be a string or an array of message items");
 	}
 	const messages: LLMMessage[] = [];
+	// Reasoning items precede the assistant output they justify; buffer them
+	// until that item arrives.
+	let pendingReasoning: ContentBlock[] = [];
 	for (const item of input) {
+		const itemType = item.type ?? "";
+		if (itemType === "reasoning") {
+			const text = (item.summary ?? [])
+				.map((s) => (typeof s?.text === "string" ? s.text : ""))
+				.join("");
+			pendingReasoning.push({
+				type: "thinking",
+				thinking: text,
+				...(item.encrypted_content && { reasoning_encrypted_content: item.encrypted_content }),
+			});
+			continue;
+		}
 		// Responses API separates tool calls and results into standalone item
 		// types (no `role`). Map them to bound's tool_call / tool_result
 		// LLMMessage roles so the bridge produces the correct assistant→tool
 		// message sequence on the wire.
-		const itemType = item.type ?? "";
 		if (itemType === "function_call") {
 			if (!item.call_id || !item.name) continue;
 			let parsedArgs: Record<string, unknown> = {};
@@ -340,7 +375,10 @@ export function inputToMessages(input: ResponsesInput | undefined): LLMMessage[]
 			}
 			messages.push({
 				role: "tool_call",
-				content: [{ type: "tool_use", id: item.call_id, name: item.name, input: parsedArgs }],
+				content: [
+					...pendingReasoning.splice(0),
+					{ type: "tool_use", id: item.call_id, name: item.name, input: parsedArgs },
+				],
 			});
 			continue;
 		}
@@ -355,7 +393,23 @@ export function inputToMessages(input: ResponsesInput | undefined): LLMMessage[]
 		}
 		// Role-based message item (user / assistant / system / developer).
 		const role = mapInputRole(item.role);
+		if (role !== "assistant" && pendingReasoning.length > 0) {
+			// Reasoning belongs to the assistant turn that follows it. A user /
+			// developer item intervening means the buffered reasoning is
+			// orphaned — attaching it forward would misattribute it.
+			pendingReasoning = [];
+		}
 		const content = partsToContent(item.content);
+		if (role === "assistant" && pendingReasoning.length > 0) {
+			const tail: ContentBlock[] =
+				typeof content === "string"
+					? content.length > 0
+						? [{ type: "text", text: content }]
+						: []
+					: content;
+			messages.push({ role, content: [...pendingReasoning.splice(0), ...tail] });
+			continue;
+		}
 		// Empty when the item carried no renderable text or media.
 		if (typeof content === "string") {
 			if (content.length === 0) continue;
@@ -551,6 +605,16 @@ interface AssembledToolCall {
 	argsJson: string;
 }
 
+/**
+ * One ordered segment of model output. `assembleOutput` folds the chunk
+ * stream into these; `buildOutputItems` maps each to its Responses output
+ * item, preserving reasoning ↔ tool-call ↔ text interleaving.
+ */
+type OutputPiece =
+	| { kind: "reasoning"; text: string; encrypted?: string }
+	| { kind: "text"; text: string }
+	| { kind: "tool_call"; toolCall: AssembledToolCall };
+
 interface UsageOut {
 	input_tokens: number;
 	output_tokens: number;
@@ -600,21 +664,22 @@ const FINISH_TO_STATUS: Record<string, string> = {
 };
 
 /**
- * Fold a StreamChunk sequence into the Responses `output` array shape used by
- * both the non-streaming Response object and the final `response.completed`
- * event. Text becomes a `message` item with an `output_text` content part;
- * each tool call becomes a `function_call` item.
+ * Fold a StreamChunk sequence into ordered OutputPieces plus usage/finish.
+ * Reasoning (thinking) chunks become reasoning pieces — summary text plus the
+ * provider's encrypted reasoning state when present — so the caller can emit
+ * Responses `reasoning` output items instead of dropping chain-of-thought on
+ * the floor. Text becomes text pieces; each tool call becomes a tool piece.
+ * Interleaving order is preserved (reasoning → tool_call → reasoning → …).
  */
-function assembleOutput(chunks: StreamChunk[]): {
-	text: string;
-	toolCalls: AssembledToolCall[];
+export function assembleOutput(chunks: StreamChunk[]): {
+	pieces: OutputPiece[];
 	usage: UsageOut;
 	finishReason: string | null;
 } {
-	let text = "";
-	const argsById = new Map<string, string>();
-	const nameById = new Map<string, string>();
-	const order: string[] = [];
+	const pieces: OutputPiece[] = [];
+	const toolById = new Map<string, AssembledToolCall>();
+	let reasoning: { text: string; encrypted?: string } | null = null;
+	let text: string | null = null;
 	let usage: UsageOut = {
 		input_tokens: 0,
 		output_tokens: 0,
@@ -623,19 +688,60 @@ function assembleOutput(chunks: StreamChunk[]): {
 	};
 	let finishReason: string | null = null;
 
+	const flushReasoning = () => {
+		if (reasoning && (reasoning.text.length > 0 || reasoning.encrypted)) {
+			pieces.push({
+				kind: "reasoning",
+				text: reasoning.text,
+				...(reasoning.encrypted && { encrypted: reasoning.encrypted }),
+			});
+		}
+		reasoning = null;
+	};
+	const flushText = () => {
+		if (text !== null && text.length > 0) pieces.push({ kind: "text", text });
+		text = null;
+	};
+
 	for (const chunk of chunks) {
 		switch (chunk.type) {
 			case "text":
-				text += chunk.content;
+				flushReasoning();
+				text = (text ?? "") + chunk.content;
 				break;
-			case "tool_use_start":
-				argsById.set(chunk.id, "");
-				nameById.set(chunk.id, chunk.name);
-				order.push(chunk.id);
+			case "thinking": {
+				flushText();
+				// A segment already carrying its encrypted state is complete —
+				// the encrypted blob arrives on the reasoning-end event — so
+				// further reasoning text opens a new segment.
+				if (reasoning?.encrypted && chunk.content.length > 0) flushReasoning();
+				if (chunk.content.length > 0 || chunk.reasoning_encrypted_content) {
+					reasoning ??= { text: "" };
+					reasoning.text += chunk.content;
+					if (chunk.reasoning_encrypted_content) {
+						reasoning.encrypted = chunk.reasoning_encrypted_content;
+					}
+				}
 				break;
-			case "tool_use_args":
-				argsById.set(chunk.id, (argsById.get(chunk.id) ?? "") + chunk.partial_json);
+			}
+			case "tool_use_start": {
+				flushReasoning();
+				flushText();
+				const toolCall: AssembledToolCall = {
+					id: `fc_${chunk.id}`,
+					callId: chunk.id,
+					name: chunk.name,
+					argsJson: "",
+				};
+				toolById.set(chunk.id, toolCall);
+				pieces.push({ kind: "tool_call", toolCall });
 				break;
+			}
+			case "tool_use_args": {
+				const toolCall = toolById.get(chunk.id);
+				if (toolCall) toolCall.argsJson += chunk.partial_json;
+				break;
+			}
 			case "tool_use_end":
 				break;
 			case "done":
@@ -657,37 +763,40 @@ function assembleOutput(chunks: StreamChunk[]): {
 				break;
 		}
 	}
+	flushReasoning();
+	flushText();
 
-	const toolCalls: AssembledToolCall[] = order.map((id) => ({
-		id: `fc_${id}`,
-		callId: id,
-		name: nameById.get(id) ?? "",
-		argsJson: argsById.get(id) ?? "",
-	}));
-
-	return { text, toolCalls, usage, finishReason };
+	return { pieces, usage, finishReason };
 }
 
-function buildOutputItems(text: string, toolCalls: AssembledToolCall[]): unknown[] {
+export function buildOutputItems(pieces: OutputPiece[]): unknown[] {
 	const items: unknown[] = [];
-	if (text.length > 0) {
-		items.push({
-			type: "message",
-			id: `msg_${randomUUID().replace(/-/g, "")}`,
-			status: "completed",
-			role: "assistant",
-			content: [{ type: "output_text", text, annotations: [] }],
-		});
-	}
-	for (const tc of toolCalls) {
-		items.push({
-			type: "function_call",
-			id: tc.id,
-			status: "completed",
-			call_id: tc.callId,
-			name: tc.name,
-			arguments: tc.argsJson,
-		});
+	for (const piece of pieces) {
+		if (piece.kind === "reasoning") {
+			items.push({
+				type: "reasoning",
+				id: `rs_${randomUUID().replace(/-/g, "")}`,
+				summary: piece.text.length > 0 ? [{ type: "summary_text", text: piece.text }] : [],
+				...(piece.encrypted && { encrypted_content: piece.encrypted }),
+			});
+		} else if (piece.kind === "text") {
+			items.push({
+				type: "message",
+				id: `msg_${randomUUID().replace(/-/g, "")}`,
+				status: "completed",
+				role: "assistant",
+				content: [{ type: "output_text", text: piece.text, annotations: [] }],
+			});
+		} else {
+			items.push({
+				type: "function_call",
+				id: piece.toolCall.id,
+				status: "completed",
+				call_id: piece.toolCall.callId,
+				name: piece.toolCall.name,
+				arguments: piece.toolCall.argsJson,
+			});
+		}
 	}
 	return items;
 }
@@ -699,7 +808,7 @@ async function collectResponse(
 ): Promise<Record<string, unknown>> {
 	const chunks: StreamChunk[] = [];
 	for await (const chunk of stream) chunks.push(chunk);
-	const { text, toolCalls, usage, finishReason } = assembleOutput(chunks);
+	const { pieces, usage, finishReason } = assembleOutput(chunks);
 	const status = finishReason ? (FINISH_TO_STATUS[finishReason] ?? "completed") : "completed";
 	return {
 		id: `resp_${randomUUID().replace(/-/g, "")}`,
@@ -707,7 +816,7 @@ async function collectResponse(
 		created_at: Math.floor(Date.now() / 1000),
 		status,
 		model: modelId,
-		output: buildOutputItems(text, toolCalls),
+		output: buildOutputItems(pieces),
 		tools: echo.tools,
 		tool_choice: echo.toolChoice,
 		parallel_tool_calls: echo.parallelToolCalls,
@@ -723,11 +832,14 @@ type SseWriter = {
 
 /**
  * Translates a StreamChunk stream into the Responses SSE event protocol. Holds
- * the per-response id and a monotonic sequence counter; opens exactly one text
- * item lazily on the first text delta and one function_call item per tool id,
- * closing each in order before `response.completed`.
+ * the per-response id and a monotonic sequence counter; opens exactly one
+ * reasoning item per thinking segment, one text item lazily on the first text
+ * delta, and one function_call item per tool id, closing each in order before
+ * `response.completed`. Completed items accumulate in order so the final
+ * envelope's `output` mirrors the event stream (reasoning → message →
+ * function_call interleaving preserved, ids stable).
  */
-class SseEmitter {
+export class SseEmitter {
 	private seq = 0;
 	private readonly responseId = `resp_${randomUUID().replace(/-/g, "")}`;
 	private outputIndex = 0;
@@ -737,10 +849,29 @@ class SseEmitter {
 	private textOpened = false;
 	private text = "";
 
+	// Reasoning-item state — summary text plus the provider's encrypted
+	// reasoning state (GPT-5.x under store:false). Dropping these instead of
+	// emitting `reasoning` output items severs chain-of-thought continuity for
+	// stateless Responses clients that replay full history.
+	private reasoningItemId: string | null = null;
+	private reasoningText = "";
+	private reasoningEncrypted: string | undefined;
+
+	// Output items in completion order, pushed as each item closes; becomes
+	// the `output` array on the final response.completed envelope.
+	private completedItems: unknown[] = [];
+
 	// Tool-call state, keyed by the internal chunk id.
 	private toolState = new Map<
 		string,
-		{ itemId: string; callId: string; name: string; args: string; outputIndex: number }
+		{
+			itemId: string;
+			callId: string;
+			name: string;
+			args: string;
+			outputIndex: number;
+			closed: boolean;
+		}
 	>();
 
 	private usage: UsageOut = {
@@ -824,16 +955,10 @@ class SseEmitter {
 		const status = this.finishReason
 			? (FINISH_TO_STATUS[this.finishReason] ?? "completed")
 			: "completed";
-		const toolCalls: AssembledToolCall[] = [...this.toolState.values()].map((t) => ({
-			id: t.itemId,
-			callId: t.callId,
-			name: t.name,
-			argsJson: t.args,
-		}));
 		await this.emit("response.completed", {
 			response: {
 				...this.responseEnvelope(status),
-				output: buildOutputItems(this.text, toolCalls),
+				output: this.completedItems,
 				usage: usageToResponsesShape(this.usage),
 			},
 		});
@@ -843,6 +968,9 @@ class SseEmitter {
 		switch (chunk.type) {
 			case "text":
 				await this.handleText(chunk.content);
+				break;
+			case "thinking":
+				await this.handleThinking(chunk.content, chunk.reasoning_encrypted_content);
 				break;
 			case "tool_use_start":
 				await this.openToolItem(chunk.id, chunk.name);
@@ -865,13 +993,14 @@ class SseEmitter {
 			case "error":
 				throw new Error(formatError(chunk.error, "provider stream error with no message"));
 			default:
-				// thinking / heartbeat: not surfaced on the Responses text channel.
+				// heartbeat: keepalive only, no output item.
 				break;
 		}
 	}
 
 	private async handleText(delta: string): Promise<void> {
 		if (delta.length === 0) return;
+		await this.closeReasoningItem();
 		if (!this.textOpened) {
 			this.textItemId = `msg_${randomUUID().replace(/-/g, "")}`;
 			this.textOpened = true;
@@ -915,27 +1044,93 @@ class SseEmitter {
 			content_index: 0,
 			part: { type: "output_text", text: this.text, annotations: [] },
 		});
+		const item = {
+			type: "message",
+			id: this.textItemId,
+			status: "completed",
+			role: "assistant",
+			content: [{ type: "output_text", text: this.text, annotations: [] }],
+		};
 		await this.emit("response.output_item.done", {
 			output_index: this.outputIndex,
-			item: {
-				type: "message",
-				id: this.textItemId,
-				status: "completed",
-				role: "assistant",
-				content: [{ type: "output_text", text: this.text, annotations: [] }],
-			},
+			item,
 		});
+		this.completedItems.push(item);
 		this.textOpened = false;
+		this.textItemId = null;
+		this.text = "";
+		this.outputIndex++;
+	}
+
+	/**
+	 * Reasoning (thinking) chunks → a Responses `reasoning` output item.
+	 * Summary text streams as reasoning_summary_text deltas; the encrypted
+	 * reasoning state (arriving on a content:"" chunk from the reasoning-end
+	 * event) rides on the closing item as `encrypted_content`. A segment that
+	 * already holds its encrypted state is complete, so further reasoning text
+	 * opens a new item — mirrors assembleOutput on the non-streaming path.
+	 */
+	private async handleThinking(content: string, encrypted?: string): Promise<void> {
+		if (content.length === 0 && !encrypted) return;
+		if (this.reasoningItemId !== null && this.reasoningEncrypted && content.length > 0) {
+			await this.closeReasoningItem();
+		}
+		await this.closeTextItem();
+		if (this.reasoningItemId === null) {
+			this.reasoningItemId = `rs_${randomUUID().replace(/-/g, "")}`;
+			await this.emit("response.output_item.added", {
+				output_index: this.outputIndex,
+				item: { type: "reasoning", id: this.reasoningItemId, summary: [] },
+			});
+		}
+		if (content.length > 0) {
+			this.reasoningText += content;
+			await this.emit("response.reasoning_summary_text.delta", {
+				item_id: this.reasoningItemId,
+				output_index: this.outputIndex,
+				summary_index: 0,
+				delta: content,
+			});
+		}
+		if (encrypted) this.reasoningEncrypted = encrypted;
+	}
+
+	private async closeReasoningItem(): Promise<void> {
+		if (this.reasoningItemId === null) return;
+		if (this.reasoningText.length > 0) {
+			await this.emit("response.reasoning_summary_text.done", {
+				item_id: this.reasoningItemId,
+				output_index: this.outputIndex,
+				summary_index: 0,
+				text: this.reasoningText,
+			});
+		}
+		const item = {
+			type: "reasoning",
+			id: this.reasoningItemId,
+			summary:
+				this.reasoningText.length > 0 ? [{ type: "summary_text", text: this.reasoningText }] : [],
+			...(this.reasoningEncrypted && { encrypted_content: this.reasoningEncrypted }),
+		};
+		await this.emit("response.output_item.done", {
+			output_index: this.outputIndex,
+			item,
+		});
+		this.completedItems.push(item);
+		this.reasoningItemId = null;
+		this.reasoningText = "";
+		this.reasoningEncrypted = undefined;
 		this.outputIndex++;
 	}
 
 	private async openToolItem(id: string, name: string): Promise<void> {
-		// Close the text item first so output indices stay ordered.
+		// Close reasoning and text items first so output indices stay ordered.
+		await this.closeReasoningItem();
 		await this.closeTextItem();
 		if (this.toolState.has(id)) return;
 		const itemId = `fc_${id}`;
 		const outputIndex = this.outputIndex++;
-		this.toolState.set(id, { itemId, callId: id, name, args: "", outputIndex });
+		this.toolState.set(id, { itemId, callId: id, name, args: "", outputIndex, closed: false });
 		await this.emit("response.output_item.added", {
 			output_index: outputIndex,
 			item: {
@@ -962,33 +1157,40 @@ class SseEmitter {
 
 	private async closeToolItem(id: string): Promise<void> {
 		const state = this.toolState.get(id);
-		if (!state) return;
+		if (!state || state.closed) return;
+		state.closed = true;
 		await this.emit("response.function_call_arguments.done", {
 			item_id: state.itemId,
 			output_index: state.outputIndex,
 			arguments: state.args,
 		});
+		const item = {
+			type: "function_call",
+			id: state.itemId,
+			status: "completed",
+			call_id: state.callId,
+			name: state.name,
+			arguments: state.args,
+		};
 		await this.emit("response.output_item.done", {
 			output_index: state.outputIndex,
-			item: {
-				type: "function_call",
-				id: state.itemId,
-				status: "completed",
-				call_id: state.callId,
-				name: state.name,
-				arguments: state.args,
-			},
+			item,
 		});
+		this.completedItems.push(item);
 	}
 
 	/**
-	 * Close any item still open at stream end (text with no explicit end, or a
-	 * tool item whose tool_use_end never arrived). Tool items already closed by
-	 * `closeToolItem` are idempotent here because their done-events already
-	 * fired; we only need the text item.
+	 * Close any item still open at stream end (reasoning with no following
+	 * text, text with no explicit end, or a tool item whose tool_use_end never
+	 * arrived). Closes are idempotent, so items already closed in order are
+	 * no-ops here.
 	 */
 	private async closeOpenItems(): Promise<void> {
+		await this.closeReasoningItem();
 		await this.closeTextItem();
+		for (const id of this.toolState.keys()) {
+			await this.closeToolItem(id);
+		}
 	}
 }
 
@@ -1086,7 +1288,3 @@ export function classifyErrorType(message: string): string {
 function errorObject(message: string, type: string): Record<string, unknown> {
 	return { error: { message, type, param: null, code: null } };
 }
-
-// Silence unused-import lint for ContentBlock (kept for the media-part
-// extension point in partsToText).
-void (undefined as unknown as ContentBlock);
