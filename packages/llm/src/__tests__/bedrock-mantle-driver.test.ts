@@ -4,6 +4,7 @@ import {
 	buildMantleOpenAIOptions,
 	deriveMantleBaseUrl,
 	deriveMantleBaseUrlForMode,
+	supportsPromptCacheBreakpoints,
 	withEmptyRetry,
 } from "../drivers/bedrock-mantle";
 import type { ChatParams, StreamChunk } from "../types";
@@ -140,15 +141,28 @@ describe("BedrockMantleDriver", () => {
 		expect(() => make()).not.toThrow();
 	});
 
-	it("reports vision + automatic prompt caching and the configured context window", () => {
+	it("reports vision + prompt caching and the configured context window", () => {
 		const caps = make().capabilities();
 		expect(caps.max_context).toBe(272_000);
 		expect(caps.streaming).toBe(true);
 		expect(caps.tool_use).toBe(true);
 		expect(caps.vision).toBe(true);
-		// Mantle GPT-5.x caches automatically (prefix-based, no markers) — the
-		// capability is honest even though the driver places no cache breakpoints.
+		// GPT-5.4/5.5 cache automatically (exact-match, no markers); the 5.6
+		// family additionally takes explicit prompt_cache_breakpoints. Either
+		// way the capability bit is honest.
 		expect(caps.prompt_caching).toBe(true);
+	});
+
+	it("gates explicit prompt_cache_breakpoint support on the model generation", () => {
+		// GPT-5.6 family (mantle "openai." prefix included): breakpoints.
+		expect(supportsPromptCacheBreakpoints("openai.gpt-5.6-terra")).toBe(true);
+		expect(supportsPromptCacheBreakpoints("openai.gpt-5.6-sol")).toBe(true);
+		expect(supportsPromptCacheBreakpoints("openai.gpt-5.6-luna")).toBe(true);
+		expect(supportsPromptCacheBreakpoints("gpt-5.6")).toBe(true);
+		// GPT-5.4/5.5 reject the field — automatic cache only.
+		expect(supportsPromptCacheBreakpoints("openai.gpt-5.4")).toBe(false);
+		expect(supportsPromptCacheBreakpoints("openai.gpt-5.5")).toBe(false);
+		expect(supportsPromptCacheBreakpoints("anthropic.claude-sonnet-5")).toBe(false);
 	});
 
 	it("sends Anthropic mode to /anthropic/v1/messages with SigV4 and no x-api-key", async () => {

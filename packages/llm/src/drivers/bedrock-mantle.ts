@@ -25,14 +25,22 @@
  * driver holding a long-lived token — the constraint on hosts that forbid
  * long-lived credentials.
  *
- * Caching: mantle GPT-5.x caches automatically on the input prefix with no
- * markers, so the driver places no cache breakpoints (`cacheProvider: null`)
- * yet reports `prompt_caching: true`. It MUST also request
- * `promptCacheRetention: "24h"` — gpt-5.5 doesn't support the `in_memory`
- * default and caches nothing without it (see `buildMantleOpenAIOptions`).
- * Cached-token accounting rides the existing bridge path — `extractUsage`
- * reads `cachedInputTokens` into `cache_read_tokens`, which the agent-loop
- * folds into contextDebug.
+ * Caching: two regimes by model generation.
+ *   - GPT-5.4/5.5: automatic prefix caching only, no marker mechanism. The
+ *     driver places no breakpoints (`cacheProvider: null`) yet reports
+ *     `prompt_caching: true`. Mantle's automatic cache is exact-match (see
+ *     buildMantleOpenAIOptions docstring), so agent traffic gets ~0 reads.
+ *   - GPT-5.6 family: accepts up to FOUR explicit `prompt_cache_breakpoint`s
+ *     per request (see `supportsPromptCacheBreakpoints`). The driver spends
+ *     one on the system/instructions message (stable-prefix anchor) and
+ *     passes `cacheProvider: "openai"` so the agent loop's `{role:"cache"}`
+ *     markers become message/part-level breakpoints via the bridge (capped
+ *     at MAX_OPENAI_MESSAGE_BREAKPOINTS = 3).
+ * Both regimes MUST request `promptCacheRetention: "24h"` — GPT-5.x doesn't
+ * support the `in_memory` default and caches nothing without it (see
+ * `buildMantleOpenAIOptions`). Cached-token accounting rides the existing
+ * bridge path — `extractUsage` reads `cachedInputTokens` into
+ * `cache_read_tokens`, which the agent-loop folds into contextDebug.
  */
 
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -52,6 +60,18 @@ import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
 
 // Re-exported for the driver test suite; canonical definition lives in ./shared.
 export { withEmptyRetry } from "./shared";
+
+/**
+ * Whether the model accepts explicit `prompt_cache_breakpoint` markers on
+ * the Responses API. GPT-5.6 family only (sol/terra/luna and any dated
+ * variants): up to four breakpoints per request. GPT-5.4/5.5 reject the
+ * field — they only have the automatic (exact-match, see gotchas) cache.
+ * Mantle ids carry an "openai." prefix ("openai.gpt-5.6-terra"), so match
+ * on substring rather than prefix.
+ */
+export function supportsPromptCacheBreakpoints(modelId: string): boolean {
+	return modelId.includes("gpt-5.6");
+}
 
 /** SigV4 service name for the Bedrock mantle endpoint. */
 const MANTLE_SIGV4_SERVICE = "bedrock";
@@ -157,7 +177,7 @@ function toReasoningEffort(
  * under Zero Data Retention (which bars `store:true`, not the cache).
  *
  * HOWEVER — verified live against mantle us-east-2 (raw SigV4
- * replays of exact production bodies): mantle's cache lookup currently
+ * replays of exact production bodies): mantle's AUTOMATIC cache lookup
  * behaves as if keyed on the FULL prompt, not longest-prefix. An identical
  * body resent back-to-back reports ~100% `cached_tokens`; a prefix-EXTENSION
  * sharing 99.3% of the prior prompt — which is what every agent-loop
@@ -165,13 +185,17 @@ function toReasoningEffort(
  * Codex CLI against the same endpoint measures the same ~0%. This is almost
  * certainly a serving-layer bug, not design: OpenAI-operated endpoints do
  * longest-prefix matching, and Codex records show ~88% cache reads against
- * an earlier (since-removed) mantle us-west-2 deployment. Until it is fixed
- * server-side, agent traffic through this driver gets no cache reads
- * regardless of request shape (`prompt_cache_key` is ignored for routing;
- * no affinity header/cookie exists). We still send
- * `promptCacheRetention: "24h"` — it is correct per the guide, harmless,
- * and becomes load-bearing the moment prefix matching works again. See
- * docs/gotchas.md ("Mantle GPT-5.x prompt cache is exact-match").
+ * an earlier (since-removed) mantle us-west-2 deployment. Consequences by
+ * model generation: gpt-5.4/5.5 have ONLY the automatic cache
+ * (`prompt_cache_key` is ignored for routing; no affinity header/cookie
+ * exists), so agent traffic on those models gets no cache reads until the
+ * serving layer is fixed. The GPT-5.6 family sidesteps the exact-match
+ * lookup with explicit `prompt_cache_breakpoint` markers — see
+ * `supportsPromptCacheBreakpoints` and the cache-provider selection in
+ * `chat()`. We still send `promptCacheRetention: "24h"` everywhere — it is
+ * correct per the guide, harmless, and on 5.4/5.5 becomes load-bearing the
+ * moment prefix matching works again. See docs/gotchas.md ("Mantle GPT-5.x
+ * automatic prompt cache is exact-match, not prefix").
  */
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
@@ -308,11 +332,18 @@ export class BedrockMantleDriver implements LLMBackend {
 
 		const provider = this.openaiProvider;
 		if (!provider) throw new Error("Bedrock Mantle OpenAI Responses provider was not initialized");
-		// Responses API has no cache-breakpoint marker — drop cache-role messages
-		// via null cacheProvider (caching is automatic, prefix-based). Permissive
-		// envelope: ids/names round-trip raw with only the length cap as a backstop.
+		// Cache-provider selection by model generation: the GPT-5.6 family
+		// accepts explicit `prompt_cache_breakpoint` markers (up to four per
+		// request), so `{role:"cache"}` markers from the agent loop become
+		// `providerOptions.openai.promptCacheBreakpoint` via the bridge's
+		// position-aware attacher. GPT-5.4/5.5 reject the field — markers are
+		// dropped (null) and those models ride the automatic exact-match cache
+		// (≈ zero reads at agent-loop depth; see docs/gotchas.md). Permissive
+		// envelope: ids/names round-trip raw with only the length cap as a
+		// backstop.
+		const breakpointsSupported = supportsPromptCacheBreakpoints(modelId);
 		const messages = toModelMessages(params.messages, {
-			cacheProvider: null,
+			cacheProvider: breakpointsSupported ? "openai" : null,
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: PERMISSIVE_ENVELOPE,
 			// Replay native OpenAI reasoning state (store:false encrypted content)
@@ -326,6 +357,27 @@ export class BedrockMantleDriver implements LLMBackend {
 			midConversationSystem: true,
 		});
 
+		// System-anchor breakpoint (GPT-5.6 family): spend one of the four
+		// breakpoints on the system/instructions message so the big stable
+		// prefix (persona + orientation + schema + volatile-stable) caches at
+		// its boundary even when no message-level marker lands. Passing a
+		// SystemModelMessage (not a bare string) lets providerOptions ride
+		// through standardizePrompt → convertToLanguageModelPrompt → the
+		// Responses converter's system/developer branch, which reads
+		// MESSAGE-level promptCacheBreakpoint. Mirrors the Bedrock driver's
+		// system cachePoint anchor (see bedrock.ts "Cache-anchor gating").
+		const systemParam = params.system
+			? breakpointsSupported
+				? {
+						role: "system" as const,
+						content: params.system,
+						providerOptions: {
+							openai: { promptCacheBreakpoint: { mode: "explicit" as const } },
+						},
+					}
+				: params.system
+			: undefined;
+
 		// One streaming attempt — built fresh per retry so a re-issue is a clean
 		// new request (new SigV4 signature, new stream), not a replayed one.
 		const runAttempt = (): AsyncIterable<StreamChunk> =>
@@ -336,7 +388,7 @@ export class BedrockMantleDriver implements LLMBackend {
 						model: provider.responses(modelId),
 						messages,
 						allowSystemInMessages: true,
-						...(params.system && { system: params.system }),
+						...(systemParam && { system: systemParam }),
 						...(tools && { tools }),
 						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 						...(params.temperature !== undefined && { temperature: params.temperature }),
