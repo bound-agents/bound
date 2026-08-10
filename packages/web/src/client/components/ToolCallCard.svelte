@@ -62,6 +62,7 @@ interface ToolResultMsg {
 	content: string;
 	exit_code?: number | null;
 	tool_name?: string | null;
+	metadata?: string | Record<string, unknown> | null;
 }
 
 interface ToolMessage {

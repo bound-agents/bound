@@ -1,14 +1,22 @@
 // Pure extraction logic for the inline aux-invocation cards.
 //
-// When the agent calls the `aux` tool with action=invoke, the tool result
-// carries a `Thread: <uuid>` trailer (sync path: auxiliary.ts handleInvoke;
-// background path: server.ts finishParent) naming the child thread the errand
-// ran on. Background invocations first return a placeholder mentioning
-// "queued on thread <uuid>", which resolves to the trailer form when the aux
-// finishes. Aux threads are excluded from the thread directory, so the card
-// this module powers is the only navigable door into them. This module
-// isolates the "which tool calls are aux-invoke cards, and what thread/status
-// do they reference" decision so it can be unit-tested without a DOM.
+// When the agent calls the `aux` tool with action=invoke, the persisted
+// tool_result row carries `metadata.aux_thread` — the child thread the errand
+// ran on — stamped by the tool (sync path: auxiliary.ts handleInvoke returns
+// a ToolResultWithMetadata; background path: the DeferredToolResult's
+// metadata rides the placeholder row and survives resolution, since
+// resolveDeferredToolResult drops only the `background` marker). A background
+// invocation additionally carries `metadata.background: true` while the
+// errand is still running.
+//
+// Aux threads are excluded from the thread directory, so the card this module
+// powers is the only navigable door into them. This module isolates the
+// "which tool calls are aux-invoke cards, and what thread/status do they
+// reference" decision so it can be unit-tested without a DOM.
+//
+// Rows persisted before the metadata channel existed carry the link as a
+// `Thread: <uuid>` content trailer (or a "queued on thread <uuid>"
+// placeholder); those parse as a legacy fallback.
 
 interface ToolUseLike {
 	id: string;
@@ -19,6 +27,8 @@ interface ToolUseLike {
 interface ResultLike {
 	content: string;
 	exit_code?: number | null;
+	/** Raw `messages.metadata` — a JSON string from the API/WS, or already-parsed. */
+	metadata?: string | Record<string, unknown> | null;
 }
 
 export interface AuxInvokeRef {
@@ -33,13 +43,12 @@ export interface AuxInvokeRef {
 
 const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
-// The result trailer both invoke paths append. Anchored to end-of-content so
-// a summary that merely *mentions* some other thread mid-text cannot hijack
-// the link.
+// Legacy content-trailer form (pre-metadata rows). Anchored to end-of-content
+// so a summary that merely *mentions* some other thread mid-text cannot
+// hijack the link.
 const THREAD_TRAILER_RE = new RegExp(`\\bThread: (${UUID_SOURCE})\\s*$`, "i");
 
-// The background placeholder written while the errand is still running:
-// "Auxiliary agent 'x' queued on thread <uuid> — running in background."
+// Legacy background placeholder written while the errand was still running.
 const QUEUED_RE = new RegExp(`\\bqueued on thread (${UUID_SOURCE})\\b`, "i");
 
 function readString(input: unknown, key: string): string | undefined {
@@ -48,14 +57,29 @@ function readString(input: unknown, key: string): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+/** Parse a message's metadata bag, tolerating the raw JSON-string form. */
+function readMetadataBag(metadata: ResultLike["metadata"]): Record<string, unknown> | undefined {
+	if (metadata == null) return undefined;
+	let bag: unknown = metadata;
+	if (typeof metadata === "string") {
+		try {
+			bag = JSON.parse(metadata);
+		} catch {
+			return undefined;
+		}
+	}
+	if (typeof bag !== "object" || bag === null) return undefined;
+	return bag as Record<string, unknown>;
+}
+
 /**
  * Select the `aux`-tool calls in a turn that invoked an identity and resolve
  * each to the child thread it ran on plus a coarse status. Calls with no
- * result yet, and background placeholders, report `running`; a result whose
- * exit code is non-zero or whose content is an invoke error reports `failed`.
- * Calls that never produced a thread reference (e.g. validation errors like
- * "no active auxiliary agent named 'x'") are skipped entirely — there is no
- * thread to link to.
+ * result yet, and unresolved background placeholders (`metadata.background`),
+ * report `running`; a result whose exit code is non-zero or whose content is
+ * an invoke error reports `failed`. Calls that never produced a thread
+ * reference (e.g. validation errors like "no active auxiliary agent named
+ * 'x'") are skipped entirely — there is no thread to link to.
  */
 export function extractAuxInvokeRefs(
 	toolUses: ToolUseLike[],
@@ -78,15 +102,22 @@ export function extractAuxInvokeRefs(
 			continue;
 		}
 
-		const trailer = result.content.match(THREAD_TRAILER_RE);
-		const queued = trailer ? null : result.content.match(QUEUED_RE);
-		const threadId = trailer?.[1] ?? queued?.[1] ?? null;
-		if (!threadId) continue; // validation error / legacy result — nothing to link
+		// Primary channel: the metadata bag stamped by the tool.
+		const bag = readMetadataBag(result.metadata);
+		const metaThread = typeof bag?.aux_thread === "string" ? bag.aux_thread : null;
+		const inFlight = bag?.background === true;
+
+		// Legacy fallback: rows persisted before the metadata channel existed.
+		const trailer = metaThread ? null : result.content.match(THREAD_TRAILER_RE);
+		const queued = metaThread || trailer ? null : result.content.match(QUEUED_RE);
+		const threadId = metaThread ?? trailer?.[1] ?? queued?.[1] ?? null;
+		if (!threadId) continue; // validation error — nothing to link
 
 		const failed =
 			(result.exit_code != null && result.exit_code !== 0) ||
 			/\b(completed with error|errand failed)\b/i.test(result.content);
-		const status: AuxInvokeRef["status"] = queued ? "running" : failed ? "failed" : "completed";
+		const status: AuxInvokeRef["status"] =
+			inFlight || queued ? "running" : failed ? "failed" : "completed";
 
 		seen.add(tu.id);
 		refs.push({ toolUseId: tu.id, agentName, threadId, status });
