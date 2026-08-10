@@ -204,33 +204,43 @@ export function getResolvedModelId(resolution: ModelResolution | null, fallback?
 }
 
 /**
+ * Conservative output budget used when neither the loop nor the backend
+ * advertises one. This must stay aligned with context assembly's fallback
+ * reserve: the number subtracted from the context window is also the number
+ * sent on the wire. Omitting max_tokens lets some providers substitute their
+ * model-wide maximum (observed: 128k on GLM-5), invalidating assembly's 8k
+ * reserve and producing a context-length 400 once history grows.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 8_000;
+
+/**
  * Reconciles the agent-loop default `max_tokens` budget with a per-backend
  * cap configured in `model_backends.json#max_output_tokens`. Returns
- * `min(defaultMax, cap)` when both are positive integers. When `defaultMax`
- * is `undefined` and `cap` is set, returns `cap`. When both are `undefined`,
- * returns `undefined` so the provider uses its own default.
+ * `min(defaultMax, cap)` when both are positive integers. When only one is
+ * present, returns it. When neither is present, returns the conservative 8k
+ * fallback rather than omitting max_tokens and accepting a provider-defined
+ * default that may consume most of the context window.
  *
  * Exists because some Bedrock models reject an explicit `maxTokens` above
  * their ceiling with `max_tokens exceeds model limit of N` — notably
- * Nova Pro (N=10_000). The backend cap is treated as an upper bound only:
- * if an operator sets a cap above the configured default, the default
- * still wins so the per-turn budget can never be raised behind the loop's back.
+ * Nova Pro. The backend cap is treated as an upper bound only: if an operator
+ * sets a cap above the configured default, the default still wins.
  *
- * Exported so both the agent-loop (local path) and the relay-processor
- * (receiver side) can reuse a single definition — defence-in-depth against
- * stale requester payloads that still carry an explicit max_tokens.
+ * Exported so both the agent-loop (local path) and relay-processor (receiver
+ * side) reuse one definition — defence-in-depth against stale requester
+ * payloads and provider defaults.
  */
 export function clampMaxOutputTokens(
 	defaultMax: number | undefined,
 	cap: number | undefined,
-): number | undefined {
+): number {
 	const hasDefault =
 		typeof defaultMax === "number" && Number.isFinite(defaultMax) && defaultMax > 0;
 	const hasCap = typeof cap === "number" && Number.isFinite(cap) && cap > 0;
 	if (hasDefault && hasCap) return Math.min(defaultMax, Math.floor(cap));
 	if (hasDefault) return defaultMax;
 	if (hasCap) return Math.floor(cap);
-	return undefined;
+	return DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 // ---------------------------------------------------------------------------

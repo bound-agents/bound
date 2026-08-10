@@ -76,7 +76,11 @@ export const STALE_TASK_RESET_SQL =
  * live DB and synthetic fixtures in startup-wiring.test.ts.
  *
  * Excludes threads with a pending `client_tool_call` in `dispatch_queue` —
- * those are waiting for client execution, not crashed server tools.
+ * those are waiting for client execution, not crashed server tools. Also
+ * excludes auxiliary-agent threads (`threads.agent_id IS NOT NULL`): foreground
+ * aux loops are owned by the parent invocation and cannot be resumed by the
+ * main-loop dispatcher, while background aux recovery rides its durable seed
+ * and dispatch queue rather than this generic interrupted-turn notice.
  */
 export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
 	SELECT thread_id,
@@ -91,7 +95,10 @@ export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
 	GROUP BY thread_id
 )
 SELECT ts.thread_id FROM thread_summary ts
-WHERE ts.last_tool_at IS NOT NULL
+JOIN threads t ON t.id = ts.thread_id
+WHERE t.deleted = 0
+  AND t.agent_id IS NULL
+  AND ts.last_tool_at IS NOT NULL
   AND (ts.last_assistant_at IS NULL OR ts.last_assistant_at < ts.last_tool_at)
   AND (ts.last_interrupt_at IS NULL OR ts.last_interrupt_at < ts.last_tool_at)
   AND NOT EXISTS (

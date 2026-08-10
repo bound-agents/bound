@@ -57,6 +57,20 @@ export const sandboxTool: ToolDefinition = {
 export interface AuxLoopParentContext {
 	clientTools?: AgentLoopConfig["clientTools"];
 	connectionId?: string;
+	/** Surface tag inherited from the dispatching loop (web, boundless, discord, ...). */
+	platform?: string;
+	/** Full per-session context block (boundless cwd/git/context files, when present). */
+	systemPromptAddition?: string;
+	/** Connector/platform-authored instructions from the dispatching loop. */
+	platformInstructions?: string;
+}
+
+/** Keep the parent's surface context byte-for-byte, then append the aux persona. */
+export function composeAuxSystemPromptAddition(
+	parentAddition: string | undefined,
+	persona: string,
+): string {
+	return [parentAddition, persona].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 export interface AgentLoopFactory {
@@ -309,12 +323,21 @@ export function createAgentLoopFactory(
 				undefined,
 			);
 
+			const inheritedSystemPromptAddition = composeAuxSystemPromptAddition(
+				parent.systemPromptAddition,
+				params.persona,
+			);
+
 			const auxLoop = new AuxAgentLoop(appContext, auxSandbox, modelRouter, {
 				threadId: params.threadId,
 				userId: params.userId,
 				modelId: params.modelHint ?? undefined,
-				systemPromptAddition: params.persona,
-				platform: "aux",
+				// Preserve the parent surface's complete injected context verbatim —
+				// notably boundless cwd/git/context-file blocks — then append the aux
+				// identity persona. No thinner aux-specific reconstruction.
+				systemPromptAddition: inheritedSystemPromptAddition || undefined,
+				platformInstructions: parent.platformInstructions,
+				platform: parent.platform ?? "aux",
 				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
 				toolRegistry: auxToolRegistry,
 				clientTools: auxClientTools,
@@ -485,6 +508,9 @@ export function createAgentLoopFactory(
 		const auxLoopRunner = createAuxLoopRunner({
 			clientTools: config.clientTools,
 			connectionId: config.connectionId,
+			platform: config.platform,
+			systemPromptAddition: config.systemPromptAddition,
+			platformInstructions: config.platformInstructions,
 		});
 
 		const toolCtx: ToolContext = {

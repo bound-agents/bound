@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test";
 import type { RegisteredTool } from "@bound/agent";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { Logger } from "@bound/shared";
-import { createToolRegistry } from "../commands/start/agent-factory";
+import {
+	composeAuxSystemPromptAddition,
+	createToolRegistry,
+} from "../commands/start/agent-factory";
 
 const noopLogger: Logger = {
 	debug: () => {},
@@ -25,6 +28,25 @@ function platformTool(
 		...extras,
 	};
 }
+
+describe("composeAuxSystemPromptAddition", () => {
+	it("preserves the full parent surface context before the aux persona", () => {
+		const parent = [
+			"You are connected to a boundless terminal client.",
+			"Working directory: /repo",
+			"<git-context>main</git-context>",
+			'<context-file path="AGENTS.md">rules</context-file>',
+		].join("\n");
+
+		expect(composeAuxSystemPromptAddition(parent, "Methodical scout.")).toBe(
+			`${parent}\n\nMethodical scout.`,
+		);
+	});
+
+	it("uses only the persona when the parent surface has no injected context", () => {
+		expect(composeAuxSystemPromptAddition(undefined, "Brief auditor.")).toBe("Brief auditor.");
+	});
+});
 
 describe("createToolRegistry — platform tool annotation propagation", () => {
 	it("copies static idempotent and readOnly fields onto the registered tool", () => {

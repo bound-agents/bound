@@ -746,8 +746,8 @@ describe("clampMaxOutputTokens", () => {
 	// This pure helper reconciles a configured max_tokens with per-backend
 	// caps like Nova Pro's 10_000 ceiling. Both agent-loop (local path) and
 	// relay-processor (receiver side) go through it so a misconfigured payload
-	// can never slip a too-high value past the provider. When both inputs are
-	// undefined, returns undefined so the provider uses its own default.
+	// cannot slip a too-high value past the provider. When both inputs are
+	// absent, it returns the same conservative 8k reserve used by assembly.
 	it("returns the default when no cap is configured", () => {
 		expect(clampMaxOutputTokens(16384, undefined)).toBe(16384);
 	});
@@ -776,11 +776,10 @@ describe("clampMaxOutputTokens", () => {
 		expect(clampMaxOutputTokens(16384, -500)).toBe(16384);
 	});
 
-	it("returns undefined when both default and cap are absent", () => {
-		// When no per-thread maxOutputTokens is configured and no backend
-		// cap is set, omit max_tokens entirely so the provider uses its
-		// own default (e.g. Bedrock Converse defaults to the model maximum).
-		expect(clampMaxOutputTokens(undefined, undefined)).toBeUndefined();
+	it("returns the conservative fallback when both default and cap are absent", () => {
+		// Never omit max_tokens: providers may substitute their model-wide output
+		// maximum (observed: 128k on GLM-5), invalidating assembly's 8k reserve.
+		expect(clampMaxOutputTokens(undefined, undefined)).toBe(8000);
 	});
 
 	it("returns the cap when only the cap is set (no configured default)", () => {

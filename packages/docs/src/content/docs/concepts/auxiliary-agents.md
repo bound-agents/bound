@@ -53,11 +53,14 @@ Auxiliary agents do not receive orchestration capabilities for delegation, sched
 cross-thread messaging. Delegation is one level deep, and the main agent remains the
 scheduler. A tool allowlist can narrow the remaining capabilities for an identity.
 
-An invocation can inherit client tools from the dispatching thread. Inheritance does not
-remove the orchestration restrictions, and host access still follows the [sandbox and
-filesystem model](/bound/concepts/sandbox/). [Security
-boundaries](/bound/concepts/security-boundaries/) places these identity and capability
-limits in the broader trust model.
+An invocation inherits the dispatching thread's surface context as well as its eligible
+client tools. A Boundless invocation therefore receives the same working directory, Git
+context, and injected context files as its parent; connector and web invocations preserve
+their corresponding platform context. The auxiliary persona is appended after that inherited
+context. Inheritance does not remove orchestration restrictions, and host access still follows
+the [sandbox and filesystem model](/bound/concepts/sandbox/). [Security
+boundaries](/bound/concepts/security-boundaries/) places these identity and capability limits
+in the broader trust model.
 
 ## Child threads and focused results
 

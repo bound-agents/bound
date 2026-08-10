@@ -1735,12 +1735,11 @@ export class RelayProcessor {
 				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
 			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
 			// Defense-in-depth: clamp the requester's max_tokens to this host's
-			// per-backend cap. Without this, a stale requester binary (or a
-			// hub routing decision made against a peer's stale capability
-			// record) can still send an explicit max_tokens for a model
-			// whose provider rejects it — e.g. Nova Pro's 10_000 ceiling.
-			// When both the requester value and the local cap are absent,
-			// max_tokens is omitted entirely so the provider uses its own default.
+			// per-backend cap. Without this, a stale requester binary (or a hub
+			// routing decision made against stale peer capabilities) can send an
+			// invalid ceiling. When both values are absent, the helper supplies the
+			// same conservative 8k fallback reserved by context assembly — never a
+			// provider-defined model maximum.
 			const localMaxOutputTokens = this.modelRouter.getMaxOutputTokens(payload.model);
 			const effectiveMaxTokens = clampMaxOutputTokens(payload.max_tokens, localMaxOutputTokens);
 			const chatStream = backend.chat({
