@@ -54,13 +54,19 @@ The endpoint accepts the subset of the Responses schema that maps to Bound model
 ### Input items
 
 `input` is either a string or an array of items. Message items carry `role` and `content`.
-Tool calls and results are standalone item types without `role`.
+Tool calls, tool results, and reasoning are standalone item types without `role`.
 
 | Item type | Fields | Meaning |
 |-----------|--------|---------|
 | Message | `role`, `content` | A conversation message with the supplied role |
 | `function_call` | `type`, `call_id`, `name`, `arguments` | A function the model asks the caller to run |
 | `function_call_output` | `type`, `call_id`, `output` | The caller-provided result for the matching function call |
+| `reasoning` | `type`, `summary`, `encrypted_content` | A reasoning item from an earlier response, replayed as part of the conversation. The endpoint attaches it to the assistant turn that follows it. |
+
+Replay `reasoning` items exactly as an earlier response returned them. For models that return
+`encrypted_content`, the replayed item restores the model's prior reasoning state across
+stateless requests; dropping the items degrades multi-step tool use. A reasoning item
+followed by a user or developer message, or by nothing, is dropped.
 
 Message `content` is either a string or a parts array. The endpoint handles these part types:
 
@@ -79,10 +85,10 @@ returned function call. The caller owns the lifecycle:
 1. Send the conversation and `tools`.
 2. Read returned `function_call` items and execute the named functions outside Bound's agent
    loop.
-3. Send the complete conversation again, including each `function_call` and its matching
-   `function_call_output` identified by `call_id`.
+3. Send the complete conversation again, including each returned `reasoning` item, each
+   `function_call`, and its matching `function_call_output` identified by `call_id`.
 
-The endpoint does not retain earlier calls or outputs between requests.
+The endpoint does not retain earlier calls, outputs, or reasoning between requests.
 
 ### Ignored and rejected fields
 
@@ -100,8 +106,10 @@ Bound does not store Responses API conversations, so send the complete conversat
 
 Omit `stream` or set it to `false`. The endpoint collects the model stream internally and
 returns one OpenAI-compatible `Response` object. The response includes model output and
-usage information, and its output entries can contain text or function calls. Other parts of
-the broader Responses schema are not supported unless this page lists them.
+usage information, and its output entries can contain reasoning, text, or function calls in
+model order. Reasoning entries carry the model's summary text and, for models that produce
+it, `encrypted_content` for replay in a later request. Other parts of the broader Responses
+schema are not supported unless this page lists them.
 
 The response echoes `tool_choice` and `parallel_tool_calls` for strict SDK parsers. Echoing
 `parallel_tool_calls` does not mean that the value was forwarded to the model driver.
@@ -116,10 +124,14 @@ data: <JSON containing a monotonic sequence_number>
 ```
 
 The following sequence illustrates the event boundaries. Delta events can repeat, and a
-response can contain multiple text or function-call output items.
+response can contain multiple reasoning, text, or function-call output items.
 
 ```text
 response.created → response.in_progress
+  → (reasoning) output_item.added(reasoning)
+               → response.reasoning_summary_text.delta (repeats as needed)
+               → response.reasoning_summary_text.done
+               → output_item.done
   → (text)     output_item.added → content_part.added
                → response.output_text.delta (repeats as needed)
                → response.output_text.done
