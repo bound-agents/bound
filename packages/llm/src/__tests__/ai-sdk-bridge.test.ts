@@ -2408,6 +2408,145 @@ describe("toModelMessages — cache marker", () => {
 		expect(out).toHaveLength(1);
 		expect(out[0].providerOptions).toBeUndefined();
 	});
+
+	it("openai: attaches part-level promptCacheBreakpoint to a string user message (lifted to parts)", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		expect(out).toHaveLength(1);
+		// The Responses converter ignores MESSAGE-level providerOptions on user
+		// messages — the marker must ride PART-level, which requires lifting
+		// string content to parts form.
+		expect(out[0].providerOptions).toBeUndefined();
+		const parts = out[0].content as Array<Record<string, unknown>>;
+		expect(parts).toEqual([
+			{
+				type: "text",
+				text: "hi",
+				providerOptions: { openai: { promptCacheBreakpoint: { mode: "explicit" } } },
+			},
+		]);
+	});
+
+	it("openai: marks the LAST text part of a multi-part user message", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "first" },
+						{ type: "text", text: "second" },
+					],
+				},
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		const parts = out[0].content as Array<Record<string, unknown>>;
+		expect(parts[0].providerOptions).toBeUndefined();
+		expect(parts[1].providerOptions).toEqual({
+			openai: { promptCacheBreakpoint: { mode: "explicit" } },
+		});
+	});
+
+	it("openai: converts a text-shape tool output to content shape to carry the breakpoint", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "call_1", name: "do_thing", input: {} }],
+				},
+				{ role: "tool_result", tool_use_id: "call_1", content: "result text" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		const toolMsg = out.find((m) => m.role === "tool");
+		expect(toolMsg).toBeDefined();
+		const parts = toolMsg?.content as unknown as Array<Record<string, unknown>>;
+		expect(parts[0].output).toEqual({
+			type: "content",
+			value: [
+				{
+					type: "text",
+					text: "result text",
+					providerOptions: { openai: { promptCacheBreakpoint: { mode: "explicit" } } },
+				},
+			],
+		});
+	});
+
+	it("openai: walks back past an assistant message to a markable position", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "question" },
+				{ role: "assistant", content: "answer" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		// Assistant output items have no breakpoint slot on the Responses wire;
+		// the marker must land on the user message instead (boundary moves
+		// earlier — semantically safe).
+		expect(out[1].providerOptions).toBeUndefined();
+		const userParts = out[0].content as Array<Record<string, unknown>>;
+		expect(userParts[0].providerOptions).toEqual({
+			openai: { promptCacheBreakpoint: { mode: "explicit" } },
+		});
+	});
+
+	it("openai: collapsing markers onto one boundary attaches only once", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "question" },
+				{ role: "assistant", content: "answer" },
+				{ role: "cache", content: "" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		const userParts = out[0].content as Array<Record<string, unknown>>;
+		const provOpts = userParts[0].providerOptions as Record<string, Record<string, unknown>>;
+		expect(provOpts.openai.promptCacheBreakpoint).toEqual({ mode: "explicit" });
+	});
+
+	it("openai: caps message-level breakpoints at MAX_OPENAI_MESSAGE_BREAKPOINTS", () => {
+		// Four distinct user-turn boundaries, four markers — only the first
+		// three (in message order) may attach; the driver holds the fourth
+		// breakpoint for the system anchor.
+		const messages: LLMMessage[] = [];
+		for (let i = 0; i < 4; i++) {
+			messages.push({ role: "user", content: `turn ${i}` });
+			messages.push({ role: "cache", content: "" });
+			messages.push({ role: "assistant", content: `reply ${i}` });
+		}
+		const out = toModelMessages(messages, { cacheProvider: "openai" });
+		const marked = out.filter((m) => {
+			if (m.role !== "user" || !Array.isArray(m.content)) return false;
+			return (m.content as Array<Record<string, unknown>>).some((p) => {
+				const po = p.providerOptions as Record<string, Record<string, unknown>> | undefined;
+				return po?.openai?.promptCacheBreakpoint !== undefined;
+			});
+		});
+		expect(marked).toHaveLength(3);
+	});
+
+	it("openai: drops leading cache marker with no prior message", () => {
+		const out = toModelMessages(
+			[
+				{ role: "cache", content: "" },
+				{ role: "user", content: "hi" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0].providerOptions).toBeUndefined();
+		expect(typeof out[0].content).toBe("string");
+	});
 });
 
 describe("toToolSet", () => {
