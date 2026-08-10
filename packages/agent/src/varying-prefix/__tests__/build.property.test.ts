@@ -4,7 +4,7 @@
  * Properties:
  *
  *   V1 Determinism — same inputs produce byte-equal output.
- *   V2 First line — always `User ID: <userId>, Thread ID: <threadId>`.
+ *   V2 First line — always `<identity user-id="…" thread-id="…"/>`.
  *   V3 Order — user/thread, relay, current model (any subset).
  *   V7 Optional fields absent -> their lines absent.
  *   V8 Newline absence — no embedded newlines in any single emitted line
@@ -12,6 +12,7 @@
  */
 
 import { describe, it } from "bun:test";
+import { escapeXmlAttr } from "@bound/shared";
 import fc from "fast-check";
 import { buildVaryingPrefix } from "../build";
 
@@ -45,11 +46,14 @@ describe("buildVaryingPrefix — property tests", () => {
 		);
 	});
 
-	it("V2: first line is always `User ID: ..., Thread ID: ...`", () => {
+	it("V2: first line is always the `<identity/>` element", () => {
 		fc.assert(
 			fc.property(fullArb, (params) => {
 				const out = buildVaryingPrefix(params);
-				return out[0] === `User ID: ${params.userId}, Thread ID: ${params.threadId}`;
+				return (
+					out[0] ===
+					`<identity user-id="${escapeXmlAttr(params.userId)}" thread-id="${escapeXmlAttr(params.threadId)}"/>`
+				);
 			}),
 			{ numRuns: 100 },
 		);
@@ -76,7 +80,9 @@ describe("buildVaryingPrefix — property tests", () => {
 	it("V7: optional fields absent -> their lines absent", () => {
 		const out = buildVaryingPrefix({ userId: "u", threadId: "t" });
 		if (out.length !== 1) throw new Error(`expected exactly 1 line, got ${out.length}`);
-		if (out[0] !== "User ID: u, Thread ID: t") throw new Error(`unexpected line: ${out[0]}`);
+		if (out[0] !== '<identity user-id="u" thread-id="t"/>') {
+			throw new Error(`unexpected line: ${out[0]}`);
+		}
 	});
 
 	it("V7b: relay-only adds exactly one line; model-only adds one line", () => {

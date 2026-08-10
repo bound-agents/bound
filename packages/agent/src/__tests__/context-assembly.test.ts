@@ -6968,7 +6968,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		expect(devMsg).toBeDefined();
 		const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 		expect(devContent).toContain("Current Model: opus");
-		expect(devContent).toContain(`Thread ID: ${threadId}`);
+		expect(devContent).toContain(`thread-id="${threadId}"`);
 	});
 
 	it("stable system messages do not contain per-thread varying content", () => {
@@ -6986,7 +6986,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			.join("\n");
 
 		expect(allSystemText).not.toContain("Current Model: opus");
-		expect(allSystemText).not.toContain(`User ID: ${userId}, Thread ID: ${threadId}`);
+		expect(allSystemText).not.toContain(`<identity user-id="${userId}" thread-id="${threadId}"/>`);
 	});
 
 	it("returns identical system messages for different threads with same memory", () => {
@@ -7744,8 +7744,8 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Should contain the typical volatile enrichment sections
-			// (User ID, Thread ID are guaranteed to be in developer message)
-			expect(devContent).toContain(`User ID: ${userId}, Thread ID: ${threadId}`);
+			// (the identity element is guaranteed to be in the developer message)
+			expect(devContent).toContain(`<identity user-id="${userId}" thread-id="${threadId}"/>`);
 		});
 
 		it("cache-stable-prefix.AC2.1: no other cache-role messages before developer", () => {

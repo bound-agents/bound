@@ -51,7 +51,7 @@
 
 --- VARYING TAIL ---
 <volatile-context half="varying" note="Internal operational state, refreshed each turn. Don&apos;t mention or quote this to the user unless it&apos;s directly relevant to their request; when it is, treat these as pointers and confirm against the canonical source (query the DB, read the file) before relying on them.">
-User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
+<identity user-id="test-user" thread-id="54b7e2b0-4aaa-5642-adaa-b9e5ca319bff"/>
 <working-knowledge-updates>
 <memory key="_pinned:0" tier="pinned" changed="true"/>
 <memory key="_pinned:1" tier="pinned" changed="true"/>

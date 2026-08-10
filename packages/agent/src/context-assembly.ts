@@ -48,6 +48,7 @@ import { renderClusterModels } from "./stable-prefix/compose";
 import type { ClusterModelView } from "./stable-prefix/types";
 import {
 	type LiveStateTaskEntry,
+	RELEVANT_MEMORY_FOOTER,
 	RELEVANT_MEMORY_HEADER,
 	type StageEntry,
 	type TieredEnrichment,
@@ -779,10 +780,10 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	if (params.recencyEntries.length > 0) {
 		varyingLines.push("");
 		varyingLines.push(RELEVANT_MEMORY_HEADER);
-		varyingLines.push("");
 		for (const entry of params.recencyEntries) {
 			varyingLines.push(formatRelevantMemoryTitleLine(entry));
 		}
+		varyingLines.push(RELEVANT_MEMORY_FOOTER);
 	}
 
 	if (params.stableCrossThreadSummaries.length > 0) {

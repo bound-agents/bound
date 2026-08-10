@@ -6,7 +6,7 @@
  * Properties pinned by `__tests__/build.property.test.ts`:
  *
  *   V1 Determinism — same inputs produce byte-equal output.
- *   V2 First line — always `User ID: <userId>, Thread ID: <threadId>`.
+ *   V2 First line — always `<identity user-id="…" thread-id="…"/>`.
  *   V3 Order — user/thread, relay, current model.
  *   V7 Optional fields absent -> their lines absent.
  *   V8 No embedded newlines in any single emitted line.

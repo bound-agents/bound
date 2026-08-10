@@ -958,12 +958,16 @@ export function formatStableDetailLine(
 }
 
 /**
- * R-VC27 section header for the turn-relevant cross-tier retrieval block.
+ * R-VC27 section element for the turn-relevant cross-tier retrieval block.
  * The keyword+graph pipeline runs WITHOUT the old `tier='default'` clamp, so
  * pinned/summary/detail entries that match the conversation now surface here
  * (title-only). Rendered into the varying tail by `composeVolatileSections`.
  */
-export const RELEVANT_MEMORY_HEADER = "## Relevant memory — matched to this turn";
+export const RELEVANT_MEMORY_HEADER =
+	'<relevant-memory note="Matched to this turn; bodies via memory search.">';
+
+/** Closing tag paired with RELEVANT_MEMORY_HEADER. */
+export const RELEVANT_MEMORY_FOOTER = "</relevant-memory>";
 
 /** R-VC27 default cap on the relevant-memory block (`BOUND_VC27_K`). */
 export const RELEVANT_MEMORY_DEFAULT_K = 15;
@@ -1023,16 +1027,16 @@ export function selectRelevantMemory(
 }
 
 /**
- * R-VC27 title-only line: `- {key} [{tier}] ({relTime})`. Renders the entry's
+ * R-VC27 title-only element: `<memory key tier age/>`. Renders the entry's
  * actual tier (pinned/summary/default/detail) — what tells the agent where the
  * body lives — not its retrieval-stage tag. Soft-deleted entries render as
- * `[forgotten]`. Uses wall-clock `relativeTime`; the varying-tail mirror uses
- * the `nowMs`-injected variant, and the parity test mocks the clock so the two
- * agree byte-for-byte.
+ * `tier="forgotten"`. Uses wall-clock `relativeTime`; the varying-tail mirror
+ * uses the `nowMs`-injected variant, and the parity test mocks the clock so
+ * the two agree byte-for-byte.
  */
 export function formatRelevantMemoryTitleLine(entry: StageEntry): string {
 	const tierTag = entry.deleted ? "forgotten" : entry.tier;
-	return `- ${entry.key} [${tierTag}] (${relativeTime(entry.modifiedAt)})`;
+	return `<memory key="${escapeXmlAttr(entry.key)}" tier="${escapeXmlAttr(tierTag)}" age="${escapeXmlAttr(relativeTime(entry.modifiedAt))}"/>`;
 }
 
 /**

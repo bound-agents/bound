@@ -2,6 +2,7 @@ import { escapeXmlAttr } from "@bound/shared";
 import {
 	BUDGET_PRESSURE_SUBSYSTEM_CAP,
 	LIVE_STATE_FOOTER,
+	RELEVANT_MEMORY_FOOTER,
 	RELEVANT_MEMORY_HEADER,
 	STALE_CHILD_GLOSS_MAX,
 	WORKING_KNOWLEDGE_UPDATES_FOOTER,
@@ -84,11 +85,11 @@ function renderWorkingKnowledgeUpdates(updates: WorkingKnowledgeUpdatesView): st
 }
 
 /**
- * Render the R-VC27 `## Relevant memory — matched to this turn` block. Empty
- * when the input array is empty (the production code path elides the header in
- * that case). Entries arrive PRE-SELECTED (dedup against the full-body stable
- * prefix + BOUND_VC27_K cap happen upstream in `selectRelevantMemory`); this
- * renderer only title-only formats them.
+ * Render the R-VC27 `<relevant-memory>` block. Empty when the input array is
+ * empty (the production code path elides the element in that case). Entries
+ * arrive PRE-SELECTED (dedup against the full-body stable prefix +
+ * BOUND_VC27_K cap happen upstream in `selectRelevantMemory`); this renderer
+ * only title-only formats them.
  */
 function renderRecentMemoryBlock(
 	entries: ReadonlyArray<RecentMemoryEntryView>,
@@ -99,16 +100,16 @@ function renderRecentMemoryBlock(
 	const out: string[] = [];
 	out.push("");
 	out.push(RELEVANT_MEMORY_HEADER);
-	out.push("");
 	for (const entry of entries) {
 		out.push(formatRecentMemoryLine(entry, nowMs));
 	}
+	out.push(RELEVANT_MEMORY_FOOTER);
 	return out;
 }
 
 /**
- * Title-only line mirroring `formatRelevantMemoryTitleLine` in
- * `summary-extraction.ts`: `- {key} [{tier}] ({relTime})`. Renders the entry's
+ * Title-only element mirroring `formatRelevantMemoryTitleLine` in
+ * `summary-extraction.ts`: `<memory key tier age/>`. Renders the entry's
  * actual tier (`forgotten` if soft-deleted), NOT its retrieval-stage tag. Must
  * stay byte-equivalent or the parity regression test fails — uses the
  * `nowMs`-injected relative-time variant; production uses wall-clock
@@ -116,7 +117,7 @@ function renderRecentMemoryBlock(
  */
 function formatRecentMemoryLine(entry: RecentMemoryEntryView, nowMs: number): string {
 	const tierTag = entry.deleted ? "forgotten" : entry.tier;
-	return `- ${entry.key} [${tierTag}] (${relativeTimeAt(entry.modifiedAt, nowMs)})`;
+	return `<memory key="${escapeXmlAttr(entry.key)}" tier="${escapeXmlAttr(tierTag)}" age="${escapeXmlAttr(relativeTimeAt(entry.modifiedAt, nowMs))}"/>`;
 }
 
 /**

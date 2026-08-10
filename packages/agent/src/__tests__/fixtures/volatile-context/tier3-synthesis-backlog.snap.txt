@@ -1,4 +1,4 @@
-User ID: test-user, Thread ID: d415ffe4-2d41-5928-8568-67d2eeb89f29
+<identity user-id="test-user" thread-id="d415ffe4-2d41-5928-8568-67d2eeb89f29"/>
 
 <working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
 <memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>
@@ -969,22 +969,22 @@ User ID: test-user, Thread ID: d415ffe4-2d41-5928-8568-67d2eeb89f29
 <memory key="_summary:topic-49" tier="summary" changed="true"/>
 </working-knowledge-updates>
 
-## Relevant memory — matched to this turn
-
-- curiosity:item-0-det000000 [detail] (1m ago)
-- curiosity:item-1-det000001 [detail] (1m ago)
-- curiosity:item-2-det000002 [detail] (1m ago)
-- curiosity:item-3-det000003 [detail] (1m ago)
-- curiosity:item-4-det000004 [detail] (1m ago)
-- curiosity:item-5-det000005 [detail] (1m ago)
-- curiosity:item-6-det000006 [detail] (1m ago)
-- curiosity:item-7-det000007 [detail] (1m ago)
-- curiosity:item-8-det000008 [detail] (1m ago)
-- curiosity:item-9-det000009 [detail] (1m ago)
-- curiosity:item-10-det000010 [detail] (1m ago)
-- curiosity:item-11-det000011 [detail] (1m ago)
-- curiosity:item-12-det000012 [detail] (1m ago)
-- curiosity:item-13-det000013 [detail] (1m ago)
-- curiosity:item-14-det000014 [detail] (1m ago)
+<relevant-memory note="Matched to this turn; bodies via memory search.">
+<memory key="curiosity:item-0-det000000" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-1-det000001" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-2-det000002" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-3-det000003" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-4-det000004" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-5-det000005" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-6-det000006" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-7-det000007" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-8-det000008" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-9-det000009" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-10-det000010" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-11-det000011" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-12-det000012" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-13-det000013" tier="detail" age="1m ago"/>
+<memory key="curiosity:item-14-det000014" tier="detail" age="1m ago"/>
+</relevant-memory>
 <live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
 </live-state>

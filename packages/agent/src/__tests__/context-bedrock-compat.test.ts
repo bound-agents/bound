@@ -236,7 +236,7 @@ describe("Context assembly Bedrock compatibility", () => {
 				(typeof m.content === "string" &&
 					!m.content.startsWith("You are a helpful") &&
 					!m.content.startsWith("## Orientation") &&
-					!m.content.startsWith("User ID:") &&
+					!m.content.startsWith("<identity ") &&
 					!m.content.startsWith("Model switched")),
 		);
 
@@ -430,7 +430,7 @@ describe("Context assembly Bedrock compatibility", () => {
 				typeof m.content === "string" &&
 				(m.content.startsWith("You are a helpful") ||
 					m.content.startsWith("## Orientation") ||
-					m.content.startsWith("User ID:") ||
+					m.content.startsWith("<identity ") ||
 					m.content.startsWith("Model switched"))) ||
 			m.role === "developer";
 
