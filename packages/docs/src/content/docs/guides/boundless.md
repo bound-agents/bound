@@ -1,61 +1,45 @@
 ---
 title: Use the boundless terminal client
-description: Connect a terminal workspace to Bound and expose local file, shell, and MCP tools.
+description: Connect a terminal workspace to Bound and use local file, shell, and MCP tools.
 ---
 
-The `boundless` terminal client connects one working directory to a Bound thread. It adds
-host-side file and shell tools while keeping messages, memory, and tool calls in the shared
-Bound state.
+Use the `boundless` terminal client to connect your current working directory to a Bound
+thread and make host-side file and shell tools available to that thread.
 
 ## Prerequisites
 
 - A running Bound server
 - The `boundless` binary on your `PATH`
+- A working directory that the agent can read
 
-## Start a session
+## 1. Open the working directory
+
+In a terminal, change to the directory you want the agent to work with. The client registers
+tools against this real working directory.
+
+## 2. Start a live session
+
+Run the client:
 
 ```bash
 boundless
 ```
 
 By default, the client connects to `http://localhost:3001` and creates a thread for the
-current working directory.
+current working directory. The client session is the live connection; the thread is the
+conversation that you can resume later.
 
-Connect to another server:
+## 3. Verify the live session
 
-```bash
-boundless --url http://my-server:3001
-```
+Check the status area for the connection state, thread ID, selected model, MCP server count,
+and working directory. Send a message in the terminal UI and confirm that the thread
+responds.
 
-Resume an existing thread:
+Copy the full thread ID if you want to resume this thread later.
 
-```bash
-boundless --attach <thread-id>
-```
+## Work with local files and commands
 
-## Configure the client
-
-Configuration lives in `~/.bound/less/`:
-
-| File | Purpose |
-| --- | --- |
-| `config.json` | Server URL, default model, injected context files, and shell override |
-| `mcp.json` | Local MCP servers (separate from the server's `mcp.json`) |
-
-## Understand filesystem access
-
-Shell commands run in an OS-level write-confinement sandbox:
-
-| Platform | Mechanism |
-| --- | --- |
-| macOS | `seatbelt` (sandbox-exec profile) |
-| Linux | `bubblewrap` (`bwrap`) |
-| Windows | `IsolationSession` |
-
-The agent can read the host filesystem. Writes are confined to the working directory and
-temporary directories allowed by the platform sandbox.
-
-The client registers these tools against the real working directory:
+The client registers these tools against the working directory:
 
 - `boundless_read` reads files with stable line anchors.
 - `boundless_write` creates or replaces files atomically.
@@ -66,61 +50,91 @@ The client registers these tools against the real working directory:
 
 Anchored reads let the agent address exact lines without reproducing their full text.
 
-## Read tool output
+:::danger[Filesystem access]
+Read access follows the operating-system permissions of the `boundless` process. Writes are
+confined to the working directory and temporary directories allowed by the platform sandbox.
+Start `boundless` in a directory whose contents are appropriate for the thread to access.
+:::
 
-Shell results show up to 32 visual rows. Larger results retain the first and last 16 rows
-around an elision marker. Results that exceed the universal 256 KiB cap are offloaded
-before they reach the transcript.
+For details about host-tool trust boundaries and shell write confinement, read
+[Security boundaries](/bound/concepts/security-boundaries/) and
+[Sandbox and filesystems](/bound/concepts/sandbox/).
 
-Consecutive reads, searches, and database queries share one compact result group. Failed
-calls retain their diagnostic output.
+## Connect to another server
 
-## Monitor the session
+Override the configured server URL for the current run:
 
-The status area shows the connection state, thread ID, selected model, MCP server count,
-and working directory. Copy the full thread ID when you need to reconnect with `--attach`.
+```bash
+boundless --url http://my-server:3001
+```
 
-An additional row appears when measurements are available:
+The override isn't persisted. The default URL is `http://localhost:3001`.
+
+## Resume an existing thread
+
+Pass the full thread ID shown in the status area:
+
+```bash
+boundless --attach <thread-id>
+```
+
+Replace `<thread-id>` with the thread you want to resume. This starts a new live client
+session attached to that thread.
+
+## Configuration files
+
+Client configuration lives in `~/.bound/less/`:
+
+| File | Purpose |
+| --- | --- |
+| `config.json` | Server URL, default model, injected context files, and shell override |
+| `mcp.json` | Local MCP servers, separate from the server's `mcp.json` |
+
+## Read status and tool output
+
+Large shell results may be shortened or offloaded before they reach the transcript.
+Consecutive reads and searches share one compact result group. Failed calls retain their
+diagnostic output.
+
+An additional status row appears when measurements are available:
 
 | Segment | Meaning |
 | --- | --- |
-| `ctx 44% (87k/200k)` | Provider-reported context-window use after the last turn. |
-| `$1.05 session / $12.34 today` | Cluster-wide session and daily spend. |
-| `● 3 background` | Background tool calls in flight on this thread (see [Run an errand in the background](/bound/concepts/auxiliary-agents/#run-an-errand-in-the-background)). |
+| `ctx 44% (87k/200k)` | Provider-reported context-window use after the last turn |
+| `$1.05 session / $12.34 today` | Cluster-wide live-session and daily spend |
+| `● 3 background` | Background tool calls in flight on this thread |
 
-Segments remain hidden until they have a value.
+Segments remain hidden until they have a value. See
+[Foreground and background work](/bound/concepts/auxiliary-agents/#foreground-and-background-work)
+for background work.
 
 ## Connect an ACP editor
 
-`boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio, letting ACP-compatible editors (Zed, others) drive bound as their backend agent.
+To use `boundless` from an Agent Client Protocol (ACP) editor instead of the terminal UI,
+follow [Connect an ACP editor](/bound/guides/acp-editor/).
 
-The editor spawns `boundless --acp` as a subprocess and speaks JSON-RPC over stdin/stdout. Bound provides inference, memory, and model routing; the filesystem and shell tools execute locally in the editor's workspace, gated through the editor's permission prompts.
+## Troubleshoot the client
 
-Existing bound threads can be resumed via the protocol's `session/load`.
+### The client doesn't connect
 
-### Configure Zed
+Confirm that the Bound server is running. If it isn't at `http://localhost:3001`, pass its
+web-server URL with `--url` or set the server URL in `~/.bound/less/config.json`.
 
-```json
-{
-  "agent_servers": {
-    "bound": {
-      "type": "custom",
-      "command": "boundless",
-      "args": ["--acp"],
-      "env": {}
-    }
-  }
-}
-```
+### An attached thread isn't the expected thread
 
-In ACP mode, stdout is reserved for JSON-RPC. Diagnostics go to
-`~/.bound/less/logs/`, with fatal startup errors also written to stderr. ACP clients open
-sessions through `session/new` and `session/load`; `--attach` does not apply.
+Copy the full thread ID from the status area and pass that value to `--attach`.
 
-## Command-line reference
+### Tool output appears shortened
 
-| Option | Description |
-| --- | --- |
-| `--url <url>` | Override the configured server URL for this run (not persisted). Default `http://localhost:3001`. |
-| `--attach <thread-id>` | Attach to an existing thread instead of creating a new one. |
-| `--acp` | Run as an ACP agent server over stdio instead of rendering the terminal UI. |
+Shell output longer than 32 visual rows is elided in the middle. Output over 256 KiB is
+offloaded before it reaches the transcript.
+
+## Related concepts
+
+- [System model](/bound/concepts/system-model/)
+- [Work lifecycle](/bound/concepts/work-lifecycle/)
+- [Security boundaries](/bound/concepts/security-boundaries/)
+- [Sandbox and filesystems](/bound/concepts/sandbox/)
+
+For concise option lookup, see the
+[`boundless` command reference](/bound/guides/cli-operations/#boundless).

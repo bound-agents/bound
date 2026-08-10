@@ -1,61 +1,61 @@
 ---
 title: Agent system
-description: How Bound coordinates conversations, built-in tools, scheduled work, and event intake.
+description: How Bound turns triggers into model decisions, tool calls, and persisted conversation state.
 ---
 
-Bound presents one persistent agent across threads and interfaces. The agent loop assembles
-context, calls a model, executes tools, persists the result, and checks for queued work
-before returning to idle.
+Bound presents one persistent agent across threads and interfaces. This page explains the
+loop that advances that agent and the kinds of capabilities the loop can use. For the
+larger architectural picture, see the [system model](/bound/concepts/system-model/).
 
-## Built-in tools
+## The agent loop
 
-The native tools are always registered:
+A trigger starts or resumes work on a thread. The trigger can be a user message, scheduled
+work, or an external event. The loop then:
 
-| Tool | What it does |
-| --- | --- |
-| `memory` | Store, search, and forget facts across sessions |
-| `task` | Schedule or update deferred, recurring, and event-driven tasks |
-| `cancel` | Cancel a scheduled task |
-| `query` | Run read-only SQL against the database |
-| `purge` | Mark distracting or unnecessary messages for context substitution |
-| `skill` | Activate, list, read, or deactivate skills |
-| `advisory` | Create and manage operational advisories |
-| `notify` | Send a reminder to a thread |
-| `introspect` | Ask another thread for reflection |
-| `archive` | Archive old threads |
-| `model_hint` | Switch the model for the current task |
-| `hostinfo` | Inspect hosts, topology, and host capabilities |
-| `aux` | Create and manage auxiliary agent identities |
+1. Assembles the thread's conversation, relevant memory, active skills, and live state.
+2. Resolves a model and sends it the assembled context.
+3. Interprets the model response as either a reply or one or more tool calls.
+4. Executes each requested tool, adds its result to the conversation, and asks the model for
+   the next decision. Steps 3 and 4 repeat while the model requests more tools.
+5. Exits the decision cycle when the model returns a reply without another tool call, then
+   persists the resulting messages and state before the turn becomes idle.
 
-Platform connectors add the `connector` tool where it is available. MCP servers and
-`boundless` sessions contribute additional tools through the unified registry.
+The loop host coordinates this cycle. [Inference routing](/bound/concepts/inference/) and
+tool routing can place individual operations on another host without moving the loop itself.
 
-## Scheduled work
+## Tool categories
 
-The scheduler supports:
+Bound combines several sources of tools in one registry:
 
-- **Cron tasks:** Recurring work described by a cron expression.
-- **Deferred tasks:** One-time work scheduled after a delay.
-- **Event tasks:** Work woken by connector, webhook, or RSS intake.
+- **State and coordination tools** work with memory, tasks, advisories, threads, and host
+  information.
+- **Agent extension tools** activate skills or delegate bounded work to
+  [auxiliary agents](/bound/concepts/auxiliary-agents/).
+- **Integration tools** come from platform connectors and Model Context Protocol (MCP)
+  servers.
+- **Client tools** are supplied by a live client session, such as the file and shell tools
+  exposed by the `boundless` terminal client.
 
-Tasks can depend on earlier tasks and receive the earlier result as input. In a multi-host
-cluster, task claiming ensures that one host runs a given task.
+Which tools a turn receives depends on its interface, thread context, connected services,
+and capability boundaries. See [Agent tools](/bound/reference/agent-tools/) for tool names,
+actions, and parameters.
 
-## Event intake
+## Scheduled and event-driven turns
 
-External events use the same scheduler wakeup path:
+Recurring, deferred, and event-driven tasks all trigger the same agent loop. Once triggered,
+they follow the same model-decision, tool-call, and tool-result cycle as a user message.
 
-- [Webhooks](/bound/guides/webhooks/) accept pushed HTTP events.
-- [RSS feeds](/bound/guides/rss-feeds/) poll for new feed items.
-- Platform connectors subscribe to events such as Discord messages.
+External events enter through integrations such as [webhooks](/bound/guides/webhooks/),
+[RSS feeds](/bound/guides/rss-feeds/), and platform connectors. Connectors can also
+contribute scoped tools appropriate to the receiving thread.
 
-The scheduler folds each intake envelope into the task wakeup context.
+Task dependencies, scheduling, claiming, interruption, and recovery are lifecycle concerns
+rather than parts of the model's decision cycle. See the [work
+lifecycle](/bound/concepts/work-lifecycle/) for those boundaries and guarantees.
 
-## Platform connectors
+## Persistence and distribution
 
-Platform connectors are in-process MCP servers managed by Bound. Event-bound threads
-receive the connector's scoped tools, while ordinary threads receive read-only platform
-tools and the connector-management tool.
-
-Only the elected connector leader maintains active subscriptions. Synced connector handles
-allow another host to reconnect them after failover.
+Conversation and tool results are durable Bound state; host-local capabilities remain tied
+to the host or client that provides them. See [State, consistency, and multi-host
+operation](/bound/concepts/sync/) for how durable state and remote capabilities cross host
+boundaries.

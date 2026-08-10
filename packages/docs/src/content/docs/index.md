@@ -21,35 +21,29 @@ Bound is experimental and does not yet provide production stability guarantees.
 
 ## What Bound does
 
-Bound runs a persistent personal agent across one or more hosts. Messages, memory, files,
-skills, and tasks replicate through an encrypted sync protocol, so the web UI, Discord,
-and the `boundless` terminal client share the same state.
+Bound gives you a persistent personal agent whose messages, memory, files, skills, and tasks
+remain available through the web UI, Discord, and the `boundless` terminal client. You can
+run Bound on one host or use optional multi-host operation to make models, tools, and
+interfaces on different machines available to the same agent.
 
-Each host can expose different models and tools. Bound resolves the requested model across
-the cluster, relays inference or tool calls when necessary, and keeps the agent loop on the
-host that received the trigger.
+## What you can do
 
-## Core capabilities
+- **Continue your work:** Carry context and durable memory across conversations and
+  interfaces.
+- **Use available models:** Work with local and remote model backends and route requests
+  based on their capabilities.
+- **Automate recurring work:** Run tasks on schedules, after a delay, or in response to
+  external events.
+- **Extend your agent:** Add MCP servers and client-provided tools to support your workflows.
+- **Choose your interface:** Use the web UI, Discord, or the `boundless` terminal client
+  with the same agent state.
 
-- **Replicated state:** Each host maintains a SQLite database and exchanges signed,
-  encrypted changes through the cluster hub.
-- **Model routing:** Local and remote backends participate in one cluster-wide model
-  inventory with capability-aware fallback.
-- **Persistent memory:** A tiered knowledge graph carries durable knowledge across
-  conversations and hosts.
-- **Scheduled and event-driven work:** Tasks can run on cron schedules, after a delay, or
-  in response to connector, webhook, and RSS events.
-- **Tool integration:** MCP servers, platform connectors, and `boundless` client tools use
-  the same tool-dispatch system.
-- **Constrained execution:** The built-in filesystem is virtual, while `boundless` shell
-  commands use OS-level write confinement.
+## Choose your next step
 
-## Next steps
-
-- [Complete the quick start](/bound/guides/quick-start/) to run a local instance.
-- [Use the `boundless` terminal client](/bound/guides/boundless/) for coding workflows.
-- [Configure a multi-host cluster](/bound/guides/multi-host/) when models or interfaces
-  need to run on different machines.
-- [Review the web UI reference](/bound/concepts/web-ui/) to find operational views.
-- [Use the configuration reference](/bound/reference/configuration/) for every supported
-  config field.
+- **Run Bound locally:** [Complete the quick start](/bound/guides/quick-start/).
+- **Understand the system:** Read [How Bound fits together](/bound/concepts/system-model/).
+- **Use Bound for terminal workflows:** [Set up the `boundless` terminal client](/bound/guides/boundless/).
+- **Distribute models or interfaces across machines:** [Configure optional multi-host
+  operation](/bound/guides/multi-host/).
+- **Learn the web UI:** [Review the web UI guide](/bound/concepts/web-ui/).
+- **Look up a setting:** [Use the configuration reference](/bound/reference/configuration/).

@@ -1,31 +1,50 @@
 ---
 title: Sandbox and filesystem
-description: How Bound separates its virtual files from host files exposed through boundless.
+description: How Bound separates replicated virtual files from host files exposed by a terminal session.
 ---
 
-Bound has two filesystem layers that serve different purposes.
+Bound exposes two filesystem models with different storage, availability, and security
+boundaries. Distinguishing them explains why a file can be durable across agent turns but
+separate from a project on your computer.
+
+## Operation and boundary matrix
+
+| Operation | Agent virtual filesystem | Connected client filesystem |
+| --- | --- | --- |
+| Read a file | Reads database-backed virtual content | Reads through tools supplied by a connected terminal client, subject to that client process's OS permissions |
+| Write or edit a file | Changes virtual content persisted by Bound | Changes host content within the client's write boundary |
+| Run a shell command | Not part of this filesystem model | Runs through the client under OS-level write confinement |
+| Continue on another turn | Persisted virtual files remain available | Requires an applicable client session and its tools |
+| Appear on another Bound host | Selected virtual file state can synchronize | Client files do not synchronize through Bound's file state |
+
+The tool name and active client context determine which boundary an operation uses; a
+similar-looking path or filename does not join the two filesystems.
 
 ## Agent virtual filesystem
 
-The agent works in an in-memory virtual filesystem — not your real disk. When the agent reads or writes a file during a conversation, it's operating on virtual files that live in memory and are persisted to the database. A stray write can never escape onto a real disk.
+The agent virtual filesystem is an in-memory workspace backed by Bound's database. Reads
+and writes operate on virtual files rather than directly on a host disk.
 
-Files the agent creates are stored in the `files` table and replicated across hosts via sync. When a new agent loop starts, previously persisted files are loaded back into the virtual filesystem.
+This model gives the agent durable working files without granting host filesystem access.
+Its contents follow Bound's state model rather than the directory layout of a connected
+computer.
 
-## Host filesystem access
+## Connected client filesystem
 
-The `boundless` terminal client can expose host file and shell tools for its working
-directory. Shell commands run in an OS-level write-confinement sandbox:
+A connected `boundless` terminal client—the command-line client that connects a local
+working directory to Bound—can provide file and shell tools. These tools operate on the
+connected client's filesystem, so their availability and effects are tied to that session
+rather than to the replicated virtual filesystem.
 
-| Platform | Mechanism |
-| --- | --- |
-| macOS | `seatbelt` (sandbox-exec profile) |
-| Linux | `bubblewrap` (`bwrap`) |
-| Windows | `IsolationSession` |
+Reads can reach files that the client process's operating-system permissions allow. Writes
+and shell commands are subject to OS-level write confinement: writes are limited to the
+client's working directory and allowed temporary directories. This boundary does not make
+client files part of the virtual filesystem or replicate them to other Bound hosts.
 
-The agent can read the host filesystem. Writes are confined to the working directory and
-allowed temporary directories.
+## Next steps
 
-File operations through `boundless_read`, `boundless_write`, and `boundless_edit` go through the boundless client's own I/O. Shell commands via `boundless_bash` run inside the sandbox.
-
-See [Use the `boundless` terminal client](/bound/guides/boundless/) for the complete
-workflow.
+- [Use the `boundless` terminal client](/bound/guides/boundless/) to connect a working
+  directory and use its file and shell tools.
+- [Agent tools](/bound/reference/agent-tools/) lists the available file and shell operations.
+- [Security boundaries](/bound/concepts/security-boundaries/) explains the surrounding trust
+  model and why client access should remain scoped.
