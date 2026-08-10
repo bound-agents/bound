@@ -1,1377 +1,1374 @@
 User ID: test-user, Thread ID: 8869d0e9-563b-5c63-af80-fa048b224bc8
 
-## Working Knowledge — operational and durable
-
-- _pinned:0 (modified 2026-05-22): pinned body 0
-- _pinned:1 (modified 2026-05-21): pinned body 1
-- _pinned:10 (modified 2026-05-21): pinned body 10
-- _pinned:11 (modified 2026-05-21): pinned body 11
-- _pinned:12 (modified 2026-05-21): pinned body 12
-- _pinned:13 (modified 2026-05-21): pinned body 13
-- _pinned:14 (modified 2026-05-21): pinned body 14
-- _pinned:15 (modified 2026-05-21): pinned body 15
-- _pinned:16 (modified 2026-05-21): pinned body 16
-- _pinned:17 (modified 2026-05-21): pinned body 17
-- _pinned:18 (modified 2026-05-21): pinned body 18
-- _pinned:19 (modified 2026-05-21): pinned body 19
-- _pinned:2 (modified 2026-05-21): pinned body 2
-- _pinned:20 (modified 2026-05-21): pinned body 20
-- _pinned:21 (modified 2026-05-21): pinned body 21
-- _pinned:22 (modified 2026-05-21): pinned body 22
-- _pinned:23 (modified 2026-05-21): pinned body 23
-- _pinned:24 (modified 2026-05-21): pinned body 24
-- _pinned:25 (modified 2026-05-21): pinned body 25
-- _pinned:26 (modified 2026-05-21): pinned body 26
-- _pinned:27 (modified 2026-05-21): pinned body 27
-- _pinned:28 (modified 2026-05-21): pinned body 28
-- _pinned:29 (modified 2026-05-21): pinned body 29
-- _pinned:3 (modified 2026-05-21): pinned body 3
-- _pinned:30 (modified 2026-05-21): pinned body 30
-- _pinned:31 (modified 2026-05-21): pinned body 31
-- _pinned:32 (modified 2026-05-21): pinned body 32
-- _pinned:33 (modified 2026-05-21): pinned body 33
-- _pinned:34 (modified 2026-05-21): pinned body 34
-- _pinned:35 (modified 2026-05-21): pinned body 35
-- _pinned:36 (modified 2026-05-21): pinned body 36
-- _pinned:37 (modified 2026-05-21): pinned body 37
-- _pinned:38 (modified 2026-05-21): pinned body 38
-- _pinned:39 (modified 2026-05-21): pinned body 39
-- _pinned:4 (modified 2026-05-21): pinned body 4
-- _pinned:40 (modified 2026-05-21): pinned body 40
-- _pinned:41 (modified 2026-05-21): pinned body 41
-- _pinned:42 (modified 2026-05-21): pinned body 42
-- _pinned:43 (modified 2026-05-21): pinned body 43
-- _pinned:44 (modified 2026-05-21): pinned body 44
-- _pinned:45 (modified 2026-05-21): pinned body 45
-- _pinned:46 (modified 2026-05-21): pinned body 46
-- _pinned:47 (modified 2026-05-21): pinned body 47
-- _pinned:48 (modified 2026-05-21): pinned body 48
-- _pinned:49 (modified 2026-05-21): pinned body 49
-- _pinned:5 (modified 2026-05-21): pinned body 5
-- _pinned:50 (modified 2026-05-21): pinned body 50
-- _pinned:51 (modified 2026-05-21): pinned body 51
-- _pinned:52 (modified 2026-05-21): pinned body 52
-- _pinned:53 (modified 2026-05-21): pinned body 53
-- _pinned:54 (modified 2026-05-21): pinned body 54
-- _pinned:55 (modified 2026-05-21): pinned body 55
-- _pinned:56 (modified 2026-05-21): pinned body 56
-- _pinned:57 (modified 2026-05-21): pinned body 57
-- _pinned:58 (modified 2026-05-21): pinned body 58
-- _pinned:59 (modified 2026-05-21): pinned body 59
-- _pinned:6 (modified 2026-05-21): pinned body 6
-- _pinned:60 (modified 2026-05-21): pinned body 60
-- _pinned:61 (modified 2026-05-21): pinned body 61
-- _pinned:62 (modified 2026-05-21): pinned body 62
-- _pinned:63 (modified 2026-05-21): pinned body 63
-- _pinned:64 (modified 2026-05-21): pinned body 64
-- _pinned:65 (modified 2026-05-21): pinned body 65
-- _pinned:66 (modified 2026-05-21): pinned body 66
-- _pinned:67 (modified 2026-05-21): pinned body 67
-- _pinned:68 (modified 2026-05-21): pinned body 68
-- _pinned:69 (modified 2026-05-21): pinned body 69
-- _pinned:7 (modified 2026-05-21): pinned body 7
-- _pinned:70 (modified 2026-05-21): pinned body 70
-- _pinned:71 (modified 2026-05-21): pinned body 71
-- _pinned:72 (modified 2026-05-21): pinned body 72
-- _pinned:73 (modified 2026-05-21): pinned body 73
-- _pinned:74 (modified 2026-05-21): pinned body 74
-- _pinned:75 (modified 2026-05-21): pinned body 75
-- _pinned:76 (modified 2026-05-21): pinned body 76
-- _pinned:77 (modified 2026-05-21): pinned body 77
-- _pinned:78 (modified 2026-05-21): pinned body 78
-- _pinned:79 (modified 2026-05-21): pinned body 79
-- _pinned:8 (modified 2026-05-21): pinned body 8
-- _pinned:9 (modified 2026-05-21): pinned body 9
-- _summary:non-compliant (modified 2026-05-22): This is a summary without proper sub-topic vocabulary or structure.
-- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
-- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
-- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
-- _summary:topic-3 (modified 2026-05-21): Summary for topic 3: this is a brief overview.
-- _summary:topic-4 (modified 2026-05-21): Summary for topic 4: this is a brief overview.
-- _summary:topic-5 (modified 2026-05-21): Summary for topic 5: this is a brief overview.
-- _summary:topic-6 (modified 2026-05-21): Summary for topic 6: this is a brief overview.
-- _summary:topic-7 (modified 2026-05-21): Summary for topic 7: this is a brief overview.
-- _summary:topic-8 (modified 2026-05-21): Summary for topic 8: this is a brief overview.
-- _summary:topic-9 (modified 2026-05-21): Summary for topic 9: this is a brief overview.
-- _summary:topic-10 (modified 2026-05-21): Summary for topic 10: this is a brief overview.
-- _summary:topic-11 (modified 2026-05-21): Summary for topic 11: this is a brief overview.
-- _summary:topic-12 (modified 2026-05-21): Summary for topic 12: this is a brief overview.
-- _summary:topic-13 (modified 2026-05-21): Summary for topic 13: this is a brief overview.
-- _summary:topic-14 (modified 2026-05-21): Summary for topic 14: this is a brief overview.
-- _summary:topic-15 (modified 2026-05-21): Summary for topic 15: this is a brief overview.
-- _summary:topic-16 (modified 2026-05-21): Summary for topic 16: this is a brief overview.
-- _summary:topic-17 (modified 2026-05-21): Summary for topic 17: this is a brief overview.
-- _summary:topic-18 (modified 2026-05-21): Summary for topic 18: this is a brief overview.
-- _summary:topic-19 (modified 2026-05-21): Summary for topic 19: this is a brief overview.
-- _summary:topic-20 (modified 2026-05-21): Summary for topic 20: this is a brief overview.
-- _summary:topic-21 (modified 2026-05-21): Summary for topic 21: this is a brief overview.
-- _summary:topic-22 (modified 2026-05-21): Summary for topic 22: this is a brief overview.
-- _summary:topic-23 (modified 2026-05-21): Summary for topic 23: this is a brief overview.
-- _summary:topic-24 (modified 2026-05-21): Summary for topic 24: this is a brief overview.
-- _summary:topic-25 (modified 2026-05-21): Summary for topic 25: this is a brief overview.
-- _summary:topic-26 (modified 2026-05-21): Summary for topic 26: this is a brief overview.
-- _summary:topic-27 (modified 2026-05-21): Summary for topic 27: this is a brief overview.
-- _summary:topic-28 (modified 2026-05-21): Summary for topic 28: this is a brief overview.
-- _summary:topic-29 (modified 2026-05-21): Summary for topic 29: this is a brief overview.
-- _summary:topic-30 (modified 2026-05-21): Summary for topic 30: this is a brief overview.
-- _summary:topic-31 (modified 2026-05-21): Summary for topic 31: this is a brief overview.
-- _summary:topic-32 (modified 2026-05-21): Summary for topic 32: this is a brief overview.
-- _summary:topic-33 (modified 2026-05-21): Summary for topic 33: this is a brief overview.
-- _summary:topic-34 (modified 2026-05-21): Summary for topic 34: this is a brief overview.
-- _summary:topic-35 (modified 2026-05-21): Summary for topic 35: this is a brief overview.
-- _summary:topic-36 (modified 2026-05-21): Summary for topic 36: this is a brief overview.
-- _summary:topic-37 (modified 2026-05-21): Summary for topic 37: this is a brief overview.
-- _summary:topic-38 (modified 2026-05-21): Summary for topic 38: this is a brief overview.
-- _summary:topic-39 (modified 2026-05-21): Summary for topic 39: this is a brief overview.
-- _summary:topic-40 (modified 2026-05-21): Summary for topic 40: this is a brief overview.
-- _summary:topic-41 (modified 2026-05-21): Summary for topic 41: this is a brief overview.
-- _summary:topic-42 (modified 2026-05-21): Summary for topic 42: this is a brief overview.
-- _summary:topic-43 (modified 2026-05-21): Summary for topic 43: this is a brief overview.
-- _summary:topic-44 (modified 2026-05-21): Summary for topic 44: this is a brief overview.
-- _summary:topic-45 (modified 2026-05-21): Summary for topic 45: this is a brief overview.
-- _summary:topic-46 (modified 2026-05-21): Summary for topic 46: this is a brief overview.
-- _summary:topic-47 (modified 2026-05-21): Summary for topic 47: this is a brief overview.
-- _summary:topic-48 (modified 2026-05-21): Summary for topic 48: this is a brief overview.
-
-Bodies of summary entries are accessed via memory search using terms from the entry key.
-## Discoverable Archive — title-only; bodies via memory search
-
-### topic-0 (100 entries, showing 20 most recent)
-- curiosity:item-0-det000000
-- curiosity:item-100-det000100
-- curiosity:item-150-det000150
-- curiosity:item-200-det000200
-- curiosity:item-250-det000250
-- curiosity:item-300-det000300
-- curiosity:item-350-det000350
-- curiosity:item-400-det000400
-- curiosity:item-450-det000450
-- curiosity:item-50-det000050
-- curiosity:item-500-det000500
-- curiosity:item-550-det000550
-- curiosity:item-600-det000600
-- curiosity:item-650-det000650
-- curiosity:item-700-det000700
-- curiosity:item-750-det000750
-- curiosity:item-800-det000800
-- curiosity:item-850-det000850
-- curiosity:item-900-det000900
-- curiosity:item-950-det000950
-
-### topic-1 (100 entries, showing 20 most recent)
-- curiosity:item-1-det000001
-- curiosity:item-101-det000101
-- curiosity:item-151-det000151
-- curiosity:item-201-det000201
-- curiosity:item-251-det000251
-- curiosity:item-301-det000301
-- curiosity:item-351-det000351
-- curiosity:item-401-det000401
-- curiosity:item-451-det000451
-- curiosity:item-501-det000501
-- curiosity:item-51-det000051
-- curiosity:item-551-det000551
-- curiosity:item-601-det000601
-- curiosity:item-651-det000651
-- curiosity:item-701-det000701
-- curiosity:item-751-det000751
-- curiosity:item-801-det000801
-- curiosity:item-851-det000851
-- curiosity:item-901-det000901
-- curiosity:item-951-det000951
-
-### topic-10 (100 entries, showing 20 most recent)
-- curiosity:item-10-det000010
-- curiosity:item-110-det000110
-- curiosity:item-160-det000160
-- curiosity:item-210-det000210
-- curiosity:item-260-det000260
-- curiosity:item-310-det000310
-- curiosity:item-360-det000360
-- curiosity:item-410-det000410
-- curiosity:item-460-det000460
-- curiosity:item-510-det000510
-- curiosity:item-560-det000560
-- curiosity:item-60-det000060
-- curiosity:item-610-det000610
-- curiosity:item-660-det000660
-- curiosity:item-710-det000710
-- curiosity:item-760-det000760
-- curiosity:item-810-det000810
-- curiosity:item-860-det000860
-- curiosity:item-910-det000910
-- curiosity:item-960-det000960
-
-### topic-11 (100 entries, showing 20 most recent)
-- curiosity:item-11-det000011
-- curiosity:item-111-det000111
-- curiosity:item-161-det000161
-- curiosity:item-211-det000211
-- curiosity:item-261-det000261
-- curiosity:item-311-det000311
-- curiosity:item-361-det000361
-- curiosity:item-411-det000411
-- curiosity:item-461-det000461
-- curiosity:item-511-det000511
-- curiosity:item-561-det000561
-- curiosity:item-61-det000061
-- curiosity:item-611-det000611
-- curiosity:item-661-det000661
-- curiosity:item-711-det000711
-- curiosity:item-761-det000761
-- curiosity:item-811-det000811
-- curiosity:item-861-det000861
-- curiosity:item-911-det000911
-- curiosity:item-961-det000961
-
-### topic-12 (100 entries, showing 20 most recent)
-- curiosity:item-112-det000112
-- curiosity:item-12-det000012
-- curiosity:item-162-det000162
-- curiosity:item-212-det000212
-- curiosity:item-262-det000262
-- curiosity:item-312-det000312
-- curiosity:item-362-det000362
-- curiosity:item-412-det000412
-- curiosity:item-462-det000462
-- curiosity:item-512-det000512
-- curiosity:item-562-det000562
-- curiosity:item-612-det000612
-- curiosity:item-62-det000062
-- curiosity:item-662-det000662
-- curiosity:item-712-det000712
-- curiosity:item-762-det000762
-- curiosity:item-812-det000812
-- curiosity:item-862-det000862
-- curiosity:item-912-det000912
-- curiosity:item-962-det000962
-
-### topic-13 (100 entries, showing 20 most recent)
-- curiosity:item-113-det000113
-- curiosity:item-13-det000013
-- curiosity:item-163-det000163
-- curiosity:item-213-det000213
-- curiosity:item-263-det000263
-- curiosity:item-313-det000313
-- curiosity:item-363-det000363
-- curiosity:item-413-det000413
-- curiosity:item-463-det000463
-- curiosity:item-513-det000513
-- curiosity:item-563-det000563
-- curiosity:item-613-det000613
-- curiosity:item-63-det000063
-- curiosity:item-663-det000663
-- curiosity:item-713-det000713
-- curiosity:item-763-det000763
-- curiosity:item-813-det000813
-- curiosity:item-863-det000863
-- curiosity:item-913-det000913
-- curiosity:item-963-det000963
-
-### topic-14 (100 entries, showing 20 most recent)
-- curiosity:item-114-det000114
-- curiosity:item-14-det000014
-- curiosity:item-164-det000164
-- curiosity:item-214-det000214
-- curiosity:item-264-det000264
-- curiosity:item-314-det000314
-- curiosity:item-364-det000364
-- curiosity:item-414-det000414
-- curiosity:item-464-det000464
-- curiosity:item-514-det000514
-- curiosity:item-564-det000564
-- curiosity:item-614-det000614
-- curiosity:item-64-det000064
-- curiosity:item-664-det000664
-- curiosity:item-714-det000714
-- curiosity:item-764-det000764
-- curiosity:item-814-det000814
-- curiosity:item-864-det000864
-- curiosity:item-914-det000914
-- curiosity:item-964-det000964
-
-### topic-15 (100 entries, showing 20 most recent)
-- curiosity:item-115-det000115
-- curiosity:item-15-det000015
-- curiosity:item-165-det000165
-- curiosity:item-215-det000215
-- curiosity:item-265-det000265
-- curiosity:item-315-det000315
-- curiosity:item-365-det000365
-- curiosity:item-415-det000415
-- curiosity:item-465-det000465
-- curiosity:item-515-det000515
-- curiosity:item-565-det000565
-- curiosity:item-615-det000615
-- curiosity:item-65-det000065
-- curiosity:item-665-det000665
-- curiosity:item-715-det000715
-- curiosity:item-765-det000765
-- curiosity:item-815-det000815
-- curiosity:item-865-det000865
-- curiosity:item-915-det000915
-- curiosity:item-965-det000965
-
-### topic-16 (100 entries, showing 20 most recent)
-- curiosity:item-116-det000116
-- curiosity:item-16-det000016
-- curiosity:item-166-det000166
-- curiosity:item-216-det000216
-- curiosity:item-266-det000266
-- curiosity:item-316-det000316
-- curiosity:item-366-det000366
-- curiosity:item-416-det000416
-- curiosity:item-466-det000466
-- curiosity:item-516-det000516
-- curiosity:item-566-det000566
-- curiosity:item-616-det000616
-- curiosity:item-66-det000066
-- curiosity:item-666-det000666
-- curiosity:item-716-det000716
-- curiosity:item-766-det000766
-- curiosity:item-816-det000816
-- curiosity:item-866-det000866
-- curiosity:item-916-det000916
-- curiosity:item-966-det000966
-
-### topic-17 (100 entries, showing 20 most recent)
-- curiosity:item-117-det000117
-- curiosity:item-167-det000167
-- curiosity:item-17-det000017
-- curiosity:item-217-det000217
-- curiosity:item-267-det000267
-- curiosity:item-317-det000317
-- curiosity:item-367-det000367
-- curiosity:item-417-det000417
-- curiosity:item-467-det000467
-- curiosity:item-517-det000517
-- curiosity:item-567-det000567
-- curiosity:item-617-det000617
-- curiosity:item-667-det000667
-- curiosity:item-67-det000067
-- curiosity:item-717-det000717
-- curiosity:item-767-det000767
-- curiosity:item-817-det000817
-- curiosity:item-867-det000867
-- curiosity:item-917-det000917
-- curiosity:item-967-det000967
-
-### topic-18 (100 entries, showing 20 most recent)
-- curiosity:item-118-det000118
-- curiosity:item-168-det000168
-- curiosity:item-18-det000018
-- curiosity:item-218-det000218
-- curiosity:item-268-det000268
-- curiosity:item-318-det000318
-- curiosity:item-368-det000368
-- curiosity:item-418-det000418
-- curiosity:item-468-det000468
-- curiosity:item-518-det000518
-- curiosity:item-568-det000568
-- curiosity:item-618-det000618
-- curiosity:item-668-det000668
-- curiosity:item-68-det000068
-- curiosity:item-718-det000718
-- curiosity:item-768-det000768
-- curiosity:item-818-det000818
-- curiosity:item-868-det000868
-- curiosity:item-918-det000918
-- curiosity:item-968-det000968
-
-### topic-19 (100 entries, showing 20 most recent)
-- curiosity:item-119-det000119
-- curiosity:item-169-det000169
-- curiosity:item-19-det000019
-- curiosity:item-219-det000219
-- curiosity:item-269-det000269
-- curiosity:item-319-det000319
-- curiosity:item-369-det000369
-- curiosity:item-419-det000419
-- curiosity:item-469-det000469
-- curiosity:item-519-det000519
-- curiosity:item-569-det000569
-- curiosity:item-619-det000619
-- curiosity:item-669-det000669
-- curiosity:item-69-det000069
-- curiosity:item-719-det000719
-- curiosity:item-769-det000769
-- curiosity:item-819-det000819
-- curiosity:item-869-det000869
-- curiosity:item-919-det000919
-- curiosity:item-969-det000969
-
-### topic-2 (100 entries, showing 20 most recent)
-- curiosity:item-102-det000102
-- curiosity:item-152-det000152
-- curiosity:item-2-det000002
-- curiosity:item-202-det000202
-- curiosity:item-252-det000252
-- curiosity:item-302-det000302
-- curiosity:item-352-det000352
-- curiosity:item-402-det000402
-- curiosity:item-452-det000452
-- curiosity:item-502-det000502
-- curiosity:item-52-det000052
-- curiosity:item-552-det000552
-- curiosity:item-602-det000602
-- curiosity:item-652-det000652
-- curiosity:item-702-det000702
-- curiosity:item-752-det000752
-- curiosity:item-802-det000802
-- curiosity:item-852-det000852
-- curiosity:item-902-det000902
-- curiosity:item-952-det000952
-
-### topic-20 (100 entries, showing 20 most recent)
-- curiosity:item-120-det000120
-- curiosity:item-170-det000170
-- curiosity:item-20-det000020
-- curiosity:item-220-det000220
-- curiosity:item-270-det000270
-- curiosity:item-320-det000320
-- curiosity:item-370-det000370
-- curiosity:item-420-det000420
-- curiosity:item-470-det000470
-- curiosity:item-520-det000520
-- curiosity:item-570-det000570
-- curiosity:item-620-det000620
-- curiosity:item-670-det000670
-- curiosity:item-70-det000070
-- curiosity:item-720-det000720
-- curiosity:item-770-det000770
-- curiosity:item-820-det000820
-- curiosity:item-870-det000870
-- curiosity:item-920-det000920
-- curiosity:item-970-det000970
-
-### topic-21 (100 entries, showing 20 most recent)
-- curiosity:item-121-det000121
-- curiosity:item-171-det000171
-- curiosity:item-21-det000021
-- curiosity:item-221-det000221
-- curiosity:item-271-det000271
-- curiosity:item-321-det000321
-- curiosity:item-371-det000371
-- curiosity:item-421-det000421
-- curiosity:item-471-det000471
-- curiosity:item-521-det000521
-- curiosity:item-571-det000571
-- curiosity:item-621-det000621
-- curiosity:item-671-det000671
-- curiosity:item-71-det000071
-- curiosity:item-721-det000721
-- curiosity:item-771-det000771
-- curiosity:item-821-det000821
-- curiosity:item-871-det000871
-- curiosity:item-921-det000921
-- curiosity:item-971-det000971
-
-### topic-22 (100 entries, showing 20 most recent)
-- curiosity:item-122-det000122
-- curiosity:item-172-det000172
-- curiosity:item-22-det000022
-- curiosity:item-222-det000222
-- curiosity:item-272-det000272
-- curiosity:item-322-det000322
-- curiosity:item-372-det000372
-- curiosity:item-422-det000422
-- curiosity:item-472-det000472
-- curiosity:item-522-det000522
-- curiosity:item-572-det000572
-- curiosity:item-622-det000622
-- curiosity:item-672-det000672
-- curiosity:item-72-det000072
-- curiosity:item-722-det000722
-- curiosity:item-772-det000772
-- curiosity:item-822-det000822
-- curiosity:item-872-det000872
-- curiosity:item-922-det000922
-- curiosity:item-972-det000972
-
-### topic-23 (100 entries, showing 20 most recent)
-- curiosity:item-123-det000123
-- curiosity:item-173-det000173
-- curiosity:item-223-det000223
-- curiosity:item-23-det000023
-- curiosity:item-273-det000273
-- curiosity:item-323-det000323
-- curiosity:item-373-det000373
-- curiosity:item-423-det000423
-- curiosity:item-473-det000473
-- curiosity:item-523-det000523
-- curiosity:item-573-det000573
-- curiosity:item-623-det000623
-- curiosity:item-673-det000673
-- curiosity:item-723-det000723
-- curiosity:item-73-det000073
-- curiosity:item-773-det000773
-- curiosity:item-823-det000823
-- curiosity:item-873-det000873
-- curiosity:item-923-det000923
-- curiosity:item-973-det000973
-
-### topic-24 (100 entries, showing 20 most recent)
-- curiosity:item-124-det000124
-- curiosity:item-174-det000174
-- curiosity:item-224-det000224
-- curiosity:item-24-det000024
-- curiosity:item-274-det000274
-- curiosity:item-324-det000324
-- curiosity:item-374-det000374
-- curiosity:item-424-det000424
-- curiosity:item-474-det000474
-- curiosity:item-524-det000524
-- curiosity:item-574-det000574
-- curiosity:item-624-det000624
-- curiosity:item-674-det000674
-- curiosity:item-724-det000724
-- curiosity:item-74-det000074
-- curiosity:item-774-det000774
-- curiosity:item-824-det000824
-- curiosity:item-874-det000874
-- curiosity:item-924-det000924
-- curiosity:item-974-det000974
-
-### topic-25 (100 entries, showing 20 most recent)
-- curiosity:item-125-det000125
-- curiosity:item-175-det000175
-- curiosity:item-225-det000225
-- curiosity:item-25-det000025
-- curiosity:item-275-det000275
-- curiosity:item-325-det000325
-- curiosity:item-375-det000375
-- curiosity:item-425-det000425
-- curiosity:item-475-det000475
-- curiosity:item-525-det000525
-- curiosity:item-575-det000575
-- curiosity:item-625-det000625
-- curiosity:item-675-det000675
-- curiosity:item-725-det000725
-- curiosity:item-75-det000075
-- curiosity:item-775-det000775
-- curiosity:item-825-det000825
-- curiosity:item-875-det000875
-- curiosity:item-925-det000925
-- curiosity:item-975-det000975
-
-### topic-26 (100 entries, showing 20 most recent)
-- curiosity:item-126-det000126
-- curiosity:item-176-det000176
-- curiosity:item-226-det000226
-- curiosity:item-26-det000026
-- curiosity:item-276-det000276
-- curiosity:item-326-det000326
-- curiosity:item-376-det000376
-- curiosity:item-426-det000426
-- curiosity:item-476-det000476
-- curiosity:item-526-det000526
-- curiosity:item-576-det000576
-- curiosity:item-626-det000626
-- curiosity:item-676-det000676
-- curiosity:item-726-det000726
-- curiosity:item-76-det000076
-- curiosity:item-776-det000776
-- curiosity:item-826-det000826
-- curiosity:item-876-det000876
-- curiosity:item-926-det000926
-- curiosity:item-976-det000976
-
-### topic-27 (100 entries, showing 20 most recent)
-- curiosity:item-127-det000127
-- curiosity:item-177-det000177
-- curiosity:item-227-det000227
-- curiosity:item-27-det000027
-- curiosity:item-277-det000277
-- curiosity:item-327-det000327
-- curiosity:item-377-det000377
-- curiosity:item-427-det000427
-- curiosity:item-477-det000477
-- curiosity:item-527-det000527
-- curiosity:item-577-det000577
-- curiosity:item-627-det000627
-- curiosity:item-677-det000677
-- curiosity:item-727-det000727
-- curiosity:item-77-det000077
-- curiosity:item-777-det000777
-- curiosity:item-827-det000827
-- curiosity:item-877-det000877
-- curiosity:item-927-det000927
-- curiosity:item-977-det000977
-
-### topic-28 (100 entries, showing 20 most recent)
-- curiosity:item-128-det000128
-- curiosity:item-178-det000178
-- curiosity:item-228-det000228
-- curiosity:item-278-det000278
-- curiosity:item-28-det000028
-- curiosity:item-328-det000328
-- curiosity:item-378-det000378
-- curiosity:item-428-det000428
-- curiosity:item-478-det000478
-- curiosity:item-528-det000528
-- curiosity:item-578-det000578
-- curiosity:item-628-det000628
-- curiosity:item-678-det000678
-- curiosity:item-728-det000728
-- curiosity:item-778-det000778
-- curiosity:item-78-det000078
-- curiosity:item-828-det000828
-- curiosity:item-878-det000878
-- curiosity:item-928-det000928
-- curiosity:item-978-det000978
-
-### topic-29 (100 entries, showing 20 most recent)
-- curiosity:item-129-det000129
-- curiosity:item-179-det000179
-- curiosity:item-229-det000229
-- curiosity:item-279-det000279
-- curiosity:item-29-det000029
-- curiosity:item-329-det000329
-- curiosity:item-379-det000379
-- curiosity:item-429-det000429
-- curiosity:item-479-det000479
-- curiosity:item-529-det000529
-- curiosity:item-579-det000579
-- curiosity:item-629-det000629
-- curiosity:item-679-det000679
-- curiosity:item-729-det000729
-- curiosity:item-779-det000779
-- curiosity:item-79-det000079
-- curiosity:item-829-det000829
-- curiosity:item-879-det000879
-- curiosity:item-929-det000929
-- curiosity:item-979-det000979
-
-### topic-3 (100 entries, showing 20 most recent)
-- curiosity:item-103-det000103
-- curiosity:item-153-det000153
-- curiosity:item-203-det000203
-- curiosity:item-253-det000253
-- curiosity:item-3-det000003
-- curiosity:item-303-det000303
-- curiosity:item-353-det000353
-- curiosity:item-403-det000403
-- curiosity:item-453-det000453
-- curiosity:item-503-det000503
-- curiosity:item-53-det000053
-- curiosity:item-553-det000553
-- curiosity:item-603-det000603
-- curiosity:item-653-det000653
-- curiosity:item-703-det000703
-- curiosity:item-753-det000753
-- curiosity:item-803-det000803
-- curiosity:item-853-det000853
-- curiosity:item-903-det000903
-- curiosity:item-953-det000953
-
-### topic-30 (100 entries, showing 20 most recent)
-- curiosity:item-130-det000130
-- curiosity:item-180-det000180
-- curiosity:item-230-det000230
-- curiosity:item-280-det000280
-- curiosity:item-30-det000030
-- curiosity:item-330-det000330
-- curiosity:item-380-det000380
-- curiosity:item-430-det000430
-- curiosity:item-480-det000480
-- curiosity:item-530-det000530
-- curiosity:item-580-det000580
-- curiosity:item-630-det000630
-- curiosity:item-680-det000680
-- curiosity:item-730-det000730
-- curiosity:item-780-det000780
-- curiosity:item-80-det000080
-- curiosity:item-830-det000830
-- curiosity:item-880-det000880
-- curiosity:item-930-det000930
-- curiosity:item-980-det000980
-
-### topic-31 (100 entries, showing 20 most recent)
-- curiosity:item-131-det000131
-- curiosity:item-181-det000181
-- curiosity:item-231-det000231
-- curiosity:item-281-det000281
-- curiosity:item-31-det000031
-- curiosity:item-331-det000331
-- curiosity:item-381-det000381
-- curiosity:item-431-det000431
-- curiosity:item-481-det000481
-- curiosity:item-531-det000531
-- curiosity:item-581-det000581
-- curiosity:item-631-det000631
-- curiosity:item-681-det000681
-- curiosity:item-731-det000731
-- curiosity:item-781-det000781
-- curiosity:item-81-det000081
-- curiosity:item-831-det000831
-- curiosity:item-881-det000881
-- curiosity:item-931-det000931
-- curiosity:item-981-det000981
-
-### topic-32 (100 entries, showing 20 most recent)
-- curiosity:item-132-det000132
-- curiosity:item-182-det000182
-- curiosity:item-232-det000232
-- curiosity:item-282-det000282
-- curiosity:item-32-det000032
-- curiosity:item-332-det000332
-- curiosity:item-382-det000382
-- curiosity:item-432-det000432
-- curiosity:item-482-det000482
-- curiosity:item-532-det000532
-- curiosity:item-582-det000582
-- curiosity:item-632-det000632
-- curiosity:item-682-det000682
-- curiosity:item-732-det000732
-- curiosity:item-782-det000782
-- curiosity:item-82-det000082
-- curiosity:item-832-det000832
-- curiosity:item-882-det000882
-- curiosity:item-932-det000932
-- curiosity:item-982-det000982
-
-### topic-33 (100 entries, showing 20 most recent)
-- curiosity:item-133-det000133
-- curiosity:item-183-det000183
-- curiosity:item-233-det000233
-- curiosity:item-283-det000283
-- curiosity:item-33-det000033
-- curiosity:item-333-det000333
-- curiosity:item-383-det000383
-- curiosity:item-433-det000433
-- curiosity:item-483-det000483
-- curiosity:item-533-det000533
-- curiosity:item-583-det000583
-- curiosity:item-633-det000633
-- curiosity:item-683-det000683
-- curiosity:item-733-det000733
-- curiosity:item-783-det000783
-- curiosity:item-83-det000083
-- curiosity:item-833-det000833
-- curiosity:item-883-det000883
-- curiosity:item-933-det000933
-- curiosity:item-983-det000983
-
-### topic-34 (100 entries, showing 20 most recent)
-- curiosity:item-134-det000134
-- curiosity:item-184-det000184
-- curiosity:item-234-det000234
-- curiosity:item-284-det000284
-- curiosity:item-334-det000334
-- curiosity:item-34-det000034
-- curiosity:item-384-det000384
-- curiosity:item-434-det000434
-- curiosity:item-484-det000484
-- curiosity:item-534-det000534
-- curiosity:item-584-det000584
-- curiosity:item-634-det000634
-- curiosity:item-684-det000684
-- curiosity:item-734-det000734
-- curiosity:item-784-det000784
-- curiosity:item-834-det000834
-- curiosity:item-84-det000084
-- curiosity:item-884-det000884
-- curiosity:item-934-det000934
-- curiosity:item-984-det000984
-
-### topic-35 (100 entries, showing 20 most recent)
-- curiosity:item-135-det000135
-- curiosity:item-185-det000185
-- curiosity:item-235-det000235
-- curiosity:item-285-det000285
-- curiosity:item-335-det000335
-- curiosity:item-35-det000035
-- curiosity:item-385-det000385
-- curiosity:item-435-det000435
-- curiosity:item-485-det000485
-- curiosity:item-535-det000535
-- curiosity:item-585-det000585
-- curiosity:item-635-det000635
-- curiosity:item-685-det000685
-- curiosity:item-735-det000735
-- curiosity:item-785-det000785
-- curiosity:item-835-det000835
-- curiosity:item-85-det000085
-- curiosity:item-885-det000885
-- curiosity:item-935-det000935
-- curiosity:item-985-det000985
-
-### topic-36 (100 entries, showing 20 most recent)
-- curiosity:item-136-det000136
-- curiosity:item-186-det000186
-- curiosity:item-236-det000236
-- curiosity:item-286-det000286
-- curiosity:item-336-det000336
-- curiosity:item-36-det000036
-- curiosity:item-386-det000386
-- curiosity:item-436-det000436
-- curiosity:item-486-det000486
-- curiosity:item-536-det000536
-- curiosity:item-586-det000586
-- curiosity:item-636-det000636
-- curiosity:item-686-det000686
-- curiosity:item-736-det000736
-- curiosity:item-786-det000786
-- curiosity:item-836-det000836
-- curiosity:item-86-det000086
-- curiosity:item-886-det000886
-- curiosity:item-936-det000936
-- curiosity:item-986-det000986
-
-### topic-37 (100 entries, showing 20 most recent)
-- curiosity:item-137-det000137
-- curiosity:item-187-det000187
-- curiosity:item-237-det000237
-- curiosity:item-287-det000287
-- curiosity:item-337-det000337
-- curiosity:item-37-det000037
-- curiosity:item-387-det000387
-- curiosity:item-437-det000437
-- curiosity:item-487-det000487
-- curiosity:item-537-det000537
-- curiosity:item-587-det000587
-- curiosity:item-637-det000637
-- curiosity:item-687-det000687
-- curiosity:item-737-det000737
-- curiosity:item-787-det000787
-- curiosity:item-837-det000837
-- curiosity:item-87-det000087
-- curiosity:item-887-det000887
-- curiosity:item-937-det000937
-- curiosity:item-987-det000987
-
-### topic-38 (100 entries, showing 20 most recent)
-- curiosity:item-138-det000138
-- curiosity:item-188-det000188
-- curiosity:item-238-det000238
-- curiosity:item-288-det000288
-- curiosity:item-338-det000338
-- curiosity:item-38-det000038
-- curiosity:item-388-det000388
-- curiosity:item-438-det000438
-- curiosity:item-488-det000488
-- curiosity:item-538-det000538
-- curiosity:item-588-det000588
-- curiosity:item-638-det000638
-- curiosity:item-688-det000688
-- curiosity:item-738-det000738
-- curiosity:item-788-det000788
-- curiosity:item-838-det000838
-- curiosity:item-88-det000088
-- curiosity:item-888-det000888
-- curiosity:item-938-det000938
-- curiosity:item-988-det000988
-
-### topic-39 (100 entries, showing 20 most recent)
-- curiosity:item-139-det000139
-- curiosity:item-189-det000189
-- curiosity:item-239-det000239
-- curiosity:item-289-det000289
-- curiosity:item-339-det000339
-- curiosity:item-389-det000389
-- curiosity:item-39-det000039
-- curiosity:item-439-det000439
-- curiosity:item-489-det000489
-- curiosity:item-539-det000539
-- curiosity:item-589-det000589
-- curiosity:item-639-det000639
-- curiosity:item-689-det000689
-- curiosity:item-739-det000739
-- curiosity:item-789-det000789
-- curiosity:item-839-det000839
-- curiosity:item-889-det000889
-- curiosity:item-89-det000089
-- curiosity:item-939-det000939
-- curiosity:item-989-det000989
-
-### topic-4 (100 entries, showing 20 most recent)
-- curiosity:item-104-det000104
-- curiosity:item-154-det000154
-- curiosity:item-204-det000204
-- curiosity:item-254-det000254
-- curiosity:item-304-det000304
-- curiosity:item-354-det000354
-- curiosity:item-4-det000004
-- curiosity:item-404-det000404
-- curiosity:item-454-det000454
-- curiosity:item-504-det000504
-- curiosity:item-54-det000054
-- curiosity:item-554-det000554
-- curiosity:item-604-det000604
-- curiosity:item-654-det000654
-- curiosity:item-704-det000704
-- curiosity:item-754-det000754
-- curiosity:item-804-det000804
-- curiosity:item-854-det000854
-- curiosity:item-904-det000904
-- curiosity:item-954-det000954
-
-### topic-40 (100 entries, showing 20 most recent)
-- curiosity:item-140-det000140
-- curiosity:item-190-det000190
-- curiosity:item-240-det000240
-- curiosity:item-290-det000290
-- curiosity:item-340-det000340
-- curiosity:item-390-det000390
-- curiosity:item-40-det000040
-- curiosity:item-440-det000440
-- curiosity:item-490-det000490
-- curiosity:item-540-det000540
-- curiosity:item-590-det000590
-- curiosity:item-640-det000640
-- curiosity:item-690-det000690
-- curiosity:item-740-det000740
-- curiosity:item-790-det000790
-- curiosity:item-840-det000840
-- curiosity:item-890-det000890
-- curiosity:item-90-det000090
-- curiosity:item-940-det000940
-- curiosity:item-990-det000990
-
-### topic-41 (100 entries, showing 20 most recent)
-- curiosity:item-141-det000141
-- curiosity:item-191-det000191
-- curiosity:item-241-det000241
-- curiosity:item-291-det000291
-- curiosity:item-341-det000341
-- curiosity:item-391-det000391
-- curiosity:item-41-det000041
-- curiosity:item-441-det000441
-- curiosity:item-491-det000491
-- curiosity:item-541-det000541
-- curiosity:item-591-det000591
-- curiosity:item-641-det000641
-- curiosity:item-691-det000691
-- curiosity:item-741-det000741
-- curiosity:item-791-det000791
-- curiosity:item-841-det000841
-- curiosity:item-891-det000891
-- curiosity:item-91-det000091
-- curiosity:item-941-det000941
-- curiosity:item-991-det000991
-
-### topic-42 (100 entries, showing 20 most recent)
-- curiosity:item-142-det000142
-- curiosity:item-192-det000192
-- curiosity:item-242-det000242
-- curiosity:item-292-det000292
-- curiosity:item-342-det000342
-- curiosity:item-392-det000392
-- curiosity:item-42-det000042
-- curiosity:item-442-det000442
-- curiosity:item-492-det000492
-- curiosity:item-542-det000542
-- curiosity:item-592-det000592
-- curiosity:item-642-det000642
-- curiosity:item-692-det000692
-- curiosity:item-742-det000742
-- curiosity:item-792-det000792
-- curiosity:item-842-det000842
-- curiosity:item-892-det000892
-- curiosity:item-92-det000092
-- curiosity:item-942-det000942
-- curiosity:item-992-det000992
-
-### topic-43 (100 entries, showing 20 most recent)
-- curiosity:item-143-det000143
-- curiosity:item-193-det000193
-- curiosity:item-243-det000243
-- curiosity:item-293-det000293
-- curiosity:item-343-det000343
-- curiosity:item-393-det000393
-- curiosity:item-43-det000043
-- curiosity:item-443-det000443
-- curiosity:item-493-det000493
-- curiosity:item-543-det000543
-- curiosity:item-593-det000593
-- curiosity:item-643-det000643
-- curiosity:item-693-det000693
-- curiosity:item-743-det000743
-- curiosity:item-793-det000793
-- curiosity:item-843-det000843
-- curiosity:item-893-det000893
-- curiosity:item-93-det000093
-- curiosity:item-943-det000943
-- curiosity:item-993-det000993
-
-### topic-44 (100 entries, showing 20 most recent)
-- curiosity:item-144-det000144
-- curiosity:item-194-det000194
-- curiosity:item-244-det000244
-- curiosity:item-294-det000294
-- curiosity:item-344-det000344
-- curiosity:item-394-det000394
-- curiosity:item-44-det000044
-- curiosity:item-444-det000444
-- curiosity:item-494-det000494
-- curiosity:item-544-det000544
-- curiosity:item-594-det000594
-- curiosity:item-644-det000644
-- curiosity:item-694-det000694
-- curiosity:item-744-det000744
-- curiosity:item-794-det000794
-- curiosity:item-844-det000844
-- curiosity:item-894-det000894
-- curiosity:item-94-det000094
-- curiosity:item-944-det000944
-- curiosity:item-994-det000994
-
-### topic-45 (100 entries, showing 20 most recent)
-- curiosity:item-145-det000145
-- curiosity:item-195-det000195
-- curiosity:item-245-det000245
-- curiosity:item-295-det000295
-- curiosity:item-345-det000345
-- curiosity:item-395-det000395
-- curiosity:item-445-det000445
-- curiosity:item-45-det000045
-- curiosity:item-495-det000495
-- curiosity:item-545-det000545
-- curiosity:item-595-det000595
-- curiosity:item-645-det000645
-- curiosity:item-695-det000695
-- curiosity:item-745-det000745
-- curiosity:item-795-det000795
-- curiosity:item-845-det000845
-- curiosity:item-895-det000895
-- curiosity:item-945-det000945
-- curiosity:item-95-det000095
-- curiosity:item-995-det000995
-
-### topic-46 (100 entries, showing 20 most recent)
-- curiosity:item-146-det000146
-- curiosity:item-196-det000196
-- curiosity:item-246-det000246
-- curiosity:item-296-det000296
-- curiosity:item-346-det000346
-- curiosity:item-396-det000396
-- curiosity:item-446-det000446
-- curiosity:item-46-det000046
-- curiosity:item-496-det000496
-- curiosity:item-546-det000546
-- curiosity:item-596-det000596
-- curiosity:item-646-det000646
-- curiosity:item-696-det000696
-- curiosity:item-746-det000746
-- curiosity:item-796-det000796
-- curiosity:item-846-det000846
-- curiosity:item-896-det000896
-- curiosity:item-946-det000946
-- curiosity:item-96-det000096
-- curiosity:item-996-det000996
-
-### topic-47 (100 entries, showing 20 most recent)
-- curiosity:item-147-det000147
-- curiosity:item-197-det000197
-- curiosity:item-247-det000247
-- curiosity:item-297-det000297
-- curiosity:item-347-det000347
-- curiosity:item-397-det000397
-- curiosity:item-447-det000447
-- curiosity:item-47-det000047
-- curiosity:item-497-det000497
-- curiosity:item-547-det000547
-- curiosity:item-597-det000597
-- curiosity:item-647-det000647
-- curiosity:item-697-det000697
-- curiosity:item-747-det000747
-- curiosity:item-797-det000797
-- curiosity:item-847-det000847
-- curiosity:item-897-det000897
-- curiosity:item-947-det000947
-- curiosity:item-97-det000097
-- curiosity:item-997-det000997
-
-### topic-48 (100 entries, showing 20 most recent)
-- curiosity:item-148-det000148
-- curiosity:item-198-det000198
-- curiosity:item-248-det000248
-- curiosity:item-298-det000298
-- curiosity:item-348-det000348
-- curiosity:item-398-det000398
-- curiosity:item-448-det000448
-- curiosity:item-48-det000048
-- curiosity:item-498-det000498
-- curiosity:item-548-det000548
-- curiosity:item-598-det000598
-- curiosity:item-648-det000648
-- curiosity:item-698-det000698
-- curiosity:item-748-det000748
-- curiosity:item-798-det000798
-- curiosity:item-848-det000848
-- curiosity:item-898-det000898
-- curiosity:item-948-det000948
-- curiosity:item-98-det000098
-- curiosity:item-998-det000998
-
-### topic-49 (100 entries, showing 20 most recent)
-- curiosity:item-149-det000149
-- curiosity:item-199-det000199
-- curiosity:item-249-det000249
-- curiosity:item-299-det000299
-- curiosity:item-349-det000349
-- curiosity:item-399-det000399
-- curiosity:item-449-det000449
-- curiosity:item-49-det000049
-- curiosity:item-499-det000499
-- curiosity:item-549-det000549
-- curiosity:item-599-det000599
-- curiosity:item-649-det000649
-- curiosity:item-699-det000699
-- curiosity:item-749-det000749
-- curiosity:item-799-det000799
-- curiosity:item-849-det000849
-- curiosity:item-899-det000899
-- curiosity:item-949-det000949
-- curiosity:item-99-det000099
-- curiosity:item-999-det000999
-
-### topic-5 (100 entries, showing 20 most recent)
-- curiosity:item-105-det000105
-- curiosity:item-155-det000155
-- curiosity:item-205-det000205
-- curiosity:item-255-det000255
-- curiosity:item-305-det000305
-- curiosity:item-355-det000355
-- curiosity:item-405-det000405
-- curiosity:item-455-det000455
-- curiosity:item-5-det000005
-- curiosity:item-505-det000505
-- curiosity:item-55-det000055
-- curiosity:item-555-det000555
-- curiosity:item-605-det000605
-- curiosity:item-655-det000655
-- curiosity:item-705-det000705
-- curiosity:item-755-det000755
-- curiosity:item-805-det000805
-- curiosity:item-855-det000855
-- curiosity:item-905-det000905
-- curiosity:item-955-det000955
-
-### topic-6 (100 entries, showing 20 most recent)
-- curiosity:item-106-det000106
-- curiosity:item-156-det000156
-- curiosity:item-206-det000206
-- curiosity:item-256-det000256
-- curiosity:item-306-det000306
-- curiosity:item-356-det000356
-- curiosity:item-406-det000406
-- curiosity:item-456-det000456
-- curiosity:item-506-det000506
-- curiosity:item-556-det000556
-- curiosity:item-56-det000056
-- curiosity:item-6-det000006
-- curiosity:item-606-det000606
-- curiosity:item-656-det000656
-- curiosity:item-706-det000706
-- curiosity:item-756-det000756
-- curiosity:item-806-det000806
-- curiosity:item-856-det000856
-- curiosity:item-906-det000906
-- curiosity:item-956-det000956
-
-### topic-7 (100 entries, showing 20 most recent)
-- curiosity:item-107-det000107
-- curiosity:item-157-det000157
-- curiosity:item-207-det000207
-- curiosity:item-257-det000257
-- curiosity:item-307-det000307
-- curiosity:item-357-det000357
-- curiosity:item-407-det000407
-- curiosity:item-457-det000457
-- curiosity:item-507-det000507
-- curiosity:item-557-det000557
-- curiosity:item-57-det000057
-- curiosity:item-607-det000607
-- curiosity:item-657-det000657
-- curiosity:item-7-det000007
-- curiosity:item-707-det000707
-- curiosity:item-757-det000757
-- curiosity:item-807-det000807
-- curiosity:item-857-det000857
-- curiosity:item-907-det000907
-- curiosity:item-957-det000957
-
-### topic-8 (100 entries, showing 20 most recent)
-- curiosity:item-108-det000108
-- curiosity:item-158-det000158
-- curiosity:item-208-det000208
-- curiosity:item-258-det000258
-- curiosity:item-308-det000308
-- curiosity:item-358-det000358
-- curiosity:item-408-det000408
-- curiosity:item-458-det000458
-- curiosity:item-508-det000508
-- curiosity:item-558-det000558
-- curiosity:item-58-det000058
-- curiosity:item-608-det000608
-- curiosity:item-658-det000658
-- curiosity:item-708-det000708
-- curiosity:item-758-det000758
-- curiosity:item-8-det000008
-- curiosity:item-808-det000808
-- curiosity:item-858-det000858
-- curiosity:item-908-det000908
-- curiosity:item-958-det000958
-
-### topic-9 (100 entries, showing 20 most recent)
-- curiosity:item-109-det000109
-- curiosity:item-159-det000159
-- curiosity:item-209-det000209
-- curiosity:item-259-det000259
-- curiosity:item-309-det000309
-- curiosity:item-359-det000359
-- curiosity:item-409-det000409
-- curiosity:item-459-det000459
-- curiosity:item-509-det000509
-- curiosity:item-559-det000559
-- curiosity:item-59-det000059
-- curiosity:item-609-det000609
-- curiosity:item-659-det000659
-- curiosity:item-709-det000709
-- curiosity:item-759-det000759
-- curiosity:item-809-det000809
-- curiosity:item-859-det000859
-- curiosity:item-9-det000009
-- curiosity:item-909-det000909
-- curiosity:item-959-det000959
-
-### Older summaries (titles only — search the key for the body)
-- _summary:topic-49
-
-Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
-## Working Knowledge — updates
-
-- _pinned:0 [changed since last turn]
-- _pinned:1 [changed since last turn]
-- _pinned:10 [changed since last turn]
-- _pinned:11 [changed since last turn]
-- _pinned:12 [changed since last turn]
-- _pinned:13 [changed since last turn]
-- _pinned:14 [changed since last turn]
-- _pinned:15 [changed since last turn]
-- _pinned:16 [changed since last turn]
-- _pinned:17 [changed since last turn]
-- _pinned:18 [changed since last turn]
-- _pinned:19 [changed since last turn]
-- _pinned:2 [changed since last turn]
-- _pinned:20 [changed since last turn]
-- _pinned:21 [changed since last turn]
-- _pinned:22 [changed since last turn]
-- _pinned:23 [changed since last turn]
-- _pinned:24 [changed since last turn]
-- _pinned:25 [changed since last turn]
-- _pinned:26 [changed since last turn]
-- _pinned:27 [changed since last turn]
-- _pinned:28 [changed since last turn]
-- _pinned:29 [changed since last turn]
-- _pinned:3 [changed since last turn]
-- _pinned:30 [changed since last turn]
-- _pinned:31 [changed since last turn]
-- _pinned:32 [changed since last turn]
-- _pinned:33 [changed since last turn]
-- _pinned:34 [changed since last turn]
-- _pinned:35 [changed since last turn]
-- _pinned:36 [changed since last turn]
-- _pinned:37 [changed since last turn]
-- _pinned:38 [changed since last turn]
-- _pinned:39 [changed since last turn]
-- _pinned:4 [changed since last turn]
-- _pinned:40 [changed since last turn]
-- _pinned:41 [changed since last turn]
-- _pinned:42 [changed since last turn]
-- _pinned:43 [changed since last turn]
-- _pinned:44 [changed since last turn]
-- _pinned:45 [changed since last turn]
-- _pinned:46 [changed since last turn]
-- _pinned:47 [changed since last turn]
-- _pinned:48 [changed since last turn]
-- _pinned:49 [changed since last turn]
-- _pinned:5 [changed since last turn]
-- _pinned:50 [changed since last turn]
-- _pinned:51 [changed since last turn]
-- _pinned:52 [changed since last turn]
-- _pinned:53 [changed since last turn]
-- _pinned:54 [changed since last turn]
-- _pinned:55 [changed since last turn]
-- _pinned:56 [changed since last turn]
-- _pinned:57 [changed since last turn]
-- _pinned:58 [changed since last turn]
-- _pinned:59 [changed since last turn]
-- _pinned:6 [changed since last turn]
-- _pinned:60 [changed since last turn]
-- _pinned:61 [changed since last turn]
-- _pinned:62 [changed since last turn]
-- _pinned:63 [changed since last turn]
-- _pinned:64 [changed since last turn]
-- _pinned:65 [changed since last turn]
-- _pinned:66 [changed since last turn]
-- _pinned:67 [changed since last turn]
-- _pinned:68 [changed since last turn]
-- _pinned:69 [changed since last turn]
-- _pinned:7 [changed since last turn]
-- _pinned:70 [changed since last turn]
-- _pinned:71 [changed since last turn]
-- _pinned:72 [changed since last turn]
-- _pinned:73 [changed since last turn]
-- _pinned:74 [changed since last turn]
-- _pinned:75 [changed since last turn]
-- _pinned:76 [changed since last turn]
-- _pinned:77 [changed since last turn]
-- _pinned:78 [changed since last turn]
-- _pinned:79 [changed since last turn]
-- _pinned:8 [changed since last turn]
-- _pinned:9 [changed since last turn]
-- _summary:non-compliant [changed since last turn]
-- _summary:topic-0 [changed since last turn]
-- _summary:topic-1 [changed since last turn]
-- _summary:topic-2 [changed since last turn]
-- _summary:topic-3 [changed since last turn]
-- _summary:topic-4 [changed since last turn]
-- _summary:topic-5 [changed since last turn]
-- _summary:topic-6 [changed since last turn]
-- _summary:topic-7 [changed since last turn]
-- _summary:topic-8 [changed since last turn]
-- _summary:topic-9 [changed since last turn]
-- _summary:topic-10 [changed since last turn]
-- _summary:topic-11 [changed since last turn]
-- _summary:topic-12 [changed since last turn]
-- _summary:topic-13 [changed since last turn]
-- _summary:topic-14 [changed since last turn]
-- _summary:topic-15 [changed since last turn]
-- _summary:topic-16 [changed since last turn]
-- _summary:topic-17 [changed since last turn]
-- _summary:topic-18 [changed since last turn]
-- _summary:topic-19 [changed since last turn]
-- _summary:topic-20 [changed since last turn]
-- _summary:topic-21 [changed since last turn]
-- _summary:topic-22 [changed since last turn]
-- _summary:topic-23 [changed since last turn]
-- _summary:topic-24 [changed since last turn]
-- _summary:topic-25 [changed since last turn]
-- _summary:topic-26 [changed since last turn]
-- _summary:topic-27 [changed since last turn]
-- _summary:topic-28 [changed since last turn]
-- _summary:topic-29 [changed since last turn]
-- _summary:topic-30 [changed since last turn]
-- _summary:topic-31 [changed since last turn]
-- _summary:topic-32 [changed since last turn]
-- _summary:topic-33 [changed since last turn]
-- _summary:topic-34 [changed since last turn]
-- _summary:topic-35 [changed since last turn]
-- _summary:topic-36 [changed since last turn]
-- _summary:topic-37 [changed since last turn]
-- _summary:topic-38 [changed since last turn]
-- _summary:topic-39 [changed since last turn]
-- _summary:topic-40 [changed since last turn]
-- _summary:topic-41 [changed since last turn]
-- _summary:topic-42 [changed since last turn]
-- _summary:topic-43 [changed since last turn]
-- _summary:topic-44 [changed since last turn]
-- _summary:topic-45 [changed since last turn]
-- _summary:topic-46 [changed since last turn]
-- _summary:topic-47 [changed since last turn]
-- _summary:topic-48 [changed since last turn]
-- _summary:topic-49 [changed since last turn]
+<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
+<memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>
+<memory key="_pinned:1" tier="pinned" modified="2026-05-21">pinned body 1</memory>
+<memory key="_pinned:10" tier="pinned" modified="2026-05-21">pinned body 10</memory>
+<memory key="_pinned:11" tier="pinned" modified="2026-05-21">pinned body 11</memory>
+<memory key="_pinned:12" tier="pinned" modified="2026-05-21">pinned body 12</memory>
+<memory key="_pinned:13" tier="pinned" modified="2026-05-21">pinned body 13</memory>
+<memory key="_pinned:14" tier="pinned" modified="2026-05-21">pinned body 14</memory>
+<memory key="_pinned:15" tier="pinned" modified="2026-05-21">pinned body 15</memory>
+<memory key="_pinned:16" tier="pinned" modified="2026-05-21">pinned body 16</memory>
+<memory key="_pinned:17" tier="pinned" modified="2026-05-21">pinned body 17</memory>
+<memory key="_pinned:18" tier="pinned" modified="2026-05-21">pinned body 18</memory>
+<memory key="_pinned:19" tier="pinned" modified="2026-05-21">pinned body 19</memory>
+<memory key="_pinned:2" tier="pinned" modified="2026-05-21">pinned body 2</memory>
+<memory key="_pinned:20" tier="pinned" modified="2026-05-21">pinned body 20</memory>
+<memory key="_pinned:21" tier="pinned" modified="2026-05-21">pinned body 21</memory>
+<memory key="_pinned:22" tier="pinned" modified="2026-05-21">pinned body 22</memory>
+<memory key="_pinned:23" tier="pinned" modified="2026-05-21">pinned body 23</memory>
+<memory key="_pinned:24" tier="pinned" modified="2026-05-21">pinned body 24</memory>
+<memory key="_pinned:25" tier="pinned" modified="2026-05-21">pinned body 25</memory>
+<memory key="_pinned:26" tier="pinned" modified="2026-05-21">pinned body 26</memory>
+<memory key="_pinned:27" tier="pinned" modified="2026-05-21">pinned body 27</memory>
+<memory key="_pinned:28" tier="pinned" modified="2026-05-21">pinned body 28</memory>
+<memory key="_pinned:29" tier="pinned" modified="2026-05-21">pinned body 29</memory>
+<memory key="_pinned:3" tier="pinned" modified="2026-05-21">pinned body 3</memory>
+<memory key="_pinned:30" tier="pinned" modified="2026-05-21">pinned body 30</memory>
+<memory key="_pinned:31" tier="pinned" modified="2026-05-21">pinned body 31</memory>
+<memory key="_pinned:32" tier="pinned" modified="2026-05-21">pinned body 32</memory>
+<memory key="_pinned:33" tier="pinned" modified="2026-05-21">pinned body 33</memory>
+<memory key="_pinned:34" tier="pinned" modified="2026-05-21">pinned body 34</memory>
+<memory key="_pinned:35" tier="pinned" modified="2026-05-21">pinned body 35</memory>
+<memory key="_pinned:36" tier="pinned" modified="2026-05-21">pinned body 36</memory>
+<memory key="_pinned:37" tier="pinned" modified="2026-05-21">pinned body 37</memory>
+<memory key="_pinned:38" tier="pinned" modified="2026-05-21">pinned body 38</memory>
+<memory key="_pinned:39" tier="pinned" modified="2026-05-21">pinned body 39</memory>
+<memory key="_pinned:4" tier="pinned" modified="2026-05-21">pinned body 4</memory>
+<memory key="_pinned:40" tier="pinned" modified="2026-05-21">pinned body 40</memory>
+<memory key="_pinned:41" tier="pinned" modified="2026-05-21">pinned body 41</memory>
+<memory key="_pinned:42" tier="pinned" modified="2026-05-21">pinned body 42</memory>
+<memory key="_pinned:43" tier="pinned" modified="2026-05-21">pinned body 43</memory>
+<memory key="_pinned:44" tier="pinned" modified="2026-05-21">pinned body 44</memory>
+<memory key="_pinned:45" tier="pinned" modified="2026-05-21">pinned body 45</memory>
+<memory key="_pinned:46" tier="pinned" modified="2026-05-21">pinned body 46</memory>
+<memory key="_pinned:47" tier="pinned" modified="2026-05-21">pinned body 47</memory>
+<memory key="_pinned:48" tier="pinned" modified="2026-05-21">pinned body 48</memory>
+<memory key="_pinned:49" tier="pinned" modified="2026-05-21">pinned body 49</memory>
+<memory key="_pinned:5" tier="pinned" modified="2026-05-21">pinned body 5</memory>
+<memory key="_pinned:50" tier="pinned" modified="2026-05-21">pinned body 50</memory>
+<memory key="_pinned:51" tier="pinned" modified="2026-05-21">pinned body 51</memory>
+<memory key="_pinned:52" tier="pinned" modified="2026-05-21">pinned body 52</memory>
+<memory key="_pinned:53" tier="pinned" modified="2026-05-21">pinned body 53</memory>
+<memory key="_pinned:54" tier="pinned" modified="2026-05-21">pinned body 54</memory>
+<memory key="_pinned:55" tier="pinned" modified="2026-05-21">pinned body 55</memory>
+<memory key="_pinned:56" tier="pinned" modified="2026-05-21">pinned body 56</memory>
+<memory key="_pinned:57" tier="pinned" modified="2026-05-21">pinned body 57</memory>
+<memory key="_pinned:58" tier="pinned" modified="2026-05-21">pinned body 58</memory>
+<memory key="_pinned:59" tier="pinned" modified="2026-05-21">pinned body 59</memory>
+<memory key="_pinned:6" tier="pinned" modified="2026-05-21">pinned body 6</memory>
+<memory key="_pinned:60" tier="pinned" modified="2026-05-21">pinned body 60</memory>
+<memory key="_pinned:61" tier="pinned" modified="2026-05-21">pinned body 61</memory>
+<memory key="_pinned:62" tier="pinned" modified="2026-05-21">pinned body 62</memory>
+<memory key="_pinned:63" tier="pinned" modified="2026-05-21">pinned body 63</memory>
+<memory key="_pinned:64" tier="pinned" modified="2026-05-21">pinned body 64</memory>
+<memory key="_pinned:65" tier="pinned" modified="2026-05-21">pinned body 65</memory>
+<memory key="_pinned:66" tier="pinned" modified="2026-05-21">pinned body 66</memory>
+<memory key="_pinned:67" tier="pinned" modified="2026-05-21">pinned body 67</memory>
+<memory key="_pinned:68" tier="pinned" modified="2026-05-21">pinned body 68</memory>
+<memory key="_pinned:69" tier="pinned" modified="2026-05-21">pinned body 69</memory>
+<memory key="_pinned:7" tier="pinned" modified="2026-05-21">pinned body 7</memory>
+<memory key="_pinned:70" tier="pinned" modified="2026-05-21">pinned body 70</memory>
+<memory key="_pinned:71" tier="pinned" modified="2026-05-21">pinned body 71</memory>
+<memory key="_pinned:72" tier="pinned" modified="2026-05-21">pinned body 72</memory>
+<memory key="_pinned:73" tier="pinned" modified="2026-05-21">pinned body 73</memory>
+<memory key="_pinned:74" tier="pinned" modified="2026-05-21">pinned body 74</memory>
+<memory key="_pinned:75" tier="pinned" modified="2026-05-21">pinned body 75</memory>
+<memory key="_pinned:76" tier="pinned" modified="2026-05-21">pinned body 76</memory>
+<memory key="_pinned:77" tier="pinned" modified="2026-05-21">pinned body 77</memory>
+<memory key="_pinned:78" tier="pinned" modified="2026-05-21">pinned body 78</memory>
+<memory key="_pinned:79" tier="pinned" modified="2026-05-21">pinned body 79</memory>
+<memory key="_pinned:8" tier="pinned" modified="2026-05-21">pinned body 8</memory>
+<memory key="_pinned:9" tier="pinned" modified="2026-05-21">pinned body 9</memory>
+<memory key="_summary:non-compliant" tier="summary" modified="2026-05-22">This is a summary without proper sub-topic vocabulary or structure.</memory>
+<memory key="_summary:topic-0" tier="summary" modified="2026-05-21">Summary for topic 0: this is a brief overview.</memory>
+<memory key="_summary:topic-1" tier="summary" modified="2026-05-21">Summary for topic 1: this is a brief overview.</memory>
+<memory key="_summary:topic-2" tier="summary" modified="2026-05-21">Summary for topic 2: this is a brief overview.</memory>
+<memory key="_summary:topic-3" tier="summary" modified="2026-05-21">Summary for topic 3: this is a brief overview.</memory>
+<memory key="_summary:topic-4" tier="summary" modified="2026-05-21">Summary for topic 4: this is a brief overview.</memory>
+<memory key="_summary:topic-5" tier="summary" modified="2026-05-21">Summary for topic 5: this is a brief overview.</memory>
+<memory key="_summary:topic-6" tier="summary" modified="2026-05-21">Summary for topic 6: this is a brief overview.</memory>
+<memory key="_summary:topic-7" tier="summary" modified="2026-05-21">Summary for topic 7: this is a brief overview.</memory>
+<memory key="_summary:topic-8" tier="summary" modified="2026-05-21">Summary for topic 8: this is a brief overview.</memory>
+<memory key="_summary:topic-9" tier="summary" modified="2026-05-21">Summary for topic 9: this is a brief overview.</memory>
+<memory key="_summary:topic-10" tier="summary" modified="2026-05-21">Summary for topic 10: this is a brief overview.</memory>
+<memory key="_summary:topic-11" tier="summary" modified="2026-05-21">Summary for topic 11: this is a brief overview.</memory>
+<memory key="_summary:topic-12" tier="summary" modified="2026-05-21">Summary for topic 12: this is a brief overview.</memory>
+<memory key="_summary:topic-13" tier="summary" modified="2026-05-21">Summary for topic 13: this is a brief overview.</memory>
+<memory key="_summary:topic-14" tier="summary" modified="2026-05-21">Summary for topic 14: this is a brief overview.</memory>
+<memory key="_summary:topic-15" tier="summary" modified="2026-05-21">Summary for topic 15: this is a brief overview.</memory>
+<memory key="_summary:topic-16" tier="summary" modified="2026-05-21">Summary for topic 16: this is a brief overview.</memory>
+<memory key="_summary:topic-17" tier="summary" modified="2026-05-21">Summary for topic 17: this is a brief overview.</memory>
+<memory key="_summary:topic-18" tier="summary" modified="2026-05-21">Summary for topic 18: this is a brief overview.</memory>
+<memory key="_summary:topic-19" tier="summary" modified="2026-05-21">Summary for topic 19: this is a brief overview.</memory>
+<memory key="_summary:topic-20" tier="summary" modified="2026-05-21">Summary for topic 20: this is a brief overview.</memory>
+<memory key="_summary:topic-21" tier="summary" modified="2026-05-21">Summary for topic 21: this is a brief overview.</memory>
+<memory key="_summary:topic-22" tier="summary" modified="2026-05-21">Summary for topic 22: this is a brief overview.</memory>
+<memory key="_summary:topic-23" tier="summary" modified="2026-05-21">Summary for topic 23: this is a brief overview.</memory>
+<memory key="_summary:topic-24" tier="summary" modified="2026-05-21">Summary for topic 24: this is a brief overview.</memory>
+<memory key="_summary:topic-25" tier="summary" modified="2026-05-21">Summary for topic 25: this is a brief overview.</memory>
+<memory key="_summary:topic-26" tier="summary" modified="2026-05-21">Summary for topic 26: this is a brief overview.</memory>
+<memory key="_summary:topic-27" tier="summary" modified="2026-05-21">Summary for topic 27: this is a brief overview.</memory>
+<memory key="_summary:topic-28" tier="summary" modified="2026-05-21">Summary for topic 28: this is a brief overview.</memory>
+<memory key="_summary:topic-29" tier="summary" modified="2026-05-21">Summary for topic 29: this is a brief overview.</memory>
+<memory key="_summary:topic-30" tier="summary" modified="2026-05-21">Summary for topic 30: this is a brief overview.</memory>
+<memory key="_summary:topic-31" tier="summary" modified="2026-05-21">Summary for topic 31: this is a brief overview.</memory>
+<memory key="_summary:topic-32" tier="summary" modified="2026-05-21">Summary for topic 32: this is a brief overview.</memory>
+<memory key="_summary:topic-33" tier="summary" modified="2026-05-21">Summary for topic 33: this is a brief overview.</memory>
+<memory key="_summary:topic-34" tier="summary" modified="2026-05-21">Summary for topic 34: this is a brief overview.</memory>
+<memory key="_summary:topic-35" tier="summary" modified="2026-05-21">Summary for topic 35: this is a brief overview.</memory>
+<memory key="_summary:topic-36" tier="summary" modified="2026-05-21">Summary for topic 36: this is a brief overview.</memory>
+<memory key="_summary:topic-37" tier="summary" modified="2026-05-21">Summary for topic 37: this is a brief overview.</memory>
+<memory key="_summary:topic-38" tier="summary" modified="2026-05-21">Summary for topic 38: this is a brief overview.</memory>
+<memory key="_summary:topic-39" tier="summary" modified="2026-05-21">Summary for topic 39: this is a brief overview.</memory>
+<memory key="_summary:topic-40" tier="summary" modified="2026-05-21">Summary for topic 40: this is a brief overview.</memory>
+<memory key="_summary:topic-41" tier="summary" modified="2026-05-21">Summary for topic 41: this is a brief overview.</memory>
+<memory key="_summary:topic-42" tier="summary" modified="2026-05-21">Summary for topic 42: this is a brief overview.</memory>
+<memory key="_summary:topic-43" tier="summary" modified="2026-05-21">Summary for topic 43: this is a brief overview.</memory>
+<memory key="_summary:topic-44" tier="summary" modified="2026-05-21">Summary for topic 44: this is a brief overview.</memory>
+<memory key="_summary:topic-45" tier="summary" modified="2026-05-21">Summary for topic 45: this is a brief overview.</memory>
+<memory key="_summary:topic-46" tier="summary" modified="2026-05-21">Summary for topic 46: this is a brief overview.</memory>
+<memory key="_summary:topic-47" tier="summary" modified="2026-05-21">Summary for topic 47: this is a brief overview.</memory>
+<memory key="_summary:topic-48" tier="summary" modified="2026-05-21">Summary for topic 48: this is a brief overview.</memory>
+</working-knowledge>
+<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">
+<cluster name="topic-0" count="100" showing="20">
+<entry key="curiosity:item-0-det000000"/>
+<entry key="curiosity:item-100-det000100"/>
+<entry key="curiosity:item-150-det000150"/>
+<entry key="curiosity:item-200-det000200"/>
+<entry key="curiosity:item-250-det000250"/>
+<entry key="curiosity:item-300-det000300"/>
+<entry key="curiosity:item-350-det000350"/>
+<entry key="curiosity:item-400-det000400"/>
+<entry key="curiosity:item-450-det000450"/>
+<entry key="curiosity:item-50-det000050"/>
+<entry key="curiosity:item-500-det000500"/>
+<entry key="curiosity:item-550-det000550"/>
+<entry key="curiosity:item-600-det000600"/>
+<entry key="curiosity:item-650-det000650"/>
+<entry key="curiosity:item-700-det000700"/>
+<entry key="curiosity:item-750-det000750"/>
+<entry key="curiosity:item-800-det000800"/>
+<entry key="curiosity:item-850-det000850"/>
+<entry key="curiosity:item-900-det000900"/>
+<entry key="curiosity:item-950-det000950"/>
+</cluster>
+<cluster name="topic-1" count="100" showing="20">
+<entry key="curiosity:item-1-det000001"/>
+<entry key="curiosity:item-101-det000101"/>
+<entry key="curiosity:item-151-det000151"/>
+<entry key="curiosity:item-201-det000201"/>
+<entry key="curiosity:item-251-det000251"/>
+<entry key="curiosity:item-301-det000301"/>
+<entry key="curiosity:item-351-det000351"/>
+<entry key="curiosity:item-401-det000401"/>
+<entry key="curiosity:item-451-det000451"/>
+<entry key="curiosity:item-501-det000501"/>
+<entry key="curiosity:item-51-det000051"/>
+<entry key="curiosity:item-551-det000551"/>
+<entry key="curiosity:item-601-det000601"/>
+<entry key="curiosity:item-651-det000651"/>
+<entry key="curiosity:item-701-det000701"/>
+<entry key="curiosity:item-751-det000751"/>
+<entry key="curiosity:item-801-det000801"/>
+<entry key="curiosity:item-851-det000851"/>
+<entry key="curiosity:item-901-det000901"/>
+<entry key="curiosity:item-951-det000951"/>
+</cluster>
+<cluster name="topic-10" count="100" showing="20">
+<entry key="curiosity:item-10-det000010"/>
+<entry key="curiosity:item-110-det000110"/>
+<entry key="curiosity:item-160-det000160"/>
+<entry key="curiosity:item-210-det000210"/>
+<entry key="curiosity:item-260-det000260"/>
+<entry key="curiosity:item-310-det000310"/>
+<entry key="curiosity:item-360-det000360"/>
+<entry key="curiosity:item-410-det000410"/>
+<entry key="curiosity:item-460-det000460"/>
+<entry key="curiosity:item-510-det000510"/>
+<entry key="curiosity:item-560-det000560"/>
+<entry key="curiosity:item-60-det000060"/>
+<entry key="curiosity:item-610-det000610"/>
+<entry key="curiosity:item-660-det000660"/>
+<entry key="curiosity:item-710-det000710"/>
+<entry key="curiosity:item-760-det000760"/>
+<entry key="curiosity:item-810-det000810"/>
+<entry key="curiosity:item-860-det000860"/>
+<entry key="curiosity:item-910-det000910"/>
+<entry key="curiosity:item-960-det000960"/>
+</cluster>
+<cluster name="topic-11" count="100" showing="20">
+<entry key="curiosity:item-11-det000011"/>
+<entry key="curiosity:item-111-det000111"/>
+<entry key="curiosity:item-161-det000161"/>
+<entry key="curiosity:item-211-det000211"/>
+<entry key="curiosity:item-261-det000261"/>
+<entry key="curiosity:item-311-det000311"/>
+<entry key="curiosity:item-361-det000361"/>
+<entry key="curiosity:item-411-det000411"/>
+<entry key="curiosity:item-461-det000461"/>
+<entry key="curiosity:item-511-det000511"/>
+<entry key="curiosity:item-561-det000561"/>
+<entry key="curiosity:item-61-det000061"/>
+<entry key="curiosity:item-611-det000611"/>
+<entry key="curiosity:item-661-det000661"/>
+<entry key="curiosity:item-711-det000711"/>
+<entry key="curiosity:item-761-det000761"/>
+<entry key="curiosity:item-811-det000811"/>
+<entry key="curiosity:item-861-det000861"/>
+<entry key="curiosity:item-911-det000911"/>
+<entry key="curiosity:item-961-det000961"/>
+</cluster>
+<cluster name="topic-12" count="100" showing="20">
+<entry key="curiosity:item-112-det000112"/>
+<entry key="curiosity:item-12-det000012"/>
+<entry key="curiosity:item-162-det000162"/>
+<entry key="curiosity:item-212-det000212"/>
+<entry key="curiosity:item-262-det000262"/>
+<entry key="curiosity:item-312-det000312"/>
+<entry key="curiosity:item-362-det000362"/>
+<entry key="curiosity:item-412-det000412"/>
+<entry key="curiosity:item-462-det000462"/>
+<entry key="curiosity:item-512-det000512"/>
+<entry key="curiosity:item-562-det000562"/>
+<entry key="curiosity:item-612-det000612"/>
+<entry key="curiosity:item-62-det000062"/>
+<entry key="curiosity:item-662-det000662"/>
+<entry key="curiosity:item-712-det000712"/>
+<entry key="curiosity:item-762-det000762"/>
+<entry key="curiosity:item-812-det000812"/>
+<entry key="curiosity:item-862-det000862"/>
+<entry key="curiosity:item-912-det000912"/>
+<entry key="curiosity:item-962-det000962"/>
+</cluster>
+<cluster name="topic-13" count="100" showing="20">
+<entry key="curiosity:item-113-det000113"/>
+<entry key="curiosity:item-13-det000013"/>
+<entry key="curiosity:item-163-det000163"/>
+<entry key="curiosity:item-213-det000213"/>
+<entry key="curiosity:item-263-det000263"/>
+<entry key="curiosity:item-313-det000313"/>
+<entry key="curiosity:item-363-det000363"/>
+<entry key="curiosity:item-413-det000413"/>
+<entry key="curiosity:item-463-det000463"/>
+<entry key="curiosity:item-513-det000513"/>
+<entry key="curiosity:item-563-det000563"/>
+<entry key="curiosity:item-613-det000613"/>
+<entry key="curiosity:item-63-det000063"/>
+<entry key="curiosity:item-663-det000663"/>
+<entry key="curiosity:item-713-det000713"/>
+<entry key="curiosity:item-763-det000763"/>
+<entry key="curiosity:item-813-det000813"/>
+<entry key="curiosity:item-863-det000863"/>
+<entry key="curiosity:item-913-det000913"/>
+<entry key="curiosity:item-963-det000963"/>
+</cluster>
+<cluster name="topic-14" count="100" showing="20">
+<entry key="curiosity:item-114-det000114"/>
+<entry key="curiosity:item-14-det000014"/>
+<entry key="curiosity:item-164-det000164"/>
+<entry key="curiosity:item-214-det000214"/>
+<entry key="curiosity:item-264-det000264"/>
+<entry key="curiosity:item-314-det000314"/>
+<entry key="curiosity:item-364-det000364"/>
+<entry key="curiosity:item-414-det000414"/>
+<entry key="curiosity:item-464-det000464"/>
+<entry key="curiosity:item-514-det000514"/>
+<entry key="curiosity:item-564-det000564"/>
+<entry key="curiosity:item-614-det000614"/>
+<entry key="curiosity:item-64-det000064"/>
+<entry key="curiosity:item-664-det000664"/>
+<entry key="curiosity:item-714-det000714"/>
+<entry key="curiosity:item-764-det000764"/>
+<entry key="curiosity:item-814-det000814"/>
+<entry key="curiosity:item-864-det000864"/>
+<entry key="curiosity:item-914-det000914"/>
+<entry key="curiosity:item-964-det000964"/>
+</cluster>
+<cluster name="topic-15" count="100" showing="20">
+<entry key="curiosity:item-115-det000115"/>
+<entry key="curiosity:item-15-det000015"/>
+<entry key="curiosity:item-165-det000165"/>
+<entry key="curiosity:item-215-det000215"/>
+<entry key="curiosity:item-265-det000265"/>
+<entry key="curiosity:item-315-det000315"/>
+<entry key="curiosity:item-365-det000365"/>
+<entry key="curiosity:item-415-det000415"/>
+<entry key="curiosity:item-465-det000465"/>
+<entry key="curiosity:item-515-det000515"/>
+<entry key="curiosity:item-565-det000565"/>
+<entry key="curiosity:item-615-det000615"/>
+<entry key="curiosity:item-65-det000065"/>
+<entry key="curiosity:item-665-det000665"/>
+<entry key="curiosity:item-715-det000715"/>
+<entry key="curiosity:item-765-det000765"/>
+<entry key="curiosity:item-815-det000815"/>
+<entry key="curiosity:item-865-det000865"/>
+<entry key="curiosity:item-915-det000915"/>
+<entry key="curiosity:item-965-det000965"/>
+</cluster>
+<cluster name="topic-16" count="100" showing="20">
+<entry key="curiosity:item-116-det000116"/>
+<entry key="curiosity:item-16-det000016"/>
+<entry key="curiosity:item-166-det000166"/>
+<entry key="curiosity:item-216-det000216"/>
+<entry key="curiosity:item-266-det000266"/>
+<entry key="curiosity:item-316-det000316"/>
+<entry key="curiosity:item-366-det000366"/>
+<entry key="curiosity:item-416-det000416"/>
+<entry key="curiosity:item-466-det000466"/>
+<entry key="curiosity:item-516-det000516"/>
+<entry key="curiosity:item-566-det000566"/>
+<entry key="curiosity:item-616-det000616"/>
+<entry key="curiosity:item-66-det000066"/>
+<entry key="curiosity:item-666-det000666"/>
+<entry key="curiosity:item-716-det000716"/>
+<entry key="curiosity:item-766-det000766"/>
+<entry key="curiosity:item-816-det000816"/>
+<entry key="curiosity:item-866-det000866"/>
+<entry key="curiosity:item-916-det000916"/>
+<entry key="curiosity:item-966-det000966"/>
+</cluster>
+<cluster name="topic-17" count="100" showing="20">
+<entry key="curiosity:item-117-det000117"/>
+<entry key="curiosity:item-167-det000167"/>
+<entry key="curiosity:item-17-det000017"/>
+<entry key="curiosity:item-217-det000217"/>
+<entry key="curiosity:item-267-det000267"/>
+<entry key="curiosity:item-317-det000317"/>
+<entry key="curiosity:item-367-det000367"/>
+<entry key="curiosity:item-417-det000417"/>
+<entry key="curiosity:item-467-det000467"/>
+<entry key="curiosity:item-517-det000517"/>
+<entry key="curiosity:item-567-det000567"/>
+<entry key="curiosity:item-617-det000617"/>
+<entry key="curiosity:item-667-det000667"/>
+<entry key="curiosity:item-67-det000067"/>
+<entry key="curiosity:item-717-det000717"/>
+<entry key="curiosity:item-767-det000767"/>
+<entry key="curiosity:item-817-det000817"/>
+<entry key="curiosity:item-867-det000867"/>
+<entry key="curiosity:item-917-det000917"/>
+<entry key="curiosity:item-967-det000967"/>
+</cluster>
+<cluster name="topic-18" count="100" showing="20">
+<entry key="curiosity:item-118-det000118"/>
+<entry key="curiosity:item-168-det000168"/>
+<entry key="curiosity:item-18-det000018"/>
+<entry key="curiosity:item-218-det000218"/>
+<entry key="curiosity:item-268-det000268"/>
+<entry key="curiosity:item-318-det000318"/>
+<entry key="curiosity:item-368-det000368"/>
+<entry key="curiosity:item-418-det000418"/>
+<entry key="curiosity:item-468-det000468"/>
+<entry key="curiosity:item-518-det000518"/>
+<entry key="curiosity:item-568-det000568"/>
+<entry key="curiosity:item-618-det000618"/>
+<entry key="curiosity:item-668-det000668"/>
+<entry key="curiosity:item-68-det000068"/>
+<entry key="curiosity:item-718-det000718"/>
+<entry key="curiosity:item-768-det000768"/>
+<entry key="curiosity:item-818-det000818"/>
+<entry key="curiosity:item-868-det000868"/>
+<entry key="curiosity:item-918-det000918"/>
+<entry key="curiosity:item-968-det000968"/>
+</cluster>
+<cluster name="topic-19" count="100" showing="20">
+<entry key="curiosity:item-119-det000119"/>
+<entry key="curiosity:item-169-det000169"/>
+<entry key="curiosity:item-19-det000019"/>
+<entry key="curiosity:item-219-det000219"/>
+<entry key="curiosity:item-269-det000269"/>
+<entry key="curiosity:item-319-det000319"/>
+<entry key="curiosity:item-369-det000369"/>
+<entry key="curiosity:item-419-det000419"/>
+<entry key="curiosity:item-469-det000469"/>
+<entry key="curiosity:item-519-det000519"/>
+<entry key="curiosity:item-569-det000569"/>
+<entry key="curiosity:item-619-det000619"/>
+<entry key="curiosity:item-669-det000669"/>
+<entry key="curiosity:item-69-det000069"/>
+<entry key="curiosity:item-719-det000719"/>
+<entry key="curiosity:item-769-det000769"/>
+<entry key="curiosity:item-819-det000819"/>
+<entry key="curiosity:item-869-det000869"/>
+<entry key="curiosity:item-919-det000919"/>
+<entry key="curiosity:item-969-det000969"/>
+</cluster>
+<cluster name="topic-2" count="100" showing="20">
+<entry key="curiosity:item-102-det000102"/>
+<entry key="curiosity:item-152-det000152"/>
+<entry key="curiosity:item-2-det000002"/>
+<entry key="curiosity:item-202-det000202"/>
+<entry key="curiosity:item-252-det000252"/>
+<entry key="curiosity:item-302-det000302"/>
+<entry key="curiosity:item-352-det000352"/>
+<entry key="curiosity:item-402-det000402"/>
+<entry key="curiosity:item-452-det000452"/>
+<entry key="curiosity:item-502-det000502"/>
+<entry key="curiosity:item-52-det000052"/>
+<entry key="curiosity:item-552-det000552"/>
+<entry key="curiosity:item-602-det000602"/>
+<entry key="curiosity:item-652-det000652"/>
+<entry key="curiosity:item-702-det000702"/>
+<entry key="curiosity:item-752-det000752"/>
+<entry key="curiosity:item-802-det000802"/>
+<entry key="curiosity:item-852-det000852"/>
+<entry key="curiosity:item-902-det000902"/>
+<entry key="curiosity:item-952-det000952"/>
+</cluster>
+<cluster name="topic-20" count="100" showing="20">
+<entry key="curiosity:item-120-det000120"/>
+<entry key="curiosity:item-170-det000170"/>
+<entry key="curiosity:item-20-det000020"/>
+<entry key="curiosity:item-220-det000220"/>
+<entry key="curiosity:item-270-det000270"/>
+<entry key="curiosity:item-320-det000320"/>
+<entry key="curiosity:item-370-det000370"/>
+<entry key="curiosity:item-420-det000420"/>
+<entry key="curiosity:item-470-det000470"/>
+<entry key="curiosity:item-520-det000520"/>
+<entry key="curiosity:item-570-det000570"/>
+<entry key="curiosity:item-620-det000620"/>
+<entry key="curiosity:item-670-det000670"/>
+<entry key="curiosity:item-70-det000070"/>
+<entry key="curiosity:item-720-det000720"/>
+<entry key="curiosity:item-770-det000770"/>
+<entry key="curiosity:item-820-det000820"/>
+<entry key="curiosity:item-870-det000870"/>
+<entry key="curiosity:item-920-det000920"/>
+<entry key="curiosity:item-970-det000970"/>
+</cluster>
+<cluster name="topic-21" count="100" showing="20">
+<entry key="curiosity:item-121-det000121"/>
+<entry key="curiosity:item-171-det000171"/>
+<entry key="curiosity:item-21-det000021"/>
+<entry key="curiosity:item-221-det000221"/>
+<entry key="curiosity:item-271-det000271"/>
+<entry key="curiosity:item-321-det000321"/>
+<entry key="curiosity:item-371-det000371"/>
+<entry key="curiosity:item-421-det000421"/>
+<entry key="curiosity:item-471-det000471"/>
+<entry key="curiosity:item-521-det000521"/>
+<entry key="curiosity:item-571-det000571"/>
+<entry key="curiosity:item-621-det000621"/>
+<entry key="curiosity:item-671-det000671"/>
+<entry key="curiosity:item-71-det000071"/>
+<entry key="curiosity:item-721-det000721"/>
+<entry key="curiosity:item-771-det000771"/>
+<entry key="curiosity:item-821-det000821"/>
+<entry key="curiosity:item-871-det000871"/>
+<entry key="curiosity:item-921-det000921"/>
+<entry key="curiosity:item-971-det000971"/>
+</cluster>
+<cluster name="topic-22" count="100" showing="20">
+<entry key="curiosity:item-122-det000122"/>
+<entry key="curiosity:item-172-det000172"/>
+<entry key="curiosity:item-22-det000022"/>
+<entry key="curiosity:item-222-det000222"/>
+<entry key="curiosity:item-272-det000272"/>
+<entry key="curiosity:item-322-det000322"/>
+<entry key="curiosity:item-372-det000372"/>
+<entry key="curiosity:item-422-det000422"/>
+<entry key="curiosity:item-472-det000472"/>
+<entry key="curiosity:item-522-det000522"/>
+<entry key="curiosity:item-572-det000572"/>
+<entry key="curiosity:item-622-det000622"/>
+<entry key="curiosity:item-672-det000672"/>
+<entry key="curiosity:item-72-det000072"/>
+<entry key="curiosity:item-722-det000722"/>
+<entry key="curiosity:item-772-det000772"/>
+<entry key="curiosity:item-822-det000822"/>
+<entry key="curiosity:item-872-det000872"/>
+<entry key="curiosity:item-922-det000922"/>
+<entry key="curiosity:item-972-det000972"/>
+</cluster>
+<cluster name="topic-23" count="100" showing="20">
+<entry key="curiosity:item-123-det000123"/>
+<entry key="curiosity:item-173-det000173"/>
+<entry key="curiosity:item-223-det000223"/>
+<entry key="curiosity:item-23-det000023"/>
+<entry key="curiosity:item-273-det000273"/>
+<entry key="curiosity:item-323-det000323"/>
+<entry key="curiosity:item-373-det000373"/>
+<entry key="curiosity:item-423-det000423"/>
+<entry key="curiosity:item-473-det000473"/>
+<entry key="curiosity:item-523-det000523"/>
+<entry key="curiosity:item-573-det000573"/>
+<entry key="curiosity:item-623-det000623"/>
+<entry key="curiosity:item-673-det000673"/>
+<entry key="curiosity:item-723-det000723"/>
+<entry key="curiosity:item-73-det000073"/>
+<entry key="curiosity:item-773-det000773"/>
+<entry key="curiosity:item-823-det000823"/>
+<entry key="curiosity:item-873-det000873"/>
+<entry key="curiosity:item-923-det000923"/>
+<entry key="curiosity:item-973-det000973"/>
+</cluster>
+<cluster name="topic-24" count="100" showing="20">
+<entry key="curiosity:item-124-det000124"/>
+<entry key="curiosity:item-174-det000174"/>
+<entry key="curiosity:item-224-det000224"/>
+<entry key="curiosity:item-24-det000024"/>
+<entry key="curiosity:item-274-det000274"/>
+<entry key="curiosity:item-324-det000324"/>
+<entry key="curiosity:item-374-det000374"/>
+<entry key="curiosity:item-424-det000424"/>
+<entry key="curiosity:item-474-det000474"/>
+<entry key="curiosity:item-524-det000524"/>
+<entry key="curiosity:item-574-det000574"/>
+<entry key="curiosity:item-624-det000624"/>
+<entry key="curiosity:item-674-det000674"/>
+<entry key="curiosity:item-724-det000724"/>
+<entry key="curiosity:item-74-det000074"/>
+<entry key="curiosity:item-774-det000774"/>
+<entry key="curiosity:item-824-det000824"/>
+<entry key="curiosity:item-874-det000874"/>
+<entry key="curiosity:item-924-det000924"/>
+<entry key="curiosity:item-974-det000974"/>
+</cluster>
+<cluster name="topic-25" count="100" showing="20">
+<entry key="curiosity:item-125-det000125"/>
+<entry key="curiosity:item-175-det000175"/>
+<entry key="curiosity:item-225-det000225"/>
+<entry key="curiosity:item-25-det000025"/>
+<entry key="curiosity:item-275-det000275"/>
+<entry key="curiosity:item-325-det000325"/>
+<entry key="curiosity:item-375-det000375"/>
+<entry key="curiosity:item-425-det000425"/>
+<entry key="curiosity:item-475-det000475"/>
+<entry key="curiosity:item-525-det000525"/>
+<entry key="curiosity:item-575-det000575"/>
+<entry key="curiosity:item-625-det000625"/>
+<entry key="curiosity:item-675-det000675"/>
+<entry key="curiosity:item-725-det000725"/>
+<entry key="curiosity:item-75-det000075"/>
+<entry key="curiosity:item-775-det000775"/>
+<entry key="curiosity:item-825-det000825"/>
+<entry key="curiosity:item-875-det000875"/>
+<entry key="curiosity:item-925-det000925"/>
+<entry key="curiosity:item-975-det000975"/>
+</cluster>
+<cluster name="topic-26" count="100" showing="20">
+<entry key="curiosity:item-126-det000126"/>
+<entry key="curiosity:item-176-det000176"/>
+<entry key="curiosity:item-226-det000226"/>
+<entry key="curiosity:item-26-det000026"/>
+<entry key="curiosity:item-276-det000276"/>
+<entry key="curiosity:item-326-det000326"/>
+<entry key="curiosity:item-376-det000376"/>
+<entry key="curiosity:item-426-det000426"/>
+<entry key="curiosity:item-476-det000476"/>
+<entry key="curiosity:item-526-det000526"/>
+<entry key="curiosity:item-576-det000576"/>
+<entry key="curiosity:item-626-det000626"/>
+<entry key="curiosity:item-676-det000676"/>
+<entry key="curiosity:item-726-det000726"/>
+<entry key="curiosity:item-76-det000076"/>
+<entry key="curiosity:item-776-det000776"/>
+<entry key="curiosity:item-826-det000826"/>
+<entry key="curiosity:item-876-det000876"/>
+<entry key="curiosity:item-926-det000926"/>
+<entry key="curiosity:item-976-det000976"/>
+</cluster>
+<cluster name="topic-27" count="100" showing="20">
+<entry key="curiosity:item-127-det000127"/>
+<entry key="curiosity:item-177-det000177"/>
+<entry key="curiosity:item-227-det000227"/>
+<entry key="curiosity:item-27-det000027"/>
+<entry key="curiosity:item-277-det000277"/>
+<entry key="curiosity:item-327-det000327"/>
+<entry key="curiosity:item-377-det000377"/>
+<entry key="curiosity:item-427-det000427"/>
+<entry key="curiosity:item-477-det000477"/>
+<entry key="curiosity:item-527-det000527"/>
+<entry key="curiosity:item-577-det000577"/>
+<entry key="curiosity:item-627-det000627"/>
+<entry key="curiosity:item-677-det000677"/>
+<entry key="curiosity:item-727-det000727"/>
+<entry key="curiosity:item-77-det000077"/>
+<entry key="curiosity:item-777-det000777"/>
+<entry key="curiosity:item-827-det000827"/>
+<entry key="curiosity:item-877-det000877"/>
+<entry key="curiosity:item-927-det000927"/>
+<entry key="curiosity:item-977-det000977"/>
+</cluster>
+<cluster name="topic-28" count="100" showing="20">
+<entry key="curiosity:item-128-det000128"/>
+<entry key="curiosity:item-178-det000178"/>
+<entry key="curiosity:item-228-det000228"/>
+<entry key="curiosity:item-278-det000278"/>
+<entry key="curiosity:item-28-det000028"/>
+<entry key="curiosity:item-328-det000328"/>
+<entry key="curiosity:item-378-det000378"/>
+<entry key="curiosity:item-428-det000428"/>
+<entry key="curiosity:item-478-det000478"/>
+<entry key="curiosity:item-528-det000528"/>
+<entry key="curiosity:item-578-det000578"/>
+<entry key="curiosity:item-628-det000628"/>
+<entry key="curiosity:item-678-det000678"/>
+<entry key="curiosity:item-728-det000728"/>
+<entry key="curiosity:item-778-det000778"/>
+<entry key="curiosity:item-78-det000078"/>
+<entry key="curiosity:item-828-det000828"/>
+<entry key="curiosity:item-878-det000878"/>
+<entry key="curiosity:item-928-det000928"/>
+<entry key="curiosity:item-978-det000978"/>
+</cluster>
+<cluster name="topic-29" count="100" showing="20">
+<entry key="curiosity:item-129-det000129"/>
+<entry key="curiosity:item-179-det000179"/>
+<entry key="curiosity:item-229-det000229"/>
+<entry key="curiosity:item-279-det000279"/>
+<entry key="curiosity:item-29-det000029"/>
+<entry key="curiosity:item-329-det000329"/>
+<entry key="curiosity:item-379-det000379"/>
+<entry key="curiosity:item-429-det000429"/>
+<entry key="curiosity:item-479-det000479"/>
+<entry key="curiosity:item-529-det000529"/>
+<entry key="curiosity:item-579-det000579"/>
+<entry key="curiosity:item-629-det000629"/>
+<entry key="curiosity:item-679-det000679"/>
+<entry key="curiosity:item-729-det000729"/>
+<entry key="curiosity:item-779-det000779"/>
+<entry key="curiosity:item-79-det000079"/>
+<entry key="curiosity:item-829-det000829"/>
+<entry key="curiosity:item-879-det000879"/>
+<entry key="curiosity:item-929-det000929"/>
+<entry key="curiosity:item-979-det000979"/>
+</cluster>
+<cluster name="topic-3" count="100" showing="20">
+<entry key="curiosity:item-103-det000103"/>
+<entry key="curiosity:item-153-det000153"/>
+<entry key="curiosity:item-203-det000203"/>
+<entry key="curiosity:item-253-det000253"/>
+<entry key="curiosity:item-3-det000003"/>
+<entry key="curiosity:item-303-det000303"/>
+<entry key="curiosity:item-353-det000353"/>
+<entry key="curiosity:item-403-det000403"/>
+<entry key="curiosity:item-453-det000453"/>
+<entry key="curiosity:item-503-det000503"/>
+<entry key="curiosity:item-53-det000053"/>
+<entry key="curiosity:item-553-det000553"/>
+<entry key="curiosity:item-603-det000603"/>
+<entry key="curiosity:item-653-det000653"/>
+<entry key="curiosity:item-703-det000703"/>
+<entry key="curiosity:item-753-det000753"/>
+<entry key="curiosity:item-803-det000803"/>
+<entry key="curiosity:item-853-det000853"/>
+<entry key="curiosity:item-903-det000903"/>
+<entry key="curiosity:item-953-det000953"/>
+</cluster>
+<cluster name="topic-30" count="100" showing="20">
+<entry key="curiosity:item-130-det000130"/>
+<entry key="curiosity:item-180-det000180"/>
+<entry key="curiosity:item-230-det000230"/>
+<entry key="curiosity:item-280-det000280"/>
+<entry key="curiosity:item-30-det000030"/>
+<entry key="curiosity:item-330-det000330"/>
+<entry key="curiosity:item-380-det000380"/>
+<entry key="curiosity:item-430-det000430"/>
+<entry key="curiosity:item-480-det000480"/>
+<entry key="curiosity:item-530-det000530"/>
+<entry key="curiosity:item-580-det000580"/>
+<entry key="curiosity:item-630-det000630"/>
+<entry key="curiosity:item-680-det000680"/>
+<entry key="curiosity:item-730-det000730"/>
+<entry key="curiosity:item-780-det000780"/>
+<entry key="curiosity:item-80-det000080"/>
+<entry key="curiosity:item-830-det000830"/>
+<entry key="curiosity:item-880-det000880"/>
+<entry key="curiosity:item-930-det000930"/>
+<entry key="curiosity:item-980-det000980"/>
+</cluster>
+<cluster name="topic-31" count="100" showing="20">
+<entry key="curiosity:item-131-det000131"/>
+<entry key="curiosity:item-181-det000181"/>
+<entry key="curiosity:item-231-det000231"/>
+<entry key="curiosity:item-281-det000281"/>
+<entry key="curiosity:item-31-det000031"/>
+<entry key="curiosity:item-331-det000331"/>
+<entry key="curiosity:item-381-det000381"/>
+<entry key="curiosity:item-431-det000431"/>
+<entry key="curiosity:item-481-det000481"/>
+<entry key="curiosity:item-531-det000531"/>
+<entry key="curiosity:item-581-det000581"/>
+<entry key="curiosity:item-631-det000631"/>
+<entry key="curiosity:item-681-det000681"/>
+<entry key="curiosity:item-731-det000731"/>
+<entry key="curiosity:item-781-det000781"/>
+<entry key="curiosity:item-81-det000081"/>
+<entry key="curiosity:item-831-det000831"/>
+<entry key="curiosity:item-881-det000881"/>
+<entry key="curiosity:item-931-det000931"/>
+<entry key="curiosity:item-981-det000981"/>
+</cluster>
+<cluster name="topic-32" count="100" showing="20">
+<entry key="curiosity:item-132-det000132"/>
+<entry key="curiosity:item-182-det000182"/>
+<entry key="curiosity:item-232-det000232"/>
+<entry key="curiosity:item-282-det000282"/>
+<entry key="curiosity:item-32-det000032"/>
+<entry key="curiosity:item-332-det000332"/>
+<entry key="curiosity:item-382-det000382"/>
+<entry key="curiosity:item-432-det000432"/>
+<entry key="curiosity:item-482-det000482"/>
+<entry key="curiosity:item-532-det000532"/>
+<entry key="curiosity:item-582-det000582"/>
+<entry key="curiosity:item-632-det000632"/>
+<entry key="curiosity:item-682-det000682"/>
+<entry key="curiosity:item-732-det000732"/>
+<entry key="curiosity:item-782-det000782"/>
+<entry key="curiosity:item-82-det000082"/>
+<entry key="curiosity:item-832-det000832"/>
+<entry key="curiosity:item-882-det000882"/>
+<entry key="curiosity:item-932-det000932"/>
+<entry key="curiosity:item-982-det000982"/>
+</cluster>
+<cluster name="topic-33" count="100" showing="20">
+<entry key="curiosity:item-133-det000133"/>
+<entry key="curiosity:item-183-det000183"/>
+<entry key="curiosity:item-233-det000233"/>
+<entry key="curiosity:item-283-det000283"/>
+<entry key="curiosity:item-33-det000033"/>
+<entry key="curiosity:item-333-det000333"/>
+<entry key="curiosity:item-383-det000383"/>
+<entry key="curiosity:item-433-det000433"/>
+<entry key="curiosity:item-483-det000483"/>
+<entry key="curiosity:item-533-det000533"/>
+<entry key="curiosity:item-583-det000583"/>
+<entry key="curiosity:item-633-det000633"/>
+<entry key="curiosity:item-683-det000683"/>
+<entry key="curiosity:item-733-det000733"/>
+<entry key="curiosity:item-783-det000783"/>
+<entry key="curiosity:item-83-det000083"/>
+<entry key="curiosity:item-833-det000833"/>
+<entry key="curiosity:item-883-det000883"/>
+<entry key="curiosity:item-933-det000933"/>
+<entry key="curiosity:item-983-det000983"/>
+</cluster>
+<cluster name="topic-34" count="100" showing="20">
+<entry key="curiosity:item-134-det000134"/>
+<entry key="curiosity:item-184-det000184"/>
+<entry key="curiosity:item-234-det000234"/>
+<entry key="curiosity:item-284-det000284"/>
+<entry key="curiosity:item-334-det000334"/>
+<entry key="curiosity:item-34-det000034"/>
+<entry key="curiosity:item-384-det000384"/>
+<entry key="curiosity:item-434-det000434"/>
+<entry key="curiosity:item-484-det000484"/>
+<entry key="curiosity:item-534-det000534"/>
+<entry key="curiosity:item-584-det000584"/>
+<entry key="curiosity:item-634-det000634"/>
+<entry key="curiosity:item-684-det000684"/>
+<entry key="curiosity:item-734-det000734"/>
+<entry key="curiosity:item-784-det000784"/>
+<entry key="curiosity:item-834-det000834"/>
+<entry key="curiosity:item-84-det000084"/>
+<entry key="curiosity:item-884-det000884"/>
+<entry key="curiosity:item-934-det000934"/>
+<entry key="curiosity:item-984-det000984"/>
+</cluster>
+<cluster name="topic-35" count="100" showing="20">
+<entry key="curiosity:item-135-det000135"/>
+<entry key="curiosity:item-185-det000185"/>
+<entry key="curiosity:item-235-det000235"/>
+<entry key="curiosity:item-285-det000285"/>
+<entry key="curiosity:item-335-det000335"/>
+<entry key="curiosity:item-35-det000035"/>
+<entry key="curiosity:item-385-det000385"/>
+<entry key="curiosity:item-435-det000435"/>
+<entry key="curiosity:item-485-det000485"/>
+<entry key="curiosity:item-535-det000535"/>
+<entry key="curiosity:item-585-det000585"/>
+<entry key="curiosity:item-635-det000635"/>
+<entry key="curiosity:item-685-det000685"/>
+<entry key="curiosity:item-735-det000735"/>
+<entry key="curiosity:item-785-det000785"/>
+<entry key="curiosity:item-835-det000835"/>
+<entry key="curiosity:item-85-det000085"/>
+<entry key="curiosity:item-885-det000885"/>
+<entry key="curiosity:item-935-det000935"/>
+<entry key="curiosity:item-985-det000985"/>
+</cluster>
+<cluster name="topic-36" count="100" showing="20">
+<entry key="curiosity:item-136-det000136"/>
+<entry key="curiosity:item-186-det000186"/>
+<entry key="curiosity:item-236-det000236"/>
+<entry key="curiosity:item-286-det000286"/>
+<entry key="curiosity:item-336-det000336"/>
+<entry key="curiosity:item-36-det000036"/>
+<entry key="curiosity:item-386-det000386"/>
+<entry key="curiosity:item-436-det000436"/>
+<entry key="curiosity:item-486-det000486"/>
+<entry key="curiosity:item-536-det000536"/>
+<entry key="curiosity:item-586-det000586"/>
+<entry key="curiosity:item-636-det000636"/>
+<entry key="curiosity:item-686-det000686"/>
+<entry key="curiosity:item-736-det000736"/>
+<entry key="curiosity:item-786-det000786"/>
+<entry key="curiosity:item-836-det000836"/>
+<entry key="curiosity:item-86-det000086"/>
+<entry key="curiosity:item-886-det000886"/>
+<entry key="curiosity:item-936-det000936"/>
+<entry key="curiosity:item-986-det000986"/>
+</cluster>
+<cluster name="topic-37" count="100" showing="20">
+<entry key="curiosity:item-137-det000137"/>
+<entry key="curiosity:item-187-det000187"/>
+<entry key="curiosity:item-237-det000237"/>
+<entry key="curiosity:item-287-det000287"/>
+<entry key="curiosity:item-337-det000337"/>
+<entry key="curiosity:item-37-det000037"/>
+<entry key="curiosity:item-387-det000387"/>
+<entry key="curiosity:item-437-det000437"/>
+<entry key="curiosity:item-487-det000487"/>
+<entry key="curiosity:item-537-det000537"/>
+<entry key="curiosity:item-587-det000587"/>
+<entry key="curiosity:item-637-det000637"/>
+<entry key="curiosity:item-687-det000687"/>
+<entry key="curiosity:item-737-det000737"/>
+<entry key="curiosity:item-787-det000787"/>
+<entry key="curiosity:item-837-det000837"/>
+<entry key="curiosity:item-87-det000087"/>
+<entry key="curiosity:item-887-det000887"/>
+<entry key="curiosity:item-937-det000937"/>
+<entry key="curiosity:item-987-det000987"/>
+</cluster>
+<cluster name="topic-38" count="100" showing="20">
+<entry key="curiosity:item-138-det000138"/>
+<entry key="curiosity:item-188-det000188"/>
+<entry key="curiosity:item-238-det000238"/>
+<entry key="curiosity:item-288-det000288"/>
+<entry key="curiosity:item-338-det000338"/>
+<entry key="curiosity:item-38-det000038"/>
+<entry key="curiosity:item-388-det000388"/>
+<entry key="curiosity:item-438-det000438"/>
+<entry key="curiosity:item-488-det000488"/>
+<entry key="curiosity:item-538-det000538"/>
+<entry key="curiosity:item-588-det000588"/>
+<entry key="curiosity:item-638-det000638"/>
+<entry key="curiosity:item-688-det000688"/>
+<entry key="curiosity:item-738-det000738"/>
+<entry key="curiosity:item-788-det000788"/>
+<entry key="curiosity:item-838-det000838"/>
+<entry key="curiosity:item-88-det000088"/>
+<entry key="curiosity:item-888-det000888"/>
+<entry key="curiosity:item-938-det000938"/>
+<entry key="curiosity:item-988-det000988"/>
+</cluster>
+<cluster name="topic-39" count="100" showing="20">
+<entry key="curiosity:item-139-det000139"/>
+<entry key="curiosity:item-189-det000189"/>
+<entry key="curiosity:item-239-det000239"/>
+<entry key="curiosity:item-289-det000289"/>
+<entry key="curiosity:item-339-det000339"/>
+<entry key="curiosity:item-389-det000389"/>
+<entry key="curiosity:item-39-det000039"/>
+<entry key="curiosity:item-439-det000439"/>
+<entry key="curiosity:item-489-det000489"/>
+<entry key="curiosity:item-539-det000539"/>
+<entry key="curiosity:item-589-det000589"/>
+<entry key="curiosity:item-639-det000639"/>
+<entry key="curiosity:item-689-det000689"/>
+<entry key="curiosity:item-739-det000739"/>
+<entry key="curiosity:item-789-det000789"/>
+<entry key="curiosity:item-839-det000839"/>
+<entry key="curiosity:item-889-det000889"/>
+<entry key="curiosity:item-89-det000089"/>
+<entry key="curiosity:item-939-det000939"/>
+<entry key="curiosity:item-989-det000989"/>
+</cluster>
+<cluster name="topic-4" count="100" showing="20">
+<entry key="curiosity:item-104-det000104"/>
+<entry key="curiosity:item-154-det000154"/>
+<entry key="curiosity:item-204-det000204"/>
+<entry key="curiosity:item-254-det000254"/>
+<entry key="curiosity:item-304-det000304"/>
+<entry key="curiosity:item-354-det000354"/>
+<entry key="curiosity:item-4-det000004"/>
+<entry key="curiosity:item-404-det000404"/>
+<entry key="curiosity:item-454-det000454"/>
+<entry key="curiosity:item-504-det000504"/>
+<entry key="curiosity:item-54-det000054"/>
+<entry key="curiosity:item-554-det000554"/>
+<entry key="curiosity:item-604-det000604"/>
+<entry key="curiosity:item-654-det000654"/>
+<entry key="curiosity:item-704-det000704"/>
+<entry key="curiosity:item-754-det000754"/>
+<entry key="curiosity:item-804-det000804"/>
+<entry key="curiosity:item-854-det000854"/>
+<entry key="curiosity:item-904-det000904"/>
+<entry key="curiosity:item-954-det000954"/>
+</cluster>
+<cluster name="topic-40" count="100" showing="20">
+<entry key="curiosity:item-140-det000140"/>
+<entry key="curiosity:item-190-det000190"/>
+<entry key="curiosity:item-240-det000240"/>
+<entry key="curiosity:item-290-det000290"/>
+<entry key="curiosity:item-340-det000340"/>
+<entry key="curiosity:item-390-det000390"/>
+<entry key="curiosity:item-40-det000040"/>
+<entry key="curiosity:item-440-det000440"/>
+<entry key="curiosity:item-490-det000490"/>
+<entry key="curiosity:item-540-det000540"/>
+<entry key="curiosity:item-590-det000590"/>
+<entry key="curiosity:item-640-det000640"/>
+<entry key="curiosity:item-690-det000690"/>
+<entry key="curiosity:item-740-det000740"/>
+<entry key="curiosity:item-790-det000790"/>
+<entry key="curiosity:item-840-det000840"/>
+<entry key="curiosity:item-890-det000890"/>
+<entry key="curiosity:item-90-det000090"/>
+<entry key="curiosity:item-940-det000940"/>
+<entry key="curiosity:item-990-det000990"/>
+</cluster>
+<cluster name="topic-41" count="100" showing="20">
+<entry key="curiosity:item-141-det000141"/>
+<entry key="curiosity:item-191-det000191"/>
+<entry key="curiosity:item-241-det000241"/>
+<entry key="curiosity:item-291-det000291"/>
+<entry key="curiosity:item-341-det000341"/>
+<entry key="curiosity:item-391-det000391"/>
+<entry key="curiosity:item-41-det000041"/>
+<entry key="curiosity:item-441-det000441"/>
+<entry key="curiosity:item-491-det000491"/>
+<entry key="curiosity:item-541-det000541"/>
+<entry key="curiosity:item-591-det000591"/>
+<entry key="curiosity:item-641-det000641"/>
+<entry key="curiosity:item-691-det000691"/>
+<entry key="curiosity:item-741-det000741"/>
+<entry key="curiosity:item-791-det000791"/>
+<entry key="curiosity:item-841-det000841"/>
+<entry key="curiosity:item-891-det000891"/>
+<entry key="curiosity:item-91-det000091"/>
+<entry key="curiosity:item-941-det000941"/>
+<entry key="curiosity:item-991-det000991"/>
+</cluster>
+<cluster name="topic-42" count="100" showing="20">
+<entry key="curiosity:item-142-det000142"/>
+<entry key="curiosity:item-192-det000192"/>
+<entry key="curiosity:item-242-det000242"/>
+<entry key="curiosity:item-292-det000292"/>
+<entry key="curiosity:item-342-det000342"/>
+<entry key="curiosity:item-392-det000392"/>
+<entry key="curiosity:item-42-det000042"/>
+<entry key="curiosity:item-442-det000442"/>
+<entry key="curiosity:item-492-det000492"/>
+<entry key="curiosity:item-542-det000542"/>
+<entry key="curiosity:item-592-det000592"/>
+<entry key="curiosity:item-642-det000642"/>
+<entry key="curiosity:item-692-det000692"/>
+<entry key="curiosity:item-742-det000742"/>
+<entry key="curiosity:item-792-det000792"/>
+<entry key="curiosity:item-842-det000842"/>
+<entry key="curiosity:item-892-det000892"/>
+<entry key="curiosity:item-92-det000092"/>
+<entry key="curiosity:item-942-det000942"/>
+<entry key="curiosity:item-992-det000992"/>
+</cluster>
+<cluster name="topic-43" count="100" showing="20">
+<entry key="curiosity:item-143-det000143"/>
+<entry key="curiosity:item-193-det000193"/>
+<entry key="curiosity:item-243-det000243"/>
+<entry key="curiosity:item-293-det000293"/>
+<entry key="curiosity:item-343-det000343"/>
+<entry key="curiosity:item-393-det000393"/>
+<entry key="curiosity:item-43-det000043"/>
+<entry key="curiosity:item-443-det000443"/>
+<entry key="curiosity:item-493-det000493"/>
+<entry key="curiosity:item-543-det000543"/>
+<entry key="curiosity:item-593-det000593"/>
+<entry key="curiosity:item-643-det000643"/>
+<entry key="curiosity:item-693-det000693"/>
+<entry key="curiosity:item-743-det000743"/>
+<entry key="curiosity:item-793-det000793"/>
+<entry key="curiosity:item-843-det000843"/>
+<entry key="curiosity:item-893-det000893"/>
+<entry key="curiosity:item-93-det000093"/>
+<entry key="curiosity:item-943-det000943"/>
+<entry key="curiosity:item-993-det000993"/>
+</cluster>
+<cluster name="topic-44" count="100" showing="20">
+<entry key="curiosity:item-144-det000144"/>
+<entry key="curiosity:item-194-det000194"/>
+<entry key="curiosity:item-244-det000244"/>
+<entry key="curiosity:item-294-det000294"/>
+<entry key="curiosity:item-344-det000344"/>
+<entry key="curiosity:item-394-det000394"/>
+<entry key="curiosity:item-44-det000044"/>
+<entry key="curiosity:item-444-det000444"/>
+<entry key="curiosity:item-494-det000494"/>
+<entry key="curiosity:item-544-det000544"/>
+<entry key="curiosity:item-594-det000594"/>
+<entry key="curiosity:item-644-det000644"/>
+<entry key="curiosity:item-694-det000694"/>
+<entry key="curiosity:item-744-det000744"/>
+<entry key="curiosity:item-794-det000794"/>
+<entry key="curiosity:item-844-det000844"/>
+<entry key="curiosity:item-894-det000894"/>
+<entry key="curiosity:item-94-det000094"/>
+<entry key="curiosity:item-944-det000944"/>
+<entry key="curiosity:item-994-det000994"/>
+</cluster>
+<cluster name="topic-45" count="100" showing="20">
+<entry key="curiosity:item-145-det000145"/>
+<entry key="curiosity:item-195-det000195"/>
+<entry key="curiosity:item-245-det000245"/>
+<entry key="curiosity:item-295-det000295"/>
+<entry key="curiosity:item-345-det000345"/>
+<entry key="curiosity:item-395-det000395"/>
+<entry key="curiosity:item-445-det000445"/>
+<entry key="curiosity:item-45-det000045"/>
+<entry key="curiosity:item-495-det000495"/>
+<entry key="curiosity:item-545-det000545"/>
+<entry key="curiosity:item-595-det000595"/>
+<entry key="curiosity:item-645-det000645"/>
+<entry key="curiosity:item-695-det000695"/>
+<entry key="curiosity:item-745-det000745"/>
+<entry key="curiosity:item-795-det000795"/>
+<entry key="curiosity:item-845-det000845"/>
+<entry key="curiosity:item-895-det000895"/>
+<entry key="curiosity:item-945-det000945"/>
+<entry key="curiosity:item-95-det000095"/>
+<entry key="curiosity:item-995-det000995"/>
+</cluster>
+<cluster name="topic-46" count="100" showing="20">
+<entry key="curiosity:item-146-det000146"/>
+<entry key="curiosity:item-196-det000196"/>
+<entry key="curiosity:item-246-det000246"/>
+<entry key="curiosity:item-296-det000296"/>
+<entry key="curiosity:item-346-det000346"/>
+<entry key="curiosity:item-396-det000396"/>
+<entry key="curiosity:item-446-det000446"/>
+<entry key="curiosity:item-46-det000046"/>
+<entry key="curiosity:item-496-det000496"/>
+<entry key="curiosity:item-546-det000546"/>
+<entry key="curiosity:item-596-det000596"/>
+<entry key="curiosity:item-646-det000646"/>
+<entry key="curiosity:item-696-det000696"/>
+<entry key="curiosity:item-746-det000746"/>
+<entry key="curiosity:item-796-det000796"/>
+<entry key="curiosity:item-846-det000846"/>
+<entry key="curiosity:item-896-det000896"/>
+<entry key="curiosity:item-946-det000946"/>
+<entry key="curiosity:item-96-det000096"/>
+<entry key="curiosity:item-996-det000996"/>
+</cluster>
+<cluster name="topic-47" count="100" showing="20">
+<entry key="curiosity:item-147-det000147"/>
+<entry key="curiosity:item-197-det000197"/>
+<entry key="curiosity:item-247-det000247"/>
+<entry key="curiosity:item-297-det000297"/>
+<entry key="curiosity:item-347-det000347"/>
+<entry key="curiosity:item-397-det000397"/>
+<entry key="curiosity:item-447-det000447"/>
+<entry key="curiosity:item-47-det000047"/>
+<entry key="curiosity:item-497-det000497"/>
+<entry key="curiosity:item-547-det000547"/>
+<entry key="curiosity:item-597-det000597"/>
+<entry key="curiosity:item-647-det000647"/>
+<entry key="curiosity:item-697-det000697"/>
+<entry key="curiosity:item-747-det000747"/>
+<entry key="curiosity:item-797-det000797"/>
+<entry key="curiosity:item-847-det000847"/>
+<entry key="curiosity:item-897-det000897"/>
+<entry key="curiosity:item-947-det000947"/>
+<entry key="curiosity:item-97-det000097"/>
+<entry key="curiosity:item-997-det000997"/>
+</cluster>
+<cluster name="topic-48" count="100" showing="20">
+<entry key="curiosity:item-148-det000148"/>
+<entry key="curiosity:item-198-det000198"/>
+<entry key="curiosity:item-248-det000248"/>
+<entry key="curiosity:item-298-det000298"/>
+<entry key="curiosity:item-348-det000348"/>
+<entry key="curiosity:item-398-det000398"/>
+<entry key="curiosity:item-448-det000448"/>
+<entry key="curiosity:item-48-det000048"/>
+<entry key="curiosity:item-498-det000498"/>
+<entry key="curiosity:item-548-det000548"/>
+<entry key="curiosity:item-598-det000598"/>
+<entry key="curiosity:item-648-det000648"/>
+<entry key="curiosity:item-698-det000698"/>
+<entry key="curiosity:item-748-det000748"/>
+<entry key="curiosity:item-798-det000798"/>
+<entry key="curiosity:item-848-det000848"/>
+<entry key="curiosity:item-898-det000898"/>
+<entry key="curiosity:item-948-det000948"/>
+<entry key="curiosity:item-98-det000098"/>
+<entry key="curiosity:item-998-det000998"/>
+</cluster>
+<cluster name="topic-49" count="100" showing="20">
+<entry key="curiosity:item-149-det000149"/>
+<entry key="curiosity:item-199-det000199"/>
+<entry key="curiosity:item-249-det000249"/>
+<entry key="curiosity:item-299-det000299"/>
+<entry key="curiosity:item-349-det000349"/>
+<entry key="curiosity:item-399-det000399"/>
+<entry key="curiosity:item-449-det000449"/>
+<entry key="curiosity:item-49-det000049"/>
+<entry key="curiosity:item-499-det000499"/>
+<entry key="curiosity:item-549-det000549"/>
+<entry key="curiosity:item-599-det000599"/>
+<entry key="curiosity:item-649-det000649"/>
+<entry key="curiosity:item-699-det000699"/>
+<entry key="curiosity:item-749-det000749"/>
+<entry key="curiosity:item-799-det000799"/>
+<entry key="curiosity:item-849-det000849"/>
+<entry key="curiosity:item-899-det000899"/>
+<entry key="curiosity:item-949-det000949"/>
+<entry key="curiosity:item-99-det000099"/>
+<entry key="curiosity:item-999-det000999"/>
+</cluster>
+<cluster name="topic-5" count="100" showing="20">
+<entry key="curiosity:item-105-det000105"/>
+<entry key="curiosity:item-155-det000155"/>
+<entry key="curiosity:item-205-det000205"/>
+<entry key="curiosity:item-255-det000255"/>
+<entry key="curiosity:item-305-det000305"/>
+<entry key="curiosity:item-355-det000355"/>
+<entry key="curiosity:item-405-det000405"/>
+<entry key="curiosity:item-455-det000455"/>
+<entry key="curiosity:item-5-det000005"/>
+<entry key="curiosity:item-505-det000505"/>
+<entry key="curiosity:item-55-det000055"/>
+<entry key="curiosity:item-555-det000555"/>
+<entry key="curiosity:item-605-det000605"/>
+<entry key="curiosity:item-655-det000655"/>
+<entry key="curiosity:item-705-det000705"/>
+<entry key="curiosity:item-755-det000755"/>
+<entry key="curiosity:item-805-det000805"/>
+<entry key="curiosity:item-855-det000855"/>
+<entry key="curiosity:item-905-det000905"/>
+<entry key="curiosity:item-955-det000955"/>
+</cluster>
+<cluster name="topic-6" count="100" showing="20">
+<entry key="curiosity:item-106-det000106"/>
+<entry key="curiosity:item-156-det000156"/>
+<entry key="curiosity:item-206-det000206"/>
+<entry key="curiosity:item-256-det000256"/>
+<entry key="curiosity:item-306-det000306"/>
+<entry key="curiosity:item-356-det000356"/>
+<entry key="curiosity:item-406-det000406"/>
+<entry key="curiosity:item-456-det000456"/>
+<entry key="curiosity:item-506-det000506"/>
+<entry key="curiosity:item-556-det000556"/>
+<entry key="curiosity:item-56-det000056"/>
+<entry key="curiosity:item-6-det000006"/>
+<entry key="curiosity:item-606-det000606"/>
+<entry key="curiosity:item-656-det000656"/>
+<entry key="curiosity:item-706-det000706"/>
+<entry key="curiosity:item-756-det000756"/>
+<entry key="curiosity:item-806-det000806"/>
+<entry key="curiosity:item-856-det000856"/>
+<entry key="curiosity:item-906-det000906"/>
+<entry key="curiosity:item-956-det000956"/>
+</cluster>
+<cluster name="topic-7" count="100" showing="20">
+<entry key="curiosity:item-107-det000107"/>
+<entry key="curiosity:item-157-det000157"/>
+<entry key="curiosity:item-207-det000207"/>
+<entry key="curiosity:item-257-det000257"/>
+<entry key="curiosity:item-307-det000307"/>
+<entry key="curiosity:item-357-det000357"/>
+<entry key="curiosity:item-407-det000407"/>
+<entry key="curiosity:item-457-det000457"/>
+<entry key="curiosity:item-507-det000507"/>
+<entry key="curiosity:item-557-det000557"/>
+<entry key="curiosity:item-57-det000057"/>
+<entry key="curiosity:item-607-det000607"/>
+<entry key="curiosity:item-657-det000657"/>
+<entry key="curiosity:item-7-det000007"/>
+<entry key="curiosity:item-707-det000707"/>
+<entry key="curiosity:item-757-det000757"/>
+<entry key="curiosity:item-807-det000807"/>
+<entry key="curiosity:item-857-det000857"/>
+<entry key="curiosity:item-907-det000907"/>
+<entry key="curiosity:item-957-det000957"/>
+</cluster>
+<cluster name="topic-8" count="100" showing="20">
+<entry key="curiosity:item-108-det000108"/>
+<entry key="curiosity:item-158-det000158"/>
+<entry key="curiosity:item-208-det000208"/>
+<entry key="curiosity:item-258-det000258"/>
+<entry key="curiosity:item-308-det000308"/>
+<entry key="curiosity:item-358-det000358"/>
+<entry key="curiosity:item-408-det000408"/>
+<entry key="curiosity:item-458-det000458"/>
+<entry key="curiosity:item-508-det000508"/>
+<entry key="curiosity:item-558-det000558"/>
+<entry key="curiosity:item-58-det000058"/>
+<entry key="curiosity:item-608-det000608"/>
+<entry key="curiosity:item-658-det000658"/>
+<entry key="curiosity:item-708-det000708"/>
+<entry key="curiosity:item-758-det000758"/>
+<entry key="curiosity:item-8-det000008"/>
+<entry key="curiosity:item-808-det000808"/>
+<entry key="curiosity:item-858-det000858"/>
+<entry key="curiosity:item-908-det000908"/>
+<entry key="curiosity:item-958-det000958"/>
+</cluster>
+<cluster name="topic-9" count="100" showing="20">
+<entry key="curiosity:item-109-det000109"/>
+<entry key="curiosity:item-159-det000159"/>
+<entry key="curiosity:item-209-det000209"/>
+<entry key="curiosity:item-259-det000259"/>
+<entry key="curiosity:item-309-det000309"/>
+<entry key="curiosity:item-359-det000359"/>
+<entry key="curiosity:item-409-det000409"/>
+<entry key="curiosity:item-459-det000459"/>
+<entry key="curiosity:item-509-det000509"/>
+<entry key="curiosity:item-559-det000559"/>
+<entry key="curiosity:item-59-det000059"/>
+<entry key="curiosity:item-609-det000609"/>
+<entry key="curiosity:item-659-det000659"/>
+<entry key="curiosity:item-709-det000709"/>
+<entry key="curiosity:item-759-det000759"/>
+<entry key="curiosity:item-809-det000809"/>
+<entry key="curiosity:item-859-det000859"/>
+<entry key="curiosity:item-9-det000009"/>
+<entry key="curiosity:item-909-det000909"/>
+<entry key="curiosity:item-959-det000959"/>
+</cluster>
+<older-summaries>
+<entry key="_summary:topic-49"/>
+</older-summaries>
+</discoverable-archive>
+<working-knowledge-updates>
+<memory key="_pinned:0" tier="pinned" changed="true"/>
+<memory key="_pinned:1" tier="pinned" changed="true"/>
+<memory key="_pinned:10" tier="pinned" changed="true"/>
+<memory key="_pinned:11" tier="pinned" changed="true"/>
+<memory key="_pinned:12" tier="pinned" changed="true"/>
+<memory key="_pinned:13" tier="pinned" changed="true"/>
+<memory key="_pinned:14" tier="pinned" changed="true"/>
+<memory key="_pinned:15" tier="pinned" changed="true"/>
+<memory key="_pinned:16" tier="pinned" changed="true"/>
+<memory key="_pinned:17" tier="pinned" changed="true"/>
+<memory key="_pinned:18" tier="pinned" changed="true"/>
+<memory key="_pinned:19" tier="pinned" changed="true"/>
+<memory key="_pinned:2" tier="pinned" changed="true"/>
+<memory key="_pinned:20" tier="pinned" changed="true"/>
+<memory key="_pinned:21" tier="pinned" changed="true"/>
+<memory key="_pinned:22" tier="pinned" changed="true"/>
+<memory key="_pinned:23" tier="pinned" changed="true"/>
+<memory key="_pinned:24" tier="pinned" changed="true"/>
+<memory key="_pinned:25" tier="pinned" changed="true"/>
+<memory key="_pinned:26" tier="pinned" changed="true"/>
+<memory key="_pinned:27" tier="pinned" changed="true"/>
+<memory key="_pinned:28" tier="pinned" changed="true"/>
+<memory key="_pinned:29" tier="pinned" changed="true"/>
+<memory key="_pinned:3" tier="pinned" changed="true"/>
+<memory key="_pinned:30" tier="pinned" changed="true"/>
+<memory key="_pinned:31" tier="pinned" changed="true"/>
+<memory key="_pinned:32" tier="pinned" changed="true"/>
+<memory key="_pinned:33" tier="pinned" changed="true"/>
+<memory key="_pinned:34" tier="pinned" changed="true"/>
+<memory key="_pinned:35" tier="pinned" changed="true"/>
+<memory key="_pinned:36" tier="pinned" changed="true"/>
+<memory key="_pinned:37" tier="pinned" changed="true"/>
+<memory key="_pinned:38" tier="pinned" changed="true"/>
+<memory key="_pinned:39" tier="pinned" changed="true"/>
+<memory key="_pinned:4" tier="pinned" changed="true"/>
+<memory key="_pinned:40" tier="pinned" changed="true"/>
+<memory key="_pinned:41" tier="pinned" changed="true"/>
+<memory key="_pinned:42" tier="pinned" changed="true"/>
+<memory key="_pinned:43" tier="pinned" changed="true"/>
+<memory key="_pinned:44" tier="pinned" changed="true"/>
+<memory key="_pinned:45" tier="pinned" changed="true"/>
+<memory key="_pinned:46" tier="pinned" changed="true"/>
+<memory key="_pinned:47" tier="pinned" changed="true"/>
+<memory key="_pinned:48" tier="pinned" changed="true"/>
+<memory key="_pinned:49" tier="pinned" changed="true"/>
+<memory key="_pinned:5" tier="pinned" changed="true"/>
+<memory key="_pinned:50" tier="pinned" changed="true"/>
+<memory key="_pinned:51" tier="pinned" changed="true"/>
+<memory key="_pinned:52" tier="pinned" changed="true"/>
+<memory key="_pinned:53" tier="pinned" changed="true"/>
+<memory key="_pinned:54" tier="pinned" changed="true"/>
+<memory key="_pinned:55" tier="pinned" changed="true"/>
+<memory key="_pinned:56" tier="pinned" changed="true"/>
+<memory key="_pinned:57" tier="pinned" changed="true"/>
+<memory key="_pinned:58" tier="pinned" changed="true"/>
+<memory key="_pinned:59" tier="pinned" changed="true"/>
+<memory key="_pinned:6" tier="pinned" changed="true"/>
+<memory key="_pinned:60" tier="pinned" changed="true"/>
+<memory key="_pinned:61" tier="pinned" changed="true"/>
+<memory key="_pinned:62" tier="pinned" changed="true"/>
+<memory key="_pinned:63" tier="pinned" changed="true"/>
+<memory key="_pinned:64" tier="pinned" changed="true"/>
+<memory key="_pinned:65" tier="pinned" changed="true"/>
+<memory key="_pinned:66" tier="pinned" changed="true"/>
+<memory key="_pinned:67" tier="pinned" changed="true"/>
+<memory key="_pinned:68" tier="pinned" changed="true"/>
+<memory key="_pinned:69" tier="pinned" changed="true"/>
+<memory key="_pinned:7" tier="pinned" changed="true"/>
+<memory key="_pinned:70" tier="pinned" changed="true"/>
+<memory key="_pinned:71" tier="pinned" changed="true"/>
+<memory key="_pinned:72" tier="pinned" changed="true"/>
+<memory key="_pinned:73" tier="pinned" changed="true"/>
+<memory key="_pinned:74" tier="pinned" changed="true"/>
+<memory key="_pinned:75" tier="pinned" changed="true"/>
+<memory key="_pinned:76" tier="pinned" changed="true"/>
+<memory key="_pinned:77" tier="pinned" changed="true"/>
+<memory key="_pinned:78" tier="pinned" changed="true"/>
+<memory key="_pinned:79" tier="pinned" changed="true"/>
+<memory key="_pinned:8" tier="pinned" changed="true"/>
+<memory key="_pinned:9" tier="pinned" changed="true"/>
+<memory key="_summary:non-compliant" tier="summary" changed="true"/>
+<memory key="_summary:topic-0" tier="summary" changed="true"/>
+<memory key="_summary:topic-1" tier="summary" changed="true"/>
+<memory key="_summary:topic-2" tier="summary" changed="true"/>
+<memory key="_summary:topic-3" tier="summary" changed="true"/>
+<memory key="_summary:topic-4" tier="summary" changed="true"/>
+<memory key="_summary:topic-5" tier="summary" changed="true"/>
+<memory key="_summary:topic-6" tier="summary" changed="true"/>
+<memory key="_summary:topic-7" tier="summary" changed="true"/>
+<memory key="_summary:topic-8" tier="summary" changed="true"/>
+<memory key="_summary:topic-9" tier="summary" changed="true"/>
+<memory key="_summary:topic-10" tier="summary" changed="true"/>
+<memory key="_summary:topic-11" tier="summary" changed="true"/>
+<memory key="_summary:topic-12" tier="summary" changed="true"/>
+<memory key="_summary:topic-13" tier="summary" changed="true"/>
+<memory key="_summary:topic-14" tier="summary" changed="true"/>
+<memory key="_summary:topic-15" tier="summary" changed="true"/>
+<memory key="_summary:topic-16" tier="summary" changed="true"/>
+<memory key="_summary:topic-17" tier="summary" changed="true"/>
+<memory key="_summary:topic-18" tier="summary" changed="true"/>
+<memory key="_summary:topic-19" tier="summary" changed="true"/>
+<memory key="_summary:topic-20" tier="summary" changed="true"/>
+<memory key="_summary:topic-21" tier="summary" changed="true"/>
+<memory key="_summary:topic-22" tier="summary" changed="true"/>
+<memory key="_summary:topic-23" tier="summary" changed="true"/>
+<memory key="_summary:topic-24" tier="summary" changed="true"/>
+<memory key="_summary:topic-25" tier="summary" changed="true"/>
+<memory key="_summary:topic-26" tier="summary" changed="true"/>
+<memory key="_summary:topic-27" tier="summary" changed="true"/>
+<memory key="_summary:topic-28" tier="summary" changed="true"/>
+<memory key="_summary:topic-29" tier="summary" changed="true"/>
+<memory key="_summary:topic-30" tier="summary" changed="true"/>
+<memory key="_summary:topic-31" tier="summary" changed="true"/>
+<memory key="_summary:topic-32" tier="summary" changed="true"/>
+<memory key="_summary:topic-33" tier="summary" changed="true"/>
+<memory key="_summary:topic-34" tier="summary" changed="true"/>
+<memory key="_summary:topic-35" tier="summary" changed="true"/>
+<memory key="_summary:topic-36" tier="summary" changed="true"/>
+<memory key="_summary:topic-37" tier="summary" changed="true"/>
+<memory key="_summary:topic-38" tier="summary" changed="true"/>
+<memory key="_summary:topic-39" tier="summary" changed="true"/>
+<memory key="_summary:topic-40" tier="summary" changed="true"/>
+<memory key="_summary:topic-41" tier="summary" changed="true"/>
+<memory key="_summary:topic-42" tier="summary" changed="true"/>
+<memory key="_summary:topic-43" tier="summary" changed="true"/>
+<memory key="_summary:topic-44" tier="summary" changed="true"/>
+<memory key="_summary:topic-45" tier="summary" changed="true"/>
+<memory key="_summary:topic-46" tier="summary" changed="true"/>
+<memory key="_summary:topic-47" tier="summary" changed="true"/>
+<memory key="_summary:topic-48" tier="summary" changed="true"/>
+<memory key="_summary:topic-49" tier="summary" changed="true"/>
+</working-knowledge-updates>
 <live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
 </live-state>

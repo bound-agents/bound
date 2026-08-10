@@ -242,7 +242,7 @@ describe("volatile-context snapshots", () => {
 
 		// Stable volatile portion: everything from the first volatile section
 		// header onward (the section headers are stable identifiers).
-		const stableMarker = "## Working Knowledge — operational and durable";
+		const stableMarker = "<working-knowledge sources=";
 		const stableMarkerIdx = result.systemPrompt.indexOf(stableMarker);
 		const stableVolatile = stableMarkerIdx >= 0 ? result.systemPrompt.slice(stableMarkerIdx) : "";
 

@@ -189,7 +189,7 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 
 		expect(ours).toBe(theirs);
 		// Sanity: the demote block actually rendered (otherwise this guards nothing).
-		expect(ours).toContain("Older summaries");
+		expect(ours).toContain("<older-summaries>");
 	});
 });
 

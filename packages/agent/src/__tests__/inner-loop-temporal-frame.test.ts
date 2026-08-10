@@ -728,11 +728,11 @@ describe("inner-loop temporal-frame coherence", () => {
 		// Sanity: at least the User/Thread ID line (varying) is present.
 		expect(allDevText).toContain(globalThreadId);
 
-		// Load-bearing: the Working Knowledge header (a stable-subsection
+		// Load-bearing: the Working Knowledge opening tag (a stable-subsection
 		// literal) must NOT appear in the developer tail. If it does, we're
 		// duplicating ~Nk bytes that the system-prompt cache anchor
-		// already covers. (The header literal lives in summary-extraction.)
-		expect(allDevText).not.toContain("## Working Knowledge — operational and durable");
+		// already covers. (The tag literal lives in summary-extraction.)
+		expect(allDevText).not.toContain("<working-knowledge sources=");
 		// And specifically the seeded pinned-memory marker — its presence
 		// in the dev tail means the stable subsection got duplicated.
 		expect(allDevText).not.toContain("pinned-marker-content-WARM-PATH-DEV-TAIL");

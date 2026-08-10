@@ -1,10 +1,10 @@
 import { escapeXmlAttr } from "@bound/shared";
 import {
 	BUDGET_PRESSURE_SUBSYSTEM_CAP,
-	DELTA_MARKER,
 	LIVE_STATE_FOOTER,
 	RELEVANT_MEMORY_HEADER,
 	STALE_CHILD_GLOSS_MAX,
+	WORKING_KNOWLEDGE_UPDATES_FOOTER,
 	WORKING_KNOWLEDGE_UPDATES_HEADER,
 	relativeTimeAt,
 	truncateGloss,
@@ -37,7 +37,7 @@ export function composeVolatileVarying(inputs: VolatileVaryingInputs): string[] 
 }
 
 /**
- * Render the `## Working Knowledge — updates` block. Mirrors
+ * Render the `<working-knowledge-updates>` block. Mirrors
  * `renderWorkingKnowledge`'s `varyingLines` channel byte-for-byte.
  *
  * Empty when no pinned/summary deltas exist AND no stale children
@@ -55,16 +55,15 @@ function renderWorkingKnowledgeUpdates(updates: WorkingKnowledgeUpdatesView): st
 	if (!hasAnyMarker) return out;
 
 	out.push(WORKING_KNOWLEDGE_UPDATES_HEADER);
-	out.push("");
 
 	// R-VC11(b): pinned delta keyed reference (body lives in stable).
 	for (const key of updates.pinnedDeltaKeys) {
-		out.push(`- ${key} ${DELTA_MARKER}`);
+		out.push(`<memory key="${escapeXmlAttr(key)}" tier="pinned" changed="true"/>`);
 	}
 
 	// R-VC11(a): summary delta keyed reference.
 	for (const key of updates.summaryDeltaKeys) {
-		out.push(`- ${key} ${DELTA_MARKER}`);
+		out.push(`<memory key="${escapeXmlAttr(key)}" tier="summary" changed="true"/>`);
 	}
 
 	// R-VC10/R-VC11(c): stale children referenced under their parent.
@@ -73,11 +72,13 @@ function renderWorkingKnowledgeUpdates(updates: WorkingKnowledgeUpdatesView): st
 	for (const summary of updates.summariesWithStaleChildren) {
 		for (const child of summary.staleChildren) {
 			const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
-			const staleMarker = `[stale child of ${summary.summaryKey}]`;
-			const childDelta = child.isDelta ? ` ${DELTA_MARKER}` : "";
-			out.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+			out.push(
+				`<memory key="${escapeXmlAttr(child.key)}" parent="${escapeXmlAttr(summary.summaryKey)}" stale="true" changed="${child.isDelta}">${escapeXmlAttr(childGloss)}</memory>`,
+			);
 		}
 	}
+
+	out.push(WORKING_KNOWLEDGE_UPDATES_FOOTER);
 
 	return out;
 }

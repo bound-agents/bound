@@ -112,9 +112,10 @@ function renderWorkingKnowledgeStable(
 ): string[] {
 	const out: string[] = [];
 	out.push(WORKING_KNOWLEDGE_HEADER);
-	out.push("");
 	for (const entry of pinned) {
-		out.push(`- ${entry.key} (modified ${formatCalendarDate(entry.modifiedAt)}): ${entry.value}`);
+		out.push(
+			`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" modified="${formatCalendarDate(entry.modifiedAt)}">${escapeXmlAttr(entry.value)}</memory>`,
+		);
 	}
 	// Identical cap to renderWorkingKnowledge's stable channel — via the SAME
 	// shared helper so the two paths cannot drift (R-VC25 parity, pinned by
@@ -123,10 +124,9 @@ function renderWorkingKnowledgeStable(
 	const { kept } = capWorkingKnowledgeSummaries(summaries);
 	for (const summary of kept) {
 		out.push(
-			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${truncateGlossForSummary(summary.value)}`,
+			`<memory key="${escapeXmlAttr(summary.key)}" tier="summary" modified="${formatCalendarDate(summary.modifiedAt)}">${escapeXmlAttr(truncateGlossForSummary(summary.value))}</memory>`,
 		);
 	}
-	out.push("");
 	out.push(WORKING_KNOWLEDGE_FOOTER);
 	return out;
 }
@@ -145,7 +145,6 @@ function renderWorkingKnowledgeStable(
 function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[] {
 	const out: string[] = [];
 	out.push(DISCOVERABLE_HEADER);
-	out.push("");
 
 	const visible = inputs.detailEntries.filter(
 		(e) => !inputs.staleChildKeysInWorkingKnowledge.has(e.key),
@@ -166,13 +165,14 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 		if (total <= inputs.tunables.n) {
 			// Tier 2: cluster compression. Within-cluster lines key-sorted.
 			for (const cluster of sorted) {
-				out.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
+				out.push(
+					`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}">`,
+				);
 				for (const entry of sortDetailEntriesForRender(cluster.entries)) {
 					out.push(formatStableDetailLine(entry, inputs.budgetPressure));
 				}
-				out.push("");
+				out.push("</cluster>");
 			}
-			if (out[out.length - 1] === "") out.pop();
 		} else {
 			// Tier 3: heading-only with M most-recent per cluster. Recency SELECTION
 			// (slice), key-sorted RENDER (mirrors production).
@@ -180,12 +180,12 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 				const totalCount = cluster.entries.length;
 				const tail = cluster.entries.slice(0, inputs.tunables.m);
 				out.push(
-					`### ${cluster.name} (${totalCount} entries, showing ${inputs.tunables.m} most recent)`,
+					`<cluster name="${escapeXmlAttr(cluster.name)}" count="${totalCount}" showing="${inputs.tunables.m}">`,
 				);
 				for (const entry of sortDetailEntriesForRender(tail)) {
 					out.push(formatStableDetailLine(entry, inputs.budgetPressure));
 				}
-				out.push("");
+				out.push("</cluster>");
 				if (
 					cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
 					totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
@@ -195,7 +195,6 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 					// the count itself does not appear in the stable output.
 				}
 			}
-			if (out[out.length - 1] === "") out.pop();
 		}
 	}
 
@@ -206,7 +205,6 @@ function renderDiscoverableArchiveStable(inputs: StableVolatileInputs): string[]
 	const { demoted } = capWorkingKnowledgeSummaries(inputs.summaries);
 	appendOlderSummariesSubBlock(out, demoted);
 
-	out.push("");
 	out.push(DISCOVERABLE_FOOTER);
 	return out;
 }
