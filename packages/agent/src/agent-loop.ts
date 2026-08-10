@@ -299,7 +299,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 		const resolvedModelForDebug = getResolvedModelId(resolution, this.config.modelId);
 		const threadInterface = this.config.platform ?? "web";
 		const cacheTtl = selectCacheTtl(threadInterface);
-		const maxOutputTokens = this.effectiveMaxOutputTokens();
+		const maxOutputTokens = this.resolvedMaxOutputTokens(resolution);
 		const baseTruncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 		const { target: truncationTargetTokens, inflation: measuredInflation } =
 			resolveAdaptiveTruncationTarget(this.ctx.db, this.config.threadId, baseTruncationTarget);

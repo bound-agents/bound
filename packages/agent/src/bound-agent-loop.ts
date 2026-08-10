@@ -112,7 +112,7 @@ import type {
 	ClientToolCallRequest,
 	DeferredToolResult,
 } from "./types";
-import { isClientToolCallRequest, isDeferredToolResult } from "./types";
+import { isClientToolCallRequest, isDeferredToolResult, isToolResultWithMetadata } from "./types";
 // Thinking-block compaction now lives exclusively in context-assembly.ts (Stage 1.7).
 // The warm path no longer mutates stored messages — see agent-loop.ts step 3a comment.
 
@@ -356,6 +356,17 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			maxTransientRetries: MAX_SILENCE_RETRIES,
 			degenerateRetryMax: MAX_DEGENERATE_RETRIES,
 		});
+	}
+
+	/**
+	 * Output budget used by BOTH context assembly and the wire request.
+	 * Backend caps win over the provider-default fallback; remote resolutions
+	 * have no cap in their synced descriptor today, so they use the explicit
+	 * conservative fallback rather than omitting max_tokens.
+	 */
+	protected resolvedMaxOutputTokens(resolution: BoundPreparedFrame["resolution"]): number {
+		const backendCap = resolution.kind === "local" ? resolution.maxOutputTokens : undefined;
+		return clampMaxOutputTokens(this.effectiveMaxOutputTokens(), backendCap);
 	}
 
 	protected override beforeRun(): void {
@@ -607,7 +618,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				nowMs: frame.assembled.assemblyNowMs,
 				tools: frame.mergedTools,
 				system: frame.assembled.systemPrompt || undefined,
-				max_tokens: this.effectiveMaxOutputTokens(),
+				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				temperature: undefined,
 				timeout_ms: this.inferenceTimeoutMs,
 			};
@@ -672,10 +683,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				messages: frame.messages,
 				system: frame.assembled.systemPrompt || undefined,
 				tools: frame.mergedTools,
-				max_tokens: clampMaxOutputTokens(
-					this.effectiveMaxOutputTokens(),
-					resolution.maxOutputTokens,
-				),
+				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				thinking: resolution.thinkingConfig,
 				effort: resolution.effort,
 				cache_ttl: resolution.cacheTtl,
@@ -1153,6 +1161,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			let exitCode = 0;
 			let mcpAppBinding: McpAppBinding | undefined;
 			let deferredPlaceholder = false;
+			let toolMetadata: Record<string, unknown> | undefined;
 			const toolStartTime = Date.now();
 
 			if (toolCall.truncated) {
@@ -1257,11 +1266,16 @@ export class BoundAgentLoop extends ModularAgentLoop {
 								`[Background: tool "${toolCall.name}" deferred \u2014 result will arrive when complete.]`;
 							exitCode = 0;
 							deferredPlaceholder = true;
+							// Metadata stamped on the PLACEHOLDER row survives resolution:
+							// resolveDeferredToolResult drops only the `background` marker
+							// and preserves sibling keys (e.g. aux_thread).
+							toolMetadata = dispatchResult.metadata;
 							break;
 						}
 						resultContent = dispatchResult.content;
 						exitCode = dispatchResult.exitCode;
 						mcpAppBinding = dispatchResult.mcpApp;
+						toolMetadata = dispatchResult.metadata;
 						break;
 					}
 				} finally {
@@ -1284,6 +1298,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					durationMs: toolDurationMs,
 					mcpApp: mcpAppBinding,
 					deferred: deferredPlaceholder || undefined,
+					metadata: toolMetadata,
 				},
 			});
 			this.config.onActivity?.();
@@ -1391,11 +1406,13 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				},
 				this.ctx.siteId,
 			);
-			// Stamp the background marker so the in-flight count is derivable from
+			// Stamp tool-provided metadata (e.g. aux_thread) plus the seam's own
+			// keys. The background marker keeps the in-flight count derivable from
 			// DB state (countBackgroundToolCallsByThread) rather than tallied by
 			// event arithmetic on a client, which drifts on any dropped frame.
-			// resolveDeferredToolResult clears the key when the real result lands.
-			const extraMetadata: Record<string, unknown> = {};
+			// resolveDeferredToolResult clears ONLY the background key when the
+			// real result lands — sibling keys like aux_thread survive resolution.
+			const extraMetadata: Record<string, unknown> = { ...result.metadata };
 			if (result.mcpApp) extraMetadata.mcp_app = result.mcpApp;
 			if (result.deferred) extraMetadata.background = true;
 			if (Object.keys(extraMetadata).length > 0) {
@@ -1867,7 +1884,12 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		toolCall: ParsedToolCall,
 		parentCtx?: Context,
 	): Promise<
-		| { content: string; exitCode: number; mcpApp?: McpAppBinding }
+		| {
+				content: string;
+				exitCode: number;
+				mcpApp?: McpAppBinding;
+				metadata?: Record<string, unknown>;
+		  }
 		| RelayToolCallRequest
 		| ClientToolCallRequest
 		| DeferredToolResult
@@ -1906,7 +1928,31 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			);
 
 			try {
-				let result: { content: string; exitCode: number; mcpApp?: McpAppBinding };
+				let result: {
+					content: string;
+					exitCode: number;
+					mcpApp?: McpAppBinding;
+					metadata?: Record<string, unknown>;
+				};
+
+				// Normalize a tool's raw return (string | ContentBlock[]) into the
+				// result shape, deriving exitCode from the Error: convention. Shared
+				// by the platform and builtin arms, and by the ToolResultWithMetadata
+				// unwrap below.
+				const normalize = (
+					raw: string | import("@bound/llm").ContentBlock[],
+				): { content: string; exitCode: number } => {
+					if (Array.isArray(raw)) {
+						const hasError = raw.some(
+							(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
+						);
+						// Rewrite inline-base64 image blocks to file_ref before persist so
+						// a screenshot-sized payload never hits the cap. See tool-result-images.ts.
+						const lightened = persistImageBlocksAsFileRefs(raw, this.ctx.db, this.ctx.siteId);
+						return { content: JSON.stringify(lightened), exitCode: hasError ? 1 : 0 };
+					}
+					return { content: raw, exitCode: raw.startsWith("Error:") ? 1 : 0 };
+				};
 
 				switch (tool.kind) {
 					case "platform": {
@@ -1924,23 +1970,12 @@ export class BoundAgentLoop extends ModularAgentLoop {
 						if (isDeferredToolResult(platformResult)) {
 							return platformResult;
 						}
-						// Platform tools return strings, but handle both just like builtin does
-						if (Array.isArray(platformResult)) {
-							const hasError = platformResult.some(
-								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
-							);
-							// Rewrite inline-base64 image blocks to file_ref before persist so
-							// a screenshot-sized payload never hits the cap. See tool-result-images.ts.
-							const lightened = persistImageBlocksAsFileRefs(
-								platformResult,
-								this.ctx.db,
-								this.ctx.siteId,
-							);
-							result = { content: JSON.stringify(lightened), exitCode: hasError ? 1 : 0 };
-						} else {
-							const exitCode = platformResult.startsWith("Error:") ? 1 : 0;
-							result = { content: platformResult, exitCode };
+						if (isToolResultWithMetadata(platformResult)) {
+							result = { ...normalize(platformResult.content), metadata: platformResult.metadata };
+							break;
 						}
+						// Platform tools return strings, but handle both just like builtin does
+						result = normalize(platformResult);
 						break;
 					}
 
@@ -1998,22 +2033,11 @@ export class BoundAgentLoop extends ModularAgentLoop {
 						if (isDeferredToolResult(builtinResult)) {
 							return builtinResult;
 						}
-						if (Array.isArray(builtinResult)) {
-							const hasError = builtinResult.some(
-								(b) => b.type === "text" && "text" in b && (b.text as string).startsWith("Error:"),
-							);
-							// Rewrite inline-base64 image blocks to file_ref before persist so
-							// a screenshot-sized payload never hits the cap. See tool-result-images.ts.
-							const lightened = persistImageBlocksAsFileRefs(
-								builtinResult,
-								this.ctx.db,
-								this.ctx.siteId,
-							);
-							result = { content: JSON.stringify(lightened), exitCode: hasError ? 1 : 0 };
-						} else {
-							const exitCode = builtinResult.startsWith("Error:") ? 1 : 0;
-							result = { content: builtinResult, exitCode };
+						if (isToolResultWithMetadata(builtinResult)) {
+							result = { ...normalize(builtinResult.content), metadata: builtinResult.metadata };
+							break;
 						}
+						result = normalize(builtinResult);
 						break;
 					}
 				}
@@ -2052,7 +2076,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 						toolKind: tool.kind,
 						rawSize: rawOutputSize,
 					});
-					result = { content: cappedContent, exitCode: result.exitCode };
+					result = { ...result, content: cappedContent };
 				}
 
 				// Record I/O sizes for trace analysis

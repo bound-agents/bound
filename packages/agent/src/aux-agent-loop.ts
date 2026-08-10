@@ -40,7 +40,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		const mergedTools = this.getMergedTools();
 		const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
 		const resolvedModelForDebug = getResolvedModelId(resolution, this.config.modelId);
-		const maxOutputTokens = this.effectiveMaxOutputTokens();
+		const maxOutputTokens = this.resolvedMaxOutputTokens(resolution);
 		const truncationTargetTokens = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 		const cacheTtl = selectCacheTtl("aux");
 		const assemblyClock = realTimeClock();
@@ -65,6 +65,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			toolTokenEstimate,
 			truncationTargetTokens,
 			recentHardCeilingDeflator: 1,
+			platformInstructions: this.config.platformInstructions,
 			systemPromptAddition: this.config.systemPromptAddition,
 			commandRegistry: this.ctx.commandRegistry,
 			stableSubsectionCache: sharedStableSubsectionCache,
@@ -122,10 +123,10 @@ export class AuxAgentLoop extends BoundAgentLoop {
 	 * `relayMetadataRef` leak across turns, and `onActivity` never fires, so the
 	 * caller's silence-timeout heartbeat gets no pulse while an aux is working.
 	 *
-	 * Deliberately NOT copied from MainAgentLoop: the turn>1 volatile-tail refresh
-	 * and rolling cache-marker maintenance. Aux frames are always assembled cold
-	 * (`cachePath: "cold"`, `selectCacheTtl("aux")`) and carry no cached turn
-	 * state, so there is nothing for either to update.
+	 * Deliberately NOT copied from MainAgentLoop: warm-tail refresh and rolling
+	 * cache-marker maintenance. Aux frames have no cached-turn state; instead,
+	 * afterToolPersistence performs a cold rebuild after every tool round so
+	 * the full persisted transcript is re-budgeted and truncated.
 	 */
 	protected override beforeTurn(_turn: number, _frame: BoundPreparedFrame): void {
 		this.currentTurnId = null;
@@ -155,7 +156,17 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		batch: LoopToolExecutionBatch,
 	): Promise<LoopTurnDecision> {
 		if (batch.deferred.length === 0) {
-			return super.afterToolPersistence(parsed, frame, batch);
+			const decision = await super.afterToolPersistence(parsed, frame, batch);
+			if (decision.action !== "continue") return decision;
+
+			// Aux loops used to keep appending tool results to one in-memory frame
+			// forever. Reassemble after every completed tool round so Stage 6 can
+			// truncate against the CURRENT transcript rather than the invocation's
+			// opening size. Run the normal post-execution guards here first because
+			// returning retry makes the base runTurn skip its guard call.
+			const guardDecision = this.runPostExecutionGuards(batch, frame);
+			if (guardDecision.action !== "continue") return guardDecision;
+			return { action: "retry", rebuildFrame: true };
 		}
 
 		for (const { toolCall } of batch.deferred) {
@@ -233,9 +244,13 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			acknowledgeToolResultForCall(this.ctx.db, this.config.threadId, toolCall.id);
 		}
 
-		// Every deferred call now has a persisted result AND an in-frame pairing,
-		// so the loop can take another turn on this frame.
-		return { action: "continue" };
+		// Every deferred call now has a persisted result AND an in-frame pairing.
+		// Check the ordinary loop guards, then discard the growing live frame and
+		// reassemble from persisted rows so context budgeting runs before the next
+		// inference call.
+		const guardDecision = this.runPostExecutionGuards(batch, frame);
+		if (guardDecision.action !== "continue") return guardDecision;
+		return { action: "retry", rebuildFrame: true };
 	}
 
 	/**

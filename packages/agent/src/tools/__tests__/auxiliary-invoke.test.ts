@@ -221,7 +221,12 @@ describe("Native Aux Tool (invoke slice)", () => {
 				instructions: "count files",
 			});
 
-			expect(out).toBe("aux completed: found 3 files");
+			// The result is a ToolResultWithMetadata: the LLM-visible content is
+			// the summary alone, and the child-thread link rides metadata.aux_thread
+			// (the web chat view reads it to render the aux-invocation card).
+			const res = out as { content: string; metadata: Record<string, unknown> };
+			expect(res.content).toBe("aux completed: found 3 files");
+			expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
 		});
 
 		it("returns error summary when loop runner errors", async () => {
@@ -242,8 +247,10 @@ describe("Native Aux Tool (invoke slice)", () => {
 				instructions: "count files",
 			});
 
-			expect(out).toContain("completed with error");
-			expect(out).toContain("model timeout");
+			const res = out as { content: string; metadata: Record<string, unknown> };
+			expect(res.content).toContain("completed with error");
+			expect(res.content).toContain("model timeout");
+			expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
 		});
 
 		it("passes allowlisted tools from agent definition", async () => {
@@ -590,7 +597,9 @@ describe("invoke with background: true", () => {
 			background: true,
 		});
 
-		expect(out).toBe("sync summary");
+		const res = out as { content: string; metadata: Record<string, unknown> };
+		expect(res.content).toBe("sync summary");
+		expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
 	});
 
 	it("still blocks when background is omitted", async () => {
@@ -604,7 +613,9 @@ describe("invoke with background: true", () => {
 
 		const out = await exec({ action: "invoke", name: "tama", instructions: "work" }, "call-sync");
 
-		expect(out).toBe("blocking summary");
+		const res = out as { content: string; metadata: Record<string, unknown> };
+		expect(res.content).toBe("blocking summary");
+		expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
 	});
 
 	it("validates the identity before deferring", async () => {

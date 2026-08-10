@@ -19,6 +19,7 @@ interface Message {
 	created_at?: string;
 	id?: string;
 	exit_code?: number | null;
+	metadata?: string | Record<string, unknown> | null;
 }
 
 interface TurnRange {
@@ -177,6 +178,7 @@ interface ToolResultMsg {
 	content: string;
 	exit_code?: number | null;
 	tool_name?: string | null;
+	metadata?: string | Record<string, unknown> | null;
 }
 
 const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
@@ -187,6 +189,7 @@ const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
 				content: m.content,
 				exit_code: m.exit_code ?? null,
 				tool_name: m.tool_name,
+				metadata: m.metadata ?? null,
 			};
 		}
 	}

@@ -10,7 +10,12 @@ import {
 } from "@bound/core";
 import type { Agent } from "@bound/shared";
 import { z } from "zod";
-import type { DeferredToolResult, RegisteredTool, ToolContext } from "../types";
+import type {
+	DeferredToolResult,
+	RegisteredTool,
+	ToolContext,
+	ToolResultWithMetadata,
+} from "../types";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 /**
@@ -110,7 +115,7 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 		execute: async (
 			raw: Record<string, unknown>,
 			callId?: string,
-		): Promise<string | DeferredToolResult> => {
+		): Promise<string | DeferredToolResult | ToolResultWithMetadata> => {
 			const parsed = parseToolInput(auxSchema, raw, "aux");
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
@@ -295,7 +300,7 @@ async function handleInvoke(
 	ctx: ToolContext,
 	input: AuxInput,
 	callId?: string,
-): Promise<string | DeferredToolResult> {
+): Promise<string | DeferredToolResult | ToolResultWithMetadata> {
 	if (!input.name) return "Error: 'name' is required for invoke action";
 	if (!input.instructions) return "Error: 'instructions' is required for invoke action";
 
@@ -398,9 +403,14 @@ async function handleInvoke(
 	if (input.background && callId) {
 		enqueueMessage(ctx.db, messageId, threadId);
 		ctx.eventBus.emit("notify:enqueued", { thread_id: threadId });
+		// aux_thread on the placeholder row's metadata links the parent's
+		// tool_result to the child thread for the web chat card. It survives
+		// resolution: resolveDeferredToolResult drops only the `background`
+		// marker and preserves sibling keys.
 		return {
 			deferred: true,
 			description: `Auxiliary agent '${input.name}' queued on thread ${threadId} — running in background. Result will arrive when complete.`,
+			metadata: { aux_thread: threadId },
 		};
 	}
 
@@ -417,10 +427,18 @@ async function handleInvoke(
 			userId: parentInfo.user_id,
 			parentThreadId: ctx.threadId,
 		});
+		// aux_thread rides the persisted tool_result row's metadata bag — the
+		// web chat view reads it to render the inline card linking to the aux
+		// thread (which is excluded from the thread directory, so that card is
+		// its only door). Metadata, not a content trailer: the LLM-visible
+		// content stays the summary alone.
 		if (result.error) {
-			return `Auxiliary agent '${input.name}' completed with error: ${result.error}\n\nThread: ${threadId}`;
+			return {
+				content: `Auxiliary agent '${input.name}' completed with error: ${result.error}`,
+				metadata: { aux_thread: threadId },
+			};
 		}
-		return result.summary;
+		return { content: result.summary, metadata: { aux_thread: threadId } };
 	}
 
 	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}. Loop runner not available — thread is ready for manual execution.`;
