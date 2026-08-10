@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import type { BoundClient } from "@bound/client";
+import { Text } from "ink";
+import { render } from "ink-testing-library";
+import React from "react";
 import { contextGaugeColor } from "../tui/components/StatusBar";
-import { formatTokens, formatUsd } from "../tui/hooks/useSessionHud";
+import { formatTokens, formatUsd, useSessionHud } from "../tui/hooks/useSessionHud";
 
 describe("session HUD formatters", () => {
 	it("formatUsd: cents precision under $100, whole dollars to $999, k above", () => {
@@ -25,5 +29,71 @@ describe("session HUD formatters", () => {
 		expect(contextGaugeColor(0.84)).toBe("yellow");
 		expect(contextGaugeColor(0.85)).toBe("red");
 		expect(contextGaugeColor(1)).toBe("red");
+	});
+});
+
+type EventHandler = (...args: unknown[]) => void;
+
+function createHudClient(initialCounts: Record<string, number> = {}) {
+	const listeners = new Map<string, Set<EventHandler>>();
+	const counts = new Map(Object.entries(initialCounts));
+	return {
+		on(event: string, handler: EventHandler) {
+			if (!listeners.has(event)) listeners.set(event, new Set());
+			listeners.get(event)?.add(handler);
+		},
+		off(event: string, handler: EventHandler) {
+			listeners.get(event)?.delete(handler);
+		},
+		emitBackground(threadId: string, count: number) {
+			counts.set(threadId, count);
+			for (const handler of listeners.get("background:count") ?? []) {
+				handler({ thread_id: threadId, count });
+			}
+		},
+		getBackgroundCount(threadId: string) {
+			return counts.get(threadId) ?? 0;
+		},
+	} as unknown as BoundClient & {
+		emitBackground(threadId: string, count: number): void;
+	};
+}
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+describe("useSessionHud background lifecycle", () => {
+	it("hydrates a count that arrived before the hook mounted", () => {
+		const client = createHudClient({ "thread-1": 2 });
+
+		function Harness() {
+			const hud = useSessionHud(client, "thread-1");
+			return React.createElement(Text, null, String(hud.backgroundCount));
+		}
+
+		const { lastFrame } = render(React.createElement(Harness));
+		expect(lastFrame()).toContain("2");
+	});
+
+	it("toggles on and off from current-thread events and ignores other threads", async () => {
+		const client = createHudClient();
+
+		function Harness() {
+			const hud = useSessionHud(client, "thread-1");
+			return React.createElement(Text, null, String(hud.backgroundCount));
+		}
+
+		const { lastFrame } = render(React.createElement(Harness));
+		await tick();
+		client.emitBackground("thread-2", 9);
+		await tick();
+		expect(lastFrame()).toContain("0");
+
+		client.emitBackground("thread-1", 1);
+		await tick();
+		expect(lastFrame()).toContain("1");
+
+		client.emitBackground("thread-1", 0);
+		await tick();
+		expect(lastFrame()).toContain("0");
 	});
 });

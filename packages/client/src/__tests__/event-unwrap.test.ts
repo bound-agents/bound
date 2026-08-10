@@ -192,4 +192,20 @@ describe("BoundClient event unwrapping", () => {
 		expect(usage.input_tokens).toBe(150);
 		expect(usage.cache_read_tokens).toBe(120);
 	});
+
+	it("retains the latest background count per thread for late subscribers", () => {
+		const client = new BoundClient("http://localhost:3001");
+
+		client.handleWsMessage(
+			JSON.stringify({ type: "background:count", thread_id: "t-1", count: 2 }),
+		);
+
+		expect(client.getBackgroundCount("t-1")).toBe(2);
+		expect(client.getBackgroundCount("t-2")).toBe(0);
+
+		client.handleWsMessage(
+			JSON.stringify({ type: "background:count", thread_id: "t-1", count: 0 }),
+		);
+		expect(client.getBackgroundCount("t-1")).toBe(0);
+	});
 });

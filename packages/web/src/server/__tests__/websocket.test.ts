@@ -2690,3 +2690,31 @@ describe("issue #189: single tool-bearing session per thread (eviction)", () => 
 		db.close();
 	});
 });
+
+describe("background count subscription seeds", () => {
+	it("sends zero on subscribe so reconnect clears a stale client count", async () => {
+		const { applySchema, createDatabase } = await import("@bound/core");
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const eventBus = new TypedEventEmitter();
+		const handler = createWebSocketHandler({
+			eventBus,
+			db,
+			siteId: "site-a",
+			defaultUserId: "test-user",
+		});
+		const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+		handler.open(ws);
+
+		handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: "thread-idle" }));
+
+		expect((ws as unknown as MockWebSocket).messages).toContainEqual({
+			type: "background:count",
+			thread_id: "thread-idle",
+			count: 0,
+		});
+
+		handler.cleanup();
+		db.close();
+	});
+});
