@@ -9,8 +9,14 @@ export type {
 	RegisteredTool,
 	ToolAnnotations,
 	ToolExecutionResult,
+	ToolResultWithMetadata,
 } from "@bound/loop";
-export { VALID_TRANSITIONS, isClientToolCallRequest, isDeferredToolResult } from "@bound/loop";
+export {
+	VALID_TRANSITIONS,
+	isClientToolCallRequest,
+	isDeferredToolResult,
+	isToolResultWithMetadata,
+} from "@bound/loop";
 
 /**
  * Context passed to native agent tool factories.

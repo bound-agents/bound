@@ -20,6 +20,15 @@ export type BuiltInToolResult = string | ContentBlock[];
 export interface DeferredToolResult {
 	deferred: true;
 	description?: string;
+	/**
+	 * Metadata entries to merge into the persisted PLACEHOLDER tool_result
+	 * row's `messages.metadata` bag (alongside the `background` marker the
+	 * persist seam stamps). `resolveDeferredToolResult` preserves sibling
+	 * metadata keys when the real result lands, so entries stamped here
+	 * survive resolution — e.g. `aux_thread` linking an aux invocation's
+	 * result row to its child thread for the web chat card.
+	 */
+	metadata?: Record<string, unknown>;
 }
 
 export function isDeferredToolResult(result: unknown): result is DeferredToolResult {
@@ -28,6 +37,28 @@ export function isDeferredToolResult(result: unknown): result is DeferredToolRes
 		typeof result === "object" &&
 		"deferred" in result &&
 		(result as { deferred: unknown }).deferred === true
+	);
+}
+
+/**
+ * Structured tool result: content plus metadata entries to merge into the
+ * persisted tool_result row's `messages.metadata` bag. Lets a builtin or
+ * platform tool attach machine-readable references (e.g. `aux_thread`) for
+ * UI consumers without encoding them in the content the LLM reads — the
+ * same channel `mcp_app` bindings and the `background` marker already use.
+ */
+export interface ToolResultWithMetadata {
+	content: string | ContentBlock[];
+	metadata: Record<string, unknown>;
+}
+
+export function isToolResultWithMetadata(result: unknown): result is ToolResultWithMetadata {
+	return (
+		result != null &&
+		typeof result === "object" &&
+		!Array.isArray(result) &&
+		"content" in result &&
+		"metadata" in result
 	);
 }
 
@@ -147,7 +178,7 @@ export interface RegisteredTool {
 	execute?: (
 		input: Record<string, unknown>,
 		callId?: string,
-	) => Promise<BuiltInToolResult | string | DeferredToolResult>;
+	) => Promise<BuiltInToolResult | string | DeferredToolResult | ToolResultWithMetadata>;
 	idempotent?: boolean;
 	readOnly?: boolean;
 	resolveAnnotations?: (args: Record<string, unknown>) => ToolAnnotations;
@@ -166,4 +197,11 @@ export interface ToolExecutionResult {
 	 * Cleared by `resolveDeferredToolResult` when the real result lands.
 	 */
 	deferred?: boolean;
+	/**
+	 * Metadata entries to merge into the persisted tool_result row's
+	 * `messages.metadata` bag (from `ToolResultWithMetadata` /
+	 * `DeferredToolResult.metadata`). Merged before the seam's own keys
+	 * (`mcp_app`, `background`), which win on collision.
+	 */
+	metadata?: Record<string, unknown>;
 }

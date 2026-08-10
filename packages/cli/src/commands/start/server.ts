@@ -582,15 +582,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						userId: threadInfo?.user_id ?? operatorUserId,
 						parentThreadId: seed.parentThreadId,
 					});
-					// Both branches carry the `Thread: <uuid>` trailer — the web chat
-					// view parses it out of the resolved tool_result to render the aux
-					// invocation card (aux threads are hidden from the directory, so
-					// the card is their only door). Mirrors the sync path in
-					// packages/agent/src/tools/auxiliary.ts handleInvoke.
+					// The child-thread link rides the placeholder row's metadata
+					// (aux_thread, stamped by the loop's persist seam from the
+					// DeferredToolResult) — resolveDeferredToolResult preserves
+					// sibling metadata keys, so the web card keeps its link after
+					// resolution without a content trailer.
 					finishParent(
-						result.error
-							? `Auxiliary agent errand failed: ${result.error}\n\nThread: ${thread_id}`
-							: `${result.summary}\n\nThread: ${thread_id}`,
+						result.error ? `Auxiliary agent errand failed: ${result.error}` : result.summary,
 						!!result.error,
 					);
 					acknowledgeBatch(appContext.db, claimedIds);
