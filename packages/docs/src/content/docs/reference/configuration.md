@@ -1,18 +1,36 @@
 ---
 title: Configuration reference
-description: Fields, defaults, validation rules, and examples for every Bound configuration file.
+description: Fields, defaults, validation rules, and selected examples for Bound configuration files.
 ---
 
-Bound reads host-local configuration from `./config` by default. Use `--config-dir` to
+This reference lists Bound's host-local configuration files, their fields, defaults, and
+validation rules. Bound reads these files from `./config` by default. Use `--config-dir` to
 select another directory. The schemas are the source of truth; see
 [`packages/shared/src/config-schemas.ts`](https://github.com/bound-agents/bound/blob/main/packages/shared/src/config-schemas.ts).
-Every schema is strict, so startup rejects unknown keys instead of ignoring them.
+Every file schema is strict, so startup rejects unknown keys instead of ignoring them.
+
+## Scope and propagation
+
+Use this legend to distinguish files and secrets that stay on one host from state that
+replicates or belongs to a single request or thread.
+
+| Scope | Meaning | Entries on this page |
+| --- | --- | --- |
+| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.json`, `model_backends.json`, `network.json`, `platforms.json`, `sync.json`, `keyring.json`, `mcp.json`, `memory.json` |
+| **Replicated control state** | Stored outside the configuration-file set and replicated to hosts. | [`persona`](#persona) |
+| **Per-thread or client-local concept** | Selected or derived for a thread, turn, or client rather than defined as replicated cluster control state. | Per-thread backend cache windows and per-call model effort |
+
+Unless a field description explicitly says otherwise, a file entry configures the host that
+reads it. For example, `model_backends.json` lists backends that the host can serve locally,
+and fetch-specific headers apply on the host that performs the fetch.
+
+## Configuration files
 
 | File | Required | Purpose |
 |------|----------|---------|
 | [`allowlist.json`](#allowlistjson) | Yes | Who may talk to the agent |
 | [`model_backends.json`](#model_backendsjson) | Yes | LLM backends, routing, pricing, caching |
-| [`network.json`](#networkjson) | No | Outbound HTTP allowlist for the sandbox |
+| [`network.json`](#networkjson) | No | Outbound HTTP policy for sandbox and just-bash execution |
 | [`platforms.json`](#platformsjson) | No | Platform connectors (Discord, etc.) |
 | [`sync.json`](#syncjson) | No | Hub URL, relay, WebSocket sync tuning |
 | [`keyring.json`](#keyringjson) | No | Per-host identity keys (auto-populated) |
@@ -23,7 +41,7 @@ Every schema is strict, so startup rejects unknown keys instead of ignoring them
 
 ## `allowlist.json`
 
-The guest list. Anyone not here cannot interact with the agent.
+Maps Bound users to identities on supported platforms.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
@@ -35,9 +53,9 @@ The guest list. Anyone not here cannot interact with the agent.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `display_name` | string (non-empty) | — | Human-readable name. |
-| `platforms` | map&lt;string, string&gt; | absent | Per-platform identity, e.g. `{ "discord": "<discord-user-id>" }`. |
+| `platforms` | map&lt;string, string&gt; | absent | Identifies this Bound user on each platform, e.g. `{ "discord": "<discord-user-id>" }`. This is independent of connector-local `platforms.json` filtering. |
 
-> `discord_id` was removed. Use `platforms.discord` instead — the old key now fails the parse with a pointer to the replacement.
+> `discord_id` was removed. Use `platforms.discord` instead; the old key fails validation.
 
 ---
 
@@ -52,7 +70,6 @@ must be `""`.
 | `backends` | array&lt;backend&gt; | — | The backends this host can serve locally. May be empty (hub-only). |
 | `default` | string | `""` | Backend `id` used when a turn names no model. Must reference a real backend, or be `""` when `backends` is empty. |
 | `daily_budget_usd` | number ≥ 0 | absent | Optional soft daily spend ceiling. |
-| `cache_warming` | cache-warming block | absent | Cluster-level cache-warming driver toggle (see below). |
 
 **Backend entry:**
 
@@ -67,19 +84,19 @@ must be `""`.
 | `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
 | `context_window` | int > 0 | — | Token budget bound for context assembly. **Omitted for `umans`** (fetched per-model). |
-| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. **Omitted for `umans`** (derived per-model from price rank). |
+| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. **Omitted and rejected for `umans`.** |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
-| `effort` | string (non-empty) | absent | Reasoning depth — **free-form, provider-validated**. The canonical Anthropic/Bedrock-Converse set is `low`, `medium`, `high`, `xhigh`, `max` (`xhigh` recommended for agentic work, `max` Opus-tier only); other providers advertise their own levels (umans forwards this as a top-level `reasoning_effort` and validates against the model's `reasoning.levels`). The schema only requires a non-empty string; each driver maps/drops it. |
-| `max_output_tokens` | int > 0 | absent | Per-backend cap on output tokens. Use when a model rejects the 16384 default (e.g. Nova Pro caps at 10000). Applied as `min(this, default)`, so lowering is always safe. |
-| `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. `1h` is extended TTL (Bedrock: Claude Opus/Sonnet/Haiku 4.5+ only); silently falls back to `5m` where unsupported. |
-| `cache_warming` | cache-warming block | absent | Per-backend cache-warming (see below). Absent means this backend is never warmed. |
-| `connect_timeout_ms` | int > 0 | absent (off) | Connect / time-to-first-byte deadline. If response headers don't arrive within this window the request aborts with a self-identifying error instead of the opaque transport `TimeoutError`. Headers-scoped only — a slow-but-progressing stream is governed by the agent-loop silence timeout, not this. Applied on whichever host runs the fetch (not forwarded over the relay). Absent → no deadline; set generously (TTFB on a 200k-token prompt can run tens of seconds) and lower it only to fail-fast-and-retry sooner. |
-| `additional_headers` | map (string→string) | absent | Arbitrary custom HTTP headers added to every request to the upstream endpoint, layered on top of the provider's own headers (the `api_key`-derived `Authorization` is applied first, so a header here can't silently clobber auth unless it names `Authorization` itself). Currently honored by the OpenAI-compatible-shim providers (`openai-compatible`, `cerebras`, `zai`). Applied on whichever host runs the fetch (not forwarded over the relay), so a spoke uses its own headers rather than a hub-set set. Absent → no extra headers. |
+| `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |
+| `max_output_tokens` | int > 0 | absent | Per-backend output-token cap, applied as the lower of this value and the default limit. |
+| `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. Unsupported `1h` hints fall back to `5m`. |
+| `cache_warming` | cache-warming block | absent | Per-backend cache warming (see below). Absent disables warming for this backend. |
+| `connect_timeout_ms` | int > 0 | absent (off) | Deadline for receiving response headers. It applies on the host making the request and is not forwarded over the relay; streaming after headers uses separate timeout handling. |
+| `additional_headers` | map (string→string) | absent | Extra upstream HTTP headers for `openai-compatible`, `cerebras`, and `zai`. They apply on the host making the request and may override a same-named provider header, including `Authorization`. |
 
 **Capabilities override** (`capabilities`) — all fields optional booleans except
 `max_context`; set only to override the driver's autodetected defaults:
@@ -102,60 +119,35 @@ cache-read instead of a cache-write. Off by default.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `enabled` | bool | `false` | Master toggle. |
-| `max_pokes` | int ≥ 0 | `3` | Pokes per thread since its last real activity. The load-bearing economic control — break-even scales with the cache-write/read price ratio, so cheap-read backends tolerate more pokes. `0` disables warming on this backend even with `enabled: true`. |
+| `max_pokes` | int ≥ 0 | `3` | Maximum pokes per thread since its last real activity. `0` disables warming on this backend even with `enabled: true`. |
 
 The poke *window* is not configured — it is derived per-thread from that thread's backend
 `cache_ttl` (a poke fires only when the cache would otherwise lapse before the next scan).
 
-### umans.ai (self-configuring)
+### umans.ai
 
-`umans` is **config-light**: a backend entry carries only `provider`, `id`, `api_key`, and
-`default`. Everything else — the full model lineup, per-model context windows, max-output,
-pricing, capabilities, tiers, and the account concurrency limit — is fetched from umans at
-runtime. Do **not** set `model`, `context_window`, `tier`, `capabilities`, or any
-`price_per_m_*` on a umans row; the schema rejects them (they would be ignored or
-overwritten). A minimal entry:
+A minimal `umans` backend entry contains `provider`, `id`, and `api_key`. The top-level
+`default` field is a sibling of `backends` and names the entry's `id`; it is not a backend
+entry field.
 
 ```json
-{ "backends": [{ "id": "umans", "provider": "umans", "api_key": "sk-…" }], "default": "umans" }
+{
+  "backends": [{ "provider": "umans", "id": "umans", "api_key": "sk-…" }],
+  "default": "umans"
+}
 ```
 
-Behavior:
-
-- **`default` must be the namespace `id` (`"umans"`), not a concrete model id.** The
-  concrete umans model ids don't exist at startup, so naming one as `default` crashes
-  `bound start` (the default-existence check). Point `default` at the namespace; it is
-  automatically redirected to a concrete model once the lineup lands.
-- **Auto-expansion (one entry → N models).** On the first successful fetch the single
-  namespace entry materializes one independently selectable + cluster-advertised backend
-  per umans model id (`umans-coder`, `umans-flash`, …). Per-model tiers are derived by
-  ranking the lineup by input price (cheapest → tier 5, dearest → tier 1).
-- **Anthropic route + caching.** umans is routed through its Anthropic Messages API
-  (`POST /v1/messages`), so prompt-cache breakpoints and cached-token usage surface in the
-  debugger. `prompt_caching` is reported `true`.
-- **Reasoning effort.** umans takes a top-level `reasoning_effort` on the Anthropic route
-  (a umans extension — not native Anthropic). The driver injects it per turn: a per-call
-  `effort` wins (validated against the model's advertised `reasoning.levels`, falling back
-  to its `default_level` if the requested level isn't supported); otherwise the model's
-  fetched `reasoning.default_level` is sent; if neither is set, nothing is sent and umans
-  applies its own default. The `effort` vocabulary is **free-form** (each provider
-  advertises its own levels) — it is no longer restricted to the Anthropic
-  `low/medium/high/xhigh/max` set.
-- **Concurrency throttle.** An in-process semaphore sized from the account's `/v1/usage`
-  concurrency limit queues in-flight requests; a server-side priority pause
-  (`boxed_until`) is surfaced as a 429 so the router backs off.
-- **Readiness.** A umans model is invisible / unselectable until its first successful
-  fetch (typically sub-second); until then it resolves `transient-unavailable` (retryable).
-  If umans is persistently unreachable the models never appear — check connectivity and
-  the API key. This is intentional: bound never runs a turn on guessed pricing/limits.
-
-Set up with `bound init --umans` (reads `UMANS_API_KEY`).
+Do not set `model`, `tier`, `context_window`, `capabilities`, or nondefault pricing fields
+on a `umans` entry; they are rejected. Other generic optional backend fields may be
+accepted by the schema. Set up with `bound init --umans` (reads `UMANS_API_KEY`).
 
 ---
 
 ## `network.json`
 
-Outbound HTTP allowlist for sandboxed code. Absent means no outbound HTTP path.
+Outbound HTTP policy for sandbox and just-bash egress. It does not control Bound's own
+provider, sync, platform, or MCP clients. When this file is absent, those clients are not
+globally denied.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -181,7 +173,7 @@ subscriptions, with failover to standbys.
 | `platform` | string (non-empty) | — | Platform name, e.g. `discord`. |
 | `token` | string | absent | Bot token / credential. |
 | `signing_secret` | string | absent | Webhook signing secret. |
-| `allowed_users` | array&lt;string&gt; | `[]` | Platform user ids permitted to reach the agent on this connector. |
+| `allowed_users` | array&lt;string&gt; | `[]` | Connector-local platform user filter, independent of `allowlist.json` identity mapping. For Discord, this filters DMs and interactions; it is not documented as guild-channel author gating. |
 | `leadership` | enum | `auto` | `auto`, `leader`, `standby`, or `all` — this host's role in leader election. |
 | `failover_threshold_ms` | int > 0 | `30000` | How long a leader may be silent before a standby takes over. |
 
@@ -193,7 +185,7 @@ Multi-host sync. Absent means single-host.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `hub` | string (non-empty) | Hub host name this node syncs to. Absent on the hub itself. |
+| `hub` | string (non-empty) | Reachable WebSocket URL of the hub this spoke syncs to. Absent on the hub itself. |
 | `relay` | relay block | Inference-relay tuning (see below). |
 | `ws` | ws block | WebSocket sync tuning (see below). |
 
@@ -224,8 +216,9 @@ Multi-host sync. Absent means single-host.
 
 ## `keyring.json`
 
-Per-host identity keys for sync trust. **Auto-populated** — you usually don't hand-edit
-this.
+Per-host identity keys for sync trust. During initial multi-host setup, add the hub's
+reachable URL and public key to each spoke before connecting. Bound maintains known-host
+entries after the topology is configured.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -254,23 +247,11 @@ confirmation).
 Unknown keys on one transport do not slip through via the other — each variant is strict
 independently.
 
-**MCP Apps.** When an `http`/`sse` server advertises the [MCP Apps](https://github.com/modelcontextprotocol/ext-apps)
-`io.modelcontextprotocol/ui` capability, its UI-bearing tool results render inline as
-interactive apps in the web UI. There is no separate config: app-bearing servers are
-discovered by joining `mcp.json` against the synced capability inventory (captured at
-connect time), and the web router serves the browser-reachable subset via
-`GET /api/mcp-apps`. The agent still calls these tools server-side as normal; the browser
-is purely a renderer (it reads the server's `ui://` resources and routes the app's
-callbacks), never a second tool provider.
-
----
-
-## `cron_schedules.json`
-
-Removed. Recurring tasks are created at runtime through the agent's `task` tool
-(`schedule` action with a `cron` expression), which writes `tasks` rows directly —
-the file's per-task seeding was redundant with that path. The agent heartbeat is now
-a system-managed, uncancellable task seeded at a fixed cadence with no config surface.
+**MCP Apps.** A configured HTTP server that advertises the
+[MCP Apps](https://github.com/modelcontextprotocol/ext-apps) `io.modelcontextprotocol/ui`
+capability can render UI-bearing tool results inline in the web UI. There is no separate
+MCP Apps configuration. SSE may carry a streamed HTTP response, but it is not a
+`transport` value in `mcp.json`.
 
 ---
 
@@ -286,19 +267,19 @@ Pinned-memory caps — a context-management control. Absent means the defaults b
 
 ---
 
-## `persona`
+## Replicated control state
 
-The cluster-wide operator persona — free-form Markdown folded into the system prompt as
-personality. No schema, no fields — whatever you write is the voice.
+### `persona`
 
-The persona is **not** a config file. It lives as a single synced `cluster_config['persona']`
-row, set after initialization with `boundctl set-persona` (from a file or stdin) or the web
-UI's Persona view. There is no `persona.md` seed; a fresh install starts with no persona and
-uses the model's default behavior until you set one. The value is a single global row that
-replicates to every host (so a turn relayed elsewhere renders the same voice) and is read
-live at context-assembly time — no cache, no reload signal. Capped at 64 KB.
+`persona` is not a configuration file. It is a single replicated, cluster-wide Markdown
+value included in the system prompt and capped at 64 KB. A fresh install has no persona.
+Manage it with `boundctl set-persona`, the web UI's **Persona** view, or the corresponding
+API; there is no `persona.md` seed.
 
-```bash
-boundctl set-persona --file my-persona.md
-cat my-persona.md | boundctl set-persona
-```
+## Removed configuration files
+
+### `cron_schedules.json`
+
+`cron_schedules.json` is not read or validated. Create recurring tasks at runtime through
+the agent's `task` tool with the `schedule` action and a cron expression. The system-managed
+agent heartbeat has no configuration-file surface.

@@ -1,61 +1,73 @@
 ---
-title: Skills
-description: How reusable instruction sets are imported, activated per thread, and removed.
+title: Skills and activation
+description: How reusable instruction sets are packaged, stored, and activated in a thread's context.
 ---
 
-Skills are reusable instruction sets stored with their supporting files. Activation adds a
-skill's body to one thread's stable prompt prefix; importing a skill does not activate it.
+Skills are reusable instruction sets with optional supporting files. Importing stores a
+skill for later use; activating it makes its instructions available to the agent in one
+thread. These are separate lifecycle stages.
 
-## Skill format
+## Skill layout
 
-A skill is a Markdown file with YAML frontmatter:
+Each skill directory has one `SKILL.md` entry point. The file contains YAML frontmatter and
+a Markdown instruction body:
 
 ```markdown
 ---
 name: commit-style
-description: Conventional commit message conventions for this repo
+description: Conventional commit message conventions for this repository
 ---
 
-Use conventional commits: `feat(scope):`, `fix(scope):`, `docs:`, `chore:`, etc.
-Present tense, imperative mood. Keep the subject line under 72 characters.
+Use conventional commits: `feat(scope):`, `fix(scope):`, `docs:`, `chore:`, and so on.
+Use present tense and imperative mood. Keep the subject line under 72 characters.
 ```
 
-### Validation rules
+The name identifies the skill, the description tells the agent when it may be useful, and
+the body supplies the instructions used after activation. Supporting files can provide
+additional material without adding all of it to the thread's instructions.
 
-- **Name**: kebab-case, 1–64 chars, matching `^[a-z0-9]+(-[a-z0-9]+)*$`
-- **Description**: up to 1024 chars
-- **Body**: up to 500 lines, 64 KB max file size
-- One `SKILL.md` entry point per skill directory
+Authoring requirements are compact but strict: names must be 1–64 character kebab-case
+values matching `^[a-z0-9]+(-[a-z0-9]+)*$`; descriptions are limited to 1,024 characters;
+and the `SKILL.md` body is limited to 500 lines and 64 KB.
 
-## Importing skills
+## Import and storage
 
-Importing copies the skill into Bound's replicated files and creates or reactivates its
-skill record:
+Importing validates and copies the skill into Bound's replicated files and associates it
+with a skill record. The imported skill becomes available to the agent, but its instructions
+are not added to existing threads.
 
-| Surface | How |
-| --- | --- |
-| Web UI | **Connections > Skills > Import** |
-| CLI | `boundctl skill import <path>` |
-| API | `POST /api/skills` |
+Imported skills follow the [state and consistency model](/bound/concepts/sync/). Files in a
+connected project are not imported merely because a terminal client can read them.
 
-## Activating skills
+## Thread activation
 
-The agent controls activation through its `skill` tool. Ask it to use an imported skill:
+The agent can activate a skill because its description matches the work or because the user
+asks to use it. Activation is per-thread: one thread can use a skill while another continues
+without it. After activation, the agent receives the skill's instructions on subsequent
+turns in that thread.
 
-> Use our commit conventions for this.
+There is currently no global cap on the number of active skills. Each active body consumes
+context, however, so activation should remain relevant to the thread's work. Deactivation
+stops providing the instructions to that thread without removing the imported skill for
+other or later threads.
 
-Activation is per-thread. There is no global active-skill cap; deactivate skills that a
-thread no longer needs to reduce context cost.
+See [Agent tools](/bound/reference/agent-tools/) for activation actions and parameters.
 
-Ask the agent to stop using a skill to deactivate it for the current thread.
+## Skill lifecycle
 
-## Managing skills
+In summary, packaging creates an importable skill, importing makes it available, activation
+uses it in one thread, and deactivation stops using it there without deleting it:
 
-| Action | Web UI | CLI | API |
-| --- | --- | --- | --- |
-| List | **Connections > Skills** | `boundctl skill list` | `GET /api/skills` |
-| View | Click a skill | `boundctl skill view <name>` | `GET /api/skills/:id` |
-| Delete | Delete button | `boundctl skill delete <name>` | `DELETE /api/skills/:id` |
+1. **Packaged:** `SKILL.md` and any supporting files form a skill directory.
+2. **Imported:** Bound validates and stores the skill so the agent can discover it.
+3. **Activated:** The agent receives the skill body in one thread.
+4. **Deactivated:** That thread stops receiving the body, while the imported skill remains
+   available.
+5. **Removed:** The stored skill is no longer available for future activation.
+6. **Re-imported:** A newly validated copy becomes available for activation again.
 
-Deletion is the only removal operation. It soft-deletes the skill and its files, then files
-an advisory for tasks that reference it. Re-importing the same name restores the skill.
+Removing a stored skill and deactivating it in a thread are different operations.
+
+Follow [Manage skills](/bound/guides/manage-skills/) for import, inspection, and removal
+procedures. In the web UI, these controls are in the **Skills** section of
+[Connections](/bound/concepts/web-ui/#connections).

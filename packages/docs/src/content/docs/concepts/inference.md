@@ -1,72 +1,64 @@
 ---
 title: Inference and model routing
-description: How Bound resolves models across hosts, relays inference, and manages prompt caching.
+description: How Bound chooses an eligible model location, relays inference, and shapes provider context.
 ---
 
-Bound resolves each requested model against the backends advertised by the cluster. It
-prefers an eligible local backend, then considers remote hosts and configured fallbacks.
+Bound can send a model request to different model services and locations. A **backend** is
+a configured connection to a model service. A **host** is a Bound instance in the cluster.
+The **loop host** coordinates the agent turn, while the **inference host** owns the backend
+that serves a particular model request. These can be the same host or different hosts.
 
-## Supported backends
+**Routing** is the process of choosing an eligible backend and, therefore, the host that
+will serve the request. It does not move the agent loop.
 
-| Provider | Auth | Notes |
-| --- | --- | --- |
-| Ollama | None | Local inference |
-| Anthropic | `ANTHROPIC_API_KEY` | Claude models; prompt caching, extended thinking |
-| AWS Bedrock | AWS SDK chain | Converse API; SigV4 auth |
-| Bedrock Mantle | AWS SDK chain | Region-scoped; Anthropic Messages or OpenAI Responses protocol |
-| Cerebras | `CEREBRAS_API_KEY` | OpenAI-compatible |
-| z.AI | `ZAI_API_KEY` | GLM models |
-| OpenCode Go | Provider-specific | OpenAI-compatible routing |
-| umans.ai | `UMANS_API_KEY` | Self-configuring — model lineup fetched at runtime |
-| OpenAI-compatible | Varies | Any endpoint speaking the OpenAI API |
+## Routing decisions
 
-Configure backends in `model_backends.json`. See the
-[configuration reference](/bound/reference/configuration/#model_backendsjson) for every
-field.
+Each host advertises the models and capabilities available through its configured backends.
+Bound combines those advertisements into a cluster inventory and evaluates the request
+against it.
 
-## Model selection
+The decision has three broad questions:
 
-Each host advertises its available models and capabilities. The model selector combines
-these advertisements into one cluster-wide inventory.
+1. **What did the turn request?** An omitted model and `"default"` use the configured default
+   route; a named model narrows the eligible inventory.
+2. **Which backends are eligible?** Eligibility depends on the advertised model, provider
+   capabilities, and current backend configuration.
+3. **Where can the request run?** Bound prefers an eligible backend on the loop host, then can
+   consider an advertised backend on another host or a configured fallback route.
 
-`"default"` and an omitted model both resolve to the default local backend. When a named
-model exists only on another host, Bound relays the assembled context and streams the
-response back to the loop host.
+When the selected backend is remote, the loop host relays its assembled context to the
+inference host and streams the response back. The inference host serves the request; it does
+not reconstruct the turn from replicated state. See [State, consistency, and multi-host
+operation](/bound/concepts/sync/) for the distinction between inference relay and state
+replication.
 
-## Prompt caching
+A model advertisement or fallback route does not guarantee that a routed request will
+succeed. The selected backend or relay can be unavailable, reject the request, or lack a
+required capability. Bound reports a failure when it cannot complete the selected route;
+retry and recovery behavior belongs to the [work
+lifecycle](/bound/concepts/work-lifecycle/).
 
-For providers that support prompt caching, Bound separates stable context from turn-varying
-context and places provider cache breakpoints around the stable prefix.
+## Local and hosted backends
 
-Set `cache_ttl` to `5m` or `1h` on a backend. Unsupported extended TTL settings fall back
-to the provider's standard behavior.
+A backend can use a model service running locally or a hosted provider API. Providers differ
+in authentication, model discovery, request controls, and prompt-cache support. See the
+[configuration reference](/bound/reference/configuration/#model_backendsjson) for the
+current providers, credentials, and backend fields.
 
-### Cache warming
+## Provider-specific request handling
 
-Cache warming can refresh an active thread's prompt cache before it expires:
+### Prompt caching
 
-```json
-{
-  "cache_warming": {
-    "enabled": true,
-    "max_pokes": 3
-  }
-}
-```
+For providers that support prompt caching, Bound can separate context that usually stays the
+same from content that changes each turn, reducing how much unchanged prompt content the
+provider processes again. Cache warming can refresh an active thread's provider cache before
+expiry, trading an additional request for a greater chance of reuse. See the [configuration
+reference](/bound/reference/configuration/) for cache support and settings.
 
-`max_pokes` limits refreshes since the thread's last real activity. Warming trades
-additional requests for a higher chance that the next turn reads from cache.
+### Reasoning controls
 
-## Reasoning controls
-
-Backends can expose provider-specific reasoning controls:
-
-- `effort` sets a provider-supported reasoning level.
-- `thinking` selects adaptive reasoning or a legacy fixed budget where supported.
-
-```json
-{
-  "thinking": { "type": "adaptive" },
-  "effort": "xhigh"
-}
-```
+Some providers expose controls such as an effort level, adaptive reasoning, or a fixed
+thinking budget. Bound passes supported controls through the selected backend, but their
+meaning and availability remain provider-specific. A fallback route must support the
+capabilities the turn requests; controls should not be assumed to behave identically across
+providers.
