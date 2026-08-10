@@ -1,6 +1,6 @@
 # NOTE: BOUND_VC15_M overridden to 5 for snapshot reviewability; production default is 20
 
-User ID: test-user, Thread ID: 0263c015-e3d9-5557-8d50-e69782ef1ac6
+<identity user-id="test-user" thread-id="0263c015-e3d9-5557-8d50-e69782ef1ac6"/>
 
 <working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
 <memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>

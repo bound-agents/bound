@@ -5,19 +5,21 @@
  * routing info, and model-name line that open the volatile-tail varying
  * half before any Working-Knowledge / Live-State enrichment.
  *
- * Lives in the **varying** half of the R-VC24 split — the User/Thread
- * ID line is per-thread, relay routing differs by host pair, and
+ * Lives in the **varying** half of the R-VC24 split — the identity
+ * element is per-thread, relay routing differs by host pair, and
  * `currentModel` can switch turn-to-turn via `model_hint`. None of this
  * can ride the cache breakpoint.
  *
  * Contract pinned by `__tests__/build.property.test.ts`:
  *
  *   V1 Determinism — same inputs produce byte-equal output.
- *   V2 First line — always `User ID: <userId>, Thread ID: <threadId>`.
- *   V3 Order — user/thread, relay, current model (any subset).
+ *   V2 First line — always `<identity user-id="…" thread-id="…"/>`.
+ *   V3 Order — identity, relay, current model (any subset).
  *   V7 Optional fields absent -> their lines absent.
  *   V8 No embedded newlines in any single emitted line.
  */
+
+import { escapeXmlAttr } from "@bound/shared";
 
 export interface RelayInfo {
 	remoteHost: string;
@@ -36,7 +38,13 @@ export interface BuildVaryingPrefixParams {
 export function buildVaryingPrefix(params: BuildVaryingPrefixParams): string[] {
 	const lines: string[] = [];
 
-	lines.push(`User ID: ${params.userId}, Thread ID: ${params.threadId}`);
+	// String() coercion mirrors the pre-XML template-literal behavior: some
+	// no-history/task callers assemble without a userId, which used to render
+	// the literal "undefined" — keep that tolerance rather than throwing inside
+	// escapeXmlAttr.
+	lines.push(
+		`<identity user-id="${escapeXmlAttr(String(params.userId))}" thread-id="${escapeXmlAttr(String(params.threadId))}"/>`,
+	);
 
 	if (params.relayInfo) {
 		lines.push(

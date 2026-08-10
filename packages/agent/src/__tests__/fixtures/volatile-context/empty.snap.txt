@@ -1,4 +1,4 @@
-User ID: test-user, Thread ID: 825e4651-d14a-550c-8042-96b4d192fcc0
+<identity user-id="test-user" thread-id="825e4651-d14a-550c-8042-96b4d192fcc0"/>
 
 <working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
 </working-knowledge>

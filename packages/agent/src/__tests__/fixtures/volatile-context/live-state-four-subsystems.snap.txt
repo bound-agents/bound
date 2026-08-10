@@ -1,4 +1,4 @@
-User ID: test-user, Thread ID: d2a1fd52-a74d-56e8-a7da-2f81b9b5feb0
+<identity user-id="test-user" thread-id="d2a1fd52-a74d-56e8-a7da-2f81b9b5feb0"/>
 
 <working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
 <memory key="_internal.file_thread./src/main.ts" tier="pinned" modified="2026-05-22">42af641e-0efb-5b68-ad3d-5734ccacc69e</memory>

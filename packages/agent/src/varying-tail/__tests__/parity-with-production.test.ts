@@ -18,6 +18,7 @@ import {
 	type LiveStateFileEntry,
 	type LiveStateInput,
 	type LiveStateTaskEntry,
+	RELEVANT_MEMORY_FOOTER,
 	RELEVANT_MEMORY_HEADER,
 	type StageEntry,
 	formatRelevantMemoryTitleLine,
@@ -315,7 +316,6 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 	if (inputs.recentMemoryEntries.length > 0) {
 		out.push("");
 		out.push(RELEVANT_MEMORY_HEADER);
-		out.push("");
 		for (const e of inputs.recentMemoryEntries) {
 			const stage: StageEntry = {
 				key: e.key,
@@ -331,6 +331,7 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 			};
 			out.push(formatRelevantMemoryTitleLine(stage));
 		}
+		out.push(RELEVANT_MEMORY_FOOTER);
 	}
 
 	// Live State.

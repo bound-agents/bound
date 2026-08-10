@@ -1,4 +1,4 @@
-User ID: test-user, Thread ID: 24800f53-2df3-5419-8f87-7c0108efae41
+<identity user-id="test-user" thread-id="24800f53-2df3-5419-8f87-7c0108efae41"/>
 
 <working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
 <memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>
