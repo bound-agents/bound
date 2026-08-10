@@ -382,9 +382,7 @@ export interface VolatileContext {
 	allVolatileLines: string[];
 	/** Snapshot of varying-only volatile lines (mirror of `varyingContent`). */
 	allVaryingLines: string[];
-	/** Memory delta lines for tier-aware shedding */
-	memoryDeltaLines: string[];
-	/** Task digest lines for tier-aware shedding */
+	/** Task digest lines for budget accounting (see `taskDigestLinesSnapshot`) */
 	taskDigestLines: string[];
 	/** Tiered enrichment structure for shedding */
 	tiers?: TieredEnrichment;
@@ -998,7 +996,6 @@ export function buildVolatileContext(params: {
 	const {
 		taskDigestEntries,
 		taskDigestLines,
-		memoryDeltaLines,
 		tiers: enrichmentTiers,
 	} = withChildSpan("context.helper.build-volatile-enrichment", () =>
 		buildVolatileEnrichment(
@@ -1210,7 +1207,6 @@ export function buildVolatileContext(params: {
 		varyingEnrichmentEndIdx,
 		allVolatileLines,
 		allVaryingLines,
-		memoryDeltaLines,
 		taskDigestLines,
 		tiers: enrichmentTiers,
 		crossThreadSources,
