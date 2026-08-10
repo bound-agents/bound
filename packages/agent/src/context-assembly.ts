@@ -26,6 +26,7 @@ import type {
 } from "@bound/shared";
 import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
 import { context, trace } from "@opentelemetry/api";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop-utils";
 import { annotateMessagesWithTokens } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
 import { loadNotificationInputs, renderNotifications } from "./notifications";
@@ -112,13 +113,12 @@ function withChildSpan<T>(
 }
 
 /**
- * Fallback output-token reserve when the caller has no resolved max-output-tokens
- * figure for the target backend (e.g. a test harness that omits `maxOutputTokens`,
- * or a resolution path that hasn't threaded one through yet). Mirrors the `8_000`
- * convention `estimateMaxTurnCost` and `BackendConfig` schema defaults already use
- * elsewhere for "no configured cap" — see agent-loop-utils.ts.
+ * Fallback output-token reserve when the target backend has no configured cap.
+ * This is the same value `clampMaxOutputTokens` sends on the wire when neither
+ * side advertises a budget; assembly and dispatch must never disagree about
+ * how much of the context window generation owns.
  */
-export const DEFAULT_OUTPUT_TOKEN_RESERVE = 8_000;
+export const DEFAULT_OUTPUT_TOKEN_RESERVE = DEFAULT_MAX_OUTPUT_TOKENS;
 
 /**
  * The cold path targets `contextWindow - maxOutputTokens` tokens of history —

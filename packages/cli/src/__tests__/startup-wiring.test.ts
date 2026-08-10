@@ -294,6 +294,42 @@ describe("Startup Wiring", () => {
 			expect(developerMsgs[0].content).toContain(hostName);
 		});
 
+		it("does not flag auxiliary-agent threads with interrupted tool-use", () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "AuxOwner", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted, agent_id, parent_thread_id) VALUES (?, ?, 'aux', 'localhost', 0, 'aux: scout', NULL, ?, ?, ?, 0, ?, ?)",
+				[threadId, userId, now, now, now, randomUUID(), randomUUID()],
+			);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_call",
+					content: JSON.stringify([{ type: "tool_use", id: "aux-t1", name: "query", input: {} }]),
+					model_id: "test-model",
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: "test-host",
+				},
+				siteId,
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+				thread_id: string;
+			}>;
+			expect(interruptedThreads.some((t) => t.thread_id === threadId)).toBe(false);
+		});
+
 		it("does not flag threads where the last message is an assistant response", () => {
 			const userId = randomUUID();
 			const threadId = randomUUID();

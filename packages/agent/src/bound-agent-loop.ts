@@ -358,6 +358,17 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		});
 	}
 
+	/**
+	 * Output budget used by BOTH context assembly and the wire request.
+	 * Backend caps win over the provider-default fallback; remote resolutions
+	 * have no cap in their synced descriptor today, so they use the explicit
+	 * conservative fallback rather than omitting max_tokens.
+	 */
+	protected resolvedMaxOutputTokens(resolution: BoundPreparedFrame["resolution"]): number {
+		const backendCap = resolution.kind === "local" ? resolution.maxOutputTokens : undefined;
+		return clampMaxOutputTokens(this.effectiveMaxOutputTokens(), backendCap);
+	}
+
 	protected override beforeRun(): void {
 		// Base resetResilienceState() clears loop-guard, length-retry, and
 		// transport-retry counters before this runs. Reset only Bound-local state.
@@ -607,7 +618,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				nowMs: frame.assembled.assemblyNowMs,
 				tools: frame.mergedTools,
 				system: frame.assembled.systemPrompt || undefined,
-				max_tokens: this.effectiveMaxOutputTokens(),
+				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				temperature: undefined,
 				timeout_ms: this.inferenceTimeoutMs,
 			};
@@ -672,10 +683,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				messages: frame.messages,
 				system: frame.assembled.systemPrompt || undefined,
 				tools: frame.mergedTools,
-				max_tokens: clampMaxOutputTokens(
-					this.effectiveMaxOutputTokens(),
-					resolution.maxOutputTokens,
-				),
+				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				thinking: resolution.thinkingConfig,
 				effort: resolution.effort,
 				cache_ttl: resolution.cacheTtl,

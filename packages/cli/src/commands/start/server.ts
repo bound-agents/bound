@@ -537,26 +537,45 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						return { claimedIds };
 					}
 					const threadInfo = findThreadUserAndInterfaceById(appContext.db, thread_id);
+					const parentThreadInfo = findThreadUserAndInterfaceById(
+						appContext.db,
+						seed.parentThreadId,
+					);
 					const modelHint =
 						findThreadModelHintById(appContext.db, thread_id)?.model_hint ??
 						agent.model_hint ??
 						null;
 
-					// Client tools resolve through the PARENT thread's live session
-					// (the registry's subscriptionCandidates fallback), so a background
-					// aux keeps boundless reach while the session is connected and
-					// degrades to an inline error result when it is not.
-					const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(thread_id);
+					// Inherit the complete dispatching surface context, not only its
+					// client tool registry. For boundless this includes the frozen cwd,
+					// git context, and injected context-file bodies. For connector/event
+					// surfaces it includes their platform-authored instructions.
+					const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(seed.parentThreadId);
 					const clientTools =
 						clientToolsFromRegistry && clientToolsFromRegistry.size > 0
 							? clientToolsFromRegistry
 							: undefined;
 					const firstToolName = clientTools?.keys().next().value;
 					const connectionId = firstToolName
-						? wsRegistry?.getConnectionForTool(thread_id, firstToolName)
+						? wsRegistry?.getConnectionForTool(seed.parentThreadId, firstToolName)
 						: undefined;
+					const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(
+						seed.parentThreadId,
+					);
+					const platformInstructions = platformMcpRegistry?.getInstructionsForThread(
+						seed.parentThreadId,
+					);
+					const parentInterface = parentThreadInfo?.interface;
+					const platform =
+						parentInterface && isUserFacingInterface(parentInterface) ? parentInterface : undefined;
 
-					const runner = agentLoopFactory.createAuxLoopRunner?.({ clientTools, connectionId });
+					const runner = agentLoopFactory.createAuxLoopRunner?.({
+						clientTools,
+						connectionId,
+						platform,
+						systemPromptAddition,
+						platformInstructions,
+					});
 					if (!runner) {
 						finishParent(
 							"Error: this host's agent loop factory cannot construct auxiliary loops",
