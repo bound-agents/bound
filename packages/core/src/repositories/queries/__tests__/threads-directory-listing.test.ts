@@ -605,6 +605,50 @@ describe("threads-directory-listing finders", () => {
 			});
 			expect(rows.map((r) => r.id)).toEqual(["t-mine"]);
 		});
+
+		// Aux invocation threads are internal errands (main agent → aux identity),
+		// not user conversations — they must never surface in the web directory.
+		// Keyed on agent_id, never the descriptive `interface` tag.
+		it("excludes auxiliary-agent threads (agent_id non-null)", () => {
+			seedThread(db, { id: "t-main", last_message_at: "2026-02-02T00:00:00.000Z" });
+			seedThread(db, {
+				id: "t-aux",
+				interface: "aux",
+				agent_id: "agent-abc",
+				parent_thread_id: "t-main",
+				last_message_at: "2026-03-03T00:00:00.000Z",
+			});
+			// Even a user message on the aux thread doesn't make it a directory row.
+			seedMessage(db, { id: "m-aux", thread_id: "t-aux", role: "user" });
+
+			const rows = listThreadsDirectory(db, {
+				userId: USER,
+				includeEmpty: true,
+				beforeTs: null,
+				beforeId: null,
+				limit: null,
+			});
+			expect(rows.map((r) => r.id)).toEqual(["t-main"]);
+		});
+
+		// The exclusion keys on agent_id — an `interface: "aux"` tag with a null
+		// agent_id (descriptive only, per the #201 convention) stays visible.
+		it("does not exclude by the interface tag alone", () => {
+			seedThread(db, {
+				id: "t-tagged",
+				interface: "aux",
+				last_message_at: "2026-02-02T00:00:00.000Z",
+			});
+
+			const rows = listThreadsDirectory(db, {
+				userId: USER,
+				includeEmpty: true,
+				beforeTs: null,
+				beforeId: null,
+				limit: null,
+			});
+			expect(rows.map((r) => r.id)).toEqual(["t-tagged"]);
+		});
 	});
 
 	describe("ordering, keyset cursor, and limit", () => {
@@ -731,6 +775,16 @@ describe("threads-directory-listing finders", () => {
 			seedMessage(db, { id: "m-asst", thread_id: "t-empty", role: "assistant" });
 
 			const res = countThreadsDirectory(db, { userId: USER, includeEmpty: false });
+			expect(res).toEqual({ total: 1 });
+		});
+
+		// Mirrors the listing's aux exclusion so "Active Lines · N" always agrees
+		// with the visible directory rows.
+		it("excludes auxiliary-agent threads (agent_id non-null)", () => {
+			seedThread(db, { id: "t-main" });
+			seedThread(db, { id: "t-aux", interface: "aux", agent_id: "agent-abc" });
+
+			const res = countThreadsDirectory(db, { userId: USER, includeEmpty: true });
 			expect(res).toEqual({ total: 1 });
 		});
 	});
