@@ -491,13 +491,12 @@ export function createWebSocketHandler(
 		// In case session:configure happened before thread:subscribe
 		redeliverPendingToolCalls(conn, msg.thread_id);
 
-		// Seed the background-tool count for the newly subscribed thread. Without
-		// this a client attaching to a thread that already has work in flight shows
-		// nothing until the next completion — the indicator must reflect state on
-		// arrival, not only on transition.
+		// Seed the background-tool count for the newly subscribed thread. Always send
+		// zero too: after a disconnected interval, zero is what clears a stale cached
+		// nonzero count on the reconnecting client.
 		if (db) {
 			const count = countBackgroundToolCallsByThread(db, msg.thread_id);
-			if (count > 0 && conn.ws.readyState === 1) {
+			if (conn.ws.readyState === 1) {
 				conn.ws.send(JSON.stringify({ type: "background:count", thread_id: msg.thread_id, count }));
 			}
 		}

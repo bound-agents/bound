@@ -62,27 +62,26 @@ export function useSessionHud(
 	threadId: string,
 	costRefreshMinIntervalMs = 15_000,
 ): SessionHudState {
-	const [state, setState] = useState<SessionHudState>(EMPTY);
+	const [state, setState] = useState<SessionHudState>(() => ({
+		...EMPTY,
+		backgroundCount:
+			typeof client?.getBackgroundCount === "function" ? client.getBackgroundCount(threadId) : 0,
+	}));
 	// Session start is fixed at first mount — switching threads mid-session
 	// keeps the same "since you sat down" window.
 	const sessionStartRef = useRef(new Date());
 	const lastFetchRef = useRef(0);
 
 	// The thread we're gauging switches with /attach; keep the ref fresh so
-	// the stable event handler filters on the CURRENT thread.
-	//
-	// The switch also has to zero the in-flight background count: the
-	// subscription effect below deliberately does NOT re-run per thread, so
-	// otherwise an /attach would carry the previous thread's count until the next
-	// event — reporting work in flight on a thread that has none. Adjusting state
-	// during render on a prop change (guarded, so it runs once per switch) is the
-	// documented React pattern and keeps the reset off the effect's dep list. The
-	// server re-seeds on subscribe, so a thread that genuinely has background work
-	// lights up again immediately.
+	// the stable event handler filters on the CURRENT thread. Subscribe happens
+	// before the keyed ChatView mounts, so the BoundClient snapshot is the handoff
+	// between that seed frame and this hook's listener.
 	const threadIdRef = useRef(threadId);
 	if (threadIdRef.current !== threadId) {
 		threadIdRef.current = threadId;
-		setState((s) => (s.backgroundCount === 0 ? s : { ...s, backgroundCount: 0 }));
+		const nextCount =
+			typeof client?.getBackgroundCount === "function" ? client.getBackgroundCount(threadId) : 0;
+		setState((s) => (s.backgroundCount === nextCount ? s : { ...s, backgroundCount: nextCount }));
 	}
 
 	useEffect(() => {

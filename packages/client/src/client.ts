@@ -88,6 +88,8 @@ export class BoundClient {
 	private ws: WebSocket | null = null;
 	private readonly wsUrl: string;
 	private readonly subscriptions = new Set<string>();
+	/** Latest server-derived in-flight count, retained for listeners that mount after subscribe. */
+	private readonly backgroundCounts = new Map<string, number>();
 	private clientTools: ToolDefinition[] = [];
 	private toolCallHandler: ((call: ToolCallRequest) => Promise<ToolCallResult>) | null = null;
 	private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -117,6 +119,11 @@ export class BoundClient {
 	/** Public read-only accessor for the bound API base URL (trailing slash stripped). */
 	getBaseUrl(): string {
 		return this.baseUrl;
+	}
+
+	/** Latest server-derived background-operation count for a thread. */
+	getBackgroundCount(threadId: string): number {
+		return this.backgroundCounts.get(threadId) ?? 0;
 	}
 
 	/**
@@ -401,6 +408,16 @@ export class BoundClient {
 					reason: msg.reason as string | undefined,
 				});
 				return;
+			}
+
+			// A subscribe seed can arrive before the corresponding React view mounts.
+			// Retain it so late listeners hydrate from the same server-derived state.
+			if (
+				msg.type === "background:count" &&
+				typeof msg.thread_id === "string" &&
+				typeof msg.count === "number"
+			) {
+				this.backgroundCounts.set(msg.thread_id, msg.count);
 			}
 
 			// For events that wrap their payload under `data`, unwrap before emitting.
