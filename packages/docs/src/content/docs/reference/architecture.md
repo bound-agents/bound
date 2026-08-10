@@ -1,29 +1,36 @@
 ---
 title: Architecture
-description: How Bound's packages, agent loop, persistence, sync, and relay layers fit together.
+description: Current package boundaries, runtime composition, persistence, sync, and relay behavior in Bound.
 ---
 
-Bound is a Bun workspace whose packages separate persistence, sync, inference, agent
-execution, platform integration, and user interfaces.
+This implementation reference maps Bound's packages to their runtime roles and summarizes
+how those parts compose on a host. These details describe the implementation, not stable
+product guarantees. For the product-level model, see [System
+model](/bound/concepts/system-model/).
 
-## Packages
+## Package map
 
-| Package | What it does |
+Bound is a Bun workspace with these package responsibilities:
+
+| Package | Current responsibility |
 | --- | --- |
-| `shared` | Types, events, config schemas |
-| `core` | SQLite schema, database layer, change-log outbox |
-| `sync` | Ed25519 identity, encrypted WebSocket sync, conflict resolution |
-| `sandbox` | In-memory virtual filesystem, command framework |
-| `llm` | LLM driver shims (Bedrock, Anthropic, OpenAI-compatible, etc.) |
-| `loop` | Agent loop contracts, stream parsing, retry/timeout |
-| `agent` | Context pipeline, tools, scheduler, MCP bridge |
-| `platforms` | Platform connectors (Discord), webhooks, RSS |
-| `web` | Hono API + Svelte 5 SPA |
-| `client` | BoundClient for external consumers |
-| `less` | boundless terminal client |
-| `cli` | `bound` / `boundctl` / `boundless` binaries |
+| `shared` | Types, events, and configuration schemas |
+| `core` | SQLite schema, database layer, and change-log outbox |
+| `sync` | Ed25519 identity, encrypted WebSocket sync, and conflict resolution |
+| `sandbox` | In-memory virtual filesystem and command framework |
+| `llm` | Large language model (LLM) driver shims for Bedrock, Anthropic, OpenAI-compatible providers, and others |
+| `loop` | Agent-loop contracts, stream parsing, retries, and timeouts |
+| `agent` | Context pipeline, tools, scheduler, and Model Context Protocol (MCP) bridge |
+| `platforms` | Platform connectors such as Discord, webhooks, and RSS |
+| `web` | Hono-based API and Svelte single-page application |
+| `client` | `BoundClient` for external consumers |
+| `less` | Terminal-client implementation used by `boundless` |
+| `cli` | Binary entry points for `bound`, `boundctl`, and `boundless` |
 
-## Message flow
+## Runtime composition
+
+A host composes the persistence, sync, inference, agent, platform, and interface packages.
+A message moves through those parts as follows:
 
 ```text
 User sends message (web UI / Discord / boundless / webhook / RSS)
@@ -33,31 +40,41 @@ Agent loop activates:
   2. Assemble context (persona, memory, skills, history → LLM prompt)
   3. Call the LLM (local backend or relayed to a remote host)
   4. Parse response — text or tool calls
-  5. Execute tools (local, relayed to remote host, or via boundless)
+  5. Execute tools (local, relayed to a remote host, or via boundless)
   6. Persist results (messages, files, memory)
   7. Check for more queued messages → loop or idle
 ```
 
-The trigger host owns the loop and assembles context. Model resolution and tool dispatch
-can relay individual operations without moving the loop.
+See [Work lifecycle](/bound/concepts/work-lifecycle/) for the lifecycle semantics behind
+this sequence.
 
-## Sync
+## Persistence and replication
 
-Writes to synced tables use the change-log outbox. After commit, the sync transport pushes
-changes through the hub. Most tables use last-writer-wins reduction; append-only tables
-deduplicate inserts.
+Each host uses SQLite in write-ahead logging (WAL) mode. Writes to synced tables produce
+change-log outbox entries in the same transaction. After commit, the sync transport pushes
+those changes through the hub, the host that coordinates replication. Most tables use
+last-writer-wins reduction; append-only tables deduplicate inserts.
 
-See [Sync and multi-host behavior](/bound/concepts/sync/) for the concept and
-[Configure a multi-host cluster](/bound/guides/multi-host/) for setup.
+This page records the mechanisms used by the implementation. See
+[Sync and multi-host behavior](/bound/concepts/sync/) for how replication affects users and
+operators, and [Configure a multi-host cluster](/bound/guides/multi-host/) for setup.
 
-## Design principles
+## Routing and execution boundaries
 
-- **Local-first state:** Each host uses SQLite in WAL mode.
-- **Outbox replication:** Synced writes produce change-log entries in the same transaction.
-- **Constrained execution:** Built-in file operations use a virtual filesystem;
-  `boundless` adds OS-level confinement for host commands.
-- **Cluster-wide routing:** Models and tools can execute on a different host.
-- **One loop owner:** The trigger host assembles context and runs the loop; only inference
+The implementation has these runtime boundaries:
+
+- **Loop ownership:** The trigger host assembles context and runs the loop. Only inference
   and tool calls relay.
+- **Inference routing:** A model can execute on the loop-owning host or on another host.
+- **Tool routing:** A tool can execute locally, on another host, or through the
+  `boundless` terminal client.
+- **Built-in file operations:** These operations use an in-memory virtual filesystem.
+- **Host commands:** `boundless` adds operating-system-level confinement.
 
-For the full design treatment (dependency graphs, protocol details, database schema), see the `docs/design/` directory in the repository.
+These are current composition and dispatch properties rather than promises that package or
+process boundaries will remain unchanged. See
+[Security boundaries](/bound/concepts/security-boundaries/) for the trust and confinement
+model.
+
+Contributors can find internal design references—including dependency graphs, protocol
+notes, and the database schema—in the repository's `docs/design/` directory.

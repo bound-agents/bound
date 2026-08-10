@@ -1,65 +1,72 @@
 ---
 title: Memory and knowledge graph
-description: How durable memory is stored, connected, and selected for each agent turn.
+description: How Bound organizes durable knowledge and selects a limited memory view for each turn.
 ---
 
-Bound stores durable memory entries in a replicated knowledge graph. Context assembly
-combines stable working knowledge, an archive catalog, live state, and turn-relevant memory
-without loading every entry body.
+Bound stores durable memory entries in a replicated knowledge graph. The graph is larger
+than any one model prompt, so Bound selects a limited view of it when preparing each turn.
+That context model keeps durable knowledge available without loading every stored entry body
+into every prompt.
 
-## The memory tool
+## Entries and keys
 
-The agent uses the `memory` tool to manage entries:
+A memory entry contains a key, content, and a tier. Descriptive key namespaces such as
+`curiosity:*` or `person:*` help organize entries, but a key's spelling does not determine
+how prominently the entry appears. The tier is the pinning and context-selection signal.
 
-| Action | What it does |
-| --- | --- |
-| `store` | Save a durable fact, finding, preference, or correction |
-| `search` | Retrieve entries by key or prefix |
-| `forget` | Remove an entry by key, or batch-forget by prefix |
-| `connect` | Create a typed edge between two memory keys |
-| `disconnect` | Remove an edge |
-| `traverse` | Walk the edge graph from a key |
-| `neighbors` | List edges connected to a key |
-
-Keys can use descriptive namespaces such as `curiosity:*` or `person:*`. Key names do not
-control pinning; the `tier` field is the only pinning signal.
+The agent can create, retrieve, remove, and connect entries through its memory tool. See
+[Agent tools](/bound/reference/agent-tools/) for action names and parameters.
 
 ## Memory tiers
 
-Each memory entry has a tier that controls how it surfaces in context:
+Each tier gives an entry a different role in context:
 
-| Tier | How it appears |
+| Tier | Context role |
 | --- | --- |
-| `pinned` | Full body in working knowledge; intended for durable rules and corrections |
-| `summary` | Condensed working knowledge when selected within the summary budget |
-| `default` | Searchable memory eligible for relevance retrieval |
-| `detail` | Archive detail, normally represented by title until retrieved |
+| `pinned` | Supplies a full body to working knowledge for durable rules and corrections |
+| `summary` | Supplies condensed working knowledge when selected within the summary budget |
+| `default` | Remains searchable and eligible for relevance retrieval |
+| `detail` | Remains archive detail, normally represented by its title until retrieved |
 
-Pinned space is capped by `memory.json`, with defaults of 10 entries and 2,000 characters
-per entry. Ask the agent to remember a rule permanently when it should use the pinned tier.
+Pinned and summary material consume prompt space, so Bound applies configured budgets
+rather than treating a tier as unlimited storage. See the [configuration
+reference](/bound/reference/configuration/) for current memory limits and defaults.
 
-## Knowledge graph edges
+## Knowledge graph
 
-Edges use canonical relation types, a weight from 0 through 10, and optional context.
-Keyword matching and graph traversal can both contribute turn-relevant entries.
+Typed edges connect memory keys. Each edge uses a standardized relationship label, a weight
+from 0 through 10, and optional context. The graph lets related knowledge contribute to
+retrieval even when two entries do not share the same keywords.
 
-## Context tiers
+Keyword matching and graph traversal are complementary signals. They identify potentially
+relevant entries, while the tier controls how those entries can appear in the assembled
+context.
 
-Memory appears through four context sections:
+## Context model
 
-- **Working Knowledge:** Pinned bodies and selected summaries in the stable prompt prefix.
-- **Working Knowledge updates:** Changed entries on the varying side of context.
-- **Discoverable Archive:** Compressed titles that tell the agent what it can retrieve.
-- **Relevant memory:** Titles selected for the current turn by keyword and graph matching.
+The selected memory view appears through four context sections. Some content is kept steady
+across turns so the agent retains its working knowledge; other content varies with recent
+changes and the current turn:
 
-The agent can call `memory search` when it needs an entry's full body.
+- **Working Knowledge** contains pinned bodies and selected summaries that usually stay the
+  same across turns.
+- **Working Knowledge updates** contains entries that changed since that steady context was
+  prepared.
+- **Discoverable Archive** contains compressed titles that tell the agent what it can
+  retrieve.
+- **Relevant memory** contains titles selected for the current turn through keyword and
+  graph matching.
 
-## Live State pointers
+A title or pointer is not the complete memory body. The agent retrieves full content when a
+turn needs it, which keeps the default prompt smaller while retaining access to the archive.
 
-Each assembled turn also carries a Live State block for short-lived operational pointers:
-cross-thread activity, task runs, file changes, and recently applied advisories.
+## Live State is not durable knowledge
 
-Thread and advisory entries include their canonical database `id`, so the agent can retrieve the
-backing row with `query` instead of treating the rendered pointer as authoritative. A thread with
-an attached web or boundless client renders nested session metadata naming the host and whether
-that session is live; the thread's `local` attribute carries the locality verdict for the attachment.
+Each turn also includes Live State: short-lived operational pointers such as cross-thread
+activity, task runs, file changes, and recently applied advisories. Live State helps the
+agent notice current activity, while memory preserves durable knowledge that later turns can
+retrieve.
+
+Memory is one input to the broader [agent loop](/bound/concepts/agent-system/). In a
+multi-host deployment, memory replication follows the [state and consistency
+model](/bound/concepts/sync/).

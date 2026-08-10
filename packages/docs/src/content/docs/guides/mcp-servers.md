@@ -1,19 +1,27 @@
 ---
 title: Connect MCP servers
-description: Add local or remote Model Context Protocol servers to Bound's tool inventory.
+description: Connect a local or remote Model Context Protocol server and control its exposed tools.
 ---
 
-This guide connects a [Model Context Protocol](https://modelcontextprotocol.io) server and
-controls which of its tools Bound exposes.
+Use this guide to connect one Model Context Protocol (MCP) server, limit the tools Bound
+exposes, and verify the connection in the web UI.
 
 ## Prerequisites
 
 - A running Bound installation
 - A local MCP command or remote MCP endpoint
+- Any credentials required by the MCP server
 
-## Add a server
+## 1. Add a server
 
-Add the server to `mcp.json`:
+Create or update `mcp.json` in Bound's
+[configuration reference](/bound/reference/configuration/). The
+vendor packages, endpoints, and tool names below are illustrative and can change between
+versions. Check the vendor's current documentation before using them.
+
+### Local stdio
+
+Add a `stdio` server to start a process on the Bound host:
 
 ```json
 {
@@ -23,8 +31,25 @@ Add the server to `mcp.json`:
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_TOKEN": "ghp_..." }
-    },
+      "env": { "GITHUB_TOKEN": "ghp_..." },
+      "allow_tools": ["create_issue", "get_issue", "list_issues"],
+      "confirm": ["create_issue"]
+    }
+  ]
+}
+```
+
+Replace the example token with the credential required by your server. `allow_tools` exposes
+only the named tools. `confirm` requires approval for the selected exposed tools.
+
+### Remote HTTP
+
+To connect an HTTP endpoint instead of starting a local process, set `transport` to `http`
+and provide its URL. Add headers when the endpoint requires them:
+
+```json
+{
+  "servers": [
     {
       "name": "tavily",
       "transport": "http",
@@ -35,57 +60,60 @@ Add the server to `mcp.json`:
 }
 ```
 
-Restart Bound after changing this file, or reload MCP configuration:
+Use `stdio` with `command` and optional `args` and `env` for a process on the Bound host. Use
+`http` with `url` and optional `headers` for a remote endpoint.
+
+:::caution[Tool access]
+An MCP tool runs with the access granted to its server process or remote endpoint. Expose
+only the tools the agent needs with `allow_tools`, and use `confirm` to require operator
+approval for sensitive actions.
+:::
+
+## 2. Reload
+
+Apply the change without restarting Bound:
 
 ```bash
 boundctl config reload mcp
 ```
 
-## Choose a transport
+You can restart Bound instead.
 
-Use `stdio` for a process that runs on the Bound host. Set `command`, and optionally set
-`args` and `env`.
+## 3. Verify
 
-Use `http` for a remote endpoint. Set `url`, and optionally set `headers`.
+1. Open **Connections > MCP Servers**.
+2. Find the configured server.
+3. Confirm that it shows a connected status and the expected tools.
 
-Each transport schema is strict. Unknown fields cause configuration loading to fail.
-
-## Restrict exposed tools
-
-Set `allow_tools` to expose only named tools:
-
-```json
-{
-  "name": "github",
-  "transport": "stdio",
-  "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-github"],
-  "allow_tools": ["create_issue", "get_issue", "list_issues"]
-}
-```
-
-Set `confirm` to require approval for selected tools:
-
-```json
-{
-  "confirm": ["create_issue", "create_pull_request"]
-}
-```
-
-## Verify the connection
-
-Open **Connections > MCP Servers**. Confirm that the server, host, and expected tools appear
-in the cluster inventory.
-
-Bound represents each MCP server as one command with a `subcommand` parameter. If the
-server runs on another host, Bound relays the tool call to that host.
+For multi-host installations, see the [System model](/bound/concepts/system-model/).
 
 ## Use MCP Apps
 
-When an HTTP MCP server advertises the
-[MCP Apps](https://github.com/modelcontextprotocol/ext-apps)
-`io.modelcontextprotocol/ui` capability, supported tool results render as interactive apps
-in the web UI.
+MCP Apps are optional and let compatible servers return interactive UI for supported tool
+results in the web UI. See the [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps)
+for server support and implementation details.
 
-MCP Apps require no separate Bound configuration. The server remains the tool provider;
-the browser renders its `ui://` resources.
+## Troubleshoot the connection
+
+### Configuration doesn't load
+
+Check the JSON syntax and remove fields that don't belong to the selected transport. The
+transport schemas reject unknown fields. Compare the file with the
+[`mcp.json` reference](/bound/reference/configuration/#mcpjson).
+
+### The server or its tools don't appear
+
+Run `boundctl config reload mcp` after saving `mcp.json`, then check **Connections > MCP
+Servers** again. If the server appears but a tool doesn't, confirm that `allow_tools`
+contains that tool's name.
+
+### A remote server can't authenticate
+
+Confirm that the required value is present in `headers`. For a local `stdio` server, confirm
+that its required credential is present in `env`.
+
+## Related concepts
+
+- [System model](/bound/concepts/system-model/)
+- [Work lifecycle](/bound/concepts/work-lifecycle/)
+- [Security boundaries](/bound/concepts/security-boundaries/)
