@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { graphSeededRetrieval, upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
+import { deltaLines } from "./test-helpers/enrichment";
 
 let db: Database;
 let dbPath: string;
@@ -98,7 +99,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
 
 			// Should contain A (seed), B and C (via graph traversal)
-			const memoryLines = enrichment.memoryDeltaLines.join("\n");
+			const memoryLines = deltaLines(enrichment).join("\n");
 
 			expect(memoryLines).toContain("scheduler_design");
 			expect(memoryLines).toContain("[graph]");
@@ -146,7 +147,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const userMessage = "Tell me about the sync protocol";
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
 
-			const seedLine = enrichment.memoryDeltaLines.find((l) => l.includes("sync_protocol"));
+			const seedLine = deltaLines(enrichment).find((l) => l.includes("sync_protocol"));
 			expect(seedLine).toBeDefined();
 			expect(seedLine).toContain("[graph]");
 		});
@@ -181,7 +182,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const userMessage = "How does memory structure work?";
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
 
-			const mem2Line = enrichment.memoryDeltaLines.find((l) => l.includes("semantic_search"));
+			const mem2Line = deltaLines(enrichment).find((l) => l.includes("semantic_search"));
 			expect(mem2Line).toBeDefined();
 			// Should have [graph] tag since it's traversed from seed
 			if (mem2Line?.match(/\[graph\]/)) {
@@ -250,10 +251,10 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(db, baseline, 8, 5, userMessage);
 
 			// Should have at most 8 memory entries
-			expect(enrichment.memoryDeltaLines.length).toBeLessThanOrEqual(8);
+			expect(deltaLines(enrichment).length).toBeLessThanOrEqual(8);
 
 			// Count retrieval methods in output
-			const hasGraphTag = enrichment.memoryDeltaLines.some((l) => l.includes("[graph]"));
+			const hasGraphTag = deltaLines(enrichment).some((l) => l.includes("[graph]"));
 
 			// Should have graph entries (at minimum seed entry)
 			expect(hasGraphTag).toBe(true);
@@ -312,7 +313,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			);
 
 			// Should respect maxMemory limit for L2+L3 (L1 summaries uncapped; pinned entries exclude from count)
-			const regularMemories = enrichment.memoryDeltaLines.filter((l) => !l.includes("[pinned]"));
+			const regularMemories = deltaLines(enrichment).filter((l) => !l.includes("[pinned]"));
 			expect(regularMemories.length).toBeLessThanOrEqual(6);
 		});
 	});
@@ -347,7 +348,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// No edges created — call buildVolatileEnrichment
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
 
-			const memoryLines = enrichment.memoryDeltaLines;
+			const memoryLines = deltaLines(enrichment);
 
 			// Should contain entries without [seed], [graph], [recency] tags
 			// (or with [relevant] tag from keyword boosting, but no graph tags)
@@ -394,7 +395,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5);
 
 			// Find the memory line (may not be first if there are others)
-			const line = enrichment.memoryDeltaLines.find((l) => l.includes("test_key"));
+			const line = deltaLines(enrichment).find((l) => l.includes("test_key"));
 			expect(line).toBeDefined();
 			if (line) {
 				// Should have source label and relative time (old behavior)
@@ -457,7 +458,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "seed entry query");
 
-			const memoryLines = enrichment.memoryDeltaLines;
+			const memoryLines = deltaLines(enrichment);
 
 			// Count tag types
 			const pinnedCount = memoryLines.filter((l) => l.includes("[pinned]")).length;
@@ -521,7 +522,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			);
 
 			// Should return at most 4 non-pinned entries (L1 uncapped + L2+L3 capped at 3)
-			const regularMemories = enrichment.memoryDeltaLines.filter((l) => !l.includes("[pinned]"));
+			const regularMemories = deltaLines(enrichment).filter((l) => !l.includes("[pinned]"));
 			expect(regularMemories.length).toBeLessThanOrEqual(4);
 		});
 
@@ -558,11 +559,11 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(db, baseline, 3, 3, "test query");
 
 			// Should contain pinned entry
-			const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("critical_rule"));
+			const hasPinned = deltaLines(enrichment).some((l) => l.includes("critical_rule"));
 			expect(hasPinned).toBe(true);
 
 			// Verify pinned entries are separate from maxMemory limit
-			const regularMemories = enrichment.memoryDeltaLines.filter((l) => !l.includes("[pinned]"));
+			const regularMemories = deltaLines(enrichment).filter((l) => !l.includes("[pinned]"));
 			// At most 3 non-pinned entries (due to maxMemory=3)
 			expect(regularMemories.length).toBeLessThanOrEqual(3);
 		});
@@ -602,7 +603,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
 
-			const memoryLines = enrichment.memoryDeltaLines;
+			const memoryLines = deltaLines(enrichment);
 
 			// Should NOT have graph tags (graph search returned no results)
 			const hasGraphTags = memoryLines.some((l) => l.includes("[graph]"));
@@ -653,12 +654,12 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			// Should not crash or throw
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
 
-			expect(enrichment.memoryDeltaLines).toBeDefined();
-			expect(Array.isArray(enrichment.memoryDeltaLines)).toBe(true);
+			expect(deltaLines(enrichment)).toBeDefined();
+			expect(Array.isArray(deltaLines(enrichment))).toBe(true);
 
 			// When no keywords are extracted but graph edges exist,
 			// falls back to pure recency (no boost). Should have recency output only.
-			const memoryLines = enrichment.memoryDeltaLines;
+			const memoryLines = deltaLines(enrichment);
 
 			// Should NOT have graph tags (no keywords to seed with)
 			const hasGraphTags = memoryLines.some((l) => l.includes("[graph]"));
@@ -690,7 +691,7 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, "purple elephants");
 
 			// Should be empty (old memory, no match, before baseline)
-			expect(enrichment.memoryDeltaLines.length).toBe(0);
+			expect(deltaLines(enrichment).length).toBe(0);
 		});
 	});
 

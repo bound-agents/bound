@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
+import { deltaLines } from "./test-helpers/enrichment";
 
 let db: Database;
 let dbPath: string;
@@ -92,9 +93,9 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		expect(result.tiers?.L1.length).toBe(0);
 
 		// Verify memoryDeltaLines starts with pinned entries
-		expect(result.memoryDeltaLines[0]).toMatch(/\[pinned\]/);
-		expect(result.memoryDeltaLines[1]).toMatch(/\[pinned\]/);
-		expect(result.memoryDeltaLines[2]).toMatch(/\[pinned\]/);
+		expect(deltaLines(result)[0]).toMatch(/\[pinned\]/);
+		expect(deltaLines(result)[1]).toMatch(/\[pinned\]/);
+		expect(deltaLines(result)[2]).toMatch(/\[pinned\]/);
 	});
 
 	/**
@@ -295,7 +296,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		expect(staleChildL3).toBeUndefined();
 
 		// Verify memoryDeltaLines contains summary before stale child
-		const lines = result.memoryDeltaLines;
+		const lines = deltaLines(result);
 		const summaryLineIdx = lines.findIndex((l) => l.includes(summaryKey));
 		const staleLineIdx = lines.findIndex((l) => l.includes(staleChildKey));
 		expect(summaryLineIdx).toBeGreaterThanOrEqual(0);
@@ -345,7 +346,7 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		expect(l3Entry).toBeUndefined();
 
 		// Verify it appears exactly once in memoryDeltaLines
-		const matchCount = result.memoryDeltaLines.filter((l) => l.includes(pinnedKey)).length;
+		const matchCount = deltaLines(result).filter((l) => l.includes(pinnedKey)).length;
 		expect(matchCount).toBe(1);
 	});
 
@@ -503,9 +504,9 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
 
 		// Find indices in memoryDeltaLines
-		const l0LineIdx = result.memoryDeltaLines.findIndex((l) => l.includes("_pinned_order_test"));
-		const l1LineIdx = result.memoryDeltaLines.findIndex((l) => l.includes("summary_order_test"));
-		const l23LineIdx = result.memoryDeltaLines.findIndex((l) => l.includes("entry_order_test"));
+		const l0LineIdx = deltaLines(result).findIndex((l) => l.includes("_pinned_order_test"));
+		const l1LineIdx = deltaLines(result).findIndex((l) => l.includes("summary_order_test"));
+		const l23LineIdx = deltaLines(result).findIndex((l) => l.includes("entry_order_test"));
 
 		// All should be present
 		expect(l0LineIdx).toBeGreaterThanOrEqual(0);
@@ -575,8 +576,8 @@ describe("buildVolatileEnrichment pipeline orchestration", () => {
 		const result = buildVolatileEnrichment(db, baseline, 25, 5);
 
 		// Verify format: "- key: value [tag]"
-		expect(result.memoryDeltaLines[0]).toMatch(/^- /);
-		expect(result.memoryDeltaLines[0]).toMatch(/: /);
-		expect(result.memoryDeltaLines[0]).toMatch(/\[pinned\]/);
+		expect(deltaLines(result)[0]).toMatch(/^- /);
+		expect(deltaLines(result)[0]).toMatch(/: /);
+		expect(deltaLines(result)[0]).toMatch(/\[pinned\]/);
 	});
 });

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { graphSeededRetrieval, upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
+import { deltaLines } from "./test-helpers/enrichment";
 
 let db: Database;
 let dbPath: string;
@@ -309,7 +310,7 @@ describe("FTS5-based graph-seeded retrieval", () => {
 				"I just deployed the new version",
 			);
 
-			const memoryText = enrichment.memoryDeltaLines.join("\n");
+			const memoryText = deltaLines(enrichment).join("\n");
 			expect(memoryText).toContain("deployment_process");
 		});
 
@@ -339,7 +340,7 @@ describe("FTS5-based graph-seeded retrieval", () => {
 				"How do I set up the Go project?",
 			);
 
-			const memoryText = enrichment.memoryDeltaLines.join("\n");
+			const memoryText = deltaLines(enrichment).join("\n");
 			expect(memoryText).toContain("go_project");
 		});
 	});

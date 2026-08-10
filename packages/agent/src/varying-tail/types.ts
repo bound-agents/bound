@@ -53,11 +53,10 @@
 import type { MemoryTier } from "@bound/shared";
 
 /**
- * Recent-memory entry projection. Mirrors the fields read by
- * `formatMemoryEntry` for `tier='default'` L2/L3 entries on the
- * varying side: key, value, modifiedAt, tier, tag, plus the
- * source/task/thread resolution fields. The `deleted` flag triggers
- * the `[forgotten]` rendering branch.
+ * Recent-memory entry projection for the R-VC27 relevant-memory block:
+ * key, value, modifiedAt, tier, tag, plus the source/task/thread
+ * resolution fields. The `deleted` flag triggers the `forgotten`
+ * tier rendering branch.
  */
 export interface RecentMemoryEntryView {
 	key: string;

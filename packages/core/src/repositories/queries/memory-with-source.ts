@@ -167,27 +167,3 @@ export function listRecencyMemoryWithSource(
 		)
 		.all(baseline, limit) as MemoryWithSourceAndDeletedRow[];
 }
-
-/**
- * Overflow probe for the volatile-memory digest: count live, non-`_internal.`
- * entries modified since `baseline` that are eligible for the L2/L3 default-tier
- * window (same tier/orphan-detail predicate as {@link listRecencyMemoryWithSource}).
- * Returns `null` only if the aggregate yields no row (never in practice).
- */
-export function countEligibleMemoryDelta(db: Database, baseline: string): { cnt: number } | null {
-	return db
-		.prepare(
-			`SELECT COUNT(*) AS cnt FROM semantic_memory m
-			 WHERE m.deleted = 0
-			   AND m.modified_at > ?
-			   AND m.key NOT LIKE '_internal.%'
-			   AND (
-			     m.tier NOT IN ('detail', 'pinned', 'summary')
-			     OR (m.tier = 'detail' AND NOT EXISTS (
-			       SELECT 1 FROM memory_edges e
-			       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-			     ))
-			   )`,
-		)
-		.get(baseline) as { cnt: number } | null;
-}

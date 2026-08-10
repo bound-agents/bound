@@ -8270,7 +8270,6 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			varyingEnrichmentEndIdx: enrichmentEndIdx,
 			allVolatileLines,
 			allVaryingLines: [...allVolatileLines],
-			memoryDeltaLines: memoryLines,
 			taskDigestLines,
 			totalMemCount: 0,
 		};
@@ -8389,7 +8388,6 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			varyingEnrichmentEndIdx: 0,
 			allVolatileLines: [],
 			allVaryingLines: [],
-			memoryDeltaLines: [],
 			taskDigestLines: [],
 			totalMemCount: 0,
 		};
@@ -8524,7 +8522,6 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			varyingEnrichmentEndIdx: allVaryingLines.length,
 			allVolatileLines,
 			allVaryingLines,
-			memoryDeltaLines: [varyingBody],
 			taskDigestLines: [],
 			totalMemCount: 0,
 		};

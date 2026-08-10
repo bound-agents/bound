@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
-	countEligibleMemoryDelta,
 	countLiveAssistantMessagesByThread,
 	countLiveMessagesByThread,
 	countMemoryByKeyPrefix,
@@ -602,26 +601,6 @@ export function shouldInjectCrossThreadSummaries(args: {
 		(row) => Date.parse(row.summary_through) > Date.parse(threadLastMessageAt),
 	);
 }
-/**
- * Resolve a memory entry's `source` field into a human-readable
- * label. Pure in inputs alone — no DB, no clock. Exposed so the
- * varying-tail module can render `formatMemoryEntry`-equivalent
- * output without re-deriving the labelling logic.
- */
-export function resolveSource(
-	taskName: string | null,
-	threadId: string | null,
-	threadTitle: string | null,
-	source: string | null,
-): string {
-	if (taskName !== null) return `task "${taskName}"`;
-	if (threadId !== null) {
-		// source matched a non-deleted thread (may or may not have a title)
-		return `thread "${threadTitle ?? threadId.slice(0, 8)}"`;
-	}
-	if (source === null) return "unknown";
-	return source.slice(0, 8);
-}
 
 /**
  * Parameterized relative-time fragment generator. Used for the
@@ -643,27 +622,6 @@ export function relativeTimeAt(isoString: string, nowMs: number): string {
 
 function relativeTime(isoString: string): string {
 	return relativeTimeAt(isoString, Date.now());
-}
-
-/**
- * Parameterized staleness-tag generator. Same `nowMs` plumbing
- * rationale as `relativeTimeAt`.
- */
-export function stalenessTagAt(isoString: string, nowMs: number): string {
-	const diffMs = nowMs - new Date(isoString).getTime();
-	const diffDays = diffMs / (1000 * 60 * 60 * 24);
-	if (diffDays > 7) return " ⚠️ may be outdated (>7d old)";
-	if (diffDays > 1) return " (may have changed)";
-	return "";
-}
-
-/** Staleness caveat for memory entries older than 24h. */
-function stalenessTag(isoString: string): string {
-	const diffMs = Date.now() - new Date(isoString).getTime();
-	const diffDays = diffMs / (1000 * 60 * 60 * 24);
-	if (diffDays > 7) return " ⚠️ may be outdated (>7d old)";
-	if (diffDays > 1) return " (may have changed)";
-	return "";
 }
 
 /**
@@ -741,7 +699,6 @@ export function computeBaseline(
 }
 
 export interface VolatileEnrichment {
-	memoryDeltaLines: string[];
 	taskDigestLines: string[];
 	taskDigestEntries: LiveStateTaskEntry[]; // Structured task entries for Live State renderer
 	tiers: TieredEnrichment; // L0→L1→L2→L3 tiered entries (now required after Task 2 rewrite)
@@ -1246,51 +1203,6 @@ function relativeTimeFragment(iso: string | null, nowMs: number): string {
 }
 
 /**
- * Formats a single StageEntry for display in memory delta output.
- * Handles tier-aware formatting: L0 is minimal, L1 includes tier tag,
- * L2/L3 include source attribution and relative time.
- *
- * Exported for use in budget pressure shedding (memory-shedding.ts).
- */
-export function formatMemoryEntry(entry: StageEntry): string {
-	const valueDisplay =
-		entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
-	const stale = stalenessTag(entry.modifiedAt);
-
-	// Handle soft-deleted entries specially (rendered as [forgotten])
-	if (entry.deleted) {
-		const sourceLabel = resolveSource(
-			entry.taskName ?? null,
-			entry.threadId ?? null,
-			entry.threadTitle ?? null,
-			entry.source,
-		);
-		const relTime = relativeTime(entry.modifiedAt);
-		return `- ${entry.key}: [forgotten] (${relTime}, via ${sourceLabel})`;
-	}
-
-	// Different formatting for each tier
-	if (entry.tag === "[pinned]") {
-		// L0: pinned entries - minimal format
-		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-	}
-	if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
-		// L1: summary and stale-detail entries
-		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-	}
-	// L2 and L3 entries include source and relative time
-	// Resolve source using taskName/threadId/threadTitle if available, else use source id
-	const sourceLabel = resolveSource(
-		entry.taskName ?? null,
-		entry.threadId ?? null,
-		entry.threadTitle ?? null,
-		entry.source,
-	);
-	const relTime = relativeTime(entry.modifiedAt);
-	return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
-}
-
-/**
  * Pull the text + reasoning out of a single message's content for keyword
  * seeding. Handles both content shapes (invariant #10):
  *   - string: either plain text (assistant output) or a JSON-encoded
@@ -1429,49 +1341,6 @@ export function buildVolatileEnrichment(
 		L3: l3.entries,
 	};
 
-	// Format memoryDeltaLines in L0→L1→L2→L3 order
-	const memoryDeltaLines: string[] = [];
-
-	// Inject L0 entries (pinned)
-	for (const entry of l0.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Inject L1 entries (summary + stale-detail)
-	for (const entry of l1.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Inject L2 entries (graph-seeded)
-	for (const entry of l2.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Inject L3 entries (recency)
-	for (const entry of l3.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Detect overflow: if L2+L3 was capped by maxMemory, check if more entries exist
-	const totalL23Entries = l2.entries.length + l3.entries.length;
-	if (totalL23Entries >= maxMemory) {
-		// More entries may exist beyond maxMemory cap — add overflow indicator
-		// Query to check if there are more default entries after L0+L1+L2+L3
-		const allExcluded = new Set<string>([
-			...l0.entries.map((e) => e.key),
-			...l1.entries.map((e) => e.key),
-			...l2.entries.map((e) => e.key),
-			...l3.entries.map((e) => e.key),
-		]);
-
-		const countMore = countEligibleMemoryDelta(db, baseline);
-
-		if (countMore !== null && countMore.cnt > allExcluded.size) {
-			const moreCount = countMore.cnt - allExcluded.size;
-			memoryDeltaLines.push(`... and ${moreCount} more (query semantic_memory for full list)`);
-		}
-	}
-
 	// Task digest query — fetch maxTasks+1 to detect overflow
 	const taskRows = listRecentTaskRunsWithHost(db, baseline, maxTasks + 1);
 
@@ -1498,7 +1367,6 @@ export function buildVolatileEnrichment(
 	}
 
 	return {
-		memoryDeltaLines,
 		taskDigestLines,
 		taskDigestEntries,
 		tiers,
@@ -1881,7 +1749,6 @@ export const STALE_CHILD_GLOSS_MAX = 200;
 
 /**
  * Truncates a string to maximum length and appends "..." if truncated.
- * Matches the existing convention in formatMemoryEntry (line 577).
  */
 export function truncateGloss(s: string, max: number): string {
 	if (s.length <= max) return s;
