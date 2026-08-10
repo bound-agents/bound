@@ -689,6 +689,36 @@ The volatile context is restructured into XML. The motivating observation: the m
 - `<advisory title="…" applied="…"/>` — `applied` carries the R-VC12 relative-time fragment.
 - the R-VC15 Tier-3 synthesis-backlog line renders as its own element after the advisory subsystem, unchanged in trigger.
 
-R-VC22's typographic-uniformity concern (no authority gradient between top-level sections) is satisfied structurally: Working Knowledge and Discoverable Archive retain their `##` markdown headers (they ride the cached stable prefix and their rendering is untouched here), while Live State is an XML element inside the varying envelope. The two shapes do not compete for an authority gradient because they live in different channels (stable prefix vs. varying tail) and the envelope's `note` governs both.
+R-VC22's typographic-uniformity concern (no authority gradient between top-level sections) is satisfied structurally: Working Knowledge and Discoverable Archive retain their `##` markdown headers (they ride the cached stable prefix and their rendering is untouched here), while Live State is an XML element inside the varying envelope. The two shapes do not compete for an authority gradient because they live in different channels (stable prefix vs. varying tail) and the envelope's `note` governs both. *(Superseded by R-VC32, 2026-08-09: Working Knowledge and Discoverable Archive now render as XML elements too, restoring uniform structure across all three sections.)*
 
 **Cluster topology (extends R-VC24, R-VC25).** A `<stable-context>` element listing cluster models is appended to the **stable** subsection: `<model name="…" local="bool" hosts="h1,h2"/>` per model, where `local` is true when the rendering host serves the model itself (no relay hop) and `hosts` is the comma-joined host list from the synced `hosts.models` projection (`renderClusterModels`, `stable-prefix/compose.ts`; loaded by `loadClusterModels`). The motivation is the locality fact that a spoke's `role` does not indicate where inference runs — a model may be served locally on a spoke with no relay hop, or live only on a peer; the agent could not previously see this. **This is a new stable-side data dependency and therefore an R-VC25 contract change**: `StableVolatileInputs` (`stable-prefix/types.ts`) gains a `clusterModels` field, `computeStablePrefixInputFingerprint` (`hash.ts`) canonicalizes it into the input fingerprint, and the R-VC25 property tests + the stable-prefix parity test are extended to cover it. Topology is sync-state, not wall-clock, so it satisfies the R-VC25 purity requirement (a pure function of declared inputs); it shifts the cached prefix only when the synced `hosts` projection actually changes, which is the correct cache-invalidation behavior.
+
+---
+
+## Amendments (2026-08-09)
+
+### R-VC32 — XML Working Knowledge, Working Knowledge updates, and Discoverable Archive (amends R-VC2, R-VC3, R-VC6, R-VC10, R-VC11, R-VC22, R-VC29; extends R-VC31)
+
+**Motivation.** R-VC31 converted the Live State section and the volatile envelope to XML but left Working Knowledge and the Discoverable Archive as markdown (`##` headers, `- key: value` bullets, prose footers, bracketed `[changed since last turn]` / `[stale child of …]` markers). The same fragility R-VC31 named — section identity and provenance carried as typography — applied to the two stable sections, and the bracket markers were free-text conventions a model must pattern-match rather than attributes it can address. R-VC32 completes the conversion: all three sections now carry identity in element names and per-entry provenance in attributes.
+
+**Stable Working Knowledge (amends R-VC2, R-VC3, R-VC6).** The `## Working Knowledge — operational and durable` header and its prose footer are replaced by a `<working-knowledge sources="…">` element whose `sources` attribute carries the former footer text. Each entry renders as one `<memory>` element:
+
+```
+<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
+<memory key="…" tier="pinned" modified="YYYY-MM-DD">{full pinned text}</memory>
+<memory key="…" tier="summary" modified="YYYY-MM-DD">{200-char gloss}</memory>
+</working-knowledge>
+```
+
+`tier` makes the pinned/summary fidelity split explicit per entry; `modified` carries the #71 capture-date provenance previously rendered as the `(modified …)` prefix. Key and body are XML-escaped via `escapeXmlAttr`. Multi-line pinned bodies stay verbatim inside the element (escaped), so R-VC3 full-text fidelity is unchanged.
+
+**Working Knowledge updates (amends R-VC10, R-VC11).** The varying-side `## Working Knowledge — updates` block becomes `<working-knowledge-updates>…</working-knowledge-updates>`. Delta markers and stale-child sub-bullets become attributes on keyed `<memory>` elements:
+
+- R-VC11(a)/(b) delta: `<memory key="…" tier="pinned|summary" changed="true"/>` — self-closing; the body lives in stable.
+- R-VC10 stale child: `<memory key="…" parent="{summary key}" stale="true" changed="bool">{200-char child gloss}</memory>` — the R-VC11(c) composition (stale + delta) rides one element as two attributes instead of two ordered bracket markers; the gloss travels with the marker as before.
+
+**Discoverable Archive (amends R-VC2, R-VC6, R-VC29).** The `## Discoverable Archive` header/footer pair becomes `<discoverable-archive sources="…">…</discoverable-archive>`. Title lines become `<entry key="…"/>` elements. R-VC15 tier structure is preserved with cluster elements replacing `###` sub-headers: Tier 2 renders `<cluster name="…" count="N">…</cluster>`, Tier 3 `<cluster name="…" count="N" showing="M">…</cluster>`. The R-VC29 summary-overflow sub-block renders as `<older-summaries>` containing `<entry key="…"/>` elements, inside the archive element before its close. Selection semantics (key-sorted render, recency selection, bump invariance, stale-child dedup, synthesis-backlog trigger) are unchanged — this is a rendering-layer conversion only.
+
+**R-VC22 restoration.** With all three sections as XML elements, the typographic-uniformity requirement R-VC22 (no authority gradient between sections) is satisfied uniformly again — the R-VC31-era split (markdown stable sections vs XML Live State) is gone.
+
+**R-VC25 impact.** None to the contract: the stable renderers remain pure functions of `StableVolatileInputs`, the mirror in `stable-prefix/compose.ts` is updated in lockstep and pinned by the parity test, and the input fingerprint is unchanged (same inputs, different bytes — a version-bump cache flush on deploy, which is expected for any renderer change). The Relevant-memory block (R-VC27) is explicitly out of scope and retains its markdown title-only shape.

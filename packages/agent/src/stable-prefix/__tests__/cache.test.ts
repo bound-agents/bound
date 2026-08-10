@@ -194,7 +194,7 @@ describe("StableSubsectionCache — invariant tests", () => {
 		});
 
 		expect(lines2.join("\n")).not.toBe(lines1.join("\n"));
-		expect(lines2.join("\n")).toContain("- ttl-c");
+		expect(lines2.join("\n")).toContain('<entry key="ttl-c"/>');
 	});
 
 	it("K4: cold-start fidelity — first call equals direct collect+compose output", () => {
@@ -231,7 +231,7 @@ describe("StableSubsectionCache — invariant tests", () => {
 			.join("\n");
 
 		expect(lines2).not.toBe(lines1);
-		expect(lines2).toContain("- inv-c");
+		expect(lines2).toContain('<entry key="inv-c"/>');
 	});
 
 	it("STABLE_SUBSECTION_TTL_MS is 1h to align with Bedrock cache TTL", () => {

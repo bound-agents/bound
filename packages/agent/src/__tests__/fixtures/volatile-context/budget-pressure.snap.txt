@@ -1,73 +1,69 @@
-## Working Knowledge — operational and durable
-
-- _internal.file_thread.build/output.js (modified 2026-05-22): 45926555-c65d-55a4-b439-09c3167e4000
-- _internal.file_thread.config/settings.json (modified 2026-05-22): 50777cb5-6d75-5280-9d9a-b8c803869883
-- _internal.file_thread.docs/README.md (modified 2026-05-22): 45926555-c65d-55a4-b439-09c3167e4000
-- _internal.file_thread.src/main.ts (modified 2026-05-22): 19e2ff49-7e57-5ae2-aafb-5da2182afb37
-- _internal.file_thread.test/fixtures.ts (modified 2026-05-22): 19e2ff49-7e57-5ae2-aafb-5da2182afb37
-- _pinned:0 (modified 2026-05-22): pinned body 0
-- _pinned:1 (modified 2026-05-21): pinned body 1
-- _pinned:2 (modified 2026-05-21): pinned body 2
-- _pinned:3 (modified 2026-05-21): pinned body 3
-- _pinned:4 (modified 2026-05-21): pinned body 4
-- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
-- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
-- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
-- _summary:topic-3 (modified 2026-05-21): Summary for topic 3: this is a brief overview.
-- _summary:topic-4 (modified 2026-05-21): Summary for topic 4: this is a brief overview.
-
-Bodies of summary entries are accessed via memory search using terms from the entry key.
-## Discoverable Archive — title-only; bodies via memory search
-
-- curiosity:item-0-det000000
-- curiosity:item-1-det000001
-- curiosity:item-10-det000010
-- curiosity:item-11-det000011
-- curiosity:item-12-det000012
-- curiosity:item-13-det000013
-- curiosity:item-14-det000014
-- curiosity:item-15-det000015
-- curiosity:item-16-det000016
-- curiosity:item-17-det000017
-- curiosity:item-18-det000018
-- curiosity:item-19-det000019
-- curiosity:item-2-det000002
-- curiosity:item-20-det000020
-- curiosity:item-21-det000021
-- curiosity:item-22-det000022
-- curiosity:item-23-det000023
-- curiosity:item-24-det000024
-- curiosity:item-25-det000025
-- curiosity:item-26-det000026
-- curiosity:item-27-det000027
-- curiosity:item-28-det000028
-- curiosity:item-29-det000029
-- curiosity:item-3-det000003
-- curiosity:item-4-det000004
-- curiosity:item-5-det000005
-- curiosity:item-6-det000006
-- curiosity:item-7-det000007
-- curiosity:item-8-det000008
-- curiosity:item-9-det000009
-
-Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
+<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
+<memory key="_internal.file_thread.build/output.js" tier="pinned" modified="2026-05-22">45926555-c65d-55a4-b439-09c3167e4000</memory>
+<memory key="_internal.file_thread.config/settings.json" tier="pinned" modified="2026-05-22">50777cb5-6d75-5280-9d9a-b8c803869883</memory>
+<memory key="_internal.file_thread.docs/README.md" tier="pinned" modified="2026-05-22">45926555-c65d-55a4-b439-09c3167e4000</memory>
+<memory key="_internal.file_thread.src/main.ts" tier="pinned" modified="2026-05-22">19e2ff49-7e57-5ae2-aafb-5da2182afb37</memory>
+<memory key="_internal.file_thread.test/fixtures.ts" tier="pinned" modified="2026-05-22">19e2ff49-7e57-5ae2-aafb-5da2182afb37</memory>
+<memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>
+<memory key="_pinned:1" tier="pinned" modified="2026-05-21">pinned body 1</memory>
+<memory key="_pinned:2" tier="pinned" modified="2026-05-21">pinned body 2</memory>
+<memory key="_pinned:3" tier="pinned" modified="2026-05-21">pinned body 3</memory>
+<memory key="_pinned:4" tier="pinned" modified="2026-05-21">pinned body 4</memory>
+<memory key="_summary:topic-0" tier="summary" modified="2026-05-21">Summary for topic 0: this is a brief overview.</memory>
+<memory key="_summary:topic-1" tier="summary" modified="2026-05-21">Summary for topic 1: this is a brief overview.</memory>
+<memory key="_summary:topic-2" tier="summary" modified="2026-05-21">Summary for topic 2: this is a brief overview.</memory>
+<memory key="_summary:topic-3" tier="summary" modified="2026-05-21">Summary for topic 3: this is a brief overview.</memory>
+<memory key="_summary:topic-4" tier="summary" modified="2026-05-21">Summary for topic 4: this is a brief overview.</memory>
+</working-knowledge>
+<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">
+<entry key="curiosity:item-0-det000000"/>
+<entry key="curiosity:item-1-det000001"/>
+<entry key="curiosity:item-10-det000010"/>
+<entry key="curiosity:item-11-det000011"/>
+<entry key="curiosity:item-12-det000012"/>
+<entry key="curiosity:item-13-det000013"/>
+<entry key="curiosity:item-14-det000014"/>
+<entry key="curiosity:item-15-det000015"/>
+<entry key="curiosity:item-16-det000016"/>
+<entry key="curiosity:item-17-det000017"/>
+<entry key="curiosity:item-18-det000018"/>
+<entry key="curiosity:item-19-det000019"/>
+<entry key="curiosity:item-2-det000002"/>
+<entry key="curiosity:item-20-det000020"/>
+<entry key="curiosity:item-21-det000021"/>
+<entry key="curiosity:item-22-det000022"/>
+<entry key="curiosity:item-23-det000023"/>
+<entry key="curiosity:item-24-det000024"/>
+<entry key="curiosity:item-25-det000025"/>
+<entry key="curiosity:item-26-det000026"/>
+<entry key="curiosity:item-27-det000027"/>
+<entry key="curiosity:item-28-det000028"/>
+<entry key="curiosity:item-29-det000029"/>
+<entry key="curiosity:item-3-det000003"/>
+<entry key="curiosity:item-4-det000004"/>
+<entry key="curiosity:item-5-det000005"/>
+<entry key="curiosity:item-6-det000006"/>
+<entry key="curiosity:item-7-det000007"/>
+<entry key="curiosity:item-8-det000008"/>
+<entry key="curiosity:item-9-det000009"/>
+</discoverable-archive>
 </volatile-context>
 
 --- VARYING TAIL ---
 <volatile-context half="varying" note="Internal operational state, refreshed each turn. Don&apos;t mention or quote this to the user unless it&apos;s directly relevant to their request; when it is, treat these as pointers and confirm against the canonical source (query the DB, read the file) before relying on them.">
 User ID: test-user, Thread ID: 54b7e2b0-4aaa-5642-adaa-b9e5ca319bff
-## Working Knowledge — updates
-
-- _pinned:0 [changed since last turn]
-- _pinned:1 [changed since last turn]
-- _pinned:2 [changed since last turn]
-- _pinned:3 [changed since last turn]
-- _pinned:4 [changed since last turn]
-- _summary:topic-0 [changed since last turn]
-- _summary:topic-1 [changed since last turn]
-- _summary:topic-2 [changed since last turn]
-- _summary:topic-3 [changed since last turn]
-- _summary:topic-4 [changed since last turn]
+<working-knowledge-updates>
+<memory key="_pinned:0" tier="pinned" changed="true"/>
+<memory key="_pinned:1" tier="pinned" changed="true"/>
+<memory key="_pinned:2" tier="pinned" changed="true"/>
+<memory key="_pinned:3" tier="pinned" changed="true"/>
+<memory key="_pinned:4" tier="pinned" changed="true"/>
+<memory key="_summary:topic-0" tier="summary" changed="true"/>
+<memory key="_summary:topic-1" tier="summary" changed="true"/>
+<memory key="_summary:topic-2" tier="summary" changed="true"/>
+<memory key="_summary:topic-3" tier="summary" changed="true"/>
+<memory key="_summary:topic-4" tier="summary" changed="true"/>
+</working-knowledge-updates>
 <live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
 <thread id="3f5e1184-c60c-54e5-9764-39efbe973c0a" title="sibling-4" messages="2" updated="2026-05-21T23:59:59.000Z" local="false"/>
 <thread id="c294e4c1-3c15-5896-9d61-d31fe3ce2b01" title="sibling-3" messages="4" updated="2026-05-21T23:59:59.000Z" local="false"/>

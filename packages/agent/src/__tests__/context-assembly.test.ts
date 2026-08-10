@@ -2722,10 +2722,10 @@ This skill reviews pull requests.`;
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
-			// Memory delta should be in systemSuffix (now in Working Knowledge section)
+			// Memory delta should be in systemSuffix (now the Working Knowledge updates block)
 			expect(systemSuffix).toBeDefined();
 			expect(systemSuffix).toContain("pinned:test_key");
-			expect(systemSuffix).toContain("Working Knowledge");
+			expect(systemSuffix).toContain("<working-knowledge-updates>");
 		});
 
 		it("AC8.2: does not include raw 'Semantic Memory:' format in any assembled message", () => {
@@ -2907,8 +2907,8 @@ This skill reviews pull requests.`;
 			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 			const combined = `${systemPrompt}\n${devContent}`;
 			expect(
-				combined.includes("## Working Knowledge") ||
-					combined.includes("## Discoverable Archive") ||
+				combined.includes("<working-knowledge") ||
+					combined.includes("<discoverable-archive") ||
 					combined.includes("<live-state"),
 			).toBe(true);
 			expect(combined).toContain("nohist_key");
@@ -3087,21 +3087,21 @@ This skill reviews pull requests.`;
 			const combined = `${result.systemPrompt}\n${varyingTail}`;
 
 			// Budget pressure should trigger re-composition with three sections (R-VC1)
-			expect(combined).toContain("## Working Knowledge");
-			expect(combined).toContain("## Discoverable Archive");
+			expect(combined).toContain("<working-knowledge");
+			expect(combined).toContain("<discoverable-archive");
 			expect(combined).toContain("<live-state");
 
-			// Memory deltas should be inline with [changed since] markers, not standalone "Memory:" header
+			// Memory deltas should be inline changed-marker elements, not standalone "Memory:" header
 			expect(combined.match(/^Memory:\s+/m)).toBeNull();
 
 			// Check that Working Knowledge contains at most 3 pinned or summary entries
 			// (budget pressure applies reduced (3,3) caps through the three-section composition).
 			// The WK bodies are on systemPrompt; assert against the stable side.
-			const wkStart = result.systemPrompt.indexOf("## Working Knowledge");
-			const daStart = result.systemPrompt.indexOf("## Discoverable Archive");
+			const wkStart = result.systemPrompt.indexOf("<working-knowledge");
+			const daStart = result.systemPrompt.indexOf("<discoverable-archive");
 			if (wkStart >= 0 && daStart >= 0) {
 				const wkSection = result.systemPrompt.substring(wkStart, daStart);
-				const entryLines = wkSection.split("\n").filter((l) => l.match(/^\s*-/));
+				const entryLines = wkSection.split("\n").filter((l) => l.startsWith("<memory "));
 				expect(entryLines.length).toBeLessThanOrEqual(3);
 			}
 		});
@@ -4202,7 +4202,7 @@ This skill reviews pull requests.`;
 				});
 				const devMsg = result.messages.find((m) => m.role === "developer");
 				const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-				expect(systemSuffix).toContain(`[stale child of ${STALE_SUMMARY_KEY}]`);
+				expect(systemSuffix).toContain(`parent="${STALE_SUMMARY_KEY}" stale="true"`);
 			} finally {
 				cleanupStaleChild();
 			}
@@ -4238,32 +4238,33 @@ This skill reviews pull requests.`;
 				// This proves the delta baseline is old enough that the seeded entries
 				// qualify as deltas — so the STALE_CHILD_KEY suppression below is exercised
 				// against a real would-be delta, not a no-op.
-				expect(devContent).toContain(`- ${STALE_CONTROL_SUMMARY_KEY} [changed since last turn]`);
+				expect(devContent).toContain(
+					`<memory key="${STALE_CONTROL_SUMMARY_KEY}" tier="summary" changed="true"/>`,
+				);
 
-				// PRIMARY (#69): the `[stale child of …]` re-summarization bullets are
+				// PRIMARY (#69): the stale-child re-summarization elements are
 				// stripped on the active surface — neither the marker nor a per-summary
-				// bullet appears anywhere.
-				expect(allContent).not.toContain("[stale child of");
+				// element appears anywhere.
+				expect(allContent).not.toContain('stale="true"');
 
 				// DA-title fallback prevented: the stripped child is not re-surfaced as a
-				// bare Discoverable-Archive title line (`- <key>` with no gloss).
+				// bare Discoverable-Archive title element (`<entry key="…"/>` with no gloss).
 				const hasBareTitleLine = allContent
 					.split("\n")
-					.some((l) => l.trim() === `- ${STALE_CHILD_KEY}`);
+					.some((l) => l.trim() === `<entry key="${STALE_CHILD_KEY}"/>`);
 				expect(hasBareTitleLine).toBe(false);
 
 				// REGRESSION GUARD: the stale-detail child also rides `loadSummaryEntries`
 				// as a `[stale-detail]`-tagged entry in `input.summaries`. Before the fix,
 				// `summaryDeltas` filtered `input.summaries` on `deltaKeys` alone, so a
 				// stale-detail child past the delta baseline leaked a bare
-				// `- <key> [changed since last turn]` line onto the active varying tail.
+				// changed-marker element onto the active varying tail.
 				// The fix restricts summary deltas to genuine `[summary]` tags. The child's
-				// unlabeled `- key (modified YYYY-MM-DD): gloss` line still renders on the
-				// STABLE body (systemPrompt) — surface-independent, keeping the stable
-				// channel byte-identical — but it must never appear in the varying
-				// developer tail. The `(modified …)` capture-time prefix (#71) sits
-				// between the key and the colon, so match on the key + prefix opener.
-				expect(systemPrompt).toContain(`- ${STALE_CHILD_KEY} (modified `);
+				// unlabeled `<memory key="…" … modified="…">gloss</memory>` element still
+				// renders on the STABLE body (systemPrompt) — surface-independent, keeping
+				// the stable channel byte-identical — but it must never appear in the
+				// varying developer tail.
+				expect(systemPrompt).toContain(`<memory key="${STALE_CHILD_KEY}"`);
 				expect(devContent).not.toContain(STALE_CHILD_KEY);
 			} finally {
 				cleanupStaleChild();

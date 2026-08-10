@@ -70,15 +70,13 @@ describe("volatile-context-integration", () => {
 			currentModel: "test-model",
 		});
 
-		expect(result.content).toContain("## Working Knowledge — operational and durable");
-		expect(result.content).toContain(
-			"## Discoverable Archive — title-only; bodies via memory search",
-		);
+		expect(result.content).toContain("<working-knowledge sources=");
+		expect(result.content).toContain("<discoverable-archive sources=");
 		expect(result.content).toContain("<live-state sources=");
 
 		// Verify order: Working Knowledge before Discoverable Archive before Live State
-		const wkIdx = result.content.indexOf("## Working Knowledge");
-		const daIdx = result.content.indexOf("## Discoverable Archive");
+		const wkIdx = result.content.indexOf("<working-knowledge");
+		const daIdx = result.content.indexOf("<discoverable-archive");
 		const lsIdx = result.content.indexOf("<live-state");
 
 		expect(wkIdx).toBeGreaterThan(0);
@@ -152,8 +150,10 @@ describe("volatile-context-integration", () => {
 			siteId,
 		});
 
-		// Should contain delta marker in the summary line
-		expect(result.content).toContain("[changed since last turn]");
+		// Should contain the changed-marker element for the summary
+		expect(result.content).toContain(
+			'<memory key="_summary:changed" tier="summary" changed="true"/>',
+		);
 		// Should NOT contain standalone "Memory: " header
 		expect(result.content).not.toMatch(/^Memory:\s+/m);
 	});
@@ -212,7 +212,7 @@ describe("volatile-context-integration", () => {
 		});
 
 		// Should have the three sections
-		expect(result.content).toContain("## Working Knowledge");
+		expect(result.content).toContain("<working-knowledge");
 		expect(result.content).toContain("<live-state");
 
 		// Live State should reference cross-thread entries
@@ -334,12 +334,12 @@ describe("volatile-context-integration", () => {
 		});
 
 		// Assert Discoverable Archive section present
-		expect(result.content).toContain("## Discoverable Archive");
+		expect(result.content).toContain("<discoverable-archive");
 
-		// Assert Tier-2 cluster headings for both topics with entry counts
-		// Format: "### topic1 (125 entries)" and "### topic2 (125 entries)"
-		expect(result.content).toMatch(/### topic1\s*\(\d+\s+entries\)/);
-		expect(result.content).toMatch(/### topic2\s*\(\d+\s+entries\)/);
+		// Assert Tier-2 cluster elements for both topics with entry counts
+		// Format: '<cluster name="topic1" count="125">'
+		expect(result.content).toMatch(/<cluster name="topic1" count="\d+">/);
+		expect(result.content).toMatch(/<cluster name="topic2" count="\d+">/);
 	});
 
 	test("Discoverable Archive Tier-3 with synthesis-backlog", () => {
@@ -439,7 +439,7 @@ describe("volatile-context-integration", () => {
 		});
 
 		// Assert Discoverable Archive section present
-		expect(result.content).toContain("## Discoverable Archive");
+		expect(result.content).toContain("<discoverable-archive");
 
 		// Tier-3 should be active (1100 total entries > 1000), and uncategorized count (60) > 50,
 		// so synthesis-backlog should be signaled in Live State
@@ -607,12 +607,12 @@ describe("volatile-context-integration", () => {
 		// the Discoverable Archive, which is stable-side per R-VC25/R-VC29).
 		expect(result.stableContent).toContain(WORKING_KNOWLEDGE_DEMOTED_HEADER);
 
-		// Demoted entries (beyond the cap) appear as title-only lines after the
-		// sub-header; kept entries render with their gloss in Working Knowledge.
+		// Demoted entries (beyond the cap) appear as title-only elements after the
+		// sub-block opens; kept entries render with their gloss in Working Knowledge.
 		const demotedIdx = result.stableContent.indexOf(WORKING_KNOWLEDGE_DEMOTED_HEADER);
 		const demotedBlock = result.stableContent.slice(demotedIdx);
 		const overflowKey = `_summary:k${String(WORKING_KNOWLEDGE_SUMMARY_CAP).padStart(3, "0")}`;
-		expect(demotedBlock).toContain(`- ${overflowKey}`);
+		expect(demotedBlock).toContain(`<entry key="${overflowKey}"/>`);
 		// Title-only: the overflow entry's body must not render anywhere.
 		expect(result.stableContent).not.toContain(
 			`summary body number ${WORKING_KNOWLEDGE_SUMMARY_CAP}`,
@@ -621,9 +621,9 @@ describe("volatile-context-integration", () => {
 		expect(result.stableContent).toContain("summary body number 0");
 
 		// Structural placement: the sub-block lives INSIDE the Discoverable
-		// Archive section — after the DA header, before the DA footer, and after
-		// the Working Knowledge footer (i.e., NOT in Working Knowledge).
-		const daHeaderIdx = result.stableContent.indexOf("## Discoverable Archive");
+		// Archive section — after the DA opening tag, before the DA closing tag,
+		// and after the Working Knowledge closing tag (i.e., NOT in Working Knowledge).
+		const daHeaderIdx = result.stableContent.indexOf("<discoverable-archive");
 		const wkFooterIdx = result.stableContent.indexOf(WORKING_KNOWLEDGE_FOOTER);
 		expect(daHeaderIdx).toBeGreaterThan(-1);
 		expect(wkFooterIdx).toBeGreaterThan(-1);

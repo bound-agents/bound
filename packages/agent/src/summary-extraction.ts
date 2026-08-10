@@ -931,9 +931,9 @@ export function buildStaleChildrenMap(
 	return result;
 }
 
-export const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
-export const DISCOVERABLE_FOOTER =
-	"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.";
+export const DISCOVERABLE_HEADER =
+	'<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">';
+export const DISCOVERABLE_FOOTER = "</discoverable-archive>";
 
 /**
  * Render a Discoverable-Archive entry line. Pure in `(entry,
@@ -1057,9 +1057,7 @@ export function toRelevantMemoryDebug(
 export function renderDiscoverableArchive(
 	input: DiscoverableArchiveInput,
 ): DiscoverableArchiveOutput {
-	const lines: string[] = [];
-	lines.push(DISCOVERABLE_HEADER);
-	lines.push("");
+	const lines: string[] = [DISCOVERABLE_HEADER];
 
 	// §5.2 step 2 — drop entries also rendered as stale children in Working Knowledge.
 	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
@@ -1080,14 +1078,14 @@ export function renderDiscoverableArchive(
 		const clusters = groupByCluster(visible, input.parentSummaryByKey);
 		const sorted = sortClusters(clusters);
 		for (const cluster of sorted) {
-			lines.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
+			lines.push(
+				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}">`,
+			);
 			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
 				lines.push(formatDetailLine(entry, input.budgetPressure));
 			}
-			lines.push(""); // blank line between clusters for readability
+			lines.push("</cluster>");
 		}
-		// Drop trailing blank if any cluster was rendered.
-		if (lines[lines.length - 1] === "") lines.pop();
 	} else {
 		// Tier 3: heading-only compression with M most-recent per cluster.
 		// SELECTION stays by recency (cluster.entries arrive last_accessed_at DESC,
@@ -1099,12 +1097,12 @@ export function renderDiscoverableArchive(
 			const totalCount = cluster.entries.length;
 			const tail = cluster.entries.slice(0, input.tunables.m);
 			lines.push(
-				`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
+				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${totalCount}" showing="${input.tunables.m}">`,
 			);
 			for (const entry of sortDetailEntriesForRender(tail)) {
 				lines.push(formatDetailLine(entry, input.budgetPressure));
 			}
-			lines.push("");
+			lines.push("</cluster>");
 			if (
 				cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
 				totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
@@ -1112,7 +1110,6 @@ export function renderDiscoverableArchive(
 				synthesisBacklogCount = totalCount;
 			}
 		}
-		if (lines[lines.length - 1] === "") lines.pop();
 	}
 
 	// R-VC29: demoted summary-overflow titles render here, inside the Archive,
@@ -1120,7 +1117,6 @@ export function renderDiscoverableArchive(
 	// Working Knowledge. Absent/empty ⇒ no sub-block, byte-identical to pre-R-VC29.
 	appendOlderSummariesSubBlock(lines, input.demotedSummaries);
 
-	lines.push("");
 	lines.push(DISCOVERABLE_FOOTER);
 	return { section: { lines }, synthesisBacklogCount };
 }
@@ -1137,11 +1133,11 @@ export function appendOlderSummariesSubBlock(
 	demotedSummaries: ReadonlyArray<{ key: string }> | undefined,
 ): void {
 	if (!demotedSummaries || demotedSummaries.length === 0) return;
-	lines.push("");
 	lines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
 	for (const summary of demotedSummaries) {
-		lines.push(`- ${summary.key}`);
+		lines.push(`<entry key="${escapeXmlAttr(summary.key)}"/>`);
 	}
+	lines.push("</older-summaries>");
 }
 
 interface Cluster {
@@ -1193,11 +1189,11 @@ function formatDetailLine(entry: DetailEntry, _budgetPressure: boolean): string 
 	// continuously-bumped column (bumpRenderedDetailEntries, debounced 1h/entry);
 	// rendering any function of it — date OR sort order — leaks wall-clock into
 	// the cached stable prefix bytes and busts the provider cache on every bump
-	// fracture for no information change. The line is now a pure function of the
+	// fracture for no information change. The element is a pure function of the
 	// entry key, so the Discoverable Archive bytes are invariant to bumps. The
 	// `budgetPressure` parameter is retained for call-site compatibility but no
 	// longer changes output (the date suffix it used to drop is gone for all).
-	return `- ${entry.key}`;
+	return `<entry key="${escapeXmlAttr(entry.key)}"/>`;
 }
 
 /**
@@ -1819,9 +1815,9 @@ export function bumpRenderedDetailEntries(
 	}
 }
 
-export const WORKING_KNOWLEDGE_HEADER = "## Working Knowledge — operational and durable";
-export const WORKING_KNOWLEDGE_FOOTER =
-	"Bodies of summary entries are accessed via memory search using terms from the entry key.";
+export const WORKING_KNOWLEDGE_HEADER =
+	'<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">';
+export const WORKING_KNOWLEDGE_FOOTER = "</working-knowledge>";
 export const SUMMARY_GLOSS_MAX = 200;
 
 /**
@@ -1847,8 +1843,7 @@ export const WORKING_KNOWLEDGE_SUMMARY_CAP = 50;
  * the agent can tell full-gloss bodies (above) from query-for-body titles
  * (below).
  */
-export const WORKING_KNOWLEDGE_DEMOTED_HEADER =
-	"### Older summaries (titles only — search the key for the body)";
+export const WORKING_KNOWLEDGE_DEMOTED_HEADER = "<older-summaries>";
 
 /**
  * Split a recency-ordered summary list into the `kept` prefix (rendered at full
@@ -1879,7 +1874,6 @@ export function truncateGlossForSummary(value: string): string {
 	return truncateGloss(value, SUMMARY_GLOSS_MAX);
 }
 export const STALE_CHILD_GLOSS_MAX = 200;
-export const DELTA_MARKER = "[changed since last turn]";
 
 /**
  * Truncates a string to maximum length and appends "..." if truncated.
@@ -1916,7 +1910,10 @@ export function formatCalendarDate(iso: string | null | undefined): string {
  * the agent can visually pair updates with the stable bodies above without
  * re-parsing the section title.
  */
-export const WORKING_KNOWLEDGE_UPDATES_HEADER = "## Working Knowledge — updates";
+export const WORKING_KNOWLEDGE_UPDATES_HEADER = "<working-knowledge-updates>";
+
+/** Closing tag paired with WORKING_KNOWLEDGE_UPDATES_HEADER. */
+export const WORKING_KNOWLEDGE_UPDATES_FOOTER = "</working-knowledge-updates>";
 
 /**
  * Renders the Working Knowledge section from pinned and summary entries.
@@ -1948,37 +1945,34 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 	stableLines: string[];
 	varyingLines: string[];
 } {
-	const stableLines: string[] = [];
-	stableLines.push(WORKING_KNOWLEDGE_HEADER);
-	stableLines.push("");
+	const stableLines: string[] = [WORKING_KNOWLEDGE_HEADER];
 
-	// R-VC3: pinned bodies in full text, no inline markers. The `(modified
-	// YYYY-MM-DD)` capture-time prefix (#71) rides the stable channel because
-	// its source column advances only on a real body rewrite — the same event
-	// that already busts the prefix cache — so it carries provenance without
-	// adding cache churn.
+	// R-VC3: pinned bodies in full text, no inline markers. The `modified`
+	// capture-date attribute (#71) rides the stable channel because its source
+	// column advances only on a real body rewrite — the same event that already
+	// busts the prefix cache — so it carries provenance without adding cache
+	// churn.
 	for (const entry of input.pinned) {
 		stableLines.push(
-			`- ${entry.key} (modified ${formatCalendarDate(entry.modifiedAt)}): ${entry.value}`,
+			`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" modified="${formatCalendarDate(entry.modifiedAt)}">${escapeXmlAttr(entry.value)}</memory>`,
 		);
 	}
 
 	// R-VC3: summary bodies with 200-char gloss, no inline markers. Capped at
 	// WORKING_KNOWLEDGE_SUMMARY_CAP most-recent (input.summaries arrives
 	// recency-ordered from loadSummaryEntries); the overflow is demoted to
-	// title-only lines. R-VC29: those demoted titles render in the Discoverable
-	// Archive (under `### Older summaries`), NOT here — Working Knowledge keeps
+	// title-only entries. R-VC29: those demoted titles render in the Discoverable
+	// Archive (under `<older-summaries>`), NOT here — Working Knowledge keeps
 	// only full-fidelity content (pinned + glossed summaries). The caller passes
 	// `capWorkingKnowledgeSummaries(summaries).demoted` to renderDiscoverableArchive.
 	const { kept: keptSummaries } = capWorkingKnowledgeSummaries(input.summaries);
 	for (const summary of keptSummaries) {
 		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
 		stableLines.push(
-			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${gloss}`,
+			`<memory key="${escapeXmlAttr(summary.key)}" tier="summary" modified="${formatCalendarDate(summary.modifiedAt)}">${escapeXmlAttr(gloss)}</memory>`,
 		);
 	}
 
-	stableLines.push("");
 	stableLines.push(WORKING_KNOWLEDGE_FOOTER);
 
 	const varyingLines: string[] = [];
@@ -2010,30 +2004,35 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 
 	if (pinnedDeltas.length > 0 || summaryDeltas.length > 0 || hasStaleChildren) {
 		varyingLines.push(WORKING_KNOWLEDGE_UPDATES_HEADER);
-		varyingLines.push("");
 
 		// R-VC11(b): pinned delta — keyed reference (body lives in stable).
 		for (const entry of pinnedDeltas) {
-			varyingLines.push(`- ${entry.key} ${DELTA_MARKER}`);
+			varyingLines.push(`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" changed="true"/>`);
 		}
 
 		// R-VC11(a): summary delta — keyed reference (body lives in stable).
 		for (const summary of summaryDeltas) {
-			varyingLines.push(`- ${summary.key} ${DELTA_MARKER}`);
+			varyingLines.push(
+				`<memory key="${escapeXmlAttr(summary.key)}" tier="summary" changed="true"/>`,
+			);
 		}
 
 		// R-VC10/R-VC11(c): stale children referenced under their parent. The
 		// child gloss travels with the marker because the staleness signal is
-		// what makes it relevant — it would not appear otherwise.
+		// what makes it relevant — it would not appear otherwise. When the child
+		// is also a delta, both signals ride the same element (`stale` +
+		// `changed` attributes), preserving the R-VC11(c) composition.
 		for (const summary of input.summaries) {
 			const staleChildren = input.staleChildrenBySummary.get(summary.key) ?? [];
 			for (const child of staleChildren) {
 				const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
-				const staleMarker = `[stale child of ${summary.key}]`;
-				const childDelta = input.deltaKeys.has(child.key) ? ` ${DELTA_MARKER}` : "";
-				varyingLines.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+				varyingLines.push(
+					`<memory key="${escapeXmlAttr(child.key)}" parent="${escapeXmlAttr(summary.key)}" stale="true" changed="${input.deltaKeys.has(child.key)}">${escapeXmlAttr(childGloss)}</memory>`,
+				);
 			}
 		}
+
+		varyingLines.push(WORKING_KNOWLEDGE_UPDATES_FOOTER);
 	}
 
 	return { stableLines, varyingLines };

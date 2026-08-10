@@ -34,11 +34,11 @@ function da(entries: DetailEntry[], extra?: Partial<DiscoverableArchiveInput>): 
 }
 
 describe("Discoverable Archive — render stability under last_accessed_at churn", () => {
-	it("renders detail lines as bare `- <key>` with no date suffix", () => {
+	it('renders detail lines as bare `<entry key="…"/>` elements with no date suffix', () => {
 		const out = da([{ key: "adapter:foo", last_accessed_at: "2026-05-30T10:00:00Z" }]);
-		const detailLines = out.split("\n").filter((l) => l.startsWith("- "));
-		expect(detailLines).toEqual(["- adapter:foo"]);
-		// The rendered entry line carries no access date (the footer's prose
+		const detailLines = out.split("\n").filter((l) => l.startsWith("<entry"));
+		expect(detailLines).toEqual(['<entry key="adapter:foo"/>']);
+		// The rendered entry line carries no access date (the header's prose
 		// "accessed via memory search" is unrelated; assert on the line itself).
 		expect(detailLines[0]).not.toContain("accessed");
 		expect(detailLines[0]).not.toContain("2026-05-30");
@@ -64,8 +64,8 @@ describe("Discoverable Archive — render stability under last_accessed_at churn
 			{ key: "apple", last_accessed_at: "2026-01-01T00:00:00Z" }, // oldest
 			{ key: "mango", last_accessed_at: "2026-03-15T00:00:00Z" },
 		]);
-		const lines = out.split("\n").filter((l) => l.startsWith("- "));
-		expect(lines).toEqual(["- apple", "- mango", "- zebra"]);
+		const lines = out.split("\n").filter((l) => l.startsWith("<entry"));
+		expect(lines).toEqual(['<entry key="apple"/>', '<entry key="mango"/>', '<entry key="zebra"/>']);
 	});
 
 	it("Tier 2 within-cluster lines are key-sorted and access-time-invariant", () => {
@@ -103,9 +103,15 @@ describe("Discoverable Archive — render stability under last_accessed_at churn
 			parent.set(key, "_summary:cluster");
 		}
 		const out = da(entries, { parentSummaryByKey: parent, tunables: { n: 200, m: 5 } });
-		const lines = out.split("\n").filter((l) => l.startsWith("- "));
+		const lines = out.split("\n").filter((l) => l.startsWith("<entry"));
 		// Selected = the 5 newest (item-245..item-249); rendered key ASC.
-		expect(lines).toEqual(["- item-245", "- item-246", "- item-247", "- item-248", "- item-249"]);
+		expect(lines).toEqual([
+			'<entry key="item-245"/>',
+			'<entry key="item-246"/>',
+			'<entry key="item-247"/>',
+			'<entry key="item-248"/>',
+			'<entry key="item-249"/>',
+		]);
 	});
 
 	it("budget-pressure output equals normal output (date already gone, so no divergence)", () => {

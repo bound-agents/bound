@@ -8,8 +8,8 @@
  *
  *   V1 Determinism — same `(inputs, nowMs)` → byte-equal output.
  *   V2 Freshness — when an input gets a delta-key flag, the next
- *      render's output reflects the `[changed since last turn]`
- *      marker for that key.
+ *      render's output reflects the `changed="true"` marker element
+ *      for that key.
  *   V3 Source-label totality — every Live-State line carries
  *      exactly one of `[thread] / [task] / [file] / [advisory] /
  *      [synthesis-backlog]`.
@@ -24,6 +24,7 @@
  */
 
 import { describe, it } from "bun:test";
+import { escapeXmlAttr } from "@bound/shared";
 import fc from "fast-check";
 import { composeVolatileVarying } from "../compose";
 import type {
@@ -139,11 +140,11 @@ describe("composeVolatileVarying — property tests", () => {
 		);
 	});
 
-	it("V2: freshness — adding a key to pinnedDeltaKeys produces its [changed since last turn] marker", () => {
+	it("V2: freshness — adding a key to pinnedDeltaKeys produces its changed-marker element", () => {
 		// We pin the rest of the input and only vary the delta-key list.
-		// The rendered output for the WK-updates block must include a
-		// line `- ${key} [changed since last turn]` whenever the key is
-		// in pinnedDeltaKeys.
+		// The rendered output for the WK-updates block must include an
+		// element `<memory key="${key}" tier="pinned" changed="true"/>`
+		// (key XML-escaped) whenever the key is in pinnedDeltaKeys.
 		fc.assert(
 			fc.property(varyingInputs, safeKey, (baseInputs, newKey) => {
 				const inputs: VolatileVaryingInputs = {
@@ -154,7 +155,9 @@ describe("composeVolatileVarying — property tests", () => {
 					},
 				};
 				const output = composeVolatileVarying(inputs).join("\n");
-				return output.includes(`- ${newKey} [changed since last turn]`);
+				return output.includes(
+					`<memory key="${escapeXmlAttr(newKey)}" tier="pinned" changed="true"/>`,
+				);
 			}),
 			{ numRuns: 100 },
 		);

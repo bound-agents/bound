@@ -1,57 +1,53 @@
 User ID: test-user, Thread ID: d2a1fd52-a74d-56e8-a7da-2f81b9b5feb0
 
-## Working Knowledge — operational and durable
-
-- _internal.file_thread./src/main.ts (modified 2026-05-22): 42af641e-0efb-5b68-ad3d-5734ccacc69e
-- _internal.file_thread./src/utils.ts (modified 2026-05-22): 8d46c412-1f7f-5fe5-9702-cfe97e720551
-- _pinned:0 (modified 2026-05-22): pinned body 0
-- _pinned:1 (modified 2026-05-21): pinned body 1
-- _pinned:2 (modified 2026-05-21): pinned body 2
-- _pinned:3 (modified 2026-05-21): pinned body 3
-- _pinned:4 (modified 2026-05-21): pinned body 4
-- _pinned:5 (modified 2026-05-21): pinned body 5
-- _pinned:6 (modified 2026-05-21): pinned body 6
-- _pinned:7 (modified 2026-05-21): pinned body 7
-- _pinned:8 (modified 2026-05-21): pinned body 8
-- _pinned:9 (modified 2026-05-21): pinned body 9
-- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
-- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
-- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
-- _summary:topic-3 (modified 2026-05-21): Summary for topic 3: this is a brief overview.
-- _summary:topic-4 (modified 2026-05-21): Summary for topic 4: this is a brief overview.
-
-Bodies of summary entries are accessed via memory search using terms from the entry key.
-## Discoverable Archive — title-only; bodies via memory search
-
-- curiosity:item-0-det000000
-- curiosity:item-1-det000001
-- curiosity:item-2-det000002
-- curiosity:item-3-det000003
-- curiosity:item-4-det000004
-- curiosity:item-5-det000005
-- curiosity:item-6-det000006
-- curiosity:item-7-det000007
-- curiosity:item-8-det000008
-- curiosity:item-9-det000009
-
-Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
-## Working Knowledge — updates
-
-- _pinned:0 [changed since last turn]
-- _pinned:1 [changed since last turn]
-- _pinned:2 [changed since last turn]
-- _pinned:3 [changed since last turn]
-- _pinned:4 [changed since last turn]
-- _pinned:5 [changed since last turn]
-- _pinned:6 [changed since last turn]
-- _pinned:7 [changed since last turn]
-- _pinned:8 [changed since last turn]
-- _pinned:9 [changed since last turn]
-- _summary:topic-0 [changed since last turn]
-- _summary:topic-1 [changed since last turn]
-- _summary:topic-2 [changed since last turn]
-- _summary:topic-3 [changed since last turn]
-- _summary:topic-4 [changed since last turn]
+<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
+<memory key="_internal.file_thread./src/main.ts" tier="pinned" modified="2026-05-22">42af641e-0efb-5b68-ad3d-5734ccacc69e</memory>
+<memory key="_internal.file_thread./src/utils.ts" tier="pinned" modified="2026-05-22">8d46c412-1f7f-5fe5-9702-cfe97e720551</memory>
+<memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>
+<memory key="_pinned:1" tier="pinned" modified="2026-05-21">pinned body 1</memory>
+<memory key="_pinned:2" tier="pinned" modified="2026-05-21">pinned body 2</memory>
+<memory key="_pinned:3" tier="pinned" modified="2026-05-21">pinned body 3</memory>
+<memory key="_pinned:4" tier="pinned" modified="2026-05-21">pinned body 4</memory>
+<memory key="_pinned:5" tier="pinned" modified="2026-05-21">pinned body 5</memory>
+<memory key="_pinned:6" tier="pinned" modified="2026-05-21">pinned body 6</memory>
+<memory key="_pinned:7" tier="pinned" modified="2026-05-21">pinned body 7</memory>
+<memory key="_pinned:8" tier="pinned" modified="2026-05-21">pinned body 8</memory>
+<memory key="_pinned:9" tier="pinned" modified="2026-05-21">pinned body 9</memory>
+<memory key="_summary:topic-0" tier="summary" modified="2026-05-21">Summary for topic 0: this is a brief overview.</memory>
+<memory key="_summary:topic-1" tier="summary" modified="2026-05-21">Summary for topic 1: this is a brief overview.</memory>
+<memory key="_summary:topic-2" tier="summary" modified="2026-05-21">Summary for topic 2: this is a brief overview.</memory>
+<memory key="_summary:topic-3" tier="summary" modified="2026-05-21">Summary for topic 3: this is a brief overview.</memory>
+<memory key="_summary:topic-4" tier="summary" modified="2026-05-21">Summary for topic 4: this is a brief overview.</memory>
+</working-knowledge>
+<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">
+<entry key="curiosity:item-0-det000000"/>
+<entry key="curiosity:item-1-det000001"/>
+<entry key="curiosity:item-2-det000002"/>
+<entry key="curiosity:item-3-det000003"/>
+<entry key="curiosity:item-4-det000004"/>
+<entry key="curiosity:item-5-det000005"/>
+<entry key="curiosity:item-6-det000006"/>
+<entry key="curiosity:item-7-det000007"/>
+<entry key="curiosity:item-8-det000008"/>
+<entry key="curiosity:item-9-det000009"/>
+</discoverable-archive>
+<working-knowledge-updates>
+<memory key="_pinned:0" tier="pinned" changed="true"/>
+<memory key="_pinned:1" tier="pinned" changed="true"/>
+<memory key="_pinned:2" tier="pinned" changed="true"/>
+<memory key="_pinned:3" tier="pinned" changed="true"/>
+<memory key="_pinned:4" tier="pinned" changed="true"/>
+<memory key="_pinned:5" tier="pinned" changed="true"/>
+<memory key="_pinned:6" tier="pinned" changed="true"/>
+<memory key="_pinned:7" tier="pinned" changed="true"/>
+<memory key="_pinned:8" tier="pinned" changed="true"/>
+<memory key="_pinned:9" tier="pinned" changed="true"/>
+<memory key="_summary:topic-0" tier="summary" changed="true"/>
+<memory key="_summary:topic-1" tier="summary" changed="true"/>
+<memory key="_summary:topic-2" tier="summary" changed="true"/>
+<memory key="_summary:topic-3" tier="summary" changed="true"/>
+<memory key="_summary:topic-4" tier="summary" changed="true"/>
+</working-knowledge-updates>
 <live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
 <thread id="8d46c412-1f7f-5fe5-9702-cfe97e720551" title="Related Thread 2" messages="2" updated="2026-05-21T23:59:59.000Z" local="false">
 <session host="boundless-snapshot-host" live="true"/>

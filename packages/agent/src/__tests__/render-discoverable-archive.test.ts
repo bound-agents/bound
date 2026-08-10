@@ -31,10 +31,8 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 		const result = renderDiscoverableArchive(input);
 
 		expect(result.section.lines).toEqual([
-			"## Discoverable Archive — title-only; bodies via memory search",
-			"",
-			"",
-			"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.",
+			'<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">',
+			"</discoverable-archive>",
 		]);
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
@@ -55,7 +53,7 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- my-memory");
+		expect(result.section.lines).toContain('<entry key="my-memory"/>');
 		expect(result.section.lines.join("\n")).not.toContain("accessed 2026");
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
@@ -72,7 +70,7 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- forgotten-key");
+		expect(result.section.lines).toContain('<entry key="forgotten-key"/>');
 		// No date-derived fragment of any kind (including the old "never").
 		expect(result.section.lines.join("\n")).not.toContain("never");
 	});
@@ -97,8 +95,12 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		const contentLines = result.section.lines.filter((l) => l.startsWith("- "));
-		expect(contentLines).toEqual(["- apex", "- middle", "- zulu"]);
+		const contentLines = result.section.lines.filter((l) => l.startsWith("<entry"));
+		expect(contentLines).toEqual([
+			'<entry key="apex"/>',
+			'<entry key="middle"/>',
+			'<entry key="zulu"/>',
+		]);
 	});
 
 	it("test 5: Budget-pressure mode drops context fragment but preserves title", () => {
@@ -113,9 +115,9 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain("- my-memory");
+		expect(result.section.lines).toContain('<entry key="my-memory"/>');
 		// Should NOT contain the parenthetical fragment
-		const contentLines = result.section.lines.filter((l) => l.startsWith("- "));
+		const contentLines = result.section.lines.filter((l) => l.startsWith("<entry"));
 		expect(contentLines[0]).not.toContain("(last accessed");
 	});
 
@@ -136,7 +138,7 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		const contentLines = result.section.lines.slice(2, -2).filter((l) => l.startsWith("- "));
+		const contentLines = result.section.lines.filter((l) => l.startsWith("<entry"));
 		expect(contentLines).toHaveLength(2);
 		expect(contentLines[0]).toContain("entry-a");
 		expect(contentLines[1]).toContain("entry-c");
@@ -159,10 +161,10 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		const contentLines = result.section.lines.slice(2, -2).filter((l) => l.startsWith("- "));
+		const contentLines = result.section.lines.filter((l) => l.startsWith("<entry"));
 		expect(contentLines).toHaveLength(VC15_TIER1_THRESHOLD);
-		// Should be flat (no cluster headings with ###)
-		expect(result.section.lines.join("\n")).not.toContain("###");
+		// Should be flat (no cluster elements)
+		expect(result.section.lines.join("\n")).not.toContain("<cluster");
 	});
 
 	it("test 8: R-VC20 — no value bodies in output", () => {
@@ -215,11 +217,9 @@ describe("renderDiscoverableArchive — Tier 1 (flat list)", () => {
 		const result = renderDiscoverableArchive(input);
 
 		expect(result.section.lines[0]).toBe(
-			"## Discoverable Archive — title-only; bodies via memory search",
+			'<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">',
 		);
-		expect(result.section.lines[result.section.lines.length - 1]).toBe(
-			"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.",
-		);
+		expect(result.section.lines[result.section.lines.length - 1]).toBe("</discoverable-archive>");
 	});
 });
 
@@ -240,7 +240,9 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		expect(result.section.lines).toContain(`### ${UNCATEGORIZED_CLUSTER_NAME} (201 entries)`);
+		expect(result.section.lines).toContain(
+			`<cluster name="${UNCATEGORIZED_CLUSTER_NAME}" count="201">`,
+		);
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 
@@ -272,8 +274,8 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 		const result = renderDiscoverableArchive(input);
 		const output = result.section.lines.join("\n");
 
-		expect(output).toContain("### cooking (125 entries)");
-		expect(output).toContain("### transit (125 entries)");
+		expect(output).toContain('<cluster name="cooking" count="125">');
+		expect(output).toContain('<cluster name="transit" count="125">');
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
 
@@ -305,8 +307,8 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 		const result = renderDiscoverableArchive(input);
 		const output = result.section.lines.join("\n");
 
-		expect(output).toContain("### cooking (125 entries)");
-		expect(output).toContain(`### ${UNCATEGORIZED_CLUSTER_NAME} (125 entries)`);
+		expect(output).toContain('<cluster name="cooking" count="125">');
+		expect(output).toContain(`<cluster name="${UNCATEGORIZED_CLUSTER_NAME}" count="125">`);
 	});
 
 	it("test 14: Cluster ordering — count descending, name ascending on tie", () => {
@@ -349,9 +351,9 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 
 		const lines = result.section.lines;
 		// Find cluster headings
-		const alphaIdx = lines.findIndex((l) => l.includes("### alpha"));
-		const betaIdx = lines.findIndex((l) => l.includes("### beta"));
-		const gammaIdx = lines.findIndex((l) => l.includes("### gamma"));
+		const alphaIdx = lines.findIndex((l) => l.includes('<cluster name="alpha"'));
+		const betaIdx = lines.findIndex((l) => l.includes('<cluster name="beta"'));
+		const gammaIdx = lines.findIndex((l) => l.includes('<cluster name="gamma"'));
 
 		// Both alpha and beta have 100 entries; alpha should come first (alphabetical)
 		expect(alphaIdx).toBeLessThan(betaIdx);
@@ -392,21 +394,25 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 		const result = renderDiscoverableArchive(input);
 
 		const lines = result.section.lines;
-		const cookingHeadingIdx = lines.findIndex((l) => l.includes("### cooking"));
+		const cookingHeadingIdx = lines.findIndex((l) => l.includes('<cluster name="cooking"'));
 		expect(cookingHeadingIdx).toBeGreaterThanOrEqual(0);
 
 		const cookingLines = [];
 		for (let i = cookingHeadingIdx + 1; i < lines.length; i++) {
-			if (lines[i].startsWith("###") || lines[i].includes("Bodies are accessed")) {
+			if (lines[i].startsWith("</cluster>")) {
 				break;
 			}
-			if (lines[i].startsWith("- ")) {
+			if (lines[i].startsWith("<entry")) {
 				cookingLines.push(lines[i]);
 			}
 		}
 
 		// Key ASC, not access-time DESC.
-		expect(cookingLines).toEqual(["- apple", "- mango", "- zebra"]);
+		expect(cookingLines).toEqual([
+			'<entry key="apple"/>',
+			'<entry key="mango"/>',
+			'<entry key="zebra"/>',
+		]);
 	});
 
 	it("test 16: Sub-cluster ### typography (R-VC22)", () => {
@@ -425,13 +431,11 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		// All cluster headings should be ### (not ## or ####)
-		const clusterHeadings = result.section.lines.filter((l) => l.startsWith("###"));
+		// All cluster open tags carry name + count attributes
+		const clusterHeadings = result.section.lines.filter((l) => l.startsWith("<cluster"));
 		expect(clusterHeadings.length).toBeGreaterThan(0);
 		for (const heading of clusterHeadings) {
-			expect(heading).toMatch(/^### /);
-			expect(heading).not.toMatch(/^## /);
-			expect(heading).not.toMatch(/^#### /);
+			expect(heading).toMatch(/^<cluster name=".+" count="\d+">$/);
 		}
 	});
 
@@ -451,9 +455,9 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 
 		const result = renderDiscoverableArchive(input);
 
-		// Should be Tier 2 (cluster output with ### headings, not throw)
+		// Should be Tier 2 (cluster output with <cluster> elements, not throw)
 		const output = result.section.lines.join("\n");
-		expect(output).toContain("###");
+		expect(output).toContain("<cluster");
 		expect(output).toContain(UNCATEGORIZED_CLUSTER_NAME);
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
@@ -475,10 +479,10 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 		const result = renderDiscoverableArchive(input);
 
 		const output = result.section.lines.join("\n");
-		// Cluster heading should still be present
-		expect(output).toContain("###");
+		// Cluster element should still be present
+		expect(output).toContain("<cluster");
 		// Entries should be present but WITHOUT the (last accessed ...) fragment
-		const entryLines = result.section.lines.filter((l) => l.startsWith("- entry-"));
+		const entryLines = result.section.lines.filter((l) => l.startsWith('<entry key="entry-'));
 		expect(entryLines.length).toBeGreaterThan(0);
 		for (const line of entryLines) {
 			expect(line).not.toContain("(last accessed");
@@ -514,7 +518,7 @@ describe("renderDiscoverableArchive — Tier 2 (cluster grouping)", () => {
 
 		// Should be Tier 2 (205 < 1000)
 		const output = result.section.lines.join("\n");
-		expect(output).toContain("###");
+		expect(output).toContain("<cluster");
 		// But synthesisBacklogCount should still be null (only set in Tier 3)
 		expect(result.synthesisBacklogCount).toBe(null);
 	});
@@ -538,10 +542,10 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		const result = renderDiscoverableArchive(input);
 		const output = result.section.lines.join("\n");
 
-		// Should use Tier 3 heading format with "showing M most recent"
-		expect(output).toContain("showing 3 most recent");
+		// Should use Tier 3 cluster format with the showing attribute
+		expect(output).toContain('showing="3"');
 		// Should be Uncategorized since no parents
-		expect(output).toContain(`### ${UNCATEGORIZED_CLUSTER_NAME}`);
+		expect(output).toContain(`<cluster name="${UNCATEGORIZED_CLUSTER_NAME}"`);
 	});
 
 	it("test 21: M-cap respected — each cluster renders only M most-recent entries", () => {
@@ -560,8 +564,8 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 
 		const result = renderDiscoverableArchive(input);
 
-		// Count entry lines (lines starting with "- ")
-		const entryLines = result.section.lines.filter((l) => l.startsWith("- "));
+		// Count entry elements
+		const entryLines = result.section.lines.filter((l) => l.startsWith("<entry"));
 		// Should have only 3 entries rendered (M-cap)
 		expect(entryLines.length).toBe(3);
 	});
@@ -588,8 +592,8 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		const result = renderDiscoverableArchive(input);
 		const output = result.section.lines.join("\n");
 
-		// Should have heading with total count (210) and M (5)
-		expect(output).toContain("### foo (210 entries, showing 5 most recent)");
+		// Should have the cluster tag with total count (210) and M (5)
+		expect(output).toContain('<cluster name="foo" count="210" showing="5">');
 	});
 
 	it("test 23: Tier-3 SELECTS most-recent (slice m), then RENDERS them key-sorted", () => {
@@ -629,22 +633,26 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		const result = renderDiscoverableArchive(input);
 
 		const lines = result.section.lines;
-		const cookingHeadingIdx = lines.findIndex((l) => l.includes("### cooking"));
+		const cookingHeadingIdx = lines.findIndex((l) => l.includes('<cluster name="cooking"'));
 		expect(cookingHeadingIdx).toBeGreaterThanOrEqual(0);
 
 		const entryLines = [];
 		for (let i = cookingHeadingIdx + 1; i < lines.length; i++) {
-			if (lines[i].startsWith("###") || lines[i].includes("Bodies are accessed")) {
+			if (lines[i].startsWith("</cluster>")) {
 				break;
 			}
-			if (lines[i].startsWith("- ")) {
+			if (lines[i].startsWith("<entry")) {
 				entryLines.push(lines[i]);
 			}
 		}
 
 		// SELECTION: the 3 most-recent (carrot, apple, banana); durian dropped.
 		// RENDER: those 3 key-sorted -> apple, banana, carrot.
-		expect(entryLines).toEqual(["- apple", "- banana", "- carrot"]);
+		expect(entryLines).toEqual([
+			'<entry key="apple"/>',
+			'<entry key="banana"/>',
+			'<entry key="carrot"/>',
+		]);
 	});
 
 	it("test 24: synthesisBacklogCount raised when Uncategorized > 50 in Tier 3", () => {
@@ -750,12 +758,12 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 		const result = renderDiscoverableArchive(input);
 		const output = result.section.lines.join("\n");
 
-		// Cluster sub-header should still be present
-		expect(output).toContain("###");
-		// Should show "showing M most recent"
-		expect(output).toContain("showing 3 most recent");
+		// Cluster element should still be present
+		expect(output).toContain("<cluster");
+		// Should show the showing attribute
+		expect(output).toContain('showing="3"');
 		// Entries should be present but WITHOUT (last accessed ...) fragment
-		const entryLines = result.section.lines.filter((l) => l.startsWith("- entry-"));
+		const entryLines = result.section.lines.filter((l) => l.startsWith('<entry key="entry-'));
 		expect(entryLines.length).toBe(3);
 		for (const line of entryLines) {
 			expect(line).not.toContain("(last accessed");
@@ -834,7 +842,7 @@ describe("renderDiscoverableArchive — Tier 3 (heading-only compression with M-
 });
 
 describe("renderDiscoverableArchive — R-VC29 summary-overflow sub-block", () => {
-	it("renders demoted summaries under an `### Older summaries` sub-header after the detail tier, before the footer", () => {
+	it("renders demoted summaries inside an <older-summaries> block after the detail tier, before the footer", () => {
 		const input: DiscoverableArchiveInput = {
 			entries: [
 				{ key: "adapter:foo", last_accessed_at: "2026-05-30T10:00:00Z" },
@@ -848,23 +856,23 @@ describe("renderDiscoverableArchive — R-VC29 summary-overflow sub-block", () =
 		};
 
 		const lines = renderDiscoverableArchive(input).section.lines;
-		const subHeaderIdx = lines.indexOf(
-			"### Older summaries (titles only — search the key for the body)",
-		);
-		const footerIdx = lines.findIndex((l) => l.includes("Bodies are accessed via"));
+		const subHeaderIdx = lines.indexOf("<older-summaries>");
+		const footerIdx = lines.indexOf("</discoverable-archive>");
 
-		// Sub-header present, sits after the detail lines and before the footer.
+		// Sub-block present, sits after the detail lines and before the footer.
 		expect(subHeaderIdx).toBeGreaterThan(-1);
 		expect(footerIdx).toBeGreaterThan(subHeaderIdx);
-		expect(lines.indexOf("- adapter:bar")).toBeLessThan(subHeaderIdx);
+		expect(lines.indexOf('<entry key="adapter:bar"/>')).toBeLessThan(subHeaderIdx);
 
 		// Overflow titles render title-only, in order, between the sub-header and footer.
-		expect(lines.indexOf("- _summary:old-a")).toBeGreaterThan(subHeaderIdx);
-		expect(lines.indexOf("- _summary:old-a")).toBeLessThan(lines.indexOf("- _summary:old-b"));
-		expect(lines.indexOf("- _summary:old-b")).toBeLessThan(footerIdx);
+		expect(lines.indexOf('<entry key="_summary:old-a"/>')).toBeGreaterThan(subHeaderIdx);
+		expect(lines.indexOf('<entry key="_summary:old-a"/>')).toBeLessThan(
+			lines.indexOf('<entry key="_summary:old-b"/>'),
+		);
+		expect(lines.indexOf('<entry key="_summary:old-b"/>')).toBeLessThan(footerIdx);
 	});
 
-	it("renders the `### Older summaries` sub-block even when there are no detail entries", () => {
+	it("renders the <older-summaries> block even when there are no detail entries", () => {
 		const input: DiscoverableArchiveInput = {
 			entries: [],
 			parentSummaryByKey: new Map(),
@@ -875,8 +883,8 @@ describe("renderDiscoverableArchive — R-VC29 summary-overflow sub-block", () =
 		};
 
 		const out = renderDiscoverableArchive(input).section.lines.join("\n");
-		expect(out).toContain("### Older summaries (titles only — search the key for the body)");
-		expect(out).toContain("- _summary:only-overflow");
+		expect(out).toContain("<older-summaries>");
+		expect(out).toContain('<entry key="_summary:only-overflow"/>');
 	});
 
 	it("omits the sub-block entirely when there are no demoted summaries (byte-identical to pre-R-VC29)", () => {
@@ -890,6 +898,6 @@ describe("renderDiscoverableArchive — R-VC29 summary-overflow sub-block", () =
 		};
 
 		const out = renderDiscoverableArchive(input).section.lines.join("\n");
-		expect(out).not.toContain("Older summaries");
+		expect(out).not.toContain("<older-summaries>");
 	});
 });
