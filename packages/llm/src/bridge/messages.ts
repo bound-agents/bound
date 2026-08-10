@@ -15,15 +15,20 @@ export interface ToModelMessagesOptions {
 	/**
 	 * Provider key used on the cache-marker passthrough. Bedrock expects
 	 * `providerOptions.bedrock.cachePoint`, Anthropic expects
-	 * `providerOptions.anthropic.cacheControl`. OpenAI-compatible providers
-	 * generally don't support prompt caching via provider options, but the
-	 * marker role is still dropped harmlessly here.
+	 * `providerOptions.anthropic.cacheControl`. OpenAI Responses models that
+	 * accept explicit breakpoints (GPT-5.6 family on Mantle) use "openai":
+	 * the marker becomes `providerOptions.openai.promptCacheBreakpoint`,
+	 * attached at the nearest position the Responses wire can express — see
+	 * attachOpenAIPromptCacheBreakpoint. Null (or omit) drops marker roles
+	 * harmlessly for providers with no breakpoint mechanism.
 	 */
-	cacheProvider?: "bedrock" | "anthropic" | null;
+	cacheProvider?: "bedrock" | "anthropic" | "openai" | null;
 	/**
 	 * Cache TTL hint forwarded to the cache breakpoint. "5m" or "1h".
 	 * Omit (or undefined) to use the provider's default (5m). 1h is only
 	 * supported on certain newer Claude models — see ChatParams.cache_ttl.
+	 * Ignored for the "openai" provider: OpenAI cache retention is a
+	 * request-level option (promptCacheRetention), not per-breakpoint.
 	 */
 	cacheTtl?: "5m" | "1h";
 	/**
@@ -76,6 +81,139 @@ export interface ToModelMessagesOptions {
 	 * driver to keep the legacy merge path.
 	 */
 	midConversationSystem?: boolean;
+}
+
+/**
+ * Ceiling on message-level `prompt_cache_breakpoint`s emitted per request.
+ *
+ * The GPT-5.6 family accepts at most FOUR breakpoints per request. The
+ * mantle driver spends one on the system/instructions message (the
+ * stable-prefix anchor, attached in bedrock-mantle.ts — invisible to this
+ * module), so the bridge caps message-level markers at three. The agent
+ * loop's stable placer emits 1–2 markers per turn today; the cap is a
+ * backstop so a future placer emitting more degrades to "marker dropped"
+ * instead of a 400 on every request.
+ */
+export const MAX_OPENAI_MESSAGE_BREAKPOINTS = 3;
+
+/**
+ * Attach an OpenAI `prompt_cache_breakpoint` for one `{role:"cache"}` marker.
+ *
+ * Anthropic/Bedrock accept a cache boundary on ANY message via
+ * message-level providerOptions, so the generic handler marks
+ * `result[length-1]` unconditionally. The OpenAI Responses converter
+ * (@ai-sdk/openai `convertToOpenAIResponsesInput`) only reads
+ * `providerOptions.openai.promptCacheBreakpoint` from specific positions:
+ *
+ *   - system/developer messages — MESSAGE-level providerOptions;
+ *   - user messages — PART-level providerOptions on input_text/file parts
+ *     (message-level is ignored);
+ *   - tool function_call_output — ITEM-level providerOptions on content
+ *     items, and only when the output uses the `{type:"content"}` shape
+ *     (the `{type:"text"}` shape serializes to a bare string with nowhere
+ *     to hang the marker);
+ *   - assistant messages — not representable at all (output_text items
+ *     carry no breakpoint field).
+ *
+ * So: walk backwards from the marker to the nearest message that CAN carry
+ * a breakpoint and mark it there. Moving the boundary earlier only shrinks
+ * the cached prefix by the skipped messages — semantically safe. A user
+ * message with string content is lifted to parts form so the marker can
+ * ride part-level (the SDK's own string→parts lift keeps providerOptions
+ * at the message level, which the Responses converter ignores for user
+ * messages). Empty text parts are skipped — `convertToLanguageModelPrompt`
+ * filters them out of user content, taking any marker with them. A
+ * text-shape tool output is converted to the equivalent single-item
+ * content shape to gain an item to mark.
+ *
+ * If the walk finds a position that already carries a breakpoint (two
+ * markers collapsing onto one boundary), the marker is a no-op rather than
+ * a double-count against MAX_OPENAI_MESSAGE_BREAKPOINTS.
+ */
+function attachOpenAIPromptCacheBreakpoint(
+	result: ModelMessage[],
+	state: { attached: number },
+): void {
+	if (state.attached >= MAX_OPENAI_MESSAGE_BREAKPOINTS) return;
+	for (let i = result.length - 1; i >= 0; i--) {
+		const msg = result[i];
+		if (msg.role === "system") {
+			if (!msg.providerOptions) msg.providerOptions = {};
+			const provOpts = msg.providerOptions as Record<string, Record<string, unknown>>;
+			if (!provOpts.openai) provOpts.openai = {};
+			if (provOpts.openai.promptCacheBreakpoint) return; // boundary already marked
+			provOpts.openai.promptCacheBreakpoint = { mode: "explicit" };
+			state.attached += 1;
+			return;
+		}
+		if (msg.role === "user") {
+			if (typeof msg.content === "string") {
+				if (msg.content === "") continue; // would be filtered on the wire
+				msg.content = [{ type: "text", text: msg.content }] as never;
+			}
+			const parts = msg.content as unknown as Array<Record<string, unknown>>;
+			for (let j = parts.length - 1; j >= 0; j--) {
+				const part = parts[j];
+				if (part.type !== "text" || part.text === "") continue;
+				if (!part.providerOptions) part.providerOptions = {};
+				const provOpts = part.providerOptions as Record<string, Record<string, unknown>>;
+				if (!provOpts.openai) provOpts.openai = {};
+				if (provOpts.openai.promptCacheBreakpoint) return; // boundary already marked
+				provOpts.openai.promptCacheBreakpoint = { mode: "explicit" };
+				state.attached += 1;
+				return;
+			}
+			continue; // no markable text part (image-only user turn) — walk on
+		}
+		if (msg.role === "tool" && Array.isArray(msg.content)) {
+			const parts = msg.content as unknown as Array<Record<string, unknown>>;
+			for (let j = parts.length - 1; j >= 0; j--) {
+				const part = parts[j];
+				if (part.type !== "tool-result") continue;
+				const output = part.output as
+					| { type: "text"; value: string }
+					| { type: "content"; value: Array<Record<string, unknown>> }
+					| undefined;
+				if (!output) continue;
+				if (output.type === "text") {
+					// Convert to the content shape — the only tool-output form
+					// with an item slot for the breakpoint. The Responses
+					// converter serializes both shapes; content-shape text
+					// becomes [{type:"input_text", text}] instead of a bare
+					// string, which the API accepts equivalently.
+					part.output = {
+						type: "content",
+						value: [
+							{
+								type: "text",
+								text: output.value,
+								providerOptions: { openai: { promptCacheBreakpoint: { mode: "explicit" } } },
+							},
+						],
+					};
+					state.attached += 1;
+					return;
+				}
+				if (output.type === "content") {
+					for (let k = output.value.length - 1; k >= 0; k--) {
+						const item = output.value[k];
+						if (item.type !== "text") continue;
+						if (!item.providerOptions) item.providerOptions = {};
+						const provOpts = item.providerOptions as Record<string, Record<string, unknown>>;
+						if (!provOpts.openai) provOpts.openai = {};
+						if (provOpts.openai.promptCacheBreakpoint) return; // already marked
+						provOpts.openai.promptCacheBreakpoint = { mode: "explicit" };
+						state.attached += 1;
+						return;
+					}
+				}
+				// media-only tool output — no text item to mark; try the
+				// previous tool-result part or an earlier message.
+			}
+		}
+		// assistant (and anything else): the Responses wire has no breakpoint
+		// slot on assistant items — walk further back.
+	}
 }
 
 /** Maximum length accepted by Bedrock Converse for toolUseId and toolUse.name.
@@ -256,6 +394,9 @@ export function toModelMessages(
 	// prepending into the next user message; any remainder is appended onto
 	// the last emitted user message after the loop.
 	const pendingDev: string[] = [];
+	// Per-call budget tracker for OpenAI message-level breakpoints — see
+	// MAX_OPENAI_MESSAGE_BREAKPOINTS.
+	const openaiBreakpoints = { attached: 0 };
 	// Whether the CURRENT pendingDev batch began accumulating while `result`
 	// was still empty. This is the positional HEAD-vs-TAIL discriminator for
 	// leftover dev content (see the leftover-pendingDev handler after the
@@ -299,6 +440,12 @@ export function toModelMessages(
 			// Attach a cache breakpoint to the most recently emitted message.
 			const prev = result[result.length - 1];
 			if (!prev || !opts.cacheProvider) continue;
+			if (opts.cacheProvider === "openai") {
+				// The Responses wire can't take a breakpoint on arbitrary
+				// messages — delegate to the position-aware attacher.
+				attachOpenAIPromptCacheBreakpoint(result, openaiBreakpoints);
+				continue;
+			}
 			if (!prev.providerOptions) prev.providerOptions = {};
 			const provOpts = prev.providerOptions as Record<string, Record<string, unknown>>;
 			if (!provOpts[opts.cacheProvider]) provOpts[opts.cacheProvider] = {};
