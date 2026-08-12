@@ -8,6 +8,8 @@ import { fitPngToByteBudget } from "./png";
  * macOS: `pngpaste -` when installed (fast path), else `osascript` asking for
  * the clipboard as «class PNGf» and parsing the hex blob AppleScript prints.
  * Linux: `wl-paste` (Wayland) then `xclip` (X11), both asking for image/png.
+ * Windows: PowerShell (pwsh, then powershell.exe) + System.Windows.Forms,
+ * base64-encoding the clipboard Bitmap as PNG on stdout.
  *
  * Returns null when the clipboard holds no image (or no reader exists on
  * this platform) — callers treat null as "nothing to paste", not an error.
@@ -114,6 +116,44 @@ export async function readClipboardImage(
 				const fitted = fitToProviderBudget(new Uint8Array(res.stdout));
 				if (fitted) return { bytes: fitted, mediaType: "image/png" };
 				return null;
+			}
+		}
+		return null;
+	}
+
+	if (platform === "win32") {
+		// PowerShell + System.Windows.Forms reads the clipboard image as a
+		// Bitmap and base64-encodes its PNG form to stdout. pwsh (7) is the
+		// fast path; powershell.exe ships in System32 on every Windows install
+		// so it's the guaranteed fallback. -Sta is required — the clipboard
+		// needs an STA thread. Base64 is ASCII, so it survives either shell's
+		// redirected-stdout codepage. No image → empty stdout → null.
+		const script = [
+			"Add-Type -AssemblyName System.Windows.Forms",
+			"Add-Type -AssemblyName System.Drawing",
+			"$img = [System.Windows.Forms.Clipboard]::GetImage()",
+			"if ($null -eq $img) { exit 0 }",
+			"$ms = New-Object System.IO.MemoryStream",
+			"$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)",
+			"[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray()))",
+			"$ms.Dispose(); $img.Dispose()",
+		].join("\n");
+		const encoded = Buffer.from(script, "utf16le").toString("base64");
+		for (const cmd of ["pwsh", "powershell.exe"]) {
+			const res = await run(cmd, [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Sta",
+				"-EncodedCommand",
+				encoded,
+			]);
+			if (res.ok && res.stdout.length > 0) {
+				const bytes = new Uint8Array(Buffer.from(res.stdout.toString("utf8"), "base64"));
+				if (looksLikePng(bytes)) {
+					const fitted = fitToProviderBudget(bytes);
+					if (fitted) return { bytes: fitted, mediaType: "image/png" };
+					return null;
+				}
 			}
 		}
 		return null;
