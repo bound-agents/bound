@@ -7,13 +7,27 @@
  * extractUsage folds provider usage metadata into the terminal `done` chunk.
  */
 
-import { createLogger } from "@bound/shared";
+import { type Logger, createLogger } from "@bound/shared";
 import type { LLMFinishReason, LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import { mapError } from "./errors";
 import { MAX_TOOL_USE_ID_LENGTH } from "./messages";
 
-const logger = createLogger("llm", "ai-sdk-bridge");
+// Lazily created, not at module scope: `createLogger()` materializes the pino
+// root, which mkdirs `logs/` and opens `logs/bound.log` under process.cwd()
+// synchronously. This module is reachable by just importing @bound/llm (which
+// boundless does for image-budget constants) — an eager logger here dropped a
+// 0-byte logs/bound.log into whatever directory boundless ran from, even
+// though boundless never logs through pino (it has its own AppLogger). The
+// file only appears if this logger actually fires, which is exactly when a
+// log file is warranted.
+let logger: Logger | null = null;
+function getLogger(): Logger {
+	if (logger === null) {
+		logger = createLogger("llm", "ai-sdk-bridge");
+	}
+	return logger;
+}
 
 export interface MapChunksOptions {
 	/**
@@ -263,7 +277,7 @@ export async function* mapChunks(
 				// envelope. Charset diffs are expected steady state and not
 				// logged.
 				if (id.length > MAX_TOOL_USE_ID_LENGTH || name.length > MAX_TOOL_USE_ID_LENGTH) {
-					logger.warn("oversized tool_use streamed; will be truncated at read boundary", {
+					getLogger().warn("oversized tool_use streamed; will be truncated at read boundary", {
 						provider: opts.providerName,
 						id,
 						name,
