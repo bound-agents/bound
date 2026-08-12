@@ -227,7 +227,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -245,13 +245,13 @@ describe("Startup Wiring", () => {
 					tool_name: "t1",
 					created_at: new Date(Date.now() + 1).toISOString(),
 					modified_at: new Date(Date.now() + 1).toISOString(),
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
 			// Run the same crash recovery scan from start.ts step 7
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -294,6 +294,46 @@ describe("Startup Wiring", () => {
 			expect(developerMsgs[0].content).toContain(hostName);
 		});
 
+		it("does not flag a trailing tool turn owned by another host", () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const peerSiteId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "PeerLoopOwner", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', ?, 0, 'peer-active', NULL, ?, ?, ?, 0)",
+				[threadId, userId, peerSiteId, now, now, now],
+			);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_result",
+					content: "peer tool completed; its loop is still continuing",
+					model_id: "test-model",
+					tool_name: "peer-call",
+					created_at: now,
+					modified_at: now,
+					host_origin: peerSiteId,
+					deleted: 0,
+					exit_code: 0,
+					metadata: null,
+				},
+				peerSiteId,
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
+				thread_id: string;
+			}>;
+			expect(interruptedThreads.some((t) => t.thread_id === threadId)).toBe(false);
+		});
+
 		it("does not flag auxiliary-agent threads with interrupted tool-use", () => {
 			const userId = randomUUID();
 			const threadId = randomUUID();
@@ -319,12 +359,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 			expect(interruptedThreads.some((t) => t.thread_id === threadId)).toBe(false);
@@ -362,7 +402,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t1,
 					modified_at: t1,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -378,7 +418,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t2,
 					modified_at: t2,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -394,12 +434,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t3,
 					modified_at: t3,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -440,7 +480,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t1,
 					modified_at: t1,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -457,12 +497,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t2,
 					modified_at: t2,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -499,7 +539,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -510,7 +550,7 @@ describe("Startup Wiring", () => {
 				[randomUUID(), threadId, now, now],
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -551,7 +591,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t1,
 					modified_at: t1,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -567,12 +607,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t2,
 					modified_at: t2,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 

@@ -60,8 +60,16 @@ export const STALE_TASK_RESET_SQL =
 
 /**
  * Crash-recovery scan for threads whose last meaningful message is a tool_call
- * or tool_result with no following assistant turn or interrupt notice. Runs on
- * every daemon boot.
+ * or tool_result written by this site, with no following assistant turn or
+ * interrupt notice. Runs on every daemon boot.
+ *
+ * Scoping the trailing tool message to the booting site is the ownership gate:
+ * boot proves this site's previous process is gone, but says nothing about a
+ * peer that may still be executing its own trailing tool turn. Without this
+ * predicate, any peer restart can inject a false interruption notice into a
+ * healthy loop elsewhere in the cluster. `host_origin` carries the stable site
+ * ID on agent-authored tool messages; the notice can therefore name this
+ * booting host without misattributing a peer's work.
  *
  * Thread-centric form: one GROUP BY scan over `idx_messages_thread`, ~1k thread
  * groups on a typical deployment. The semantically-equivalent per-tool-message
@@ -69,11 +77,6 @@ export const STALE_TASK_RESET_SQL =
  * lookups on a 185k-row messages table and runs in ~4s warm — historically a
  * meaningful chunk of bootstrap latency on slow disks. Profiled rewrite runs in
  * ~100ms.
- *
- * Equivalence: a tool message with no later assistant/interrupt notice is
- * exactly equivalent to "the last assistant/interrupt timestamp in the thread
- * is earlier than the last tool timestamp" (or absent). Verified against the
- * live DB and synthetic fixtures in startup-wiring.test.ts.
  *
  * Excludes threads with a pending `client_tool_call` in `dispatch_queue` —
  * those are waiting for client execution, not crashed server tools. Also
@@ -84,7 +87,9 @@ export const STALE_TASK_RESET_SQL =
  */
 export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
 	SELECT thread_id,
-		MAX(CASE WHEN role IN ('tool_call', 'tool_result') THEN created_at END) AS last_tool_at,
+		MAX(CASE
+			WHEN role IN ('tool_call', 'tool_result') AND host_origin = ? THEN created_at
+		END) AS last_local_tool_at,
 		MAX(CASE WHEN role = 'assistant' THEN created_at END) AS last_assistant_at,
 		MAX(CASE
 			WHEN role IN ('system', 'developer')
@@ -92,15 +97,16 @@ export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
 			THEN created_at
 		END) AS last_interrupt_at
 	FROM messages
+	WHERE deleted = 0
 	GROUP BY thread_id
 )
 SELECT ts.thread_id FROM thread_summary ts
 JOIN threads t ON t.id = ts.thread_id
 WHERE t.deleted = 0
   AND t.agent_id IS NULL
-  AND ts.last_tool_at IS NOT NULL
-  AND (ts.last_assistant_at IS NULL OR ts.last_assistant_at < ts.last_tool_at)
-  AND (ts.last_interrupt_at IS NULL OR ts.last_interrupt_at < ts.last_tool_at)
+  AND ts.last_local_tool_at IS NOT NULL
+  AND (ts.last_assistant_at IS NULL OR ts.last_assistant_at < ts.last_local_tool_at)
+  AND (ts.last_interrupt_at IS NULL OR ts.last_interrupt_at < ts.last_local_tool_at)
   AND NOT EXISTS (
 	SELECT 1 FROM dispatch_queue dq
 	WHERE dq.thread_id = ts.thread_id
@@ -452,7 +458,9 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		// Scan for interrupted tool-use per R-E13. SQL is exported as
 		// INTERRUPTED_TOOL_USE_SCAN_SQL so the regression tests can pin the same
 		// query the daemon actually runs.
-		const interruptedThreads = appContext.db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+		const interruptedThreads = appContext.db
+			.query(INTERRUPTED_TOOL_USE_SCAN_SQL)
+			.all(appContext.siteId) as Array<{
 			thread_id: string;
 		}>;
 
