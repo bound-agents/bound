@@ -92,6 +92,10 @@ export function advertiseLocalModels(
 		return {
 			id: b.id,
 			tier: rawBackend?.tier,
+			thinking_mode:
+				typeof rawBackend?.thinking === "object" && rawBackend.thinking?.type === "tool"
+					? "tool"
+					: undefined,
 			capabilities: b.capabilities,
 		};
 	});

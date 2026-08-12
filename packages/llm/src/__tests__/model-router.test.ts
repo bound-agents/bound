@@ -1201,6 +1201,27 @@ describe("ModelRouter thinking config", () => {
 		expect(config?.display).toBe("summarized");
 	});
 
+	it("maps thinking: { type: 'tool' } to an explicit provider disable and exposes the tool mode", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "tool-model",
+					provider: "bedrock",
+					region: "us-east-1",
+					model: "anthropic.claude-opus-5",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					thinking: { type: "tool" },
+				},
+			],
+			default: "tool-model",
+		});
+
+		expect(router.getThinkingConfig("tool-model")).toEqual({ type: "disabled" });
+		expect(router.usesThinkingTool("tool-model")).toBe(true);
+		expect(router.getEffort("tool-model")).toBeUndefined();
+	});
+
 	it("getEffort returns configured effort", () => {
 		const router = createModelRouter({
 			backends: [

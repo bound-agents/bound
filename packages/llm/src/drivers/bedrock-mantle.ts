@@ -199,8 +199,9 @@ function toReasoningEffort(
  */
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
+	reasoningDisabled = false,
 ): Record<string, string | boolean> {
-	const reasoningEffort = toReasoningEffort(effort);
+	const reasoningEffort = reasoningDisabled ? "none" : toReasoningEffort(effort);
 	return {
 		store: false,
 		promptCacheRetention: "24h",
@@ -314,6 +315,11 @@ export class BedrockMantleDriver implements LLMBackend {
 							...(params.top_p !== undefined && { topP: params.top_p }),
 							...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 							abortSignal: params.signal,
+							...(params.thinking?.type === "disabled" && {
+								providerOptions: {
+									anthropic: { thinking: { type: "disabled" } },
+								},
+							}),
 						}).fullStream,
 					map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
 				});
@@ -395,7 +401,9 @@ export class BedrockMantleDriver implements LLMBackend {
 						...(params.top_p !== undefined && { topP: params.top_p }),
 						...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 						abortSignal: params.signal,
-						providerOptions: { openai: buildMantleOpenAIOptions(params.effort) },
+						providerOptions: {
+							openai: buildMantleOpenAIOptions(params.effort, params.thinking?.type === "disabled"),
+						},
 					}).fullStream,
 				map: {
 					estimateInputFromMessages: params.messages,

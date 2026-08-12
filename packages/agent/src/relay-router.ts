@@ -20,6 +20,8 @@ export interface EligibleHost {
 	};
 	/** Tier preference (lower = preferred). Present for verified hosts only. */
 	tier?: number;
+	/** Bound-side reasoning transport advertised by the serving host. */
+	thinkingMode?: "tool";
 	/**
 	 * Whether this host entry was parsed from legacy string format (no metadata).
 	 * Unverified hosts are used as fallback when no verified match exists.
@@ -180,6 +182,7 @@ export function findEligibleHostsByModel(
 					modified_at: row.modified_at,
 					capabilities: hostEntry.capabilities,
 					tier: hostEntry.tier,
+					thinkingMode: hostEntry.thinking_mode,
 					unverified: false,
 				};
 

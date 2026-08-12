@@ -569,6 +569,64 @@ describe("Config schemas", () => {
 				expect(result.success).toBe(false);
 			});
 
+			it("accepts `thinking: { type: 'tool' }`", () => {
+				const config = {
+					backends: [
+						{
+							id: "tool-mode",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "tool" },
+						},
+					],
+					default: "tool-mode",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toEqual({ type: "tool" });
+			});
+
+			it("rejects tool mode with native-thinking fields", () => {
+				const config = {
+					backends: [
+						{
+							id: "tool-mode",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "tool", budget_tokens: 12000 },
+						},
+					],
+					default: "tool-mode",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+			});
+
+			it("rejects tool mode for Mantle Fable because the provider has no disable control", () => {
+				const config = {
+					backends: [
+						{
+							id: "fable",
+							provider: "bedrock-mantle",
+							provider_mode: "anthropic",
+							model: "anthropic.claude-fable-5",
+							region: "us-east-1",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "tool" },
+						},
+					],
+					default: "fable",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+			});
+
 			it("rejects unknown thinking type values (e.g. 'auto')", () => {
 				const config = {
 					backends: [

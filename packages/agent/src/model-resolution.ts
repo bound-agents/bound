@@ -18,9 +18,11 @@ export type ModelResolution =
 			backend: LLMBackend;
 			modelId: string;
 			reResolved?: boolean;
-			// Carries both legacy `{type:"enabled", budget_tokens}` and
-			// adaptive `{type:"adaptive", display?}` shapes; see ChatParams.
+			// Carries provider-native thinking config; tool mode resolves to explicit
+			// disabled native reasoning so drivers never fall back to their default.
 			thinkingConfig?: ChatParams["thinking"];
+			/** Expose Bound's synthetic think tool for this backend. */
+			thinkingTool?: boolean;
 			// Top-level output_config.effort — depth control for Opus 4.7.
 			effort?: ChatParams["effort"];
 			// Per-backend cap on `maxOutputTokens`. When set, the agent-loop
@@ -43,9 +45,9 @@ export type ModelResolution =
 			hosts: EligibleHost[];
 			modelId: string;
 			reResolved?: boolean;
-			// Context window for the chosen remote host, in tokens. Required for
-			// the same reason as the local variant: skew (a host that synced caps
-			// without max_context) routes to `kind: "error"` rather than defaulting.
+			/** Mirrored from the serving host's advertised config. */
+			thinkingTool?: boolean;
+			thinkingConfig?: ChatParams["thinking"];
 			max_context: number;
 	  }
 	| {
@@ -178,6 +180,7 @@ function buildLocalResolution(
 		modelId,
 		...(reResolved ? { reResolved: true } : {}),
 		thinkingConfig: modelRouter.getThinkingConfig(modelId),
+		thinkingTool: modelRouter.usesThinkingTool(modelId),
 		effort: modelRouter.getEffort(modelId),
 		maxOutputTokens: modelRouter.getMaxOutputTokens(modelId),
 		cacheTtl: modelRouter.getCacheTtl(modelId),
@@ -412,7 +415,15 @@ export function resolveModel(
 					reason: "transient-unavailable",
 				};
 			}
-			return { kind: "remote", hosts: anyRemote.hosts, modelId: anyRemote.modelId, max_context };
+			return {
+				kind: "remote",
+				hosts: anyRemote.hosts,
+				modelId: anyRemote.modelId,
+				thinkingTool: anyRemote.hosts[0]?.thinkingMode === "tool",
+				thinkingConfig:
+					anyRemote.hosts[0]?.thinkingMode === "tool" ? { type: "disabled" } : undefined,
+				max_context,
+			};
 		}
 		return {
 			kind: "error",
@@ -432,7 +443,15 @@ export function resolveModel(
 				reason: "transient-unavailable",
 			};
 		}
-		return { kind: "remote", hosts: remoteResult.hosts, modelId: effectiveModelId, max_context };
+		return {
+			kind: "remote",
+			hosts: remoteResult.hosts,
+			modelId: effectiveModelId,
+			thinkingTool: remoteResult.hosts[0]?.thinkingMode === "tool",
+			thinkingConfig:
+				remoteResult.hosts[0]?.thinkingMode === "tool" ? { type: "disabled" } : undefined,
+			max_context,
+		};
 	}
 
 	// Phase 3: Error (not found anywhere)

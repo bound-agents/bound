@@ -118,6 +118,24 @@ import { isClientToolCallRequest, isDeferredToolResult, isToolResultWithMetadata
 
 export const SILENCE_TIMEOUT_MS = 600_000;
 export const MAX_SILENCE_RETRIES = 3;
+
+export const THINK_TOOL_DEFINITION: ToolDefinition = {
+	type: "function",
+	function: {
+		name: "think",
+		description:
+			"Use this optional scratchpad to reason through a problem before acting. " +
+			"It has no external effect; put the reasoning in `thought`.",
+		parameters: {
+			type: "object",
+			properties: { thought: { type: "string" } },
+			required: ["thought"],
+			additionalProperties: false,
+		},
+	},
+};
+export const THINK_TOOL_RESULT = "Thinking complete - please continue your work.";
+
 /**
  * Max retries for a degenerate turn — one producing no actionable output (no
  * tool call and no text), whether truncated at the output-token limit
@@ -620,6 +638,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				system: frame.assembled.systemPrompt || undefined,
 				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				temperature: undefined,
+				...(resolution.thinkingConfig && { thinking: resolution.thinkingConfig }),
 				timeout_ms: this.inferenceTimeoutMs,
 			};
 
@@ -1156,6 +1175,14 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		const deferred: LoopToolExecutionBatch["deferred"] = [];
 
 		for (const toolCall of parsed.toolCalls) {
+			if (toolCall.name === "think" && _frame.resolution.thinkingTool) {
+				this.toolCallsMade++;
+				results.push({
+					toolCall,
+					result: { content: THINK_TOOL_RESULT, exitCode: 0, durationMs: 0 },
+				});
+				continue;
+			}
 			this.toolCallsMade++;
 			let resultContent = "";
 			let exitCode = 0;
@@ -1811,24 +1838,32 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		// `noTools` turns (e.g. cache-warming pokes, issue #10) run tool-less: the
 		// merged list resolves to undefined and the loop ends after one response.
 		if (this.config.noTools) return undefined;
+		const thinkingTool =
+			this.lastModelResolution !== null &&
+			this.lastModelResolution.kind !== "error" &&
+			this.lastModelResolution.thinkingTool === true;
 		if (this.config.toolRegistry) {
 			const registryTools: ToolDefinition[] = [];
 			for (const registered of this.config.toolRegistry.values()) {
 				registryTools.push(registered.toolDefinition);
 			}
-			// config.tools may contain MCP bridge tool definitions that
-			// appear in the LLM tool list but dispatch through the bash tool.
-			// Include any config.tools entries not already in the registry.
 			const registryNames = new Set(this.config.toolRegistry.keys());
 			const extras = (this.config.tools ?? []).filter((t) => !registryNames.has(t.function.name));
-			const merged = [...registryTools, ...extras];
+			const merged = [
+				...registryTools,
+				...extras,
+				...(thinkingTool ? [THINK_TOOL_DEFINITION] : []),
+			];
 			return merged.length > 0 ? merged : undefined;
 		}
 
-		// Legacy path (when no registry provided)
 		const serverTools = this.config.tools ?? [];
 		const clientTools = this.config.clientTools ? Array.from(this.config.clientTools.values()) : [];
-		const merged: Array<ToolDefinition> = [...serverTools, ...clientTools];
+		const merged: Array<ToolDefinition> = [
+			...serverTools,
+			...clientTools,
+			...(thinkingTool ? [THINK_TOOL_DEFINITION] : []),
+		];
 		return merged.length > 0 ? merged : undefined;
 	}
 

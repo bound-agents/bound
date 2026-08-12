@@ -38,7 +38,7 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 			model: "opus",
 			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
 			nowMs: 0,
-			thinking: { type: "disabled", budget_tokens: 10000 },
+			thinking: { type: "bogus", budget_tokens: 10000 },
 		};
 		const result = inferenceRequestPayloadSchema.safeParse(payload);
 		expect(result.success).toBe(false);

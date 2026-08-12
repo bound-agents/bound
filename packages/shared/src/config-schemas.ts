@@ -69,11 +69,28 @@ const thinkingConfigSchema = z.union([
 	z.literal(true),
 	z
 		.object({
-			type: z.enum(["enabled", "adaptive"]).optional(),
+			type: z.enum(["enabled", "adaptive", "tool"]).optional(),
 			budget_tokens: z.number().int().positive().optional(),
 			display: z.enum(["omitted", "summarized"]).optional(),
 		})
-		.strict(),
+		.strict()
+		.superRefine((value, ctx) => {
+			if (value.type === "adaptive" && value.budget_tokens !== undefined) {
+				ctx.addIssue({ code: "custom", message: "adaptive thinking cannot set budget_tokens" });
+			}
+			if (value.type === "enabled" && value.display !== undefined) {
+				ctx.addIssue({ code: "custom", message: "enabled thinking cannot set display" });
+			}
+			if (
+				value.type === "tool" &&
+				(value.budget_tokens !== undefined || value.display !== undefined)
+			) {
+				ctx.addIssue({
+					code: "custom",
+					message: "tool thinking cannot set budget_tokens or display",
+				});
+			}
+		}),
 ]);
 
 // `effort` is a top-level output_config knob on the Claude API. It
@@ -209,7 +226,32 @@ const modelBackendSchema = z
 		// `connect_timeout_ms`). Absent → no extra headers.
 		additional_headers: z.record(z.string(), z.string()).optional(),
 	})
-	.strict();
+	.strict()
+	.superRefine((backend, ctx) => {
+		if (typeof backend.thinking !== "object" || backend.thinking?.type !== "tool") return;
+		if (backend.effort !== undefined) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["effort"],
+				message: "tool thinking cannot set effort",
+			});
+		}
+		const isMantleFable =
+			backend.provider === "bedrock-mantle" && backend.model === "anthropic.claude-fable-5";
+		const supportsToolMode =
+			!isMantleFable &&
+			(backend.provider === "bedrock-mantle" ||
+				(backend.provider === "bedrock" && backend.model?.includes("anthropic")));
+		if (!supportsToolMode) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["thinking"],
+				message: isMantleFable
+					? "tool thinking is unsupported for anthropic.claude-fable-5: Mantle defaults it to adaptive reasoning and rejects explicit disable"
+					: "tool thinking requires bedrock-mantle or an Anthropic Bedrock model with explicit reasoning disable support",
+			});
+		}
+	});
 
 export const modelBackendsSchema = z
 	.object({

@@ -853,9 +853,12 @@ describe("collectGitContext", () => {
 
 describe("collectContextFiles", () => {
 	it("returns empty string for directory with no context files", async () => {
-		// /tmp should not contain README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
-		const result = await collectContextFiles("/tmp");
-		expect(result).toBe("");
+		const dir = mkdtempSync(join(tmpdir(), "boundless-empty-context-"));
+		try {
+			expect(await collectContextFiles(dir)).toBe("");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("returns empty string for non-existent directory", async () => {
@@ -974,9 +977,13 @@ describe("buildSystemPromptAddition context files", () => {
 	});
 
 	it("does not include context files block when none are present", async () => {
-		// /tmp has no README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
-		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
-		expect(prompt).not.toContain("<context-files");
+		const dir = mkdtempSync(join(tmpdir(), "boundless-empty-context-"));
+		try {
+			const prompt = await buildSystemPromptAddition(dir, "localhost", []);
+			expect(prompt).not.toContain("<context-files");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("still includes all other sections when context files list is empty", async () => {

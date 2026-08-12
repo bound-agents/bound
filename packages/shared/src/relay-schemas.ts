@@ -106,6 +106,7 @@ export const inferenceRequestPayloadSchema = z.object({
 				type: z.literal("adaptive"),
 				display: z.enum(["omitted", "summarized"]).optional(),
 			}),
+			z.object({ type: z.literal("disabled") }),
 		])
 		.optional(),
 	// Free-form, provider-validated (see ChatParams.effort) — forwarded verbatim
