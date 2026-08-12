@@ -111,4 +111,12 @@ export interface PreSeededMessage {
 	content: string;
 	/** Defaults to fixture start time minus (totalCount - index) seconds. */
 	created_at?: string;
+	/**
+	 * For `tool_result` rows: the `tool_use` id this result answers. Persisted
+	 * into `messages.tool_name`, which is the column the readback seam reads
+	 * back as `LLMMessage.tool_use_id` (see `agent-loop-utils.ts`). Without it
+	 * the bridge cannot pair results to calls and Anthropic rejects the turn
+	 * with "each tool_use must have a single result".
+	 */
+	tool_use_id?: string;
 }

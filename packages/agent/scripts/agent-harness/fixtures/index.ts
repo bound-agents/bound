@@ -6,6 +6,7 @@
 import { autonomousTaskFixture } from "./autonomous-task";
 import { longThreadFixture } from "./long-thread";
 import { productionShapeFixture } from "./production-shape";
+import { thinkForceFixture } from "./think-force";
 import type { HarnessFixture } from "./types";
 
 const REGISTRY = new Map<string, HarnessFixture>();
@@ -23,4 +24,5 @@ export function registerBuiltinFixtures(): void {
 	registerFixture(autonomousTaskFixture);
 	registerFixture(productionShapeFixture);
 	registerFixture(longThreadFixture);
+	registerFixture(thinkForceFixture);
 }

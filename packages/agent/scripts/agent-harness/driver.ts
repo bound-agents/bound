@@ -373,7 +373,12 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 					role: pm.role,
 					content: pm.content,
 					model_id: null,
-					tool_name: null,
+					// `tool_name` is the column the readback seam converts back into
+					// `LLMMessage.tool_use_id` (agent-loop-utils.ts). A seeded
+					// `tool_result` without it cannot be paired to its call, and
+					// Anthropic rejects the turn with "each tool_use must have a
+					// single result".
+					tool_name: pm.tool_use_id ?? null,
 					host_origin: hostName,
 					created_at: msgTime,
 					modified_at: msgTime,
