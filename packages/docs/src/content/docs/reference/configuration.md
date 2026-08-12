@@ -108,9 +108,11 @@ object:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `type` | `enabled`\|`adaptive` | `enabled` + `budget_tokens` is the legacy fixed-budget shape (removed on Opus 4.7); `adaptive` lets the model decide, with depth set by the backend's `effort`. |
-| `budget_tokens` | int > 0 | Legacy fixed thinking budget. Rejected (400) on Opus 4.7. |
-| `display` | `omitted`\|`summarized` | Opt into visible reasoning text on Opus 4.7 (default `omitted`). |
+| `type` | `enabled`\|`adaptive`\|`tool` | `enabled` + `budget_tokens` is the legacy fixed-budget shape (removed on Opus 4.7); `adaptive` lets the model decide, with depth set by the backend's `effort`. `tool` disables the provider's native reasoning and exposes Bound's optional `think({ thought })` scratchpad tool instead. |
+| `budget_tokens` | int > 0 | Legacy fixed thinking budget. Rejected (400) on Opus 4.7; incompatible with `adaptive` and `tool`. |
+| `display` | `omitted`\|`summarized` | Opt into visible reasoning text on Opus 4.7 (default `omitted`); incompatible with `enabled` and `tool`. |
+
+`tool` mode cannot set `effort`. It emits `Thinking complete - please continue your work.` after a `think` call and does not require the model to invoke that tool.
 
 **Cache-warming block** (`cache_warming`) — opt-in periodic "warm poke" that
 keeps the prompt cache hot on active threads so the next real message lands on a

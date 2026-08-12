@@ -35,6 +35,17 @@ describe("buildReasoningConfig — Anthropic models", () => {
 		expect(cfg).toEqual({ type: "enabled", budgetTokens: 8192 });
 	});
 
+	it("sends explicit disabled thinking for tool mode on Anthropic", () => {
+		const cfg = buildReasoningConfig(
+			{
+				messages: [],
+				thinking: { type: "disabled" },
+			},
+			"anthropic.claude-opus-4-7",
+		);
+		expect(cfg).toEqual({ type: "disabled" });
+	});
+
 	it("keeps adaptive thinking on Anthropic", () => {
 		const cfg = buildReasoningConfig(
 			{

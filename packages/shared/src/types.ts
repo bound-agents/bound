@@ -229,6 +229,8 @@ export interface Host extends SoftDeletable {
 export interface HostModelEntry {
 	id: string;
 	tier?: number;
+	/** Bound-side reasoning transport selected by this host's backend config. */
+	thinking_mode?: "tool";
 	capabilities?: {
 		streaming?: boolean;
 		tool_use?: boolean;

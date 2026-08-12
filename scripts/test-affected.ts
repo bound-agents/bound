@@ -214,6 +214,8 @@ export function run(): void {
 	if (shouldRunScriptsTests(changed)) dirs.push("scripts");
 
 	const testableDirs = dirs.filter((d) => hasTestFiles(d, root));
+	const scriptsHaveTests = shouldRunScriptsTests(changed) && hasTestFiles("scripts", root);
+	if (scriptsHaveTests) testableDirs.push("scripts");
 
 	if (testableDirs.length === 0) {
 		console.log("test-affected: no testable sources staged — skipping tests.");
@@ -253,7 +255,11 @@ export function run(): void {
 				stdout: "inherit",
 				stderr: "inherit",
 			});
-			if ((proc.exitCode ?? 1) !== 0) lastExit = proc.exitCode ?? 1;
+			const exitCode = proc.exitCode ?? 1;
+			if (exitCode !== 0) {
+				console.error(`test-affected: ${dir} exited ${exitCode}`);
+				lastExit = exitCode;
+			}
 		}
 		process.exit(lastExit);
 	}

@@ -465,28 +465,37 @@ export class ModelRouter {
 		}
 		if (typeof config.thinking === "object" && config.thinking !== null) {
 			const t = config.thinking as {
-				type?: "enabled" | "adaptive";
+				type?: "enabled" | "adaptive" | "tool";
 				budget_tokens?: number;
 				display?: "omitted" | "summarized";
 			};
+			if (t.type === "tool") return { type: "disabled" };
 			if (t.type === "adaptive") {
 				return { type: "adaptive", display: t.display ?? "summarized" };
 			}
-			return {
-				type: "enabled",
-				budget_tokens: t.budget_tokens ?? 10000,
-			};
+			return { type: "enabled", budget_tokens: t.budget_tokens ?? 10000 };
 		}
 		return undefined;
 	}
 
+	/** Returns whether this backend replaces native reasoning with Bound's think tool. */
+	usesThinkingTool(backendId: string): boolean {
+		const config = this.backendConfigs.get(backendId);
+		return (
+			typeof config?.thinking === "object" &&
+			config.thinking !== null &&
+			(config.thinking as { type?: string }).type === "tool"
+		);
+	}
+
 	/**
 	 * Returns the `effort` level configured for a backend, or undefined if
-	 * unset. A free-form, provider-validated reasoning-depth string (canonical
-	 * Anthropic/Bedrock-Converse set: low | medium | high | xhigh | max; other
-	 * providers advertise their own levels). See `ChatParams.effort`.
+	 * unset. Tool-thinking mode deliberately suppresses it: absence is not a
+	 * disable request on several providers, but the explicit disabled thinking
+	 * config from getThinkingConfig() is.
 	 */
 	getEffort(backendId: string): ChatParams["effort"] | undefined {
+		if (this.usesThinkingTool(backendId)) return undefined;
 		const config = this.backendConfigs.get(backendId);
 		if (!config) return undefined;
 		const effort = config.effort as ChatParams["effort"] | undefined;

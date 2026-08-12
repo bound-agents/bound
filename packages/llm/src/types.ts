@@ -136,7 +136,8 @@ export interface ChatParams {
 	 */
 	thinking?:
 		| { type: "enabled"; budget_tokens: number }
-		| { type: "adaptive"; display?: "omitted" | "summarized" };
+		| { type: "adaptive"; display?: "omitted" | "summarized" }
+		| { type: "disabled" };
 	/**
 	 * Reasoning-depth / token-spend lever. A FREE-FORM string: the accepted
 	 * vocabulary is provider-specific and validated per-driver, not by this
@@ -480,7 +481,8 @@ export interface InferenceRequestPayload {
 	tool_choice?: "auto" | "none" | "required" | { type: "tool"; toolName: string };
 	thinking?:
 		| { type: "enabled"; budget_tokens: number }
-		| { type: "adaptive"; display?: "omitted" | "summarized" };
+		| { type: "adaptive"; display?: "omitted" | "summarized" }
+		| { type: "disabled" };
 	// Free-form, provider-validated; see ChatParams.effort.
 	effort?: string;
 	cache_ttl?: "5m" | "1h";

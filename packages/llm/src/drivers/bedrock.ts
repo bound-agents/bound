@@ -336,7 +336,9 @@ export function buildReasoningConfig(
 	const isAnthropicModel = modelId.includes("anthropic");
 	const config: BedrockReasoningConfig = {};
 	if (isAnthropicModel) {
-		if (params.thinking?.type === "enabled") {
+		if (params.thinking?.type === "disabled") {
+			config.type = "disabled";
+		} else if (params.thinking?.type === "enabled") {
 			config.type = "enabled";
 			config.budgetTokens = params.thinking.budget_tokens;
 		} else if (params.thinking?.type === "adaptive") {
