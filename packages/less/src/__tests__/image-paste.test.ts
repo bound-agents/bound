@@ -166,6 +166,27 @@ describe("clipboard image reading", () => {
 		}));
 		expect(img).toBeNull();
 	});
+
+	it("win32: reads PNG base64 from PowerShell, falling back to powershell.exe", async () => {
+		const png = buildPng(1, 1, 2, [7, 7, 7]);
+		const calls: string[] = [];
+		const img = await readClipboardImage("win32", async (cmd) => {
+			calls.push(cmd);
+			if (cmd === "pwsh") return { ok: false, stdout: Buffer.alloc(0) };
+			return { ok: true, stdout: Buffer.from(Buffer.from(png).toString("base64")) };
+		});
+		expect(calls).toEqual(["pwsh", "powershell.exe"]);
+		expect(img?.mediaType).toBe("image/png");
+		expect(Buffer.from(img?.bytes ?? []).equals(Buffer.from(png))).toBe(true);
+	});
+
+	it("win32: empty PowerShell stdout means no image", async () => {
+		const img = await readClipboardImage("win32", async () => ({
+			ok: true,
+			stdout: Buffer.alloc(0),
+		}));
+		expect(img).toBeNull();
+	});
 });
 
 describe("image preview cache + description stamp", () => {
