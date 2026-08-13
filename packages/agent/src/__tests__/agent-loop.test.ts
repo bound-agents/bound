@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
+import type { BackendConfig, ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { EventMap } from "@bound/shared";
 import { assert } from "@bound/shared";
@@ -2187,6 +2187,62 @@ describe("MainAgentLoop", () => {
 		expect(developerMsg?.content).toContain(localThreadId);
 		// system_suffix should no longer be passed
 		expect(params.system_suffix).toBeUndefined();
+	});
+
+	it("forces think on the actual local backend request after ten think-free tool calls", async () => {
+		const localThreadId = randomUUID();
+		const ctx = makeCtx();
+		const backend = new CaptureParamsBackend();
+		const backendId = "tool-mode-model";
+		const router = new ModelRouter(
+			new Map([[backendId, backend]]),
+			backendId,
+			undefined,
+			undefined,
+			new Map([
+				[
+					backendId,
+					{
+						id: backendId,
+						provider: "bedrock-mantle",
+						provider_mode: "openai_responses",
+						model: "openai.gpt-5.6-sol",
+						thinking: { type: "tool" },
+					} as BackendConfig,
+				],
+			]),
+		);
+
+		for (let i = 0; i < 10; i++) {
+			const createdAt = new Date(Date.now() - (10 - i) * 1000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([{ type: "tool_use", id: `call_${i}`, name: "query", input: {} }]),
+					backendId,
+					null,
+					createdAt,
+					createdAt,
+					"local",
+					0,
+				],
+			);
+		}
+
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
+			threadId: localThreadId,
+			userId: "test-user",
+			modelId: backendId,
+		});
+
+		await agentLoop.run();
+
+		expect(backend.capturedParams).toHaveLength(1);
+		expect(backend.capturedParams[0].tool_choice).toEqual({ type: "tool", toolName: "think" });
+		expect(backend.capturedParams[0].tools?.map((tool) => tool.function.name)).toContain("think");
 	});
 
 	describe("context_debug freshness per turn", () => {

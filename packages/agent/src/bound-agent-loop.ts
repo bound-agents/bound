@@ -17,6 +17,7 @@ import {
 	writeOutbox,
 } from "@bound/core";
 import type {
+	ChatParams,
 	ContentBlock,
 	LLMBackend,
 	ModelRouter,
@@ -98,6 +99,11 @@ import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { fromEventBus } from "./rx-utils";
+import {
+	THINK_FORCE_SCAN_LIMIT,
+	THINK_TOOL_FORCE_AFTER,
+	resolveThinkToolChoice,
+} from "./think-tool-force";
 import { persistImageBlocksAsFileRefs } from "./tool-result-images";
 import {
 	TOOL_RESULT_OFFLOAD_THRESHOLD,
@@ -595,6 +601,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		if (!resolution || resolution.kind === "error") {
 			throw new Error(resolution?.error ?? "Model resolution not available");
 		}
+		const forcedThinkChoice = this.resolveThinkForce(resolution);
 		if (resolution.kind === "remote") {
 			// Single delegation wire format (R-UD3): ship the assembled context as
 			// SEGMENTS, never raw `messages` and never a `files`-table offload. The
@@ -639,6 +646,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				temperature: undefined,
 				...(resolution.thinkingConfig && { thinking: resolution.thinkingConfig }),
+				...(forcedThinkChoice && { tool_choice: forcedThinkChoice }),
 				timeout_ms: this.inferenceTimeoutMs,
 			};
 
@@ -705,6 +713,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				max_tokens: this.resolvedMaxOutputTokens(resolution),
 				thinking: resolution.thinkingConfig,
 				effort: resolution.effort,
+				...(forcedThinkChoice && { tool_choice: forcedThinkChoice }),
 				cache_ttl: resolution.cacheTtl,
 				resolveFileRef: createFileRefResolver(this.ctx.db),
 				signal: this.config.abortSignal,
@@ -1865,6 +1874,32 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			...(thinkingTool ? [THINK_TOOL_DEFINITION] : []),
 		];
 		return merged.length > 0 ? merged : undefined;
+	}
+
+	/**
+	 * Resolve a forced `think` choice from complete persisted history. Context
+	 * assembly may budget-truncate old rows, but truncation must not reset this
+	 * behavioral guardrail. The same resolved value is attached to both local
+	 * backend calls and relay inference payloads.
+	 */
+	protected resolveThinkForce(
+		resolution: BoundPreparedFrame["resolution"],
+	): ChatParams["tool_choice"] | undefined {
+		if (this.config.noTools || resolution.thinkingTool !== true) return undefined;
+		const rows = listLiveMessageProjectionByThreadNewestFirst(
+			this.ctx.db,
+			this.config.threadId,
+			THINK_FORCE_SCAN_LIMIT,
+		);
+		const choice = resolveThinkToolChoice({ thinkingTool: true, rows });
+		if (choice) {
+			this.ctx.logger.info("[agent-loop] Forcing think tool after tool-call streak", {
+				threadId: this.config.threadId,
+				model: resolution.modelId,
+				forceAfter: THINK_TOOL_FORCE_AFTER,
+			});
+		}
+		return choice;
 	}
 
 	/**
