@@ -1891,6 +1891,34 @@ describe("toModelMessages — tool-pair completeness backstop (orphan recovery)"
 		expect(resultIds).toEqual([]);
 	});
 
+	it("replaces a tool_result separated from its tool_call by an intervening message", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_call",
+					content: [{ type: "tool_use", id: "tooluse_interleaved", name: "query", input: {} }],
+				},
+				{ role: "developer", content: "background notification" },
+				{
+					role: "tool_result",
+					tool_use_id: "tooluse_interleaved",
+					content: [{ type: "text", text: "late result" }],
+				},
+			],
+			{ targetEnvelope: BEDROCK_PERMISSIVE_ENVELOPE },
+		);
+		const result = out
+			.flatMap((m) =>
+				Array.isArray(m.content) ? (m.content as Array<Record<string, unknown>>) : [],
+			)
+			.find((part) => part.type === "tool-result" && part.toolCallId === "tooluse_interleaved") as {
+			output?: { value?: string };
+		};
+		expect(result.output?.value).toBe("[no tool result recorded: the call did not complete]");
+		expect(out.filter((m) => m.role === "tool")).toHaveLength(1);
+	});
+
 	it("leaves a well-formed parallel batch untouched", () => {
 		const out = toModelMessages(
 			[
