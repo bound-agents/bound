@@ -91,6 +91,15 @@ describe("buildCspString", () => {
 describe("buildAppFrameSrcdoc", () => {
 	const html = "<!doctype html><html><head><title>App</title></head><body>hi</body></html>";
 
+	it("injects opaque-origin postMessage compatibility before app code", () => {
+		const out = buildAppFrameSrcdoc(html);
+		// Browser extensions and app bundles sometimes use the frame's literal
+		// `location.origin` ("null") as targetOrigin. postMessage rejects that
+		// string, so normalize only that target to "*" inside the isolated frame.
+		expect(out).toContain('targetOrigin==="null"?"*":targetOrigin');
+		expect(out.indexOf('targetOrigin==="null"')).toBeLessThan(out.indexOf("<title>"));
+	});
+
 	it("injects the in-memory storage shim (always) even with no csp", () => {
 		const out = buildAppFrameSrcdoc(html);
 		// shim is injected so the opaque-origin frame doesn't crash on localStorage
@@ -98,7 +107,7 @@ describe("buildAppFrameSrcdoc", () => {
 		expect(out).toContain('Object.defineProperty(window,"sessionStorage"');
 		// no csp → no meta tag
 		expect(out).not.toContain("Content-Security-Policy");
-		// shim lands inside the head, before the title
+		// shims land inside the head, before the title
 		expect(out.indexOf("localStorage")).toBeLessThan(out.indexOf("<title>"));
 		expect(out.indexOf("<head>")).toBeLessThan(out.indexOf("localStorage"));
 		// original markup is preserved
