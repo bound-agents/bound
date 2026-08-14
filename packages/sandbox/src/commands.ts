@@ -25,6 +25,8 @@ export interface McpAppBinding {
 	server: string;
 	tool: string;
 	uiResourceUri: string;
+	/** Native arguments dispatched to the MCP tool, used to reconstruct the app after reload. */
+	input?: Record<string, unknown>;
 }
 
 export const loopContextStorage = new AsyncLocalStorage<{

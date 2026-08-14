@@ -251,21 +251,33 @@ describe("reconstructInstancesFromMessages", () => {
 		});
 	});
 
-	it("mounts regardless of call shape — a binding on a bash-wrapped call still renders", () => {
-		// The whole point of stamping the binding at dispatch: it doesn't matter
-		// where the tool was called from. Here the tool_use is a `bash` call whose
-		// input is a shell string (the boundless shape) — no `subcommand` to parse,
-		// the old resolveCall heuristic would have found nothing. The result-row
-		// binding carries the truth, so the instance still mounts.
+	it("recovers native tool arguments from metadata for a bash-wrapped call", () => {
+		// The persisted tool_use belongs to the outer bash tool, but the app needs
+		// the native arguments that the MCP bridge parsed and dispatched.
 		const h = host();
 		const messages: PersistedToolMessage[] = [
-			toolCallMsg("tooluse_b", "bash", { command: "github do_thing" }),
-			toolResultMsg("tooluse_b", SRV_BINDING),
+			toolCallMsg("tooluse_b", "bash", { command: "srv do_thing --q hi" }),
+			{
+				role: "tool_result",
+				tool_name: "tooluse_b",
+				content: JSON.stringify([{ type: "text", text: "rendered ok" }]),
+				metadata: JSON.stringify({
+					mcp_app: { ...SRV_BINDING, input: { q: "hi" } },
+				}),
+			},
 		];
 		const instances = reconstructInstancesFromMessages(messages, h, "t1");
 		expect(instances).toHaveLength(1);
-		expect(instances[0].serverName).toBe("srv");
-		expect(instances[0].uiResourceUri).toBe("ui://srv/app.html");
+		expect(instances[0].input).toEqual({ q: "hi" });
+	});
+
+	it("does not reconstruct a blank app from a legacy bash wrapper with no native input", () => {
+		const h = host();
+		const messages: PersistedToolMessage[] = [
+			toolCallMsg("tooluse_legacy", "bash", { command: "srv do_thing --q hi" }),
+			toolResultMsg("tooluse_legacy", SRV_BINDING, "tool failed"),
+		];
+		expect(reconstructInstancesFromMessages(messages, h, "t1")).toEqual([]);
 	});
 
 	it("resolves an empty result when the bound result row carried no content", async () => {

@@ -244,7 +244,7 @@ describe("MCP App binding persisted to tool_result metadata", () => {
 		if (tmpDir) await cleanupTmpDir(tmpDir);
 	});
 
-	it("stamps {server, tool, uiResourceUri} on the tool_result row for a UI-bearing tool", async () => {
+	it("stamps the binding and native MCP input on the tool_result row", async () => {
 		const backend = new ScriptedLLMBackend();
 		backend.toolThenText("call-1", "github get_me", "done");
 
@@ -267,6 +267,7 @@ describe("MCP App binding persisted to tool_result metadata", () => {
 			server: "github",
 			tool: "get_me",
 			uiResourceUri: UI_RESOURCE_URI,
+			input: {},
 		});
 	});
 
