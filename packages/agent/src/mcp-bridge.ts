@@ -457,21 +457,27 @@ export async function generateMCPCommands(
 				// outcome; a UI-capable surface renders the result, error or not.
 				const uiResourceUri = (entry.tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta
 					?.ui?.resourceUri;
+
+				// Pass all args except 'subcommand' to callTool, with type coercion.
+				// Args arrive as strings from the bash --key value parser. MCP servers
+				// validate against their input schema, so "10" when number is expected
+				// or "true" when boolean is expected causes validation failures.
+				// Coerce values using the tool's input schema before dispatch.
+				const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
+				const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 				if (typeof uiResourceUri === "string") {
 					const store = loopContextStorage.getStore();
 					if (store) {
-						store.mcpApp = { server: serverName, tool: subcommand, uiResourceUri };
+						store.mcpApp = {
+							server: serverName,
+							tool: subcommand,
+							uiResourceUri,
+							input: toolArgs,
+						};
 					}
 				}
 
 				try {
-					// Pass all args except 'subcommand' to callTool, with type coercion.
-					// Args arrive as strings from the bash --key value parser. MCP servers
-					// validate against their input schema, so "10" when number is expected
-					// or "true" when boolean is expected causes validation failures.
-					// Coerce values using the tool's input schema before dispatch.
-					const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
-					const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 					const result = await currentClient.callTool(subcommand, toolArgs);
 
 					// Convert mixed media to JSON ContentBlock[] so the agent loop
