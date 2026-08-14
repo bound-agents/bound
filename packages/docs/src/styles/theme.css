@@ -362,6 +362,9 @@ aside[data-type="danger"] {
 	color: var(--bound-ink-3) !important;
 	border: 1px solid var(--bound-rule) !important;
 	background: transparent !important;
+	/* Starlight removes inline padding from minimal links; this theme gives
+	   them a button border, so restore a full hit area. */
+	padding-inline: 1.25rem !important;
 }
 
 .sl-link-button.minimal:hover {

@@ -186,7 +186,19 @@ async function checkGeneratedLinks(): Promise<void> {
 	}
 }
 
+function checkThemeContracts(): void {
+	const themeFile = join(packageRoot, "src", "styles", "theme.css");
+	const theme = readFileSync(themeFile, "utf8");
+	const minimalButton = theme.match(/\.sl-link-button\.minimal\s*\{([\s\S]*?)\}/)?.[1];
+	if (!minimalButton || !/\bpadding(?:-inline)?\s*:/.test(minimalButton)) {
+		errors.push(
+			"src/styles/theme.css: bordered minimal link button must restore padding removed by Starlight",
+		);
+	}
+}
+
 checkSourceStructure();
+checkThemeContracts();
 await checkGeneratedLinks();
 
 if (errors.length > 0) {
