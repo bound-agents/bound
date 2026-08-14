@@ -73,6 +73,7 @@ import { createSyncServer, createWebServer } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 import type { AgentLoopFactory } from "./agent-factory.js";
+import { resolvePlatformToolsForThread } from "./platform-tools.js";
 
 export type { AgentLoopFactory } from "./agent-factory.js";
 
@@ -787,27 +788,24 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									? threadInterface
 									: undefined;
 
-							// Resolve platform tools using two-branch model:
-							// - Event task threads: scoped to their bound server's full tool set
-							// - All other threads: read-only platform tools + connector tool
+							// Event task threads additionally receive the connector tool so they
+							// can detach a malfunctioning subscription without external help.
 							let platformTools: PlatformRegisteredTool[] | undefined;
 							// Connector-authored instructions, surfaced only to event-bound
 							// threads (mirrors getInstructionsForThread's scoping).
 							let platformInstructions: string | undefined;
 							if (platformMcpRegistry) {
 								const scopedTools = platformMcpRegistry.getToolsForThread(thread_id);
+								const resolvedTools = resolvePlatformToolsForThread(
+									platformMcpRegistry,
+									thread_id,
+									connectorTool,
+								);
+								if (resolvedTools.length > 0) {
+									platformTools = resolvedTools;
+								}
 								if (scopedTools.size > 0) {
-									platformTools = Array.from(scopedTools.values());
 									platformInstructions = platformMcpRegistry.getInstructionsForThread(thread_id);
-								} else {
-									const readOnlyTools = Array.from(
-										platformMcpRegistry.getReadOnlyPlatformTools().values(),
-									);
-									if (connectorTool) {
-										platformTools = [...readOnlyTools, connectorTool];
-									} else if (readOnlyTools.length > 0) {
-										platformTools = readOnlyTools;
-									}
 								}
 							}
 

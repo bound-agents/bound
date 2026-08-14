@@ -30,6 +30,7 @@ import {
 	registerConnectorEventDelivery,
 } from "@bound/platforms";
 import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
+import { resolvePlatformToolsForThread } from "./platform-tools.js";
 import { shutdownTelemetry } from "./telemetry.js";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
@@ -209,21 +210,8 @@ export function initScheduler(
 							}
 						: undefined,
 				platformToolResolver: platformMcpRegistry
-					? (threadId: string) => {
-							// Event task threads: scoped to their bound server's full tool set
-							const scopedTools = platformMcpRegistry.getToolsForThread(threadId);
-							if (scopedTools.size > 0) {
-								return Array.from(scopedTools.values());
-							}
-							// All other threads: read-only platform tools + connector tool
-							const readOnlyTools = Array.from(
-								platformMcpRegistry.getReadOnlyPlatformTools().values(),
-							);
-							if (connectorTool) {
-								return [...readOnlyTools, connectorTool];
-							}
-							return readOnlyTools;
-						}
+					? (threadId: string) =>
+							resolvePlatformToolsForThread(platformMcpRegistry, threadId, connectorTool)
 					: undefined,
 				platformInstructionsResolver: platformMcpRegistry
 					? (threadId: string) => platformMcpRegistry.getInstructionsForThread(threadId)
