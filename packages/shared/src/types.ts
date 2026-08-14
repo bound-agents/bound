@@ -571,6 +571,9 @@ export const RELAY_KIND_REGISTRY = {
 	// Async request kinds — fire-and-forget, processed via relay_inbox
 	cancel: { dispatch: "async" },
 	inference: { dispatch: "async" },
+	// Transport-sized pieces of one serialized inference request. The receiver
+	// reassembles all parts before invoking the normal inference handler.
+	inference_part: { dispatch: "async" },
 	intake: { dispatch: "async" },
 
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor

@@ -48,6 +48,7 @@ import {
 	extractTraceContext,
 	hostMcpToolsSchema,
 	hostModelsSchema,
+	inferenceRequestPartPayloadSchema,
 	inferenceRequestPayloadSchema,
 	intakePayloadSchema,
 	parseJsonSafe,
@@ -75,6 +76,10 @@ import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { reconcileDarkConnectorHandles } from "./connector-handle-reconciler.js";
 import { resolveSegments } from "./delegation-segments.js";
+import {
+	type InferenceRequestPart,
+	InferenceRequestPartAssembler,
+} from "./inference-request-parts.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import { formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
@@ -162,6 +167,7 @@ export class RelayProcessor {
 	private idempotencyCache = new Map<string, IdempotencyCacheEntry>();
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
+	private readonly completedInferenceParts = new Set<string>();
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformMcpRegistry: PlatformMcpRegistry | null = null;
 	private wsRegistry: ClientToolResolver | null = null;
@@ -199,6 +205,7 @@ export class RelayProcessor {
 				this.executePlatformRequest(p as PlatformRequestPayload),
 			),
 		inference: (entry) => this.handleInference(entry),
+		inference_part: (entry) => this.handleInferencePart(entry),
 		intake: (entry) => this.handleIntake(entry),
 		client_tool: (entry) => this.handleClientTool(entry),
 	};
@@ -602,6 +609,53 @@ export class RelayProcessor {
 		this.executeInference(entry, payloadResult.value as InferenceRequestPayload).catch((err) => {
 			this.logger.error("executeInference failed", { error: err, entryId: entry.id });
 		});
+		return null;
+	}
+
+	private async handleInferencePart(entry: RelayInboxEntry): Promise<null> {
+		const parsed = parseJsonSafe(inferenceRequestPartPayloadSchema, entry.payload, entry.kind);
+		if (!parsed.ok || !entry.ref_id) {
+			throw new Error(
+				`Invalid multipart inference payload: ${parsed.ok ? "missing ref_id" : parsed.error}`,
+			);
+		}
+		const part = parsed.value as InferenceRequestPart;
+		if (part.request_id !== entry.ref_id) throw new Error("Multipart request_id/ref_id mismatch");
+		if (this.completedInferenceParts.has(part.request_id)) return null;
+
+		const rows = this.db
+			.query(
+				"SELECT * FROM relay_inbox WHERE kind = 'inference_part' AND ref_id = ? ORDER BY received_at ASC, id ASC",
+			)
+			.all(part.request_id) as RelayInboxEntry[];
+		const assembler = new InferenceRequestPartAssembler();
+		let serialized: string | null = null;
+		for (const row of rows) {
+			if (
+				row.source_site_id !== entry.source_site_id ||
+				row.stream_id !== entry.stream_id ||
+				row.expires_at !== entry.expires_at
+			) {
+				throw new Error("Conflicting multipart inference request envelope");
+			}
+			const rowPart = parseJsonSafe(inferenceRequestPartPayloadSchema, row.payload, row.kind);
+			if (!rowPart.ok) throw new Error(`Invalid multipart inference payload: ${rowPart.error}`);
+			const completed = assembler.add(rowPart.value as InferenceRequestPart);
+			if (completed !== null) serialized = completed;
+		}
+		if (serialized === null) return null;
+		if (this.pendingCancels.delete(part.request_id)) return null;
+
+		this.completedInferenceParts.add(part.request_id);
+		const synthetic: RelayInboxEntry = {
+			...entry,
+			id: part.request_id,
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			payload: serialized,
+		};
+		await this.handleInference(synthetic);
 		return null;
 	}
 

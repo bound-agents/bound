@@ -7,6 +7,7 @@ import { applySchema } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import { splitInferenceRequest } from "../inference-request-parts";
 import { RelayProcessor } from "../relay-processor";
 import { waitFor } from "./helpers";
 
@@ -240,6 +241,64 @@ describe("RelayProcessor - executeInference", () => {
 		expect(cycleKinds.has("inference")).toBe(true);
 		expect(cycleKinds.has("stream_chunk")).toBe(true);
 		expect(cycleKinds.has("stream_end")).toBe(true);
+	});
+
+	it("reassembles out-of-order inference parts and invokes the backend exactly once", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("multipart-ok");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		const expiresAt = new Date(Date.now() + 60_000).toISOString();
+		const serialized = JSON.stringify({
+			model: "test-model",
+			segments: [{ kind: "inline", message: { role: "user", content: "電".repeat(2000) } }],
+			nowMs: 0,
+			timeout_ms: 5000,
+		});
+		const parts = splitInferenceRequest(serialized, requestId, 512).reverse();
+		const insert = db.prepare(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, 'inference_part', ?, ?, ?, ?, ?, ?, 0)`,
+		);
+		for (const part of [...parts, parts[0]]) {
+			insert.run(
+				randomUUID(),
+				"requester-site",
+				requestId,
+				`part-${requestId}-${part.index}-${randomUUID()}`,
+				streamId,
+				JSON.stringify(part),
+				expiresAt,
+				new Date().toISOString(),
+			);
+		}
+		const handle = processor.start(10);
+		await waitFor(() => backend.capturedParams.length === 1, {
+			message: "multipart inference did not invoke backend",
+		});
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number }
+				).n === 1,
+			{ message: "multipart inference did not complete" },
+		);
+		handle.stop();
+		expect(backend.capturedParams).toHaveLength(1);
+		expect((backend.capturedParams[0].messages[0].content as string).length).toBe(2000);
 	});
 
 	it("AC3.2a: flushes at 200ms timer with pending chunks", async () => {
