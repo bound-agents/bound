@@ -45,7 +45,13 @@ import {
 	shouldRetryRelayCall,
 } from "@bound/loop";
 import type { McpAppBinding } from "@bound/sandbox";
-import type { ClientToolPayload, ContextDebugInfo, EventMap, SyncConfig } from "@bound/shared";
+import type {
+	ClientToolPayload,
+	ContextDebugInfo,
+	EventMap,
+	RelayConfig,
+	SyncConfig,
+} from "@bound/shared";
 import {
 	HLC_ZERO,
 	appendToolDuration,
@@ -680,6 +686,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					eventBus: this.ctx.eventBus,
 					siteId: this.ctx.siteId,
 					logger: this.ctx.logger,
+					maxPayloadBytes: this.relayConfig.max_payload_bytes,
 				},
 				inferencePayload,
 				resolution.hosts,
@@ -1794,15 +1801,18 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		this.messagesCreated++;
 	}
 
+	private get relayConfig(): RelayConfig {
+		const syncResult = this.ctx.optionalConfig?.sync;
+		const syncConfig = syncResult?.ok ? (syncResult.value as SyncConfig) : undefined;
+		return resolveRelayConfig(syncConfig);
+	}
+
 	/** Read inference_timeout_ms from relay config (default 300s). */
 	private get inferenceTimeoutMs(): number {
-		if (this._inferenceTimeoutMs === null) {
-			const syncResult = this.ctx.optionalConfig?.sync;
-			const syncConfig = syncResult?.ok ? (syncResult.value as SyncConfig) : undefined;
-			const relayConfig = resolveRelayConfig(syncConfig);
-			this._inferenceTimeoutMs = relayConfig.inference_timeout_ms;
-		}
-		return this._inferenceTimeoutMs;
+		if (this._inferenceTimeoutMs !== null) return this._inferenceTimeoutMs;
+		const timeoutMs = this.relayConfig.inference_timeout_ms;
+		this._inferenceTimeoutMs = timeoutMs;
+		return timeoutMs;
 	}
 
 	// First-chunk timeout for relay streaming. A dead/restarted spoke never

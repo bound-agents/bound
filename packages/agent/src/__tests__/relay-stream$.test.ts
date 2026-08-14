@@ -567,4 +567,44 @@ describe("createRelayStream$", () => {
 			.get() as { cnt: number };
 		expect(outbox.cnt).toBe(1);
 	});
+
+	it("splits an oversized inference request into relay-safe parts", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+		const maxPayloadBytes = 512;
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger, maxPayloadBytes },
+			{
+				...payloadFixture,
+				segments: [
+					{ kind: "inline" as const, message: { role: "user", content: "電".repeat(4000) } },
+				],
+			} as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 100, firstChunkTimeoutMs: 100, pollIntervalMs: 20 },
+		);
+		await lastValueFrom(stream$, { defaultValue: undefined }).catch(() => undefined);
+		const rows = db
+			.prepare(
+				"SELECT kind, ref_id, stream_id, payload FROM relay_outbox WHERE kind = 'inference_part'",
+			)
+			.all() as Array<{ kind: string; ref_id: string; stream_id: string; payload: string }>;
+		expect(rows.length).toBeGreaterThan(1);
+		expect(new Set(rows.map((row) => row.ref_id)).size).toBe(1);
+		expect(new Set(rows.map((row) => row.stream_id)).size).toBe(1);
+		for (const row of rows) {
+			expect(new TextEncoder().encode(row.payload).byteLength).toBeLessThanOrEqual(maxPayloadBytes);
+		}
+		expect(
+			(
+				db.prepare("SELECT COUNT(*) AS count FROM relay_outbox WHERE kind = 'inference'").get() as {
+					count: number;
+				}
+			).count,
+		).toBe(0);
+	});
 });

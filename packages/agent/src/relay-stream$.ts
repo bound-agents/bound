@@ -35,6 +35,7 @@ import {
 	timeout,
 } from "rxjs";
 import type { Observable } from "rxjs";
+import { splitInferenceRequest } from "./inference-request-parts";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
 
@@ -43,6 +44,7 @@ export interface RelayStreamDeps {
 	eventBus: TypedEventEmitter;
 	siteId: string;
 	logger: Logger;
+	maxPayloadBytes?: number;
 }
 
 export interface RelayStreamOptions {
@@ -211,18 +213,43 @@ export function createRelayStream$(
 			const streamId = randomUUID();
 			const serializedPayload = JSON.stringify(payload);
 			const traceContext = injectTraceContext();
-			const outboxEntry = createRelayOutboxEntry(
-				host.site_id,
-				deps.siteId,
-				"inference",
-				serializedPayload,
-				perHostTimeoutMs,
-				undefined,
-				undefined,
-				streamId,
-				traceContext ? JSON.stringify(traceContext) : undefined,
-			);
-			writeOutbox(deps.db, outboxEntry);
+			const maxPayloadBytes = deps.maxPayloadBytes ?? 2 * 1024 * 1024;
+			const serializedBytes = new TextEncoder().encode(serializedPayload).byteLength;
+			const requestId = randomUUID();
+			const requestParts =
+				serializedBytes <= maxPayloadBytes
+					? null
+					: splitInferenceRequest(serializedPayload, requestId, maxPayloadBytes);
+			const outboxEntries = requestParts
+				? requestParts.map((part) =>
+						createRelayOutboxEntry(
+							host.site_id,
+							deps.siteId,
+							"inference_part",
+							JSON.stringify(part),
+							perHostTimeoutMs,
+							requestId,
+							`inference-part:${requestId}:${part.index}`,
+							streamId,
+							traceContext ? JSON.stringify(traceContext) : undefined,
+						),
+					)
+				: [
+						createRelayOutboxEntry(
+							host.site_id,
+							deps.siteId,
+							"inference",
+							serializedPayload,
+							perHostTimeoutMs,
+							undefined,
+							undefined,
+							streamId,
+							traceContext ? JSON.stringify(traceContext) : undefined,
+						),
+					];
+			for (const entry of outboxEntries) writeOutbox(deps.db, entry, maxPayloadBytes);
+			const outboxEntry = outboxEntries[0];
+			const logicalRequestId = requestParts ? requestId : outboxEntry.id;
 
 			deps.logger.info("RELAY_STREAM: connecting", {
 				host: host.host_name,
@@ -283,7 +310,7 @@ export function createRelayStream$(
 							"cancel",
 							JSON.stringify({}),
 							30_000,
-							outboxEntry.id,
+							logicalRequestId,
 							undefined,
 							undefined,
 							traceContext ? JSON.stringify(traceContext) : undefined,

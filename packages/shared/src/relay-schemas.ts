@@ -63,6 +63,14 @@ export const contextSegmentSchema = z.union([
 	}),
 ]);
 
+export const inferenceRequestPartPayloadSchema = z.object({
+	version: z.literal(1),
+	request_id: z.string().min(1),
+	index: z.number().int().nonnegative(),
+	count: z.number().int().positive(),
+	data: z.string(),
+});
+
 export const inferenceRequestPayloadSchema = z.object({
 	model: z.string().min(1),
 	/**
@@ -253,6 +261,7 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	platform_request: platformRequestPayloadSchema,
 	cancel: cancelPayloadSchema,
 	inference: inferenceRequestPayloadSchema,
+	inference_part: inferenceRequestPartPayloadSchema,
 	intake: intakePayloadSchema,
 	client_tool: clientToolPayloadSchema,
 	result: resultPayloadSchema,

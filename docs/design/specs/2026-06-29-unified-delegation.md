@@ -117,6 +117,8 @@ A client tool referenced by a loop running on a non-session host now relays to t
 
 **R-UD15.** The system shall not call the model with an empty history when a user message exists for the thread; the producer's inline tail shall always carry the triggering message.
 
+**R-UD16.** When the serialized inference request exceeds `relay.max_payload_bytes`, the producer shall split it into independently relay-safe `inference_part` envelopes. The consumer shall invoke inference only after byte-identical reassembly of every part; part order and duplicate delivery shall not affect the result or cause duplicate invocation.
+
 ## 4. Data Model Changes
 
 ### 4.1 `ContextSegment` (new, `@bound/shared`)
@@ -131,8 +133,9 @@ The inference relay payload carries `segments: ContextSegment[]` in place of `me
 
 ### 4.2 New relay kinds (`RELAY_KIND_REGISTRY`)
 
-- `client_tool` — request kind (`dispatch: "sync"`), payload mirrors `ToolCallPayload` plus the session-routing key; resolves the serving host from the synced `client_sessions` table.
+- `client_tool` — request kind (`dispatch: "async"`), payload mirrors `ToolCallPayload` plus the session-routing key; resolves the serving host from the synced `client_sessions` table.
 - `client_result` — response kind (`dispatch: "response"`), payload mirrors `ResultPayload`/`ErrorPayload`.
+- `inference_part` — async request kind carrying one base64 transport part of an oversized serialized `InferenceRequestPayload`; all parts share a request ID and response stream ID.
 
 The `process` kind is removed from the registry. Because `RelayKind` is `keyof typeof RELAY_KIND_REGISTRY`, every dead `process` reference becomes a type error.
 
@@ -171,4 +174,5 @@ The EARS requirements map one-for-one onto the implementation gates (Tier 1 type
 - R-UD5/R-UD8 → client-tool relay round-trip; R-UD12 → session-kill yields `retriable`. (AC.7a/AC.7b)
 - R-UD9 → re-drive idempotency unit + integration tests. (AC.7c)
 - R-UD14 → audit script asserting no relay payload path writes `files`. (AC.8)
+- R-UD16 → multipart codec properties (UTF-8 round-trip, frame ceiling, reorder/duplicate invariance, incomplete-set non-execution, conflicting-duplicate rejection) plus sender/receiver integration. (AC.9)
 - Prompt-cache stability across segmentation. (AC.10)
