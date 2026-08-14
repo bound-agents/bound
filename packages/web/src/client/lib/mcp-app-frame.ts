@@ -64,6 +64,18 @@ export function buildCspString(csp?: McpUiResourceCsp): string {
 }
 
 /**
+ * Opaque-origin compatibility for callers that pass `location.origin` to
+ * postMessage. In a sandbox without allow-same-origin that value is the literal
+ * string `"null"`, which browsers reject as an invalid target origin. Normalize
+ * only that impossible target to `"*"`; source-window validation in the MCP Apps
+ * transports remains the security boundary, and the frame stays opaque.
+ *
+ * The shim also covers browser content scripts injected into the frame. Those
+ * run before the app handshake and otherwise throw exactly the same exception.
+ */
+const POST_MESSAGE_SHIM = `<script>(function(){var p=Window.prototype.postMessage;Window.prototype.postMessage=function(message,targetOrigin,transfer){return p.call(this,message,targetOrigin==="null"?"*":targetOrigin,transfer);};})();</script>`;
+
+/**
  * In-memory `localStorage`/`sessionStorage` shim injected into every app frame.
  *
  * The app frame runs at an opaque (null) origin (no `allow-same-origin`), where
@@ -93,7 +105,7 @@ export function buildAppFrameSrcdoc(html: string, csp?: McpUiResourceCsp): strin
 	const meta = csp
 		? `<meta http-equiv="Content-Security-Policy" content="${buildCspString(csp)}">`
 		: "";
-	const inject = meta + STORAGE_SHIM;
+	const inject = meta + POST_MESSAGE_SHIM + STORAGE_SHIM;
 
 	const headOpen = /<head[^>]*>/i.exec(html);
 	if (headOpen) {
