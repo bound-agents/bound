@@ -50,16 +50,19 @@ describe("runYardProgram — pure programs", () => {
 			program: `function* main() {
 				return [
 					typeof fetch, typeof process, typeof require,
-					typeof setTimeout, typeof Bun, typeof Date.now === "function" ? Date.now() : "no-clock",
+					typeof setTimeout, typeof Bun, typeof Date,
 				];
 			}`,
 			host: fakeHost(),
 		});
-		const [fetchT, processT, requireT, setTimeoutT] = out.result as unknown[];
+		const [fetchT, processT, requireT, setTimeoutT, , dateT] = out.result as unknown[];
 		expect(fetchT).toBe("undefined");
 		expect(processT).toBe("undefined");
 		expect(requireT).toBe("undefined");
 		expect(setTimeoutT).toBe("undefined");
+		// No ambient clock either (design plan, "Execution") — QuickJS ships
+		// Date by default; the bootstrap must remove it.
+		expect(dateT).toBe("undefined");
 	});
 
 	it("rejects a program without a main generator", async () => {
@@ -294,5 +297,110 @@ describe("runYardProgram — limits", () => {
 				host: fakeHost(),
 			}),
 		).rejects.toThrow(/JSON/i);
+	});
+});
+
+describe("runYardProgram — hardened intrinsics", () => {
+	it("keeps intrinsic prototypes frozen against pollution", async () => {
+		// Sloppy-mode assignment to a frozen prototype fails SILENTLY, so the
+		// assertion is on effect, not on throwing: the pollution must not take.
+		const out = await runYardProgram({
+			program: `function* main() {
+				try { Object.prototype.evil = 1; } catch (e) {}
+				try { Array.prototype.map = function () { return ["hacked"]; }; } catch (e) {}
+				try { JSON.stringify = function () { return '"hacked"'; }; } catch (e) {}
+				return {
+					polluted: ({}).evil === 1,
+					mapped: [1, 2].map(x => x * 2),
+					json: JSON.stringify({ a: 1 }),
+				};
+			}`,
+			host: fakeHost(),
+		});
+		expect(out.result).toEqual({ polluted: false, mapped: [2, 4], json: '{"a":1}' });
+	});
+
+	it("cannot forge effect payloads via Object.prototype.toJSON", async () => {
+		// The step reply crosses the bridge through JSON.stringify AFTER the
+		// brand check — a guest-installed toJSON on Object.prototype could
+		// rewrite the validated payload in flight. Frozen intrinsics close it.
+		const calls: string[] = [];
+		const host = fakeHost({
+			dispatchTool: async (name) => {
+				calls.push(name);
+				return "ok";
+			},
+		});
+		const out = await runYardProgram({
+			program: `function* main() {
+				try {
+					Object.defineProperty(Object.prototype, "toJSON", {
+						value: function () { return { kind: "tool", name: "forged", args: {} }; },
+					});
+				} catch (e) {}
+				return yield tool("honest", {});
+			}`,
+			host,
+		});
+		expect(out.result).toBe("ok");
+		expect(calls).toEqual(["honest"]);
+	});
+
+	it("cannot swap intrinsic global bindings out from under the bridge", async () => {
+		const out = await runYardProgram({
+			program: `function* main() {
+				try { globalThis.JSON = { stringify: function () { return '"hacked"'; }, parse: function () { return {}; } }; } catch (e) {}
+				return JSON.stringify({ a: 1 });
+			}`,
+			host: fakeHost(),
+		});
+		expect(out.result).toBe('{"a":1}');
+	});
+
+	it("exposes no randomness", async () => {
+		const out = await runYardProgram({
+			program: `function* main() {
+				try { return String(Math.random()); } catch (e) { return "refused"; }
+			}`,
+			host: fakeHost(),
+		});
+		expect(out.result).toBe("refused");
+	});
+
+	it("leaves guest-defined prototypes writable", async () => {
+		// Freezing covers INTRINSICS only — the guest's own classes and
+		// prototype assignments must keep working.
+		const out = await runYardProgram({
+			program: `function* main() {
+				function Point(x) { this.x = x; }
+				Point.prototype.double = function () { return this.x * 2; };
+				return new Point(21).double();
+			}`,
+			host: fakeHost(),
+		});
+		expect(out.result).toBe(42);
+	});
+
+	it("still throws catchable effect errors after freezing (override-mistake regression)", async () => {
+		// The bootstrap's own throw path once did err.name = ... — an instance
+		// assignment shadowing frozen Error.prototype.name, which the override
+		// mistake breaks under "use strict". Pin that it survives freezing.
+		const host = fakeHost({
+			dispatchTool: async () => {
+				throw new Error("tool exploded");
+			},
+		});
+		const out = await runYardProgram({
+			program: `function* main() {
+				try {
+					yield tool("t", {});
+					return "unreachable";
+				} catch (e) {
+					return e.name + ": " + e.message;
+				}
+			}`,
+			host,
+		});
+		expect(out.result).toBe("YardEffectError: tool exploded");
 	});
 });
