@@ -127,6 +127,29 @@ describe("createYardTool", () => {
 		expect(seen).toEqual([{ pattern: "x" }]);
 	});
 
+	it("dispatches sandbox-kind tools through the ordinary sandbox runner", async () => {
+		const seen: Array<{ command: string; timeout?: number; cwd?: string }> = [];
+		ctx.executeSandboxTool = async (command, timeout, cwd) => {
+			seen.push({ command, timeout, cwd });
+			return { stdout: '["a","b"]', stderr: "", exitCode: 0 };
+		};
+		registry.set("bms_bash", {
+			kind: "sandbox",
+			toolDefinition: {
+				type: "function",
+				function: { name: "bms_bash", description: "x", parameters: {} },
+			},
+		});
+		const raw = await invoke({
+			program: `function* main() {
+				const hits = yield tool("bms_bash", { command: "search", timeout: 1000, cwd: "/x" });
+				return hits.length;
+			}`,
+		});
+		expect(JSON.parse(raw).result).toBe(2);
+		expect(seen).toEqual([{ command: "search", timeout: 1000, cwd: "/x" }]);
+	});
+
 	it("returns non-JSON tool output to the guest as a string", async () => {
 		registry.set("plain", {
 			kind: "builtin",

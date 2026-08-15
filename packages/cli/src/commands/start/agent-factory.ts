@@ -290,6 +290,10 @@ export function createAgentLoopFactory(
 				memoryLimits,
 				topologyRole,
 				agentId: params.agentId,
+				executeSandboxTool: async (command, timeout, cwd) => {
+					if (!auxSandbox.exec) throw new Error("sandbox execution not available");
+					return auxSandbox.exec(command, { timeout, cwd });
+				},
 				getToolRegistry: () => {
 					if (!auxToolRegistry) throw new Error("aux tool registry accessed before construction");
 					return auxToolRegistry;
@@ -543,6 +547,10 @@ export function createAgentLoopFactory(
 			memoryLimits,
 			topologyRole,
 			auxLoopRunner,
+			executeSandboxTool: async (command, timeout, cwd) => {
+				if (!loopSandbox.exec) throw new Error("sandbox execution not available");
+				return loopSandbox.exec(command, { timeout, cwd });
+			},
 			getToolRegistry: () => {
 				if (!toolRegistry) throw new Error("tool registry accessed before construction");
 				return toolRegistry;
