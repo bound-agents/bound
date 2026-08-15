@@ -790,7 +790,10 @@ function enforceToolPairCompleteness(messages: ModelMessage[]): ModelMessage[] {
 				};
 			});
 
-		out.push({ role: "tool", content: [...legalResults, ...missingResults] as never });
+		out.push({
+			...(next?.role === "tool" ? next : { role: "tool" as const }),
+			content: [...legalResults, ...missingResults] as never,
+		});
 		if (next?.role === "tool") index++;
 	}
 	return out;
