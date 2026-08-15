@@ -340,20 +340,53 @@ function createYardHost(
 						`tool "${name}" is a client tool; client round-trips are not dispatchable from yard`,
 					);
 				}
-				if (!tool.execute) {
-					throw new Error(`tool "${name}" has no direct execute path and cannot be used from yard`);
-				}
+
+				// Sandbox-kind registry entries intentionally have no direct execute
+				// closure: the loop owns command execution (including MCP bridge
+				// subcommands). Use the executor injected by agent-factory so Yard
+				// follows the same sandbox rather than implementing a parallel runner.
+				const execute = async (): Promise<unknown> => {
+					if (tool.kind === "sandbox") {
+						if (!ctx.executeSandboxTool) {
+							throw new Error(`tool "${name}" has no sandbox executor wired on this host`);
+						}
+						const record = args as Record<string, unknown>;
+						if (typeof record.command !== "string") {
+							throw new Error(`tool "${name}" requires a command string`);
+						}
+						const result = await ctx.executeSandboxTool(
+							record.command,
+							typeof record.timeout === "number" ? record.timeout : undefined,
+							typeof record.cwd === "string" ? record.cwd : undefined,
+						);
+						const parts = [result.stdout, result.stderr].filter(
+							(part): part is string => typeof part === "string" && part.length > 0,
+						);
+						const content =
+							parts.length > 0
+								? parts.join("\n")
+								: (result.exitCode ?? 0) === 0
+									? "Command completed successfully"
+									: `Exit code: ${result.exitCode ?? 1}`;
+						if ((result.exitCode ?? 0) !== 0) {
+							throw new Error(content);
+						}
+						return content;
+					}
+					if (!tool.execute) {
+						throw new Error(
+							`tool "${name}" has no direct execute path and cannot be used from yard`,
+						);
+					}
+					return tool.execute(args as Record<string, unknown>);
+				};
 
 				// Nested yard is orchestration, not leaf work — no permit, so a
 				// suspended parent can never hold a permit its child needs.
 				const isNestedYard = name === "yard";
 				if (!isNestedYard) await scope.semaphore.acquire();
 				try {
-					const raw = await raceDeadline(
-						Promise.resolve(tool.execute(args as Record<string, unknown>)),
-						scope,
-						`tool "${name}"`,
-					);
+					const raw = await raceDeadline(Promise.resolve(execute()), scope, `tool "${name}"`);
 					let content: string;
 					if (typeof raw === "string") {
 						content = raw;

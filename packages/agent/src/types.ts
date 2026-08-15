@@ -77,4 +77,20 @@ export interface ToolContext {
 	 * partial toolset.
 	 */
 	getToolRegistry?: () => Map<string, import("@bound/loop").RegisteredTool>;
+	/**
+	 * Yard seam for sandbox-kind tools (`bms_bash`, including MCP bridge
+	 * subcommands). Registry entries intentionally carry no execute closure —
+	 * the loop owns sandbox execution, timeout, and relay behavior — so Yard
+	 * receives the SAME executor from agent-factory instead of growing a
+	 * special-case command runner.
+	 */
+	executeSandboxTool?: (
+		command: string,
+		timeout?: number,
+		cwd?: string,
+	) => Promise<{
+		stdout?: string;
+		stderr?: string;
+		exitCode?: number;
+	}>;
 }
