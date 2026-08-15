@@ -256,7 +256,7 @@ The \`program\` must define \`function* main(input) { ... }\` and return a JSON-
 - \`input\` — deeply frozen JSON-compatible \`input\` from this tool call.
 - \`tool(name, args)\` — create an effect for an ordinary Bound tool in your current effective toolset. Use the tool's normal argument schema.
 - \`infer(modelId, { prompt, input?, schema?, max_tokens? })\` — create an ephemeral inference effect using the required explicit model ID. Returns a string without \`schema\`, or validated JSON with \`schema\`. No hidden schema repair: a violation fails the effect; retry explicitly if needed.
-- \`aux(name, instructions, options?)\` — shorthand for \`tool("aux", { action: "invoke", name, instructions, ...options })\`.
+- \`aux(name, instructions, options?)\` — shorthand for \`tool("aux", { action: "invoke", name, instructions, ...options })\`. Invocations are synchronous only: \`background: true\` is rejected at dispatch (deferred results have no resolution path inside a Yard run). For concurrent aux work, yield several aux effects through \`all()\` instead.
 - \`all(effects, { concurrency?, errors? }?)\` — create a parallel compound effect. \`errors\` is "fail-fast" by default or "settled" (input-ordered \`{ status, value | reason }\` entries); results preserve input order.
 - \`sequence(effects)\` — create an ordered, fail-fast compound effect.
 
