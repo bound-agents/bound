@@ -92,6 +92,7 @@ export function advertiseLocalModels(
 		return {
 			id: b.id,
 			tier: rawBackend?.tier,
+			max_output_tokens: modelRouter.getMaxOutputTokens(b.id),
 			thinking_mode:
 				typeof rawBackend?.thinking === "object" && rawBackend.thinking?.type === "tool"
 					? "tool"

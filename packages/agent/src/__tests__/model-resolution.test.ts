@@ -103,7 +103,13 @@ describe("Model Resolution", () => {
 				[
 					"remote-1",
 					"Remote Host",
-					JSON.stringify([{ id: "claude-haiku", capabilities: { max_context: 200000 } }]),
+					JSON.stringify([
+						{
+							id: "claude-haiku",
+							max_output_tokens: 64_000,
+							capabilities: { max_context: 200000 },
+						},
+					]),
 					0,
 					now,
 					now,
@@ -133,6 +139,7 @@ describe("Model Resolution", () => {
 				expect(resolution.hosts.length).toBe(1);
 				expect(resolution.hosts[0].site_id).toBe("remote-1");
 				expect(resolution.modelId).toBe("claude-haiku");
+				expect(resolution.maxOutputTokens).toBe(64_000);
 			}
 		});
 
