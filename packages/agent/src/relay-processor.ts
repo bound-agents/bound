@@ -51,6 +51,7 @@ import {
 	inferenceRequestPartPayloadSchema,
 	inferenceRequestPayloadSchema,
 	intakePayloadSchema,
+	notifyWakeupPayloadSchema,
 	parseJsonSafe,
 	parseJsonUntyped,
 } from "@bound/shared";
@@ -85,6 +86,7 @@ import { formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
+import { deliverNotificationWakeup } from "./wakeup-routing.js";
 import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -207,6 +209,7 @@ export class RelayProcessor {
 		inference: (entry) => this.handleInference(entry),
 		inference_part: (entry) => this.handleInferencePart(entry),
 		intake: (entry) => this.handleIntake(entry),
+		notify_wakeup: (entry) => this.handleNotifyWakeup(entry),
 		client_tool: (entry) => this.handleClientTool(entry),
 	};
 
@@ -740,6 +743,39 @@ export class RelayProcessor {
 			});
 		}
 
+		return null;
+	}
+
+	/**
+	 * Receiving side of a routed notify/introspect wakeup (#91 under unified
+	 * delegation). The sender resolved THIS host as the holder of the thread's
+	 * live WS session and shipped the notification payload here instead of
+	 * enqueueing into its own local dispatch_queue — so exactly one host wakes
+	 * the thread, beside its session. Delivery is UNCONDITIONAL (no re-routing):
+	 * a session row churning mid-flight must not ping-pong the wakeup between
+	 * hosts. Worst case (session died in flight) the wakeup runs where the
+	 * session was last seen — the pre-#91 behavior for a just-dropped client.
+	 */
+	private async handleNotifyWakeup(entry: RelayInboxEntry): Promise<null> {
+		const payloadResult = parseJsonSafe(notifyWakeupPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.logger.error("Invalid relay payload", {
+				kind: entry.kind,
+				error: payloadResult.error,
+				entryId: entry.id,
+			});
+			markProcessed(this.db, [entry.id]);
+			throw new PayloadParseError();
+		}
+		const payload = payloadResult.value;
+		this.logger.info("[relay] Notify wakeup received", {
+			threadId: payload.thread_id,
+			sourceSiteId: entry.source_site_id,
+		});
+		deliverNotificationWakeup(this.db, this.eventBus, {
+			thread_id: payload.thread_id,
+			payload: payload.payload,
+		});
 		return null;
 	}
 

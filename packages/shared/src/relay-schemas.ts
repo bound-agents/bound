@@ -31,6 +31,16 @@ export const cancelPayloadSchema = z.object({
 	reason: z.string().optional(),
 });
 
+// Notification wakeup routed to the thread's live WS-session host (#91
+// regression under unified delegation). `payload` is the dispatch_queue
+// notification body (proactive/introspect/task_complete shapes) — opaque to
+// the relay; the receiving host enqueues it verbatim into its LOCAL
+// dispatch_queue and wakes the thread beside its session.
+export const notifyWakeupPayloadSchema = z.object({
+	thread_id: z.string().min(1),
+	payload: z.record(z.string(), z.unknown()),
+});
+
 export const clientToolPayloadSchema = z.object({
 	thread_id: z.string().min(1),
 	call_id: z.string().min(1),
@@ -263,6 +273,7 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	inference: inferenceRequestPayloadSchema,
 	inference_part: inferenceRequestPartPayloadSchema,
 	intake: intakePayloadSchema,
+	notify_wakeup: notifyWakeupPayloadSchema,
 	client_tool: clientToolPayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,

@@ -14,6 +14,7 @@ import {
 	generateThreadTitle,
 	getClientSessions,
 	isWarmPokeNotificationPayload,
+	routeNotificationWakeup,
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
 } from "@bound/agent";
@@ -1044,11 +1045,17 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				result: result ?? "completed",
 			};
 
-			enqueueNotification(appContext.db, task.thread_id, notificationPayload);
-			handleThread(task.thread_id).catch((err) =>
-				appContext.logger.error("[notification] Task completion dispatch error", {
-					error: formatError(err),
-				}),
+			// Route through the session-host resolver (#91 under unified
+			// delegation): if the task's thread has a live boundless session on
+			// another host, the wakeup ships there instead of waking a second,
+			// detached loop here. Local delivery emits notify:enqueued, which the
+			// listener below turns into handleThread — no direct call needed.
+			routeNotificationWakeup(
+				appContext.db,
+				appContext.eventBus,
+				appContext.siteId,
+				task.thread_id,
+				notificationPayload,
 			);
 		});
 
