@@ -389,13 +389,15 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
-	 * Output budget used by BOTH context assembly and the wire request.
-	 * Backend caps win over the provider-default fallback; remote resolutions
-	 * have no cap in their synced descriptor today, so they use the explicit
-	 * conservative fallback rather than omitting max_tokens.
+	 * Output budget used by BOTH context assembly and the wire request. Local and
+	 * remote resolutions carry the serving backend's advertised cap; the shared
+	 * clamp still provides the conservative fallback for legacy peers that omit it.
 	 */
 	protected resolvedMaxOutputTokens(resolution: BoundPreparedFrame["resolution"]): number {
-		const backendCap = resolution.kind === "local" ? resolution.maxOutputTokens : undefined;
+		const backendCap =
+			resolution.kind === "local" || resolution.kind === "remote"
+				? resolution.maxOutputTokens
+				: undefined;
 		return clampMaxOutputTokens(this.effectiveMaxOutputTokens(), backendCap);
 	}
 

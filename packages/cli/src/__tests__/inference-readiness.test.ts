@@ -145,9 +145,14 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		const row = db.query("SELECT models FROM hosts WHERE site_id = ?").get(siteId) as {
 			models: string;
 		};
-		const advertised = JSON.parse(row.models) as Array<{ id: string }>;
+		const advertised = JSON.parse(row.models) as Array<{
+			id: string;
+			max_output_tokens?: number;
+		}>;
 		const advIds = advertised.map((m) => m.id).sort();
 		expect(advIds).toEqual(["umans-coder", "umans-flash"]);
+		expect(advertised.find((m) => m.id === "umans-coder")?.max_output_tokens).toBe(8192);
+		expect(advertised.find((m) => m.id === "umans-flash")?.max_output_tokens).toBe(4096);
 		expect(advIds).not.toContain("umans");
 
 		// Default redirected off the placeholder to a concrete id.

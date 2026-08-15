@@ -48,6 +48,7 @@ export type ModelResolution =
 			/** Mirrored from the serving host's advertised config. */
 			thinkingTool?: boolean;
 			thinkingConfig?: ChatParams["thinking"];
+			maxOutputTokens?: number;
 			max_context: number;
 	  }
 	| {
@@ -263,6 +264,7 @@ export function resolveSameTierFallback(
 				online_at: row.online_at,
 				modified_at: row.modified_at,
 				tier: hostEntry.tier,
+				maxOutputTokens: hostEntry.max_output_tokens,
 				capabilities: hostEntry.capabilities,
 				modelId: hostEntry.id,
 			});
@@ -291,6 +293,7 @@ export function resolveSameTierFallback(
 		hosts: remoteHosts.map(({ modelId: _, ...host }) => host),
 		modelId: best.modelId,
 		reResolved: true,
+		maxOutputTokens: best.maxOutputTokens,
 		max_context,
 	};
 }
@@ -422,6 +425,7 @@ export function resolveModel(
 				thinkingTool: anyRemote.hosts[0]?.thinkingMode === "tool",
 				thinkingConfig:
 					anyRemote.hosts[0]?.thinkingMode === "tool" ? { type: "disabled" } : undefined,
+				maxOutputTokens: anyRemote.hosts[0]?.maxOutputTokens,
 				max_context,
 			};
 		}
@@ -450,6 +454,7 @@ export function resolveModel(
 			thinkingTool: remoteResult.hosts[0]?.thinkingMode === "tool",
 			thinkingConfig:
 				remoteResult.hosts[0]?.thinkingMode === "tool" ? { type: "disabled" } : undefined,
+			maxOutputTokens: remoteResult.hosts[0]?.maxOutputTokens,
 			max_context,
 		};
 	}
