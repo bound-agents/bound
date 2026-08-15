@@ -763,6 +763,12 @@ export function MessageBlock({
 		// tool_use_id, which is noise in the TUI. When the name can't be resolved
 		// (orphan result), show no label rather than echo the id.
 		const toolName = resolvedToolName ? displayToolName(resolvedToolName) : null;
+		// #215: collapsed one-line results are the invocation's whole committed
+		// footprint when the ⏵ call row is suppressed (compact tools) or reduced
+		// to a status line (edit/write) — without re-carrying the [remote] tag
+		// here, a remote read/edit is indistinguishable from a local one. Same
+		// predicate as ToolCallRow: everything not boundless_* runs server-side.
+		const isRemoteResult = resolvedToolName ? !resolvedToolName.startsWith("boundless_") : false;
 
 		// Wall-clock duration: result commit-time minus call commit-time. Both
 		// ISO timestamps are frozen by the time this row renders, so the
@@ -818,6 +824,7 @@ export function MessageBlock({
 							<Text color={indicatorColor} bold>
 								{indicator}
 							</Text>
+							{isRemoteResult && <Text dimColor> [remote]</Text>}
 							<Text color="cyan" bold>
 								{" "}
 								{toolName}
@@ -890,6 +897,7 @@ export function MessageBlock({
 							<Text color={indicatorColor} bold>
 								{indicator}
 							</Text>
+							{isRemoteResult && <Text dimColor> [remote]</Text>}
 							<Text dimColor> {toolName} · </Text>
 							<Text>{linkedTarget}</Text>
 							<Text dimColor> · {summary}</Text>
