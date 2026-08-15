@@ -46,7 +46,9 @@ export interface WsClientConfig {
 		) => void;
 	};
 	logger?: Logger;
-	reconnectMaxInterval?: number; // seconds, default 60
+	reconnectMaxInterval?: number; // seconds, default 10
+	/** Internal/test override; reconnect backfill waits 15s by default. */
+	reconnectBackfillDelayMs?: number;
 	backpressureLimit?: number; // bytes, default 2097152
 	backfillIntervalSeconds?: number; // 0 = disabled, default 300
 	/** Receive-side liveness timeout in ms. If no frame is received from the
@@ -80,6 +82,9 @@ export class WsSyncClient {
 	private reconnectInterval = 1;
 	private reconnectTimer: Timer | null = null;
 	private backfillTimer: Timer | null = null;
+	private reconnectBackfillTimer: Timer | null = null;
+	private hasOpenedOnce = false;
+	private connectionHealthy = false;
 	private stopped = false;
 
 	/** Snapshot seeding state (spoke-side): tracks the current snapshot_hlc. */
@@ -209,6 +214,7 @@ export class WsSyncClient {
 	close(): void {
 		this.stopped = true;
 		this.stopBackfillTimer();
+		this.stopReconnectBackfillTimer();
 		this.stopLivenessTimer();
 		this.stopHandshakeTimer();
 		if (this.reconnectTimer) {
@@ -279,9 +285,7 @@ export class WsSyncClient {
 		// a socket that is now healthy.
 		this.stopHandshakeTimer();
 		this.recordHandshakeSuccess();
-
-		// Reset reconnect interval on successful connection
-		this.reconnectInterval = 1;
+		this.connectionHealthy = false;
 		this.sendState = "ready";
 
 		// Wire up WsTransport peer
@@ -313,11 +317,16 @@ export class WsSyncClient {
 			}
 
 			if (typeof wt.runBackfill === "function") {
-				const isFirstConnect = this.config.reseed && this.reseedSent;
-				wt.runBackfill({ isFirstConnect: !!isFirstConnect }).catch((err: Error) => {
-					this.config.logger?.warn("[backfill] Failed", { error: err.message });
-				});
+				const isFirstConnect = !this.hasOpenedOnce;
+				if (isFirstConnect) {
+					wt.runBackfill({ isFirstConnect }).catch((err: Error) => {
+						this.config.logger?.warn("[backfill] Failed", { error: err.message });
+					});
+				} else {
+					this.scheduleReconnectBackfill(wt);
+				}
 			}
+			this.hasOpenedOnce = true;
 		}
 
 		this.startBackfillTimer();
@@ -367,6 +376,7 @@ export class WsSyncClient {
 				}
 
 				const decodedFrame = decodeResult.value;
+				this.markConnectionHealthy();
 
 				// Dispatch to WsTransport handlers
 				if (this.config.wsTransport) {
@@ -440,11 +450,38 @@ export class WsSyncClient {
 			this.onMessage?.(data);
 		}
 	}
+	private markConnectionHealthy(): void {
+		if (this.connectionHealthy) return;
+		this.connectionHealthy = true;
+		this.reconnectInterval = 1;
+	}
+
+	private scheduleReconnectBackfill(wt: {
+		runBackfill?: (opts?: { isFirstConnect?: boolean }) => Promise<unknown>;
+	}): void {
+		this.stopReconnectBackfillTimer();
+		const delayMs = this.config.reconnectBackfillDelayMs ?? 15_000;
+		this.reconnectBackfillTimer = setTimeout(() => {
+			this.reconnectBackfillTimer = null;
+			if (!this.connected || !this.connectionHealthy || typeof wt.runBackfill !== "function")
+				return;
+			wt.runBackfill().catch((err: Error) => {
+				this.config.logger?.warn("[backfill] Failed", { error: err.message });
+			});
+		}, delayMs);
+	}
+
+	private stopReconnectBackfillTimer(): void {
+		if (!this.reconnectBackfillTimer) return;
+		clearTimeout(this.reconnectBackfillTimer);
+		this.reconnectBackfillTimer = null;
+	}
 
 	private handleClose(): void {
 		this.config.logger?.debug("WsSyncClient: connection closed");
 		this.ws = null;
 		this.stopBackfillTimer();
+		this.stopReconnectBackfillTimer();
 		this.stopLivenessTimer();
 		// A close observed before the handshake landed is already a full teardown;
 		// disarm the deadline so it can't fire against the next socket.
@@ -670,6 +707,7 @@ export class WsSyncClient {
 			}
 
 			this.stopBackfillTimer();
+			this.stopReconnectBackfillTimer();
 			this.stopLivenessTimer();
 			if (this.config.wsTransport) {
 				this.config.wsTransport.removePeer(this.config.hubSiteId);
@@ -740,7 +778,7 @@ export class WsSyncClient {
 	 * Schedule a reconnection attempt with exponential backoff and jitter.
 	 *
 	 * Delay: reconnectInterval seconds + 0-25% jitter
-	 * Double interval for next attempt, cap at reconnectMaxInterval (default 60s)
+	 * Double interval for next attempt, cap at reconnectMaxInterval (default 10s)
 	 */
 	private scheduleReconnect(): void {
 		if (this.stopped) {
@@ -754,7 +792,7 @@ export class WsSyncClient {
 
 		this.config.logger?.info("WsSyncClient: scheduling reconnection", {
 			delaySeconds: Math.round(delaySeconds * 100) / 100,
-			nextInterval: Math.min(this.reconnectInterval * 2, this.config.reconnectMaxInterval ?? 60),
+			nextInterval: Math.min(this.reconnectInterval * 2, this.config.reconnectMaxInterval ?? 10),
 		});
 
 		this.reconnectTimer = setTimeout(() => {
@@ -769,7 +807,7 @@ export class WsSyncClient {
 		// Double interval for next attempt, cap at max
 		this.reconnectInterval = Math.min(
 			this.reconnectInterval * 2,
-			this.config.reconnectMaxInterval ?? 60,
+			this.config.reconnectMaxInterval ?? 10,
 		);
 	}
 }

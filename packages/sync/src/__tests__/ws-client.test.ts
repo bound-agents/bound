@@ -507,19 +507,100 @@ describe("WsSyncClient", () => {
 			expect(client).toBeTruthy();
 		});
 
-		it("uses default reconnectMaxInterval of 60s", () => {
+		it("uses default reconnectMaxInterval of 10s", () => {
 			const client = new WsSyncClient({
 				hubUrl: "http://localhost:3000",
 				privateKey: spokeKeypair.privateKey,
 				siteId: spokeSiteId,
 				keyManager: hubKeyManager,
 				hubSiteId,
-				// No reconnectMaxInterval specified
 			});
 
 			clients.push(client);
+			const internal = client as unknown as {
+				config: { reconnectMaxInterval?: number };
+				reconnectInterval: number;
+				scheduleReconnect(): void;
+			};
+			internal.reconnectInterval = 10;
+			internal.scheduleReconnect();
+			expect(internal.reconnectInterval).toBe(10);
+		});
 
-			expect(client).toBeTruthy();
+		it("resets reconnect backoff only after authenticated inbound activity", () => {
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				reconnectInterval: number;
+				connectionHealthy: boolean;
+				markConnectionHealthy(): void;
+			};
+			internal.reconnectInterval = 8;
+			internal.connectionHealthy = false;
+			internal.markConnectionHealthy();
+			expect(internal.reconnectInterval).toBe(1);
+			expect(internal.connectionHealthy).toBe(true);
+		});
+
+		it("debounces reconnect backfill until the socket stays open", async () => {
+			let runs = 0;
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+				reconnectBackfillDelayMs: 20,
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				ws: { readyState: number } | null;
+				scheduleReconnectBackfill(wt: { runBackfill(): Promise<void> }): void;
+			};
+			internal.ws = { readyState: WebSocket.OPEN };
+			(client as unknown as { connectionHealthy: boolean }).connectionHealthy = true;
+			internal.scheduleReconnectBackfill({
+				runBackfill: async () => {
+					runs++;
+				},
+			});
+			expect(runs).toBe(0);
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			expect(runs).toBe(1);
+		});
+
+		it("cancels reconnect backfill when the socket drops again", async () => {
+			let runs = 0;
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+				reconnectBackfillDelayMs: 20,
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				ws: { readyState: number } | null;
+				scheduleReconnectBackfill(wt: { runBackfill(): Promise<void> }): void;
+				stopReconnectBackfillTimer(): void;
+			};
+			internal.ws = { readyState: WebSocket.OPEN };
+			(client as unknown as { connectionHealthy: boolean }).connectionHealthy = true;
+			internal.scheduleReconnectBackfill({
+				runBackfill: async () => {
+					runs++;
+				},
+			});
+			internal.stopReconnectBackfillTimer();
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			expect(runs).toBe(0);
 		});
 
 		it("uses default backpressureLimit of 2MB", () => {

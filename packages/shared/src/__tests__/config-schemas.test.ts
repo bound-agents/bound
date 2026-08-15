@@ -913,6 +913,11 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("applies reconnect defaults when the ws block is present", () => {
+			const result = syncSchema.parse({ ws: {} });
+			expect(result.ws?.reconnect_max_interval).toBe(10);
+		});
+
 		it("validates empty sync config (hub-only, defaults)", () => {
 			const config = {};
 			const result = syncSchema.safeParse(config);
