@@ -1,9 +1,10 @@
 import type { Database as BunDatabase } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { enqueueNotification, writeMessageMetadata } from "@bound/core";
+import { writeMessageMetadata } from "@bound/core";
 import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
+import { routeNotificationWakeup } from "../wakeup-routing.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 interface ThreadRow {
@@ -79,16 +80,17 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 				// Generate correlation ID
 				const correlationId = randomUUID();
 
-				// Enqueue notification with introspect payload
-				enqueueNotification(ctx.db, input.thread_id, {
+				// Enqueue introspect wakeup, routed to the host holding the thread's
+				// live WS session (#91 under unified delegation): a local enqueue on
+				// THIS host would mint a second, detached loop when the session lives
+				// elsewhere. The response comes back via synced messages metadata, so
+				// the polling below works regardless of which host runs the loop.
+				routeNotificationWakeup(ctx.db, ctx.eventBus, ctx.siteId, input.thread_id, {
 					type: "introspect",
 					correlation_id: correlationId,
 					source_thread: ctx.threadId ?? null,
 					content: input.message,
 				});
-
-				// Emit event for wakeup
-				ctx.eventBus.emit("notify:enqueued", { thread_id: input.thread_id });
 
 				// Setup polling
 				const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS;

@@ -1,29 +1,11 @@
-import { enqueueNotification } from "@bound/core";
 import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
+import { routeNotificationWakeup } from "../wakeup-routing.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 interface ThreadRow {
 	id: string;
-}
-
-/**
- * Enqueue a proactive notification and signal the server to run inference.
- */
-function enqueueAndSignal(
-	ctx: ToolContext,
-	threadId: string,
-	sourceThreadId: string | undefined,
-	message: string,
-): void {
-	enqueueNotification(ctx.db, threadId, {
-		type: "proactive",
-		source_thread: sourceThreadId ?? null,
-		content: message,
-	});
-
-	ctx.eventBus.emit("notify:enqueued", { thread_id: threadId });
 }
 
 const notifySchema = z.object({
@@ -69,9 +51,19 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 					return `Error: Thread not found or is deleted: ${thread_id}`;
 				}
 
-				enqueueAndSignal(ctx, thread.id, ctx.threadId, message.trim());
+				// Route the wakeup to the host holding the thread's live WS session
+				// (#91 under unified delegation): a local enqueue on THIS host would
+				// mint a second, detached loop when the session lives elsewhere.
+				const routed = routeNotificationWakeup(ctx.db, ctx.eventBus, ctx.siteId, thread.id, {
+					type: "proactive",
+					source_thread: ctx.threadId ?? null,
+					content: message.trim(),
+				});
 				const warning = clientSessionWakeupWarning(ctx.db, thread.id);
-				const confirmation = `Notification enqueued for thread ${thread_id}.`;
+				const confirmation =
+					routed.delivery === "relayed"
+						? `Notification enqueued for thread ${thread_id} (routed to session host ${routed.targetHostName}).`
+						: `Notification enqueued for thread ${thread_id}.`;
 				return warning ? `${confirmation}\n${warning}` : confirmation;
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);

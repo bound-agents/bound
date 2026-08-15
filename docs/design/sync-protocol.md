@@ -621,6 +621,7 @@ CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocesse
 | `inference` | Request LLM inference from the target (streaming response; context travels as `segments`) |
 | `client_tool` | Relay a client (WS) tool call to the host holding the WS session |
 | `intake` | Route an inbound platform message to the appropriate spoke for processing |
+| `notify_wakeup` | Ship a notify/introspect/task-completion wakeup to the host holding the thread's live WS session, so exactly one host wakes the thread (dispatch_queue is local-only; a local enqueue on the sending host would mint a second, detached loop) |
 | `platform_request` | Proxy an MCP platform request (e.g. `events/list`) to the host running that connector (sync dispatch) |
 | `webhook_intake` | Passive: durable HTTP-envelope mailbox row written by `/webhook/:name`, consumed by the scheduler (not the relay-processor) |
 

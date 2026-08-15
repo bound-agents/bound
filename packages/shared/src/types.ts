@@ -578,6 +578,16 @@ export const RELAY_KIND_REGISTRY = {
 	inference_part: { dispatch: "async" },
 	intake: { dispatch: "async" },
 
+	// Notification wakeup routed to the thread's live WS-session host (#91
+	// regression under unified delegation). dispatch_queue is local-only, so a
+	// notify/introspect enqueued where it was SENT wakes a loop on that host
+	// even when the thread's live boundless session (and its active loop) is
+	// on another host — two hosts, two loops, one thread. The sender routes
+	// the wakeup here instead; the receiving host enqueues into its LOCAL
+	// dispatch_queue unconditionally (no re-routing — a churning session row
+	// must not ping-pong the wakeup) and wakes the loop beside the session.
+	notify_wakeup: { dispatch: "async" },
+
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor
 	// consumer. The relay-processor must NOT markProcessed these.
 	//

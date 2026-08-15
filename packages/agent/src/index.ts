@@ -42,6 +42,7 @@ export {
 	isClientSessionLive,
 	resolveClientSessionHost,
 } from "./delegation";
+export { routeNotificationWakeup, deliverNotificationWakeup } from "./wakeup-routing";
 
 // Export agent loop
 export { MainAgentLoop } from "./agent-loop";
