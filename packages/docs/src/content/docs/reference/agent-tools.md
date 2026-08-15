@@ -23,6 +23,7 @@ For lifecycle, scheduling, and connector context, see [Agent system](/bound/conc
 | `advisory` | Creates and manages operational advisories. |
 | `message` | Sends a message or reminder to a thread. |
 | `aux` | Defines, changes, invokes, and retires durable auxiliary-agent identities. |
+| `yard` | Runs a bounded JavaScript generator in a QuickJS sandbox for bulk data work, keeping intermediates out of conversation history. |
 | `connector` | Where platform connectors are available, manages connector access through Bound's unified connector-management surface. |
 
 `connector` is a conditional native management tool: platform connectors contribute it where

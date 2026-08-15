@@ -269,7 +269,16 @@ export function createAgentLoopFactory(
 				builtInTools,
 			};
 
-			// Aux ToolContext with agentId set for memory namespace scoping
+			// Aux ToolContext with agentId set for memory namespace scoping.
+			// Same lazy-registry pattern as the main path below: yard dispatches
+			// yielded tool effects through the registry that is built FROM these
+			// tools, so the accessor closes over a let-binding assigned after
+			// construction. The aux registry already encodes the capability
+			// boundary (EXCLUDED_TOOLS + allowlist), so a yard run inside an aux
+			// sees exactly the aux's effective toolset — nested calls cannot
+			// escalate back to the main agent's tools.
+			// biome-ignore lint/style/useConst: assigned below, after the accessor closure that captures it is constructed
+			let auxToolRegistry: Map<string, RegisteredTool> | undefined;
 			const auxToolCtx: ToolContext = {
 				db: appContext.db,
 				siteId: appContext.siteId,
@@ -281,6 +290,10 @@ export function createAgentLoopFactory(
 				memoryLimits,
 				topologyRole,
 				agentId: params.agentId,
+				getToolRegistry: () => {
+					if (!auxToolRegistry) throw new Error("aux tool registry accessed before construction");
+					return auxToolRegistry;
+				},
 			};
 
 			// Capability boundary — always excluded from aux toolset
@@ -315,7 +328,7 @@ export function createAgentLoopFactory(
 			const auxClientToolDefs = auxClientTools ? Array.from(auxClientTools.values()) : [];
 
 			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
-			const auxToolRegistry = createToolRegistry(
+			auxToolRegistry = createToolRegistry(
 				builtInTools,
 				auxClientTools,
 				filteredAgentTools,
@@ -513,6 +526,11 @@ export function createAgentLoopFactory(
 			platformInstructions: config.platformInstructions,
 		});
 
+		// Yard dispatches yielded tool effects through the same unified registry
+		// the loop uses, but the registry is built FROM the agent tools — so the
+		// yard factory receives a lazy accessor over a let-binding assigned below.
+		// biome-ignore lint/style/useConst: assigned below, after the accessor closure that captures it is constructed
+		let toolRegistry: Map<string, RegisteredTool> | undefined;
 		const toolCtx: ToolContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -525,12 +543,16 @@ export function createAgentLoopFactory(
 			memoryLimits,
 			topologyRole,
 			auxLoopRunner,
+			getToolRegistry: () => {
+				if (!toolRegistry) throw new Error("tool registry accessed before construction");
+				return toolRegistry;
+			},
 		};
 		const agentTools = createAgentTools(toolCtx);
 
 		// Create the unified tool registry for registry-based dispatch.
 		// Platform tools are registered with their execute closures intact for MCP dispatch.
-		const toolRegistry = createToolRegistry(
+		toolRegistry = createToolRegistry(
 			builtInTools,
 			config.clientTools,
 			agentTools,
