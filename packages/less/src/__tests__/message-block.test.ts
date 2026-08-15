@@ -1084,3 +1084,95 @@ describe("image content blocks", () => {
 		clearImagePreviews();
 	});
 });
+
+describe("remote tag on collapsed one-line results (#215)", () => {
+	const renderResult = (
+		toolName: string,
+		content: string,
+		toolInput: Record<string, unknown>,
+		filePath?: string,
+	) =>
+		render(
+			React.createElement(MessageBlock, {
+				message: {
+					id: "msg-215",
+					role: "tool_result",
+					content,
+					tool_name: "tu1",
+					exit_code: 0,
+					thread_id: "t-1",
+					created_at: new Date().toISOString(),
+				},
+				toolName,
+				toolInput,
+				filePath,
+				terminalColumns: 120,
+			}),
+		);
+
+	it("tags a compact bms_read result line with [remote]", async () => {
+		// Compact tools suppress the ⏵ call row, so this one line is the
+		// invocation's whole committed footprint — without the tag here, a
+		// remote read is indistinguishable from a local one (Kara's report).
+		const { lastFrame } = renderResult(
+			"bms_read",
+			"1:aaaa|line one\n2:bbbb|line two",
+			{ path: "/home/user/notes.md" },
+			"/home/user/notes.md",
+		);
+		await tick();
+		expect(lastFrame()).toContain("[remote] read");
+	});
+
+	it("tags a compact bms_search result line with [remote]", async () => {
+		const { lastFrame } = renderResult(
+			"bms_search",
+			"src/x.ts:1:aaaa:match\n1 match in 1 file (10 files searched)",
+			{ pattern: "dispatch" },
+		);
+		await tick();
+		expect(lastFrame()).toContain("[remote] search");
+	});
+
+	it("tags a compact query result line with [remote]", async () => {
+		const { lastFrame } = renderResult("query", "id\trole\n1\tuser", { sql: "SELECT 1" });
+		await tick();
+		expect(lastFrame()).toContain("[remote] query");
+	});
+
+	it("does not tag a compact boundless_read result line", async () => {
+		const { lastFrame } = renderResult(
+			"boundless_read",
+			"1:aaaa|x",
+			{ file_path: "/x/y.ts" },
+			"/x/y.ts",
+		);
+		await tick();
+		expect(lastFrame()).not.toContain("[remote]");
+	});
+
+	it("tags a collapsed bms_edit result line with [remote]", async () => {
+		const { lastFrame } = renderResult(
+			"bms_edit",
+			"Edited /x/y.ts: applied 1 edit",
+			{
+				file_path: "/x/y.ts",
+				edits: [{ start: "1:aaaa", end: "1:aaaa", content: "z" }],
+			},
+			"/x/y.ts",
+		);
+		await tick();
+		expect(lastFrame()).toContain("[remote] edit");
+	});
+
+	it("does not tag a collapsed boundless_write result line", async () => {
+		const { lastFrame } = renderResult(
+			"boundless_write",
+			"Wrote 1 line",
+			{ file_path: "/x/y.ts", content: "z" },
+			"/x/y.ts",
+		);
+		await tick();
+		expect(lastFrame()).not.toContain("[remote]");
+	});
+});
