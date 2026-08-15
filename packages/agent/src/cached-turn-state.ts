@@ -23,6 +23,10 @@ export interface CachedTurnState {
 	assemblyNowMs?: number;
 	/** Hash of tool definitions — change triggers cold path */
 	toolFingerprint: string;
+	/** Resolved model id whose provider-facing projection produced this cache. */
+	modelId?: string;
+	/** Vision support used when image blocks were projected into cached messages. */
+	vision?: boolean;
 	/**
 	 * Section breakdown captured from the cold-path build. Reused on warm hits
 	 * so context_debug.sections stays populated across the warm-path lifecycle.

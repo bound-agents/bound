@@ -509,6 +509,52 @@ describe("createRelayStream$", () => {
 		expect(error?.message).toContain("Model not found");
 	});
 
+	it("treats an empty heartbeat payload as first activity while inference is still waiting", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture("spoke-1", "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 500, firstChunkTimeoutMs: 80, pollIntervalMs: 10 },
+		);
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const streamId = getStreamIdFromOutbox(db);
+		insertRelayInboxEntry(db, {
+			id: "heartbeat-0",
+			sourceSiteId: "spoke-1",
+			kind: "stream_chunk",
+			streamId,
+			payload: JSON.stringify({ seq: 0, chunks: [] }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		insertRelayInboxEntry(db, {
+			id: "real-1",
+			sourceSiteId: "spoke-1",
+			kind: "stream_chunk",
+			streamId,
+			payload: JSON.stringify({ seq: 1, chunks: [{ type: "text_delta", text: "alive" }] }),
+		});
+		insertRelayInboxEntry(db, {
+			id: "end-2",
+			sourceSiteId: "spoke-1",
+			kind: "stream_end",
+			streamId,
+			payload: JSON.stringify({ seq: 2, chunks: [] }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+		await done;
+		expect(chunks).toEqual([{ type: "text_delta", text: "alive" }]);
+	});
+
 	it("AC1.4: Only first host is tried when it succeeds immediately", async () => {
 		({ db, tmpDir } = createTestDb());
 		const eventBus = new TypedEventEmitter();

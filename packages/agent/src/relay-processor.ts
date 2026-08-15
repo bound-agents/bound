@@ -1736,6 +1736,12 @@ export class RelayProcessor {
 		let bufferBytes = 0;
 		let lastFlushTime = Date.now();
 		const inferenceStartTime = Date.now();
+		const heartbeatTimer = setInterval(() => {
+			// Empty sequenced payload: proves the relay consumer and backend call are
+			// alive without fabricating a model chunk. The requester consumes it as
+			// first/in-flight activity and emits nothing to the agent loop.
+			this.writeStreamChunk(entry, "stream_chunk", streamId, seq++, []);
+		}, 1_000);
 
 		const flush = (isFinal: boolean): void => {
 			if (chunkBuffer.length === 0 && !isFinal) return;
@@ -1870,7 +1876,6 @@ export class RelayProcessor {
 				const collector = createScopedTraceCollector(this.appCtx?.siteId);
 				const tracer = collector.getTracer("bound.relay-hub");
 
-				// Run inference within extracted parent context
 				await context.with(parentContext, async () => {
 					const span = tracer.startSpan("relay.hub-inference");
 					try {
@@ -1889,14 +1894,9 @@ export class RelayProcessor {
 
 				collectedSpans = await collector.flush();
 			} else {
-				// No trace context — run without tracing
 				await runInferenceWithTracing();
 			}
 		} catch (err) {
-			// Surface the failure locally before bouncing it back to the requester.
-			// Without this, relayed inference errors only appear on the requester's
-			// side (as a relay error response) and the serving spoke's own logs
-			// are silent — operators can't see WHY their host returned errors.
 			this.logger.error("[relay] Inference failed", {
 				model: payload.model,
 				source: entry.source_site_id,
@@ -1924,6 +1924,7 @@ export class RelayProcessor {
 				});
 			}
 		} finally {
+			clearInterval(heartbeatTimer);
 			this.activeInferenceStreams.delete(entry.id);
 			// Write trace_data response if spans were collected (AC5.3)
 			if (collectedSpans.length > 0) {

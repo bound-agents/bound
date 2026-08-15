@@ -330,10 +330,16 @@ export class MainAgentLoop extends BoundAgentLoop {
 		// evicted, so getCachedTurnState returns undefined and the path falls to
 		// "no-stored-state" cold. predictCacheState remains for cache-warm-poke.
 		const cachedForWarm = this.getCachedTurnState();
+		const currentVision = resolvedCaps?.vision;
+		const cacheProjectionMatches =
+			cachedForWarm !== undefined &&
+			(cachedForWarm.modelId === undefined || cachedForWarm.modelId === resolvedModelForDebug) &&
+			(cachedForWarm.vision === undefined || cachedForWarm.vision === currentVision);
 		const isWarmPathEligible =
 			!this.config.noHistory &&
 			cachedForWarm !== undefined &&
-			cachedForWarm.toolFingerprint === currentFingerprint;
+			cachedForWarm.toolFingerprint === currentFingerprint &&
+			cacheProjectionMatches;
 
 		if (isWarmPathEligible && cachedForWarm) {
 			const assembleContextSpan = getTracer().startSpan("agent-loop.assemble-context", {
@@ -589,6 +595,8 @@ export class MainAgentLoop extends BoundAgentLoop {
 			fixedCacheIdx,
 			lastMessageCreatedAt: lastRow?.created_at ?? new Date().toISOString(),
 			toolFingerprint: currentFingerprint,
+			modelId: resolvedModelForDebug,
+			vision: currentVision,
 			debugSections: contextDebug.sections,
 			assemblyNowMs,
 		});
