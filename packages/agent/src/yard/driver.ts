@@ -120,6 +120,59 @@ const BOOTSTRAP_SOURCE = `(() => {
 	try { Object.defineProperty(Object.getPrototypeOf(function () {}), "constructor", { value: refuse }); } catch (e) {}
 	try { Object.defineProperty(Object.getPrototypeOf(function* () {}), "constructor", { value: refuse }); } catch (e) {}
 
+	// No ambient clock or randomness (design plan, "Execution"). QuickJS ships
+	// Date and Math.random in a bare context; remove the clock, make the RNG
+	// refuse. Both run BEFORE the freeze pass below locks Math and the global
+	// bindings.
+	try { delete globalThis.Date; } catch (e) {}
+	if (typeof globalThis.Date !== "undefined") {
+		try { Object.defineProperty(globalThis, "Date", { value: undefined, writable: false, configurable: false }); } catch (e) {}
+	}
+	try { Math.random = function () { throw new Error("randomness is disabled in Yard"); }; } catch (e) {}
+
+	// Freeze intrinsic prototypes and constructors (design plan, "Execution").
+	// This is what makes the bridge trustworthy from inside the realm: shared
+	// prototypes cannot be polluted across the program's own modules, JSON (the
+	// serialization the step reply rides) cannot be swapped or monkey-patched,
+	// and a toJSON planted on Object.prototype cannot rewrite a validated
+	// effect payload between the brand check and the bridge copy. Sloppy-mode
+	// guest writes to frozen targets fail SILENTLY (no throw), so ordinary
+	// programs are unaffected; only the pollution itself stops taking effect.
+	// globalThis stays extensible — the program must still define main() and
+	// its own top-level bindings; guest-created objects and prototypes stay
+	// fully writable.
+	const intrinsicNames = [
+		"Object", "Array", "Function", "String", "Number", "Boolean", "Symbol", "BigInt",
+		"Math", "JSON", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
+		"ReferenceError", "EvalError", "URIError", "AggregateError", "InternalError",
+		"Promise", "Map", "Set", "WeakMap", "WeakSet", "WeakRef", "FinalizationRegistry",
+		"ArrayBuffer", "SharedArrayBuffer", "DataView", "Int8Array", "Uint8Array",
+		"Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
+		"Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
+		"Reflect", "Proxy", "eval", "isFinite", "isNaN", "parseInt", "parseFloat",
+		"decodeURI", "decodeURIComponent", "encodeURI", "encodeURIComponent",
+	];
+	for (const name of intrinsicNames) {
+		const value = globalThis[name];
+		if (value === undefined || value === null || value === globalThis) continue;
+		try {
+			if (typeof value === "function" || typeof value === "object") {
+				if (value.prototype) Object.freeze(value.prototype);
+				Object.freeze(value);
+			}
+		} catch (e) {}
+		try { Object.defineProperty(globalThis, name, { value: value, writable: false, configurable: false }); } catch (e) {}
+	}
+	// The real %Function.prototype% is no longer reachable via the (replaced)
+	// Function binding; freeze it directly, plus the generator machinery the
+	// step loop itself depends on.
+	try { Object.freeze(Object.getPrototypeOf(function () {})); } catch (e) {}
+	try {
+		const genFnProto = Object.getPrototypeOf(function* () {});
+		Object.freeze(genFnProto.prototype);
+		Object.freeze(genFnProto);
+	} catch (e) {}
+
 	const deepFreeze = (value) => {
 		if (value === null || typeof value !== "object") return value;
 		Object.freeze(value);
@@ -288,7 +341,16 @@ const BOOTSTRAP_SOURCE = `(() => {
 		if (op === "throw") {
 			const info = JSON.parse(json);
 			const err = new Error(info.message);
-			err.name = info.name || "YardEffectError";
+			// defineProperty, not assignment: Error.prototype is frozen by the
+			// hardening pass above, so under "use strict" a plain assignment to
+			// err.name hits the override mistake (assignment through a
+			// non-writable prototype property throws) - defineProperty creates
+			// the own property without consulting the prototype.
+			Object.defineProperty(err, "name", {
+				value: info.name || "YardEffectError",
+				writable: true,
+				configurable: true,
+			});
 			return advance(gen.throw(err));
 		}
 		throw new Error("unknown step op: " + op);
