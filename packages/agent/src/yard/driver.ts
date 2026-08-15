@@ -1,4 +1,14 @@
-import { type QuickJSHandle, getQuickJS } from "quickjs-emscripten";
+import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
+import { type QuickJSHandle, newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
+
+// One singleton module per daemon process, matching getQuickJS()'s old
+// behavior while using a bundle-safe variant. Individual Yard invocations
+// still receive fresh runtimes + contexts below.
+let bundleSafeQuickJSPromise: ReturnType<typeof newQuickJSWASMModuleFromVariant> | undefined;
+function getBundleSafeQuickJS(): ReturnType<typeof newQuickJSWASMModuleFromVariant> {
+	bundleSafeQuickJSPromise ??= newQuickJSWASMModuleFromVariant(RELEASE_SYNC);
+	return bundleSafeQuickJSPromise;
+}
 
 /**
  * Yard driver — slice 1 of the Yard design plan (/home/user VFS:
@@ -526,7 +536,13 @@ export async function runYardProgram(options: RunYardProgramOptions): Promise<Ya
 		elapsed_ms: 0,
 	};
 
-	const QuickJS = await getQuickJS();
+	// The default quickjs-emscripten RELEASE_SYNC variant loads a separate
+	// emscripten-module.wasm at runtime. That works from node_modules but fails
+	// in the standalone bound binary (`/$bunfs/root/emscripten-module.wasm`
+	// ENOENT). Memoize the published single-file release-sync variant instead:
+	// its WASM bytes are embedded in the JS module, so Bun bundles the complete
+	// runtime into the executable with no sidecar.
+	const QuickJS = await getBundleSafeQuickJS();
 	const runtime = QuickJS.newRuntime();
 	runtime.setMemoryLimit(limits.memoryLimitBytes);
 	runtime.setMaxStackSize(limits.stackSizeBytes);
