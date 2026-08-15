@@ -600,6 +600,75 @@ describe("Client tool dispatch in MainAgentLoop", () => {
 		expect(payload.tool_name).toBe("client_action");
 	});
 
+	it("continues in the same run when a remote-session client tool has already returned", async () => {
+		const clientTool = {
+			type: "function" as const,
+			function: {
+				name: "client_math",
+				description: "Math on remote client",
+				parameters: { type: "object", properties: {}, required: [] },
+			},
+		};
+		const clientTools = new Map([["client_math", clientTool]]);
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "tool_use_start" as const, id: "remote-call-1", name: "client_math" };
+			yield {
+				type: "tool_use_args" as const,
+				id: "remote-call-1",
+				partial_json: '{"x":10}',
+			};
+			yield { type: "tool_use_end" as const, id: "remote-call-1" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 15,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "The remote answer is 20" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 20,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const ctx = makeCtx();
+		const loop = new (class extends MainAgentLoop {
+			protected override async relayDeferredClientTool(): Promise<{
+				content: string;
+				exitCode: number;
+				durationMs: number;
+			}> {
+				return { content: "20", exitCode: 0, durationMs: 0 };
+			}
+		})(ctx, { exec: () => Promise.resolve({}) } as any, createMockRouter(mockBackend), {
+			threadId,
+			userId: randomUUID(),
+			clientTools,
+		});
+
+		const result = await loop.run();
+		expect(result.error).toBeUndefined();
+		const final = db
+			.prepare(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(threadId) as { content: string } | null;
+		expect(final?.content).toBe("The remote answer is 20");
+	});
+
 	it("full round-trip: LLM call -> loop exit -> tool_result persisted -> loop resume -> final response", async () => {
 		const clientTool = {
 			type: "function" as const,

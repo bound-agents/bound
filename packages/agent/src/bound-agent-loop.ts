@@ -1501,13 +1501,13 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		}
 
 		if (batch.deferred.length > 0) {
-			for (const { toolCall } of batch.deferred) {
+			const stillDeferred: LoopToolExecutionBatch["deferred"] = [];
+			for (const pending of batch.deferred) {
+				const { toolCall } = pending;
 				const connectionId = this.config.connectionId;
 				if (connectionId) {
-					// LOCAL PATH (unchanged): the thread's live WS session is on THIS
-					// host. Enqueue into the local WS dispatch and stop; the client's
-					// result arrives via websocket.ts → enqueueToolResult, which
-					// re-wakes the loop. The deferral is intentional.
+					// A local client result arrives asynchronously after this loop exits.
+					stillDeferred.push(pending);
 					const entryId = enqueueClientToolCall(
 						this.ctx.db,
 						this.config.threadId,
@@ -1534,38 +1534,35 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					continue;
 				}
 
-				// NO LOCAL CONNECTION. Resolve the live REMOTE host holding the
-				// thread's WS session and relay the call there (R-UD5/R-UD8/R-UD12).
 				const sessionHost = resolveClientSessionHost(
 					this.ctx.db,
 					this.config.threadId,
 					this.ctx.siteId,
 				);
 				if (!sessionHost) {
-					// No live session ANYWHERE (no local connection AND no live remote
-					// session). Keep the loud-error edge: persist an error tool_result
-					// so the loop resumes and the model sees the failure rather than
-					// silently dropping the call (which would leave an orphan tool_call).
 					this.ctx.logger.error("Client tool call without a live session anywhere", {
 						tool: toolCall.name,
 						callId: toolCall.id,
 						threadId: this.config.threadId,
 					});
-					this.persistRelayedClientToolResult(
-						toolCall.id,
-						`Error: no live boundless/client session for this thread on any host; cannot run client tool "${toolCall.name}"`,
-						true,
-					);
+					batch.results.push({
+						toolCall,
+						result: {
+							content: `Error: no live boundless/client session for this thread on any host; cannot run client tool "${toolCall.name}"`,
+							exitCode: 1,
+							durationMs: 0,
+						},
+					});
 					continue;
 				}
 
-				// Drive the relayed call to completion (relay request → wait for
-				// client_result → persist tool_result + enqueueToolResult). This
-				// matches the local resume contract: the persisted tool_result + the
-				// enqueued dispatch row re-wake the loop exactly as the WS path does.
-				await this.relayDeferredClientTool(toolCall, sessionHost);
+				// A remote client result is awaited synchronously, so it belongs to this
+				// active loop and can take the normal persistence/continuation track.
+				const remoteResult = await this.relayDeferredClientTool(toolCall, sessionHost);
+				batch.results.push({ toolCall, result: remoteResult });
 			}
-			return { action: "stop" };
+			batch.deferred.splice(0, batch.deferred.length, ...stillDeferred);
+			if (stillDeferred.length > 0) return { action: "stop" };
 		}
 
 		if (this.config.shouldYield?.()) {
@@ -1576,22 +1573,18 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
-	 * Relay a deferred client tool to the remote host holding the thread's live
-	 * WS session and drive it to completion (R-UD5/R-UD8/R-UD12).
+	 * Relay a client tool to the remote host holding the thread's live WS
+	 * session and wait for its result (R-UD5/R-UD8/R-UD12).
 	 *
-	 * Writes a `client_tool` relay outbox entry to the session host, then waits
-	 * for the matching `client_result` (or `error`) response on `relay_inbox`,
-	 * keyed by the outbox entry id — the same correlation `createRelayWait$` uses
-	 * for inference/tool relays. On success the executed tool output is persisted
-	 * as the thread's `tool_result` message (host-parity with the WS path) and
-	 * `enqueueToolResult` re-wakes the loop. On a retriable failure (timeout /
-	 * session drop mid-call, AC.7b) the failure is surfaced as the tool result so
-	 * the loop resumes and the model can react, rather than wedging the turn.
+	 * Unlike the local client path, this call is synchronous from the producer's
+	 * perspective: the result returns to the active loop, joins `batch.results`,
+	 * and is persisted into the live frame before the next inference turn. It
+	 * must not enqueue a second tool-result wakeup for work already completed.
 	 */
 	protected async relayDeferredClientTool(
 		toolCall: ParsedToolCall,
 		sessionHost: EligibleHost,
-	): Promise<void> {
+	): Promise<ToolExecutionResult> {
 		const timeoutMs = this.inferenceTimeoutMs;
 		const tracker = this.config.handleMessageTracker;
 		const dispatchCtx = tracker
@@ -1626,12 +1619,11 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				host: sessionHost.host_name,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			this.persistRelayedClientToolResult(
-				toolCall.id,
-				`Error: failed to relay client tool "${toolCall.name}" to session host: ${formatError(error)}`,
-				true,
-			);
-			return;
+			return {
+				content: `Error: failed to relay client tool "${toolCall.name}" to session host: ${formatError(error)}`,
+				exitCode: 1,
+				durationMs: 0,
+			};
 		}
 
 		this.ctx.logger.info("[agent-loop] Relaying client tool to session host", {
@@ -1661,17 +1653,19 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		}
 
 		if (resolved) {
-			this.persistRelayedClientToolResult(toolCall.id, resolved.content, resolved.isError);
-			return;
+			return {
+				content: capToolResultContent(resolved.content),
+				exitCode: resolved.isError ? 1 : 0,
+				durationMs: 0,
+			};
 		}
-		// Null = timeout / abort / unparseable response → retriable failure (AC.7b).
-		// Surface it as the tool result so the loop resumes; the producer treats it
-		// as transient (it did not hard-fail the turn).
-		this.persistRelayedClientToolResult(
-			toolCall.id,
-			`Error: client tool "${toolCall.name}" relay timed out or the session dropped before returning a result (retriable)`,
-			true,
-		);
+		return {
+			content: capToolResultContent(
+				`Error: client tool "${toolCall.name}" relay timed out or the session dropped before returning a result (retriable)`,
+			),
+			exitCode: 1,
+			durationMs: 0,
+		};
 	}
 
 	/**
