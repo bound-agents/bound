@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ModelRouter } from "@bound/llm";
+import { context as otelContext, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { resolveModel } from "../model-resolution";
 import type { RegisteredTool, ToolContext } from "../types";
@@ -44,7 +45,19 @@ interface YardRunScope {
 	deadlineAt: number;
 	semaphore: Semaphore;
 	depth: number;
+	/** Root tree id — shared by every run in the recursive tree. */
 	traceId: string;
+	/** Tree-wide leaf concurrency, recorded on each run span. */
+	concurrency: number;
+}
+
+function getTracer() {
+	return trace.getTracer("bound.yard");
+}
+
+/** Bounded content identifier for trace attributes (never the content itself). */
+function hash16(value: string): string {
+	return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
 /**
@@ -262,6 +275,29 @@ function* main(input) {
 
 \`tool("yard", ...)\` may recursively invoke Yard. Nested calls run in isolated child runtimes, must omit \`budget\`, and inherit the root deadline and concurrency unchanged. Returns \`{ result, trace_id, usage }\` as JSON.`;
 
+/**
+ * Wrap one effect dispatch in a `yard.effect` span under the ambient
+ * `yard.run` span, so per-effect timing and status land on the tree trace
+ * (design plan, "Trace": each yielded tool or inference call and its
+ * timing/status).
+ */
+async function withEffectSpan<T>(
+	attributes: Record<string, string | number>,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const span = getTracer().startSpan("yard.effect", { attributes }, otelContext.active());
+	try {
+		const value = await otelContext.with(trace.setSpan(otelContext.active(), span), fn);
+		span.setAttribute("yard.effect.status", "ok");
+		return value;
+	} catch (err) {
+		span.setAttribute("yard.effect.status", "error");
+		throw err;
+	} finally {
+		span.end();
+	}
+}
+
 /** Build the YardHost that dispatches effects through Bound's dispatch paths. */
 function createYardHost(
 	ctx: ToolContext,
@@ -269,124 +305,136 @@ function createYardHost(
 	counters: { inferenceTokens: number },
 ): YardHost {
 	return {
-		async dispatchTool(name: string, args: JsonValue): Promise<unknown> {
-			const registry = ctx.getToolRegistry?.();
-			if (!registry) throw new Error("yard has no tool registry wired on this host");
-			const tool = registry.get(name);
-			if (!tool) throw new Error(`tool "${name}" is not available in the current toolset`);
-			if (tool.kind === "client") {
-				throw new Error(
-					`tool "${name}" is a client tool; client round-trips are not dispatchable from yard`,
-				);
-			}
-			if (!tool.execute) {
-				throw new Error(`tool "${name}" has no direct execute path and cannot be used from yard`);
-			}
+		dispatchTool(name: string, args: JsonValue): Promise<unknown> {
+			return withEffectSpan({ "yard.effect.kind": "tool", "yard.effect.tool": name }, async () => {
+				const registry = ctx.getToolRegistry?.();
+				if (!registry) throw new Error("yard has no tool registry wired on this host");
+				const tool = registry.get(name);
+				if (!tool) throw new Error(`tool "${name}" is not available in the current toolset`);
+				if (tool.kind === "client") {
+					throw new Error(
+						`tool "${name}" is a client tool; client round-trips are not dispatchable from yard`,
+					);
+				}
+				if (!tool.execute) {
+					throw new Error(`tool "${name}" has no direct execute path and cannot be used from yard`);
+				}
 
-			// Nested yard is orchestration, not leaf work — no permit, so a
-			// suspended parent can never hold a permit its child needs.
-			const isNestedYard = name === "yard";
-			if (!isNestedYard) await scope.semaphore.acquire();
-			try {
-				const raw = await raceDeadline(
-					Promise.resolve(tool.execute(args as Record<string, unknown>)),
-					scope.deadlineAt,
-					`tool "${name}"`,
-				);
-				let content: string;
-				if (typeof raw === "string") {
-					content = raw;
-				} else if (Array.isArray(raw)) {
-					content = JSON.stringify(raw);
-				} else if (raw !== null && typeof raw === "object" && "deferred" in raw) {
-					throw new Error(`tool "${name}" defers to background work; not usable from yard`);
-				} else if (raw !== null && typeof raw === "object" && "content" in raw) {
-					const inner = (raw as { content: unknown }).content;
-					content = typeof inner === "string" ? inner : JSON.stringify(inner);
-				} else {
-					content = String(raw);
-				}
-				if (content.startsWith("Error:")) throw new Error(content);
-				// Give the guest structured data when the tool returned JSON,
-				// else the raw string — same information a direct call yields.
+				// Nested yard is orchestration, not leaf work — no permit, so a
+				// suspended parent can never hold a permit its child needs.
+				const isNestedYard = name === "yard";
+				if (!isNestedYard) await scope.semaphore.acquire();
 				try {
-					return JSON.parse(content);
-				} catch {
-					return content;
+					const raw = await raceDeadline(
+						Promise.resolve(tool.execute(args as Record<string, unknown>)),
+						scope.deadlineAt,
+						`tool "${name}"`,
+					);
+					let content: string;
+					if (typeof raw === "string") {
+						content = raw;
+					} else if (Array.isArray(raw)) {
+						content = JSON.stringify(raw);
+					} else if (raw !== null && typeof raw === "object" && "deferred" in raw) {
+						throw new Error(`tool "${name}" defers to background work; not usable from yard`);
+					} else if (raw !== null && typeof raw === "object" && "content" in raw) {
+						const inner = (raw as { content: unknown }).content;
+						content = typeof inner === "string" ? inner : JSON.stringify(inner);
+					} else {
+						content = String(raw);
+					}
+					if (content.startsWith("Error:")) throw new Error(content);
+					// Give the guest structured data when the tool returned JSON,
+					// else the raw string — same information a direct call yields.
+					try {
+						return JSON.parse(content);
+					} catch {
+						return content;
+					}
+				} finally {
+					if (!isNestedYard) scope.semaphore.release();
 				}
-			} finally {
-				if (!isNestedYard) scope.semaphore.release();
-			}
+			});
 		},
 
-		async dispatchInference(model: string, request: YardInferenceRequest): Promise<unknown> {
-			if (!ctx.modelRouter) throw new Error("yard has no model router wired on this host");
-			const resolution = resolveModel(model, ctx.modelRouter as ModelRouter, ctx.db, ctx.siteId);
-			if (resolution.kind === "error") {
-				throw new Error(`model "${model}" failed to resolve: ${resolution.error}`);
-			}
-			if (resolution.kind === "remote") {
-				throw new Error(
-					`model "${model}" resolves to a remote host; yard inference currently requires a locally-configured model`,
-				);
-			}
-
-			const parts: string[] = [request.prompt];
-			if (request.input !== undefined) {
-				parts.push(`Input:\n${JSON.stringify(request.input)}`);
-			}
-			if (request.schema !== undefined) {
-				parts.push(
-					`Respond with ONLY a JSON value that conforms to this JSON Schema — no prose, no code fence:\n${JSON.stringify(request.schema)}`,
-				);
-			}
-			const requested = request.max_tokens ?? DEFAULT_INFER_MAX_TOKENS;
-			const maxTokens =
-				resolution.maxOutputTokens !== undefined
-					? Math.min(requested, resolution.maxOutputTokens)
-					: requested;
-
-			await scope.semaphore.acquire();
-			try {
-				const consume = async (): Promise<string> => {
-					const chunks: string[] = [];
-					for await (const chunk of resolution.backend.chat({
-						messages: [{ role: "user", content: parts.join("\n\n") }],
-						max_tokens: maxTokens,
-					})) {
-						if (chunk.type === "text") chunks.push(chunk.content);
-						if (chunk.type === "done") {
-							counters.inferenceTokens += chunk.usage.input_tokens + chunk.usage.output_tokens;
-						}
+		dispatchInference(model: string, request: YardInferenceRequest): Promise<unknown> {
+			return withEffectSpan(
+				{ "yard.effect.kind": "inference", "yard.effect.model": model },
+				async () => {
+					if (!ctx.modelRouter) throw new Error("yard has no model router wired on this host");
+					const resolution = resolveModel(
+						model,
+						ctx.modelRouter as ModelRouter,
+						ctx.db,
+						ctx.siteId,
+					);
+					if (resolution.kind === "error") {
+						throw new Error(`model "${model}" failed to resolve: ${resolution.error}`);
 					}
-					return chunks.join("").trim();
-				};
-				const text = await raceDeadline(consume(), scope.deadlineAt, `inference on "${model}"`);
+					if (resolution.kind === "remote") {
+						throw new Error(
+							`model "${model}" resolves to a remote host; yard inference currently requires a locally-configured model`,
+						);
+					}
 
-				if (request.schema === undefined) return text;
+					const parts: string[] = [request.prompt];
+					if (request.input !== undefined) {
+						parts.push(`Input:\n${JSON.stringify(request.input)}`);
+					}
+					if (request.schema !== undefined) {
+						parts.push(
+							`Respond with ONLY a JSON value that conforms to this JSON Schema — no prose, no code fence:\n${JSON.stringify(request.schema)}`,
+						);
+					}
+					const requested = request.max_tokens ?? DEFAULT_INFER_MAX_TOKENS;
+					const maxTokens =
+						resolution.maxOutputTokens !== undefined
+							? Math.min(requested, resolution.maxOutputTokens)
+							: requested;
 
-				let parsed: unknown;
-				try {
-					parsed = JSON.parse(stripCodeFence(text));
-				} catch {
-					throw new Error(
-						`inference output is not valid JSON for the requested schema (model "${model}")`,
-					);
-				}
-				const violations = validateAgainstSchema(
-					parsed,
-					request.schema as Record<string, unknown>,
-					"",
-				);
-				if (violations.length > 0) {
-					throw new Error(
-						`inference output violates the requested schema: ${violations.join("; ")}`,
-					);
-				}
-				return parsed;
-			} finally {
-				scope.semaphore.release();
-			}
+					await scope.semaphore.acquire();
+					try {
+						const consume = async (): Promise<string> => {
+							const chunks: string[] = [];
+							for await (const chunk of resolution.backend.chat({
+								messages: [{ role: "user", content: parts.join("\n\n") }],
+								max_tokens: maxTokens,
+							})) {
+								if (chunk.type === "text") chunks.push(chunk.content);
+								if (chunk.type === "done") {
+									counters.inferenceTokens += chunk.usage.input_tokens + chunk.usage.output_tokens;
+								}
+							}
+							return chunks.join("").trim();
+						};
+						const text = await raceDeadline(consume(), scope.deadlineAt, `inference on "${model}"`);
+
+						if (request.schema === undefined) return text;
+
+						let parsed: unknown;
+						try {
+							parsed = JSON.parse(stripCodeFence(text));
+						} catch {
+							throw new Error(
+								`inference output is not valid JSON for the requested schema (model "${model}")`,
+							);
+						}
+						const violations = validateAgainstSchema(
+							parsed,
+							request.schema as Record<string, unknown>,
+							"",
+						);
+						if (violations.length > 0) {
+							throw new Error(
+								`inference output violates the requested schema: ${violations.join("; ")}`,
+							);
+						}
+						return parsed;
+					} finally {
+						scope.semaphore.release();
+					}
+				},
+			);
 		},
 	};
 }
@@ -395,31 +443,68 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 	const counters = { inferenceTokens: 0 };
 	const host = createYardHost(ctx, scope, counters);
 	const startedAt = Date.now();
+	// One yard.run span per run in the tree: the root opens under whatever
+	// ambient span dispatched the yard tool; a nested run opens under the
+	// parent's dispatching yard.effect span, so the OTEL tree mirrors the
+	// yard tree. scope.traceId ties the whole tree together; run_id is this
+	// run's own identity.
+	const runId = randomUUID();
+	const span = getTracer().startSpan(
+		"yard.run",
+		{
+			attributes: {
+				"yard.trace_id": scope.traceId,
+				"yard.run_id": runId,
+				"yard.depth": scope.depth,
+				"yard.program_hash": hash16(params.program),
+				"yard.input_hash": hash16(JSON.stringify(params.input ?? null)),
+				"yard.deadline_ms": scope.deadlineAt,
+				"yard.concurrency": scope.concurrency,
+			},
+		},
+		otelContext.active(),
+	);
 	try {
-		const out = await runYardProgram({
-			program: params.program,
-			input: params.input as JsonValue | undefined,
-			host,
+		return await otelContext.with(trace.setSpan(otelContext.active(), span), async () => {
+			try {
+				const out = await runYardProgram({
+					program: params.program,
+					input: params.input as JsonValue | undefined,
+					host,
+				});
+				out.usage.inference_tokens += counters.inferenceTokens;
+				span.setAttributes({
+					"yard.tool_calls": out.usage.tool_calls,
+					"yard.inference_calls": out.usage.inference_calls,
+					"yard.inference_tokens": out.usage.inference_tokens,
+					"yard.status": "completed",
+					"yard.result_hash": hash16(JSON.stringify(out.result)),
+				});
+				ctx.logger.info("[yard] run completed", {
+					traceId: scope.traceId,
+					runId,
+					depth: scope.depth,
+					toolCalls: out.usage.tool_calls,
+					inferenceCalls: out.usage.inference_calls,
+					inferenceTokens: out.usage.inference_tokens,
+					elapsedMs: out.usage.elapsed_ms,
+				});
+				return JSON.stringify({ result: out.result, trace_id: scope.traceId, usage: out.usage });
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				span.setAttribute("yard.status", "failed");
+				ctx.logger.info("[yard] run failed", {
+					traceId: scope.traceId,
+					runId,
+					depth: scope.depth,
+					elapsedMs: Date.now() - startedAt,
+					error: message,
+				});
+				return message.startsWith("Error:") ? message : `Error: ${message}`;
+			}
 		});
-		out.usage.inference_tokens += counters.inferenceTokens;
-		ctx.logger.info("[yard] run completed", {
-			traceId: scope.traceId,
-			depth: scope.depth,
-			toolCalls: out.usage.tool_calls,
-			inferenceCalls: out.usage.inference_calls,
-			inferenceTokens: out.usage.inference_tokens,
-			elapsedMs: out.usage.elapsed_ms,
-		});
-		return JSON.stringify({ result: out.result, trace_id: scope.traceId, usage: out.usage });
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		ctx.logger.info("[yard] run failed", {
-			traceId: scope.traceId,
-			depth: scope.depth,
-			elapsedMs: Date.now() - startedAt,
-			error: message,
-		});
-		return message.startsWith("Error:") ? message : `Error: ${message}`;
+	} finally {
+		span.end();
 	}
 }
 
@@ -466,6 +551,7 @@ export function createYardTool(ctx: ToolContext): RegisteredTool {
 				semaphore: new Semaphore(budget.concurrency),
 				depth: 0,
 				traceId: randomUUID(),
+				concurrency: budget.concurrency,
 			};
 			return yardRunStorage.run(rootScope, () => runYard(ctx, parsed.value, rootScope));
 		},

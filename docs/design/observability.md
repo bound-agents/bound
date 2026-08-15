@@ -31,6 +31,7 @@ All layers use `@opentelemetry/api` directly; no auto-instrumentation.
 | `bound.web` | `web.handle-message` per handler invocation (NOT a root span when `agent.handle-message` is open) |
 | `bound.scheduler` | `scheduler.execute-task` root span per scheduled task execution |
 | `bound.relay` | `relay.execute-process` root span for delegated inference on hub |
+| `bound.yard` | `yard.run` per Yard execution (root + nested, linked by `yard.trace_id`), `yard.effect` per dispatched tool/inference effect |
 
 ## Cross-handler-invocation spans
 
