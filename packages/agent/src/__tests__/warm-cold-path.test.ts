@@ -84,6 +84,38 @@ describe("warm-cold-path", () => {
 		});
 	});
 
+	describe("capability-safe warm reuse", () => {
+		it("rejects cached vision history when the next target is text-only", () => {
+			const cached: CachedTurnState = {
+				messages: [
+					{
+						role: "user",
+						content: [
+							{
+								type: "image",
+								source: { type: "file_ref", file_id: "image-1", media_type: "image/png" },
+							},
+						],
+					},
+				],
+				systemPrompt: "system",
+				cacheMessagePositions: [],
+				fixedCacheIdx: -1,
+				lastMessageCreatedAt: new Date().toISOString(),
+				toolFingerprint: "same-tools",
+				modelId: "fable",
+				vision: true,
+			};
+
+			const warmEligible =
+				cached.toolFingerprint === "same-tools" &&
+				cached.modelId === "glm-5.2" &&
+				cached.vision === false;
+
+			expect(warmEligible).toBe(false);
+		});
+	});
+
 	describe("AC1.1: Warm-path turn reuses stored messages and appends only new ones", () => {
 		it("warm path appends delta messages to stored messages", () => {
 			// Simulate warm-path message accumulation

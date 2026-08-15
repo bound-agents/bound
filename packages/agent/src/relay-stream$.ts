@@ -78,9 +78,13 @@ interface ScanOutput {
 	firstChunkReceived: boolean;
 	hostStartTime: number;
 	chunksToEmit: StreamChunk[];
+	activity: boolean;
 	done: boolean;
 	error: string | null;
 }
+
+const RELAY_ACTIVITY = Symbol("relay-activity");
+type RelayEmission = StreamChunk | typeof RELAY_ACTIVITY;
 
 function createStreamReducer(
 	deps: RelayStreamDeps,
@@ -95,6 +99,7 @@ function createStreamReducer(
 			...state,
 			buffer: new Map(state.buffer),
 			chunksToEmit: [],
+			activity: false,
 		};
 
 		const inboxEntries = readInboxByStreamId(deps.db, streamId);
@@ -130,6 +135,22 @@ function createStreamReducer(
 			if (!chunkResult.ok) continue;
 			const chunkPayload = chunkResult.value as StreamChunkPayload;
 			if (typeof chunkPayload.seq !== "number" || !Array.isArray(chunkPayload.chunks)) continue;
+			// An empty stream_chunk is a source heartbeat. Receiving a valid,
+			// sequenced payload proves the target is alive even before its backend
+			// emits the first model token, so it satisfies the first-activity timeout.
+			next.activity = true;
+			if (!next.firstChunkReceived) {
+				next.firstChunkReceived = true;
+				const firstChunkLatencyMs = Date.now() - next.hostStartTime;
+				if (relayMetadataRef) {
+					relayMetadataRef.hostName = host.host_name;
+					relayMetadataRef.firstChunkLatencyMs = firstChunkLatencyMs;
+				}
+				deps.logger.info("RELAY_STREAM: first chunk", {
+					host: host.host_name,
+					latencyMs: firstChunkLatencyMs,
+				});
+			}
 			if (!next.buffer.has(chunkPayload.seq)) {
 				next.buffer.set(chunkPayload.seq, chunkPayload);
 			}
@@ -269,6 +290,7 @@ export function createRelayStream$(
 				firstChunkReceived: false,
 				hostStartTime,
 				chunksToEmit: [],
+				activity: false,
 				done: false,
 				error: null,
 			};
@@ -284,12 +306,16 @@ export function createRelayStream$(
 				tap((s) => {
 					if (s.done) hostSucceeded = true;
 				}),
-				mergeMap((s) => {
+				mergeMap((s): Observable<RelayEmission> => {
 					const err = s.error;
 					if (err) return throwError(() => new Error(err));
-					return from(s.chunksToEmit);
+					const emissions: RelayEmission[] = s.activity
+						? [RELAY_ACTIVITY, ...s.chunksToEmit]
+						: [...s.chunksToEmit];
+					return from(emissions);
 				}),
 				timeout({ first: firstChunkTimeoutMs, each: perHostTimeoutMs }),
+				filter((value): value is StreamChunk => value !== RELAY_ACTIVITY),
 				takeUntil(aborted$),
 				catchError((err) => {
 					if (err instanceof TimeoutError) {
