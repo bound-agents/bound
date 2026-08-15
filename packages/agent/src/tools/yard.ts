@@ -1,9 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
-import type { ModelRouter } from "@bound/llm";
+import type { LLMBackend, ModelRouter } from "@bound/llm";
 import { context as otelContext, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { resolveModel } from "../model-resolution";
+import { createRelayBackend } from "../relay-backend";
 import type { RegisteredTool, ToolContext } from "../types";
 import {
 	type JsonValue,
@@ -49,6 +50,15 @@ interface YardRunScope {
 	traceId: string;
 	/** Tree-wide leaf concurrency, recorded on each run span. */
 	concurrency: number;
+	/**
+	 * Tree-wide cancellation. The ROOT invocation owns the controller and a
+	 * timer that fires it at the absolute deadline; every descendant shares
+	 * the same signal. Passed into backend.chat() (local drivers and the
+	 * relay backend both honor ChatParams.signal — the relay side writes a
+	 * relay cancel), and raced against tool executes, so deadline expiry
+	 * CANCELS in-flight work instead of merely abandoning the await.
+	 */
+	abort: AbortController;
 }
 
 function getTracer() {
@@ -97,25 +107,39 @@ class Semaphore {
 	}
 }
 
-/** Reject `promise` once the absolute deadline passes. */
-async function raceDeadline<T>(promise: Promise<T>, deadlineAt: number, what: string): Promise<T> {
-	const remaining = deadlineAt - Date.now();
-	if (remaining <= 0) {
+/**
+ * Reject `promise` when the tree's absolute deadline passes or its abort
+ * signal fires. The root scope owns one AbortController whose timer fires at
+ * the deadline, so "deadline expired" and "cancelled" converge on the same
+ * signal — in-flight operations that honor ChatParams.signal are CANCELLED
+ * (relay writes a relay cancel; local drivers abort the provider stream),
+ * not merely abandoned.
+ */
+async function raceDeadline<T>(
+	promise: Promise<T>,
+	scope: Pick<YardRunScope, "deadlineAt" | "abort">,
+	what: string,
+): Promise<T> {
+	const remaining = scope.deadlineAt - Date.now();
+	if (remaining <= 0 || scope.abort.signal.aborted) {
 		throw new Error(`yard deadline exceeded before ${what}`);
 	}
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let onAbort: (() => void) | undefined;
 	try {
 		return await Promise.race([
 			promise,
 			new Promise<never>((_, reject) => {
-				timer = setTimeout(
-					() => reject(new Error(`yard deadline exceeded during ${what} (root timeout)`)),
-					remaining,
-				);
+				const fail = () =>
+					reject(new Error(`yard deadline exceeded during ${what} (root timeout)`));
+				timer = setTimeout(fail, remaining);
+				onAbort = fail;
+				scope.abort.signal.addEventListener("abort", fail, { once: true });
 			}),
 		]);
 	} finally {
 		clearTimeout(timer);
+		if (onAbort) scope.abort.signal.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -327,7 +351,7 @@ function createYardHost(
 				try {
 					const raw = await raceDeadline(
 						Promise.resolve(tool.execute(args as Record<string, unknown>)),
-						scope.deadlineAt,
+						scope,
 						`tool "${name}"`,
 					);
 					let content: string;
@@ -371,11 +395,26 @@ function createYardHost(
 					if (resolution.kind === "error") {
 						throw new Error(`model "${model}" failed to resolve: ${resolution.error}`);
 					}
-					if (resolution.kind === "remote") {
-						throw new Error(
-							`model "${model}" resolves to a remote host; yard inference currently requires a locally-configured model`,
-						);
-					}
+					// Local resolution chats in-process; remote wraps the inference
+					// relay — the same acquisition split acquireSummaryBackend uses,
+					// so a backendless host runs yard infer() exactly like summary
+					// extraction. The relay per-host timeout is bounded by whatever
+					// remains of the root deadline: a relay hop can never outlive
+					// the tree that requested it.
+					const backend: LLMBackend =
+						resolution.kind === "local"
+							? resolution.backend
+							: createRelayBackend(
+									{
+										db: ctx.db,
+										eventBus: ctx.eventBus,
+										siteId: ctx.siteId,
+										logger: ctx.logger,
+									},
+									resolution.hosts,
+									resolution.modelId,
+									Math.max(1, scope.deadlineAt - Date.now()),
+								);
 
 					const parts: string[] = [request.prompt];
 					if (request.input !== undefined) {
@@ -396,9 +435,10 @@ function createYardHost(
 					try {
 						const consume = async (): Promise<string> => {
 							const chunks: string[] = [];
-							for await (const chunk of resolution.backend.chat({
+							for await (const chunk of backend.chat({
 								messages: [{ role: "user", content: parts.join("\n\n") }],
 								max_tokens: maxTokens,
+								signal: scope.abort.signal,
 							})) {
 								if (chunk.type === "text") chunks.push(chunk.content);
 								if (chunk.type === "done") {
@@ -407,7 +447,7 @@ function createYardHost(
 							}
 							return chunks.join("").trim();
 						};
-						const text = await raceDeadline(consume(), scope.deadlineAt, `inference on "${model}"`);
+						const text = await raceDeadline(consume(), scope, `inference on "${model}"`);
 
 						if (request.schema === undefined) return text;
 
@@ -546,14 +586,31 @@ export function createYardTool(ctx: ToolContext): RegisteredTool {
 				timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
 				concurrency: DEFAULT_CONCURRENCY,
 			};
+			const deadlineAt = Date.now() + budget.timeout_seconds * 1000;
+			const abort = new AbortController();
+			// Fire the tree-wide signal AT the deadline so in-flight operations
+			// are cancelled (relay cancel written, provider streams torn down),
+			// not just abandoned by raceDeadline. Cleared on completion either way.
+			const deadlineTimer = setTimeout(
+				() => abort.abort(new Error("yard root deadline exceeded")),
+				budget.timeout_seconds * 1000,
+			);
 			const rootScope: YardRunScope = {
-				deadlineAt: Date.now() + budget.timeout_seconds * 1000,
+				deadlineAt,
 				semaphore: new Semaphore(budget.concurrency),
 				depth: 0,
 				traceId: randomUUID(),
 				concurrency: budget.concurrency,
+				abort,
 			};
-			return yardRunStorage.run(rootScope, () => runYard(ctx, parsed.value, rootScope));
+			try {
+				return await yardRunStorage.run(rootScope, () => runYard(ctx, parsed.value, rootScope));
+			} finally {
+				clearTimeout(deadlineTimer);
+				// Sweep any still-running work the guest left behind (e.g. a
+				// settled all() branch whose sibling failed the run).
+				if (!abort.signal.aborted) abort.abort(new Error("yard run finished"));
+			}
 		},
 	};
 }
