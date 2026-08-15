@@ -422,7 +422,7 @@ export const wsSchema = z
 		backfill_interval: z.number().int().min(0).default(300),
 		backpressure_limit: z.number().int().positive().default(2097152),
 		idle_timeout: z.number().int().positive().default(120),
-		reconnect_max_interval: z.number().int().positive().default(60),
+		reconnect_max_interval: z.number().int().positive().default(10),
 		/** Receive-side liveness timeout in ms. If a spoke receives no frame from
 		 *  the hub within this window, it tears down the connection and reconnects
 		 *  — the changelog drain may be stuck even though pings keep the socket
