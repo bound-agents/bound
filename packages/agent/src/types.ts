@@ -68,4 +68,13 @@ export interface ToolContext {
 		userId: string;
 		parentThreadId: string;
 	}) => Promise<{ summary: string; error?: string }>;
+	/**
+	 * Yard: lazy accessor for the unified tool registry the current loop
+	 * dispatches through. Set by agent-factory AFTER the registry is
+	 * constructed (the registry contains the agent tools, so it cannot exist
+	 * when the tool factories run — the closure breaks the cycle). When
+	 * absent, the yard tool refuses to run rather than dispatching against a
+	 * partial toolset.
+	 */
+	getToolRegistry?: () => Map<string, import("@bound/loop").RegisteredTool>;
 }

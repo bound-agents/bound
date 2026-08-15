@@ -26,7 +26,7 @@ adds the conceptual layer the schema can't carry: what each tool is *for* and
 
 ## Native agent tools
 
-These twelve are registered in `createAgentTools()`
+These fourteen are registered in `createAgentTools()`
 (`packages/agent/src/tools/index.ts`). The set is the source of truth; this
 catalog is kept in sync with it by a test.
 
@@ -114,6 +114,20 @@ style, standing habits), not what it's for; the job rides in the invocation's
 instructions. `define` refuses an existing active name (identity sprawl splits a
 namespace); `retire` hides it from list/invoke but keeps its memory namespace
 readable. Invocation (running one) is a separate slice.
+
+### `yard`
+Execute a bounded JavaScript generator in a QuickJS sandbox, keeping
+corpus-scale intermediates outside conversation history. The `program` defines
+`function* main(input)` and yields branded effects — `tool(name, args)`,
+`infer(modelId, request)`, `aux(name, instructions)`, `all(effects)`,
+`sequence(effects)` — which Yard dispatches through the ordinary tool and
+inference paths, resuming the generator with each result. The guest has no
+ambient I/O; only the final JSON value, usage counts, and a trace id return
+to context. Use it for bulk filter/join/rank/classify work where the
+intermediate data would otherwise flood the context window. Optional `budget`
+(`timeout_seconds`, `concurrency`) bounds the whole recursive tree; nested
+`tool("yard", ...)` calls must omit `budget` and inherit the root limits
+unchanged.
 
 ## Built-in file and sandbox tools
 

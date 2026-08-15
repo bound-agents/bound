@@ -368,7 +368,7 @@ describe("tool registry", () => {
 	});
 
 	describe("merged tools discoverability (AC5.4)", () => {
-		it("all 13 native agent tools have defined parameters", () => {
+		it("all 14 native agent tools have defined parameters", () => {
 			const mockContext = {
 				db: {} as any,
 				siteId: "test-site",
@@ -382,9 +382,9 @@ describe("tool registry", () => {
 
 			const agentTools = createAgentTools(mockContext);
 
-			// Verify we have 13 agent tools (task, cancel, query, purge,
-			// advisory, notify, introspect, archive, model_hint, hostinfo, memory, skill, aux)
-			expect(agentTools.length).toBe(13);
+			// Verify we have 14 agent tools (task, cancel, query, purge, advisory,
+			// notify, introspect, archive, model_hint, hostinfo, memory, skill, aux, yard)
+			expect(agentTools.length).toBe(14);
 
 			// Verify each tool's parameters are defined
 			for (const tool of agentTools) {

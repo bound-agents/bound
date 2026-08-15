@@ -12,6 +12,7 @@ import { createPurgeTool } from "./purge.js";
 import { createQueryTool } from "./query.js";
 import { createSkillTool } from "./skill.js";
 import { createTaskTool } from "./task.js";
+import { createYardTool } from "./yard.js";
 
 export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 	return [
@@ -30,6 +31,8 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		createMemoryTool(ctx),
 		createSkillTool(ctx),
 		createAuxTool(ctx),
+		// Yard (actionless QuickJS orchestration)
+		createYardTool(ctx),
 	];
 }
 
@@ -46,3 +49,4 @@ export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
 export { createSkillTool } from "./skill.js";
 export { createAuxTool } from "./auxiliary.js";
+export { createYardTool } from "./yard.js";
