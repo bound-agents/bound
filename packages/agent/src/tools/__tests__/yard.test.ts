@@ -84,6 +84,12 @@ describe("createYardTool", () => {
 		for (const marker of ["function* main", "tool(", "infer(", "aux(", "all(", "sequence("]) {
 			expect(description).toContain(marker);
 		}
+		// The no-backgrounding rule must be taught up front: a guest that
+		// passes background: true gets a runtime rejection (deferred results
+		// have no resolution path inside a yard run), so the description has
+		// to steer programs to all() for concurrency instead.
+		expect(description).toContain("background");
+		expect(description).toMatch(/background:\s*true.*(reject|fail|not)/i);
 	});
 
 	it("runs a pure program and returns result + usage + trace_id", async () => {
