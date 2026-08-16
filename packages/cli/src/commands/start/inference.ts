@@ -3,7 +3,7 @@
  * and post-restart summary extraction.
  */
 
-import { extractSummaryAndMemories } from "@bound/agent";
+import { compileDynamicPricing, extractSummaryAndMemories } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { updateRow } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
@@ -255,6 +255,11 @@ export async function initInference(
 	// 11. LLM setup — use ModelRouter to support all configured backends
 	appContext.logger.info("Initializing LLM...");
 	const rawBackends = appContext.config.modelBackends;
+	// Cost calculation is synchronous, so compile + sample-validate every
+	// configured function before the daemon publishes any inference backend.
+	// A bad function is a startup config error; there is no warmup race where
+	// identical turns receive different prices.
+	await compileDynamicPricing(rawBackends.backends);
 	const routerConfig = toRouterConfig(rawBackends);
 
 	// Map backend IDs to their provider-specific model names for chat() calls

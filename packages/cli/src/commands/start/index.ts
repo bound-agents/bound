@@ -6,7 +6,7 @@
 export type { StartArgs } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
-import { HandleMessageTracker } from "@bound/agent";
+import { HandleMessageTracker, compileDynamicPricing } from "@bound/agent";
 import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
 import { markAwsCredentialCacheStale } from "@bound/llm";
 import { registerSighupHandler } from "../../sighup.js";
@@ -139,7 +139,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				newConfig,
 			});
 		},
-		onModelBackendsChanged: async (_oldConfig, newConfig) => {
+		onModelBackendsChanged: async (oldConfig, newConfig) => {
 			if (!modelRouter) {
 				appContext.logger.warn(
 					"[sighup] model_backends.json changed but no router is registered — restart to apply",
@@ -147,6 +147,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 				return;
 			}
 			try {
+				// Validate and atomically publish the next calculator registry before
+				// publishing router state. If router reload fails afterward, the catch
+				// restores the previous calculator set alongside the old router.
+				await compileDynamicPricing(newConfig.backends);
 				modelRouter.reload(toRouterConfig(newConfig));
 				advertiseLocalModels(appContext, modelRouter, newConfig);
 				// Re-kick self-configuring backends after reload. `reload()`
@@ -159,6 +163,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 					default: modelRouter.getDefaultId(),
 				});
 			} catch (err) {
+				try {
+					await compileDynamicPricing(oldConfig.backends);
+				} catch (rollbackError) {
+					appContext.logger.error("[sighup] Failed to restore previous pricing functions", {
+						error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+					});
+				}
 				appContext.logger.error(
 					"[sighup] Failed to reload model router — keeping previous backends",
 					{ error: err instanceof Error ? err.message : String(err) },

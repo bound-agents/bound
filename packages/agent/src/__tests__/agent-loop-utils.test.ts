@@ -20,6 +20,7 @@ import {
 	resolveToolAnnotations,
 	shouldRetryRelayCall,
 } from "../agent-loop-utils";
+import { compileDynamicPricing } from "../dynamic-pricing";
 import type { ModelResolution } from "../model-resolution";
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,35 @@ describe("buildCommandOutput", () => {
 // calculateTurnCost
 // ---------------------------------------------------------------------------
 describe("calculateTurnCost", () => {
+	beforeAll(async () => {
+		await compileDynamicPricing([
+			{
+				id: "gpt-5.6",
+				price_function: `function price(turn) {
+					const long = turn.inputTokens > 128000;
+					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
+						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
+						+ turn.cacheReadTokens * turn.pricesPerM.cacheRead
+						+ turn.cacheWriteTokens * turn.pricesPerM.cacheWrite) / 1e6;
+				}`,
+			},
+			{
+				id: "throws",
+				price_function:
+					"function price(t) { if (t.inputTokens > 10) throw new Error('bad'); return 0; }",
+			},
+			{
+				id: "negative",
+				price_function: "function price(t) { return t.inputTokens > 10 ? -1 : 0; }",
+			},
+			{ id: "nan", price_function: "function price(t) { return t.inputTokens > 10 ? NaN : 0; }" },
+			{
+				id: "infinity",
+				price_function: "function price(t) { return t.inputTokens > 10 ? Infinity : 0; }",
+			},
+		]);
+	});
+
 	const backends = [
 		{
 			id: "claude-opus",
@@ -168,6 +198,58 @@ describe("calculateTurnCost", () => {
 			[],
 		);
 		expect(cost).toBe(0);
+	});
+
+	it("uses a dynamic price function for long-context pricing", () => {
+		const cost = calculateTurnCost(
+			"gpt-5.6",
+			{
+				inputTokens: 200_000,
+				outputTokens: 10_000,
+				cacheReadTokens: 50_000,
+				cacheWriteTokens: 1_000,
+			},
+			[
+				{
+					id: "gpt-5.6",
+					price_per_m_input: 1.25,
+					price_per_m_output: 10,
+					price_per_m_cache_read: 0.125,
+					price_per_m_cache_write: 1.25,
+					price_function: `function price(turn) {
+					const long = turn.inputTokens > 128000;
+					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
+						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
+						+ turn.cacheReadTokens * turn.pricesPerM.cacheRead
+						+ turn.cacheWriteTokens * turn.pricesPerM.cacheWrite) / 1e6;
+				}`,
+				},
+			],
+		);
+		expect(cost).toBeCloseTo(0.7075, 8);
+	});
+
+	it("falls back to static pricing when a dynamic price function throws", () => {
+		const cost = calculateTurnCost(
+			"throws",
+			{ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null },
+			[{ id: "throws", price_per_m_input: 3, price_function: "configured" }],
+		);
+		expect(cost).toBe(3);
+	});
+
+	it.each([
+		["negative", "function price() { return -1; }"],
+		["NaN", "function price() { return NaN; }"],
+		["infinity", "function price() { return Infinity; }"],
+	])("falls back to static pricing for %s dynamic results", (_label, price_function) => {
+		const modelId = _label === "NaN" ? "nan" : _label;
+		const cost = calculateTurnCost(
+			modelId,
+			{ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null },
+			[{ id: modelId, price_per_m_input: 4, price_function }],
+		);
+		expect(cost).toBe(4);
 	});
 });
 

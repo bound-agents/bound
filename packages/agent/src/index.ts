@@ -8,6 +8,7 @@ export type {
 	ToolContext,
 } from "./types";
 export { isClientToolCallRequest } from "./types";
+export { compileDynamicPricing } from "./dynamic-pricing";
 export type { ContextParams, AssemblyClock, AssemblyContext } from "./context-assembly";
 export { realTimeClock, frozenClock } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";
