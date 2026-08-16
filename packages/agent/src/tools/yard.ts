@@ -352,21 +352,33 @@ function* main(input) {
 }
 \`\`\`
 
-Example — fan out independent evidence gathering, then return only the useful synthesis:
+Example — implement a small change end-to-end: locate, edit, verify — only the verified outcome returns:
 
 \`\`\`js
 function* main(input) {
-  const evidence = yield all([
-    tool("boundless_search", { pattern: input.pattern, path: input.path }),
-    tool("query", { sql: input.sql }),
-    tool("hostinfo", {}),
-  ], { concurrency: 3, errors: "settled" });
-
-  return evidence.map((entry, index) => ({
-    source: ["checkout", "database", "cluster"][index],
-    status: entry.status,
-    finding: entry.status === "fulfilled" ? entry.value : entry.reason,
+  // READ: find the line to change. Search hits are \`path:line:hash:preview\`,
+  // and \`line:hash\` is exactly the anchor boundless_edit takes.
+  const hits = String(yield tool("boundless_search", {
+    pattern: input.pattern, path: input.path, fixed_strings: true,
   }));
+  const hit = hits.match(/^([^\\n:]+):(\\d+):([0-9a-f]{4}):/m);
+  if (!hit) throw new Error(\`pattern not found: \${input.pattern}\`);
+  const [, file, line, hash] = hit;
+
+  // WRITE: replace that line in place.
+  yield tool("boundless_edit", {
+    file_path: file,
+    edits: [{ start: \`\${line}:\${hash}\`, end: \`\${line}:\${hash}\`, content: input.replacement }],
+  });
+
+  // VERIFY: run the caller's check; a thrown effect error surfaces the failure.
+  const check = String(yield tool("boundless_bash", { command: input.verify_command }));
+  return {
+    file,
+    line: Number(line),
+    verified: check.includes("Exit code: 0"),
+    check_tail: check.slice(-400),
+  };
 }
 \`\`\`
 
