@@ -89,6 +89,7 @@ must be `""`.
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
+| `price_function` | JavaScript function string | absent | Optional sandboxed `function price(turn) { ... }` returning this turn’s USD cost. Receives token counts, model ID, and static prices; compile/sample errors reject startup or reload, while branch-specific runtime errors fall back to static pricing. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
 | `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |

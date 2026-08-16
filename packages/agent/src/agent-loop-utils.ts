@@ -13,11 +13,13 @@ import type { CapabilityRequirements, ContentBlock, LLMMessage, StreamChunk } fr
 // existing callers and tests that import it from this module.
 export { isTransientLLMError } from "@bound/loop";
 import { createLogger } from "@bound/shared";
+import { calculateDynamicPrice } from "./dynamic-pricing";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
 import type { RegisteredTool } from "./types";
 
 const logger = createLogger("@bound/agent", "agent-loop-utils");
+const warnedDynamicPricingFallbacks = new Set<string>();
 
 /**
  * Parse persisted message content for the in-memory LLM message path.
@@ -148,6 +150,7 @@ interface BackendPricing {
 	price_per_m_output?: number;
 	price_per_m_cache_read?: number;
 	price_per_m_cache_write?: number;
+	price_function?: string;
 }
 
 /** Compute cost in USD for a turn's token usage against backend pricing. */
@@ -159,12 +162,30 @@ export function calculateTurnCost(
 	const cfg = backends.find((b) => b.id === modelId);
 	if (!cfg) return 0;
 
-	const inputCost = (usage.inputTokens * (cfg.price_per_m_input ?? 0)) / 1_000_000;
-	const outputCost = (usage.outputTokens * (cfg.price_per_m_output ?? 0)) / 1_000_000;
-	const cacheReadCost =
-		((usage.cacheReadTokens ?? 0) * (cfg.price_per_m_cache_read ?? 0)) / 1_000_000;
-	const cacheWriteCost =
-		((usage.cacheWriteTokens ?? 0) * (cfg.price_per_m_cache_write ?? 0)) / 1_000_000;
+	const pricesPerM = {
+		input: cfg.price_per_m_input ?? 0,
+		output: cfg.price_per_m_output ?? 0,
+		cacheRead: cfg.price_per_m_cache_read ?? 0,
+		cacheWrite: cfg.price_per_m_cache_write ?? 0,
+	};
+	const dynamic = calculateDynamicPrice(modelId, {
+		modelId,
+		inputTokens: usage.inputTokens,
+		outputTokens: usage.outputTokens,
+		cacheReadTokens: usage.cacheReadTokens ?? 0,
+		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+		pricesPerM,
+	});
+	if (dynamic !== null) return dynamic;
+	if (cfg.price_function && !warnedDynamicPricingFallbacks.has(modelId)) {
+		warnedDynamicPricingFallbacks.add(modelId);
+		logger.warn("Dynamic price function failed; falling back to static pricing", { modelId });
+	}
+
+	const inputCost = (usage.inputTokens * pricesPerM.input) / 1_000_000;
+	const outputCost = (usage.outputTokens * pricesPerM.output) / 1_000_000;
+	const cacheReadCost = ((usage.cacheReadTokens ?? 0) * pricesPerM.cacheRead) / 1_000_000;
+	const cacheWriteCost = ((usage.cacheWriteTokens ?? 0) * pricesPerM.cacheWrite) / 1_000_000;
 
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
