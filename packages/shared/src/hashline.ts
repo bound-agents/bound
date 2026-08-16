@@ -19,8 +19,8 @@
  * trimmed-content / reserved-empty-hash semantics are identical.
  */
 
-/** Reserved hash for empty and whitespace-only lines (matches the reference). */
-export const EMPTY_LINE_HASH = "    ";
+/** Reserved, visible hash for empty and whitespace-only lines. */
+export const EMPTY_LINE_HASH = "0000";
 
 /** A parsed edit anchor: optional 1-based line hint plus 4-char content hash. */
 export interface HashlineAnchor {
@@ -59,7 +59,7 @@ function isValidHash(hash: string): boolean {
 
 /**
  * Deterministic 4-hex-char hash of a line's trimmed content.
- * Whitespace-only lines get the reserved `EMPTY_LINE_HASH`.
+ * Whitespace-only lines get the reserved, visible `EMPTY_LINE_HASH`.
  */
 export function computeLineHash(line: string): string {
 	const stripped = line.trim();

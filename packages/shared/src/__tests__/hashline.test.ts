@@ -23,7 +23,8 @@ describe("computeLineHash", () => {
 		expect(computeLineHash("return true;")).toBe(computeLineHash("    return true;   "));
 	});
 
-	it("returns the reserved hash for empty and whitespace-only lines", () => {
+	it("returns the visible reserved hash for empty and whitespace-only lines", () => {
+		expect(EMPTY_LINE_HASH).toBe("0000");
 		expect(computeLineHash("")).toBe(EMPTY_LINE_HASH);
 		expect(computeLineHash("   ")).toBe(EMPTY_LINE_HASH);
 		expect(computeLineHash("\t")).toBe(EMPTY_LINE_HASH);
@@ -41,6 +42,10 @@ describe("formatWithHashes", () => {
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toBe(`1:${computeLineHash("alpha")}|alpha`);
 		expect(lines[1]).toBe(`2:${computeLineHash("beta")}|beta`);
+	});
+
+	it("renders empty lines with their visible reserved hash", () => {
+		expect(formatWithHashes("alpha\n\nbeta")).toContain(`2:${EMPTY_LINE_HASH}|`);
 	});
 
 	it("preserves original line content verbatim after the pipe", () => {
