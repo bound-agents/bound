@@ -38,6 +38,34 @@ export interface AwaitableClientToolResult {
 	isError: boolean;
 }
 
+/**
+ * websocket.ts persists client string output as ContentBlock[] JSON. For a
+ * text-only result that wire envelope is transport detail, not the guest value:
+ * flatten it back to text before resuming Yard. Preserve image/document arrays
+ * serialized so Yard's JSON bridge returns structured blocks rather than
+ * discarding binary references.
+ */
+function normalizeClientContent(content: string): string {
+	try {
+		const parsed = JSON.parse(content) as unknown;
+		if (
+			Array.isArray(parsed) &&
+			parsed.every(
+				(block) =>
+					block !== null &&
+					typeof block === "object" &&
+					(block as { type?: unknown }).type === "text" &&
+					typeof (block as { text?: unknown }).text === "string",
+			)
+		) {
+			return parsed.map((block) => (block as { text: string }).text).join("\n");
+		}
+	} catch {
+		// Plain text: return unchanged.
+	}
+	return content;
+}
+
 function waitForLocalResult(
 	deps: AwaitableClientToolDeps,
 	callId: string,
@@ -45,7 +73,7 @@ function waitForLocalResult(
 	const read = (): AwaitableClientToolResult | null => {
 		const row = findToolResultByThreadAndCallId(deps.db, deps.threadId, callId);
 		if (!row) return null;
-		return { content: row.content, isError: (row.exit_code ?? 0) !== 0 };
+		return { content: normalizeClientContent(row.content), isError: (row.exit_code ?? 0) !== 0 };
 	};
 	const existing = read();
 	if (existing) return Promise.resolve(existing);
@@ -92,7 +120,7 @@ function waitForRemoteResult(
 		if (entry.kind === "client_result") {
 			const parsed = parseJsonSafe(clientResultPayloadSchema, entry.payload, entry.kind);
 			return parsed.ok
-				? { content: parsed.value.content, isError: parsed.value.is_error }
+				? { content: normalizeClientContent(parsed.value.content), isError: parsed.value.is_error }
 				: { content: "Error: malformed client_result payload", isError: true };
 		}
 		if (entry.kind === "error") {

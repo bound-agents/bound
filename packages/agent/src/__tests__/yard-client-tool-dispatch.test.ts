@@ -57,7 +57,7 @@ describe("dispatchAwaitableClientTool", () => {
 						id: "result-1",
 						thread_id: threadId,
 						role: "tool_result",
-						content: '"hello"',
+						content: JSON.stringify([{ type: "text", text: "hello" }]),
 						model_id: null,
 						tool_name: event.callId,
 						created_at: now,
@@ -87,7 +87,7 @@ describe("dispatchAwaitableClientTool", () => {
 			timeoutMs: 1000,
 		});
 
-		expect(result).toEqual({ content: '"hello"', isError: false });
+		expect(result).toEqual({ content: "hello", isError: false });
 		expect(events).toHaveLength(1);
 		expect(events[0]?.connectionId).toBeUndefined();
 		const dispatchRow = db
