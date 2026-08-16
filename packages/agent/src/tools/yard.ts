@@ -313,7 +313,7 @@ const yardSchema = z.object({
 
 type YardInput = z.infer<typeof yardSchema>;
 
-const YARD_DESCRIPTION = `Execute a bounded JavaScript generator while retaining intermediate values outside conversation history. Use this for corpus-scale filter/join/rank/aggregate work: large intermediates stay inside the program; only the final JSON value returns to you.
+const YARD_DESCRIPTION = `Execute a bounded JavaScript generator while retaining intermediate values outside conversation history. This is a HIGH-LEVEL ORCHESTRATION tool: the unit of work is normally an agent — scatter \`aux()\` specialists across partitions, gather their findings into structured form with \`infer()\`, re-scatter implementers, gate acceptance with a reviewer — while corpus-scale intermediates stay inside the program and only the final JSON value returns to you.
 
 The \`program\` must define \`function* main(input) { ... }\` and return a JSON-compatible value. Yard has no ambient I/O — no fetch, process, filesystem, modules, clock, randomness, timers, promises, or async/await. Request external work by yielding branded effects created only by these globals:
 
@@ -326,7 +326,7 @@ The \`program\` must define \`function* main(input) { ... }\` and return a JSON-
 
 Constructors do not execute work. \`yield\` an effect to suspend the generator; Yard dispatches it and resumes the generator with its result. A failed effect is thrown into the generator as a catchable Error. Plain effect-shaped objects are rejected — only the constructors above create dispatchable effects. All values crossing the boundary must be JSON-compatible.
 
-Choosing the right effect: \`infer()\` is pure text-to-text — the invoked model has NO tools, no filesystem, and sees nothing beyond your \`prompt\` and \`input\`. Asking it to "inspect the repository" or "apply edits" fails structurally; it can only answer from data you hand it. Gather data with \`tool()\` effects and pass it in. Reach for \`aux()\` when the sub-errand itself needs tools plus judgment — an aux agent runs a real tool loop and can read and edit files itself. Rule of thumb: \`tool()\` for mechanical I/O, \`infer()\` for judgment over data already in hand, \`aux()\` for delegated errands needing both.
+Choosing the right effect: \`infer()\` is pure text-to-text — the invoked model has NO tools, no filesystem, and sees nothing beyond your \`prompt\` and \`input\`. Asking it to "inspect the repository" or "apply edits" fails structurally; it can only answer from data you hand it. Gather data with \`tool()\` effects and pass it in. Reach for \`aux()\` when the sub-errand itself needs tools plus judgment — an aux agent runs a real tool loop and can read and edit files itself. Rule of thumb: \`aux()\` is the normal unit of substantive work; \`infer()\` structures and synthesizes between stages; \`tool()\` is glue — enumeration up front, verification at the end. If the program's core work is a chain of raw \`tool()\` calls, that work usually belongs inside an \`aux()\` errand instead.
 
 Size the program to the WHOLE task. A corpus-scale request ("clean up the codebase", "audit every handler") deserves a partitioned plan, not one or two broadly-scoped errands that sample the surface: enumerate the units first (\`tool()\` a listing or search), then fan out one \`aux()\` per partition — per package, per directory, per file batch — through \`all()\` with real concurrency, each with an explicit scope and a concrete standard for what to change. Two aux calls over ten packages each is a smell; ten calls over one package each covers the same ground with real depth. Make the program return per-partition outcomes (files touched, items skipped and why) so coverage is checkable from the result — a single blended summary hides unworked ground. Budget generously (\`timeout_seconds\`, \`concurrency\`) rather than shrinking the plan to fit a default.
 
@@ -356,47 +356,70 @@ function* main(input) {
 }
 \`\`\`
 
-Example — batch implementation end-to-end: find every call site, draft replacements with a model, apply per-file edits, verify once:
+Example — scatter-gather a corpus-scale change: read-agents survey every partition, \`infer()\` structures the plan, write-agents implement it, reviewer agents gate acceptance and failures re-dispatch once:
 
 \`\`\`js
 function* main(input) {
-  // READ: hits are \`path:line:hash:preview\` rows; \`line:hash\` is exactly the
-  // anchor boundless_edit takes, so search output drives edits directly.
-  const hits = String(yield tool("boundless_search", {
-    pattern: input.pattern, path: input.path,
-  }));
-  const sites = [...hits.matchAll(/^([^\\n:]+):(\\d+):([0-9a-f]{4}):(.*)$/gm)]
-    .map(([, file, line, hash, preview]) => ({ file, line, hash, preview }));
-  if (sites.length === 0) throw new Error(\`no matches: \${input.pattern}\`);
+  // Partitions via one glue tool() call — the work itself belongs to agents.
+  const listing = String(yield tool("boundless_bash", { command: "ls -d packages/*/" }));
+  const pkgs = listing.match(/^packages\\/[\\w-]+(?=\\/)/gm) ?? [];
+  if (pkgs.length === 0) throw new Error("no partitions");
 
-  // JUDGE: infer() sees ONLY this data — hand it the previews, get drafts back.
-  const drafts = yield infer(input.model, {
-    prompt: \`Rewrite each line per: \${input.instruction}. Return one replacement per input line, in order.\`,
-    input: sites.map((s) => s.preview),
-    schema: { type: "array", items: { type: "string" } },
-  });
-  if (drafts.length !== sites.length) throw new Error("draft count mismatch");
+  // SCATTER: a read-agent surveys each partition. No edits yet.
+  const surveys = yield all(
+    pkgs.map((pkg) => aux("scout", \`Survey \${pkg} for: \${input.goal}. List candidate files with reasons; make NO edits.\`, { model: input.model })),
+    { concurrency: 4 },
+  );
 
-  // WRITE: group edits per file; one failing file must not abort the rest.
-  const byFile = new Map();
-  sites.forEach((s, i) => {
-    const edits = byFile.get(s.file) ?? [];
-    edits.push({ start: \`\${s.line}:\${s.hash}\`, end: \`\${s.line}:\${s.hash}\`, content: drafts[i] });
-    byFile.set(s.file, edits);
+  // GATHER: structure the free-text reports into per-partition work orders.
+  const orders = yield infer(input.model, {
+    prompt: \`Turn each survey into a concrete work order for: \${input.goal}. No real candidates => skip=true.\`,
+    input: pkgs.map((pkg, i) => ({ pkg, survey: surveys[i] })),
+    schema: { type: "array", items: {
+      type: "object",
+      properties: { pkg: { type: "string" }, skip: { type: "boolean" }, order: { type: "string" } },
+      required: ["pkg", "skip", "order"],
+    } },
   });
-  const applied = [];
-  for (const [file, edits] of byFile) {
-    try {
-      yield tool("boundless_edit", { file_path: file, edits });
-      applied.push({ file, edits: edits.length, ok: true });
-    } catch (err) {
-      applied.push({ file, edits: edits.length, ok: false, error: String(err) });
+
+  // RE-SCATTER: a write-agent implements each order.
+  let active = orders.filter((o) => !o.skip);
+  yield all(
+    active.map((o) => aux("implementer", \`In \${o.pkg}, do exactly this, then report per-file outcomes: \${o.order}\`, { model: input.model })),
+    { concurrency: 4 },
+  );
+
+  // REVIEW GATE: reviewer agents inspect the real diffs; infer() structures
+  // their verdicts; failed partitions re-dispatch once with the objections.
+  const outcomes = [];
+  for (let round = 0; active.length > 0; round++) {
+    const reviews = yield all(
+      active.map((o) => aux("reviewer", \`Run git diff -- \${o.pkg} and judge whether the changes satisfy: \${o.order}. Name specific gaps.\`, { model: input.model })),
+      { concurrency: 4 },
+    );
+    const verdicts = yield infer(input.model, {
+      prompt: "For each review, decide pass/fail and extract the objections.",
+      input: active.map((o, i) => ({ pkg: o.pkg, review: reviews[i] })),
+      schema: { type: "array", items: {
+        type: "object",
+        properties: { pass: { type: "boolean" }, objections: { type: "string" } },
+        required: ["pass", "objections"],
+      } },
+    });
+    const failed = [];
+    active.forEach((o, i) => {
+      if (!verdicts[i].pass && round === 0) failed.push({ ...o, objections: verdicts[i].objections });
+      else outcomes.push({ pkg: o.pkg, pass: verdicts[i].pass, objections: verdicts[i].objections });
+    });
+    if (failed.length > 0) {
+      yield all(
+        failed.map((o) => aux("implementer", \`Rework \${o.pkg} — the reviewer rejected it: \${o.objections}. Original order: \${o.order}\`, { model: input.model })),
+        { concurrency: 4 },
+      );
     }
+    active = failed;
   }
-
-  // VERIFY once; return only the compact, load-bearing outcome.
-  const check = String(yield tool("boundless_bash", { command: input.verify_command }));
-  return { applied, verified: check.includes("Exit code: 0"), check_tail: check.slice(-300) };
+  return { partitions: pkgs.length, skipped: orders.filter((o) => o.skip).map((o) => o.pkg), outcomes };
 }
 \`\`\`
 

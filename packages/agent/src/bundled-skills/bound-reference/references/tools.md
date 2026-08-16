@@ -126,20 +126,21 @@ inference paths, resuming the generator with each result. This includes
 (or relays to its host), waits inline, and consumes the generated re-wake so a
 second agent loop cannot run the thread.
 
-Reach for Yard first when independent evidence or specialist judgments can run
-in parallel: fan out synchronous `aux()` reviews with `all()`, then synthesize
-only their decisions, risks, and next slice with `infer()`. It also carries
-implementation work end-to-end — locate targets with `boundless_search`, draft
-replacements with `infer()`, apply them with `boundless_edit`, verify with one
-command — returning only the verified outcome. Choose effects by capability:
+Yard is a high-level orchestration tool: the unit of work is normally an
+agent, not a raw tool call. Corpus-scale changes are scatter-gather —
+enumerate partitions with one glue `tool()` call, scatter read-agents
+(`aux()`) across them via `all()`, gather their findings into structured
+work orders with `infer()` (schema-validated), re-scatter write-agents to
+implement, then gate acceptance with reviewer agents and re-dispatch
+implementers against the specific objections. Choose effects by capability:
 `infer()` is pure text-to-text (the invoked model has NO tools and sees only
 the prompt and input you hand it — asking it to "inspect the repo" fails
-structurally), `tool()` is mechanical I/O, and `aux()` runs a real tool loop
-for sub-errands needing tools plus judgment. Size the program to the whole
-task: for corpus-scale requests, enumerate the units first, then fan out one
-`aux()` per partition (per package, per directory) through `all()` with real
-concurrency — two broad aux calls sampling ten packages is a smell — and
-return per-partition outcomes so coverage is checkable from the result.
+structurally), `tool()` is glue for enumeration up front and verification at
+the end, and `aux()` runs a real tool loop for any errand needing tools plus
+judgment. If a program's core work is a chain of raw `tool()` calls, that
+work usually belongs inside an `aux()` errand instead. Partition finely —
+two broad aux calls sampling ten packages is a smell — and return
+per-partition outcomes so coverage is checkable from the result.
 Avoid using it for a lone trivial read where the orchestration
 cost adds nothing. The guest has no ambient I/O; only the final JSON value,
 usage counts, and a trace id return to context. Optional `budget`
