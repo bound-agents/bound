@@ -138,9 +138,12 @@ the prompt and input you hand it — asking it to "inspect the repo" fails
 structurally), `tool()` is glue for enumeration up front and verification at
 the end, and `aux()` runs a real tool loop for any errand needing tools plus
 judgment. If a program's core work is a chain of raw `tool()` calls, that
-work usually belongs inside an `aux()` errand instead. Partition finely —
-two broad aux calls sampling ten packages is a smell — and return
-per-partition outcomes so coverage is checkable from the result.
+work usually belongs inside an `aux()` errand instead. Size the plan to the
+whole task on the FIRST attempt: a partition is the smallest unit one agent
+can exhaustively cover and verify (a directory or a few files, not a group
+of packages), and dozens of concurrent aux agents is the normal shape for
+repo-wide work, not an escalation. Return per-partition outcomes so coverage
+is checkable from the result.
 Avoid using it for a lone trivial read where the orchestration
 cost adds nothing. The guest has no ambient I/O; only the final JSON value,
 usage counts, and a trace id return to context. Optional `budget`
