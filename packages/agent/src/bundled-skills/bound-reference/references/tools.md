@@ -129,9 +129,13 @@ second agent loop cannot run the thread.
 Reach for Yard first when independent evidence or specialist judgments can run
 in parallel: fan out synchronous `aux()` reviews with `all()`, then synthesize
 only their decisions, risks, and next slice with `infer()`. It also carries
-implementation work end-to-end — locate a target with `boundless_search`, apply
-the change with `boundless_edit`, and run the verification command in one
-program, returning only the verified outcome. Avoid using it for a lone trivial
+implementation work end-to-end — locate targets with `boundless_search`, draft
+replacements with `infer()`, apply them with `boundless_edit`, verify with one
+command — returning only the verified outcome. Choose effects by capability:
+`infer()` is pure text-to-text (the invoked model has NO tools and sees only
+the prompt and input you hand it — asking it to "inspect the repo" fails
+structurally), `tool()` is mechanical I/O, and `aux()` runs a real tool loop
+for sub-errands needing tools plus judgment. Avoid using it for a lone trivial
 read where the orchestration
 cost adds nothing. The guest has no ambient I/O; only the final JSON value,
 usage counts, and a trace id return to context. Optional `budget`
