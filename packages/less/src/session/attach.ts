@@ -143,10 +143,8 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 
 	// Step 5: Configure tools on client
 	logger.info("attach_flow_configure", { threadId });
-	const mcpServerNames = Array.from(mcpTools.keys());
-	const systemPromptAddition = await buildSystemPromptAddition(cwd, hostname, mcpServerNames, {
+	const systemPromptAddition = await buildSystemPromptAddition(cwd, hostname, {
 		injectContextFiles: params.injectContextFiles,
-		shellToolName: shell.toolName,
 		surface: params.surface,
 	});
 
