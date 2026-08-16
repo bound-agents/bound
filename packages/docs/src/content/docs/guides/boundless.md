@@ -117,10 +117,15 @@ initial input and the live execution graph: tool, auxiliary-agent, and inference
 hang off their parent with box-drawing branches, nested `yard()` runs indent as subtrees,
 and concurrent effects read as siblings in dispatch order. Glyphs are color-coded by state
 (green done, red failed, yellow running); tool, inference, and nested-run labels carry
-their own colors. While the run is live, input and result previews are clamped to one line
-so the card never outgrows the terminal, and client tools dispatched from inside the run
-(for example `boundless_bash`) render only as graph nodes — they do not stream a separate
-standalone tool card underneath.
+their own colors, and finished effects show elapsed time graded by magnitude. A fan-out
+that dispatches the same agent across many partitions packs into one dense row —
+`aux:scout ×24` with a per-member glyph cluster — and failed members keep an indexed
+detail line with the failure reason. While the run is live, previews are clamped to one
+line and the graph section is capped to the viewport (rows past the budget collapse into
+“… +N more effects”), so the card never outgrows the terminal. Client tools dispatched
+from inside the run (for example `boundless_bash`) render only as graph nodes, and tools
+dispatched by auxiliary-agent threads never stream under this chat — they belong to their
+own thread.
 
 When the root run finishes, the card moves into terminal scrollback at the matching Yard
 result row with the full input and result previews (wrapped, not clamped — scrollback has

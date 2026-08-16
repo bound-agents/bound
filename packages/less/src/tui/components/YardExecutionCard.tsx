@@ -16,6 +16,15 @@ export interface YardExecutionCardProps {
 	 * pinned.
 	 */
 	terminalColumns?: number;
+	/**
+	 * Row budget for the graph section of a LIVE card. A scatter-gather run
+	 * can carry dozens of aux nodes; rendered one-per-row the live card
+	 * exceeded the terminal height and Ink's dynamic region flickered on
+	 * every repaint (thread febfe45e, 2026-08-16). Rows past the budget
+	 * collapse into one "… +N more effects" line. Committed cards ignore
+	 * this — <Static> scrollback has no height constraint.
+	 */
+	maxGraphRows?: number;
 }
 
 /**
@@ -96,11 +105,20 @@ function kindColor(node: NodeState): string | undefined {
 	}
 }
 
-interface TreeRow {
-	node: NodeState;
-	/** Box-drawing prefix (│ continuations + ├─/└─ branch), already indented. */
-	prefix: string;
-}
+/**
+ * Same-label leaf siblings at or above this count pack into ONE dense row
+ * (`label ×N` + a per-member glyph cluster in dispatch order). Scatter-
+ * gather fan-outs dispatch the same aux specialist across every partition;
+ * one row per member wasted the horizontal axis and grew the card vertically
+ * without adding information (thread febfe45e).
+ */
+const GROUP_THRESHOLD = 3;
+
+type DisplayRow =
+	| { key: string; kind: "node"; node: NodeState; prefix: string }
+	| { key: string; kind: "group"; nodes: NodeState[]; prefix: string; contPrefix: string }
+	| { key: string; kind: "fail-detail"; node: NodeState; index: number; prefix: string }
+	| { key: string; kind: "overflow"; count: number };
 
 /**
  * Flatten the execution graph into display rows via depth-first walk from
@@ -109,11 +127,16 @@ interface TreeRow {
  * not emitted — the card header is that node; nested runs ARE emitted as
  * interior nodes with their subtrees indented beneath them.
  *
+ * Leaf siblings sharing a label (the scatter-gather fan-out shape) pack
+ * into one dense group row when the group reaches GROUP_THRESHOLD; failed
+ * members with summaries keep an indexed detail row beneath the group so
+ * the dense form never hides a failure reason.
+ *
  * Defensive: nodes whose parent chain never reaches the root (out-of-order
  * delivery edge cases) are appended flat at the end rather than dropped,
  * so the card never silently hides work.
  */
-function flattenTree(tree: YardTreeSnapshot): TreeRow[] {
+function flattenTree(tree: YardTreeSnapshot): DisplayRow[] {
 	const childrenOf = new Map<string, NodeState[]>();
 	for (const node of tree.nodes) {
 		if (node.parentId === null) continue;
@@ -122,28 +145,97 @@ function flattenTree(tree: YardTreeSnapshot): TreeRow[] {
 		else childrenOf.set(node.parentId, [node]);
 	}
 
-	const rows: TreeRow[] = [];
+	const rows: DisplayRow[] = [];
 	const visited = new Set<string>();
+
 	const walk = (parentId: string, indent: string): void => {
-		const children = childrenOf.get(parentId) ?? [];
-		for (let i = 0; i < children.length; i++) {
-			const child = children[i];
-			if (visited.has(child.id)) continue;
-			visited.add(child.id);
-			const last = i === children.length - 1;
-			rows.push({ node: child, prefix: `${indent}${last ? "└─" : "├─"} ` });
-			walk(child.id, `${indent}${last ? "   " : "│  "}`);
+		const children = (childrenOf.get(parentId) ?? []).filter((c) => !visited.has(c.id));
+
+		// Group LEAF children by label; interior nodes always stay individual.
+		const leafGroups = new Map<string, NodeState[]>();
+		for (const child of children) {
+			if (childrenOf.has(child.id)) continue;
+			const lbl = label(child);
+			const group = leafGroups.get(lbl);
+			if (group) group.push(child);
+			else leafGroups.set(lbl, [child]);
 		}
+
+		// Emit units in first-appearance order: interior nodes individually,
+		// dense groups once at their first member's position, small groups as
+		// individual rows.
+		type Unit = { node?: NodeState; group?: NodeState[] };
+		const units: Unit[] = [];
+		const placedGroups = new Set<string>();
+		for (const child of children) {
+			if (childrenOf.has(child.id)) {
+				units.push({ node: child });
+				continue;
+			}
+			const lbl = label(child);
+			const group = leafGroups.get(lbl) ?? [];
+			if (group.length >= GROUP_THRESHOLD) {
+				if (!placedGroups.has(lbl)) {
+					placedGroups.add(lbl);
+					units.push({ group });
+				}
+			} else {
+				units.push({ node: child });
+			}
+		}
+
+		units.forEach((unit, i) => {
+			const last = i === units.length - 1;
+			const branch = `${indent}${last ? "└─" : "├─"} `;
+			const cont = `${indent}${last ? "   " : "│  "}`;
+			if (unit.group) {
+				for (const member of unit.group) visited.add(member.id);
+				rows.push({
+					key: `group:${unit.group[0].id}`,
+					kind: "group",
+					nodes: unit.group,
+					prefix: branch,
+					contPrefix: cont,
+				});
+				unit.group.forEach((member, idx) => {
+					if (member.phase === "failed" && member.summary) {
+						rows.push({
+							key: `fail:${member.id}`,
+							kind: "fail-detail",
+							node: member,
+							index: idx + 1,
+							prefix: cont,
+						});
+					}
+				});
+			} else if (unit.node) {
+				visited.add(unit.node.id);
+				rows.push({ key: unit.node.id, kind: "node", node: unit.node, prefix: branch });
+				walk(unit.node.id, cont);
+			}
+		});
 	};
+
 	const root = tree.nodes.find((node) => node.parentId === null);
 	if (root) {
 		visited.add(root.id);
 		walk(root.id, "");
 	}
 	for (const node of tree.nodes) {
-		if (!visited.has(node.id)) rows.push({ node, prefix: "" });
+		if (!visited.has(node.id)) rows.push({ key: node.id, kind: "node", node, prefix: "" });
 	}
 	return rows;
+}
+
+/** min–max elapsed across group members that have both instants, or null. */
+function groupDurationRange(nodes: NodeState[]): string | null {
+	const values = nodes
+		.map((node) => durationMs(node.startedAt, node.finishedAt))
+		.filter((ms): ms is number => ms !== null);
+	if (values.length === 0) return null;
+	const min = Math.min(...values);
+	const max = Math.max(...values);
+	return min === max ? formatDuration(max) : `${formatDuration(min)}–${formatDuration(max)}`;
 }
 
 /**
@@ -157,8 +249,16 @@ export function YardExecutionCard({
 	tree,
 	running = false,
 	terminalColumns = 80,
+	maxGraphRows,
 }: YardExecutionCardProps): React.ReactElement {
-	const rows = flattenTree(tree);
+	let rows = flattenTree(tree);
+	// Live-card height guard: cap the graph section so the dynamic region
+	// never outgrows the viewport (constant-flicker regression, febfe45e).
+	if (running && maxGraphRows !== undefined && rows.length > maxGraphRows) {
+		const keep = Math.max(1, maxGraphRows - 1);
+		const hidden = rows.length - keep;
+		rows = [...rows.slice(0, keep), { key: "overflow", kind: "overflow", count: hidden }];
+	}
 	const effectCount = tree.nodes.filter((node) => node.node.kind !== "run").length;
 	// Mirrors MessageBlock's stripeWidth computation so Yard turns align
 	// with every other turn in the transcript.
@@ -188,15 +288,50 @@ export function YardExecutionCard({
 					{preview(tree.inputPreview)}
 				</Text>
 			) : null}
-			{rows.map(({ node, prefix }) => {
-				const ms = durationMs(node.startedAt, node.finishedAt);
+			{rows.map((row) => {
+				if (row.kind === "overflow") {
+					return (
+						<Text key={row.key} dimColor>
+							… +{row.count} more effects
+						</Text>
+					);
+				}
+				if (row.kind === "group") {
+					const first = row.nodes[0];
+					const range = groupDurationRange(row.nodes);
+					return (
+						<Text key={row.key} wrap="truncate-end">
+							<Text dimColor>{row.prefix}</Text>
+							<Text color={kindColor(first)}>{label(first)}</Text>
+							<Text dimColor> ×{row.nodes.length} </Text>
+							{row.nodes.map((member) => (
+								<Text key={member.id} color={phaseColor(member.phase)}>
+									{glyph(member.phase)}
+								</Text>
+							))}
+							{range ? <Text dimColor> · {range}</Text> : null}
+						</Text>
+					);
+				}
+				if (row.kind === "fail-detail") {
+					return (
+						<Text key={row.key} wrap="truncate-end">
+							<Text dimColor>{row.prefix}</Text>
+							<Text color="red">✗ #{row.index}</Text>
+							<Text dimColor> · {clampLine(row.node.summary ?? "")}</Text>
+						</Text>
+					);
+				}
+				const ms = durationMs(row.node.startedAt, row.node.finishedAt);
 				return (
-					<Text key={node.id} wrap="truncate-end">
-						<Text dimColor>{prefix}</Text>
-						<Text color={phaseColor(node.phase)}>{glyph(node.phase)}</Text>{" "}
-						<Text color={node.phase === "failed" ? "red" : kindColor(node)}>{label(node)}</Text>
+					<Text key={row.key} wrap="truncate-end">
+						<Text dimColor>{row.prefix}</Text>
+						<Text color={phaseColor(row.node.phase)}>{glyph(row.node.phase)}</Text>{" "}
+						<Text color={row.node.phase === "failed" ? "red" : kindColor(row.node)}>
+							{label(row.node)}
+						</Text>
 						{ms !== null ? <DurationFragment ms={ms} /> : null}
-						{node.summary ? <Text dimColor> · {clampLine(node.summary)}</Text> : null}
+						{row.node.summary ? <Text dimColor> · {clampLine(row.node.summary)}</Text> : null}
 					</Text>
 				);
 			})}
