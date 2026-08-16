@@ -30,6 +30,7 @@ import { listLiveMessageProjectionByThreadNewestFirst } from "@bound/core";
 import type { LLMMessage } from "@bound/llm";
 import type { ContextSegment, Message } from "@bound/shared";
 import { annotateMessages } from "./annotation/annotate";
+import { isYardClientBookkeepingRow } from "./yard-client-rows";
 
 /**
  * Hard cap on how many live message rows the producer/consumer load when
@@ -43,11 +44,17 @@ function bytesEqual(a: unknown, b: unknown): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Loads a thread's live message rows oldest-first (ASC). */
+/**
+ * Loads a thread's live message rows oldest-first (ASC), minus Yard
+ * client-dispatch bookkeeping rows. The SAME filter must run on producer and
+ * consumer (both call this loader) or the range's `count` stops describing
+ * the same rows on both sides and R-UD10 fires. Mirrors cold Stage 1 and the
+ * warm delta path — see yard-client-rows.ts.
+ */
 function loadRowsAsc(db: Database, threadId: string): Message[] {
 	const newestFirst = listLiveMessageProjectionByThreadNewestFirst(db, threadId, HARD_LIMIT);
 	// `.reverse()` mutates, but `newestFirst` is a fresh array from the finder.
-	return newestFirst.reverse();
+	return newestFirst.reverse().filter((row) => !isYardClientBookkeepingRow(row));
 }
 
 export interface SegmentAssembledMessagesParams {
