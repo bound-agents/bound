@@ -49,4 +49,44 @@ describe("YardExecutionCard", () => {
 		expect(frame).toContain("✗ infer · gpt-5.6-sol · provider error");
 		expect(frame).toContain('result · {"matches":3}');
 	});
+
+	// Regression (thread adb65d85, 2026-08-16): yard.ts's preview() ships up to
+	// 4,000 chars INCLUDING newlines in input_preview/result_preview. Rendering
+	// them raw made the live card taller than the terminal on long inputs and
+	// corrupted the Ink repaint (cards "badly broken… tied to certain input
+	// lengths"). The card must clamp every preview/summary to one bounded line.
+	it("clamps multi-line and oversized previews to a single bounded line", () => {
+		const noisy: YardTreeSnapshot = {
+			...tree,
+			inputPreview: `{\n  "sql": "SELECT 1",\n  "path": "a/b"\n}`,
+			resultPreview: `line one\n… truncated 90000 chars …\n${"x".repeat(3000)}`,
+			nodes: [
+				...tree.nodes,
+				{
+					id: "noisy-leaf",
+					parentId: "run",
+					node: { kind: "tool", name: "boundless_bash" },
+					phase: "completed",
+					seq: 4,
+					summary: "multi\nline\nsummary",
+				},
+			],
+		};
+		const { lastFrame } = render(React.createElement(YardExecutionCard, { tree: noisy }));
+		const frame = lastFrame() ?? "";
+
+		// Newlines in previews/summaries must not survive into the frame as
+		// extra rows: the card's height must stay bounded by its line count
+		// (header + input + 3 leaves + result + 2 border rows).
+		const rows = frame.split("\n");
+		expect(rows.length).toBeLessThanOrEqual(9);
+
+		// No row may exceed a sane single-line width (border + padding + clamp).
+		for (const row of rows) {
+			expect(row.length).toBeLessThanOrEqual(220);
+		}
+
+		// The clamped input still shows its head so the card stays informative.
+		expect(frame).toContain('"sql": "SELECT 1"');
+	});
 });
