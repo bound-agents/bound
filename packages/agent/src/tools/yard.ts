@@ -326,6 +326,8 @@ The \`program\` must define \`function* main(input) { ... }\` and return a JSON-
 
 Constructors do not execute work. \`yield\` an effect to suspend the generator; Yard dispatches it and resumes the generator with its result. A failed effect is thrown into the generator as a catchable Error. Plain effect-shaped objects are rejected — only the constructors above create dispatchable effects. All values crossing the boundary must be JSON-compatible.
 
+Choosing the right effect: \`infer()\` is pure text-to-text — the invoked model has NO tools, no filesystem, and sees nothing beyond your \`prompt\` and \`input\`. Asking it to "inspect the repository" or "apply edits" fails structurally; it can only answer from data you hand it. Gather data with \`tool()\` effects and pass it in. Reach for \`aux()\` when the sub-errand itself needs tools plus judgment — an aux agent runs a real tool loop and can read and edit files itself. Rule of thumb: \`tool()\` for mechanical I/O, \`infer()\` for judgment over data already in hand, \`aux()\` for delegated errands needing both.
+
 Example — run concurrent specialist reviews, then synthesize their findings:
 
 \`\`\`js
@@ -352,33 +354,47 @@ function* main(input) {
 }
 \`\`\`
 
-Example — implement a small change end-to-end: locate, edit, verify — only the verified outcome returns:
+Example — batch implementation end-to-end: find every call site, draft replacements with a model, apply per-file edits, verify once:
 
 \`\`\`js
 function* main(input) {
-  // READ: find the line to change. Search hits are \`path:line:hash:preview\`,
-  // and \`line:hash\` is exactly the anchor boundless_edit takes.
+  // READ: hits are \`path:line:hash:preview\` rows; \`line:hash\` is exactly the
+  // anchor boundless_edit takes, so search output drives edits directly.
   const hits = String(yield tool("boundless_search", {
-    pattern: input.pattern, path: input.path, fixed_strings: true,
+    pattern: input.pattern, path: input.path,
   }));
-  const hit = hits.match(/^([^\\n:]+):(\\d+):([0-9a-f]{4}):/m);
-  if (!hit) throw new Error(\`pattern not found: \${input.pattern}\`);
-  const [, file, line, hash] = hit;
+  const sites = [...hits.matchAll(/^([^\\n:]+):(\\d+):([0-9a-f]{4}):(.*)$/gm)]
+    .map(([, file, line, hash, preview]) => ({ file, line, hash, preview }));
+  if (sites.length === 0) throw new Error(\`no matches: \${input.pattern}\`);
 
-  // WRITE: replace that line in place.
-  yield tool("boundless_edit", {
-    file_path: file,
-    edits: [{ start: \`\${line}:\${hash}\`, end: \`\${line}:\${hash}\`, content: input.replacement }],
+  // JUDGE: infer() sees ONLY this data — hand it the previews, get drafts back.
+  const drafts = yield infer(input.model, {
+    prompt: \`Rewrite each line per: \${input.instruction}. Return one replacement per input line, in order.\`,
+    input: sites.map((s) => s.preview),
+    schema: { type: "array", items: { type: "string" } },
   });
+  if (drafts.length !== sites.length) throw new Error("draft count mismatch");
 
-  // VERIFY: run the caller's check; a thrown effect error surfaces the failure.
+  // WRITE: group edits per file; one failing file must not abort the rest.
+  const byFile = new Map();
+  sites.forEach((s, i) => {
+    const edits = byFile.get(s.file) ?? [];
+    edits.push({ start: \`\${s.line}:\${s.hash}\`, end: \`\${s.line}:\${s.hash}\`, content: drafts[i] });
+    byFile.set(s.file, edits);
+  });
+  const applied = [];
+  for (const [file, edits] of byFile) {
+    try {
+      yield tool("boundless_edit", { file_path: file, edits });
+      applied.push({ file, edits: edits.length, ok: true });
+    } catch (err) {
+      applied.push({ file, edits: edits.length, ok: false, error: String(err) });
+    }
+  }
+
+  // VERIFY once; return only the compact, load-bearing outcome.
   const check = String(yield tool("boundless_bash", { command: input.verify_command }));
-  return {
-    file,
-    line: Number(line),
-    verified: check.includes("Exit code: 0"),
-    check_tail: check.slice(-400),
-  };
+  return { applied, verified: check.includes("Exit code: 0"), check_tail: check.slice(-300) };
 }
 \`\`\`
 
