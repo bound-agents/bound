@@ -108,6 +108,17 @@ Segments remain hidden until they have a value. See
 [Foreground and background work](/bound/concepts/auxiliary-agents/#foreground-and-background-work)
 for background work.
 
+## Follow Yard execution
+
+A running `yard` call appears as a magenta card below the transcript. The card shows the
+initial input, the live execution graph, and tool, auxiliary-agent, and inference leaves in
+start order. Completed and failed leaves remain visible while the run is active.
+
+When the root run finishes, the card moves into terminal scrollback at the matching Yard
+result row and includes the final bounded result preview. Live execution events are
+thread-scoped and ephemeral; transcripts created by older servers, or sessions that attach
+after a run finishes, retain the ordinary Yard tool-call/result rendering.
+
 ## Connect an ACP editor
 
 To use `boundless` from an Agent Client Protocol (ACP) editor instead of the terminal UI,

@@ -1,4 +1,5 @@
 import type { ContentBlock } from "@bound/llm";
+import type { YardExecutionEvent } from "@bound/shared";
 import type { AgentFile, MemoryTier, Message, Task, Thread, WsStreamChunk } from "@bound/shared";
 
 // ---- Thread responses ----
@@ -576,6 +577,7 @@ export interface BoundClientEvents {
 		model: string | null;
 	}) => void;
 	"stream:chunk": (data: { thread_id: string; chunk: WsStreamChunk }) => void;
+	"yard:execution": (data: YardExecutionEvent) => void;
 	/**
 	 * Number of background (deferred, #76) tool calls in flight on a thread.
 	 * Server-recomputed on every change, so a client that missed a frame resyncs
