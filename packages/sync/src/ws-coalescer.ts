@@ -1,23 +1,11 @@
-/**
- * Microtask-based coalescer for batching WS frame sends.
- *
- * Collects items added during a synchronous code block.
- * When the current event loop tick completes (via queueMicrotask),
- * flushes all pending items in a single batch.
- *
- * Example: Multiple insertRow() calls in the same tick are coalesced
- * into one changelog_push frame instead of N frames.
- */
+/** Batch items added in one event-loop turn into a single WebSocket send. */
 export class MicrotaskCoalescer<T> {
 	private pending: T[] = [];
 	private scheduled = false;
 
 	constructor(private flush: (items: T[]) => void) {}
 
-	/**
-	 * Add an item to the pending batch.
-	 * If this is the first item, schedules the flush via queueMicrotask.
-	 */
+	/** Add an item and schedule the batch flush if needed. */
 	add(item: T): void {
 		this.pending.push(item);
 		if (!this.scheduled) {
@@ -31,9 +19,7 @@ export class MicrotaskCoalescer<T> {
 		}
 	}
 
-	/**
-	 * Get the current count of pending items (for testing/diagnostics).
-	 */
+	/** Current pending count, for tests and diagnostics. */
 	get pendingCount(): number {
 		return this.pending.length;
 	}

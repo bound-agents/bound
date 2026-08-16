@@ -129,12 +129,7 @@ function stripPlaceholderAnthropicApiKeyFetch(baseFetch: typeof fetch): typeof f
 	}) as typeof fetch;
 }
 
-/**
- * Maps bound's `ChatParams.effort` onto the Responses API's `reasoningEffort`
- * enum. bound's scale has a `"max"` that the OpenAI surface doesn't; it folds
- * onto the strongest supported level (`"xhigh"`). Anything outside the
- * supported set is dropped (returns undefined → omit the option).
- */
+/** Maps bound's `"max"` effort to OpenAI's strongest supported level; unsupported values omit the option. */
 function toReasoningEffort(
 	effort: ChatParams["effort"],
 ): "low" | "medium" | "high" | "xhigh" | undefined {
@@ -152,50 +147,9 @@ function toReasoningEffort(
 }
 
 /**
- * Builds the `providerOptions.openai` payload for a mantle turn.
- *
- * `forceReasoning: true` is load-bearing, not cosmetic. The native
- * `@ai-sdk/openai` provider detects reasoning models by `modelId.startsWith
- * ("gpt-5")` — but mantle ids carry an `openai.` prefix (`openai.gpt-5.5`),
- * so the SDK misclassifies them as non-reasoning and silently strips
- * `reasoningEffort`: verified on the wire, the request body ends up with no
- * `reasoning` field at all and the configured effort never reaches the model.
- * Forcing the flag restores it (`reasoning: { effort }` on the wire) and
- * flips the system prompt to the `developer` role reasoning models expect.
- *
- * `store: false` keeps the turn stateless — the response object never
- * persists on AWS's side (the zero-retention requirement). That governs the
- * *response*; it does not, on its own, buy prompt caching.
- *
- * `promptCacheRetention: "24h"` engages the cache for this model. Per
- * OpenAI's prompt-caching guide, gpt-5.5 / -pro (and all future models) do
- * NOT support the `in_memory` retention policy — only `24h` — and a request
- * that omits the parameter falls to an `in_memory` default the model can't
- * honor, so it caches nothing. Extended retention is explicitly ZDR-clean —
- * only the prompt's key/value tensors persist (≤24h, GPU-local), never the
- * response, and the guide states extended-retention requests are not blocked
- * under Zero Data Retention (which bars `store:true`, not the cache).
- *
- * HOWEVER — verified live against mantle us-east-2 (raw SigV4
- * replays of exact production bodies): mantle's AUTOMATIC cache lookup
- * behaves as if keyed on the FULL prompt, not longest-prefix. An identical
- * body resent back-to-back reports ~100% `cached_tokens`; a prefix-EXTENSION
- * sharing 99.3% of the prior prompt — which is what every agent-loop
- * inference is — reports 0, even back-to-back on the same connection. The
- * Codex CLI against the same endpoint measures the same ~0%. This is almost
- * certainly a serving-layer bug, not design: OpenAI-operated endpoints do
- * longest-prefix matching, and Codex records show ~88% cache reads against
- * an earlier (since-removed) mantle us-west-2 deployment. Consequences by
- * model generation: gpt-5.4/5.5 have ONLY the automatic cache
- * (`prompt_cache_key` is ignored for routing; no affinity header/cookie
- * exists), so agent traffic on those models gets no cache reads until the
- * serving layer is fixed. The GPT-5.6 family sidesteps the exact-match
- * lookup with explicit `prompt_cache_breakpoint` markers — see
- * `supportsPromptCacheBreakpoints` and the cache-provider selection in
- * `chat()`. We still send `promptCacheRetention: "24h"` everywhere — it is
- * correct per the guide, harmless, and on 5.4/5.5 becomes load-bearing the
- * moment prefix matching works again. See docs/gotchas.md ("Mantle GPT-5.x
- * automatic prompt cache is exact-match, not prefix").
+ * Mantle's `openai.` model IDs bypass the SDK's reasoning-model detection, so `forceReasoning` preserves
+ * `reasoningEffort`. `store: false` satisfies zero retention; GPT-5.x requires `promptCacheRetention: "24h"`.
+ * See the Mantle cache gotcha for 5.4/5.5 exact-match behavior and 5.6 breakpoints.
  */
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
