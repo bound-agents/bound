@@ -52,7 +52,7 @@ export function buildToolSet(
 				description:
 					"Read file contents in hashline format: each line renders as LINE:HASH|content. " +
 					"The 4-char hash is a stable anchor — pass it to boundless_edit to address lines " +
-					"without reproducing their text.",
+					"without reproducing their text. Empty or whitespace-only lines use the visible hash 0000.",
 				parameters: {
 					type: "object",
 					required: ["file_path"],
@@ -101,13 +101,14 @@ export function buildToolSet(
 			function: {
 				name: "boundless_edit",
 				description:
-					"Edit a file using hashline anchors from a prior read. Each edit replaces the " +
-					"inclusive line range [start..end] with new content; anchors are LINE:HASH tags " +
-					'(e.g. "12:a3f1") as shown by boundless_read. Anchors survive line drift: if the ' +
-					"file shifted since the read, the hash is matched by proximity to the line hint. " +
-					"A unique hash resolves regardless of the line number; the number only breaks " +
-					"ties between lines with identical content. Take both halves from the same read. " +
-					"All edits in one call are validated together and applied atomically.",
+					"Edit a file using hashline anchors copied verbatim from a prior read of the same file. " +
+					"Each edit replaces the inclusive line range [start..end] with new content; anchors are " +
+					'LINE:HASH tags (e.g. "12:a3f1") as shown by boundless_read. Empty or whitespace-only ' +
+					"lines use hash 0000; it is valid only when it was emitted by a read for that line, never as " +
+					"a positional placeholder. Anchors survive line drift: if the file shifted since the read, the " +
+					"hash is matched by proximity to the line hint. A unique hash resolves regardless of the line " +
+					"number; the number only breaks ties between lines with identical content. Take both halves from " +
+					"the same read. All edits in one call are validated together and applied atomically.",
 				parameters: {
 					type: "object",
 					required: ["file_path", "edits"],

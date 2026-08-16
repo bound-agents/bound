@@ -150,6 +150,23 @@ describe("boundless_edit (hashline)", () => {
 		expect(readFileSync(testFile, "utf-8")).toBe(content);
 	});
 
+	it("uses 0000 from a read as the anchor for a blank line", async () => {
+		const testFile = join(tempDir, "blank.txt");
+		writeFileSync(testFile, "before\n\nafter\n");
+
+		const result = await editTool(
+			{
+				file_path: "blank.txt",
+				edits: [{ start: "2:0000", end: "2:0000", content: "between" }],
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(testFile, "utf-8")).toBe("before\nbetween\nafter\n");
+	});
+
 	it("rejects the whole batch when any edit fails (atomicity)", async () => {
 		const testFile = join(tempDir, "atomic.txt");
 		const content = "aaa\nbbb\nccc\n";
