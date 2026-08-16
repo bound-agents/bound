@@ -135,8 +135,12 @@ command — returning only the verified outcome. Choose effects by capability:
 `infer()` is pure text-to-text (the invoked model has NO tools and sees only
 the prompt and input you hand it — asking it to "inspect the repo" fails
 structurally), `tool()` is mechanical I/O, and `aux()` runs a real tool loop
-for sub-errands needing tools plus judgment. Avoid using it for a lone trivial
-read where the orchestration
+for sub-errands needing tools plus judgment. Size the program to the whole
+task: for corpus-scale requests, enumerate the units first, then fan out one
+`aux()` per partition (per package, per directory) through `all()` with real
+concurrency — two broad aux calls sampling ten packages is a smell — and
+return per-partition outcomes so coverage is checkable from the result.
+Avoid using it for a lone trivial read where the orchestration
 cost adds nothing. The guest has no ambient I/O; only the final JSON value,
 usage counts, and a trace id return to context. Optional `budget`
 (`timeout_seconds`, `concurrency`) bounds the whole recursive tree; nested

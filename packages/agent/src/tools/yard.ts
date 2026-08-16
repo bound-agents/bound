@@ -328,6 +328,8 @@ Constructors do not execute work. \`yield\` an effect to suspend the generator; 
 
 Choosing the right effect: \`infer()\` is pure text-to-text — the invoked model has NO tools, no filesystem, and sees nothing beyond your \`prompt\` and \`input\`. Asking it to "inspect the repository" or "apply edits" fails structurally; it can only answer from data you hand it. Gather data with \`tool()\` effects and pass it in. Reach for \`aux()\` when the sub-errand itself needs tools plus judgment — an aux agent runs a real tool loop and can read and edit files itself. Rule of thumb: \`tool()\` for mechanical I/O, \`infer()\` for judgment over data already in hand, \`aux()\` for delegated errands needing both.
 
+Size the program to the WHOLE task. A corpus-scale request ("clean up the codebase", "audit every handler") deserves a partitioned plan, not one or two broadly-scoped errands that sample the surface: enumerate the units first (\`tool()\` a listing or search), then fan out one \`aux()\` per partition — per package, per directory, per file batch — through \`all()\` with real concurrency, each with an explicit scope and a concrete standard for what to change. Two aux calls over ten packages each is a smell; ten calls over one package each covers the same ground with real depth. Make the program return per-partition outcomes (files touched, items skipped and why) so coverage is checkable from the result — a single blended summary hides unworked ground. Budget generously (\`timeout_seconds\`, \`concurrency\`) rather than shrinking the plan to fit a default.
+
 Example — run concurrent specialist reviews, then synthesize their findings:
 
 \`\`\`js
