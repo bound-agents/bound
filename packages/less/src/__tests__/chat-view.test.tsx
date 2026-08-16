@@ -143,6 +143,44 @@ describe("ChatView active prop", () => {
 	});
 });
 
+describe("ChatView Yard-dispatched client tools", () => {
+	// Complaint (2026-08-16): bash output from inside a Yard run streamed as a
+	// standalone ToolCallCard underneath the Yard execution card — the same
+	// effect rendered twice. Yard dispatches client tools with a
+	// `yard-client-` call id (YARD_CLIENT_CALL_ID_PREFIX in @bound/shared);
+	// the execution card already renders those as graph nodes, so the
+	// streaming card must be suppressed for them and ONLY them.
+	it("does not render a streaming card for yard-client dispatches", async () => {
+		const inFlightTools = new Map([
+			[
+				"yard-client-1234",
+				{
+					toolName: "boundless_bash",
+					startTime: Date.now(),
+					stdout: "streamed-yard-rows",
+					args: { command: "ls" },
+				},
+			],
+			[
+				"toolu_direct",
+				{ toolName: "boundless_search", startTime: Date.now(), args: { pattern: "x" } },
+			],
+		]);
+		const props = makeProps({ inFlightTools });
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		// The directly-dispatched tool still gets its live card (ToolCallCard
+		// renders the display name with the boundless_ prefix stripped)…
+		expect(frame).toContain("search pattern=x");
+		// …while the Yard-dispatched one renders nowhere in the dynamic area:
+		// no card, no args summary, no streamed stdout.
+		expect(frame).not.toContain("command=ls");
+		expect(frame).not.toContain("streamed-yard-rows");
+	});
+});
+
 /**
  * Test fixtures for buildToolResultMetaMap. Real tool_call messages store a
  * JSON array of content blocks in `content`; tool_result messages stash the

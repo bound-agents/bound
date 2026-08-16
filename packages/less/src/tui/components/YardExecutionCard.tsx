@@ -9,12 +9,14 @@ export interface YardExecutionCardProps {
 
 /**
  * Yard's lifecycle events carry previews up to 4,000 chars INCLUDING
- * newlines (yard.ts `preview()`). Rendered raw, a long input made the live
- * card taller than the terminal and corrupted the Ink repaint (thread
- * adb65d85, 2026-08-16 — “cards badly broken… tied to certain input
- * lengths”). Every preview/summary is clamped to one bounded line: newline
- * runs collapse to a single space, and anything past the cap is elided.
- * The full values remain in the persisted yard tool_call/tool_result rows.
+ * newlines (yard.ts `preview()`). The LIVE card renders in Ink's dynamic
+ * region, where content taller than the terminal corrupts the repaint
+ * (thread adb65d85, 2026-08-16) — so while `running`, every preview and
+ * summary is clamped to one bounded line. The COMMITTED card renders once
+ * into <Static> scrollback, where height is harmless, so it shows the full
+ * previews (thread f1373e45: the flat 160-char elide hid the run's actual
+ * input and result). Leaf summaries stay clamped on both — the full values
+ * live in the persisted yard tool_call/tool_result rows.
  */
 const LINE_CLAMP = 160;
 
@@ -41,6 +43,25 @@ function glyph(phase: NodeState["phase"]): string {
 	if (phase === "completed") return "✓";
 	if (phase === "failed") return "✗";
 	return "◌";
+}
+
+/** State → color, used for glyphs and the header phase word. */
+function phaseColor(phase: NodeState["phase"]): string {
+	if (phase === "completed") return "green";
+	if (phase === "failed") return "red";
+	return "yellow";
+}
+
+/** Node kind → label color, so tool / inference / nested-run rows read apart. */
+function kindColor(node: NodeState): string | undefined {
+	switch (node.node.kind) {
+		case "run":
+			return "magenta";
+		case "tool":
+			return "cyan";
+		case "inference":
+			return "blue";
+	}
 }
 
 interface TreeRow {
@@ -99,29 +120,41 @@ export function YardExecutionCard({
 }: YardExecutionCardProps): React.ReactElement {
 	const rows = flattenTree(tree);
 	const effectCount = tree.nodes.filter((node) => node.node.kind !== "run").length;
+	// Live card: one bounded line per preview (dynamic-region height safety).
+	// Committed card: full text, hard-wrapped by Ink (Static scrollback).
+	const preview = (text: string): string => (running ? clampLine(text) : text);
+	const previewWrap = running ? ("truncate-end" as const) : ("wrap" as const);
 	return (
 		<Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
-			<Text color="magenta" bold>
-				Yard · {running ? "running" : tree.phase} · {effectCount}{" "}
-				{effectCount === 1 ? "effect" : "effects"}
+			<Text>
+				<Text color="magenta" bold>
+					Yard
+				</Text>
+				<Text dimColor> · </Text>
+				<Text color={running ? "yellow" : phaseColor(tree.phase)}>
+					{running ? "running" : tree.phase}
+				</Text>
+				<Text dimColor> · </Text>
+				{effectCount} {effectCount === 1 ? "effect" : "effects"}
 			</Text>
 			{tree.inputPreview ? (
-				<Text wrap="truncate-end">
+				<Text wrap={previewWrap}>
 					<Text dimColor>input · </Text>
-					{clampLine(tree.inputPreview)}
+					{preview(tree.inputPreview)}
 				</Text>
 			) : null}
 			{rows.map(({ node, prefix }) => (
-				<Text key={node.id} wrap="truncate-end" color={node.phase === "failed" ? "red" : undefined}>
+				<Text key={node.id} wrap="truncate-end">
 					<Text dimColor>{prefix}</Text>
-					{glyph(node.phase)} {label(node)}
+					<Text color={phaseColor(node.phase)}>{glyph(node.phase)}</Text>{" "}
+					<Text color={node.phase === "failed" ? "red" : kindColor(node)}>{label(node)}</Text>
 					{node.summary ? <Text dimColor> · {clampLine(node.summary)}</Text> : null}
 				</Text>
 			))}
 			{!running && tree.resultPreview ? (
-				<Text wrap="truncate-end">
+				<Text wrap={previewWrap}>
 					<Text color="magenta">result · </Text>
-					{clampLine(tree.resultPreview)}
+					{preview(tree.resultPreview)}
 				</Text>
 			) : null}
 		</Box>

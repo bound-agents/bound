@@ -1174,6 +1174,17 @@ export interface CommandRegistryEntry {
  * targets the host's real working directory rather than the sandbox.
  */
 export const SANDBOX_BASH_TOOL_NAME = "bms_bash";
+
+/**
+ * Call-id prefix for client tools dispatched from inside a Yard run
+ * (`dispatchAwaitableClientTool` in `@bound/agent`). Shared so UI surfaces
+ * can recognize Yard-origin dispatches: boundless suppresses the standalone
+ * streaming ToolCallCard for these (the Yard execution card already renders
+ * the effect as a graph node), and the agent's context pipeline filters the
+ * bookkeeping result rows these calls persist.
+ */
+export const YARD_CLIENT_CALL_ID_PREFIX = "yard-client-";
+
 export type YardExecutionNode =
 	| { kind: "run"; depth: number }
 	| { kind: "tool"; name: string }

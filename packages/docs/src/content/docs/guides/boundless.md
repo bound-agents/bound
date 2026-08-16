@@ -111,13 +111,20 @@ for background work.
 ## Follow Yard execution
 
 A running `yard` call appears as a magenta card below the transcript. The card shows the
-initial input, the live execution graph, and tool, auxiliary-agent, and inference leaves in
-start order. Completed and failed leaves remain visible while the run is active.
+initial input and the live execution graph: tool, auxiliary-agent, and inference effects
+hang off their parent with box-drawing branches, nested `yard()` runs indent as subtrees,
+and concurrent effects read as siblings in dispatch order. Glyphs are color-coded by state
+(green done, red failed, yellow running); tool, inference, and nested-run labels carry
+their own colors. While the run is live, input and result previews are clamped to one line
+so the card never outgrows the terminal, and client tools dispatched from inside the run
+(for example `boundless_bash`) render only as graph nodes — they do not stream a separate
+standalone tool card underneath.
 
 When the root run finishes, the card moves into terminal scrollback at the matching Yard
-result row and includes the final bounded result preview. Live execution events are
-thread-scoped and ephemeral; transcripts created by older servers, or sessions that attach
-after a run finishes, retain the ordinary Yard tool-call/result rendering.
+result row with the full input and result previews (wrapped, not clamped — scrollback has
+no height constraint). Live execution events are thread-scoped and ephemeral; transcripts
+created by older servers, or sessions that attach after a run finishes, retain the
+ordinary Yard tool-call/result rendering.
 
 ## Connect an ACP editor
 

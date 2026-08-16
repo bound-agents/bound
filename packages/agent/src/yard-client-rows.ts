@@ -26,8 +26,14 @@
  * Inspector, and the dispatch await path.
  */
 
-/** Call-id prefix used by `dispatchAwaitableClientTool`. Single source of truth. */
-export const YARD_CLIENT_CALL_ID_PREFIX = "yard-client-";
+import { YARD_CLIENT_CALL_ID_PREFIX } from "@bound/shared";
+
+/**
+ * Call-id prefix used by `dispatchAwaitableClientTool`. Canonical home is
+ * `@bound/shared` (boundless shares it to suppress duplicate streaming
+ * cards); re-exported here for agent-side callers.
+ */
+export { YARD_CLIENT_CALL_ID_PREFIX };
 
 /**
  * True for a persisted `tool_result` row that is Yard client-dispatch
