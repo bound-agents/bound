@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
-import { insertRow } from "@bound/core";
+import { insertRow, softDelete } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { getNeighbors, graphSeededRetrieval, traverseGraph } from "../graph-queries";
 import { upsertEdge } from "../graph-queries";
@@ -55,57 +55,42 @@ afterEach(() => {
 	}
 });
 
-describe("graph-memory.AC3.1: Traversal returns connected entries with values", () => {
-	it("should traverse from A with default depth=2", () => {
+describe("graph-memory traversal contracts", () => {
+	it("returns connected entries with their traversal result shape", () => {
 		const results = traverseGraph(db, "A");
 
-		expect(results.length).toBeGreaterThan(0);
-
-		// Check for expected entries
-		const keys = results.map((r) => r.key);
-		expect(keys).toContain("B"); // Direct child A→B
-		expect(keys).toContain("D"); // Direct child A→D
-
-		// Check that each result has required fields
-		for (const r of results) {
-			expect(r.key).toBeDefined();
-			expect(r.value).toBeDefined();
-			expect(r.depth).toBeDefined();
-			expect(r.viaRelation).toBeDefined();
-			expect(r.modifiedAt).toBeDefined();
-		}
-
-		// Check depth values - records the shortest path to each node
-		const depthMap = new Map(results.map((r) => [r.key, r.depth]));
-		// B can be reached at depth 1 via A→B and at depth 2 via A→D→B
-		// The query returns one result per key (shortest path), so B at depth 1
-		expect(depthMap.get("B")).toBeLessThanOrEqual(2);
-		expect(depthMap.get("D")).toBe(1); // Direct child via A→D
-	});
-});
-
-describe("graph-memory.AC3.2: Depth parameter limits traversal", () => {
-	it("should only return depth-1 nodes when depth=1", () => {
-		const results = traverseGraph(db, "A", 1);
-
-		const keys = results.map((r) => r.key);
-		// At depth 1, should have B and D (direct children)
-		expect(keys).toContain("B");
-		expect(keys).toContain("D");
-
-		// All results should be at depth 1
-		for (const r of results) {
-			expect(r.depth).toBe(1);
-		}
+		expect(results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					key: "B",
+					value: "Memory entry B",
+					depth: 1,
+					viaRelation: "related_to",
+					viaWeight: 1,
+					viaContext: null,
+					modifiedAt: expect.any(String),
+					source: "test",
+				}),
+				expect.objectContaining({ key: "D", depth: 1, viaRelation: "extends" }),
+			]),
+		);
+		expect(results.map((result) => result.key)).not.toContain("A");
 	});
 
-	it("should return up to depth-3 when depth=3", () => {
-		const results = traverseGraph(db, "A", 3);
+	it("limits traversal depth and clamps requests to the supported range", () => {
+		const depthOne = traverseGraph(db, "A", 1);
+		expect(depthOne.map((result) => [result.key, result.depth])).toEqual(
+			expect.arrayContaining([
+				["B", 1],
+				["D", 1],
+			]),
+		);
+		expect(depthOne.every((result) => result.depth === 1)).toBe(true);
 
-		// Should have more results than depth=1 or depth=2
-		const depth2 = traverseGraph(db, "A", 2);
-
-		expect(results.length).toBeGreaterThanOrEqual(depth2.length);
+		for (const requestedDepth of [0, -1])
+			expect(traverseGraph(db, "A", requestedDepth)).toEqual(depthOne);
+		for (const requestedDepth of [4, 10])
+			expect(traverseGraph(db, "A", requestedDepth)).toEqual(traverseGraph(db, "A", 3));
 	});
 });
 
@@ -306,20 +291,23 @@ describe("traverseGraph: Additional edge cases", () => {
 			)
 			.get("A", "B", "related_to") as { id: string } | null;
 
+		expect(edge).not.toBeNull();
 		if (edge) {
-			db.prepare("UPDATE memory_edges SET deleted = 1 WHERE id = ?").run(edge.id);
+			softDelete(db, "memory_edges", edge.id, siteId);
 
 			// Traversal should not include B via A→B
 			const results = traverseGraph(db, "A", 1);
 			// B should not be in results (only D via A→D should remain)
-			expect(results.map((r) => r.key)).toContain("D");
+			const keys = results.map((r) => r.key);
+			expect(keys).not.toContain("B");
+			expect(keys).toContain("D");
 		}
 	});
 
 	it("should join only active semantic_memory entries", () => {
 		// Soft delete memory entry C
 		const cId = deterministicUUID(BOUND_NAMESPACE, "C");
-		db.prepare("UPDATE semantic_memory SET deleted = 1 WHERE id = ?").run(cId);
+		softDelete(db, "semantic_memory", cId, siteId);
 
 		// Traversal from A should not include C in results
 		const results = traverseGraph(db, "A", 3);

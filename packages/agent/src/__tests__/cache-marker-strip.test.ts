@@ -1,106 +1,64 @@
-/**
- * Regression tests for receiver-side cache-marker stripping.
- *
- * Background: the requester-side gate in agent-loop.ts uses the remote host's
- * advertised `capabilities.prompt_caching`. But stale host-capability data,
- * legacy hosts.models formats, or pre-fix requester binaries can still send
- * `{ role: "cache" }` markers to a spoke whose backend doesn't support them.
- * Without a receiver-side strip, those markers would then get forwarded to
- * AWS as providerOptions.bedrock.cachePoint, producing the 403
- * "unsupported model or your request did not allow prompt caching."
- *
- * `stripCacheMarkersIfUnsupported(messages, caps)` filters out cache-role
- * messages when `caps.prompt_caching === false`. This is the defense-in-depth
- * line the relay-processor runs before dispatching to `backend.chat()`.
- */
-
 import { describe, expect, it } from "bun:test";
 import type { LLMMessage } from "@bound/llm";
+import fc from "fast-check";
 import { stripCacheMarkersIfUnsupported } from "../cache-marker";
 
+const messageArb = fc
+	.record({
+		role: fc.constantFrom<LLMMessage["role"]>(
+			"user",
+			"assistant",
+			"tool_call",
+			"tool_result",
+			"developer",
+			"cache",
+		),
+		content: fc.string({ maxLength: 80 }),
+	})
+	.map(({ role, content }) => ({ role, content }) as LLMMessage);
+
+const messagesArb = fc.array(messageArb, { maxLength: 24 });
+
 describe("stripCacheMarkersIfUnsupported", () => {
-	it("removes cache-role messages when caps.prompt_caching is false", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "cache", content: "" },
-			{ role: "assistant", content: "hey" },
-			{ role: "user", content: "hello" },
-		];
-		const out = stripCacheMarkersIfUnsupported(messages, { prompt_caching: false });
-		expect(out).toHaveLength(3);
-		expect(out.some((m) => m.role === "cache")).toBe(false);
-		// Non-cache messages preserve order and identity
-		expect(out[0]).toEqual(messages[0]);
-		expect(out[1]).toEqual(messages[2]);
-		expect(out[2]).toEqual(messages[3]);
+	it("removes cache markers while retaining non-cache identity, order, and input", () => {
+		fc.assert(
+			fc.property(messagesArb, (messages) => {
+				const input = [...messages];
+				const retained = input.filter((message) => message.role !== "cache");
+				const result = stripCacheMarkersIfUnsupported(messages, { prompt_caching: false });
+
+				return (
+					messages.length === input.length &&
+					messages.every((message, index) => message === input[index]) &&
+					result.length === retained.length &&
+					result.every((message, index) => message === retained[index])
+				);
+			}),
+			{ numRuns: 200 },
+		);
 	});
 
-	it("preserves cache markers when caps.prompt_caching is true", () => {
+	it("preserves cache markers when capability is unknown", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "hi" },
 			{ role: "cache", content: "" },
 			{ role: "assistant", content: "hey" },
 		];
-		const out = stripCacheMarkersIfUnsupported(messages, { prompt_caching: true });
-		expect(out).toHaveLength(3);
-		expect(out.some((m) => m.role === "cache")).toBe(true);
+
+		expect(stripCacheMarkersIfUnsupported(messages, undefined)).toBe(messages);
+		expect(
+			stripCacheMarkersIfUnsupported(messages, {
+				streaming: true,
+			} as { prompt_caching?: boolean }),
+		).toBe(messages);
 	});
 
-	it("preserves cache markers when caps are undefined (unknown → permissive)", () => {
+	it("returns the same array when disabled capability has nothing to strip", () => {
 		const messages: LLMMessage[] = [
 			{ role: "user", content: "hi" },
-			{ role: "cache", content: "" },
 			{ role: "assistant", content: "hey" },
 		];
-		const out = stripCacheMarkersIfUnsupported(messages, undefined);
-		expect(out).toHaveLength(3);
-		expect(out.some((m) => m.role === "cache")).toBe(true);
-	});
 
-	it("preserves cache markers when caps omit prompt_caching", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "cache", content: "" },
-			{ role: "assistant", content: "hey" },
-		];
-		const out = stripCacheMarkersIfUnsupported(messages, { streaming: true } as unknown as {
-			prompt_caching?: boolean;
-		});
-		expect(out).toHaveLength(3);
-		expect(out.some((m) => m.role === "cache")).toBe(true);
-	});
-
-	it("returns the same array reference when no cache markers are present (zero-copy fast path)", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "assistant", content: "hey" },
-		];
-		const out = stripCacheMarkersIfUnsupported(messages, { prompt_caching: false });
-		expect(out).toBe(messages);
-	});
-
-	it("drops multiple cache markers in a single pass", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "cache", content: "" },
-			{ role: "assistant", content: "hey" },
-			{ role: "cache", content: "" },
-			{ role: "user", content: "hello" },
-		];
-		const out = stripCacheMarkersIfUnsupported(messages, { prompt_caching: false });
-		expect(out).toHaveLength(3);
-		expect(out.filter((m) => m.role === "cache")).toHaveLength(0);
-	});
-
-	it("does not mutate the input array", () => {
-		const messages: LLMMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "cache", content: "" },
-			{ role: "assistant", content: "hey" },
-		];
-		const lenBefore = messages.length;
-		stripCacheMarkersIfUnsupported(messages, { prompt_caching: false });
-		expect(messages).toHaveLength(lenBefore);
-		expect(messages[1].role).toBe("cache");
+		expect(stripCacheMarkersIfUnsupported(messages, { prompt_caching: false })).toBe(messages);
 	});
 });

@@ -79,49 +79,33 @@ describe("built-in-tools", () => {
 			expect(result).toContain("binary");
 		});
 
-		it("applies offset (1-based)", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt", offset: 3 });
-			expect(result).toContain(hl(3, "c"));
-			expect(result).toContain(hl(4, "d"));
-			expect(result).not.toContain(hl(1, "a"));
-			expect(result).not.toContain(hl(2, "b"));
-		});
+		it("renders exact paginated slices for generated newline-free inputs", async () => {
+			const lineSets = [
+				["a"],
+				["alpha", "βeta", "gamma"],
+				Array.from({ length: 7 }, (_, index) => `line-${index + 1}`),
+			];
 
-		it("applies limit", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt", limit: 2 });
-			expect(result).toContain(hl(1, "a"));
-			expect(result).toContain(hl(2, "b"));
-			expect(result).not.toContain(hl(3, "c"));
-		});
+			for (const lines of lineSets) {
+				fs.writeFileSync("/home/user/lines.txt", `${lines.join("\n")}\n`);
+				for (let offset = 1; offset <= lines.length + 2; offset++) {
+					for (let limit = 1; limit <= lines.length + 1; limit++) {
+						const result = (await tool("bms_read").execute({
+							path: "/home/user/lines.txt",
+							offset,
+							limit,
+						})) as string;
+						const expected = lines.slice(offset - 1, offset - 1 + limit);
+						const rendered = expected.map((line, index) => hl(offset + index, line));
+						const continuation =
+							expected.length < lines.length - (offset - 1)
+								? `[Use offset=${offset + expected.length} to continue]`
+								: undefined;
 
-		it("applies offset + limit together", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({
-				path: "/home/user/lines.txt",
-				offset: 2,
-				limit: 2,
-			});
-			expect(result).toContain(hl(2, "b"));
-			expect(result).toContain(hl(3, "c"));
-			expect(result).not.toContain(hl(1, "a"));
-			expect(result).not.toContain(hl(4, "d"));
-		});
-
-		it("shows continuation hint when more lines exist", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({
-				path: "/home/user/lines.txt",
-				limit: 2,
-			});
-			expect(result).toContain("[Use offset=3 to continue]");
-		});
-
-		it("does NOT show continuation hint at end of file", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\n");
-			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt" });
-			expect(result).not.toContain("[Use offset=");
+						expect(result).toBe([...rendered, continuation].filter(Boolean).join("\n"));
+					}
+				}
+			}
 		});
 
 		it("rejects invalid offset", async () => {
@@ -206,31 +190,17 @@ describe("built-in-tools", () => {
 	// ─── host path guard ────────────────────────────────────────────────
 
 	describe("host path guard", () => {
-		it("rejects a Windows drive-letter path on write", async () => {
-			const path = "C:\\Users\\user\\Documents\\GitHub\\bound\\scripts\\x.ts";
-			const result = await tool("bms_write").execute({ path, content: "hi" });
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("sandbox");
-			// Nothing landed in the VFS root as a junk filename
-			expect(await fs.readdir("/")).not.toContain(path);
-		});
-
-		it("rejects a slash-prefixed Windows path on write", async () => {
-			const result = await tool("bms_write").execute({
-				path: "/C:\\Users\\user\\x.ts",
-				content: "hi",
-			});
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("sandbox");
-		});
-
-		it("rejects a forward-slash drive-letter path on write", async () => {
-			const result = await tool("bms_write").execute({
-				path: "C:/Users/user/x.ts",
-				content: "hi",
-			});
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("sandbox");
+		it("rejects Windows write paths without creating VFS files", async () => {
+			for (const path of [
+				"C:\\Users\\user\\Documents\\GitHub\\bound\\scripts\\x.ts",
+				"/C:\\Users\\user\\x.ts",
+				"C:/Users/user/x.ts",
+			]) {
+				const result = await tool("bms_write").execute({ path, content: "hi" });
+				expect(result).toStartWith("Error:");
+				expect(result).toContain("sandbox");
+				expect(await fs.readdir("/")).not.toContain(path);
+			}
 		});
 
 		it("rejects a host-absolute POSIX path on write and names the writable roots", async () => {

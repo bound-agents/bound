@@ -9,6 +9,7 @@ import type { LLMMessage } from "@bound/llm";
 import type { CommandRegistryEntry, ContextSection } from "@bound/shared";
 import { countContentTokens, countTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import fc from "fast-check";
 import {
 	CONTEXT_SAFETY_MARGIN_FLOOR,
 	CONTEXT_SAFETY_MARGIN_RATIO,
@@ -6800,82 +6801,78 @@ This skill reviews pull requests.`;
 });
 
 describe("formatTimestamp", () => {
-	it("formats timestamps as absolute short dates", () => {
-		// Absolute timestamps should be stable (not change between turns)
-		const ts = "2026-04-04T14:30:00.000Z";
-		const result = formatTimestamp(ts);
-		// Should contain the date and time, not relative "ago" format
-		expect(result).toMatch(/^\[.*\d{1,2}:\d{2}.*\]$/);
-		expect(result).not.toContain("ago");
+	const finiteInstant = fc
+		.integer({ min: Date.UTC(2020, 0, 1), max: Date.UTC(2030, 11, 31, 23, 59) })
+		.map((ms) => new Date(ms));
+	const validOffset = fc.integer({ min: -14 * 60, max: 14 * 60 });
+	it("formats finite instants deterministically with an explicit zone", () => {
+		fc.assert(
+			fc.property(finiteInstant, fc.option(validOffset, { nil: undefined }), (instant, offset) => {
+				const timestamp = instant.toISOString();
+				const output = formatTimestamp(timestamp, offset, Date.UTC(2026, 0, 1));
+				expect(formatTimestamp(timestamp, offset, Date.UTC(2026, 0, 1))).toBe(output);
+				expect(output).toMatch(/^\[.+ UTC(?:[+-]\d{2}:\d{2})?\]$/);
+			}),
+		);
 	});
 
-	it("produces identical output for the same input regardless of when called", () => {
-		const ts = "2026-04-04T14:30:00.000Z";
-		const result1 = formatTimestamp(ts);
-		const result2 = formatTimestamp(ts);
-		expect(result1).toBe(result2);
+	it("uses the supplied offset for local calendar fields and zone", () => {
+		fc.assert(
+			fc.property(finiteInstant, validOffset, (instant, offset) => {
+				const shifted = new Date(instant.getTime() + offset * 60_000);
+				const output = formatTimestamp(instant.toISOString(), offset, Date.UTC(2026, 0, 1));
+				const match = output.match(
+					/^\[(?<date>.+), (?<time>\d{2}:\d{2}) (?<zone>UTC[+-]\d{2}:\d{2})\]$/,
+				);
+
+				expect(match?.groups?.date).toContain(`${shifted.getUTCDate()}`);
+				expect(match?.groups?.time).toBe(
+					`${String(shifted.getUTCHours()).padStart(2, "0")}:${String(shifted.getUTCMinutes()).padStart(2, "0")}`,
+				);
+				expect(match?.groups?.zone).toBe(
+					`UTC${offset < 0 ? "-" : "+"}${String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0")}:${String(Math.abs(offset) % 60).padStart(2, "0")}`,
+				);
+			}),
+		);
 	});
 
-	it("formats today's timestamps with time only", () => {
-		const now = new Date();
-		const ts = now.toISOString();
-		const result = formatTimestamp(ts);
-		// Should have hours and minutes
-		expect(result).toMatch(/\d{1,2}:\d{2}/);
+	it("partitions same-year and different-year dates relative to the assembly clock", () => {
+		fc.assert(
+			fc.property(
+				fc.integer({ min: -2, max: 2 }),
+				fc.integer({ min: 0, max: 365 * 24 * 60 - 1 }),
+				(yearDelta, minute) => {
+					const instant = new Date(Date.UTC(2026 + yearDelta, 0, 1, 0, minute));
+					const output = formatTimestamp(instant.toISOString(), 0, Date.UTC(2026, 6, 1));
+					const hasYearSuffix = output.includes(`'${String(instant.getUTCFullYear()).slice(-2)}`);
+					expect(hasYearSuffix).toBe(instant.getUTCFullYear() !== 2026);
+				},
+			),
+		);
 	});
 
-	it("formats older timestamps with date and time", () => {
-		const ts = "2026-01-15T09:45:00.000Z";
-		const result = formatTimestamp(ts);
-		// Should include month/day info
-		expect(result).toMatch(/Jan 15/);
+	it("keeps boundary-sensitive offset regressions", () => {
+		expect(formatTimestamp("2026-06-05T22:38:00.000Z", -240, Date.UTC(2026, 0, 1))).toBe(
+			"[Jun 5, 18:38 UTC-04:00]",
+		);
+		expect(formatTimestamp("2026-06-05T22:38:00.000Z", 540, Date.UTC(2026, 0, 1))).toBe(
+			"[Jun 6, 07:38 UTC+09:00]",
+		);
+		expect(formatTimestamp("2026-01-01T02:00:00.000Z", -300, Date.UTC(2026, 0, 1))).toBe(
+			"[Dec 31 '25, 21:00 UTC-05:00]",
+		);
+		expect(formatTimestamp("2026-06-05T22:38:00.000Z", 330, Date.UTC(2026, 0, 1))).toBe(
+			"[Jun 6, 04:08 UTC+05:30]",
+		);
 	});
 
-	// --- Timezone-aware rendering. offsetMinutes is the standard UTC offset
-	//     (east-of-UTC positive): EDT = -240, JST = +540, IST = +330. ---
-
-	it("renders local wall-clock + UTC offset suffix when an offset is given", () => {
-		// 22:38 UTC at -240 (EDT) is 18:38 local, same calendar day.
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, -240)).toBe("[Jun 5, 18:38 UTC-04:00]");
-	});
-
-	it("rolls the local date forward across midnight for east offsets", () => {
-		// 22:38 UTC at +540 (JST) is 07:38 the next calendar day.
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, 540)).toBe("[Jun 6, 07:38 UTC+09:00]");
-	});
-
-	it("renders UTC+00:00 for a zero offset", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, 0)).toBe("[Jun 5, 22:38 UTC+00:00]");
-	});
-
-	it("uses the local (shifted) year for the year-variant suffix", () => {
-		// 02:00 UTC Jan 1 2026 at -300 (EST) is 21:00 Dec 31 2025 local.
-		const ts = "2026-01-01T02:00:00.000Z";
-		expect(formatTimestamp(ts, -300)).toBe("[Dec 31 '25, 21:00 UTC-05:00]");
-	});
-
-	it("renders half-hour offsets (e.g. IST +330)", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, 330)).toBe("[Jun 6, 04:08 UTC+05:30]");
-	});
-
-	it("marks the zone as UTC (never bare) when offset is undefined (back-compat)", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts)).toBe("[Jun 5, 22:38 UTC]");
-		expect(formatTimestamp(ts, undefined)).toBe("[Jun 5, 22:38 UTC]");
-	});
-
-	it("ignores a non-finite offset and renders an explicitly-marked UTC time", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, Number.NaN)).toBe("[Jun 5, 22:38 UTC]");
-	});
-
-	it("is deterministic for a given (timestamp, offset) pair", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, -240)).toBe(formatTimestamp(ts, -240));
+	it("restores omitted and undefined UTC rendering", () => {
+		const timestamp = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(timestamp)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, undefined)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, Number.NaN)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, Number.POSITIVE_INFINITY)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, Number.NEGATIVE_INFINITY)).toBe("[Jun 5, 22:38 UTC]");
 	});
 });
 
