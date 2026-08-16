@@ -1,13 +1,6 @@
 /**
- * Heartbeat anomaly detectors — code-provided detection queries.
- *
- * Each function runs a deterministic SQL query and returns a formatted
- * string for injection into the heartbeat prompt. The agent reads the
- * findings and decides what to do — these never take action themselves.
- *
- * Timestamps use JS Date → ISO strings as query parameters, avoiding
- * the strftime/datetime lexicographic comparison footgun that plagued
- * the prompt-based versions.
+ * Deterministic SQL anomaly detectors for the heartbeat prompt; they report, never act.
+ * Use JS-generated ISO parameters to avoid SQLite datetime lexicographic comparison bugs.
  */
 
 import type { Database } from "bun:sqlite";

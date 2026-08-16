@@ -1,11 +1,4 @@
-/**
- * Stale-file cleanup — runs during heartbeat context build.
- *
- * Soft-deletes VFS file entries in ephemeral paths (/tmp, .tool-results)
- * whose modified_at is older than the staleness threshold. Same pattern as
- * pruneResolvedAdvisories: query, softDelete, return count. No agent
- * involvement — purely mechanical maintenance.
- */
+/** Soft-delete stale VFS files from ephemeral paths during heartbeat context build. */
 
 import type { Database } from "bun:sqlite";
 import { softDelete } from "@bound/core";
