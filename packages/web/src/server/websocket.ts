@@ -22,6 +22,7 @@ import {
 	updateClaimedBy,
 	updateRow,
 } from "@bound/core";
+import type { YardExecutionEvent } from "@bound/shared";
 import {
 	appendToolDuration,
 	capToolResultContent,
@@ -1241,6 +1242,14 @@ export function createWebSocketHandler(
 		}
 	};
 
+	const handleYardExecution = (data: YardExecutionEvent): void => {
+		for (const [, conn] of clients) {
+			if (conn.subscriptions.has(data.thread_id) && conn.ws.readyState === 1) {
+				conn.ws.send(JSON.stringify({ type: "yard:execution", ...data }));
+			}
+		}
+	};
+
 	const handleStreamChunk = (data: { thread_id: string; chunk: WsStreamChunk }): void => {
 		for (const [, conn] of clients) {
 			if (conn.subscriptions.has(data.thread_id)) {
@@ -1435,6 +1444,7 @@ export function createWebSocketHandler(
 	eventBus.on("client_tool_call:created", handleClientToolCallCreated);
 	eventBus.on("status:forward", handleStatusForward);
 	eventBus.on("stream:chunk", handleStreamChunk);
+	eventBus.on("yard:execution", handleYardExecution);
 	eventBus.on("background:count", handleBackgroundCount);
 
 	/**
@@ -1589,6 +1599,7 @@ export function createWebSocketHandler(
 			eventBus.off("client_tool_call:created", handleClientToolCallCreated);
 			eventBus.off("status:forward", handleStatusForward);
 			eventBus.off("stream:chunk", handleStreamChunk);
+			eventBus.off("yard:execution", handleYardExecution);
 			clients.clear();
 		},
 

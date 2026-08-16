@@ -1,5 +1,11 @@
 import type { WsStreamChunk } from "./relay-schemas.js";
-import type { ContextDebugInfo, Message, RelayKind, StatusForwardPayload } from "./types.js";
+import type {
+	ContextDebugInfo,
+	Message,
+	RelayKind,
+	StatusForwardPayload,
+	YardExecutionEvent,
+} from "./types.js";
 
 export interface EventMap {
 	"message:created": { message: Message; thread_id: string; trace_context?: string };
@@ -40,6 +46,7 @@ export interface EventMap {
 		traceContext?: Record<string, string> | null;
 	};
 	"stream:chunk": { thread_id: string; chunk: WsStreamChunk };
+	"yard:execution": YardExecutionEvent;
 	"connector:event": {
 		trigger_key: string;
 		task_id: string;

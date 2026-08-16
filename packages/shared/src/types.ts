@@ -1174,3 +1174,24 @@ export interface CommandRegistryEntry {
  * targets the host's real working directory rather than the sandbox.
  */
 export const SANDBOX_BASH_TOOL_NAME = "bms_bash";
+export type YardExecutionNode =
+	| { kind: "run"; depth: number }
+	| { kind: "tool"; name: string }
+	| { kind: "inference"; model: string };
+
+export type YardExecutionEvent = {
+	thread_id: string;
+	trace_id: string;
+	run_id: string;
+	node_id: string;
+	parent_id: string | null;
+	seq: number;
+	phase: "started" | "completed" | "failed";
+	node: YardExecutionNode;
+	started_at?: string;
+	finished_at?: string;
+	input_preview?: string;
+	result_preview?: string;
+	summary?: string;
+	tool_call_id?: string;
+};

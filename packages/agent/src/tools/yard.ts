@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import type { LLMBackend, ModelRouter } from "@bound/llm";
+import type { YardExecutionEvent, YardExecutionNode } from "@bound/shared";
 import { context as otelContext, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { resolveModel } from "../model-resolution";
@@ -50,6 +51,12 @@ interface YardRunScope {
 	traceId: string;
 	/** Tree-wide leaf concurrency, recorded on each run span. */
 	concurrency: number;
+	/** Monotonic sequence shared by every run/effect in the tree. */
+	sequence: { value: number };
+	/** Current run id; effects use it for client-side grouping. */
+	runId?: string;
+	/** Outer yard tool call id, exposed on the root event for UI correlation. */
+	toolCallId?: string;
 	/**
 	 * Tree-wide cancellation. The ROOT invocation owns the controller and a
 	 * timer that fires it at the absolute deadline; every descendant shares
@@ -77,6 +84,35 @@ function hash16(value: string): string {
  * the store is visible without any explicit threading.
  */
 const yardRunStorage = new AsyncLocalStorage<YardRunScope>();
+const yardNodeStorage = new AsyncLocalStorage<string | null>();
+
+const PREVIEW_LIMIT = 4000;
+function preview(value: unknown): string {
+	const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
+	if (text.length <= PREVIEW_LIMIT) return text;
+	const half = Math.floor((PREVIEW_LIMIT - 32) / 2);
+	return `${text.slice(0, half)}\n… truncated ${text.length - half * 2} chars …\n${text.slice(-half)}`;
+}
+
+function emitLifecycle(
+	ctx: ToolContext,
+	scope: YardRunScope,
+	event: Omit<YardExecutionEvent, "thread_id" | "trace_id" | "seq">,
+): void {
+	if (!ctx.threadId) return;
+	try {
+		ctx.eventBus.emit("yard:execution", {
+			...event,
+			thread_id: ctx.threadId,
+			trace_id: scope.traceId,
+			seq: ++scope.sequence.value,
+		});
+	} catch (error) {
+		ctx.logger.debug("[yard] lifecycle listener failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
 
 /** Counting semaphore for tree-wide leaf-work concurrency. */
 class Semaphore {
@@ -306,16 +342,49 @@ function* main(input) {
  * timing/status).
  */
 async function withEffectSpan<T>(
+	ctx: ToolContext,
+	scope: YardRunScope,
+	node: YardExecutionNode,
 	attributes: Record<string, string | number>,
 	fn: () => Promise<T>,
 ): Promise<T> {
+	const nodeId = randomUUID();
+	const parentId = yardNodeStorage.getStore() ?? null;
+	const runId = scope.runId ?? scope.traceId;
+	emitLifecycle(ctx, scope, {
+		run_id: runId,
+		node_id: nodeId,
+		parent_id: parentId,
+		phase: "started",
+		node,
+		started_at: new Date().toISOString(),
+	});
 	const span = getTracer().startSpan("yard.effect", { attributes }, otelContext.active());
 	try {
-		const value = await otelContext.with(trace.setSpan(otelContext.active(), span), fn);
+		const value = await yardNodeStorage.run(nodeId, () =>
+			otelContext.with(trace.setSpan(otelContext.active(), span), fn),
+		);
 		span.setAttribute("yard.effect.status", "ok");
+		emitLifecycle(ctx, scope, {
+			run_id: runId,
+			node_id: nodeId,
+			parent_id: parentId,
+			phase: "completed",
+			node,
+			finished_at: new Date().toISOString(),
+		});
 		return value;
 	} catch (err) {
 		span.setAttribute("yard.effect.status", "error");
+		emitLifecycle(ctx, scope, {
+			run_id: runId,
+			node_id: nodeId,
+			parent_id: parentId,
+			phase: "failed",
+			node,
+			finished_at: new Date().toISOString(),
+			summary: err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500),
+		});
 		throw err;
 	} finally {
 		span.end();
@@ -330,115 +399,131 @@ function createYardHost(
 ): YardHost {
 	return {
 		dispatchTool(name: string, args: JsonValue): Promise<unknown> {
-			return withEffectSpan({ "yard.effect.kind": "tool", "yard.effect.tool": name }, async () => {
-				const registry = ctx.getToolRegistry?.();
-				if (!registry) throw new Error("yard has no tool registry wired on this host");
-				const tool = registry.get(name);
-				if (!tool) throw new Error(`tool "${name}" is not available in the current toolset`);
-				// Client tools are awaitable inside Yard: dispatch through the live
-				// local WS session or relay client_tool/client_result to its host,
-				// then resume this generator with the completed value. The shared
-				// dispatcher consumes the WS handler's generated result wake so no
-				// second agent loop runs this thread.
-				if (tool.kind === "client") {
-					if (!ctx.executeClientTool) {
-						throw new Error(`tool "${name}" has no client dispatcher wired on this host`);
-					}
-					const remaining = Math.max(1, scope.deadlineAt - Date.now());
-					const resolved = await ctx.executeClientTool(
-						name,
-						args as Record<string, unknown>,
-						remaining,
-						scope.abort.signal,
-					);
-					if (!resolved) {
-						throw new Error(
-							`client tool "${name}" timed out, was cancelled, or has no live session`,
+			const lifecycleName =
+				name === "aux" &&
+				args &&
+				typeof args === "object" &&
+				typeof (args as Record<string, unknown>).name === "string"
+					? `aux:${String((args as Record<string, unknown>).name)}`
+					: name;
+			return withEffectSpan(
+				ctx,
+				scope,
+				{ kind: "tool", name: lifecycleName },
+				{ "yard.effect.kind": "tool", "yard.effect.tool": name },
+				async () => {
+					const registry = ctx.getToolRegistry?.();
+					if (!registry) throw new Error("yard has no tool registry wired on this host");
+					const tool = registry.get(name);
+					if (!tool) throw new Error(`tool "${name}" is not available in the current toolset`);
+					// Client tools are awaitable inside Yard: dispatch through the live
+					// local WS session or relay client_tool/client_result to its host,
+					// then resume this generator with the completed value. The shared
+					// dispatcher consumes the WS handler's generated result wake so no
+					// second agent loop runs this thread.
+					if (tool.kind === "client") {
+						if (!ctx.executeClientTool) {
+							throw new Error(`tool "${name}" has no client dispatcher wired on this host`);
+						}
+						const remaining = Math.max(1, scope.deadlineAt - Date.now());
+						const resolved = await ctx.executeClientTool(
+							name,
+							args as Record<string, unknown>,
+							remaining,
+							scope.abort.signal,
 						);
+						if (!resolved) {
+							throw new Error(
+								`client tool "${name}" timed out, was cancelled, or has no live session`,
+							);
+						}
+						if (resolved.isError) throw new Error(resolved.content);
+						try {
+							return JSON.parse(resolved.content);
+						} catch {
+							return resolved.content;
+						}
 					}
-					if (resolved.isError) throw new Error(resolved.content);
-					try {
-						return JSON.parse(resolved.content);
-					} catch {
-						return resolved.content;
-					}
-				}
 
-				// Sandbox-kind registry entries intentionally have no direct execute
-				// closure: the loop owns command execution (including MCP bridge
-				// subcommands). Use the executor injected by agent-factory so Yard
-				// follows the same sandbox rather than implementing a parallel runner.
-				const execute = async (): Promise<unknown> => {
-					if (tool.kind === "sandbox") {
-						if (!ctx.executeSandboxTool) {
-							throw new Error(`tool "${name}" has no sandbox executor wired on this host`);
+					// Sandbox-kind registry entries intentionally have no direct execute
+					// closure: the loop owns command execution (including MCP bridge
+					// subcommands). Use the executor injected by agent-factory so Yard
+					// follows the same sandbox rather than implementing a parallel runner.
+					const execute = async (): Promise<unknown> => {
+						if (tool.kind === "sandbox") {
+							if (!ctx.executeSandboxTool) {
+								throw new Error(`tool "${name}" has no sandbox executor wired on this host`);
+							}
+							const record = args as Record<string, unknown>;
+							if (typeof record.command !== "string") {
+								throw new Error(`tool "${name}" requires a command string`);
+							}
+							const result = await ctx.executeSandboxTool(
+								record.command,
+								typeof record.timeout === "number" ? record.timeout : undefined,
+								typeof record.cwd === "string" ? record.cwd : undefined,
+							);
+							const parts = [result.stdout, result.stderr].filter(
+								(part): part is string => typeof part === "string" && part.length > 0,
+							);
+							const content =
+								parts.length > 0
+									? parts.join("\n")
+									: (result.exitCode ?? 0) === 0
+										? "Command completed successfully"
+										: `Exit code: ${result.exitCode ?? 1}`;
+							if ((result.exitCode ?? 0) !== 0) {
+								throw new Error(content);
+							}
+							return content;
 						}
-						const record = args as Record<string, unknown>;
-						if (typeof record.command !== "string") {
-							throw new Error(`tool "${name}" requires a command string`);
+						if (!tool.execute) {
+							throw new Error(
+								`tool "${name}" has no direct execute path and cannot be used from yard`,
+							);
 						}
-						const result = await ctx.executeSandboxTool(
-							record.command,
-							typeof record.timeout === "number" ? record.timeout : undefined,
-							typeof record.cwd === "string" ? record.cwd : undefined,
-						);
-						const parts = [result.stdout, result.stderr].filter(
-							(part): part is string => typeof part === "string" && part.length > 0,
-						);
-						const content =
-							parts.length > 0
-								? parts.join("\n")
-								: (result.exitCode ?? 0) === 0
-									? "Command completed successfully"
-									: `Exit code: ${result.exitCode ?? 1}`;
-						if ((result.exitCode ?? 0) !== 0) {
-							throw new Error(content);
-						}
-						return content;
-					}
-					if (!tool.execute) {
-						throw new Error(
-							`tool "${name}" has no direct execute path and cannot be used from yard`,
-						);
-					}
-					return tool.execute(args as Record<string, unknown>);
-				};
+						return tool.execute(args as Record<string, unknown>);
+					};
 
-				// Nested yard is orchestration, not leaf work — no permit, so a
-				// suspended parent can never hold a permit its child needs.
-				const isNestedYard = name === "yard";
-				if (!isNestedYard) await scope.semaphore.acquire();
-				try {
-					const raw = await raceDeadline(Promise.resolve(execute()), scope, `tool "${name}"`);
-					let content: string;
-					if (typeof raw === "string") {
-						content = raw;
-					} else if (Array.isArray(raw)) {
-						content = JSON.stringify(raw);
-					} else if (raw !== null && typeof raw === "object" && "deferred" in raw) {
-						throw new Error(`tool "${name}" defers to background work; not usable from yard`);
-					} else if (raw !== null && typeof raw === "object" && "content" in raw) {
-						const inner = (raw as { content: unknown }).content;
-						content = typeof inner === "string" ? inner : JSON.stringify(inner);
-					} else {
-						content = String(raw);
-					}
-					if (content.startsWith("Error:")) throw new Error(content);
-					// Give the guest structured data when the tool returned JSON,
-					// else the raw string — same information a direct call yields.
+					// Nested yard is orchestration, not leaf work — no permit, so a
+					// suspended parent can never hold a permit its child needs.
+					const isNestedYard = name === "yard";
+					if (!isNestedYard) await scope.semaphore.acquire();
 					try {
-						return JSON.parse(content);
-					} catch {
-						return content;
+						const raw = await raceDeadline(Promise.resolve(execute()), scope, `tool "${name}"`);
+						let content: string;
+						if (typeof raw === "string") {
+							content = raw;
+						} else if (Array.isArray(raw)) {
+							content = JSON.stringify(raw);
+						} else if (raw !== null && typeof raw === "object" && "deferred" in raw) {
+							throw new Error(`tool "${name}" defers to background work; not usable from yard`);
+						} else if (raw !== null && typeof raw === "object" && "content" in raw) {
+							const inner = (raw as { content: unknown }).content;
+							content = typeof inner === "string" ? inner : JSON.stringify(inner);
+						} else {
+							content = String(raw);
+						}
+						if (content.startsWith("Error:")) throw new Error(content);
+						// Give the guest structured data when the tool returned JSON,
+						// else the raw string — same information a direct call yields.
+						try {
+							return JSON.parse(content);
+						} catch {
+							return content;
+						}
+					} finally {
+						if (!isNestedYard) scope.semaphore.release();
 					}
-				} finally {
-					if (!isNestedYard) scope.semaphore.release();
-				}
-			});
+				},
+			);
 		},
 
 		dispatchInference(model: string, request: YardInferenceRequest): Promise<unknown> {
 			return withEffectSpan(
+				ctx,
+				scope,
+				{ kind: "inference", model },
 				{ "yard.effect.kind": "inference", "yard.effect.model": model },
 				async () => {
 					if (!ctx.modelRouter) throw new Error("yard has no model router wired on this host");
@@ -545,6 +630,19 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 	// yard tree. scope.traceId ties the whole tree together; run_id is this
 	// run's own identity.
 	const runId = randomUUID();
+	scope.runId = runId;
+	const parentId = yardNodeStorage.getStore() ?? null;
+	const runNode: YardExecutionNode = { kind: "run", depth: scope.depth };
+	emitLifecycle(ctx, scope, {
+		run_id: runId,
+		node_id: runId,
+		parent_id: parentId,
+		phase: "started",
+		node: runNode,
+		started_at: new Date().toISOString(),
+		input_preview: preview(params.input),
+		...(scope.depth === 0 && scope.toolCallId ? { tool_call_id: scope.toolCallId } : {}),
+	});
 	const span = getTracer().startSpan(
 		"yard.run",
 		{
@@ -561,44 +659,65 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 		otelContext.active(),
 	);
 	try {
-		return await otelContext.with(trace.setSpan(otelContext.active(), span), async () => {
-			try {
-				const out = await runYardProgram({
-					program: params.program,
-					input: params.input as JsonValue | undefined,
-					host,
-				});
-				out.usage.inference_tokens += counters.inferenceTokens;
-				span.setAttributes({
-					"yard.tool_calls": out.usage.tool_calls,
-					"yard.inference_calls": out.usage.inference_calls,
-					"yard.inference_tokens": out.usage.inference_tokens,
-					"yard.status": "completed",
-					"yard.result_hash": hash16(JSON.stringify(out.result)),
-				});
-				ctx.logger.info("[yard] run completed", {
-					traceId: scope.traceId,
-					runId,
-					depth: scope.depth,
-					toolCalls: out.usage.tool_calls,
-					inferenceCalls: out.usage.inference_calls,
-					inferenceTokens: out.usage.inference_tokens,
-					elapsedMs: out.usage.elapsed_ms,
-				});
-				return JSON.stringify({ result: out.result, trace_id: scope.traceId, usage: out.usage });
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				span.setAttribute("yard.status", "failed");
-				ctx.logger.info("[yard] run failed", {
-					traceId: scope.traceId,
-					runId,
-					depth: scope.depth,
-					elapsedMs: Date.now() - startedAt,
-					error: message,
-				});
-				return message.startsWith("Error:") ? message : `Error: ${message}`;
-			}
-		});
+		return await yardNodeStorage.run(runId, () =>
+			otelContext.with(trace.setSpan(otelContext.active(), span), async () => {
+				try {
+					const out = await runYardProgram({
+						program: params.program,
+						input: params.input as JsonValue | undefined,
+						host,
+					});
+					out.usage.inference_tokens += counters.inferenceTokens;
+					span.setAttributes({
+						"yard.tool_calls": out.usage.tool_calls,
+						"yard.inference_calls": out.usage.inference_calls,
+						"yard.inference_tokens": out.usage.inference_tokens,
+						"yard.status": "completed",
+						"yard.result_hash": hash16(JSON.stringify(out.result)),
+					});
+					emitLifecycle(ctx, scope, {
+						run_id: runId,
+						node_id: runId,
+						parent_id: parentId,
+						phase: "completed",
+						node: runNode,
+						finished_at: new Date().toISOString(),
+						result_preview: preview(out.result),
+						summary: `${out.usage.tool_calls} tools · ${out.usage.inference_calls} inferences`,
+					});
+					ctx.logger.info("[yard] run completed", {
+						traceId: scope.traceId,
+						runId,
+						depth: scope.depth,
+						toolCalls: out.usage.tool_calls,
+						inferenceCalls: out.usage.inference_calls,
+						inferenceTokens: out.usage.inference_tokens,
+						elapsedMs: out.usage.elapsed_ms,
+					});
+					return JSON.stringify({ result: out.result, trace_id: scope.traceId, usage: out.usage });
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					span.setAttribute("yard.status", "failed");
+					emitLifecycle(ctx, scope, {
+						run_id: runId,
+						node_id: runId,
+						parent_id: parentId,
+						phase: "failed",
+						node: runNode,
+						finished_at: new Date().toISOString(),
+						summary: message.slice(0, 500),
+					});
+					ctx.logger.info("[yard] run failed", {
+						traceId: scope.traceId,
+						runId,
+						depth: scope.depth,
+						elapsedMs: Date.now() - startedAt,
+						error: message,
+					});
+					return message.startsWith("Error:") ? message : `Error: ${message}`;
+				}
+			}),
+		);
 	} finally {
 		span.end();
 	}
@@ -617,7 +736,7 @@ export function createYardTool(ctx: ToolContext): RegisteredTool {
 				parameters: jsonSchema,
 			},
 		},
-		execute: async (input: Record<string, unknown>) => {
+		execute: async (input: Record<string, unknown>, callId?: string) => {
 			const parsed = parseToolInput(yardSchema, input, "yard");
 			if (!parsed.ok) return parsed.error;
 			if (!ctx.getToolRegistry?.()) {
@@ -657,6 +776,8 @@ export function createYardTool(ctx: ToolContext): RegisteredTool {
 				depth: 0,
 				traceId: randomUUID(),
 				concurrency: budget.concurrency,
+				sequence: { value: 0 },
+				toolCallId: callId,
 				abort,
 			};
 			try {

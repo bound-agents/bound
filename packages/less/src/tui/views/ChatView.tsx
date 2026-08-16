@@ -13,6 +13,7 @@ import {
 	StatusBar,
 	TextInput,
 	ToolCallCard,
+	YardExecutionCard,
 	computeStdoutRowBudget,
 } from "../components";
 import {
@@ -24,6 +25,7 @@ import {
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { type YardTreeSnapshot, useYardExecutions } from "../hooks/useYardExecutions";
 import { readClipboardImage } from "../util/clipboard-image";
 import { renderHalfBlocks } from "../util/half-blocks";
 import {
@@ -332,7 +334,8 @@ export function buildTurnActivityMap(messages: Message[]): Map<string, string> {
  */
 type SplashItem = { kind: "splash" };
 type MessageItem = { kind: "message"; msg: Message };
-type StaticItem = SplashItem | MessageItem;
+type YardItem = { kind: "yard"; msgId: string; snapshot: YardTreeSnapshot };
+type StaticItem = SplashItem | MessageItem | YardItem;
 
 /**
  * Module-scoped sentinel so its identity is stable across renders. The Static
@@ -416,7 +419,7 @@ export interface ChatViewProps {
  * (input, status, tool cards) is redrawn by Ink as needed.
  */
 export function ChatView({
-	client: _client,
+	client,
 	threadId,
 	model,
 	connectionState,
@@ -450,10 +453,11 @@ export function ChatView({
 		label: string;
 		preview: string[];
 	} | null>(null);
+	const yardExecutions = useYardExecutions(client, threadId);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
 	// Live HUD: context-window gauge (context:debug events) + cluster spend
 	// (spoke-local /api/metrics over the synced turns table).
-	const hud = useSessionHud(_client, threadId);
+	const hud = useSessionHud(client, threadId);
 	const { stdout } = useStdout();
 	// Repaint nonce: bumped on a width change to force <Static> to remount and
 	// re-emit every committed item at the new width. See resizeRedraw.ts for the
@@ -520,10 +524,25 @@ export function ChatView({
 	// the desired behavior. Committed messages always append at the tail, so the
 	// appended-only invariant holds. The pending placeholder is deliberately
 	// excluded — Static can never repaint an in-place reconciliation (#134).
-	const staticItems = useMemo<StaticItem[]>(
-		() => [SPLASH_ITEM, ...committed.map((msg): StaticItem => ({ kind: "message", msg }))],
-		[committed],
-	);
+	const staticItems = useMemo<StaticItem[]>(() => {
+		const completedByCall = new Map(
+			yardExecutions.completed
+				.filter((tree): tree is YardTreeSnapshot & { toolCallId: string } =>
+					Boolean(tree.toolCallId),
+				)
+				.map((tree) => [tree.toolCallId, tree]),
+		);
+		return [
+			SPLASH_ITEM,
+			...committed.map((msg): StaticItem => {
+				const snapshot =
+					msg.role === "tool_result" && msg.tool_name
+						? completedByCall.get(msg.tool_name)
+						: undefined;
+				return snapshot ? { kind: "yard", msgId: msg.id, snapshot } : { kind: "message", msg };
+			}),
+		];
+	}, [committed, yardExecutions.completed]);
 	// Account for the rounded input frame: 2 cols of border + 2 cols of
 	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
 	// input. Off-by-one here makes the explicit \n breaks emitted by
@@ -689,6 +708,13 @@ export function ChatView({
 								</Box>
 							);
 						}
+						if (item.kind === "yard") {
+							return (
+								<Box key={`yard:${item.msgId}`} marginBottom={1}>
+									<YardExecutionCard tree={item.snapshot} />
+								</Box>
+							);
+						}
 						const msg = item.msg;
 						const meta = toolResultMeta.get(msg.id);
 						// Margins come from buildTranscriptMargins: tool groups render
@@ -723,6 +749,11 @@ export function ChatView({
 					{/* A compact read/search run carries no bottom margin (its rows
 					    stack); supply the turn-separating gap before the dynamic area. */}
 					{layout.endsInCompactRun && <Box height={1} />}
+					{yardExecutions.live.map((tree) => (
+						<Box key={`yard-live:${tree.traceId}:${tree.runId}`} marginBottom={1}>
+							<YardExecutionCard tree={tree} running />
+						</Box>
+					))}
 					{/* Banners */}
 					{bannerMessage && bannerType && (
 						<Box marginBottom={1}>
