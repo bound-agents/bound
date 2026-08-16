@@ -90,6 +90,13 @@ describe("createYardTool", () => {
 		// to steer programs to all() for concurrency instead.
 		expect(description).toContain("background");
 		expect(description).toMatch(/background:\s*true.*(reject|fail|not)/i);
+		// Examples lead with successful production patterns: concurrent specialist
+		// review and compact synthesis from parallel effect output.
+		expect(description).toContain("concurrent specialist reviews");
+		expect(description).toContain('aux("pricing-skeptic"');
+		expect(description).toContain('aux("yard-ui-scout"');
+		expect(description).toMatch(/synthesize a compact decision artifact/i);
+		expect(description).not.toContain('tool("bms_read"');
 	});
 
 	it("runs a pure program and returns result + usage + trace_id", async () => {

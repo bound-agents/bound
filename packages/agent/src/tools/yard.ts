@@ -298,38 +298,47 @@ The \`program\` must define \`function* main(input) { ... }\` and return a JSON-
 
 Constructors do not execute work. \`yield\` an effect to suspend the generator; Yard dispatches it and resumes the generator with its result. A failed effect is thrown into the generator as a catchable Error. Plain effect-shaped objects are rejected — only the constructors above create dispatchable effects. All values crossing the boundary must be JSON-compatible.
 
-Example — call a tool, then classify results in parallel:
+Example — run concurrent specialist reviews, then synthesize their findings:
 
 \`\`\`js
 function* main(input) {
-  const hits = yield tool("bms_search", {
-    pattern: input.pattern,
-    path: input.path,
+  const reviews = yield all([
+    aux("pricing-skeptic", input.pricing_question, { model: input.model }),
+    aux("yard-ui-scout", input.ui_question, { model: input.model }),
+  ], { concurrency: 2, errors: "settled" });
+
+  const synthesis = yield infer(input.model, {
+    prompt: "Synthesize a compact decision artifact. Preserve disagreements and name the next implementation slice.",
+    input: reviews,
+    schema: {
+      type: "object",
+      properties: {
+        decision: { type: "string" },
+        risks: { type: "array", items: { type: "string" } },
+        next_slice: { type: "string" },
+      },
+      required: ["decision", "risks", "next_slice"],
+    },
   });
-  const findings = yield all(
-    hits.map(hit => infer(input.model, {
-      prompt: "Classify this match.",
-      input: hit,
-      schema: input.schema,
-    })),
-    { concurrency: 8 },
-  );
-  return findings.filter(x => x.confidence >= 0.75);
+  return { reviews, synthesis };
 }
 \`\`\`
 
-Example — delegate, write, and return a compact result:
+Example — fan out independent evidence gathering, then return only the useful synthesis:
 
 \`\`\`js
 function* main(input) {
-  const review = yield aux("skeptic", input.instructions, {
-    model: input.model,
-  });
-  yield tool("bms_write", {
-    path: input.output_path,
-    content: review,
-  });
-  return { path: input.output_path, review };
+  const evidence = yield all([
+    tool("boundless_search", { pattern: input.pattern, path: input.path }),
+    tool("query", { sql: input.sql }),
+    tool("hostinfo", {}),
+  ], { concurrency: 3, errors: "settled" });
+
+  return evidence.map((entry, index) => ({
+    source: ["checkout", "database", "cluster"][index],
+    status: entry.status,
+    finding: entry.status === "fulfilled" ? entry.value : entry.reason,
+  }));
 }
 \`\`\`
 
