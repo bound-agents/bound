@@ -271,22 +271,31 @@ function repairPass(messages: ReadonlyArray<Message>, threadId: string, nowIso: 
 				inActiveToolCall = false;
 				sanitized.push(msg);
 				prevSanitizedRole = "tool_result";
-			} else if (prevSanitizedRole === "tool_result") {
-				if (lastSyntheticToolCall) {
-					const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
-					try {
-						const blocks = JSON.parse(lastSyntheticToolCall.content);
-						if (Array.isArray(blocks) && !blocks.some((b: { id?: string }) => b.id === toolUseId)) {
-							blocks.push({ type: "tool_use", id: toolUseId, name: "unknown", input: {} });
-							lastSyntheticToolCall.content = JSON.stringify(blocks);
-						}
-					} catch {
-						// Non-parseable synthetic content — shouldn't happen.
+			} else if (prevSanitizedRole === "tool_result" && lastSyntheticToolCall) {
+				// Consecutive orphans for the same multi-tool call: extend the
+				// prior synthetic tool_call's content rather than emit a new
+				// synthetic for each.
+				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
+				try {
+					const blocks = JSON.parse(lastSyntheticToolCall.content);
+					if (Array.isArray(blocks) && !blocks.some((b: { id?: string }) => b.id === toolUseId)) {
+						blocks.push({ type: "tool_use", id: toolUseId, name: "unknown", input: {} });
+						lastSyntheticToolCall.content = JSON.stringify(blocks);
 					}
+				} catch {
+					// Non-parseable synthetic content — shouldn't happen.
 				}
 				sanitized.push(msg);
 				// prevSanitizedRole stays "tool_result"
 			} else {
+				// Orphan with no synthetic parent to extend. This INCLUDES an
+				// orphan landing directly after a REAL, fully-closed tool pair
+				// (prevSanitizedRole === "tool_result" but lastSyntheticToolCall
+				// is null): pushing it bare violated post-condition T3, and the
+				// Stage 5 annotator's fallback then stamped it with the last real
+				// call's tool_use id — duplicate tool_result ids on the wire
+				// (incident thread adb65d85, 2026-08-16). Synthesize a declaring
+				// tool_call instead.
 				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
 				const syntheticMsg: Message = {
 					id: `synthetic-${msg.id}`,

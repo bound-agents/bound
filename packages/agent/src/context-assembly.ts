@@ -84,6 +84,7 @@ import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 import { collectThreadPinnedSkills } from "./tools/skill-utils";
 import { buildVaryingPrefix } from "./varying-prefix";
+import { isYardClientBookkeepingRow } from "./yard-client-rows";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -1419,7 +1420,11 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 			MESSAGE_LOAD_HARD_CEILING,
 		);
 		rows.reverse();
-		messages.push(...rows);
+		// Yard client-dispatch bookkeeping rows (tool_name `yard-client-<uuid>`)
+		// have no declaring tool_call and their content already rides inside the
+		// aggregate yard tool_result — see yard-client-rows.ts for the incident
+		// this prevents (duplicate tool_result ids on the wire).
+		messages.push(...rows.filter((row) => !isYardClientBookkeepingRow(row)));
 	} else if (params.taskId) {
 		// noHistory tasks still need the current run's injected messages (wakeup +
 		// synthetic tool_call/tool_result). Load messages created at or after the
@@ -1427,7 +1432,7 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		const task = findTaskClaimedAtById(db, params.taskId);
 		if (task?.claimed_at) {
 			const rows = listLiveMessageProjectionByThreadSince(db, threadId, task.claimed_at);
-			messages.push(...rows);
+			messages.push(...rows.filter((row) => !isYardClientBookkeepingRow(row)));
 		}
 	}
 	stage1Span.setAttribute("message_count", messages.length);

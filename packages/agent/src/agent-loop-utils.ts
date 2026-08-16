@@ -17,6 +17,7 @@ import { calculateDynamicPrice } from "./dynamic-pricing";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
 import type { RegisteredTool } from "./types";
+import { isYardClientBookkeepingRow } from "./yard-client-rows";
 
 const logger = createLogger("@bound/agent", "agent-loop-utils");
 const warnedDynamicPricingFallbacks = new Set<string>();
@@ -657,6 +658,12 @@ export function convertDeltaMessages(rows: DbMessageRow[]): LLMMessage[] {
 	let toolCallSeen = false;
 
 	for (const row of rows) {
+		// Yard client-dispatch bookkeeping rows have no declaring tool_call and
+		// their content already rides inside the aggregate yard tool_result.
+		// Skipping BEFORE conversion leaves lastRole/toolCallSeen untouched, so a
+		// parallel batch interleaved with bookkeeping rows stays intact. Mirrors
+		// cold Stage 1 and the delegation codec — see yard-client-rows.ts.
+		if (isYardClientBookkeepingRow(row)) continue;
 		const msg = convertDbRowToLLMMessage(row, lastRole, toolCallSeen);
 		if (msg) {
 			messages.push(msg);
