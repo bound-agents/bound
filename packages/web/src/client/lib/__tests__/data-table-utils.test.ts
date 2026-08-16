@@ -1,259 +1,114 @@
 import { describe, expect, it } from "bun:test";
+import fc from "fast-check";
 import { sortRows } from "../data-table-utils";
 
+type Row = { id: number; value?: string | number | null };
+
+const textValueArb = fc.string({ maxLength: 20 });
+const valueArb = fc.option(fc.oneof(textValueArb, fc.integer()), { nil: undefined });
+
+function compareValues(a: string | number, b: string | number): number {
+	if (typeof a === "string" && typeof b === "string") {
+		return a.localeCompare(b, undefined, { sensitivity: "base" });
+	}
+	if (typeof a === "number" && typeof b === "number") return a - b;
+	return String(a).localeCompare(String(b), undefined, { sensitivity: "base" });
+}
+
 describe("sortRows", () => {
-	describe("string sorting", () => {
-		it("sorts strings ascending", () => {
-			const rows = [
-				{ id: "1", name: "zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-			];
+	it("sorts a representative mixed table case", () => {
+		const rows = [
+			{ id: "1", name: "Zebra" },
+			{ id: "2", name: "apple" },
+			{ id: "3", name: null },
+			{ id: "4", name: "BANANA" },
+		];
 
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-				{ id: "1", name: "zebra" },
-			]);
-		});
-
-		it("sorts strings descending", () => {
-			const rows = [
-				{ id: "1", name: "zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-			];
-
-			const result = sortRows(rows, "name", "desc");
-
-			expect(result).toEqual([
-				{ id: "1", name: "zebra" },
-				{ id: "3", name: "banana" },
-				{ id: "2", name: "apple" },
-			]);
-		});
-
-		it("sorts strings case-insensitively", () => {
-			const rows = [
-				{ id: "1", name: "Zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "BANANA" },
-			];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "BANANA" },
-				{ id: "1", name: "Zebra" },
-			]);
-		});
+		expect(sortRows(rows, "name", "asc")).toEqual([
+			{ id: "2", name: "apple" },
+			{ id: "4", name: "BANANA" },
+			{ id: "1", name: "Zebra" },
+			{ id: "3", name: null },
+		]);
 	});
 
-	describe("number sorting", () => {
-		it("sorts numbers ascending", () => {
-			const rows = [
-				{ id: "1", count: 100 },
-				{ id: "2", count: 5 },
-				{ id: "3", count: 50 },
-			];
+	it("preserves the input and returns a permutation with defined values ordered before nullish values", () => {
+		fc.assert(
+			fc.property(
+				fc.array(valueArb, { maxLength: 50 }),
+				fc.constantFrom("asc", "desc"),
+				(values, dir) => {
+					const rows: Row[] = values.map((value, id) =>
+						value === undefined ? { id } : { id, value },
+					);
+					const original = structuredClone(rows);
+					const sorted = sortRows(rows, "value", dir) as Row[];
+					if (sorted === rows || JSON.stringify(rows) !== JSON.stringify(original)) return false;
+					if (sorted.length !== rows.length) return false;
+					if (new Set(sorted.map((row) => row.id)).size !== sorted.length) return false;
+					if (!rows.every((row) => sorted.includes(row))) return false;
 
-			const result = sortRows(rows, "count", "asc");
+					const firstNullish = sorted.findIndex(
+						(row) => row.value === null || row.value === undefined,
+					);
+					if (
+						firstNullish !== -1 &&
+						sorted.slice(firstNullish).some((row) => row.value !== null && row.value !== undefined)
+					)
+						return false;
 
-			expect(result).toEqual([
-				{ id: "2", count: 5 },
-				{ id: "3", count: 50 },
-				{ id: "1", count: 100 },
-			]);
-		});
-
-		it("sorts numbers descending", () => {
-			const rows = [
-				{ id: "1", count: 100 },
-				{ id: "2", count: 5 },
-				{ id: "3", count: 50 },
-			];
-
-			const result = sortRows(rows, "count", "desc");
-
-			expect(result).toEqual([
-				{ id: "1", count: 100 },
-				{ id: "3", count: 50 },
-				{ id: "2", count: 5 },
-			]);
-		});
-
-		it("sorts negative numbers correctly", () => {
-			const rows = [
-				{ id: "1", value: 10 },
-				{ id: "2", value: -5 },
-				{ id: "3", value: 0 },
-			];
-
-			const result = sortRows(rows, "value", "asc");
-
-			expect(result).toEqual([
-				{ id: "2", value: -5 },
-				{ id: "3", value: 0 },
-				{ id: "1", value: 10 },
-			]);
-		});
+					const defined = sorted.filter(
+						(row): row is Row & { value: string | number } =>
+							row.value !== null && row.value !== undefined,
+					);
+					return defined.every((row, index) => {
+						if (index === 0) return true;
+						const comparison = compareValues(defined[index - 1].value, row.value);
+						return dir === "asc" ? comparison <= 0 : comparison >= 0;
+					});
+				},
+			),
+			{ numRuns: 200 },
+		);
 	});
 
-	describe("null values", () => {
-		it("sorts null values to end in ascending order", () => {
-			const rows = [
-				{ id: "1", name: "alice" },
-				{ id: "2", name: null },
-				{ id: "3", name: "bob" },
-			];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([
-				{ id: "1", name: "alice" },
-				{ id: "3", name: "bob" },
-				{ id: "2", name: null },
-			]);
-		});
-
-		it("sorts null values to end in descending order", () => {
-			const rows = [
-				{ id: "1", name: "alice" },
-				{ id: "2", name: null },
-				{ id: "3", name: "bob" },
-			];
-
-			const result = sortRows(rows, "name", "desc");
-
-			expect(result).toEqual([
-				{ id: "3", name: "bob" },
-				{ id: "1", name: "alice" },
-				{ id: "2", name: null },
-			]);
-		});
-
-		it("keeps multiple nulls at end preserving original order", () => {
-			const rows = [
-				{ id: "1", name: null },
-				{ id: "2", name: "alice" },
-				{ id: "3", name: null },
-			];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([
-				{ id: "2", name: "alice" },
-				{ id: "1", name: null },
-				{ id: "3", name: null },
-			]);
-		});
+	it("keeps equal and nullish values stable", () => {
+		fc.assert(
+			fc.property(
+				fc.array(fc.option(textValueArb, { nil: null }), { maxLength: 50 }),
+				fc.constantFrom("asc", "desc"),
+				(values, dir) => {
+					const rows = values.map((value, id) => ({ id, value }));
+					const sorted = sortRows(rows, "value", dir) as Array<{
+						id: number;
+						value: string | null;
+					}>;
+					for (let i = 0; i < sorted.length; i++) {
+						for (let j = i + 1; j < sorted.length; j++) {
+							if (sorted[i].value === sorted[j].value && sorted[i].id > sorted[j].id) return false;
+						}
+					}
+					return true;
+				},
+			),
+			{ numRuns: 200 },
+		);
 	});
 
-	describe("no sort key", () => {
-		it("returns original order when sortKey is null", () => {
-			const rows = [
-				{ id: "1", name: "zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-			];
-
-			const result = sortRows(rows, null, "asc");
-
-			expect(result).toEqual([
-				{ id: "1", name: "zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-			]);
-		});
-
-		it("returns original order when sortKey is undefined", () => {
-			const rows = [
-				{ id: "1", count: 100 },
-				{ id: "2", count: 5 },
-				{ id: "3", count: 50 },
-			];
-
-			const result = sortRows(rows, undefined, "asc");
-
-			expect(result).toEqual([
-				{ id: "1", count: 100 },
-				{ id: "2", count: 5 },
-				{ id: "3", count: 50 },
-			]);
-		});
-	});
-
-	describe("immutability", () => {
-		it("does not mutate input array", () => {
-			const rows = [
-				{ id: "1", name: "zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-			];
-			const original = [...rows];
-
-			sortRows(rows, "name", "asc");
-
-			expect(rows).toEqual(original);
-		});
-
-		it("returns a new array", () => {
-			const rows = [
-				{ id: "1", name: "zebra" },
-				{ id: "2", name: "apple" },
-				{ id: "3", name: "banana" },
-			];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).not.toBe(rows);
-		});
-	});
-
-	describe("edge cases", () => {
-		it("handles empty array", () => {
-			const rows: Record<string, unknown>[] = [];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([]);
-		});
-
-		it("handles single row", () => {
-			const rows = [{ id: "1", name: "alice" }];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([{ id: "1", name: "alice" }]);
-		});
-
-		it("handles rows with missing sort key property", () => {
-			const rows = [{ id: "1", name: "alice" }, { id: "2" }, { id: "3", name: "bob" }];
-
-			const result = sortRows(rows, "name", "asc");
-
-			expect(result).toEqual([{ id: "1", name: "alice" }, { id: "3", name: "bob" }, { id: "2" }]);
-		});
-
-		it("maintains stable sort for equal values", () => {
-			const rows = [
-				{ id: "1", priority: 1 },
-				{ id: "2", priority: 2 },
-				{ id: "3", priority: 1 },
-				{ id: "4", priority: 2 },
-			];
-
-			const result = sortRows(rows, "priority", "asc");
-
-			expect(result).toEqual([
-				{ id: "1", priority: 1 },
-				{ id: "3", priority: 1 },
-				{ id: "2", priority: 2 },
-				{ id: "4", priority: 2 },
-			]);
-		});
+	it("returns a copied, unchanged sequence when sorting is disabled", () => {
+		fc.assert(
+			fc.property(
+				fc.array(valueArb, { maxLength: 50 }),
+				fc.constantFrom(null, undefined),
+				(values, key) => {
+					const rows: Row[] = values.map((value, id) =>
+						value === undefined ? { id } : { id, value },
+					);
+					const result = sortRows(rows, key, "asc");
+					return result !== rows && JSON.stringify(result) === JSON.stringify(rows);
+				},
+			),
+			{ numRuns: 100 },
+		);
 	});
 });
