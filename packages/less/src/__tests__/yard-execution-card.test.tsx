@@ -138,12 +138,14 @@ describe("YardExecutionCard", () => {
 
 	// Regression (thread adb65d85, 2026-08-16): yard.ts's preview() ships up to
 	// 4,000 chars INCLUDING newlines in input_preview/result_preview. Rendering
-	// them raw made the live card taller than the terminal on long inputs and
-	// corrupted the Ink repaint (cards "badly broken… tied to certain input
-	// lengths"). The card must clamp every preview/summary to one bounded line.
-	it("clamps multi-line and oversized previews to a single bounded line", () => {
+	// them raw made the LIVE card taller than the terminal and corrupted the
+	// Ink repaint. The live (running) card must clamp every preview to one
+	// bounded line — the committed card is exempt (it renders once into
+	// <Static> scrollback, where height is harmless).
+	it("clamps previews to a single bounded line while running", () => {
 		const noisy: YardTreeSnapshot = {
 			...tree,
+			phase: "started",
 			inputPreview: `{\n  "sql": "SELECT 1",\n  "path": "a/b"\n}`,
 			resultPreview: `line one\n… truncated 90000 chars …\n${"x".repeat(3000)}`,
 			nodes: [
@@ -154,16 +156,19 @@ describe("YardExecutionCard", () => {
 					node: { kind: "tool", name: "boundless_bash" },
 					phase: "completed",
 					seq: 4,
+					startSeq: 4,
 					summary: "multi\nline\nsummary",
 				},
 			],
 		};
-		const { lastFrame } = render(React.createElement(YardExecutionCard, { tree: noisy }));
+		const { lastFrame } = render(
+			React.createElement(YardExecutionCard, { tree: noisy, running: true }),
+		);
 		const frame = lastFrame() ?? "";
 
 		// Newlines in previews/summaries must not survive into the frame as
-		// extra rows: the card's height must stay bounded by its line count
-		// (header + input + 3 leaves + result + 2 border rows).
+		// extra rows: the live card's height must stay bounded by its node
+		// count (header + input + 4 leaves + 2 border rows).
 		const rows = frame.split("\n");
 		expect(rows.length).toBeLessThanOrEqual(9);
 
@@ -174,5 +179,29 @@ describe("YardExecutionCard", () => {
 
 		// The clamped input still shows its head so the card stays informative.
 		expect(frame).toContain('"sql": "SELECT 1"');
+	});
+
+	// Complaint (thread f1373e45, 2026-08-16): "it heavily truncates things".
+	// The committed card renders ONCE into <Static> scrollback — tall content
+	// there is harmless (message blocks are tall all the time), so the full
+	// input and result previews must survive, wrapped, not elided to 160
+	// chars. Leaf summaries stay clamped (the full content lives in the
+	// persisted yard rows).
+	it("renders full input and result previews on the committed card", () => {
+		const detailed: YardTreeSnapshot = {
+			...tree,
+			inputPreview: `{\n  "cwd": "/repo",\n  "model": "gpt-5.6-terra"\n}`,
+			resultPreview: `{"work":"first-line\nsecond-line ${"y".repeat(400)}"}`,
+		};
+		const { lastFrame } = render(React.createElement(YardExecutionCard, { tree: detailed }));
+		const frame = lastFrame() ?? "";
+
+		// Multi-line input survives intact.
+		expect(frame).toContain('"model": "gpt-5.6-terra"');
+		// The whole result body reaches the frame (wrapped, never elided) —
+		// count the payload chars rather than matching a token that hard-wrap
+		// could split across rows.
+		expect((frame.match(/y/g) ?? []).length).toBeGreaterThanOrEqual(400);
+		expect(frame).toContain("first-line");
 	});
 });

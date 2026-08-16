@@ -1,6 +1,6 @@
 import type { BoundClient, ConnectionState } from "@bound/client";
 import type { ContentBlock } from "@bound/llm";
-import type { Message } from "@bound/shared";
+import { type Message, YARD_CLIENT_CALL_ID_PREFIX } from "@bound/shared";
 import { Box, Static, Text, useStdout } from "ink";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -801,8 +801,14 @@ export function ChatView({
 					    the whole dynamic region stays under the viewport — otherwise
 					    Ink's `outputHeight >= rows` branch strands the spinner card in
 					    scrollback (see computeStdoutRowBudget). */}
-					{Array.from(inFlightTools.entries()).map(
-						([callId, { toolName, startTime, stdout, args }]) => (
+					{Array.from(inFlightTools.entries())
+						/* Yard-dispatched client tools (call id `yard-client-*`) already
+						   render as nodes on the live Yard execution card — a second
+						   streaming card underneath it would show the same effect twice
+						   and stream its stdout outside the graph. Suppress them here;
+						   directly-dispatched tools keep their cards. */
+						.filter(([callId]) => !callId.startsWith(YARD_CLIENT_CALL_ID_PREFIX))
+						.map(([callId, { toolName, startTime, stdout, args }]) => (
 							<Box key={callId} marginBottom={1}>
 								<ToolCallCard
 									toolName={toolName}
@@ -813,8 +819,7 @@ export function ChatView({
 									maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
 								/>
 							</Box>
-						),
-					)}
+						))}
 
 					{/* Processing indicator */}
 					{isProcessing && inFlightTools.size === 0 && (

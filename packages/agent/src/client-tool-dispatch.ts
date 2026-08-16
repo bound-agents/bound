@@ -11,6 +11,7 @@ import {
 import {
 	type ClientToolPayload,
 	type TypedEventEmitter,
+	YARD_CLIENT_CALL_ID_PREFIX,
 	clientResultPayloadSchema,
 	errorPayloadSchema,
 	parseJsonSafe,
@@ -178,7 +179,7 @@ function waitForRemoteResult(
 export async function dispatchAwaitableClientTool(
 	deps: AwaitableClientToolDeps,
 ): Promise<AwaitableClientToolResult | null> {
-	const callId = `yard-client-${randomUUID()}`;
+	const callId = `${YARD_CLIENT_CALL_ID_PREFIX}${randomUUID()}`;
 	if (deps.connectionId) {
 		const entryId = enqueueClientToolCall(
 			deps.db,
