@@ -121,13 +121,15 @@ corpus-scale intermediates outside conversation history. The `program` defines
 `function* main(input)` and yields branded effects — `tool(name, args)`,
 `infer(modelId, request)`, `aux(name, instructions)`, `all(effects)`,
 `sequence(effects)` — which Yard dispatches through the ordinary tool and
-inference paths, resuming the generator with each result. The guest has no
-ambient I/O; only the final JSON value, usage counts, and a trace id return
-to context. Use it for bulk filter/join/rank/classify work where the
-intermediate data would otherwise flood the context window. Optional `budget`
-(`timeout_seconds`, `concurrency`) bounds the whole recursive tree; nested
-`tool("yard", ...)` calls must omit `budget` and inherit the root limits
-unchanged.
+inference paths, resuming the generator with each result. This includes
+`boundless_*` client tools: Yard dispatches them to the attached WS session
+(or relays to its host), waits inline, and consumes the generated re-wake so a
+second agent loop cannot run the thread. The guest has no ambient I/O; only the
+final JSON value, usage counts, and a trace id return to context. Use it for
+bulk filter/join/rank/classify work where the intermediate data would otherwise
+flood the context window. Optional `budget` (`timeout_seconds`, `concurrency`)
+bounds the whole recursive tree; nested `tool("yard", ...)` calls must omit
+`budget` and inherit the root limits unchanged.
 
 ## Built-in file and sandbox tools
 

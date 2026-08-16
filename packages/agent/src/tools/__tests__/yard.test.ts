@@ -179,25 +179,44 @@ describe("createYardTool", () => {
 		expect(JSON.parse(raw).result).toMatch(/caught:.*no_such_tool/);
 	});
 
-	it("rejects client-kind tools (no execute path from Yard)", async () => {
-		registry.set("boundless_bash", {
+	it("dispatches client-kind tools through the awaitable client runner", async () => {
+		const seen: Array<{ name: string; args: Record<string, unknown> }> = [];
+		ctx.executeClientTool = async (name, args) => {
+			seen.push({ name, args });
+			return { content: '{"path":"README.md","lines":2}', isError: false };
+		};
+		registry.set("boundless_read", {
 			kind: "client",
 			toolDefinition: {
 				type: "function",
-				function: { name: "boundless_bash", description: "x", parameters: {} },
+				function: { name: "boundless_read", description: "x", parameters: {} },
 			},
 		});
 		const raw = await invoke({
 			program: `function* main() {
-				try {
-					yield tool("boundless_bash", { command: "ls" });
-					return "unreachable";
-				} catch (e) {
-					return "caught: " + e.message;
-				}
+				return yield tool("boundless_read", { file_path: "README.md" });
 			}`,
 		});
-		expect(JSON.parse(raw).result).toMatch(/caught:/);
+		expect(JSON.parse(raw).result).toEqual({ path: "README.md", lines: 2 });
+		expect(seen).toEqual([{ name: "boundless_read", args: { file_path: "README.md" } }]);
+	});
+
+	it("throws client-tool errors into the guest generator", async () => {
+		ctx.executeClientTool = async () => ({ content: "Error: denied", isError: true });
+		registry.set("boundless_read", {
+			kind: "client",
+			toolDefinition: {
+				type: "function",
+				function: { name: "boundless_read", description: "x", parameters: {} },
+			},
+		});
+		const raw = await invoke({
+			program: `function* main() {
+				try { yield tool("boundless_read", {}); return "unreachable"; }
+				catch (e) { return e.message; }
+			}`,
+		});
+		expect(JSON.parse(raw).result).toContain("denied");
 	});
 
 	it("dispatches infer() through the model router and counts usage", async () => {
