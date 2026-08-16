@@ -128,9 +128,11 @@ second agent loop cannot run the thread.
 
 Reach for Yard first when independent evidence or specialist judgments can run
 in parallel: fan out synchronous `aux()` reviews with `all()`, then synthesize
-only their decisions, risks, and next slice with `infer()`. It is also useful
-for parallel checkout/database/cluster evidence gathering reduced to one
-compact artifact. Avoid using it for a lone trivial read where the orchestration
+only their decisions, risks, and next slice with `infer()`. It also carries
+implementation work end-to-end — locate a target with `boundless_search`, apply
+the change with `boundless_edit`, and run the verification command in one
+program, returning only the verified outcome. Avoid using it for a lone trivial
+read where the orchestration
 cost adds nothing. The guest has no ambient I/O; only the final JSON value,
 usage counts, and a trace id return to context. Optional `budget`
 (`timeout_seconds`, `concurrency`) bounds the whole recursive tree; nested
