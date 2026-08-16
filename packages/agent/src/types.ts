@@ -93,4 +93,16 @@ export interface ToolContext {
 		stderr?: string;
 		exitCode?: number;
 	}>;
+	/**
+	 * Yard seam for client-kind tools. Executes through the existing local WS
+	 * dispatch or cross-host client_tool/client_result relay and resolves
+	 * inline, consuming the generated tool-result wake so no second agent loop
+	 * runs the same thread.
+	 */
+	executeClientTool?: (
+		name: string,
+		args: Record<string, unknown>,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	) => Promise<{ content: string; isError: boolean } | null>;
 }

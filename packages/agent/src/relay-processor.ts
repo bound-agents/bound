@@ -5,6 +5,7 @@ import {
 	type AppContext,
 	type ThreadExecutor,
 	acknowledgeBatch,
+	acknowledgeToolResultForCall,
 	claimPending,
 	enqueueClientToolCall,
 	enqueueMessage,
@@ -972,6 +973,10 @@ export class RelayProcessor {
 		});
 
 		if (result) {
+			// The WS handler enqueues a local tool-result wake for ordinary agent
+			// continuation. This relay consumer owns continuation upstream, so close
+			// that wake here or the session host starts a detached second loop.
+			acknowledgeToolResultForCall(this.db, payload.thread_id, payload.call_id);
 			this.relayClientResult(entry, payload.call_id, result.content, result.isError);
 		} else {
 			this.logger.warn("[relay] client_tool: timed out waiting for client result", {

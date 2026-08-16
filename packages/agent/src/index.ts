@@ -43,6 +43,7 @@ export {
 	resolveClientSessionHost,
 } from "./delegation";
 export { routeNotificationWakeup, deliverNotificationWakeup } from "./wakeup-routing";
+export { dispatchAwaitableClientTool } from "./client-tool-dispatch";
 
 // Export agent loop
 export { MainAgentLoop } from "./agent-loop";

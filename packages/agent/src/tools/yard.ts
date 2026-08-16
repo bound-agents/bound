@@ -335,10 +335,33 @@ function createYardHost(
 				if (!registry) throw new Error("yard has no tool registry wired on this host");
 				const tool = registry.get(name);
 				if (!tool) throw new Error(`tool "${name}" is not available in the current toolset`);
+				// Client tools are awaitable inside Yard: dispatch through the live
+				// local WS session or relay client_tool/client_result to its host,
+				// then resume this generator with the completed value. The shared
+				// dispatcher consumes the WS handler's generated result wake so no
+				// second agent loop runs this thread.
 				if (tool.kind === "client") {
-					throw new Error(
-						`tool "${name}" is a client tool; client round-trips are not dispatchable from yard`,
+					if (!ctx.executeClientTool) {
+						throw new Error(`tool "${name}" has no client dispatcher wired on this host`);
+					}
+					const remaining = Math.max(1, scope.deadlineAt - Date.now());
+					const resolved = await ctx.executeClientTool(
+						name,
+						args as Record<string, unknown>,
+						remaining,
+						scope.abort.signal,
 					);
+					if (!resolved) {
+						throw new Error(
+							`client tool "${name}" timed out, was cancelled, or has no live session`,
+						);
+					}
+					if (resolved.isError) throw new Error(resolved.content);
+					try {
+						return JSON.parse(resolved.content);
+					} catch {
+						return resolved.content;
+					}
 				}
 
 				// Sandbox-kind registry entries intentionally have no direct execute

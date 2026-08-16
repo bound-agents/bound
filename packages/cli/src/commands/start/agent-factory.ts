@@ -9,6 +9,7 @@ import {
 	MainAgentLoop,
 	createAgentTools,
 	createBuiltInTools,
+	dispatchAwaitableClientTool,
 } from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
@@ -294,6 +295,18 @@ export function createAgentLoopFactory(
 					if (!auxSandbox.exec) throw new Error("sandbox execution not available");
 					return auxSandbox.exec(command, { timeout, cwd });
 				},
+				executeClientTool: (name, args, timeoutMs, signal) =>
+					dispatchAwaitableClientTool({
+						db: appContext.db,
+						eventBus: appContext.eventBus,
+						siteId: appContext.siteId,
+						threadId: params.threadId,
+						toolName: name,
+						args,
+						connectionId: parent.connectionId,
+						timeoutMs,
+						signal,
+					}),
 				getToolRegistry: () => {
 					if (!auxToolRegistry) throw new Error("aux tool registry accessed before construction");
 					return auxToolRegistry;
@@ -551,6 +564,18 @@ export function createAgentLoopFactory(
 				if (!loopSandbox.exec) throw new Error("sandbox execution not available");
 				return loopSandbox.exec(command, { timeout, cwd });
 			},
+			executeClientTool: (name, args, timeoutMs, signal) =>
+				dispatchAwaitableClientTool({
+					db: appContext.db,
+					eventBus: appContext.eventBus,
+					siteId: appContext.siteId,
+					threadId: config.threadId,
+					toolName: name,
+					args,
+					connectionId: config.connectionId,
+					timeoutMs,
+					signal,
+				}),
 			getToolRegistry: () => {
 				if (!toolRegistry) throw new Error("tool registry accessed before construction");
 				return toolRegistry;
