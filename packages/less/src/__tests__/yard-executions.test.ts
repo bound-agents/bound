@@ -86,4 +86,100 @@ describe("reduceYardExecution", () => {
 		const stale = reduceYardExecution(state, event({ seq: 1, phase: "failed" }));
 		expect(stale).toBe(state);
 	});
+
+	// A nested yard() call opens its own run with a fresh run_id but the SAME
+	// trace_id, parented under the dispatching tool effect. It is one
+	// execution tree and must fold into one card — not surface as a second
+	// disconnected live tree.
+	it("folds a nested run into its parent tree by trace_id", () => {
+		let state = reduceYardExecution(EMPTY_YARD_STATE, event());
+		state = reduceYardExecution(
+			state,
+			event({
+				node_id: "eff-yard",
+				parent_id: "run-1",
+				seq: 2,
+				node: { kind: "tool", name: "yard" },
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				run_id: "run-2",
+				node_id: "run-2",
+				parent_id: "eff-yard",
+				seq: 3,
+				node: { kind: "run", depth: 1 },
+				input_preview: '{"nested":true}',
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				run_id: "run-2",
+				node_id: "eff-inner",
+				parent_id: "run-2",
+				seq: 4,
+				node: { kind: "tool", name: "boundless_bash" },
+			}),
+		);
+
+		expect(state.live.size).toBe(1);
+		const tree = [...state.live.values()][0];
+		expect(tree?.runId).toBe("run-1");
+		expect(tree?.nodes.map((node) => node.id)).toEqual(["run-1", "eff-yard", "run-2", "eff-inner"]);
+		// The nested run's input_preview is node detail, not tree detail — it
+		// must not overwrite the root's (absent) preview.
+		expect(tree?.inputPreview).toBeUndefined();
+	});
+
+	it("commits the whole tree, nested nodes included, when the ROOT run terminates", () => {
+		let state = reduceYardExecution(EMPTY_YARD_STATE, event());
+		state = reduceYardExecution(
+			state,
+			event({
+				node_id: "eff-yard",
+				parent_id: "run-1",
+				seq: 2,
+				node: { kind: "tool", name: "yard" },
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				run_id: "run-2",
+				node_id: "run-2",
+				parent_id: "eff-yard",
+				seq: 3,
+				node: { kind: "run", depth: 1 },
+			}),
+		);
+		// Nested run terminating is NOT tree-terminal.
+		state = reduceYardExecution(
+			state,
+			event({
+				run_id: "run-2",
+				node_id: "run-2",
+				parent_id: "eff-yard",
+				seq: 4,
+				phase: "completed",
+				node: { kind: "run", depth: 1 },
+			}),
+		);
+		expect(state.live.size).toBe(1);
+		expect(state.completed).toHaveLength(0);
+
+		state = reduceYardExecution(
+			state,
+			event({ seq: 5, phase: "completed", result_preview: '{"ok":true}' }),
+		);
+		expect(state.live.size).toBe(0);
+		expect(state.completed).toHaveLength(1);
+		expect(state.completed[0]?.nodes.map((node) => node.id)).toEqual([
+			"run-1",
+			"eff-yard",
+			"run-2",
+		]);
+		expect(state.completed[0]?.nodes.find((node) => node.id === "run-2")?.phase).toBe("completed");
+	});
 });

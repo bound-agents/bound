@@ -12,13 +12,21 @@ const tree: YardTreeSnapshot = {
 	resultPreview: '{"matches":3}',
 	summary: "2 tools · 0 inferences",
 	nodes: [
-		{ id: "run", parentId: null, node: { kind: "run", depth: 0 }, phase: "completed", seq: 1 },
+		{
+			id: "run",
+			parentId: null,
+			node: { kind: "run", depth: 0 },
+			phase: "completed",
+			seq: 1,
+			startSeq: 1,
+		},
 		{
 			id: "aux",
 			parentId: "run",
 			node: { kind: "tool", name: "aux:skeptic" },
 			phase: "completed",
 			seq: 2,
+			startSeq: 2,
 		},
 		{
 			id: "infer",
@@ -26,6 +34,7 @@ const tree: YardTreeSnapshot = {
 			node: { kind: "inference", model: "gpt-5.6-sol" },
 			phase: "failed",
 			seq: 3,
+			startSeq: 3,
 			summary: "provider error",
 		},
 	],
@@ -48,6 +57,83 @@ describe("YardExecutionCard", () => {
 		expect(frame).toContain("✓ aux:skeptic");
 		expect(frame).toContain("✗ infer · gpt-5.6-sol · provider error");
 		expect(frame).toContain('result · {"matches":3}');
+	});
+
+	// The card renders the EXECUTION GRAPH, not a flat leaf list (#217's
+	// original intent). Children hang off their parent with box-drawing
+	// branches; a nested yard() run is an interior node whose subtree
+	// indents under it; concurrent effects read as siblings.
+	it("renders parent-child structure with branch glyphs and nested-run subtrees", () => {
+		const nested: YardTreeSnapshot = {
+			traceId: "trace",
+			runId: "root",
+			phase: "started",
+			nodes: [
+				{
+					id: "root",
+					parentId: null,
+					node: { kind: "run", depth: 0 },
+					phase: "started",
+					seq: 1,
+					startSeq: 1,
+				},
+				{
+					id: "eff-a",
+					parentId: "root",
+					node: { kind: "tool", name: "boundless_search" },
+					phase: "completed",
+					seq: 2,
+					startSeq: 2,
+				},
+				{
+					id: "eff-yard",
+					parentId: "root",
+					node: { kind: "tool", name: "yard" },
+					phase: "started",
+					seq: 3,
+					startSeq: 3,
+				},
+				{
+					id: "run-2",
+					parentId: "eff-yard",
+					node: { kind: "run", depth: 1 },
+					phase: "started",
+					seq: 4,
+					startSeq: 4,
+				},
+				{
+					id: "eff-inner",
+					parentId: "run-2",
+					node: { kind: "inference", model: "glm-5" },
+					phase: "started",
+					seq: 5,
+					startSeq: 5,
+				},
+			],
+		};
+		const { lastFrame } = render(
+			React.createElement(YardExecutionCard, { tree: nested, running: true }),
+		);
+		const frame = lastFrame() ?? "";
+		const rows = frame.split("\n");
+
+		// Sibling effects under the root: first gets ├─, last gets └─.
+		const searchRow = rows.find((row) => row.includes("boundless_search"));
+		const yardRow = rows.find((row) => row.includes("◌ yard"));
+		expect(searchRow).toContain("├─");
+		expect(yardRow).toContain("└─");
+
+		// The nested run renders as an interior node under the yard effect,
+		// and its child indents one level deeper than the yard effect row.
+		const runRow = rows.find((row) => row.includes("run · depth 1"));
+		const innerRow = rows.find((row) => row.includes("infer · glm-5"));
+		expect(runRow).toBeDefined();
+		expect(innerRow).toBeDefined();
+		const indentOf = (row: string): number => row.indexOf("└─");
+		expect(indentOf(innerRow ?? "")).toBeGreaterThan(indentOf(yardRow ?? ""));
+
+		// Interior run nodes don't count as effects.
+		expect(frame).toContain("3 effects");
 	});
 
 	// Regression (thread adb65d85, 2026-08-16): yard.ts's preview() ships up to
