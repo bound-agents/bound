@@ -368,7 +368,13 @@ export function createAgentLoopFactory(
 				systemPromptAddition: inheritedSystemPromptAddition || undefined,
 				platformInstructions: parent.platformInstructions,
 				platform: parent.platform ?? "aux",
-				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
+				tools: [
+					sandboxTool,
+					...builtInToolDefs,
+					...filteredAgentTools.map((tool) => tool.toolDefinition),
+					...auxToolDefs,
+					...auxClientToolDefs,
+				],
 				toolRegistry: auxToolRegistry,
 				clientTools: auxClientTools,
 				// Carries the parent's WS connection so the inline client-tool
@@ -595,7 +601,12 @@ export function createAgentLoopFactory(
 
 		return new MainAgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
-			tools: [sandboxTool, ...builtInToolDefs, ...platformToolDefs],
+			tools: [
+				sandboxTool,
+				...builtInToolDefs,
+				...agentTools.map((tool) => tool.toolDefinition),
+				...platformToolDefs,
+			],
 			toolRegistry,
 		});
 	};
