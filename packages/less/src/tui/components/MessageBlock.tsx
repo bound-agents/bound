@@ -451,7 +451,7 @@ function ToolCallRow({
  * which is propagated to descendants (Markdown, HighlightedLine, etc.)
  * transitively through the parent-bounded layout.
  */
-function StripeBox({
+export function StripeBox({
 	color,
 	width,
 	children,

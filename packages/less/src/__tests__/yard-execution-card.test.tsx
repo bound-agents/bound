@@ -204,4 +204,34 @@ describe("YardExecutionCard", () => {
 		expect((frame.match(/y/g) ?? []).length).toBeGreaterThanOrEqual(400);
 		expect(frame).toContain("first-line");
 	});
+
+	// Regression (screenshot, 2026-08-16): the bespoke rounded-border Box had
+	// no explicit width, so Yoga sized it to intrinsic content width and the
+	// terminal soft-wrapped the overflow at column 0 — shattering the border.
+	// The card now uses the SAME wrapper as message/alert turns (StripeBox:
+	// left stripe + explicit width), whose whole contract is that content
+	// wraps INSIDE the stripe. Pin that: every rendered row fits the column
+	// budget, the stripe glyph is present, and no rounded-border chrome
+	// remains.
+	it("wraps long committed previews inside the stripe at the given width", () => {
+		const detailed: YardTreeSnapshot = {
+			...tree,
+			resultPreview: `{"work":"${"z".repeat(300)}"}`,
+		};
+		const { lastFrame } = render(
+			React.createElement(YardExecutionCard, { tree: detailed, terminalColumns: 60 }),
+		);
+		const frame = lastFrame() ?? "";
+		const rows = frame.split("\n");
+
+		for (const row of rows) {
+			expect(row.length).toBeLessThanOrEqual(60);
+		}
+		// Full payload survived the wrap.
+		expect((frame.match(/z/g) ?? []).length).toBeGreaterThanOrEqual(300);
+		// Stripe wrapper, not a rounded border.
+		expect(frame).toContain("│");
+		expect(frame).not.toContain("╭");
+		expect(frame).not.toContain("╰");
+	});
 });

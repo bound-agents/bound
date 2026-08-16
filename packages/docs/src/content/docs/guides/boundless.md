@@ -110,7 +110,9 @@ for background work.
 
 ## Follow Yard execution
 
-A running `yard` call appears as a magenta card below the transcript. The card shows the
+A running `yard` call appears as a magenta-striped turn below the transcript — the same
+left-stripe wrapper as every other message, so long content wraps inside the stripe
+instead of shattering a border. The card shows the
 initial input and the live execution graph: tool, auxiliary-agent, and inference effects
 hang off their parent with box-drawing branches, nested `yard()` runs indent as subtrees,
 and concurrent effects read as siblings in dispatch order. Glyphs are color-coded by state
