@@ -40,7 +40,7 @@ import {
 	type SetSessionConfigOptionResponse,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
-import { BoundClient } from "@bound/client";
+import { BoundClient, sortClusterModelsById } from "@bound/client";
 import { getBuildInfo } from "@bound/shared";
 import type { McpServerConfig } from "../config";
 import { acquireLock, releaseLock } from "../lockfile";
@@ -446,13 +446,11 @@ export class BoundAcpAgent implements Agent {
 				category: "model",
 				type: "select",
 				currentValue,
-				options: models.models
-					.map((model) => ({
-						value: model.id,
-						name: model.id,
-						description: `${model.provider} via ${model.host}`,
-					}))
-					.sort((a, b) => b.name.localeCompare(a.name)),
+				options: sortClusterModelsById(models.models).map((model) => ({
+					value: model.id,
+					name: model.id,
+					description: `${model.provider} via ${model.host}`,
+				})),
 			},
 		];
 	}

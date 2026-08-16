@@ -1,5 +1,6 @@
 // Client classes
 export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
+export { sortClusterModelsById } from "./model-sort.js";
 
 // Tracing utilities
 export {

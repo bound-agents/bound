@@ -1,4 +1,4 @@
-import type { BoundClient } from "@bound/client";
+import { type BoundClient, sortClusterModelsById } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
@@ -68,7 +68,7 @@ export function PickerView({
 				} else if (mode === "model") {
 					const response = await client.listModels();
 					setItems(
-						response.models.map((m) => ({
+						sortClusterModelsById(response.models).map((m) => ({
 							id: m.id,
 							label: m.id,
 						})),
