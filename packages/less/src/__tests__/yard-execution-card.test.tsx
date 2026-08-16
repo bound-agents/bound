@@ -50,6 +50,35 @@ describe("YardExecutionCard", () => {
 		expect(frame).not.toContain("result ·");
 	});
 
+	// Durations ride the lifecycle events' started_at/finished_at instants and
+	// render with MessageBlock's magnitude grading, so a slow effect pops out
+	// of a wall of green rows. The header carries the whole run's elapsed on
+	// the committed card.
+	it("renders per-node and whole-run durations from lifecycle instants", () => {
+		const timed: YardTreeSnapshot = {
+			...tree,
+			startedAt: "2026-08-16T18:22:20.000Z",
+			finishedAt: "2026-08-16T18:24:47.000Z",
+			nodes: tree.nodes.map((node) =>
+				node.id === "aux"
+					? {
+							...node,
+							startedAt: "2026-08-16T18:22:20.100Z",
+							finishedAt: "2026-08-16T18:24:31.000Z",
+						}
+					: node,
+			),
+		};
+		const { lastFrame } = render(React.createElement(YardExecutionCard, { tree: timed }));
+		const frame = lastFrame() ?? "";
+		// Whole-run elapsed on the header (2m 27s).
+		expect(frame).toContain("2 effects · 2m 27s");
+		// Per-node elapsed on the aux row (2m 10.9s → "2m 11s").
+		expect(frame).toContain("aux:skeptic · 2m 11s");
+		// Nodes without both instants render no duration fragment.
+		expect(frame).toContain("infer · gpt-5.6-sol · provider error");
+	});
+
 	it("renders completed input, graph, and final result", () => {
 		const { lastFrame } = render(React.createElement(YardExecutionCard, { tree }));
 		const frame = lastFrame() ?? "";

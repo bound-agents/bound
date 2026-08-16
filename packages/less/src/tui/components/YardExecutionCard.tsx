@@ -1,7 +1,7 @@
 import { Text } from "ink";
 import type React from "react";
 import type { YardTreeSnapshot } from "../hooks/useYardExecutions";
-import { StripeBox } from "./MessageBlock";
+import { StripeBox, formatDuration } from "./MessageBlock";
 
 export interface YardExecutionCardProps {
 	tree: YardTreeSnapshot;
@@ -54,6 +54,27 @@ function glyph(phase: NodeState["phase"]): string {
 	if (phase === "completed") return "✓";
 	if (phase === "failed") return "✗";
 	return "◌";
+}
+
+/**
+ * Elapsed ms between a node's lifecycle instants, when both have arrived.
+ * Rendered with the same magnitude grading MessageBlock uses for tool
+ * results — dim under 10s, yellow to a minute, red beyond — so the one slow
+ * effect pops out of a wall of green rows without reading every number.
+ */
+function durationMs(started?: string, finished?: string): number | null {
+	if (!started || !finished) return null;
+	const ms = Date.parse(finished) - Date.parse(started);
+	return Number.isFinite(ms) && ms >= 0 ? ms : null;
+}
+
+function DurationFragment({ ms }: { ms: number }): React.ReactElement {
+	const color = ms >= 60_000 ? "red" : ms >= 10_000 ? "yellow" : undefined;
+	return color ? (
+		<Text color={color}> · {formatDuration(ms)}</Text>
+	) : (
+		<Text dimColor> · {formatDuration(ms)}</Text>
+	);
 }
 
 /** State → color, used for glyphs and the header phase word. */
@@ -146,6 +167,7 @@ export function YardExecutionCard({
 	// Committed card: full text, hard-wrapped by Ink inside the stripe.
 	const preview = (text: string): string => (running ? clampLine(text) : text);
 	const previewWrap = running ? ("truncate-end" as const) : ("wrap" as const);
+	const treeMs = running ? null : durationMs(tree.startedAt, tree.finishedAt);
 	return (
 		<StripeBox color="magenta" width={stripeWidth}>
 			<Text>
@@ -158,6 +180,7 @@ export function YardExecutionCard({
 				</Text>
 				<Text dimColor> · </Text>
 				{effectCount} {effectCount === 1 ? "effect" : "effects"}
+				{treeMs !== null ? <DurationFragment ms={treeMs} /> : null}
 			</Text>
 			{tree.inputPreview ? (
 				<Text wrap={previewWrap}>
@@ -165,14 +188,18 @@ export function YardExecutionCard({
 					{preview(tree.inputPreview)}
 				</Text>
 			) : null}
-			{rows.map(({ node, prefix }) => (
-				<Text key={node.id} wrap="truncate-end">
-					<Text dimColor>{prefix}</Text>
-					<Text color={phaseColor(node.phase)}>{glyph(node.phase)}</Text>{" "}
-					<Text color={node.phase === "failed" ? "red" : kindColor(node)}>{label(node)}</Text>
-					{node.summary ? <Text dimColor> · {clampLine(node.summary)}</Text> : null}
-				</Text>
-			))}
+			{rows.map(({ node, prefix }) => {
+				const ms = durationMs(node.startedAt, node.finishedAt);
+				return (
+					<Text key={node.id} wrap="truncate-end">
+						<Text dimColor>{prefix}</Text>
+						<Text color={phaseColor(node.phase)}>{glyph(node.phase)}</Text>{" "}
+						<Text color={node.phase === "failed" ? "red" : kindColor(node)}>{label(node)}</Text>
+						{ms !== null ? <DurationFragment ms={ms} /> : null}
+						{node.summary ? <Text dimColor> · {clampLine(node.summary)}</Text> : null}
+					</Text>
+				);
+			})}
 			{!running && tree.resultPreview ? (
 				<Text wrap={previewWrap}>
 					<Text color="magenta">result · </Text>
