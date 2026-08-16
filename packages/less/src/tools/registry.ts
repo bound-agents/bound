@@ -509,18 +509,16 @@ export { CONTEXT_FILE_CANDIDATES, collectContextFiles };
 export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
-	mcpServers: string[],
 	options?: {
 		injectContextFiles?: string[];
-		shellToolName?: string;
 		surface?: { type: "terminal" } | { type: "acp"; clientInfo: Implementation };
 	},
 ): Promise<string> {
-	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
-	const shellToolName = options?.shellToolName ?? "boundless_bash";
-	const toolList = `boundless_read, boundless_write, boundless_edit, ${shellToolName}, boundless_copy, boundless_search${
-		mcpNamespaces ? `, ${mcpNamespaces}` : ""
-	}`;
+	// Deliberately no tool enumeration here. The daemon advertises every
+	// registered tool as a JSON schema on each turn (registry + client +
+	// platform, merged in getMergedTools), so a prose list duplicated that
+	// surface, drifted from it, and — worse — invited reading the prose as the
+	// capability manifest rather than the schemas.
 
 	const gitContext = await collectGitContext(cwd);
 	const contextFilesSection = await collectContextFiles(cwd, options?.injectContextFiles);
@@ -539,7 +537,5 @@ export async function buildSystemPromptAddition(
 Host: ${hostname}
 Working directory: ${cwd}
 ${gitContext}
-${contextFilesBlock}Available tool namespaces: ${toolList}
-
-Tool results include provenance metadata showing which host and directory produced them.`;
+${contextFilesBlock}Tool results include provenance metadata showing which host and directory produced them.`;
 }
