@@ -16,6 +16,9 @@ export interface YardNodeState {
 	 */
 	startSeq: number;
 	summary?: string;
+	/** ISO start/finish instants from the lifecycle events — drive durations. */
+	startedAt?: string;
+	finishedAt?: string;
 }
 
 export interface YardTreeSnapshot {
@@ -26,6 +29,8 @@ export interface YardTreeSnapshot {
 	resultPreview?: string;
 	summary?: string;
 	toolCallId?: string;
+	startedAt?: string;
+	finishedAt?: string;
 	nodes: YardNodeState[];
 }
 
@@ -79,6 +84,8 @@ export function reduceYardExecution(
 		seq: event.seq,
 		startSeq: existing?.startSeq ?? event.seq,
 		summary: event.summary ?? existing?.summary,
+		startedAt: existing?.startedAt ?? event.started_at,
+		finishedAt: event.finished_at ?? existing?.finishedAt,
 	});
 
 	// Tree-level fields come from tree-root events only. A nested run's
@@ -96,6 +103,8 @@ export function reduceYardExecution(
 			: prior?.resultPreview,
 		summary: treeRootEvent ? event.summary : prior?.summary,
 		toolCallId: event.tool_call_id ?? prior?.toolCallId,
+		startedAt: (treeRootEvent ? event.started_at : undefined) ?? prior?.startedAt,
+		finishedAt: (treeRootEvent ? event.finished_at : undefined) ?? prior?.finishedAt,
 		nodes: snapshotNodes(nodes),
 	};
 
