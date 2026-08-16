@@ -1,10 +1,21 @@
-import { Box, Text } from "ink";
+import { Text } from "ink";
 import type React from "react";
 import type { YardTreeSnapshot } from "../hooks/useYardExecutions";
+import { StripeBox } from "./MessageBlock";
 
 export interface YardExecutionCardProps {
 	tree: YardTreeSnapshot;
 	running?: boolean;
+	/**
+	 * Terminal width, threaded from ChatView like MessageBlock's
+	 * `terminalColumns`. The wrapper NEEDS an explicit width: the previous
+	 * rounded-border Box had none, so Yoga sized it to intrinsic content
+	 * width and the terminal soft-wrapped the overflow at column 0 —
+	 * shattering the border (screenshot regression, 2026-08-16). StripeBox's
+	 * whole contract is that content wraps INSIDE the stripe when width is
+	 * pinned.
+	 */
+	terminalColumns?: number;
 }
 
 /**
@@ -114,18 +125,29 @@ function flattenTree(tree: YardTreeSnapshot): TreeRow[] {
 	return rows;
 }
 
+/**
+ * Renders a Yard execution tree as a transcript turn. Uses the SAME
+ * StripeBox wrapper as message/alert blocks — a magenta left stripe with an
+ * explicit width — instead of a bespoke bordered card, so long previews
+ * wrap inside the stripe with the exact wrapping semantics every other
+ * turn already has.
+ */
 export function YardExecutionCard({
 	tree,
 	running = false,
+	terminalColumns = 80,
 }: YardExecutionCardProps): React.ReactElement {
 	const rows = flattenTree(tree);
 	const effectCount = tree.nodes.filter((node) => node.node.kind !== "run").length;
+	// Mirrors MessageBlock's stripeWidth computation so Yard turns align
+	// with every other turn in the transcript.
+	const stripeWidth = Math.max(20, terminalColumns - 1);
 	// Live card: one bounded line per preview (dynamic-region height safety).
-	// Committed card: full text, hard-wrapped by Ink (Static scrollback).
+	// Committed card: full text, hard-wrapped by Ink inside the stripe.
 	const preview = (text: string): string => (running ? clampLine(text) : text);
 	const previewWrap = running ? ("truncate-end" as const) : ("wrap" as const);
 	return (
-		<Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
+		<StripeBox color="magenta" width={stripeWidth}>
 			<Text>
 				<Text color="magenta" bold>
 					Yard
@@ -157,6 +179,6 @@ export function YardExecutionCard({
 					{preview(tree.resultPreview)}
 				</Text>
 			) : null}
-		</Box>
+		</StripeBox>
 	);
 }

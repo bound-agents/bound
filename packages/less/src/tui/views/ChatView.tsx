@@ -711,7 +711,7 @@ export function ChatView({
 						if (item.kind === "yard") {
 							return (
 								<Box key={`yard:${item.msgId}`} marginBottom={1}>
-									<YardExecutionCard tree={item.snapshot} />
+									<YardExecutionCard tree={item.snapshot} terminalColumns={termColumns} />
 								</Box>
 							);
 						}
@@ -751,7 +751,7 @@ export function ChatView({
 					{layout.endsInCompactRun && <Box height={1} />}
 					{yardExecutions.live.map((tree) => (
 						<Box key={`yard-live:${tree.traceId}:${tree.runId}`} marginBottom={1}>
-							<YardExecutionCard tree={tree} running />
+							<YardExecutionCard tree={tree} running terminalColumns={termColumns} />
 						</Box>
 					))}
 					{/* Banners */}
