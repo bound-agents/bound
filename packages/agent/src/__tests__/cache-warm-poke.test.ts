@@ -1,6 +1,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, insertRow, recordTurn } from "@bound/core";
+import fc from "fast-check";
 import { CACHE_TTL_MS } from "../cache-prediction";
 import {
 	WARM_POKE_MARKER,
@@ -299,13 +300,36 @@ describe("isWarmPokeNotificationPayload", () => {
 		expect(isWarmPokeNotificationPayload("{not json")).toBe(false);
 	});
 
-	it("rejects null / undefined / empty payloads", () => {
-		expect(isWarmPokeNotificationPayload(null)).toBe(false);
-		expect(isWarmPokeNotificationPayload(undefined)).toBe(false);
-		expect(isWarmPokeNotificationPayload("")).toBe(false);
-	});
+	it("is non-throwing and accepts only the marker shape across JSON-compatible payloads", () => {
+		const jsonValue = fc.letrec((tie) => ({
+			value: fc.oneof(
+				fc.string(),
+				fc.boolean(),
+				fc.integer(),
+				fc.constant(null),
+				fc.array(tie("value"), { maxLength: 4 }),
+				fc.dictionary(fc.string(), tie("value"), { maxKeys: 4 }),
+			),
+		})).value;
 
-	it("rejects a non-object JSON payload", () => {
-		expect(isWarmPokeNotificationPayload('"cache_warm_poke"')).toBe(false);
+		fc.assert(
+			fc.property(fc.oneof(jsonValue.map(JSON.stringify), fc.string()), (raw) => {
+				expect(() => isWarmPokeNotificationPayload(raw)).not.toThrow();
+
+				let expected = false;
+				try {
+					const parsed: unknown = JSON.parse(raw);
+					expected =
+						typeof parsed === "object" &&
+						parsed !== null &&
+						!Array.isArray(parsed) &&
+						(parsed as Record<string, unknown>).type === "cache_warm_poke";
+				} catch {
+					expected = false;
+				}
+
+				expect(isWarmPokeNotificationPayload(raw)).toBe(expected);
+			}),
+		);
 	});
 });

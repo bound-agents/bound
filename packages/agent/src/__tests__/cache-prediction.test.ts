@@ -3,16 +3,31 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema, recordTurn } from "@bound/core";
 import { predictCacheState, selectCacheTtl } from "../cache-prediction";
 
+const NOW = 1_800_000_000_000;
+const threadId = "test-thread-001";
+const agoIso = (ms: number) => new Date(NOW - ms).toISOString();
+
+function recordCacheTurn(
+	db: Database.Database,
+	{
+		elapsedMs,
+		cacheRead,
+		cacheWrite,
+	}: { elapsedMs: number; cacheRead: number; cacheWrite: number },
+) {
+	recordTurn(db, {
+		thread_id: threadId,
+		model_id: "opus",
+		tokens_in: 100,
+		tokens_out: 50,
+		tokens_cache_read: cacheRead,
+		tokens_cache_write: cacheWrite,
+		created_at: agoIso(elapsedMs),
+	});
+}
+
 describe("Cache Prediction", () => {
 	let db: Database.Database;
-	const threadId = "test-thread-001";
-
-	// Fixed clock anchor: both the seeded `created_at` and the `nowMs` passed to
-	// predictCacheState derive from this, so the warm/cold boundary is a pure
-	// function of the offsets under test — never a race between a seeded
-	// timestamp and a later real `Date.now()`.
-	const NOW = 1_800_000_000_000; // arbitrary fixed epoch ms
-	const agoIso = (ms: number) => new Date(NOW - ms).toISOString();
 
 	beforeEach(() => {
 		db = new Database(":memory:");
@@ -25,148 +40,103 @@ describe("Cache Prediction", () => {
 	});
 
 	describe("predictCacheState", () => {
-		it("returns 'cold' when no turns exist for the thread", () => {
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("cold");
+		it("returns cold when no turn exists", () => {
+			expect(predictCacheState(db, threadId, 5 * 60_000, NOW)).toBe("cold");
 		});
 
-		it("returns 'warm' when last turn had cache_write and is within TTL", () => {
-			const recentTime = agoIso(60_000); // 1 min ago
+		it("classifies cache activity, zero activity, null metrics, and TTL boundary with an injected clock", () => {
+			const ttl = 5 * 60_000;
+			recordCacheTurn(db, { elapsedMs: ttl - 1, cacheRead: 0, cacheWrite: 500 });
+			expect(predictCacheState(db, threadId, ttl, NOW)).toBe("warm");
+
+			const readOnlyThread = "read-only-thread";
 			recordTurn(db, {
-				thread_id: threadId,
+				thread_id: readOnlyThread,
 				model_id: "opus",
 				tokens_in: 100,
 				tokens_out: 50,
-				tokens_cache_read: 0,
-				tokens_cache_write: 50000,
-				created_at: recentTime,
+				tokens_cache_read: 200_000,
+				tokens_cache_write: 0,
+				created_at: agoIso(ttl - 1),
 			});
+			expect(predictCacheState(db, readOnlyThread, ttl, NOW)).toBe("warm");
 
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("warm");
-		});
-
-		it("returns 'warm' when last turn had cache_read and is within TTL", () => {
-			const recentTime = agoIso(2 * 60_000); // 2 min ago
+			const zeroActivityThread = "zero-activity-thread";
 			recordTurn(db, {
-				thread_id: threadId,
-				model_id: "opus",
-				tokens_in: 100,
-				tokens_out: 50,
-				tokens_cache_read: 200000,
-				tokens_cache_write: 500,
-				created_at: recentTime,
-			});
-
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("warm");
-		});
-
-		it("returns 'cold' when last turn is beyond TTL", () => {
-			const oldTime = agoIso(10 * 60_000); // 10 min ago
-			recordTurn(db, {
-				thread_id: threadId,
-				model_id: "opus",
-				tokens_in: 100,
-				tokens_out: 50,
-				tokens_cache_read: 200000,
-				tokens_cache_write: 500,
-				created_at: oldTime,
-			});
-
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("cold");
-		});
-
-		it("returns 'cold' when last turn had no cache activity", () => {
-			const recentTime = agoIso(60_000);
-			recordTurn(db, {
-				thread_id: threadId,
+				thread_id: zeroActivityThread,
 				model_id: "opus",
 				tokens_in: 100,
 				tokens_out: 50,
 				tokens_cache_read: 0,
 				tokens_cache_write: 0,
-				created_at: recentTime,
+				created_at: agoIso(ttl - 1),
 			});
+			expect(predictCacheState(db, zeroActivityThread, ttl, NOW)).toBe("cold");
 
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("cold");
-		});
-
-		it("returns 'cold' when cache columns are NULL (e.g. Ollama)", () => {
-			const recentTime = agoIso(30_000);
+			const inactiveThread = "inactive-thread";
 			recordTurn(db, {
-				thread_id: threadId,
+				thread_id: inactiveThread,
 				model_id: "llama3",
 				tokens_in: 100,
 				tokens_out: 50,
 				tokens_cache_read: null,
 				tokens_cache_write: null,
-				created_at: recentTime,
+				created_at: agoIso(ttl - 1),
 			});
-
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("cold");
+			expect(predictCacheState(db, inactiveThread, ttl, NOW)).toBe("cold");
 		});
 
-		it("is deterministic at the exact TTL boundary (injected clock, no wall-clock race)", () => {
+		it("is deterministic at the exact TTL boundary", () => {
 			const ttl = 5 * 60_000;
-			recordTurn(db, {
-				thread_id: threadId,
-				model_id: "opus",
-				tokens_in: 100,
-				tokens_out: 50,
-				tokens_cache_read: 200000,
-				tokens_cache_write: 500,
-				created_at: agoIso(ttl), // exactly TTL ago
-			});
+			recordCacheTurn(db, { elapsedMs: ttl, cacheRead: 200_000, cacheWrite: 500 });
 
-			// At exactly ttl elapsed, msSinceTurn === ttl, and the predicate is
-			// strict `< ttlMs`, so the boundary is cold. One ms inside is warm.
-			// With the injected clock these are exact, not timing-dependent.
 			expect(predictCacheState(db, threadId, ttl, NOW)).toBe("cold");
 			expect(predictCacheState(db, threadId, ttl, NOW - 1)).toBe("warm");
 		});
 
-		it("uses the most recent turn when multiple exist", () => {
-			const oldTime = agoIso(10 * 60_000);
-			const recentTime = agoIso(60_000);
+		it("uses the latest turn's cache activity and timestamp in both directions", () => {
+			const ttl = 5 * 60_000;
 
-			// Old turn with cache activity (beyond TTL)
+			// A newer cold turn overrides an older warm turn.
+			recordCacheTurn(db, { elapsedMs: 10 * 60_000, cacheRead: 200_000, cacheWrite: 500 });
+			recordCacheTurn(db, { elapsedMs: 60_000, cacheRead: 0, cacheWrite: 0 });
+			expect(predictCacheState(db, threadId, ttl, NOW)).toBe("cold");
+
+			const newerWarmThread = "newer-warm-thread";
 			recordTurn(db, {
-				thread_id: threadId,
+				thread_id: newerWarmThread,
 				model_id: "opus",
 				tokens_in: 100,
 				tokens_out: 50,
-				tokens_cache_read: 200000,
+				tokens_cache_read: 0,
+				tokens_cache_write: 0,
+				created_at: agoIso(10 * 60_000),
+			});
+			recordTurn(db, {
+				thread_id: newerWarmThread,
+				model_id: "opus",
+				tokens_in: 100,
+				tokens_out: 50,
+				tokens_cache_read: 200_000,
 				tokens_cache_write: 500,
-				created_at: oldTime,
+				created_at: agoIso(60_000),
 			});
-			// Recent turn with cache activity (within TTL)
-			recordTurn(db, {
-				thread_id: threadId,
-				model_id: "opus",
-				tokens_in: 100,
-				tokens_out: 50,
-				tokens_cache_read: 200000,
-				tokens_cache_write: 100,
-				created_at: recentTime,
-			});
-
-			const state = predictCacheState(db, threadId, 5 * 60_000, NOW);
-			expect(state).toBe("warm");
+			expect(predictCacheState(db, newerWarmThread, ttl, NOW)).toBe("warm");
 		});
 	});
 
 	describe("selectCacheTtl", () => {
-		it("returns '1h' for all interfaces", () => {
-			expect(selectCacheTtl("discord")).toBe("1h");
-			expect(selectCacheTtl("scheduler")).toBe("1h");
-			expect(selectCacheTtl("web")).toBe("1h");
-			expect(selectCacheTtl("boundless")).toBe("1h");
-			expect(selectCacheTtl("discord-interaction")).toBe("1h");
-			expect(selectCacheTtl("unknown")).toBe("1h");
+		it("returns 1h for all interfaces", () => {
+			for (const threadInterface of [
+				"discord",
+				"scheduler",
+				"web",
+				"boundless",
+				"discord-interaction",
+				"unknown",
+			]) {
+				expect(selectCacheTtl(threadInterface)).toBe("1h");
+			}
 		});
 	});
 });

@@ -322,16 +322,14 @@ describe("buildEventWakeupContent", () => {
 
 	test("folds webhook_intake and connector_intake together, ignoring stray intake rows", () => {
 		const threadId = randomUUID();
-		// A stray platform-MCP `intake` row (different payload schema) must NOT
-		// be folded, same as it isn't for the webhook-only path.
 		insertEnvelope(threadId, "platform-mcp-payload", "2026-07-09T00:00:00Z", "intake");
-		const connId = insertEnvelope(
+		const connectorId = insertEnvelope(
 			threadId,
 			"connector-body",
 			"2026-07-09T00:01:00Z",
 			"connector_intake",
 		);
-		const hookId = insertEnvelope(
+		const webhookId = insertEnvelope(
 			threadId,
 			"webhook-body",
 			"2026-07-09T00:02:00Z",
@@ -344,11 +342,10 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("connector-body");
 		expect(result.content).toContain("webhook-body");
 		expect(result.content).not.toContain("platform-mcp-payload");
-		// Ordered by received_at (oldest first); stray intake row untouched.
 		expect(result.content.indexOf("connector-body")).toBeLessThan(
 			result.content.indexOf("webhook-body"),
 		);
-		expect(result.processedIds.sort()).toEqual([connId, hookId].sort());
+		expect(result.processedIds).toEqual([connectorId, webhookId]);
 	});
 
 	test("inlines a JSON request body so the envelope isn't double-escaped (#177)", () => {

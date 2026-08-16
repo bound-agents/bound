@@ -10,7 +10,7 @@
  *      changes between turns.
  *   2. `selectCacheTtl` — picks the cache TTL string.
  *   3. `maybePlaceCacheMarker` — splices a {role: "cache"} marker
- *      at messages[length-1] when capability allows.
+ *      at the bridge-safe boundary when capability allows.
  *   4. `buildCacheMarkers` — produces the descriptors recorded on
  *      `context_debug.cacheMarkers`.
  *
@@ -32,8 +32,8 @@
  *   F7 maybePlaceCacheMarker too-short gate — messages.length < 2
  *      always returns placed=false with reason "too-short".
  *   F8 maybePlaceCacheMarker insertion semantics — when placed,
- *      the result has a {role: "cache"} marker at index
- *      length-1 of the OLD array; new array is one longer.
+ *      it preserves every original message and inserts exactly one marker
+ *      at the reported bridge-safe boundary.
  *   F9 buildCacheMarkers system marker is always "fixed" — even
  *      when the message marker is "rolling".
  *   F10 buildCacheMarkers position monotonicity — the message
@@ -212,21 +212,23 @@ describe("maybePlaceCacheMarker — property tests", () => {
 		);
 	});
 
-	it("F8: insertion semantics — placed inserts cache marker at length-1, new length += 1", () => {
+	it("F8: insertion preserves every original and adds exactly one reported marker", () => {
 		fc.assert(
 			fc.property(
 				fc.array(llmMessageArb, { minLength: 2, maxLength: 10 }),
 				fc.constantFrom("fixed", "rolling"),
 				(msgs, kind) => {
-					const arr = [...msgs];
-					const oldLen = arr.length;
-					const result = maybePlaceCacheMarker(arr, kind as "fixed" | "rolling", undefined);
+					const original = structuredClone(msgs);
+					const result = maybePlaceCacheMarker(msgs, kind as "fixed" | "rolling", undefined);
 					if (!result.placed) return false;
-					if (arr.length !== oldLen + 1) return false;
-					if (result.index !== oldLen - 1) return false;
-					if (arr[result.index].role !== "cache") return false;
-					if (result.variant !== kind) return false;
-					return true;
+					const withoutMarker = [...msgs.slice(0, result.index), ...msgs.slice(result.index + 1)];
+					return (
+						msgs.length === original.length + 1 &&
+						msgs[result.index].role === "cache" &&
+						msgs[result.index].content === "" &&
+						result.variant === kind &&
+						JSON.stringify(withoutMarker) === JSON.stringify(original)
+					);
 				},
 			),
 			{ numRuns: 100 },

@@ -1,6 +1,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
+import fc from "fast-check";
 import {
 	type StageEntry,
 	buildParentSummaryMap,
@@ -8,6 +9,135 @@ import {
 } from "../summary-extraction";
 
 const TEST_SITE_ID = "test-site-00000000-0000-0000-0000-000000000000";
+const SUMMARY_TIME = "2026-05-23T10:00:00.000Z";
+
+interface ParentEdgeScenario {
+	requested: string[];
+	edges: Array<{ parent: string; child: string; deleted: boolean }>;
+}
+
+interface StaleChildScenario {
+	summaries: Array<{ key: string; modifiedAt: string }>;
+	children: Array<{
+		parent: string;
+		key: string;
+		modifiedAt: string;
+		childDeleted: boolean;
+		edgeDeleted: boolean;
+	}>;
+}
+
+function insertMemory(
+	db: Database,
+	{
+		id,
+		key,
+		modifiedAt,
+		deleted = 0,
+		tier = "detail",
+	}: {
+		id: string;
+		key: string;
+		modifiedAt: string;
+		deleted?: 0 | 1;
+		tier?: "summary" | "detail";
+	},
+): void {
+	insertRow(
+		db,
+		"semantic_memory",
+		{
+			id,
+			key,
+			value: key,
+			source: null,
+			created_at: modifiedAt,
+			modified_at: modifiedAt,
+			tier,
+			deleted,
+		},
+		TEST_SITE_ID,
+	);
+}
+
+function insertSummarizesEdge(
+	db: Database,
+	{
+		id,
+		parent,
+		child,
+		deleted = 0,
+	}: {
+		id: string;
+		parent: string;
+		child: string;
+		deleted?: boolean;
+	},
+): void {
+	insertRow(
+		db,
+		"memory_edges",
+		{
+			id,
+			source_key: parent,
+			target_key: child,
+			relation: "summarizes",
+			weight: 1,
+			created_at: SUMMARY_TIME,
+			modified_at: SUMMARY_TIME,
+			deleted: deleted ? 1 : 0,
+		},
+		TEST_SITE_ID,
+	);
+}
+
+const parentEdgeScenario = fc.record({
+	requested: fc
+		.uniqueArray(fc.integer({ min: 0, max: 5 }), { maxLength: 6 })
+		.map((ids) => ids.map((id) => `detail:${id}`)),
+	edges: fc.array(
+		fc.record({
+			parent: fc.integer({ min: 0, max: 5 }).map((id) => `_summary:${id}`),
+			child: fc.integer({ min: 0, max: 5 }).map((id) => `detail:${id}`),
+			deleted: fc.boolean(),
+		}),
+		{ maxLength: 16 },
+	),
+}) satisfies fc.Arbitrary<ParentEdgeScenario>;
+
+const staleChildScenario = fc
+	.uniqueArray(
+		fc.record({
+			key: fc.integer({ min: 0, max: 4 }).map((id) => `_summary:${id}`),
+			modifiedAt: fc.integer({ min: 1, max: 5 }).map((hour) => `2026-05-23T0${hour}:00:00.000Z`),
+		}),
+		{ selector: (summary) => summary.key, minLength: 1, maxLength: 5 },
+	)
+	.chain((summaries) =>
+		fc.record({
+			summaries: fc.constant(summaries),
+			children: fc.array(
+				fc.record({
+					parent: fc.constantFrom(...summaries.map((summary) => summary.key)),
+					key: fc.integer({ min: 0, max: 8 }).map((id) => `detail:${id}`),
+					modifiedAt: fc
+						.integer({ min: 1, max: 5 })
+						.map((hour) => `2026-05-23T0${hour}:00:00.000Z`),
+					childDeleted: fc.boolean(),
+					edgeDeleted: fc.boolean(),
+				}),
+				{ maxLength: 16 },
+			),
+		}),
+	)
+	.map(({ summaries, children }) => ({
+		summaries,
+		children: children.map((child, index) => ({
+			...child,
+			key: `${child.key}:${index}`,
+			modifiedAt: child.modifiedAt,
+		})),
+	})) satisfies fc.Arbitrary<StaleChildScenario>;
 
 describe("buildParentSummaryMap", () => {
 	let db: Database;
@@ -22,816 +152,156 @@ describe("buildParentSummaryMap", () => {
 	});
 
 	test("Empty input keys returns empty map", () => {
-		const result = buildParentSummaryMap(db, []);
-		expect(result.size).toBe(0);
+		expect(buildParentSummaryMap(db, [])).toEqual(new Map());
 	});
 
-	test("One detail key with one summarizes edge returns map with that entry", () => {
-		// Insert a parent summary entry
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
+	test("maps exactly requested children with live summarizes edges", () => {
+		fc.assert(
+			fc.property(parentEdgeScenario, ({ requested, edges }) => {
+				const propertyDb = new Database(":memory:");
+				applySchema(propertyDb);
+				try {
+					for (const [index, edge] of edges.entries()) {
+						insertSummarizesEdge(propertyDb, { id: `edge-${index}`, ...edge });
+					}
+
+					const expected = new Map<string, string>();
+					for (const edge of edges) {
+						if (!edge.deleted && requested.includes(edge.child) && !expected.has(edge.child)) {
+							expected.set(edge.child, edge.parent);
+						}
+					}
+
+					expect(buildParentSummaryMap(propertyDb, requested)).toEqual(expected);
+				} finally {
+					propertyDb.close();
+				}
+			}),
+			{ numRuns: 100 },
 		);
-
-		// Insert a detail entry
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child detail",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert a summarizes edge from parent to child
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge-id",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const result = buildParentSummaryMap(db, ["detail:key1"]);
-		expect(result.size).toBe(1);
-		expect(result.get("detail:key1")).toBe("_summary:topic1");
-	});
-
-	test("One detail key with no edges is absent from map", () => {
-		// Insert a detail entry with no incoming summarizes edges
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:orphan",
-				value: "Orphan detail",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const result = buildParentSummaryMap(db, ["detail:orphan"]);
-		expect(result.size).toBe(0);
-		expect(result.has("detail:orphan")).toBe(false);
-	});
-
-	test("Multiple keys, mixed with and without parents", () => {
-		// Insert parent summaries
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent1-id",
-				key: "_summary:topic1",
-				value: "Parent 1",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent2-id",
-				key: "_summary:topic2",
-				value: "Parent 2",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert detail entries
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child1-id",
-				key: "detail:key1",
-				value: "Child 1",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child2-id",
-				key: "detail:key2",
-				value: "Child 2",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "orphan-id",
-				key: "detail:orphan",
-				value: "Orphan",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Create edges
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge1",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge2",
-				source_key: "_summary:topic2",
-				target_key: "detail:key2",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const result = buildParentSummaryMap(db, ["detail:key1", "detail:key2", "detail:orphan"]);
-		expect(result.size).toBe(2);
-		expect(result.get("detail:key1")).toBe("_summary:topic1");
-		expect(result.get("detail:key2")).toBe("_summary:topic2");
-		expect(result.has("detail:orphan")).toBe(false);
-	});
-
-	test("Soft-deleted edges are ignored", () => {
-		// Insert a parent summary
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert a detail entry
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert a deleted edge
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge-id",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				deleted: 1,
-			},
-			TEST_SITE_ID,
-		);
-
-		const result = buildParentSummaryMap(db, ["detail:key1"]);
-		expect(result.size).toBe(0);
 	});
 
 	test("First-seen-wins on duplicate edges (multiple parents for same child)", () => {
-		// Insert two parent summaries
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent1-id",
-				key: "_summary:topic1",
-				value: "Parent 1",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
+		insertSummarizesEdge(db, { id: "first", parent: "_summary:first", child: "detail:shared" });
+		insertSummarizesEdge(db, { id: "second", parent: "_summary:second", child: "detail:shared" });
+
+		expect(buildParentSummaryMap(db, ["detail:shared"])).toEqual(
+			new Map([["detail:shared", "_summary:first"]]),
 		);
-
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent2-id",
-				key: "_summary:topic2",
-				value: "Parent 2",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert a detail entry
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child",
-				source: null,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert two edges from different parents to the same child
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge1",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge2",
-				source_key: "_summary:topic2",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: "2026-05-23T00:00:00.000Z",
-				modified_at: "2026-05-23T00:00:00.000Z",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const result = buildParentSummaryMap(db, ["detail:key1"]);
-		expect(result.size).toBe(1);
-		// Should pick the first-seen parent (depends on SQL result order)
-		const parent = result.get("detail:key1");
-		expect(parent === "_summary:topic1" || parent === "_summary:topic2").toBe(true);
-	});
-});
-
-describe("buildStaleChildrenMap", () => {
-	let db: Database;
-
-	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
 	});
 
-	afterEach(() => {
-		db.close();
-	});
+	describe("buildStaleChildrenMap", () => {
+		let db: Database;
 
-	test("Empty input summaries returns empty map", () => {
-		const result = buildStaleChildrenMap(db, []);
-		expect(result.size).toBe(0);
-	});
+		beforeEach(() => {
+			db = new Database(":memory:");
+			applySchema(db);
+		});
 
-	test("One summary with one stale child (child.modified_at > summary.modified_at)", () => {
-		const parentTime = "2026-05-23T10:00:00.000Z";
-		const childTime = "2026-05-23T11:00:00.000Z";
+		afterEach(() => {
+			db.close();
+		});
 
-		// Insert parent summary
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				created_at: parentTime,
-				modified_at: parentTime,
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
+		test("Empty input summaries returns empty map", () => {
+			expect(buildStaleChildrenMap(db, [])).toEqual(new Map());
+		});
 
-		// Insert stale child (modified later)
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child detail",
-				source: null,
-				created_at: childTime,
-				modified_at: childTime,
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
+		test("returns exactly live children newer than their requested parent with stale-detail tags", () => {
+			fc.assert(
+				fc.property(staleChildScenario, ({ summaries, children }) => {
+					const propertyDb = new Database(":memory:");
+					applySchema(propertyDb);
+					try {
+						for (const [index, child] of children.entries()) {
+							insertMemory(propertyDb, {
+								id: `child-${index}`,
+								key: child.key,
+								modifiedAt: child.modifiedAt,
+								deleted: child.childDeleted ? 1 : 0,
+							});
+							insertSummarizesEdge(propertyDb, {
+								id: `edge-${index}`,
+								parent: child.parent,
+								child: child.key,
+								deleted: child.edgeDeleted,
+							});
+						}
 
-		// Create summarizes edge
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge-id",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: parentTime,
-				modified_at: parentTime,
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
+						const stageEntries: StageEntry[] = summaries.map((summary) => ({
+							key: summary.key,
+							value: summary.key,
+							source: null,
+							modifiedAt: summary.modifiedAt,
+							tier: "summary",
+							tag: "[summary]",
+						}));
+						const summaryByKey = new Map(summaries.map((summary) => [summary.key, summary]));
+						const expected = new Map<string, Set<string>>();
+						for (const child of children) {
+							const parent = summaryByKey.get(child.parent);
+							if (
+								!parent ||
+								child.childDeleted ||
+								child.edgeDeleted ||
+								child.modifiedAt <= parent.modifiedAt
+							) {
+								continue;
+							}
+							const bucket = expected.get(child.parent) ?? new Set<string>();
+							bucket.add(`${child.key}|${child.modifiedAt}|[stale-detail]`);
+							expected.set(child.parent, bucket);
+						}
 
-		const summaries: StageEntry[] = [
-			{
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				modifiedAt: parentTime,
-				tier: "summary",
-				tag: "[summary]",
-			},
-		];
+						const actual = buildStaleChildrenMap(propertyDb, stageEntries);
+						const actualNormalized = new Map(
+							Array.from(actual, ([parent, entries]) => [
+								parent,
+								new Set(entries.map(({ key, modifiedAt, tag }) => `${key}|${modifiedAt}|${tag}`)),
+							]),
+						);
+						expect(actualNormalized).toEqual(expected);
+					} finally {
+						propertyDb.close();
+					}
+				}),
+				{ numRuns: 100 },
+			);
+		});
 
-		const result = buildStaleChildrenMap(db, summaries);
-		expect(result.size).toBe(1);
-		const staleChildren = result.get("_summary:topic1");
-		expect(staleChildren).toBeDefined();
-		expect(staleChildren?.length).toBe(1);
-		expect(staleChildren?.[0].key).toBe("detail:key1");
-		expect(staleChildren?.[0].tag).toBe("[stale-detail]");
-	});
+		test("EXPLAIN: buildStaleChildrenMap uses idx_edges_source partial index", () => {
+			const summaryTime = "2026-05-23T00:00:00.000Z";
+			const staleTime = "2026-05-24T00:00:00.000Z"; // One day later (stale)
 
-	test("One summary with one fresh child (child.modified_at <= summary.modified_at)", () => {
-		const parentTime = "2026-05-23T11:00:00.000Z";
-		const childTime = "2026-05-23T10:00:00.000Z";
-
-		// Insert parent summary
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				created_at: parentTime,
-				modified_at: parentTime,
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert fresh child (modified earlier)
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child detail",
-				source: null,
-				created_at: childTime,
-				modified_at: childTime,
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Create summarizes edge
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge-id",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: parentTime,
-				modified_at: parentTime,
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const summaries: StageEntry[] = [
-			{
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				modifiedAt: parentTime,
-				tier: "summary",
-				tag: "[summary]",
-			},
-		];
-
-		const result = buildStaleChildrenMap(db, summaries);
-		expect(result.size).toBe(0);
-	});
-
-	test("Mixed stale and fresh children under one parent", () => {
-		const parentTime = "2026-05-23T10:00:00.000Z";
-		const staleTime = "2026-05-23T11:00:00.000Z";
-		const freshTime = "2026-05-23T09:00:00.000Z";
-
-		// Insert parent summary
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				created_at: parentTime,
-				modified_at: parentTime,
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert stale child
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "stale-child-id",
-				key: "detail:stale",
-				value: "Stale child",
-				source: null,
-				created_at: staleTime,
-				modified_at: staleTime,
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert fresh child
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "fresh-child-id",
-				key: "detail:fresh",
-				value: "Fresh child",
-				source: null,
-				created_at: freshTime,
-				modified_at: freshTime,
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Create edges
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge1",
-				source_key: "_summary:topic1",
-				target_key: "detail:stale",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: parentTime,
-				modified_at: parentTime,
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge2",
-				source_key: "_summary:topic1",
-				target_key: "detail:fresh",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: parentTime,
-				modified_at: parentTime,
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const summaries: StageEntry[] = [
-			{
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				modifiedAt: parentTime,
-				tier: "summary",
-				tag: "[summary]",
-			},
-		];
-
-		const result = buildStaleChildrenMap(db, summaries);
-		expect(result.size).toBe(1);
-		const staleChildren = result.get("_summary:topic1");
-		expect(staleChildren).toBeDefined();
-		expect(staleChildren?.length).toBe(1);
-		expect(staleChildren?.[0].key).toBe("detail:stale");
-	});
-
-	test("Soft-deleted child entries are ignored", () => {
-		const parentTime = "2026-05-23T10:00:00.000Z";
-		const childTime = "2026-05-23T11:00:00.000Z";
-
-		// Insert parent summary
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				created_at: parentTime,
-				modified_at: parentTime,
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert soft-deleted child
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child detail",
-				source: null,
-				created_at: childTime,
-				modified_at: childTime,
-				tier: "detail",
-				deleted: 1,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Create edge to the deleted child
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge-id",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: parentTime,
-				modified_at: parentTime,
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const summaries: StageEntry[] = [
-			{
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				modifiedAt: parentTime,
-				tier: "summary",
-				tag: "[summary]",
-			},
-		];
-
-		const result = buildStaleChildrenMap(db, summaries);
-		expect(result.size).toBe(0);
-	});
-
-	test("Returned StageEntry tag is '[stale-detail]'", () => {
-		const parentTime = "2026-05-23T10:00:00.000Z";
-		const childTime = "2026-05-23T11:00:00.000Z";
-
-		// Insert parent summary
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "parent-id",
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				created_at: parentTime,
-				modified_at: parentTime,
-				tier: "summary",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Insert stale child
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: "child-id",
-				key: "detail:key1",
-				value: "Child detail",
-				source: null,
-				created_at: childTime,
-				modified_at: childTime,
-				tier: "detail",
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		// Create edge
-		insertRow(
-			db,
-			"memory_edges",
-			{
-				id: "edge-id",
-				source_key: "_summary:topic1",
-				target_key: "detail:key1",
-				relation: "summarizes",
-				weight: 1.0,
-				created_at: parentTime,
-				modified_at: parentTime,
-				deleted: 0,
-			},
-			TEST_SITE_ID,
-		);
-
-		const summaries: StageEntry[] = [
-			{
-				key: "_summary:topic1",
-				value: "Parent summary",
-				source: null,
-				modifiedAt: parentTime,
-				tier: "summary",
-				tag: "[summary]",
-			},
-		];
-
-		const result = buildStaleChildrenMap(db, summaries);
-		const staleChildren = result.get("_summary:topic1");
-		expect(staleChildren).toBeDefined();
-		expect(staleChildren?.[0].tag).toBe("[stale-detail]");
-	});
-
-	test("EXPLAIN: buildParentSummaryMap uses idx_edges_target partial index", () => {
-		// Populate with 1000+ edges to ensure ANALYZE computes proper selectivity
-		const topicCount = 10;
-		const detailPerTopic = 110;
-
-		// Wrap bulk inserts in a single outer transaction so the per-insertRow
-		// inner transactions become savepoints and the workload commits once
-		// instead of 2210 times. Without this, slow CI runners exceed the 5s
-		// per-test timeout (observed 9.5s on ubuntu-latest).
-		db.transaction(() => {
-			// Insert summary entries
-			for (let t = 0; t < topicCount; t++) {
-				insertRow(
-					db,
-					"semantic_memory",
-					{
-						id: `parent-${t}`,
-						key: `_summary:topic${t}`,
-						value: `Summary ${t}`,
-						source: null,
-						created_at: "2026-05-23T00:00:00.000Z",
-						modified_at: "2026-05-23T00:00:00.000Z",
-						tier: "summary",
-						deleted: 0,
-					},
-					TEST_SITE_ID,
-				);
-			}
-
-			// Insert detail entries and edges
-			for (let t = 0; t < topicCount; t++) {
-				for (let d = 0; d < detailPerTopic; d++) {
-					const key = `detail:topic${t}_item${d}`;
+			// Insert test data — wrapped in an outer transaction so the per-insertRow
+			// inner transactions become savepoints with a single final commit.
+			db.transaction(() => {
+				for (let i = 0; i < 100; i++) {
 					insertRow(
 						db,
 						"semantic_memory",
 						{
-							id: `child-${t}-${d}`,
-							key,
-							value: `Detail ${t}/${d}`,
+							id: `summary-${i}`,
+							key: `_summary:topic${i}`,
+							value: `Summary ${i}`,
 							source: null,
-							created_at: "2026-05-23T00:00:00.000Z",
-							modified_at: "2026-05-23T00:00:00.000Z",
+							created_at: summaryTime,
+							modified_at: summaryTime,
+							tier: "summary",
+							deleted: 0,
+						},
+						TEST_SITE_ID,
+					);
+
+					insertRow(
+						db,
+						"semantic_memory",
+						{
+							id: `detail-${i}`,
+							key: `detail:${i}`,
+							value: `Detail ${i}`,
+							source: null,
+							created_at: summaryTime,
+							modified_at: staleTime, // Details modified after summary = stale children
 							tier: "detail",
 							deleted: 0,
 						},
@@ -842,133 +312,42 @@ describe("buildStaleChildrenMap", () => {
 						db,
 						"memory_edges",
 						{
-							id: `edge-${t}-${d}`,
-							source_key: `_summary:topic${t}`,
-							target_key: key,
+							id: `edge-${i}`,
+							source_key: `_summary:topic${i}`,
+							target_key: `detail:${i}`,
 							relation: "summarizes",
 							weight: 1.0,
-							created_at: "2026-05-23T00:00:00.000Z",
-							modified_at: "2026-05-23T00:00:00.000Z",
+							created_at: summaryTime,
+							modified_at: summaryTime,
 							deleted: 0,
 						},
 						TEST_SITE_ID,
 					);
 				}
-			}
-		})();
+			})();
 
-		// Run ANALYZE to compute selectivity for the query planner
-		db.exec("ANALYZE");
+			// Run ANALYZE to compute selectivity for the query planner
+			db.exec("ANALYZE");
 
-		// Execute buildParentSummaryMap with a sample of keys
-		const sampleKeys = Array.from(
-			{ length: 50 },
-			(_, i) => `detail:topic${i % topicCount}_item${i}`,
-		);
-		const result = buildParentSummaryMap(db, sampleKeys);
+			// Build summaries list with summaryTime
+			const summaries: StageEntry[] = Array.from({ length: 50 }, (_, i) => ({
+				key: `_summary:topic${i}`,
+				value: `Summary ${i}`,
+				source: null,
+				modifiedAt: summaryTime,
+				tier: "summary",
+				tag: "[summary]",
+			}));
 
-		// Verify results are correct
-		expect(result.size).toBeGreaterThan(0);
+			const result = buildStaleChildrenMap(db, summaries);
 
-		// Check the query plan: the WHERE clause uses `deleted = 0` which matches the partial index predicate
-		const explainResult = db
-			.prepare(
-				`EXPLAIN QUERY PLAN
-			 SELECT e.target_key AS child, e.source_key AS parent
-			 FROM memory_edges e
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.target_key IN ('detail:topic0_item0')`,
-			)
-			.all() as Array<{ detail: string }>;
+			// Verify results work (all 50 summaries should have stale children)
+			expect(result.size).toBeGreaterThan(0);
 
-		// The plan should mention idx_edges_target (indicating partial index is used)
-		// Format: "SEARCH e USING INDEX idx_edges_target"
-		const planText = JSON.stringify(explainResult);
-		expect(planText).toContain("idx_edges_target");
-		expect(planText).not.toContain("SCAN e");
-	});
-
-	test("EXPLAIN: buildStaleChildrenMap uses idx_edges_source partial index", () => {
-		const summaryTime = "2026-05-23T00:00:00.000Z";
-		const staleTime = "2026-05-24T00:00:00.000Z"; // One day later (stale)
-
-		// Insert test data — wrapped in an outer transaction so the per-insertRow
-		// inner transactions become savepoints with a single final commit.
-		db.transaction(() => {
-			for (let i = 0; i < 100; i++) {
-				insertRow(
-					db,
-					"semantic_memory",
-					{
-						id: `summary-${i}`,
-						key: `_summary:topic${i}`,
-						value: `Summary ${i}`,
-						source: null,
-						created_at: summaryTime,
-						modified_at: summaryTime,
-						tier: "summary",
-						deleted: 0,
-					},
-					TEST_SITE_ID,
-				);
-
-				insertRow(
-					db,
-					"semantic_memory",
-					{
-						id: `detail-${i}`,
-						key: `detail:${i}`,
-						value: `Detail ${i}`,
-						source: null,
-						created_at: summaryTime,
-						modified_at: staleTime, // Details modified after summary = stale children
-						tier: "detail",
-						deleted: 0,
-					},
-					TEST_SITE_ID,
-				);
-
-				insertRow(
-					db,
-					"memory_edges",
-					{
-						id: `edge-${i}`,
-						source_key: `_summary:topic${i}`,
-						target_key: `detail:${i}`,
-						relation: "summarizes",
-						weight: 1.0,
-						created_at: summaryTime,
-						modified_at: summaryTime,
-						deleted: 0,
-					},
-					TEST_SITE_ID,
-				);
-			}
-		})();
-
-		// Run ANALYZE to compute selectivity for the query planner
-		db.exec("ANALYZE");
-
-		// Build summaries list with summaryTime
-		const summaries: StageEntry[] = Array.from({ length: 50 }, (_, i) => ({
-			key: `_summary:topic${i}`,
-			value: `Summary ${i}`,
-			source: null,
-			modifiedAt: summaryTime,
-			tier: "summary",
-			tag: "[summary]",
-		}));
-
-		const result = buildStaleChildrenMap(db, summaries);
-
-		// Verify results work (all 50 summaries should have stale children)
-		expect(result.size).toBeGreaterThan(0);
-
-		// Check the query plan: WHERE uses `deleted = 0` on both edges and semantic_memory
-		const explainResult = db
-			.prepare(
-				`EXPLAIN QUERY PLAN
+			// Check the query plan: WHERE uses `deleted = 0` on both edges and semantic_memory
+			const explainResult = db
+				.prepare(
+					`EXPLAIN QUERY PLAN
 			 SELECT e.source_key AS parent, e.target_key AS child_key,
 					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
 			 FROM memory_edges e
@@ -976,16 +355,17 @@ describe("buildStaleChildrenMap", () => {
 			 WHERE e.relation = 'summarizes'
 			   AND e.deleted = 0
 			   AND e.source_key IN ('_summary:topic0')`,
-			)
-			.all() as Array<{ detail: string }>;
+				)
+				.all() as Array<{ detail: string }>;
 
-		// The plan should NOT do a full table scan on edges (e)
-		// It should use either idx_edges_source or a covering index like idx_edges_triple
-		const planText = JSON.stringify(explainResult);
-		expect(planText).not.toContain("SCAN e");
-		// Should use an index on source_key
-		const hasSourceIndex =
-			planText.includes("idx_edges_source") || planText.includes("idx_edges_triple");
-		expect(hasSourceIndex).toBe(true);
+			// The plan should NOT do a full table scan on edges (e)
+			// It should use either idx_edges_source or a covering index like idx_edges_triple
+			const planText = JSON.stringify(explainResult);
+			expect(planText).not.toContain("SCAN e");
+			// Should use an index on source_key
+			const hasSourceIndex =
+				planText.includes("idx_edges_source") || planText.includes("idx_edges_triple");
+			expect(hasSourceIndex).toBe(true);
+		});
 	});
 });

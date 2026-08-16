@@ -53,14 +53,16 @@ describe("HandleMessageTracker", () => {
 		expect(findSpans("agent.handle-message").length).toBe(0);
 	});
 
-	it("opening a turn while one is open closes the prior turn first", () => {
+	it("opening a turn while one is open closes the prior turn with an OK terminal span", () => {
 		const tracker = new HandleMessageTracker({ watchdogIntervalMs: 0 });
 		tracker.openTurn("thread-1");
 		tracker.openTurn("thread-1");
-		// Two spans should now be ended on flush.
 		tracker.closeTurn("thread-1");
+
 		const spans = findSpans("agent.handle-message");
-		expect(spans.length).toBe(2);
+		expect(spans).toHaveLength(2);
+		expect(spans.every((span) => span.status.code === 1)).toBe(true);
+		expect(spans.every((span) => span.attributes["thread.id"] === "thread-1")).toBe(true);
 	});
 
 	it("error close stamps status and reason attribute", () => {
@@ -162,36 +164,33 @@ describe("HandleMessageTracker", () => {
 		expect(dispatch?.attributes["error.reason"]).toBe("watchdog_timeout");
 	});
 
-	it("touchTurn refreshes lastActivityAt so sweep does not close fresh activity", async () => {
+	it("touchTurn refreshes last activity so a fresh turn survives the watchdog", () => {
 		const tracker = new HandleMessageTracker({
 			watchdogIntervalMs: 0,
-			watchdogTimeoutMs: 50,
+			watchdogTimeoutMs: 1_000,
 		});
 		tracker.openTurn("thread-1");
+		const touchBaseline = Date.now();
 
-		// Wait long enough that the original openedAt would be sweep-eligible.
-		await new Promise((r) => setTimeout(r, 75));
-
-		// Without a touch, sweep would close it.
-		// Touch refreshes lastActivityAt to roughly "now", inside the 50ms window.
 		tracker.touchTurn("thread-1");
-		const closed = tracker.sweep();
-		expect(closed).toBe(0);
+		expect(tracker.sweep(touchBaseline + 500)).toBe(0);
 		expect(tracker.listOpenTurns()).toEqual(["thread-1"]);
 		tracker.closeTurn("thread-1");
 	});
 
-	it("watchdog closes turns whose lastActivityAt is older than the timeout", async () => {
+	it("watchdog sweep closes stale turns without requiring wall-clock sleeps", () => {
 		const tracker = new HandleMessageTracker({
 			watchdogIntervalMs: 0,
-			watchdogTimeoutMs: 25,
+			watchdogTimeoutMs: 1_000,
 		});
+		const openedAt = Date.now();
 		tracker.openTurn("thread-1");
-		// Sleep past the timeout without touching.
-		await new Promise((r) => setTimeout(r, 60));
-		const closed = tracker.sweep();
-		expect(closed).toBe(1);
+
+		expect(tracker.sweep(openedAt + 1_500)).toBe(1);
 		expect(tracker.listOpenTurns()).toEqual([]);
+		const turn = findSpan("agent.handle-message");
+		expect(turn?.status.code).toBe(2);
+		expect(turn?.attributes["error.reason"]).toBe("watchdog_timeout");
 	});
 
 	it("endAllOpenSpans flushes both maps", () => {

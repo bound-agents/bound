@@ -16,19 +16,18 @@ function makeRow(overrides: Partial<CrossThreadSummaryRow> = {}): CrossThreadSum
 describe("shouldInjectCrossThreadSummaries", () => {
 	const NOW_MS = new Date("2026-07-03T12:00:00.000Z").getTime();
 
-	it("Scenario A: fires for a new thread with no compaction when siblings exist", () => {
-		const rows = [makeRow()];
+	it("fires for a new thread with sibling summaries", () => {
 		expect(
 			shouldInjectCrossThreadSummaries({
 				threadSummaryThrough: null,
 				threadLastMessageAt: "2026-07-03T11:00:00.000Z",
 				nowMs: NOW_MS,
-				siblingSummaries: rows,
+				siblingSummaries: [makeRow()],
 			}),
 		).toBe(true);
 	});
 
-	it("Scenario A: does not fire for a new thread when no siblings have summaries", () => {
+	it("does not fire for a new thread without sibling summaries", () => {
 		expect(
 			shouldInjectCrossThreadSummaries({
 				threadSummaryThrough: null,
@@ -39,67 +38,57 @@ describe("shouldInjectCrossThreadSummaries", () => {
 		).toBe(false);
 	});
 
-	it("Scenario B: fires when idle > 1h and a sibling summary advanced past last activity", () => {
-		// Thread was last active at 10:00, now is 12:00 (2h idle)
-		// Sibling's summary_through is 11:00 — advanced past 10:00
-		const rows = [makeRow({ summary_through: "2026-07-03T11:00:00.000Z" })];
+	it("fires for an idle compacted thread when a sibling advanced", () => {
 		expect(
 			shouldInjectCrossThreadSummaries({
 				threadSummaryThrough: "2026-07-01T00:00:00.000Z",
 				threadLastMessageAt: "2026-07-03T10:00:00.000Z",
 				nowMs: NOW_MS,
-				siblingSummaries: rows,
+				siblingSummaries: [makeRow({ summary_through: "2026-07-03T11:00:00.000Z" })],
 			}),
 		).toBe(true);
 	});
 
-	it("Scenario B: does not fire when idle < 1h even if sibling advanced", () => {
-		// Thread was last active at 11:30, now is 12:00 (30min idle < 1h)
-		const rows = [makeRow({ summary_through: "2026-07-03T11:45:00.000Z" })];
+	it("does not fire before the idle threshold even when a sibling advanced", () => {
 		expect(
 			shouldInjectCrossThreadSummaries({
 				threadSummaryThrough: "2026-07-01T00:00:00.000Z",
 				threadLastMessageAt: "2026-07-03T11:30:00.000Z",
 				nowMs: NOW_MS,
-				siblingSummaries: rows,
+				siblingSummaries: [makeRow({ summary_through: "2026-07-03T11:45:00.000Z" })],
 			}),
 		).toBe(false);
 	});
 
-	it("Scenario B: does not fire when idle > 1h but no sibling advanced past last activity", () => {
-		// Thread was last active at 10:00, now is 12:00 (2h idle)
-		// But sibling's summary_through is 09:00 — before the thread's last activity
-		const rows = [makeRow({ summary_through: "2026-07-03T09:00:00.000Z" })];
+	it("does not fire at exactly the idle threshold", () => {
 		expect(
 			shouldInjectCrossThreadSummaries({
 				threadSummaryThrough: "2026-07-01T00:00:00.000Z",
-				threadLastMessageAt: "2026-07-03T10:00:00.000Z",
+				threadLastMessageAt: new Date(NOW_MS - 60 * 60 * 1000).toISOString(),
 				nowMs: NOW_MS,
-				siblingSummaries: rows,
+				siblingSummaries: [makeRow({ summary_through: new Date(NOW_MS).toISOString() })],
 			}),
 		).toBe(false);
 	});
 
-	it("Scenario B: does not fire when idle > 1h but no siblings exist", () => {
-		expect(
-			shouldInjectCrossThreadSummaries({
-				threadSummaryThrough: "2026-07-01T00:00:00.000Z",
-				threadLastMessageAt: "2026-07-03T10:00:00.000Z",
-				nowMs: NOW_MS,
-				siblingSummaries: [],
-			}),
-		).toBe(false);
-	});
-
-	it("does not fire for a compacted thread that is actively in conversation", () => {
-		// Thread has been compacted (summary_through set), last message was 5 min ago
-		const rows = [makeRow({ summary_through: "2026-07-03T11:58:00.000Z" })];
+	it("does not inject an advanced sibling summary into a thread with a recent message", () => {
 		expect(
 			shouldInjectCrossThreadSummaries({
 				threadSummaryThrough: "2026-07-01T00:00:00.000Z",
 				threadLastMessageAt: "2026-07-03T11:55:00.000Z",
 				nowMs: NOW_MS,
-				siblingSummaries: rows,
+				siblingSummaries: [makeRow({ summary_through: "2026-07-03T11:58:00.000Z" })],
+			}),
+		).toBe(false);
+	});
+
+	it("does not inject a sibling summary that has not advanced past an idle thread", () => {
+		expect(
+			shouldInjectCrossThreadSummaries({
+				threadSummaryThrough: "2026-07-01T00:00:00.000Z",
+				threadLastMessageAt: "2026-07-03T10:00:00.000Z",
+				nowMs: NOW_MS,
+				siblingSummaries: [makeRow({ summary_through: "2026-07-03T09:00:00.000Z" })],
 			}),
 		).toBe(false);
 	});
