@@ -99,6 +99,57 @@ describe("createYardTool", () => {
 		expect(description).not.toContain('tool("bms_read"');
 	});
 
+	it("normalizes a JSON-string input into a value for the guest", async () => {
+		// Models routinely emit nested object params as JSON *text* rather than a
+		// nested object (same class as the tavily list-arg serialization). The
+		// schema is z.any(), so a string passes validation, then the driver
+		// JSON.stringify()s it and the guest JSON.parse()s it straight back to a
+		// string — faithfully round-tripping the wrong thing. Observed live: the
+		// guest saw typeof input === "string" with Object.keys() returning
+		// character indices, so input.field was undefined.
+		const raw = await invoke({
+			program:
+				"function* main(input) { return { t: typeof input, alpha: input.alpha, deep: input.nested.deep }; }",
+			input: '{"alpha": 1, "nested": {"deep": true}}',
+		});
+		const parsed = JSON.parse(raw) as { result: { t: string; alpha: number; deep: boolean } };
+		expect(parsed.result.t).toBe("object");
+		expect(parsed.result.alpha).toBe(1);
+		expect(parsed.result.deep).toBe(true);
+	});
+
+	it("passes a genuine object input through unchanged", async () => {
+		const raw = await invoke({
+			program: "function* main(input) { return { t: typeof input, alpha: input.alpha }; }",
+			input: { alpha: 7 },
+		});
+		const parsed = JSON.parse(raw) as { result: { t: string; alpha: number } };
+		expect(parsed.result.t).toBe("object");
+		expect(parsed.result.alpha).toBe(7);
+	});
+
+	it("keeps a non-JSON string input as a string", async () => {
+		// Only strings that parse to an object/array are treated as marshalling
+		// artifacts. A plain scalar string is a legitimate input value.
+		const raw = await invoke({
+			program: "function* main(input) { return { t: typeof input, v: input }; }",
+			input: "hello",
+		});
+		const parsed = JSON.parse(raw) as { result: { t: string; v: string } };
+		expect(parsed.result.t).toBe("string");
+		expect(parsed.result.v).toBe("hello");
+	});
+
+	it("keeps a numeric-looking string input as a string", async () => {
+		const raw = await invoke({
+			program: "function* main(input) { return { t: typeof input, v: input }; }",
+			input: "42",
+		});
+		const parsed = JSON.parse(raw) as { result: { t: string; v: string } };
+		expect(parsed.result.t).toBe("string");
+		expect(parsed.result.v).toBe("42");
+	});
+
 	it("runs a pure program and returns result + usage + trace_id", async () => {
 		const raw = await invoke({
 			program: "function* main(input) { return input.n * 2; }",

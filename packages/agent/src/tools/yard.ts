@@ -256,6 +256,32 @@ function stripCodeFence(text: string): string {
 	return match ? (match[1] as string) : trimmed;
 }
 
+/**
+ * Recover an `input` object that crossed the tool boundary as JSON *text*.
+ *
+ * Models routinely emit nested object params as a JSON string rather than a
+ * nested object, and `input` is `z.any()`, so a string passes validation. The
+ * driver then `JSON.stringify()`s it and the guest `JSON.parse()`s it straight
+ * back to the same string — a faithful round-trip of the wrong thing, leaving
+ * the guest with `typeof input === "string"` and every `input.field` undefined.
+ * Same class as the tavily list-arg serialization.
+ *
+ * Only strings that parse to an object or array are recovered: a scalar string
+ * ("hello", "42", "true") is a legitimate input value and is passed through
+ * untouched, so this cannot swallow a deliberate string payload.
+ */
+export function normalizeYardInput(raw: unknown): unknown {
+	if (typeof raw !== "string") return raw;
+	const trimmed = raw.trim();
+	if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return raw;
+	try {
+		const parsed = JSON.parse(trimmed);
+		return parsed !== null && typeof parsed === "object" ? parsed : raw;
+	} catch {
+		return raw;
+	}
+}
+
 const yardSchema = z.object({
 	program: z
 		.string()
@@ -263,7 +289,9 @@ const yardSchema = z.object({
 	input: z
 		.any()
 		.optional()
-		.describe("JSON-compatible value exposed to the program as `input` (deeply frozen)."),
+		.describe(
+			"JSON-compatible value exposed to the program as `input` (deeply frozen). A JSON *string* encoding an object or array is decoded first, so a stringified nested param still reaches the guest as a value; scalar strings pass through unchanged.",
+		),
 	budget: z
 		.object({
 			timeout_seconds: z
@@ -673,7 +701,7 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 				try {
 					const out = await runYardProgram({
 						program: params.program,
-						input: params.input as JsonValue | undefined,
+						input: normalizeYardInput(params.input) as JsonValue | undefined,
 						host,
 					});
 					out.usage.inference_tokens += counters.inferenceTokens;

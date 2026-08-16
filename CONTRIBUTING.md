@@ -151,6 +151,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [`boundless_bash` runs inside a filesystem sandbox by default](docs/gotchas.md#boundless_bash-runs-inside-a-filesystem-sandbox-by-default)
 - [Mantle GPT-5.x automatic prompt cache is exact-match, not prefix](docs/gotchas.md#mantle-gpt-5x-automatic-prompt-cache-is-exact-match-not-prefix)
 - [Importing a package can create logs/bound.log in cwd](docs/gotchas.md#importing-a-package-can-create-logsboundlog-in-cwd)
+- [Yard's `input` can arrive as JSON text, not a value](docs/gotchas.md#yards-input-can-arrive-as-json-text-not-a-value)
 
 ## Recurring Checklists
 
