@@ -384,7 +384,13 @@ export interface ChatViewProps {
 	messages: Message[];
 	inFlightTools: Map<
 		string,
-		{ toolName: string; startTime: number; stdout?: string; args?: Record<string, unknown> }
+		{
+			toolName: string;
+			startTime: number;
+			stdout?: string;
+			args?: Record<string, unknown>;
+			threadId?: string;
+		}
 	>;
 	mcpServerCount: number;
 	bannerMessage: string | null;
@@ -751,7 +757,12 @@ export function ChatView({
 					{layout.endsInCompactRun && <Box height={1} />}
 					{yardExecutions.live.map((tree) => (
 						<Box key={`yard-live:${tree.traceId}:${tree.runId}`} marginBottom={1}>
-							<YardExecutionCard tree={tree} running terminalColumns={termColumns} />
+							<YardExecutionCard
+								tree={tree}
+								running
+								terminalColumns={termColumns}
+								maxGraphRows={Math.max(4, termRows - 10)}
+							/>
 						</Box>
 					))}
 					{/* Banners */}
@@ -805,9 +816,16 @@ export function ChatView({
 						/* Yard-dispatched client tools (call id `yard-client-*`) already
 						   render as nodes on the live Yard execution card — a second
 						   streaming card underneath it would show the same effect twice
-						   and stream its stdout outside the graph. Suppress them here;
-						   directly-dispatched tools keep their cards. */
-						.filter(([callId]) => !callId.startsWith(YARD_CLIENT_CALL_ID_PREFIX))
+						   and stream its stdout outside the graph. Aux agents run in
+						   their OWN threads but execute client tools on this session's
+						   handlers — without the thread filter their bash output
+						   streams under whatever chat is open (thread febfe45e).
+						   Directly-dispatched tools for THIS thread keep their cards. */
+						.filter(
+							([callId, t]) =>
+								!callId.startsWith(YARD_CLIENT_CALL_ID_PREFIX) &&
+								(!t.threadId || t.threadId === threadId),
+						)
 						.map(([callId, { toolName, startTime, stdout, args }]) => (
 							<Box key={callId} marginBottom={1}>
 								<ToolCallCard

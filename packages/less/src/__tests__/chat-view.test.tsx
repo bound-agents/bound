@@ -179,6 +179,45 @@ describe("ChatView Yard-dispatched client tools", () => {
 		expect(frame).not.toContain("command=ls");
 		expect(frame).not.toContain("streamed-yard-rows");
 	});
+
+	// Complaint 2 (thread febfe45e, 2026-08-16): aux agents run in their OWN
+	// threads but execute client tools on this session's registered handlers,
+	// so their bash output streamed under whatever chat was open — dozens of
+	// scouts made the transcript unfollowable. In-flight cards now carry the
+	// dispatching thread id and ChatView renders only this thread's tools.
+	it("does not render streaming cards for tools dispatched by other threads", async () => {
+		const inFlightTools = new Map([
+			[
+				"call_aux1",
+				{
+					toolName: "boundless_bash",
+					startTime: Date.now(),
+					stdout: "aux-scout-output",
+					args: { command: "bun test" },
+					threadId: "aux-thread-999",
+				},
+			],
+			[
+				"call_mine",
+				{
+					toolName: "boundless_search",
+					startTime: Date.now(),
+					args: { pattern: "y" },
+					threadId: "thread-123",
+				},
+			],
+		]);
+		const props = makeProps({ inFlightTools });
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		// This thread's tool renders…
+		expect(frame).toContain("search pattern=y");
+		// …the aux thread's tool and its stdout do not.
+		expect(frame).not.toContain("command=bun test");
+		expect(frame).not.toContain("aux-scout-output");
+	});
 });
 
 /**

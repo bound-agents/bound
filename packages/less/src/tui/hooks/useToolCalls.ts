@@ -17,6 +17,13 @@ export interface InFlightTool {
 	 * only surface identifying concurrent invocations while they run.
 	 */
 	args: Record<string, unknown>;
+	/**
+	 * The dispatching thread. Aux agents run in their own threads but their
+	 * client tools execute on THIS session's registered handlers, so without
+	 * this field their bash output streams under whatever chat is open.
+	 * ChatView filters the live cards to the viewed thread.
+	 */
+	threadId?: string;
 }
 
 export interface UseToolCallsResult {
@@ -61,6 +68,7 @@ export function useToolCalls(
 					startTime,
 					stdout: undefined,
 					args: (args ?? {}) as Record<string, unknown>,
+					threadId: call.thread_id,
 				});
 				return updated;
 			});

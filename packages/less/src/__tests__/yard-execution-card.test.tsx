@@ -263,4 +263,127 @@ describe("YardExecutionCard", () => {
 		expect(frame).not.toContain("╭");
 		expect(frame).not.toContain("╰");
 	});
+
+	// Dense fan-out packing (thread febfe45e, 2026-08-16): scatter-gather
+	// runs dispatch the same aux specialist across dozens of partitions; one
+	// row per member grew the live card past the terminal and flickered.
+	// Same-label leaf siblings ≥ 3 pack into ONE row: `label ×N` plus a
+	// per-member glyph cluster in dispatch order. Failed members keep an
+	// indexed detail row so the dense form never hides a failure reason.
+	it("packs same-label leaf siblings into a dense group row", () => {
+		const fanout: YardTreeSnapshot = {
+			traceId: "trace",
+			runId: "root",
+			phase: "started",
+			nodes: [
+				{
+					id: "root",
+					parentId: null,
+					node: { kind: "run", depth: 0 },
+					phase: "started",
+					seq: 1,
+					startSeq: 1,
+				},
+				...Array.from({ length: 6 }, (_, i) => ({
+					id: `scout-${i}`,
+					parentId: "root",
+					node: { kind: "tool", name: "aux:test-matrix-scout" } as const,
+					phase: (i === 2 ? "failed" : i < 4 ? "completed" : "started") as
+						| "failed"
+						| "completed"
+						| "started",
+					seq: 2 + i,
+					startSeq: 2 + i,
+					...(i === 2 ? { summary: "aux failed: lint errors" } : {}),
+				})),
+				{
+					id: "gather",
+					parentId: "root",
+					node: { kind: "inference", model: "gpt-5.6-terra" },
+					phase: "started",
+					seq: 8,
+					startSeq: 8,
+				},
+			],
+		};
+		const { lastFrame } = render(
+			React.createElement(YardExecutionCard, { tree: fanout, running: true, terminalColumns: 100 }),
+		);
+		const frame = lastFrame() ?? "";
+		const rows = frame.split("\n");
+
+		// One dense row for all six scouts: label ×6 + glyph cluster.
+		const groupRow = rows.find((row) => row.includes("×6"));
+		expect(groupRow).toBeDefined();
+		expect(groupRow).toContain("aux:test-matrix-scout");
+		// Glyph cluster carries per-member state in dispatch order:
+		// 2 done, 1 failed, 1 done, 2 running.
+		expect(groupRow).toContain("✓✓✗✓◌◌");
+		// The failed member gets an indexed detail row with its summary.
+		const failRow = rows.find((row) => row.includes("#3"));
+		expect(failRow).toBeDefined();
+		expect(failRow).toContain("aux failed: lint errors");
+		// No per-member rows beyond the group + fail detail.
+		expect(rows.filter((row) => row.includes("aux:test-matrix-scout")).length).toBe(1);
+		// The lone inference leaf stays an individual row.
+		expect(frame).toContain("infer · gpt-5.6-terra");
+		// Header counts every member.
+		expect(frame).toContain("7 effects");
+	});
+
+	// Live-card height guard (thread febfe45e): enough aux nodes made the
+	// dynamic region exceed terminal height and Ink flickered on every
+	// repaint. Past maxGraphRows the graph collapses into "… +N more".
+	// Committed cards ignore the budget (Static scrollback).
+	it("caps live graph rows at maxGraphRows with an overflow line", () => {
+		const many: YardTreeSnapshot = {
+			traceId: "trace",
+			runId: "root",
+			phase: "started",
+			nodes: [
+				{
+					id: "root",
+					parentId: null,
+					node: { kind: "run", depth: 0 },
+					phase: "started",
+					seq: 1,
+					startSeq: 1,
+				},
+				// Distinct labels so grouping cannot absorb them.
+				...Array.from({ length: 12 }, (_, i) => ({
+					id: `eff-${i}`,
+					parentId: "root",
+					node: { kind: "tool", name: `tool-${i}` } as const,
+					phase: "started" as const,
+					seq: 2 + i,
+					startSeq: 2 + i,
+				})),
+			],
+		};
+		const live = render(
+			React.createElement(YardExecutionCard, {
+				tree: many,
+				running: true,
+				terminalColumns: 100,
+				maxGraphRows: 5,
+			}),
+		);
+		const liveFrame = live.lastFrame() ?? "";
+		// 4 kept rows + 1 overflow line.
+		expect(liveFrame).toContain("tool-3");
+		expect(liveFrame).not.toContain("tool-4");
+		expect(liveFrame).toContain("+8 more effects");
+
+		// Committed card ignores the budget entirely.
+		const committed = render(
+			React.createElement(YardExecutionCard, {
+				tree: { ...many, phase: "completed" },
+				terminalColumns: 100,
+				maxGraphRows: 5,
+			}),
+		);
+		const committedFrame = committed.lastFrame() ?? "";
+		expect(committedFrame).toContain("tool-11");
+		expect(committedFrame).not.toContain("more effects");
+	});
 });
