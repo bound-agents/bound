@@ -9,7 +9,7 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createAppContext } from "../app-context";
 import { insertRow } from "../change-log";
 
-describe("Phase 1 Integration", () => {
+describe("Phase 1 Integration", async () => {
 	let configDir: string;
 	let dbPath: string;
 
@@ -67,9 +67,9 @@ describe("Phase 1 Integration", () => {
 		}
 	});
 
-	it("complete Phase 1 vertical slice: create context, verify database, insert user, emit event", () => {
+	it("complete Phase 1 vertical slice: create context, verify database, insert user, emit event", async () => {
 		// Step 1: Create AppContext with full initialization
-		const ctx = createAppContext(configDir, dbPath);
+		const ctx = await createAppContext(configDir, dbPath);
 
 		expect(ctx).toBeDefined();
 		expect(ctx.db).toBeDefined();
@@ -204,8 +204,8 @@ describe("Phase 1 Integration", () => {
 		ctx.db.close();
 	});
 
-	it("vertical slice with multiple users and threads", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("vertical slice with multiple users and threads", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
 
 		// Insert multiple users
@@ -315,8 +315,8 @@ describe("Phase 1 Integration", () => {
 		ctx.db.close();
 	});
 
-	it("semantic memory and tasks storage", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("semantic memory and tasks storage", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
 
 		// Insert semantic memory

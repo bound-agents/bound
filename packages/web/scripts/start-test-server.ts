@@ -48,7 +48,7 @@ writeFileSync(
 
 async function main() {
 	try {
-		const ctx = createAppContext(configDir, ":memory:");
+		const ctx = await createAppContext(configDir, ":memory:");
 		const eventBus = new TypedEventEmitter();
 		const webServer = await createWebServer(ctx.db, eventBus, {
 			port: 3000,

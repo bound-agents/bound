@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AllowlistConfig, ModelBackendsConfig } from "@bound/shared";
 import {
 	type RelayConfig,
@@ -14,6 +15,53 @@ import {
 	relaySchema,
 	syncSchema,
 } from "@bound/shared";
+import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
+import type { QuickJSWASMModule } from "quickjs-emscripten-core";
+import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
+
+const JS_CONFIG_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
+const JS_CONFIG_STACK_LIMIT_BYTES = 256 * 1024;
+const JS_CONFIG_CPU_LIMIT_MS = 50;
+let quickJS: Promise<QuickJSWASMModule> | undefined;
+
+function getQuickJS(): Promise<QuickJSWASMModule> {
+	quickJS ??= newQuickJSWASMModuleFromVariant(RELEASE_SYNC);
+	return quickJS;
+}
+
+function errorMessage(value: unknown): string {
+	if (value !== null && typeof value === "object" && "message" in value) {
+		return String(value.message);
+	}
+	return String(value);
+}
+
+async function evaluateJavaScriptConfig(source: string, filename: string): Promise<unknown> {
+	const runtime = (await getQuickJS()).newRuntime();
+	runtime.setMemoryLimit(JS_CONFIG_MEMORY_LIMIT_BYTES);
+	runtime.setMaxStackSize(JS_CONFIG_STACK_LIMIT_BYTES);
+	const deadline = Date.now() + JS_CONFIG_CPU_LIMIT_MS;
+	runtime.setInterruptHandler(() => Date.now() > deadline);
+	const vm = runtime.newContext();
+	try {
+		const body = source.replace(/^\s*export\s+default\s+/, "return (").replace(/;?\s*$/, ");");
+		const result = vm.evalCode(
+			`(() => { "use strict"; const config = (() => { ${body} })(); if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("${filename} must export an object"); return config; })()`,
+			filename,
+		);
+		if (result.error) {
+			const error = vm.dump(result.error);
+			result.error.dispose();
+			throw new Error(errorMessage(error));
+		}
+		const value = vm.dump(result.value);
+		result.value.dispose();
+		return value;
+	} finally {
+		vm.dispose();
+		runtime.dispose();
+	}
+}
 
 export interface ConfigError {
 	filename: string;
@@ -79,6 +127,45 @@ function expandEnvVarsInObject(obj: unknown): unknown {
 		return result;
 	}
 	return obj;
+}
+
+export async function loadConfigWithPrecedence<T>(
+	configDir: string,
+	basename: string,
+	schema: ZodSchema<T>,
+): Promise<Result<T, ConfigError>> {
+	const jsFilename = `${basename}.js`;
+	const jsonFilename = `${basename}.json`;
+	if (!existsSync(join(configDir, jsFilename))) {
+		return loadConfigFile(configDir, jsonFilename, schema);
+	}
+
+	try {
+		const source = expandEnvVars(readFileSync(join(configDir, jsFilename), "utf-8"));
+		const evaluated = await evaluateJavaScriptConfig(source, jsFilename);
+		const expanded = expandEnvVarsInObject(evaluated);
+		const result = schema.safeParse(expanded);
+		if (result.success && result.data !== undefined) return ok(result.data);
+		const fieldErrors: Record<string, string[]> = {};
+		if (result.error) {
+			for (const [field, errors] of Object.entries(result.error.flatten().fieldErrors ?? {})) {
+				fieldErrors[field] = (errors as string[]) || [];
+			}
+			return err({
+				filename: jsFilename,
+				message: `Validation failed: ${result.error.message}`,
+				fieldErrors,
+			});
+		}
+		return err({ filename: jsFilename, message: "Validation failed: unknown error", fieldErrors });
+	} catch (error) {
+		return err({
+			filename: jsFilename,
+			message:
+				error instanceof Error ? error.message : "Unknown error loading JavaScript config file",
+			fieldErrors: {},
+		});
+	}
 }
 
 export function loadConfigFile<T>(
@@ -161,29 +248,29 @@ export function loadConfigFile<T>(
 	}
 }
 
-export function loadModelBackendsConfig<T>(
+export async function loadModelBackendsConfig<T>(
 	configDir: string,
 	schema: ZodSchema<T>,
-): Result<T, ConfigError> {
-	return loadConfigFile(configDir, "model_backends.json", schema);
+): Promise<Result<T, ConfigError>> {
+	return loadConfigWithPrecedence(configDir, "model_backends", schema);
 }
 
-export function loadRequiredConfigs(
+export async function loadRequiredConfigs(
 	configDir: string,
 	allowlistSchema: ZodSchema<AllowlistConfig>,
 	modelBackendsSchema: ZodSchema<ModelBackendsConfig>,
 	modelBackends?: ModelBackendsConfig,
-): Result<RequiredConfig, ConfigError[]> {
+): Promise<Result<RequiredConfig, ConfigError[]>> {
 	const errors: ConfigError[] = [];
 
-	const allowlistResult = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
+	const allowlistResult = await loadConfigWithPrecedence(configDir, "allowlist", allowlistSchema);
 	if (!allowlistResult.ok) {
 		errors.push(allowlistResult.error);
 	}
 
 	const modelBackendsResult = modelBackends
 		? ok(modelBackends)
-		: loadModelBackendsConfig(configDir, modelBackendsSchema);
+		: await loadModelBackendsConfig(configDir, modelBackendsSchema);
 	if (!modelBackendsResult.ok) {
 		errors.push(modelBackendsResult.error);
 	}
@@ -203,7 +290,7 @@ export function loadRequiredConfigs(
 	});
 }
 
-export function loadOptionalConfigs(configDir: string): OptionalConfigs {
+export async function loadOptionalConfigs(configDir: string): Promise<OptionalConfigs> {
 	const configs: OptionalConfigs = {};
 
 	// Define optional config files and their schemas
@@ -221,7 +308,11 @@ export function loadOptionalConfigs(configDir: string): OptionalConfigs {
 	];
 
 	for (const { filename, schema, key } of optionalConfigs) {
-		const result = loadConfigFile(configDir, filename, schema);
+		const result = await loadConfigWithPrecedence(
+			configDir,
+			filename.replace(/\.json$/, ""),
+			schema,
+		);
 		if (result.ok || !result.error?.message.includes("File not found")) {
 			// Include both successful loads and actual validation errors
 			// Exclude only "file not found" errors (missing optional files are OK)

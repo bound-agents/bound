@@ -113,7 +113,7 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 		}
 
-		const newOptionalConfigs = loadOptionalConfigs(configDir);
+		const newOptionalConfigs = await loadOptionalConfigs(configDir);
 
 		// Capture old MCP and sync configs before they get overwritten
 		const oldMcpResult = appContext.optionalConfig.mcp;

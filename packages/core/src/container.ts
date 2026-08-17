@@ -63,13 +63,13 @@ export class LoggerService {
 	}
 }
 
-export function bootstrapContainer(
+export async function bootstrapContainer(
 	configDir: string,
 	dbPath: string,
 	modelBackends?: ModelBackendsConfig,
 ) {
 	// Load and validate config
-	const configResult = loadRequiredConfigs(
+	const configResult = await loadRequiredConfigs(
 		configDir,
 		allowlistSchema,
 		modelBackendsSchema,

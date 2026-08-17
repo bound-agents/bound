@@ -243,7 +243,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	try {
 		const resolvedConfigDir = resolve(configDir);
 		const modelBackends = await loadStartupModelBackends(resolvedConfigDir);
-		appContext = createAppContext(resolvedConfigDir, dbPath, modelBackends);
+		appContext = await createAppContext(resolvedConfigDir, dbPath, modelBackends);
 		// Clear the column cache after applySchema has run, so long-running
 		// agent processes pick up the new memory_edges.context column without restart.
 		clearColumnCache();

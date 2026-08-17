@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { getSiteId, insertRow, updateRow } from "@bound/core";
+import { getSiteId, insertRow, loadConfigWithPrecedence, updateRow } from "@bound/core";
+import { syncSchema } from "@bound/shared";
 import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
 	hostName: string;
@@ -15,20 +15,10 @@ interface SyncStateRow {
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function loadRelayConfig(configDir: string): { drain_timeout_seconds: number } {
-	try {
-		const syncConfigPath = resolve(configDir, "sync.json");
-		if (!existsSync(syncConfigPath)) {
-			return { drain_timeout_seconds: 120 };
-		}
-		const content = readFileSync(syncConfigPath, "utf-8");
-		const parsed = JSON.parse(content);
-		return {
-			drain_timeout_seconds: parsed.relay?.drain_timeout_seconds ?? 120,
-		};
-	} catch {
-		return { drain_timeout_seconds: 120 };
-	}
+async function loadRelayConfig(configDir: string): Promise<{ drain_timeout_seconds: number }> {
+	const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
+	if (!result.ok) return { drain_timeout_seconds: 120 };
+	return { drain_timeout_seconds: result.value.relay?.drain_timeout_seconds ?? 120 };
 }
 export async function runSetHub(args: SetHubArgs): Promise<void> {
 	const configDir = args.configDir || "config";
@@ -81,7 +71,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		// Step 2: Wait for relay outbox to drain
 		// Polls relay_outbox until all entries are delivered or the timeout elapses.
 		// Entries are marked delivered via markDelivered() when acknowledged by the relay handler.
-		const relayConfig = loadRelayConfig(configDir);
+		const relayConfig = await loadRelayConfig(configDir);
 		const drainTimeoutMs = relayConfig.drain_timeout_seconds * 1000;
 		const drainStart = Date.now();
 		let drained = false;
