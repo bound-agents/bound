@@ -66,14 +66,6 @@ export interface AuxLoopParentContext {
 	platformInstructions?: string;
 }
 
-/** Keep the parent's surface context byte-for-byte, then append the aux persona. */
-export function composeAuxSystemPromptAddition(
-	parentAddition: string | undefined,
-	persona: string,
-): string {
-	return [parentAddition, persona].filter((part): part is string => Boolean(part)).join("\n\n");
-}
-
 export interface AgentLoopFactory {
 	(config: AgentLoopConfig): MainAgentLoop;
 	createAuxLoopRunner(parent: AuxLoopParentContext): NonNullable<ToolContext["auxLoopRunner"]>;
@@ -353,19 +345,18 @@ export function createAgentLoopFactory(
 				undefined,
 			);
 
-			const inheritedSystemPromptAddition = composeAuxSystemPromptAddition(
-				parent.systemPromptAddition,
-				params.persona,
-			);
-
 			const auxLoop = new AuxAgentLoop(appContext, auxSandbox, modelRouter, {
 				threadId: params.threadId,
 				userId: params.userId,
 				modelId: params.modelHint ?? undefined,
 				// Preserve the parent surface's complete injected context verbatim —
-				// notably boundless cwd/git/context-file blocks — then append the aux
-				// identity persona. No thinner aux-specific reconstruction.
-				systemPromptAddition: inheritedSystemPromptAddition || undefined,
+				// notably boundless cwd/git/context-file blocks.
+				systemPromptAddition: parent.systemPromptAddition,
+				// The aux identity REPLACES the main persona in the stable prefix.
+				// It used to be appended to systemPromptAddition instead, which left
+				// the main persona loaded from cluster_config underneath — every aux
+				// thread spoke as the main agent with its own persona as a footnote.
+				personaOverride: params.persona,
 				platformInstructions: parent.platformInstructions,
 				platform: parent.platform ?? "aux",
 				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],

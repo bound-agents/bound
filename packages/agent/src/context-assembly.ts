@@ -255,6 +255,16 @@ export interface ContextParams {
 	/** Optional system prompt addition from client connection. Appended to system suffix. */
 	systemPromptAddition?: string;
 	/**
+	 * Replaces the persona slot in the stable system prompt. The slot
+	 * otherwise loads the MAIN persona from cluster_config — which meant
+	 * every aux agent spoke as the main agent, with its own persona merely
+	 * appended after the full main identity (live bug: aux bug-sweeper
+	 * threads opened reports in the main persona's voice). An aux loop
+	 * passes its identity's persona here; empty string renders no persona
+	 * slot; undefined keeps the main persona.
+	 */
+	personaOverride?: string;
+	/**
 	 * Server-level instructions authored by the connector this thread is bound
 	 * to, resolved via PlatformMcpRegistry.getInstructionsForThread(). Surfaced
 	 * verbatim on the varying side. bound core does not interpret it — the
@@ -1585,7 +1595,12 @@ Original output was too large for the context window. If you need the full conte
 	// tested for byte-stability — see `system-parts/__tests__/static-parts.property.test.ts`.
 	const systemParts: string[] = buildStaticSystemParts({
 		db,
-		persona: loadPersona(db),
+		// An aux loop replaces the persona slot with its own identity; the
+		// main persona must NOT ride underneath it (aux threads spoke as the
+		// main agent — see ContextParams.personaOverride). Empty string means
+		// "no persona slot at all".
+		persona:
+			params.personaOverride !== undefined ? params.personaOverride || null : loadPersona(db),
 		commandRegistry: params.commandRegistry ?? [],
 		hostName,
 		siteId,

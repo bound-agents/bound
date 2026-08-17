@@ -138,6 +138,12 @@ export interface AgentLoopConfig {
 	shouldYield?: () => boolean;
 	connectionId?: string;
 	systemPromptAddition?: string;
+	/**
+	 * Replaces the persona slot in the assembled system prompt. Set by aux
+	 * loops so the auxiliary identity IS the persona instead of riding as a
+	 * suffix under the main agent's identity.
+	 */
+	personaOverride?: string;
 	platformInstructions?: string;
 	platformTools?: Array<{
 		kind: "platform";

@@ -2,10 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { RegisteredTool } from "@bound/agent";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { Logger } from "@bound/shared";
-import {
-	composeAuxSystemPromptAddition,
-	createToolRegistry,
-} from "../commands/start/agent-factory";
+import { createToolRegistry } from "../commands/start/agent-factory";
 
 const noopLogger: Logger = {
 	debug: () => {},
@@ -29,24 +26,12 @@ function platformTool(
 	};
 }
 
-describe("composeAuxSystemPromptAddition", () => {
-	it("preserves the full parent surface context before the aux persona", () => {
-		const parent = [
-			"You are connected to a boundless terminal client.",
-			"Working directory: /repo",
-			"<git-context>main</git-context>",
-			'<context-file path="AGENTS.md">rules</context-file>',
-		].join("\n");
-
-		expect(composeAuxSystemPromptAddition(parent, "Methodical scout.")).toBe(
-			`${parent}\n\nMethodical scout.`,
-		);
-	});
-
-	it("uses only the persona when the parent surface has no injected context", () => {
-		expect(composeAuxSystemPromptAddition(undefined, "Brief auditor.")).toBe("Brief auditor.");
-	});
-});
+// composeAuxSystemPromptAddition was removed: the aux persona now rides
+// ContextParams.personaOverride and REPLACES the main persona in the stable
+// prefix, instead of being appended to systemPromptAddition underneath the
+// full main identity (which made every aux thread speak as the main agent).
+// The replacement behavior is pinned in
+// packages/agent/src/__tests__/context-assembly.test.ts ("personaOverride").
 
 describe("createToolRegistry — platform tool annotation propagation", () => {
 	it("copies static idempotent and readOnly fields onto the registered tool", () => {
