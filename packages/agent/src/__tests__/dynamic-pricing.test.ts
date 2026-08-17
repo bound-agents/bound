@@ -19,7 +19,7 @@ describe("dynamic pricing registry", () => {
 		await compileDynamicPricing([
 			{ id: "m", priceFunction: "function price(t) { return t.inputTokens / 1000; }" },
 		]);
-		expect(calculateDynamicPrice("m", input)).toBe(0.1);
+		expect(calculateDynamicPrice("m", input)).toEqual({ value: 0.1, error: null });
 	});
 
 	it("rejects syntax errors before publication", async () => {
@@ -34,10 +34,10 @@ describe("dynamic pricing registry", () => {
 		await expect(
 			compileDynamicPricing([{ id: "m", priceFunction: "function price() { return -1; }" }]),
 		).rejects.toThrow(/finite non-negative/);
-		expect(calculateDynamicPrice("m", input)).toBe(7);
+		expect(calculateDynamicPrice("m", input)).toEqual({ value: 7, error: null });
 	});
 
-	it("returns null for branch-specific runtime failures", async () => {
+	it("returns the branch-specific runtime failure for logging", async () => {
 		await compileDynamicPricing([
 			{
 				id: "m",
@@ -45,7 +45,10 @@ describe("dynamic pricing registry", () => {
 					"function price(t) { if (t.inputTokens > 10) throw new Error('branch'); return 0; }",
 			},
 		]);
-		expect(calculateDynamicPrice("m", input)).toBeNull();
+		expect(calculateDynamicPrice("m", input)).toEqual({
+			value: null,
+			error: "branch",
+		});
 	});
 
 	it("interrupts runaway functions during startup validation", async () => {

@@ -176,10 +176,13 @@ export function calculateTurnCost(
 		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
 		pricesPerM,
 	});
-	if (dynamic !== null) return dynamic;
-	if (!warnedDynamicPricingFallbacks.has(modelId)) {
+	if (dynamic?.value !== null && dynamic !== null) return dynamic.value;
+	if (dynamic?.error && !warnedDynamicPricingFallbacks.has(modelId)) {
 		warnedDynamicPricingFallbacks.add(modelId);
-		logger.warn("Dynamic price callback failed; falling back to static pricing", { modelId });
+		logger.warn("Dynamic price callback failed; falling back to static pricing", {
+			modelId,
+			error: dynamic.error,
+		});
 	}
 
 	const inputCost = (usage.inputTokens * pricesPerM.input) / 1_000_000;
