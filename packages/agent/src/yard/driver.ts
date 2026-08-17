@@ -151,6 +151,41 @@ const BOOTSTRAP_SOURCE = `(() => {
 	// globalThis stays extensible — the program must still define main() and
 	// its own top-level bindings; guest-created objects and prototypes stay
 	// fully writable.
+	// Implicit object-to-string coercion is always data loss in an
+	// orchestration program: a template literal embedding a plain object
+	// produces the literal "[object Object]" and the receiving agent gets
+	// nothing (live incident: two review objects handed to a remediation
+	// agent this way; it saw no findings and no-oped). Defining
+	// Symbol.toPrimitive on Object.prototype replaces the default
+	// OrdinaryToPrimitive for every object that lacks its own hook, so this
+	// reimplements the spec algorithm faithfully and throws ONLY where the
+	// default would have landed on Object.prototype.toString. Errors, dates
+	// (own hook), and custom toString() implementations coerce exactly as
+	// before; an array of plain objects throws from the element coercion
+	// inside join(). Must run BEFORE the intrinsic freeze below.
+	const plainObjectToString = Object.prototype.toString;
+	Object.defineProperty(Object.prototype, Symbol.toPrimitive, {
+		value: function (hint) {
+			const order = hint === "string" ? ["toString", "valueOf"] : ["valueOf", "toString"];
+			for (const name of order) {
+				const method = this[name];
+				if (typeof method === "function") {
+					if (method === plainObjectToString) {
+						throw new TypeError(
+							"implicit object-to-string coercion would embed '[object Object]' and lose the value - JSON.stringify() it (or extract the fields you need) before building the string",
+						);
+					}
+					const result = method.call(this);
+					if (result === null || typeof result !== "object") return result;
+				}
+			}
+			throw new TypeError("Cannot convert object to primitive value");
+		},
+		writable: false,
+		enumerable: false,
+		configurable: false,
+	});
+
 	const intrinsicNames = [
 		"Object", "Array", "Function", "String", "Number", "Boolean", "Symbol", "BigInt",
 		"Math", "JSON", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
@@ -241,13 +276,6 @@ const BOOTSTRAP_SOURCE = `(() => {
 		if (typeof request.prompt !== "string") {
 			throw new TypeError("infer() request requires a prompt string");
 		}
-		// Same interpolation trap as aux() instructions: pass structured data
-		// through request.input, or JSON.stringify() it into the prompt.
-		if (request.prompt.indexOf("[object Object]") !== -1) {
-			throw new TypeError(
-				'infer() prompt contains "[object Object]" - a structured value was interpolated into a template string and its content was lost. Pass structured data via request.input, or JSON.stringify() it.',
-			);
-		}
 		assertJsonCompatible(request, "infer() request");
 		return brand({ kind: "inference", model: model, request: request });
 	};
@@ -258,16 +286,6 @@ const BOOTSTRAP_SOURCE = `(() => {
 		}
 		if (typeof instructions !== "string" || instructions.length === 0) {
 			throw new TypeError("aux() requires instructions");
-		}
-		// Interpolating a structured value into a template string coerces it to
-		// the literal "[object Object]" and the receiving agent gets no data at
-		// all (live incident: two review objects handed to a remediation agent
-		// as "[object Object]" - it saw no findings and no-oped). Fail loudly at
-		// construction, where the program can still fix the interpolation.
-		if (instructions.indexOf("[object Object]") !== -1) {
-			throw new TypeError(
-				'aux() instructions contain "[object Object]" - a structured value was interpolated into a template string and its content was lost. JSON.stringify() the value (or extract the fields you need) before embedding it.',
-			);
 		}
 		const extra = options === undefined ? {} : options;
 		return toolCtor("aux", Object.assign({ action: "invoke", name: name, instructions: instructions }, extra));
