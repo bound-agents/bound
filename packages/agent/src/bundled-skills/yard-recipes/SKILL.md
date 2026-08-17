@@ -197,6 +197,19 @@ function* main(input) {
   inherit the root deadline and concurrency unchanged.
 - **Schema violation from `infer()`** — fails the effect; there is no hidden
   repair. Catch and retry explicitly if the stage is retryable.
+- **A reviewer errand told to "fix it directly" or own the release.** That is
+  role-forcing: the reviewer judges; repairs go to an implementer
+  re-dispatched with the reviewer's specific objections. Observed live: a
+  reviewer handed repair-and-release duties spent its whole budget and
+  returned a bare apology.
+- **A survey arm told to implement.** The scatter phase reads; the implement
+  phase writes. An arm instructed to "implement fully" during the survey
+  races the other arms' reads, and its work is discarded by the later
+  implement stage anyway.
+- **Release ownership split across arms.** "Commit and push if the
+  implementer has not already done so" makes two agents responsible for one
+  irreversible step. Exactly one errand owns commit/push; everyone else
+  reports.
 
 ## Roster
 

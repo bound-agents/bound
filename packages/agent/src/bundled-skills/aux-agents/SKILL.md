@@ -65,6 +65,10 @@ investigator and overprompted to compensate.
 - Encode the STOP conditions: what the identity refuses to improvise
   through (an implementer stopping when the worktree doesn't match the
   errand, rather than "fixing" it).
+- Encode the report shape when stopped short: ground state — what changed,
+  what didn't, where the boundary sits, what would unblock — never a bare
+  apology. An "I wasn't able to complete this" with nothing else spends the
+  whole errand's budget and hands the orchestrator zero data.
 - Do NOT encode any particular codebase, task, or output format — those
   are errand material.
 
