@@ -1,7 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import type { CommandRegistryEntry, Logger, TypedEventEmitter } from "@bound/shared";
+import type {
+	CommandRegistryEntry,
+	Logger,
+	ModelBackendsConfig,
+	TypedEventEmitter,
+} from "@bound/shared";
 import type { OptionalConfigs, RequiredConfig } from "./config-loader";
 import { loadOptionalConfigs } from "./config-loader";
 import { bootstrapContainer } from "./container";
@@ -30,8 +35,12 @@ export interface AppContext {
 	commandRegistry: CommandRegistryEntry[];
 }
 
-export function createAppContext(configDir: string, dbPath: string): AppContext {
-	const container = bootstrapContainer(configDir, dbPath);
+export function createAppContext(
+	configDir: string,
+	dbPath: string,
+	modelBackends?: ModelBackendsConfig,
+): AppContext {
+	const container = bootstrapContainer(configDir, dbPath, modelBackends);
 
 	const dbService = container.resolve(DatabaseService);
 	const configService = container.resolve(ConfigService);

@@ -17,7 +17,7 @@
  *   --persona       persona file path (default: ./persona.md, else .example)
  *   --seed          seed transcript json (default: ./seed.json, else .example)
  *   --prompts-file  prompts json (default: ./prompts.json, else .example)
- *   --config-dir    bound config dir holding model_backends.json
+ *   --config-dir    bound config dir holding model_backends.js
  *                   (default: $BOUND_CONFIG_DIR, else ~/bound/config)
  *   --out           also write the markdown report to this path
  *
@@ -29,9 +29,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { insertRow, loadConfigFile } from "@bound/core";
+import { insertRow } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
-import { modelBackendsSchema } from "@bound/shared";
 import { toRouterConfig } from "../../../cli/src/commands/start/inference";
 import { insertThreadMessage } from "../../src/agent-loop-utils";
 // Shared hermetic seed-and-run environment. persona-lab observes the model's
@@ -46,6 +45,7 @@ import {
 	latestTurnMetrics,
 	silentLogger,
 } from "../../src/harness/environment";
+import { loadModelBackendsConfig } from "../../src/model-backends-config";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -82,10 +82,7 @@ type Inputs = {
 	outPath: string | null;
 };
 
-type RawBackends = Extract<
-	ReturnType<typeof loadConfigFile<typeof modelBackendsSchema>>,
-	{ ok: true }
->["value"];
+type RawBackends = Awaited<ReturnType<typeof loadModelBackendsConfig>>;
 
 // --- arg parsing ------------------------------------------------------------
 
@@ -156,7 +153,7 @@ function loadInputs(args: Record<string, string>): Inputs {
 	const models = splitList(args.models ?? "");
 	if (models.length === 0) {
 		console.error(
-			"no models given. Pass --models <id,id,...> with backend ids from your model_backends.json.",
+			"no models given. Pass --models <id,id,...> with backend ids from your model_backends.js.",
 		);
 		process.exit(1);
 	}
@@ -322,9 +319,7 @@ function formatCase(r: CaseResult): string {
 async function main(): Promise<void> {
 	const inputs = loadInputs(parseArgs(process.argv.slice(2)));
 
-	const rb = loadConfigFile(inputs.configDir, "model_backends.json", modelBackendsSchema);
-	if (!rb.ok) throw rb.error;
-	const rawBackends = rb.value;
+	const rawBackends = await loadModelBackendsConfig(inputs.configDir);
 
 	const lines = buildReportHeader(inputs);
 	for (const line of lines) console.log(line);

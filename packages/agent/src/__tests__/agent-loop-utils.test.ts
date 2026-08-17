@@ -108,7 +108,7 @@ describe("calculateTurnCost", () => {
 		await compileDynamicPricing([
 			{
 				id: "gpt-5.6",
-				price_function: `function price(turn) {
+				priceFunction: `function price(turn) {
 					const long = turn.inputTokens > 128000;
 					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
 						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
@@ -118,17 +118,17 @@ describe("calculateTurnCost", () => {
 			},
 			{
 				id: "throws",
-				price_function:
+				priceFunction:
 					"function price(t) { if (t.inputTokens > 10) throw new Error('bad'); return 0; }",
 			},
 			{
 				id: "negative",
-				price_function: "function price(t) { return t.inputTokens > 10 ? -1 : 0; }",
+				priceFunction: "function price(t) { return t.inputTokens > 10 ? -1 : 0; }",
 			},
-			{ id: "nan", price_function: "function price(t) { return t.inputTokens > 10 ? NaN : 0; }" },
+			{ id: "nan", priceFunction: "function price(t) { return t.inputTokens > 10 ? NaN : 0; }" },
 			{
 				id: "infinity",
-				price_function: "function price(t) { return t.inputTokens > 10 ? Infinity : 0; }",
+				priceFunction: "function price(t) { return t.inputTokens > 10 ? Infinity : 0; }",
 			},
 		]);
 	});
@@ -235,7 +235,7 @@ describe("calculateTurnCost", () => {
 					price_per_m_output: 10,
 					price_per_m_cache_read: 0.125,
 					price_per_m_cache_write: 1.25,
-					price_function: `function price(turn) {
+					priceFunction: `function price(turn) {
 					const long = turn.inputTokens > 128000;
 					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
 						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
@@ -252,7 +252,7 @@ describe("calculateTurnCost", () => {
 		const cost = calculateTurnCost(
 			"throws",
 			{ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null },
-			[{ id: "throws", price_per_m_input: 3, price_function: "configured" }],
+			[{ id: "throws", price_per_m_input: 3, priceFunction: "configured" }],
 		);
 		expect(cost).toBe(3);
 	});
@@ -261,12 +261,12 @@ describe("calculateTurnCost", () => {
 		["negative", "function price() { return -1; }"],
 		["NaN", "function price() { return NaN; }"],
 		["infinity", "function price() { return Infinity; }"],
-	])("falls back to static pricing for %s dynamic results", (_label, price_function) => {
+	])("falls back to static pricing for %s dynamic results", (_label, priceFunction) => {
 		const modelId = _label === "NaN" ? "nan" : _label;
 		const cost = calculateTurnCost(
 			modelId,
 			{ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null },
-			[{ id: modelId, price_per_m_input: 4, price_function }],
+			[{ id: modelId, price_per_m_input: 4, priceFunction }],
 		);
 		expect(cost).toBe(4);
 	});

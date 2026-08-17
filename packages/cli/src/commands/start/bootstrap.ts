@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { seedBundledSkills } from "@bound/agent";
+import { loadModelBackendsConfig, seedBundledSkills } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	createAppContext,
@@ -124,6 +124,10 @@ export interface BootstrapResult {
 	appContext: AppContext;
 	keypair: Awaited<ReturnType<typeof ensureKeypair>>;
 	configDir: string;
+}
+
+export async function loadStartupModelBackends(configDir: string) {
+	return loadModelBackendsConfig(configDir);
 }
 
 export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
@@ -237,7 +241,9 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 
 	let appContext: AppContext;
 	try {
-		appContext = createAppContext(resolve(configDir), dbPath);
+		const resolvedConfigDir = resolve(configDir);
+		const modelBackends = await loadStartupModelBackends(resolvedConfigDir);
+		appContext = createAppContext(resolvedConfigDir, dbPath, modelBackends);
 		// Clear the column cache after applySchema has run, so long-running
 		// agent processes pick up the new memory_edges.context column without restart.
 		clearColumnCache();

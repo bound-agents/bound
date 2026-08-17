@@ -23,7 +23,7 @@ RUN mkdir -p config data && chown -R bound:bound /app
 
 USER bound
 
-# config/ — required JSON configs: allowlist.json, model_backends.json
+# config/ — required configs: allowlist.json, model_backends.js
 #           optional: network.json, platforms.json, sync.json, mcp.json, etc.
 #           persona.md for a custom agent system prompt
 # data/   — SQLite database (bound.db) and Ed25519 keypair (host.key / host.pub)

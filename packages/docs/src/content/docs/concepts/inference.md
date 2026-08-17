@@ -42,7 +42,7 @@ lifecycle](/bound/concepts/work-lifecycle/).
 
 A backend can use a model service running locally or a hosted provider API. Providers differ
 in authentication, model discovery, request controls, and prompt-cache support. See the
-[configuration reference](/bound/reference/configuration/#model_backendsjson) for the
+[configuration reference](/bound/reference/configuration/#model_backendsjs) for the
 current providers, credentials, and backend fields.
 
 ## Provider-specific request handling

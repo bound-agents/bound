@@ -1382,3 +1382,22 @@ describe("Startup Wiring", () => {
 		});
 	});
 });
+
+describe("model_backends.js startup configuration", () => {
+	it("loads JavaScript backends before creating the app context", async () => {
+		const { loadStartupModelBackends } = await import("../commands/start/bootstrap");
+		const configDir = mkdtempSync(join(tmpdir(), "startup-model-backends-"));
+		try {
+			await Bun.write(
+				join(configDir, "model_backends.js"),
+				`export default { default: "local", backends: [{ id: "local", provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen", context_window: 8192, tier: 1, price(turn) { return 0; } }] };`,
+			);
+
+			const config = await loadStartupModelBackends(configDir);
+			expect(config.default).toBe("local");
+			expect(config.backends[0]).not.toHaveProperty("price_function");
+		} finally {
+			await cleanupTmpDir(configDir);
+		}
+	});
+});

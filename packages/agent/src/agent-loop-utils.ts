@@ -151,7 +151,6 @@ interface BackendPricing {
 	price_per_m_output?: number;
 	price_per_m_cache_read?: number;
 	price_per_m_cache_write?: number;
-	price_function?: string;
 }
 
 /** Compute cost in USD for a turn's token usage against backend pricing. */
@@ -178,9 +177,9 @@ export function calculateTurnCost(
 		pricesPerM,
 	});
 	if (dynamic !== null) return dynamic;
-	if (cfg.price_function && !warnedDynamicPricingFallbacks.has(modelId)) {
+	if (!warnedDynamicPricingFallbacks.has(modelId)) {
 		warnedDynamicPricingFallbacks.add(modelId);
-		logger.warn("Dynamic price function failed; falling back to static pricing", { modelId });
+		logger.warn("Dynamic price callback failed; falling back to static pricing", { modelId });
 	}
 
 	const inputCost = (usage.inputTokens * pricesPerM.input) / 1_000_000;

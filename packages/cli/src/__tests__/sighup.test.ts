@@ -328,7 +328,7 @@ describe("SIGHUP handler", () => {
 		expect(reloadCalled).toBe(false);
 	});
 
-	it("reloads model_backends.json and updates appContext.config.modelBackends", async () => {
+	it("reloads model_backends.js and updates appContext.config.modelBackends", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
 		const initialBackends: ModelBackendsConfig = {
@@ -371,7 +371,10 @@ describe("SIGHUP handler", () => {
 			config: { modelBackends: initialBackends },
 		};
 
-		writeFileSync(join(tempDir, "model_backends.json"), JSON.stringify(newBackends));
+		writeFileSync(
+			join(tempDir, "model_backends.js"),
+			`export default ${JSON.stringify(newBackends)};`,
+		);
 
 		let callbackInvoked = false;
 		let receivedNew: ModelBackendsConfig | null = null;
@@ -391,7 +394,7 @@ describe("SIGHUP handler", () => {
 		expect(mockAppContext.config?.modelBackends?.backends[0].id).toBe("new");
 	});
 
-	it("does not invoke onModelBackendsChanged when model_backends.json is unchanged", async () => {
+	it("does not invoke onModelBackendsChanged when model_backends.js is unchanged", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
 		const backends: ModelBackendsConfig = {
@@ -411,14 +414,23 @@ describe("SIGHUP handler", () => {
 			default: "same",
 		};
 
+		writeFileSync(
+			join(tempDir, "model_backends.js"),
+			`export default ${JSON.stringify(backends)};`,
+		);
+		const { loadModelBackendsConfig } = await import("@bound/agent");
+		const currentBackends = await loadModelBackendsConfig(tempDir);
 		const mockAppContext: TestAppContext = {
 			logger: testLogger,
 			optionalConfig: {},
-			config: { modelBackends: backends },
+			config: { modelBackends: currentBackends },
 		};
 
-		// Write same backends — Zod will parse to same shape, so no-op.
-		writeFileSync(join(tempDir, "model_backends.json"), JSON.stringify(backends));
+		// Rewriting the identical module must not publish a candidate.
+		writeFileSync(
+			join(tempDir, "model_backends.js"),
+			`export default ${JSON.stringify(backends)};`,
+		);
 
 		let callbackInvoked = false;
 		await reloadConfigs({
@@ -433,7 +445,7 @@ describe("SIGHUP handler", () => {
 		expect(callbackInvoked).toBe(false);
 	});
 
-	it("keeps previous model_backends when new file has invalid JSON", async () => {
+	it("keeps previous model_backends and does not invoke the router callback when model_backends.js is malformed", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
 		const priorBackends: ModelBackendsConfig = {
@@ -459,7 +471,7 @@ describe("SIGHUP handler", () => {
 			config: { modelBackends: priorBackends },
 		};
 
-		writeFileSync(join(tempDir, "model_backends.json"), "{ not valid json");
+		writeFileSync(join(tempDir, "model_backends.js"), "export default { not valid javascript");
 
 		let callbackInvoked = false;
 		await reloadConfigs({
@@ -476,6 +488,50 @@ describe("SIGHUP handler", () => {
 		expect(callbackInvoked).toBe(false);
 		const errors = testLogger.getMessages("error");
 		expect(errors.some((e) => e.includes("model_backends"))).toBe(true);
+	});
+
+	it("keeps appContext.config unchanged when the router rejects a valid JS candidate", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+		const priorBackends: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "prior",
+					provider: "openai-compatible",
+					model: "llama3",
+					base_url: "http://localhost:11434",
+					context_window: 4096,
+					tier: 3,
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+				},
+			],
+			default: "prior",
+		};
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {},
+			config: { modelBackends: priorBackends },
+		};
+
+		writeFileSync(
+			join(tempDir, "model_backends.js"),
+			`export default { default: "candidate", backends: [{ id: "candidate", provider: "openai-compatible", model: "llama4", base_url: "http://localhost:11434", context_window: 8192, tier: 2, price() { return 4; } }] };`,
+		);
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+			onModelBackendsChanged: async () => {
+				throw new Error("router rejected candidate");
+			},
+		});
+
+		expect(mockAppContext.config?.modelBackends).toBe(priorBackends);
+		expect(mockAppContext.config?.modelBackends?.default).toBe("prior");
+		expect(
+			testLogger.getMessages("error").some((message) => message.includes("model_backends")),
+		).toBe(true);
 	});
 
 	it("AC12.6: concurrent reloads handled gracefully", async () => {

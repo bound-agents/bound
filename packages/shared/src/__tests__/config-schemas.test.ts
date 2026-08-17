@@ -83,7 +83,7 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("accepts a per-backend price_function", () => {
+		it("rejects retired inline price_function", () => {
 			const result = modelBackendsSchema.safeParse({
 				backends: [
 					{
@@ -98,7 +98,7 @@ describe("Config schemas", () => {
 				],
 				default: "priced",
 			});
-			expect(result.success).toBe(true);
+			expect(result.success).toBe(false);
 		});
 
 		it("rejects empty backends array with non-empty default", () => {

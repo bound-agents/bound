@@ -8,6 +8,7 @@
 import "reflect-metadata";
 import type { Database } from "bun:sqlite";
 import { TypedEventEmitter, createLogger } from "@bound/shared";
+import type { ModelBackendsConfig } from "@bound/shared";
 import { allowlistSchema, modelBackendsSchema } from "@bound/shared";
 import { container, injectable, singleton } from "tsyringe";
 import { loadRequiredConfigs } from "./config-loader";
@@ -62,9 +63,18 @@ export class LoggerService {
 	}
 }
 
-export function bootstrapContainer(configDir: string, dbPath: string) {
+export function bootstrapContainer(
+	configDir: string,
+	dbPath: string,
+	modelBackends?: ModelBackendsConfig,
+) {
 	// Load and validate config
-	const configResult = loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
+	const configResult = loadRequiredConfigs(
+		configDir,
+		allowlistSchema,
+		modelBackendsSchema,
+		modelBackends,
+	);
 
 	if (!configResult.ok) {
 		const errors = configResult.error.map((e) => `${e.filename}: ${e.message}`).join("; ");

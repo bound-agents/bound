@@ -27,7 +27,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 	// Check if config already exists
 	const allowlistPath = resolve(configDir, "allowlist.json");
-	const modelBackendsPath = resolve(configDir, "model_backends.json");
+	const modelBackendsPath = resolve(configDir, "model_backends.js");
 
 	if (!args.force && (existsSync(allowlistPath) || existsSync(modelBackendsPath))) {
 		console.log("Config already exists. Use --force to overwrite.");
@@ -130,7 +130,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 		},
 	};
 
-	// Create model_backends.json
+	// Create model_backends.js
 	let modelBackendsConfig: { backends: unknown[]; default: string };
 	if (args.hub) {
 		// Hub-only: no inference backends. Inference is relayed to spokes.
@@ -174,7 +174,10 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 	// Write config files
 	writeFileSync(allowlistPath, `${JSON.stringify(allowlistConfig, null, 2)}\n`);
-	writeFileSync(modelBackendsPath, `${JSON.stringify(modelBackendsConfig, null, 2)}\n`);
+	writeFileSync(
+		modelBackendsPath,
+		`export default ${JSON.stringify(modelBackendsConfig, null, 2)};\n`,
+	);
 
 	if (args.hub) {
 		console.log(`
@@ -182,7 +185,7 @@ Hub initialized successfully!
 
 Created:
   - ${configDir}/allowlist.json
-  - ${configDir}/model_backends.json (empty — hub relays inference to spokes)
+  - ${configDir}/model_backends.js (empty — hub relays inference to spokes)
 
 Operator: ${operatorName}
 
@@ -199,7 +202,7 @@ Config initialized successfully!
 
 Created:
   - ${configDir}/allowlist.json
-  - ${configDir}/model_backends.json
+  - ${configDir}/model_backends.js
 
 Operator: ${operatorName}
 Provider: ${provider}

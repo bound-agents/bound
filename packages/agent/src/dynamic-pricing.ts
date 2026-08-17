@@ -18,7 +18,7 @@ export interface DynamicPriceInput {
 
 export interface PriceFunctionBackend {
 	id: string;
-	price_function?: string;
+	priceFunction?: string;
 }
 
 const MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
@@ -57,8 +57,8 @@ function evaluate(module: QuickJSWASMModule, source: string, input: DynamicPrice
 			`(() => {
 				"use strict";
 				${HARDENING_SOURCE}
-				const price = (${source});
-				if (typeof price !== "function") throw new Error("price_function must evaluate to a function");
+				const price = (${source.replace(/^function\s+[^ (]+/, "function")});
+				if (typeof price !== "function") throw new Error("price callback must evaluate to a function");
 				return price(Object.freeze(${JSON.stringify(input)}));
 			})()`,
 			"price-function.js",
@@ -75,7 +75,7 @@ function evaluate(module: QuickJSWASMModule, source: string, input: DynamicPrice
 		const value = vm.dump(result.value) as unknown;
 		result.value.dispose();
 		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-			throw new Error("price_function must return a finite non-negative number");
+			throw new Error("price callback must return a finite non-negative number");
 		}
 		return value;
 	} finally {
@@ -103,9 +103,9 @@ export async function compileDynamicPricing(backends: PriceFunctionBackend[]): P
 	const module = await loadQuickJS();
 	const next = new Map<string, string>();
 	for (const backend of backends) {
-		if (!backend.price_function) continue;
-		evaluate(module, backend.price_function, sampleInput(backend.id));
-		next.set(backend.id, backend.price_function);
+		if (!backend.priceFunction) continue;
+		evaluate(module, backend.priceFunction, sampleInput(backend.id));
+		next.set(backend.id, backend.priceFunction);
 	}
 	activeSources = next;
 }

@@ -9,6 +9,8 @@ export type {
 } from "./types";
 export { isClientToolCallRequest } from "./types";
 export { compileDynamicPricing } from "./dynamic-pricing";
+export { loadModelBackendsConfig } from "./model-backends-config";
+export type { LoadedModelBackendsConfig } from "./model-backends-config";
 export type { ContextParams, AssemblyClock, AssemblyContext } from "./context-assembly";
 export { realTimeClock, frozenClock } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";

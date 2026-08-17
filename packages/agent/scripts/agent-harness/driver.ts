@@ -25,7 +25,7 @@
  * or (c) is documented as a known limitation.
  *
  * Reused unchanged from production:
- *   - `loadConfigFile` + `modelBackendsSchema` (config-loader)
+ *   - `loadModelBackendsConfig` (the production JS config loader)
  *   - `toRouterConfig` (Critical Invariant #17 hand-off)
  *   - `createModelRouter` + `createBackendFromConfig` (provider dispatch)
  *   - `applySchema` + `applyMetricsSchema` + `insertRow` (DB seed)
@@ -64,12 +64,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import {
-	insertRow,
-	loadConfigFile,
-	setChangelogEventBus,
-	setRelayOutboxEventBus,
-} from "@bound/core";
+import { insertRow, setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { ToolDefinition } from "@bound/llm";
 import {
@@ -77,7 +72,6 @@ import {
 	type ModelBackendsConfig as RawBackendsConfig,
 	TypedEventEmitter,
 	keyringSchema,
-	modelBackendsSchema,
 	syncSchema,
 } from "@bound/shared";
 // `toRouterConfig` lives in the cli package; this is a known minor coupling
@@ -86,13 +80,14 @@ import {
 // via relative path because cli has no package re-export and adding one
 // would touch CI surface unrelated to the harness.
 import { toRouterConfig } from "../../../cli/src/commands/start/inference";
+import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
+import { createHarnessEnvironment } from "../../src/harness/environment";
 // `@bound/agent` is the package this harness lives in; use relative paths to
 // avoid the package self-reference resolution issue under tsc. The hermetic
 // seed-and-run environment (in-memory DB, silent bus, AppContext stub, sandbox
 // shim, MainAgentLoop construction) is shared with persona-lab via the harness
 // core; only the wire-capture / budget / diagnostic logic is driver-specific.
-import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
-import { createHarnessEnvironment } from "../../src/harness/environment";
+import { loadModelBackendsConfig } from "../../src/model-backends-config";
 import type { RegisteredTool } from "../../src/types";
 import { createCapturingFetch } from "./capture";
 import type { Diagnostic, DiagnosticTurnData } from "./diagnostics/types";
@@ -143,18 +138,14 @@ export interface HarnessRunResult {
  * (`run.ts`) is responsible for formatting + writing to stdout.
  */
 export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunResult> {
-	// 1. Load model_backends.json — same path as production startup.
-	const rawBackendsResult = loadConfigFile(
-		opts.configDir,
-		"model_backends.json",
-		modelBackendsSchema,
-	);
-	if (!rawBackendsResult.ok) {
-		throw new Error(
-			`failed to load model_backends.json from ${opts.configDir}: ${rawBackendsResult.error.message}`,
-		);
+	// 1. Load model_backends.js through the same bounded QuickJS loader as startup.
+	let rawBackends: RawBackendsConfig;
+	try {
+		rawBackends = await loadModelBackendsConfig(opts.configDir);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`failed to load model_backends.js from ${opts.configDir}: ${message}`);
 	}
-	const rawBackends = rawBackendsResult.value;
 
 	// 2. Pick the backend / model the operator selected.
 	let picked: RawBackendConfig;
@@ -168,7 +159,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		}
 		picked = rawBackends.backends[0];
 		if (!picked) {
-			throw new Error("model_backends.json must have at least one backend for auxiliary calls");
+			throw new Error("model_backends.js must have at least one backend for auxiliary calls");
 		}
 		modelId = opts.backend;
 	} else {
@@ -176,9 +167,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		const found = rawBackends.backends.find((b: RawBackendConfig) => b.id === pickedId);
 		if (!found) {
 			const known = rawBackends.backends.map((b: RawBackendConfig) => b.id).join(", ") || "(none)";
-			throw new Error(
-				`backend "${pickedId}" not found in model_backends.json. Available: ${known}`,
-			);
+			throw new Error(`backend "${pickedId}" not found in model_backends.js. Available: ${known}`);
 		}
 		picked = found;
 		modelId = picked.id;
