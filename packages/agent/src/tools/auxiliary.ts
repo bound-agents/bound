@@ -91,7 +91,7 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 			function: {
 				name: "aux",
 				description:
-					"Manage auxiliary-agent identities: define, update, retire, list, or invoke. An auxiliary agent is a durable, persona-scoped identity with its own memory namespace, invoked to handle side errands without dragging the main agent's context or identity along. The persona says who it IS, not what it's for.",
+					"Manage auxiliary-agent identities: define, update, retire, list, or invoke. An auxiliary agent is a durable, persona-scoped identity with its own memory namespace, invoked to handle side errands without dragging the main agent's context or identity along. The persona says who it IS, not what it's for. Before defining a new identity or writing a long invocation, activate the `aux-agents` skill — it carries the persona-vs-errand doctrine, roster design by role, and the overprompting smell that means an identity is missing.",
 				parameters: jsonSchema,
 			},
 		},

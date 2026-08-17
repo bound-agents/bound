@@ -30,6 +30,17 @@ Authoring requirements are compact but strict: names must be 1–64 character ke
 values matching `^[a-z0-9]+(-[a-z0-9]+)*$`; descriptions are limited to 1,024 characters;
 and the `SKILL.md` body is limited to 500 lines and 64 KB.
 
+## Bundled skills
+
+Bound ships a small set of skills embedded in the binary and seeded on startup:
+`bound-reference` (the agent's self-reference manual), `skill-authoring` (how to
+write skills), `yard-recipes` (orchestration recipes for the `yard` tool), and
+`aux-agents` (doctrine for designing auxiliary-agent identities). Seeding is
+idempotent and respects operator retirement — a bundled skill you delete stays
+deleted. The `yard` and `aux` tool descriptions point the agent at the matching
+skill, so deep guidance lives in an activatable body instead of permanently
+occupying every turn's context.
+
 ## Import and storage
 
 Importing validates and copies the skill into Bound's replicated files and associates it
