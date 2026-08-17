@@ -16,12 +16,12 @@ replicates or belongs to a single request or thread.
 
 | Scope | Meaning | Entries on this page |
 | --- | --- | --- |
-| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.json`, `model_backends.json`, `network.json`, `platforms.json`, `sync.json`, `keyring.json`, `mcp.json`, `memory.json` |
+| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.json`, `model_backends.js`, `network.json`, `platforms.json`, `sync.json`, `keyring.json`, `mcp.json`, `memory.json` |
 | **Replicated control state** | Stored outside the configuration-file set and replicated to hosts. | [`persona`](#persona) |
 | **Per-thread or client-local concept** | Selected or derived for a thread, turn, or client rather than defined as replicated cluster control state. | Per-thread backend cache windows and per-call model effort |
 
 Unless a field description explicitly says otherwise, a file entry configures the host that
-reads it. For example, `model_backends.json` lists backends that the host can serve locally,
+reads it. For example, `model_backends.js` lists backends that the host can serve locally,
 and fetch-specific headers apply on the host that performs the fetch.
 
 ## Configuration files
@@ -29,7 +29,7 @@ and fetch-specific headers apply on the host that performs the fetch.
 | File | Required | Purpose |
 |------|----------|---------|
 | [`allowlist.json`](#allowlistjson) | Yes | Who may talk to the agent |
-| [`model_backends.json`](#model_backendsjson) | Yes | LLM backends, routing, pricing, caching |
+| [`model_backends.js`](#model_backendsjs) | Yes | LLM backends, routing, pricing, caching |
 | [`network.json`](#networkjson) | No | Outbound HTTP policy for sandbox and just-bash execution |
 | [`platforms.json`](#platformsjson) | No | Platform connectors (Discord, etc.) |
 | [`sync.json`](#syncjson) | No | Hub URL, relay, WebSocket sync tuning |
@@ -59,7 +59,9 @@ Maps Bound users to identities on supported platforms.
 
 ---
 
-## `model_backends.json`
+## `model_backends.js`
+
+An ESM-like JavaScript module that `export default`s the LLM backends and routing configuration. The module runs in Bound's bounded QuickJS evaluator; only supported runtime fields such as a backend `price(turn)` callback may be functions. All other configuration remains strictly validated.
 
 The LLM backends and how inference routes across them. An **empty `backends` array is
 valid** for a hub-only node that relays all inference to spokes; in that case `default`
@@ -89,7 +91,7 @@ must be `""`.
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
-| `price_function` | JavaScript function string | absent | Optional sandboxed `function price(turn) { ... }` returning this turn’s USD cost. Receives token counts, model ID, and static prices; compile/sample errors reject startup or reload, while branch-specific runtime errors fall back to static pricing. |
+| `price` | function | absent | Optional `price(turn)` callback returning this turn’s USD cost. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to static pricing. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
 | `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |
@@ -127,17 +129,40 @@ cache-read instead of a cache-write. Off by default.
 The poke *window* is not configured — it is derived per-thread from that thread's backend
 `cache_ttl` (a poke fires only when the cache would otherwise lapse before the next scan).
 
+### Price callback
+
+Put dynamic pricing beside the backend it prices. For example, cache reads can receive a different rate:
+
+```js
+export default {
+  backends: [
+    {
+      id: "example",
+      provider: "openai-compatible",
+      model: "example-model",
+      base_url: "https://api.example.com/v1",
+      context_window: 128000,
+      tier: 3,
+      price(turn) {
+        return (turn.usage.inputTokens * 2 + turn.usage.outputTokens * 8) / 1_000_000;
+      },
+    },
+  ],
+  default: "example",
+};
+```
+
 ### umans.ai
 
 A minimal `umans` backend entry contains `provider`, `id`, and `api_key`. The top-level
 `default` field is a sibling of `backends` and names the entry's `id`; it is not a backend
 entry field.
 
-```json
-{
-  "backends": [{ "provider": "umans", "id": "umans", "api_key": "sk-…" }],
-  "default": "umans"
-}
+```js
+export default {
+  backends: [{ provider: "umans", id: "umans", api_key: "sk-…" }],
+  default: "umans",
+};
 ```
 
 Do not set `model`, `tier`, `context_window`, `capabilities`, or nondefault pricing fields

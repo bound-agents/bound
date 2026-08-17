@@ -1157,7 +1157,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		}, EXPIRY_SCAN_INTERVAL_MS);
 
 		// Task 2: Cache-warming "warm poke" driver (issue #10). Opt-in via the
-		// `cache_warming` block in model_backends.json. Periodically finds active
+		// `cache_warming` block in model_backends.js. Periodically finds active
 		// threads whose prompt cache is warm but near expiry and enqueues a
 		// tool-less poke wakeup so the next real message lands on a cache-read
 		// instead of a cache-write. The poke window is derived per-thread from

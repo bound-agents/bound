@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -28,7 +28,7 @@ describe("Bound CLI E2E Integration Test", () => {
 
 		// Verify init created required files
 		const allowlistPath = join(tempDir, "allowlist.json");
-		const modelBackendsPath = join(tempDir, "model_backends.json");
+		const modelBackendsPath = join(tempDir, "model_backends.js");
 
 		// Both files should exist
 		let fileExists = false;
@@ -67,7 +67,6 @@ describe("Bound CLI E2E Integration Test", () => {
 		});
 
 		// Config should still exist with original values
-		const { readFileSync } = await import("node:fs");
 		const allowlistPath = join(tempDir, "allowlist.json");
 		const allowlist = JSON.parse(readFileSync(allowlistPath, "utf-8"));
 
@@ -96,11 +95,12 @@ describe("Bound CLI E2E Integration Test", () => {
 			configDir: tempDir,
 		});
 
-		const { readFileSync, existsSync } = await import("node:fs");
+		const { existsSync } = await import("node:fs");
 		expect(existsSync(join(tempDir, "allowlist.json"))).toBe(true);
-		expect(existsSync(join(tempDir, "model_backends.json"))).toBe(true);
+		expect(existsSync(join(tempDir, "model_backends.js"))).toBe(true);
 
-		const modelBackends = JSON.parse(readFileSync(join(tempDir, "model_backends.json"), "utf-8"));
+		const source = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
+		const modelBackends = JSON.parse(source.replace(/^export default /, "").replace(/;\n?$/, ""));
 		expect(modelBackends.backends).toEqual([]);
 		expect(modelBackends.default).toBe("");
 	});
@@ -117,6 +117,6 @@ describe("Bound CLI E2E Integration Test", () => {
 		// Should still create configs even without API key
 		const { existsSync } = await import("node:fs");
 		expect(existsSync(join(tempDir, "allowlist.json"))).toBe(true);
-		expect(existsSync(join(tempDir, "model_backends.json"))).toBe(true);
+		expect(existsSync(join(tempDir, "model_backends.js"))).toBe(true);
 	});
 });

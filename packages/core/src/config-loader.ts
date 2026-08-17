@@ -161,10 +161,18 @@ export function loadConfigFile<T>(
 	}
 }
 
+export function loadModelBackendsConfig<T>(
+	configDir: string,
+	schema: ZodSchema<T>,
+): Result<T, ConfigError> {
+	return loadConfigFile(configDir, "model_backends.json", schema);
+}
+
 export function loadRequiredConfigs(
 	configDir: string,
 	allowlistSchema: ZodSchema<AllowlistConfig>,
 	modelBackendsSchema: ZodSchema<ModelBackendsConfig>,
+	modelBackends?: ModelBackendsConfig,
 ): Result<RequiredConfig, ConfigError[]> {
 	const errors: ConfigError[] = [];
 
@@ -173,7 +181,9 @@ export function loadRequiredConfigs(
 		errors.push(allowlistResult.error);
 	}
 
-	const modelBackendsResult = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
+	const modelBackendsResult = modelBackends
+		? ok(modelBackends)
+		: loadModelBackendsConfig(configDir, modelBackendsSchema);
 	if (!modelBackendsResult.ok) {
 		errors.push(modelBackendsResult.error);
 	}

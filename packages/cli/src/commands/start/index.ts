@@ -142,38 +142,27 @@ export async function runStart(args: StartArgs): Promise<void> {
 		onModelBackendsChanged: async (oldConfig, newConfig) => {
 			if (!modelRouter) {
 				appContext.logger.warn(
-					"[sighup] model_backends.json changed but no router is registered — restart to apply",
+					"[sighup] model_backends.js changed but no router is registered — restart to apply",
 				);
 				return;
 			}
+
 			try {
-				// Validate and atomically publish the next calculator registry before
-				// publishing router state. If router reload fails afterward, the catch
-				// restores the previous calculator set alongside the old router.
-				await compileDynamicPricing(newConfig.backends);
+				// The loader has already evaluated and sample-validated the candidate,
+				// including its pricing functions. Reload builds router state before it
+				// swaps it, so both derived states are ready before SIGHUP publishes
+				// appContext.config.modelBackends.
 				modelRouter.reload(toRouterConfig(newConfig));
 				advertiseLocalModels(appContext, modelRouter, newConfig);
-				// Re-kick self-configuring backends after reload. `reload()`
-				// disposed the superseded readiness handles and re-seeded
-				// not-ready; this re-`start()`s the fresh ones with a registrar
-				// bound to the now-current config object.
+				appContext.config.modelBackends = newConfig;
 				wireBackendReadiness(appContext, modelRouter);
 				appContext.logger.info("[sighup] Model router reloaded", {
 					backends: modelRouter.listBackends().map((b) => b.id),
 					default: modelRouter.getDefaultId(),
 				});
 			} catch (err) {
-				try {
-					await compileDynamicPricing(oldConfig.backends);
-				} catch (rollbackError) {
-					appContext.logger.error("[sighup] Failed to restore previous pricing functions", {
-						error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
-					});
-				}
-				appContext.logger.error(
-					"[sighup] Failed to reload model router — keeping previous backends",
-					{ error: err instanceof Error ? err.message : String(err) },
-				);
+				await compileDynamicPricing(oldConfig.backends);
+				throw err;
 			}
 		},
 		onWsConfigChanged: async (newWsConfig) => {

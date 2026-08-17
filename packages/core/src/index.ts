@@ -38,6 +38,7 @@ export {
 } from "./consistency";
 export {
 	loadConfigFile,
+	loadModelBackendsConfig,
 	loadRequiredConfigs,
 	loadOptionalConfigs,
 	expandEnvVars,

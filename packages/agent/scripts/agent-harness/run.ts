@@ -8,7 +8,7 @@
  *
  * `--budget <usd>` is required so cost is always a deliberate operator
  * decision; no env vars are consulted by the harness itself. Credentials
- * flow through whatever `model_backends.json` already configures for the
+ * flow through whatever `model_backends.js` already configures for the
  * chosen `--backend`.
  *
  * Run:

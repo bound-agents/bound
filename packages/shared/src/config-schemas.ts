@@ -178,10 +178,6 @@ const modelBackendSchema = z
 		price_per_m_output: z.number().min(0).default(0),
 		price_per_m_cache_write: z.number().min(0).optional(),
 		price_per_m_cache_read: z.number().min(0).optional(),
-		// Optional sandboxed QuickJS function for turn-dependent tariffs.
-		// Compiled/sample-validated at startup and reload; runtime failures
-		// fall back to the static price_per_m_* fields.
-		price_function: z.string().min(1).optional(),
 		capabilities: backendCapabilitiesOverrideSchema.optional(),
 		thinking: thinkingConfigSchema.optional(),
 		effort: effortSchema.optional(),
@@ -350,7 +346,6 @@ export const modelBackendsSchema = z
 				if (b.price_per_m_output !== 0) return false;
 				if (b.price_per_m_cache_write !== undefined) return false;
 				if (b.price_per_m_cache_read !== undefined) return false;
-				if (b.price_function !== undefined) return false;
 				return true;
 			});
 		},

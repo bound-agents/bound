@@ -17,9 +17,9 @@ import { join } from "node:path";
 export interface HarnessArgs {
 	/** Hard ceiling in USD; required, no default. */
 	budget: number;
-	/** Path to the directory containing `model_backends.json`. */
+	/** Path to the directory containing `model_backends.js`. */
 	configDir: string;
-	/** Backend ID from `model_backends.json` (local) or a remote model ID. Empty string → router default. */
+	/** Backend ID from `model_backends.js` (local) or a remote model ID. Empty string → router default. */
 	backend: string;
 	/** Fixture name; required. */
 	fixture: string;
@@ -46,9 +46,9 @@ Required:
   --fixture <name>          Fixture from fixtures/ to run.
 
 Optional:
-  --config-dir <path>       Directory containing model_backends.json.
+  --config-dir <path>       Directory containing model_backends.js.
                             Default: ./config
-  --backend <id>            Backend ID from model_backends.json. Default: the
+  --backend <id>            Backend ID from model_backends.js. Default: the
                             router's configured default. With --remote, this is
                             the model ID to resolve (can be a remote model).
   --diagnostic <names>      Comma-separated diagnostic plugin name(s) to run.
