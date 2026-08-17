@@ -5,6 +5,20 @@ import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import type { Logger } from "./logger.js";
 import type { SerializedSpan } from "./trace-collector.js";
 
+interface ExportFailureState {
+	suppressedFailures: number;
+}
+
+const exportFailureStates = new WeakMap<SpanExporter, Map<string, ExportFailureState>>();
+
+function errorClass(error: unknown): string {
+	return error instanceof Error ? error.name : typeof error;
+}
+
+function failureKey(result: { code: number; error?: Error }): string {
+	return `${result.code}:${errorClass(result.error)}`;
+}
+
 /**
  * Re-export serialized remote spans to the local OTLP exporter.
  * Constructs ReadableSpan-conformant objects from SerializedSpan data.
@@ -58,11 +72,34 @@ export function reExportSpans(
 	}));
 
 	exporter.export(readableSpans as ReadableSpan[], (result) => {
-		if (result.code === 0) return;
+		const states = exportFailureStates.get(exporter) ?? new Map<string, ExportFailureState>();
+		exportFailureStates.set(exporter, states);
+
+		if (result.code === 0) {
+			for (const [key, state] of states) {
+				if (state.suppressedFailures > 0) {
+					logger?.warn("Remote span re-export recovered", {
+						error_class: key.split(":")[1],
+						suppressed_failures: state.suppressedFailures,
+					});
+				}
+			}
+			states.clear();
+			return;
+		}
+
+		const key = failureKey(result);
+		const state = states.get(key);
+		if (state) {
+			state.suppressedFailures++;
+			return;
+		}
+
+		states.set(key, { suppressedFailures: 0 });
 		logger?.warn("Remote span re-export failed", {
 			span_count: spans.length,
 			result_code: result.code,
-			error: result.error instanceof Error ? result.error.message : undefined,
+			error_class: errorClass(result.error),
 		});
 	});
 }
