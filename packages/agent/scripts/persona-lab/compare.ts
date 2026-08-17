@@ -17,7 +17,7 @@
  *   --persona       persona file path (default: ./persona.md, else .example)
  *   --seed          seed transcript json (default: ./seed.json, else .example)
  *   --prompts-file  prompts json (default: ./prompts.json, else .example)
- *   --config-dir    bound config dir holding model_backends.js
+ *   --config-dir    bound config dir holding model_backends.js or model_backends.json
  *                   (default: $BOUND_CONFIG_DIR, else ~/bound/config)
  *   --out           also write the markdown report to this path
  *
@@ -153,7 +153,7 @@ function loadInputs(args: Record<string, string>): Inputs {
 	const models = splitList(args.models ?? "");
 	if (models.length === 0) {
 		console.error(
-			"no models given. Pass --models <id,id,...> with backend ids from your model_backends.js.",
+			"no models given. Pass --models <id,id,...> with backend ids from your model backends config.",
 		);
 		process.exit(1);
 	}

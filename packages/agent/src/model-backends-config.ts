@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { modelBackendsSchema } from "@bound/shared";
 import type { ModelBackendsConfig } from "@bound/shared";
@@ -94,7 +94,13 @@ function evaluateConfig(module: QuickJSWASMModule, source: string): EvaluatedCon
 export async function loadModelBackendsConfig(
 	configDir: string,
 ): Promise<LoadedModelBackendsConfig> {
-	const source = expandEnvVars(readFileSync(join(configDir, "model_backends.js"), "utf8"));
+	const jsPath = join(configDir, "model_backends.js");
+	if (!existsSync(jsPath)) {
+		const source = expandEnvVars(readFileSync(join(configDir, "model_backends.json"), "utf8"));
+		return modelBackendsSchema.parse(JSON.parse(source)) as LoadedModelBackendsConfig;
+	}
+
+	const source = expandEnvVars(readFileSync(jsPath, "utf8"));
 	const { staticConfig, priceFunctions } = evaluateConfig(await getQuickJS(), source);
 	const parsed = modelBackendsSchema.parse(staticConfig) as LoadedModelBackendsConfig;
 	await compileDynamicPricing(

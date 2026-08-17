@@ -394,6 +394,44 @@ describe("SIGHUP handler", () => {
 		expect(mockAppContext.config?.modelBackends?.backends[0].id).toBe("new");
 	});
 
+	it("switches from JSON fallback to a newly-created JavaScript override on reload", async () => {
+		const { reloadConfigs } = await import("../sighup.js");
+		const jsonBackends = {
+			backends: [
+				{
+					id: "json",
+					provider: "openai-compatible",
+					model: "llama3",
+					base_url: "http://localhost:11434",
+					context_window: 4096,
+					tier: 3,
+				},
+			],
+			default: "json",
+		};
+		writeFileSync(join(tempDir, "model_backends.json"), JSON.stringify(jsonBackends));
+		const { loadModelBackendsConfig } = await import("@bound/agent");
+		const currentBackends = await loadModelBackendsConfig(tempDir);
+		const mockAppContext: TestAppContext = {
+			logger: testLogger,
+			optionalConfig: {},
+			config: { modelBackends: currentBackends },
+		};
+
+		writeFileSync(
+			join(tempDir, "model_backends.js"),
+			`export default { backends: [{ id: "js", provider: "openai-compatible", model: "llama4", base_url: "http://localhost:11434", context_window: 8192, tier: 2 }], default: "js" };`,
+		);
+
+		await reloadConfigs({
+			appContext: mockAppContext,
+			configDir: tempDir,
+			logger: testLogger,
+		});
+
+		expect(mockAppContext.config?.modelBackends?.default).toBe("js");
+	});
+
 	it("does not invoke onModelBackendsChanged when model_backends.js is unchanged", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 

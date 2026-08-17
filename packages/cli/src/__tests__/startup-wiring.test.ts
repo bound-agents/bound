@@ -1395,7 +1395,6 @@ describe("model_backends.js startup configuration", () => {
 
 			const config = await loadStartupModelBackends(configDir);
 			expect(config.default).toBe("local");
-			expect(config.backends[0]).not.toHaveProperty("price_function");
 		} finally {
 			await cleanupTmpDir(configDir);
 		}

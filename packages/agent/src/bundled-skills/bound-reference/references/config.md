@@ -22,7 +22,7 @@ about *running* behavior, the loaded config is what matters, not the file on dis
 | File | Required | Holds |
 |------|----------|-------|
 | `allowlist.json` | yes | users allowed to interact with the agent |
-| `model_backends.js` | yes | LLM backend configuration |
+| `model_backends.js` / `model_backends.json` | yes | LLM backend configuration; JS takes precedence and alone permits `backend.price(turn)` |
 | `platforms.json` | no | platform connector config (e.g. Discord bot token, MCP server settings) |
 | `sync.json` | no | hub URL, sync interval, relay + WS settings |
 | `keyring.json` | no | per-host identity keys (auto-populated) |
@@ -43,7 +43,7 @@ This is invariant #13.
 At startup `createAppContext(configDir, dbPath)` loads and validates the files
 into `AppContext.config` (required) and `AppContext.optionalConfig` (the rest).
 From there it flows to wherever it is needed — model routing reads
-`model_backends.js` via `toRouterConfig()`, platform connectors read
+the precedence-selected model backends config via `toRouterConfig()`, platform connectors read
 `platforms.json`, and so on. You
 never parse config yourself; you observe its *effects* (which models resolve,
 which connectors are up).

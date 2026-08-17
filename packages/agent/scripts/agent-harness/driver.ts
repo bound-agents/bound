@@ -25,7 +25,7 @@
  * or (c) is documented as a known limitation.
  *
  * Reused unchanged from production:
- *   - `loadModelBackendsConfig` (the production JS config loader)
+ *   - `loadModelBackendsConfig` (the production precedence config loader)
  *   - `toRouterConfig` (Critical Invariant #17 hand-off)
  *   - `createModelRouter` + `createBackendFromConfig` (provider dispatch)
  *   - `applySchema` + `applyMetricsSchema` + `insertRow` (DB seed)
@@ -138,13 +138,13 @@ export interface HarnessRunResult {
  * (`run.ts`) is responsible for formatting + writing to stdout.
  */
 export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunResult> {
-	// 1. Load model_backends.js through the same bounded QuickJS loader as startup.
+	// 1. Load the same precedence-selected model backend config as startup.
 	let rawBackends: RawBackendsConfig;
 	try {
 		rawBackends = await loadModelBackendsConfig(opts.configDir);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`failed to load model_backends.js from ${opts.configDir}: ${message}`);
+		throw new Error(`failed to load model backends config from ${opts.configDir}: ${message}`);
 	}
 
 	// 2. Pick the backend / model the operator selected.
@@ -159,7 +159,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		}
 		picked = rawBackends.backends[0];
 		if (!picked) {
-			throw new Error("model_backends.js must have at least one backend for auxiliary calls");
+			throw new Error("model backends config must have at least one backend for auxiliary calls");
 		}
 		modelId = opts.backend;
 	} else {
@@ -167,7 +167,9 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		const found = rawBackends.backends.find((b: RawBackendConfig) => b.id === pickedId);
 		if (!found) {
 			const known = rawBackends.backends.map((b: RawBackendConfig) => b.id).join(", ") || "(none)";
-			throw new Error(`backend "${pickedId}" not found in model_backends.js. Available: ${known}`);
+			throw new Error(
+				`backend "${pickedId}" not found in model backends config. Available: ${known}`,
+			);
 		}
 		picked = found;
 		modelId = picked.id;

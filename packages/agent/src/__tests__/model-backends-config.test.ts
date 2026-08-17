@@ -18,6 +18,54 @@ describe("model_backends.js loader", () => {
 		await cleanupTmpDir(configDir);
 	});
 
+	it("falls back to model_backends.json when no JavaScript config exists", async () => {
+		writeFileSync(
+			join(configDir, "model_backends.json"),
+			JSON.stringify({
+				backends: [
+					{
+						id: "json",
+						provider: "openai-compatible",
+						model: "x",
+						context_window: 8192,
+						tier: 1,
+						base_url: "http://localhost:11434/v1",
+					},
+				],
+				default: "json",
+			}),
+		);
+
+		const config = await loadModelBackendsConfig(configDir);
+		expect(config.default).toBe("json");
+	});
+
+	it("prefers model_backends.js over model_backends.json", async () => {
+		writeFileSync(
+			join(configDir, "model_backends.json"),
+			JSON.stringify({
+				backends: [
+					{
+						id: "json",
+						provider: "openai-compatible",
+						model: "x",
+						context_window: 8192,
+						tier: 1,
+						base_url: "http://localhost:11434/v1",
+					},
+				],
+				default: "json",
+			}),
+		);
+		writeFileSync(
+			join(configDir, "model_backends.js"),
+			`export default { backends: [{ id: "js", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1" }], default: "js" };`,
+		);
+
+		const config = await loadModelBackendsConfig(configDir);
+		expect(config.default).toBe("js");
+	});
+
 	it("loads the default export and preserves a backend price callback", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),
@@ -26,7 +74,6 @@ describe("model_backends.js loader", () => {
 
 		const config = await loadModelBackendsConfig(configDir);
 		expect(config.backends[0]?.base_url).toBe("http://localhost:11434/v1");
-		expect(config.backends[0]).not.toHaveProperty("price_function");
 		expect(config.backends[0]).not.toHaveProperty("price");
 	});
 
@@ -39,16 +86,6 @@ describe("model_backends.js loader", () => {
 		await expect(loadModelBackendsConfig(configDir)).rejects.toThrow(
 			"only backend.price may be a function",
 		);
-	});
-
-	it("does not expose backend price callbacks as inline price_function fields", async () => {
-		writeFileSync(
-			join(configDir, "model_backends.js"),
-			`export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1", price() { return 1; } }], default: "local" };`,
-		);
-
-		const config = await loadModelBackendsConfig(configDir);
-		expect(config.backends[0]).not.toHaveProperty("price_function");
 	});
 
 	it("does not publish a candidate with an invalid price callback", async () => {

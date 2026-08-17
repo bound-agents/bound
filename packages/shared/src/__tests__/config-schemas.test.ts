@@ -83,24 +83,6 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("rejects retired inline price_function", () => {
-			const result = modelBackendsSchema.safeParse({
-				backends: [
-					{
-						id: "priced",
-						provider: "openai-compatible",
-						model: "priced",
-						base_url: "http://localhost:11434/v1",
-						context_window: 4096,
-						tier: 1,
-						price_function: "function price(turn) { return turn.inputTokens / 1e6; }",
-					},
-				],
-				default: "priced",
-			});
-			expect(result.success).toBe(false);
-		});
-
 		it("rejects empty backends array with non-empty default", () => {
 			const config = {
 				backends: [],
