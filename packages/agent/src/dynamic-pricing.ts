@@ -111,12 +111,20 @@ export async function compileDynamicPricing(backends: PriceFunctionBackend[]): P
 }
 
 /** Synchronous hot-path evaluation over the registry published at startup/reload. */
-export function calculateDynamicPrice(modelId: string, input: DynamicPriceInput): number | null {
+export type DynamicPriceResult = { value: number; error: null } | { value: null; error: string };
+
+export function calculateDynamicPrice(
+	modelId: string,
+	input: DynamicPriceInput,
+): DynamicPriceResult | null {
 	const source = activeSources.get(modelId);
 	if (!source || !quickJS) return null;
 	try {
-		return evaluate(quickJS, source, input);
-	} catch {
-		return null;
+		return { value: evaluate(quickJS, source, input), error: null };
+	} catch (error) {
+		return {
+			value: null,
+			error: error instanceof Error ? error.message : String(error),
+		};
 	}
 }
