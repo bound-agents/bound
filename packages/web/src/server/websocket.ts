@@ -31,6 +31,7 @@ import {
 	reExportSpans,
 } from "@bound/shared";
 import type {
+	Logger,
 	Message,
 	SerializedSpan,
 	StatusForwardPayload,
@@ -218,6 +219,8 @@ export interface WebSocketHandlerConfig {
 	siteId?: string;
 	defaultUserId?: string;
 	hostOrigin?: string;
+	/** Structured logger for non-blocking telemetry failures. */
+	logger?: Pick<Logger, "warn">;
 	/**
 	 * Span tracker for cross-handler-invocation OTel spans. When provided,
 	 * `tool:result` reception closes the matching `tool.dispatch` span, and
@@ -253,6 +256,7 @@ export function createWebSocketHandler(
 	let siteId: string | undefined;
 	let defaultUserId: string | undefined;
 	let hostOrigin = "localhost:3000";
+	let logger: Pick<Logger, "warn"> | undefined;
 	let handleMessageTracker: WebSocketHandlerConfig["handleMessageTracker"];
 
 	if ("on" in config && "emit" in config) {
@@ -265,6 +269,7 @@ export function createWebSocketHandler(
 		siteId = config.siteId;
 		defaultUserId = config.defaultUserId;
 		hostOrigin = config.hostOrigin ?? "localhost:3000";
+		logger = config.logger;
 		handleMessageTracker = config.handleMessageTracker;
 	}
 
@@ -949,7 +954,7 @@ export function createWebSocketHandler(
 		try {
 			const spans = JSON.parse(traceData) as SerializedSpan[];
 			const exporter = getTraceExporter();
-			reExportSpans(spans, exporter);
+			reExportSpans(spans, exporter, logger);
 		} catch {
 			// Invalid trace_data — silently ignore, observability never blocks tool flow
 		}

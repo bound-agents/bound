@@ -121,7 +121,7 @@ function createStreamReducer(
 			markProcessed(deps.db, [traceDataEntry.id]);
 			if (spanResult.ok) {
 				const spans = spanResult.value as SerializedSpan[];
-				reExportSpans(spans, getTraceExporter());
+				reExportSpans(spans, getTraceExporter(), deps.logger);
 			}
 			// trace_data is fire-and-forget; continue processing other entries
 		}

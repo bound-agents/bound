@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
-import type { PlatformConnectorConfig } from "@bound/shared";
+import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 
 // NOTE: Host heartbeat (hosts.modified_at) is handled by startHostHeartbeat() in @bound/core.
 // This class only manages platform leader election via cluster_config.
@@ -31,6 +31,7 @@ export class PlatformLeaderElection {
 		private readonly db: Database,
 		private readonly siteId: string,
 		private readonly hostBaseUrl?: string,
+		private readonly logger?: Pick<Logger, "warn">,
 	) {}
 
 	async start(): Promise<void> {
@@ -58,8 +59,8 @@ export class PlatformLeaderElection {
 			this.ownershipTimer = null;
 		}
 		if (this.isLeaderFlag) {
-			this.connector.disconnect?.().catch(() => {
-				// Disconnect errors are non-fatal during shutdown
+			this.connector.disconnect?.().catch((error) => {
+				this.logDisconnectFailure("shutdown", error);
 			});
 		}
 		this.isLeaderFlag = false;
@@ -129,11 +130,20 @@ export class PlatformLeaderElection {
 			this.isLeaderFlag = false;
 			try {
 				await this.connector.disconnect?.();
-			} catch {
-				// Disconnect errors must not prevent re-entering standby.
+			} catch (error) {
+				this.logDisconnectFailure("ownership_replaced", error);
 			}
 			this.startStalenessCheck(leaderKey);
 		}, checkInterval);
+	}
+
+	private logDisconnectFailure(reason: "shutdown" | "ownership_replaced", error: unknown): void {
+		this.logger?.warn("Platform leader connector disconnect failed", {
+			platform: this.connector.platform,
+			site_id: this.siteId,
+			reason,
+			error: error instanceof Error ? error.message : String(error),
+		});
 	}
 
 	private startStalenessCheck(leaderKey: string): void {
