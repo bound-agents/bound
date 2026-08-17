@@ -368,6 +368,17 @@ export function partitionPendingMessage(messages: Message[]): {
 	return { committed, pending };
 }
 
+/**
+ * Spinner label for a live Yard run: whole-invocation progress (`Yard ·
+ * 3/12 effects`) instead of a per-segment "Thinking" that resets between
+ * loop turns and reads as a stall during minutes-long runs (thread 2b372dca).
+ */
+function yardSpinnerLabel(tree: YardTreeSnapshot): string {
+	const leaves = tree.nodes.filter((node) => node.node.kind !== "run");
+	const done = leaves.filter((node) => node.phase !== "started").length;
+	return `Yard · ${done}/${leaves.length} effects`;
+}
+
 export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
@@ -461,6 +472,27 @@ export function ChatView({
 	} | null>(null);
 	const yardExecutions = useYardExecutions(client, threadId);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
+	// The oldest live Yard run on this thread anchors the processing spinner:
+	// a scatter-gather run works for minutes while the generic "Thinking"
+	// counter kept resetting per loop segment, reading as a stall (thread
+	// 2b372dca). Anchoring elapsed at the run's start makes the indicator
+	// reflect the invocation as a whole.
+	const liveYard = yardExecutions.live[0];
+	// In-flight tools that actually render as streaming cards: yard-client
+	// dispatches live on the Yard card, and other threads' (aux) tools belong
+	// to their own transcripts. The spinner gate below must count DISPLAYED
+	// cards, not raw map size — during a Yard run every in-flight tool is
+	// filtered, and gating on the raw size left NO liveness indicator at all
+	// (thread 2b372dca: "not clear if the system is actually working").
+	const visibleInFlight = useMemo(
+		() =>
+			Array.from(inFlightTools.entries()).filter(
+				([callId, t]) =>
+					!callId.startsWith(YARD_CLIENT_CALL_ID_PREFIX) &&
+					(!t.threadId || t.threadId === threadId),
+			),
+		[inFlightTools, threadId],
+	);
 	// Live HUD: context-window gauge (context:debug events) + cluster spend
 	// (spoke-local /api/metrics over the synced turns table).
 	const hud = useSessionHud(client, threadId);
@@ -812,37 +844,31 @@ export function ChatView({
 					    the whole dynamic region stays under the viewport — otherwise
 					    Ink's `outputHeight >= rows` branch strands the spinner card in
 					    scrollback (see computeStdoutRowBudget). */}
-					{Array.from(inFlightTools.entries())
-						/* Yard-dispatched client tools (call id `yard-client-*`) already
-						   render as nodes on the live Yard execution card — a second
-						   streaming card underneath it would show the same effect twice
-						   and stream its stdout outside the graph. Aux agents run in
-						   their OWN threads but execute client tools on this session's
-						   handlers — without the thread filter their bash output
-						   streams under whatever chat is open (thread febfe45e).
-						   Directly-dispatched tools for THIS thread keep their cards. */
-						.filter(
-							([callId, t]) =>
-								!callId.startsWith(YARD_CLIENT_CALL_ID_PREFIX) &&
-								(!t.threadId || t.threadId === threadId),
-						)
-						.map(([callId, { toolName, startTime, stdout, args }]) => (
-							<Box key={callId} marginBottom={1}>
-								<ToolCallCard
-									toolName={toolName}
-									startTime={startTime}
-									stdout={stdout}
-									argsSummary={args ? summarizeToolArgs(toolName, args) : undefined}
-									terminalColumns={termColumns}
-									maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
-								/>
-							</Box>
-						))}
+					{visibleInFlight.map(([callId, { toolName, startTime, stdout, args }]) => (
+						<Box key={callId} marginBottom={1}>
+							<ToolCallCard
+								toolName={toolName}
+								startTime={startTime}
+								stdout={stdout}
+								argsSummary={args ? summarizeToolArgs(toolName, args) : undefined}
+								terminalColumns={termColumns}
+								maxStdoutRows={computeStdoutRowBudget(termRows, visibleInFlight.length)}
+							/>
+						</Box>
+					))}
 
-					{/* Processing indicator */}
-					{isProcessing && inFlightTools.size === 0 && (
+					{/* Processing indicator. Gated on DISPLAYED cards, not the raw
+					    in-flight map — during a Yard run every in-flight tool is
+					    filtered (yard-client / aux-thread), and gating on raw size
+					    left no liveness signal at all. A live Yard run labels the
+					    spinner with whole-invocation progress and anchors elapsed
+					    at the run's start (thread 2b372dca). */}
+					{(isProcessing || liveYard) && visibleInFlight.length === 0 && (
 						<Box>
-							<Spinner label="Thinking" />
+							<Spinner
+								label={liveYard ? yardSpinnerLabel(liveYard) : "Thinking"}
+								startTime={liveYard?.startedAt ? Date.parse(liveYard.startedAt) : undefined}
+							/>
 						</Box>
 					)}
 

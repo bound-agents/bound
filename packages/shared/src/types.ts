@@ -1202,6 +1202,13 @@ export type YardExecutionEvent = {
 	started_at?: string;
 	finished_at?: string;
 	input_preview?: string;
+	/**
+	 * Bounded preview of the generator source, carried on the tree-root
+	 * started event only. Lets the boundless committed card render the
+	 * program (highlighted) without reaching back to the persisted tool_call
+	 * row — which the card replaces.
+	 */
+	program_preview?: string;
 	result_preview?: string;
 	summary?: string;
 	tool_call_id?: string;

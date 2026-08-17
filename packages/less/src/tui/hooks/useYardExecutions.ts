@@ -26,6 +26,8 @@ export interface YardTreeSnapshot {
 	runId: string;
 	phase: "started" | "completed" | "failed";
 	inputPreview?: string;
+	/** Bounded generator source from the tree-root started event. */
+	programPreview?: string;
 	resultPreview?: string;
 	summary?: string;
 	toolCallId?: string;
@@ -98,6 +100,9 @@ export function reduceYardExecution(
 		inputPreview: treeRootEvent
 			? (event.input_preview ?? prior?.inputPreview)
 			: prior?.inputPreview,
+		programPreview: treeRootEvent
+			? (event.program_preview ?? prior?.programPreview)
+			: prior?.programPreview,
 		resultPreview: treeRootEvent
 			? (event.result_preview ?? prior?.resultPreview)
 			: prior?.resultPreview,

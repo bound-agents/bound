@@ -731,6 +731,10 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 		node: runNode,
 		started_at: new Date().toISOString(),
 		input_preview: preview(params.input),
+		// Program source rides the start event so the boundless card — which
+		// REPLACES the persisted request/result rows — can render the generator
+		// highlighted without reaching back to the tool_call row.
+		program_preview: preview(params.program),
 		...(scope.depth === 0 && scope.toolCallId ? { tool_call_id: scope.toolCallId } : {}),
 	});
 	const span = getTracer().startSpan(

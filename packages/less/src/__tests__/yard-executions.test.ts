@@ -87,6 +87,28 @@ describe("reduceYardExecution", () => {
 		expect(stale).toBe(state);
 	});
 
+	// The program source rides the tree-root started event (program_preview)
+	// so the committed card can render the generator without reaching back to
+	// the persisted tool_call row — which the card replaces. Child events must
+	// not clobber it.
+	it("keeps the root's program preview across child events", () => {
+		let state = reduceYardExecution(
+			EMPTY_YARD_STATE,
+			event({ program_preview: "function* main(input) { return 1; }" }),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				node_id: "tool-a",
+				parent_id: "run-1",
+				seq: 2,
+				node: { kind: "tool", name: "boundless_bash" },
+			}),
+		);
+		const tree = [...state.live.values()][0];
+		expect(tree?.programPreview).toBe("function* main(input) { return 1; }");
+	});
+
 	// A nested yard() call opens its own run with a fresh run_id but the SAME
 	// trace_id, parented under the dispatching tool effect. It is one
 	// execution tree and must fold into one card — not surface as a second

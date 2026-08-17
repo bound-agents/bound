@@ -45,6 +45,9 @@ describe("yard lifecycle events", () => {
 		expect(start?.node.kind).toBe("run");
 		expect(start?.parent_id).toBeNull();
 		expect(start?.input_preview).toBe('{"n":41}');
+		// The program source rides the root start event so the boundless card
+		// (which replaces the request/result rows) can render it highlighted.
+		expect(start?.program_preview).toContain("function* main(input)");
 		expect(done?.phase).toBe("completed");
 		expect(done?.node_id).toBe(start?.node_id);
 		expect(done?.result_preview).toContain('"answer":42');

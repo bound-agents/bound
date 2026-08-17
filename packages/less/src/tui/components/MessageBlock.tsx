@@ -93,7 +93,12 @@ export function analyzeToolCallContent(content: string): {
 	const suppressed =
 		toolUses.length > 0 &&
 		inlineText === "" &&
-		(toolUses.length > 1 || toolUses.every((b) => isCompactToolName(b.name)));
+		(toolUses.length > 1 ||
+			// A lone yard invocation renders as the Yard execution card (live
+			// while running, committed at the result row) which now carries the
+			// program and input itself — a separate request card above it showed
+			// the same payload twice (thread 2b372dca).
+			toolUses.every((b) => isCompactToolName(b.name) || b.name === "yard"));
 	return { toolUses, inlineText, suppressed };
 }
 
@@ -681,7 +686,9 @@ export function MessageBlock({
 			return <></>;
 		}
 		const toolUseBlocks =
-			toolUses.length > 1 ? [] : toolUses.filter((b) => !isCompactToolName(b.name));
+			toolUses.length > 1
+				? []
+				: toolUses.filter((b) => !isCompactToolName(b.name) && b.name !== "yard");
 
 		if (toolUses.length > 0) {
 			return (
