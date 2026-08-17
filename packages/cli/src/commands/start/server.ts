@@ -1360,6 +1360,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				platformsConfig.connectors[0],
 				appContext.db,
 				appContext.siteId,
+				undefined,
+				appContext.logger,
 			);
 			await leaderElection.start();
 			appContext.logger.info("[platforms-mcp] Leader election started");
@@ -1540,6 +1542,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			},
 			appContext.db,
 			appContext.siteId,
+			undefined,
+			appContext.logger,
 		);
 		await rssLeaderElection.start();
 		appContext.logger.info("[rss] Poller leader election started");

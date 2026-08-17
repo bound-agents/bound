@@ -144,6 +144,7 @@ export async function createWebServer(
 		db,
 		siteId: config.siteId,
 		defaultUserId: config.operatorUserId,
+		logger,
 		handleMessageTracker: config.handleMessageTracker,
 	});
 

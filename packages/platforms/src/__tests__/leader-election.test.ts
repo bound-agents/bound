@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
-import type { PlatformConnectorConfig } from "@bound/shared";
+import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { PlatformLeaderElection } from "../leader-election.js";
 
 // Mock connector for testing
@@ -34,6 +34,18 @@ class MockConnector {
 let db: Database;
 let testDbPath: string;
 let mockConnector: MockConnector;
+
+const createCapturingLogger = () => {
+	const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
+	const logger: Logger = {
+		debug: () => {},
+		info: () => {},
+		warn: (message, context) => warnings.push({ message, context }),
+		error: () => {},
+		isLevelEnabled: () => true,
+	};
+	return { logger, warnings };
+};
 
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
@@ -270,6 +282,38 @@ describe("PlatformLeaderElection", () => {
 
 			expect(mockConnector.disconnectCallCount).toBe(1);
 			expect(election.isLeader()).toBe(false);
+		});
+
+		it("logs a structured warning when shutdown disconnect fails", async () => {
+			const config: PlatformConnectorConfig = {
+				platform: "discord",
+				failover_threshold_ms: 50,
+				allowed_users: [],
+			};
+			mockConnector.disconnectError = new Error("Disconnect failed");
+			const { logger, warnings } = createCapturingLogger();
+			const election = new PlatformLeaderElection(
+				mockConnector,
+				config,
+				db,
+				"site-1",
+				undefined,
+				logger,
+			);
+
+			await election.start();
+			election.stop();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(warnings).toContainEqual({
+				message: "Platform leader connector disconnect failed",
+				context: {
+					platform: "discord",
+					site_id: "site-1",
+					reason: "shutdown",
+					error: "Disconnect failed",
+				},
+			});
 		});
 
 		it("should handle disconnect errors gracefully", async () => {
