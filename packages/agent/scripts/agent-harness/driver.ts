@@ -64,7 +64,12 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { insertRow, setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
+import {
+	insertRow,
+	loadConfigWithPrecedence,
+	setChangelogEventBus,
+	setRelayOutboxEventBus,
+} from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { ToolDefinition } from "@bound/llm";
 import {
@@ -245,8 +250,8 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	//     else stays hermetic (harness-seeded data only).
 	if (opts.remote && remoteKeypair && remoteEventBus) {
 		const { KeyManager, WsSyncClient, WsTransport } = await import("@bound/sync");
-		const keyringResult = loadConfigFile(opts.configDir, "keyring.json", keyringSchema);
-		const syncResult = loadConfigFile(opts.configDir, "sync.json", syncSchema);
+		const keyringResult = await loadConfigWithPrecedence(opts.configDir, "keyring", keyringSchema);
+		const syncResult = await loadConfigWithPrecedence(opts.configDir, "sync", syncSchema);
 		if (!keyringResult.ok) {
 			throw new Error(
 				`failed to load keyring.json from ${opts.configDir}: ${keyringResult.error.message}`,

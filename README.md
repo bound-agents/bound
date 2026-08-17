@@ -54,16 +54,16 @@ After `bound init`, `config/` contains:
 
 | File | Required | Description |
 |------|----------|-------------|
-| `allowlist.json` | Yes | Users permitted to interact; `default_web_user` + user map with display names and platform handles |
+| `allowlist.js` / `allowlist.json` | Yes | Users permitted to interact; `default_web_user` + user map with display names and platform handles |
 | `model_backends.js` / `model_backends.json` | Yes | JS takes precedence when present; otherwise JSON static backend configuration is loaded. Only JS supports `backend.price(turn)` callbacks. |
-| `network.json` | No | Outbound HTTP allowlist for the sandbox, with per-URL header injection |
-| `platforms.json` | No | Platform connectors (Discord token, allowed users, leadership role, failover threshold) |
-| `sync.json` | No | Hub URL (on spokes), relay tuning, WebSocket settings |
-| `keyring.json` | No | Per-host Ed25519 public keys and URLs (auto-populated by sync handshake) |
-| `mcp.json` | No | MCP server connections (`stdio` or `http`; `io.modelcontextprotocol/ui` tools render inline in the web UI) |
-| `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
+| `network.js` / `network.json` | No | Outbound HTTP allowlist for the sandbox, with per-URL header injection |
+| `platforms.js` / `platforms.json` | No | Platform connectors (Discord token, allowed users, leadership role, failover threshold) |
+| `sync.js` / `sync.json` | No | Hub URL (on spokes), relay tuning, WebSocket settings |
+| `keyring.js` / `keyring.json` | No | Per-host Ed25519 public keys and URLs (auto-populated by sync handshake) |
+| `mcp.js` / `mcp.json` | No | MCP server connections (`stdio` or `http`; `io.modelcontextprotocol/ui` tools render inline in the web UI) |
+| `memory.js` / `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
 
-All schemas are strict — unknown keys fail loudly. See the [Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) for the per-field reference.
+All operator configs support a `.js` alternative that takes precedence over JSON; each default-exports one object and uses the same strict schema. `model_backends.js` is the only JavaScript config permitted to define `backend.price(turn)` callbacks. All schemas are strict — unknown keys fail loudly. See the [Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) for the per-field reference.
 
 ## Further reading
 

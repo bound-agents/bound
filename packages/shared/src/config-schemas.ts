@@ -548,4 +548,5 @@ export const configSchemaMap = {
 	"sync.json": syncSchema,
 	"keyring.json": keyringSchema,
 	"mcp.json": mcpSchema,
+	"memory.json": memoryConfigSchema,
 } as const;

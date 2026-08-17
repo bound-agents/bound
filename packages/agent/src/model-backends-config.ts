@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadConfigWithPrecedence } from "@bound/core";
 import { modelBackendsSchema } from "@bound/shared";
 import type { ModelBackendsConfig } from "@bound/shared";
 import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
@@ -15,19 +16,7 @@ let quickJS: Promise<QuickJSWASMModule> | undefined;
 
 export type LoadedModelBackendsConfig = ModelBackendsConfig;
 
-type EvaluatedConfig = {
-	staticConfig: unknown;
-	priceFunctions: Array<string | undefined>;
-};
-
-function expandEnvVars(value: string): string {
-	return value.replace(/\$\{([^:}]+)(?::-([^}]*))?\}/g, (_match, varName, defaultValue) => {
-		const environmentValue = process.env[varName];
-		if (environmentValue !== undefined) return environmentValue;
-		if (defaultValue !== undefined) return defaultValue;
-		throw new Error(`Environment variable ${varName} is not defined and no default provided`);
-	});
-}
+type EvaluatedPricing = Array<string | undefined>;
 
 function getQuickJS(): Promise<QuickJSWASMModule> {
 	quickJS ??= newQuickJSWASMModuleFromVariant(RELEASE_SYNC);
@@ -41,21 +30,23 @@ function errorMessage(value: unknown): string {
 	return String(value);
 }
 
-function evaluateConfig(module: QuickJSWASMModule, source: string): EvaluatedConfig {
-	const runtime = module.newRuntime();
+async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPricing> {
+	const runtime = (await getQuickJS()).newRuntime();
 	runtime.setMemoryLimit(MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(STACK_LIMIT_BYTES);
 	const deadline = Date.now() + CPU_LIMIT_MS;
 	runtime.setInterruptHandler(() => Date.now() > deadline);
 	const vm = runtime.newContext();
 	try {
+		const body = source.replace(/^\s*export\s+default\s+/, "return (").replace(/;?\s*$/, ");");
 		const result = vm.evalCode(
 			`(() => {
 				"use strict";
-				const config = (() => { ${source.replace(/^\s*export\s+default\s+/, "return (").replace(/;?\s*$/, ");")} })();
-				if (!config || typeof config !== "object") throw new Error("model_backends.js must export an object");
-				if (!Array.isArray(config.backends)) throw new Error("model_backends.js export must contain a backends array");
-				const priceFunctions = config.backends.map((backend, index) => {
+				const config = (() => { ${body} })();
+				if (!config || typeof config !== "object" || !Array.isArray(config.backends)) {
+					throw new Error("model_backends.js export must contain a backends array");
+				}
+				return config.backends.map((backend, index) => {
 					if (!backend || typeof backend !== "object") return undefined;
 					for (const [key, value] of Object.entries(backend)) {
 						if (typeof value === "function" && key !== "price") {
@@ -67,13 +58,6 @@ function evaluateConfig(module: QuickJSWASMModule, source: string): EvaluatedCon
 					}
 					return backend.price === undefined ? undefined : "function " + backend.price.toString();
 				});
-				for (const [key, value] of Object.entries(config)) {
-					if (key !== "backends" && typeof value === "function") {
-						throw new Error("only backend.price may be a function");
-					}
-				}
-				const staticConfig = { ...config, backends: config.backends.map(({ price, ...backend }) => backend) };
-				return { staticConfig, priceFunctions };
 			})()`,
 			"model_backends.js",
 		);
@@ -82,7 +66,7 @@ function evaluateConfig(module: QuickJSWASMModule, source: string): EvaluatedCon
 			result.error.dispose();
 			throw new Error(errorMessage(error));
 		}
-		const value = vm.dump(result.value) as EvaluatedConfig;
+		const value = vm.dump(result.value) as EvaluatedPricing;
 		result.value.dispose();
 		return value;
 	} finally {
@@ -95,19 +79,21 @@ export async function loadModelBackendsConfig(
 	configDir: string,
 ): Promise<LoadedModelBackendsConfig> {
 	const jsPath = join(configDir, "model_backends.js");
-	if (!existsSync(jsPath)) {
-		const source = expandEnvVars(readFileSync(join(configDir, "model_backends.json"), "utf8"));
-		return modelBackendsSchema.parse(JSON.parse(source)) as LoadedModelBackendsConfig;
+	const result = await loadConfigWithPrecedence(configDir, "model_backends", modelBackendsSchema);
+	if (!result.ok) {
+		// Preserve source-level policy errors (functions other than backend.price)
+		// which QuickJS serialization would otherwise erase before schema validation.
+		if (existsSync(jsPath)) await loadDynamicPriceFunctions(readFileSync(jsPath, "utf8"));
+		throw new Error(`${result.error.filename}: ${result.error.message}`);
 	}
-
-	const source = expandEnvVars(readFileSync(jsPath, "utf8"));
-	const { staticConfig, priceFunctions } = evaluateConfig(await getQuickJS(), source);
-	const parsed = modelBackendsSchema.parse(staticConfig) as LoadedModelBackendsConfig;
+	const priceFunctions = existsSync(jsPath)
+		? await loadDynamicPriceFunctions(readFileSync(jsPath, "utf8"))
+		: [];
 	await compileDynamicPricing(
-		parsed.backends.map((backend, index) => ({
+		result.value.backends.map((backend, index) => ({
 			id: backend.id,
 			priceFunction: priceFunctions[index],
 		})),
 	);
-	return parsed;
+	return result.value;
 }

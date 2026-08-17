@@ -104,8 +104,7 @@ async function runAcpMode(args: {
 
 	const configDir = join(homedir(), ".bound", "less");
 	mkdirSync(configDir, { recursive: true });
-	const config = loadConfig(configDir);
-	const mcpConfig = loadMcpConfig(configDir);
+	const [config, mcpConfig] = await Promise.all([loadConfig(configDir), loadMcpConfig(configDir)]);
 	if (args.urlArg) {
 		config.url = args.urlArg;
 	}
@@ -206,8 +205,10 @@ async function main(): Promise<void> {
 		// Step 2: Load config
 		const configDir = join(homedir(), ".bound", "less");
 		mkdirSync(configDir, { recursive: true });
-		const config = loadConfig(configDir);
-		const mcpConfig = loadMcpConfig(configDir);
+		const [config, mcpConfig] = await Promise.all([
+			loadConfig(configDir),
+			loadMcpConfig(configDir),
+		]);
 
 		// Override config.url if --url provided (without persisting)
 		if (urlArg) {

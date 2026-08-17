@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { getSiteId, insertRow, updateRow } from "@bound/core";
+import { getSiteId, insertRow, loadConfigWithPrecedence, updateRow } from "@bound/core";
 import { mcpSchema } from "@bound/shared";
 import { openBoundDB } from "../lib/db";
 export interface ConfigReloadArgs {
@@ -22,34 +21,14 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 		if (siteId === "unknown") {
 			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
-		// Read mcp.json
-		const mcpPath = resolve(configDir, "mcp.json");
-		let mcpContent: string;
-		try {
-			mcpContent = readFileSync(mcpPath, "utf-8");
-		} catch (error) {
-			throw new Error(
-				`Failed to read ${mcpPath}: ${error instanceof Error ? error.message : String(error)}`,
-			);
+		// Evaluate and validate the precedence-selected mcp.js / mcp.json candidate
+		// before notifying the daemon. A bad JavaScript config never triggers a reload.
+		const mcpResult = await loadConfigWithPrecedence(configDir, "mcp", mcpSchema);
+		if (!mcpResult.ok) {
+			throw new Error(`Failed to load ${mcpResult.error.filename}: ${mcpResult.error.message}`);
 		}
-		// Parse JSON
-		let mcpData: unknown;
-		try {
-			mcpData = JSON.parse(mcpContent);
-		} catch (error) {
-			throw new Error(
-				`Failed to parse mcp.json: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-		// Validate schema
-		const validationResult = mcpSchema.safeParse(mcpData);
-		if (!validationResult.success) {
-			const issues = validationResult.error.issues
-				.map((issue) => `  - ${issue.path.join(".")}: ${issue.message}`)
-				.join("\n");
-			throw new Error(`MCP configuration validation failed:\n${issues}`);
-		}
-		const mcpConfig = validationResult.data;
+		const mcpConfig = mcpResult.value;
+
 		// Check for name collisions (duplicate server names)
 		const serverNames = new Set<string>();
 		for (const server of mcpConfig.servers) {

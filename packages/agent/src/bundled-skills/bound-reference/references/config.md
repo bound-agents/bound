@@ -21,13 +21,14 @@ about *running* behavior, the loaded config is what matters, not the file on dis
 
 | File | Required | Holds |
 |------|----------|-------|
-| `allowlist.json` | yes | users allowed to interact with the agent |
+| `allowlist.js` / `allowlist.json` | yes | users allowed to interact with the agent |
 | `model_backends.js` / `model_backends.json` | yes | LLM backend configuration; JS takes precedence and alone permits `backend.price(turn)` |
-| `platforms.json` | no | platform connector config (e.g. Discord bot token, MCP server settings) |
-| `sync.json` | no | hub URL, sync interval, relay + WS settings |
-| `keyring.json` | no | per-host identity keys (auto-populated) |
-| `mcp.json` | no | MCP server connections (stdio or http transport) |
-| `memory.json` | no | pinned-memory caps (`pinned_count_cap`, `pinned_size_cap`) |
+| `network.js` / `network.json` | no | sandbox outbound HTTP policy |
+| `platforms.js` / `platforms.json` | no | platform connector config (e.g. Discord bot token, MCP server settings) |
+| `sync.js` / `sync.json` | no | hub URL, sync interval, relay + WS settings |
+| `keyring.js` / `keyring.json` | no | per-host identity keys (auto-populated) |
+| `mcp.js` / `mcp.json` | no | MCP server connections (stdio or http transport) |
+| `memory.js` / `memory.json` | no | pinned-memory caps (`pinned_count_cap`, `pinned_size_cap`) |
 
 ## Schemas are strict — unknown keys fail loudly
 

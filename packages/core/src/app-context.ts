@@ -35,12 +35,12 @@ export interface AppContext {
 	commandRegistry: CommandRegistryEntry[];
 }
 
-export function createAppContext(
+export async function createAppContext(
 	configDir: string,
 	dbPath: string,
 	modelBackends?: ModelBackendsConfig,
-): AppContext {
-	const container = bootstrapContainer(configDir, dbPath, modelBackends);
+): Promise<AppContext> {
+	const container = await bootstrapContainer(configDir, dbPath, modelBackends);
 
 	const dbService = container.resolve(DatabaseService);
 	const configService = container.resolve(ConfigService);
@@ -73,7 +73,7 @@ export function createAppContext(
 	const hostName = hostname() || "localhost";
 
 	// Load optional configs
-	const optionalConfigs = loadOptionalConfigs(configDir);
+	const optionalConfigs = await loadOptionalConfigs(configDir);
 
 	return {
 		db,

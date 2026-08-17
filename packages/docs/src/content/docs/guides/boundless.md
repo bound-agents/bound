@@ -87,8 +87,8 @@ Client configuration lives in `~/.bound/less/`:
 
 | File | Purpose |
 | --- | --- |
-| `config.json` | Server URL, default model, injected context files, and shell override |
-| `mcp.json` | Local MCP servers, separate from the server's `mcp.json` |
+| `config.js` / `config.json` | Server URL, default model, injected context files, and shell override. The optional JS base is overlaid by writable JSON preferences. |
+| `mcp.js` / `mcp.json` | Local MCP servers, separate from the server's `mcp.json`. The optional JS base is overlaid by writable JSON preferences. |
 
 ## Read status and tool output
 

@@ -16,7 +16,7 @@ replicates or belongs to a single request or thread.
 
 | Scope | Meaning | Entries on this page |
 | --- | --- | --- |
-| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.json`, `model_backends.js` / `model_backends.json`, `network.json`, `platforms.json`, `sync.json`, `keyring.json`, `mcp.json`, `memory.json` |
+| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.js` / `allowlist.json`, `model_backends.js` / `model_backends.json`, `network.js` / `network.json`, `platforms.js` / `platforms.json`, `sync.js` / `sync.json`, `keyring.js` / `keyring.json`, `mcp.js` / `mcp.json`, `memory.js` / `memory.json` |
 | **Replicated control state** | Stored outside the configuration-file set and replicated to hosts. | [`persona`](#persona) |
 | **Per-thread or client-local concept** | Selected or derived for a thread, turn, or client rather than defined as replicated cluster control state. | Per-thread backend cache windows and per-call model effort |
 
@@ -28,18 +28,24 @@ and fetch-specific headers apply on the host that performs the fetch.
 
 | File | Required | Purpose |
 |------|----------|---------|
-| [`allowlist.json`](#allowlistjson) | Yes | Who may talk to the agent |
+| [`allowlist.js` / `allowlist.json`](#allowlistjs--allowlistjson) | Yes | Who may talk to the agent |
 | [`model_backends.js` / `model_backends.json`](#model_backendsjs) | Yes | LLM backends, routing, pricing, caching |
-| [`network.json`](#networkjson) | No | Outbound HTTP policy for sandbox and just-bash execution |
-| [`platforms.json`](#platformsjson) | No | Platform connectors (Discord, etc.) |
-| [`sync.json`](#syncjson) | No | Hub URL, relay, WebSocket sync tuning |
-| [`keyring.json`](#keyringjson) | No | Per-host identity keys (auto-populated) |
-| [`mcp.json`](#mcpjson) | No | MCP server connections |
-| [`memory.json`](#memoryjson) | No | Pinned-memory caps |
+| [`network.js` / `network.json`](#networkjs--networkjson) | No | Outbound HTTP policy for sandbox and just-bash execution |
+| [`platforms.js` / `platforms.json`](#platformsjs--platformsjson) | No | Platform connectors (Discord, etc.) |
+| [`sync.js` / `sync.json`](#syncjs--syncjson) | No | Hub URL, relay, WebSocket sync tuning |
+| [`keyring.js` / `keyring.json`](#keyringjs--keyringjson) | No | Per-host identity keys (auto-populated) |
+| [`mcp.js` / `mcp.json`](#mcpjs--mcpjson) | No | MCP server connections |
+| [`memory.js` / `memory.json`](#memoryjs--memoryjson) | No | Pinned-memory caps |
 
 ---
 
-## `allowlist.json`
+## JavaScript alternatives
+
+Every operator config supports a JavaScript alternative: `allowlist.js`, `model_backends.js`, `network.js`, `platforms.js`, `sync.js`, `keyring.js`, `mcp.js`, and `memory.js`. When both forms exist, Bound selects `.js`; it never falls back to JSON after a selected JavaScript file fails to evaluate or validate. This keeps a broken override visible and makes startup/reload transactional: the previous loaded configuration remains active on a hot reload.
+
+A JavaScript file is an ESM-like module that `export default`s one object. Bound evaluates it in a bounded QuickJS runtime, expands `${NAME}` and `${NAME:-default}` strings, then applies the same strict Zod schema as JSON. JavaScript is configuration, not a general plugin surface: `model_backends.js` alone may contain `backend.price(turn)` callbacks; all other config values must be data.
+
+## `allowlist.js` / `allowlist.json`
 
 Maps Bound users to identities on supported platforms.
 
@@ -171,7 +177,7 @@ accepted by the schema. Set up with `bound init --umans` (reads `UMANS_API_KEY`)
 
 ---
 
-## `network.json`
+## `network.js` / `network.json`
 
 Outbound HTTP policy for sandbox and just-bash egress. It does not control Bound's own
 provider, sync, platform, or MCP clients. When this file is absent, those clients are not
@@ -185,7 +191,7 @@ globally denied.
 
 ---
 
-## `platforms.json`
+## `platforms.js` / `platforms.json`
 
 Platform connectors. Each is an in-process MCP server; only the leader host runs active
 subscriptions, with failover to standbys.
@@ -207,7 +213,7 @@ subscriptions, with failover to standbys.
 
 ---
 
-## `sync.json`
+## `sync.js` / `sync.json`
 
 Multi-host sync. Absent means single-host.
 
@@ -242,7 +248,7 @@ Multi-host sync. Absent means single-host.
 
 ---
 
-## `keyring.json`
+## `keyring.js` / `keyring.json`
 
 Per-host identity keys for sync trust. During initial multi-host setup, add the hub's
 reachable URL and public key to each spoke before connecting. Bound maintains known-host
@@ -254,7 +260,7 @@ entries after the topology is configured.
 
 ---
 
-## `mcp.json`
+## `mcp.js` / `mcp.json`
 
 MCP server connections. Tools from connected servers are auto-registered as agent
 commands.
@@ -283,7 +289,7 @@ MCP Apps configuration. SSE may carry a streamed HTTP response, but it is not a
 
 ---
 
-## `memory.json`
+## `memory.js` / `memory.json`
 
 Pinned-memory caps — a context-management control. Absent means the defaults below apply
 (the enforcement code falls back to the same numbers).
