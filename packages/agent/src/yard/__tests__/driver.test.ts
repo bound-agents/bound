@@ -281,9 +281,12 @@ describe("runYardProgram — aux sugar", () => {
 	// Live incident (thread 41cb32eb, trace 2f0dae8f): two structured review
 	// results were interpolated into an aux instruction template; JS coerced
 	// them to literal "[object Object]" and the remediation agent received no
-	// findings at all — it saw nothing to fix and no-oped. The constructors
-	// fail loudly at construction, where the program can still fix it.
-	it("aux() rejects instructions carrying [object Object] from template interpolation", async () => {
+	// findings at all — it saw nothing to fix and no-oped. The guest replaces
+	// the default object→string coercion with a Symbol.toPrimitive hook on
+	// Object.prototype, so the loss throws AT THE COERCION SITE — no
+	// substring scanning, and it catches every string-building path (template
+	// literals, String(), +, join()), not just effect constructors.
+	it("throws at the coercion site when a plain object is interpolated into a template", async () => {
 		await expect(
 			runYardProgram({
 				program: `function* main() {
@@ -292,10 +295,10 @@ describe("runYardProgram — aux sugar", () => {
 				}`,
 				host: fakeHost({}),
 			}),
-		).rejects.toThrow(/\[object Object\].*JSON\.stringify/);
+		).rejects.toThrow(/JSON\.stringify/);
 	});
 
-	it("infer() rejects prompts carrying [object Object] from template interpolation", async () => {
+	it("throws for infer prompts built by interpolating an object", async () => {
 		await expect(
 			runYardProgram({
 				program: `function* main() {
@@ -304,7 +307,31 @@ describe("runYardProgram — aux sugar", () => {
 				}`,
 				host: fakeHost({}),
 			}),
-		).rejects.toThrow(/\[object Object\].*request\.input/);
+		).rejects.toThrow(/implicit object-to-string coercion/);
+	});
+
+	it("throws when an array of objects is joined into a string", async () => {
+		await expect(
+			runYardProgram({
+				program: `function* main() {
+					const rows = [{ id: 1 }, { id: 2 }];
+					return \`rows: \${rows}\`;
+				}`,
+				host: fakeHost({}),
+			}),
+		).rejects.toThrow(/implicit object-to-string coercion/);
+	});
+
+	it("leaves intentional coercions intact (errors, numbers, custom toString)", async () => {
+		const out = await runYardProgram({
+			program: `function* main() {
+				const err = new Error("boom");
+				const custom = { toString() { return "custom-repr"; } };
+				return \`\${err} \${42} \${custom} \${[1, 2].join(",")}\`;
+			}`,
+			host: fakeHost({}),
+		});
+		expect(out.result).toBe("Error: boom 42 custom-repr 1,2");
 	});
 
 	it("aux() still accepts stringified structured data", async () => {
