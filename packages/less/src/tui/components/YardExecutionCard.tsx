@@ -1,6 +1,7 @@
 import { Text } from "ink";
 import type React from "react";
 import type { YardTreeSnapshot } from "../hooks/useYardExecutions";
+import { HighlightedCodeBlock } from "./HighlightedCode";
 import { StripeBox, formatDuration } from "./MessageBlock";
 
 export interface YardExecutionCardProps {
@@ -44,6 +45,20 @@ function clampLine(text: string): string {
 	const flat = text.replace(/\s*[\r\n]+\s*/g, " ").trim();
 	if (flat.length <= LINE_CLAMP) return flat;
 	return `${flat.slice(0, LINE_CLAMP - 1)}…`;
+}
+
+/**
+ * Pretty-print a preview that parses as JSON; null when it doesn't (e.g.
+ * yard.ts preview() middle-elided a long payload, breaking the syntax).
+ * Callers fall back to the raw wrapped text — formatting is best-effort,
+ * never a gate on showing the content.
+ */
+function prettyJson(text: string): string | null {
+	try {
+		return JSON.stringify(JSON.parse(text), null, 2);
+	} catch {
+		return null;
+	}
 }
 
 type NodeState = YardTreeSnapshot["nodes"][number];
@@ -268,6 +283,12 @@ export function YardExecutionCard({
 	const preview = (text: string): string => (running ? clampLine(text) : text);
 	const previewWrap = running ? ("truncate-end" as const) : ("wrap" as const);
 	const treeMs = running ? null : durationMs(tree.startedAt, tree.finishedAt);
+	// Committed cards format JSON payloads and highlight the program source;
+	// live cards keep one-line clamps (dynamic-region height safety). Both
+	// fall back to raw wrapped text when a preview was middle-elided by
+	// yard.ts and no longer parses.
+	const prettyInput = !running && tree.inputPreview ? prettyJson(tree.inputPreview) : null;
+	const prettyResult = !running && tree.resultPreview ? prettyJson(tree.resultPreview) : null;
 	return (
 		<StripeBox color="magenta" width={stripeWidth}>
 			<Text>
@@ -282,11 +303,24 @@ export function YardExecutionCard({
 				{effectCount} {effectCount === 1 ? "effect" : "effects"}
 				{treeMs !== null ? <DurationFragment ms={treeMs} /> : null}
 			</Text>
+			{!running && tree.programPreview ? (
+				<>
+					<Text dimColor>program</Text>
+					<HighlightedCodeBlock code={tree.programPreview} lang="js" />
+				</>
+			) : null}
 			{tree.inputPreview ? (
-				<Text wrap={previewWrap}>
-					<Text dimColor>input · </Text>
-					{preview(tree.inputPreview)}
-				</Text>
+				running || prettyInput === null ? (
+					<Text wrap={previewWrap}>
+						<Text dimColor>input · </Text>
+						{preview(tree.inputPreview)}
+					</Text>
+				) : (
+					<>
+						<Text dimColor>input</Text>
+						<HighlightedCodeBlock code={prettyInput} lang="json" />
+					</>
+				)
 			) : null}
 			{rows.map((row) => {
 				if (row.kind === "overflow") {
@@ -336,10 +370,17 @@ export function YardExecutionCard({
 				);
 			})}
 			{!running && tree.resultPreview ? (
-				<Text wrap={previewWrap}>
-					<Text color="magenta">result · </Text>
-					{preview(tree.resultPreview)}
-				</Text>
+				prettyResult === null ? (
+					<Text wrap={previewWrap}>
+						<Text color="magenta">result · </Text>
+						{preview(tree.resultPreview)}
+					</Text>
+				) : (
+					<>
+						<Text color="magenta">result</Text>
+						<HighlightedCodeBlock code={prettyResult} lang="json" />
+					</>
+				)
 			) : null}
 		</StripeBox>
 	);

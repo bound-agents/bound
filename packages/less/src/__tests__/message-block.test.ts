@@ -78,6 +78,37 @@ describe("MessageBlock", () => {
 			expect((lastFrame() ?? "").trim()).toBe("");
 		});
 
+		it("suppresses a lone yard call row — the execution card carries the program", async () => {
+			// The Yard execution card replaces BOTH the request and result rows:
+			// it renders the program (highlighted), input, graph, and result
+			// itself, so a separate request card above it showed the same
+			// payload twice (thread 2b372dca).
+			const content = JSON.stringify([
+				{
+					type: "tool_use",
+					id: "tooluse_yard1",
+					name: "yard",
+					input: { program: "function* main() { return 1; }", budget: { timeout_seconds: 60 } },
+				},
+			]);
+
+			const { lastFrame } = render(
+				React.createElement(MessageBlock, {
+					message: {
+						id: "msg-yard",
+						role: "tool_call",
+						content,
+						thread_id: "t-1",
+						created_at: new Date().toISOString(),
+					},
+					terminalColumns: 120,
+				}),
+			);
+			await tick();
+
+			expect((lastFrame() ?? "").trim()).toBe("");
+		});
+
 		it("prefixes remote (non-boundless) tools with [remote]", async () => {
 			// Single-use calls: multi-use (parallel) calls are suppressed — their
 			// ⏵ rows render on the results — so formatting is pinned per-use here.

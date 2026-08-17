@@ -150,9 +150,20 @@ export function useSessionHud(
 			setState((s) => ({ ...s, backgroundCount: data.count }));
 		};
 
+		const onYardExecution = (data: { thread_id: string }) => {
+			if (data.thread_id !== threadIdRef.current) return;
+			// A Yard run spends for minutes (aux loops, relayed inference) before
+			// its thread ever goes inactive — waiting for thread:status meant the
+			// session cost froze for the whole run (thread 2b372dca). Lifecycle
+			// events arrive per effect; the min-interval debounce in refreshCost
+			// keeps this at one metrics fetch per window, not one per event.
+			refreshCost();
+		};
+
 		client.on("context:debug", onContextDebug);
 		client.on("thread:status", onThreadStatus);
 		client.on("background:count", onBackgroundCount);
+		client.on("yard:execution", onYardExecution);
 		refreshCost(true);
 
 		return () => {
@@ -160,6 +171,7 @@ export function useSessionHud(
 			client.off("context:debug", onContextDebug);
 			client.off("thread:status", onThreadStatus);
 			client.off("background:count", onBackgroundCount);
+			client.off("yard:execution", onYardExecution);
 		};
 	}, [client, costRefreshMinIntervalMs]);
 

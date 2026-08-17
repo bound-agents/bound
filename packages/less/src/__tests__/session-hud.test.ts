@@ -97,3 +97,56 @@ describe("useSessionHud background lifecycle", () => {
 		expect(lastFrame()).toContain("0");
 	});
 });
+
+describe("useSessionHud cost refresh during Yard runs", () => {
+	// A Yard run spends for minutes (aux loops, relayed inference) before its
+	// thread ever goes inactive — waiting for thread:status froze the session
+	// cost for the whole run (thread 2b372dca). Lifecycle events now trigger
+	// the debounced refresh.
+	it("refreshes spend on yard:execution events for the current thread", async () => {
+		const listeners = new Map<string, Set<EventHandler>>();
+		let fetches = 0;
+		const client = {
+			on(event: string, handler: EventHandler) {
+				if (!listeners.has(event)) listeners.set(event, new Set());
+				listeners.get(event)?.add(handler);
+			},
+			off(event: string, handler: EventHandler) {
+				listeners.get(event)?.delete(handler);
+			},
+			getBackgroundCount() {
+				return 0;
+			},
+			getMetricsTotals() {
+				fetches++;
+				return Promise.resolve({ cost_usd: fetches * 0.5 });
+			},
+		} as unknown as BoundClient;
+
+		function Harness() {
+			const hud = useSessionHud(client, "thread-1", 0);
+			return React.createElement(Text, null, `cost:${hud.sessionCostUsd ?? "none"}`);
+		}
+
+		const { lastFrame } = render(React.createElement(Harness));
+		await tick();
+		const mountFetches = fetches;
+		expect(mountFetches).toBeGreaterThan(0);
+
+		// Mid-run lifecycle event for THIS thread refreshes spend…
+		for (const handler of listeners.get("yard:execution") ?? []) {
+			handler({ thread_id: "thread-1" });
+		}
+		await tick();
+		expect(fetches).toBeGreaterThan(mountFetches);
+		expect(lastFrame()).toContain("cost:");
+
+		// …while another thread's events do not.
+		const before = fetches;
+		for (const handler of listeners.get("yard:execution") ?? []) {
+			handler({ thread_id: "other-thread" });
+		}
+		await tick();
+		expect(fetches).toBe(before);
+	});
+});

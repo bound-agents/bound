@@ -82,10 +82,14 @@ describe("YardExecutionCard", () => {
 	it("renders completed input, graph, and final result", () => {
 		const { lastFrame } = render(React.createElement(YardExecutionCard, { tree }));
 		const frame = lastFrame() ?? "";
-		expect(frame).toContain('input · {"query":"yard"}');
+		// Committed cards pretty-print JSON payloads under section labels
+		// (2-space indent from JSON.stringify) instead of a one-line `input ·`.
+		expect(frame).toContain("input");
+		expect(frame).toContain('"query": "yard"');
 		expect(frame).toContain("✓ aux:skeptic");
 		expect(frame).toContain("✗ infer · gpt-5.6-sol · provider error");
-		expect(frame).toContain('result · {"matches":3}');
+		expect(frame).toContain("result");
+		expect(frame).toContain('"matches": 3');
 	});
 
 	// The card renders the EXECUTION GRAPH, not a flat leaf list (#217's

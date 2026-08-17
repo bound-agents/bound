@@ -112,7 +112,9 @@ for background work.
 
 A running `yard` call appears as a magenta-striped turn below the transcript — the same
 left-stripe wrapper as every other message, so long content wraps inside the stripe
-instead of shattering a border. The card shows the
+instead of shattering a border. The card replaces the ordinary tool request and result
+rows entirely: the request card is suppressed while the run is live and stays suppressed
+after it commits, so one card carries the whole invocation. The card shows the
 initial input and the live execution graph: tool, auxiliary-agent, and inference effects
 hang off their parent with box-drawing branches, nested `yard()` runs indent as subtrees,
 and concurrent effects read as siblings in dispatch order. Glyphs are color-coded by state
@@ -122,14 +124,18 @@ that dispatches the same agent across many partitions packs into one dense row �
 `aux:scout ×24` with a per-member glyph cluster — and failed members keep an indexed
 detail line with the failure reason. While the run is live, previews are clamped to one
 line and the graph section is capped to the viewport (rows past the budget collapse into
-“… +N more effects”), so the card never outgrows the terminal. Client tools dispatched
-from inside the run (for example `boundless_bash`) render only as graph nodes, and tools
-dispatched by auxiliary-agent threads never stream under this chat — they belong to their
-own thread.
+“… +N more effects”), so the card never outgrows the terminal. The processing indicator
+reflects the invocation as a whole — `Yard · 3/12 effects` with elapsed anchored at the
+run's start rather than a per-segment “Thinking” counter that resets between loop turns —
+and the status-bar session cost refreshes as lifecycle events arrive instead of freezing
+until the run terminates. Client tools dispatched from inside the run (for example
+`boundless_bash`) render only as graph nodes, and tools dispatched by auxiliary-agent
+threads never stream under this chat — they belong to their own thread.
 
 When the root run finishes, the card moves into terminal scrollback at the matching Yard
-result row with the full input and result previews (wrapped, not clamped — scrollback has
-no height constraint). Live execution events are thread-scoped and ephemeral; transcripts
+result row with the generator program (syntax-highlighted) and the full input and result
+payloads — pretty-printed JSON when they parse, raw wrapped text when a long preview was
+middle-elided upstream. Live execution events are thread-scoped and ephemeral; transcripts
 created by older servers, or sessions that attach after a run finishes, retain the
 ordinary Yard tool-call/result rendering.
 
