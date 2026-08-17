@@ -331,6 +331,7 @@ async function main(): Promise<void> {
 				toolHandlers={toolSet.handlers}
 				initialThreadTitle={initialThread.title}
 				terminalTitle={terminalTitle}
+				contextFiles={config.contextFiles}
 				shell={shell}
 				sandbox={sandbox}
 			/>,

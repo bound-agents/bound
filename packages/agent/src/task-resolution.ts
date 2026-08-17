@@ -230,6 +230,8 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 	const day = parseCronField(dayStr, 1, 31);
 	const month = parseCronField(monthStr, 1, 12);
 	const weekday = parseCronField(weekdayStr, 0, 6);
+	const dayWildcard = dayStr === "*";
+	const weekdayWildcard = weekdayStr === "*";
 
 	// Find the next matching time.
 	//
@@ -260,8 +262,12 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 		const monthMatch = month.has(mon);
 		const weekdayMatch = weekday.has(dow);
 
-		// Both day and weekday must match (OR condition per cron spec)
-		const dateMatch = (dayMatch || weekdayMatch) && monthMatch;
+		const calendarDayMatch = dayWildcard
+			? weekdayMatch
+			: weekdayWildcard
+				? dayMatch
+				: dayMatch || weekdayMatch;
+		const dateMatch = calendarDayMatch && monthMatch;
 
 		if (minuteMatch && hourMatch && dateMatch) {
 			return next;
@@ -271,6 +277,13 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 	}
 
 	throw new Error("Could not find next cron execution time");
+}
+
+function parseCronNumber(token: string): number {
+	if (!/^\d+$/.test(token)) {
+		throw new Error(`Invalid numeric value: ${token}`);
+	}
+	return Number(token);
 }
 
 function parseCronField(field: string, min: number, max: number): Set<number> {
@@ -295,8 +308,11 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 
 	if (field.includes("/")) {
 		const [range, step] = field.split("/");
-		const stepNum = Number.parseInt(step, 10);
-		if (Number.isNaN(stepNum)) {
+		if (!/^-?\d+$/.test(step)) {
+			throw new Error(`Invalid step value: ${step}`);
+		}
+		const stepNum = Number(step);
+		if (stepNum <= 0) {
 			throw new Error(`Invalid step value: ${step}`);
 		}
 
@@ -305,11 +321,11 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 
 		if (range !== "*") {
 			const rangeParts = range.split("-");
-			start = Number.parseInt(rangeParts[0], 10);
-			end = rangeParts[1] ? Number.parseInt(rangeParts[1], 10) : end;
-			if (Number.isNaN(start) || Number.isNaN(end)) {
+			if (rangeParts.length > 2) {
 				throw new Error(`Invalid range: ${range}`);
 			}
+			start = parseCronNumber(rangeParts[0]);
+			end = rangeParts[1] ? parseCronNumber(rangeParts[1]) : end;
 		}
 
 		for (let i = start; i <= end; i += stepNum) {
@@ -321,10 +337,11 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 	}
 
 	if (field.includes("-")) {
-		const [start, end] = field.split("-").map((s) => Number.parseInt(s, 10));
-		if (Number.isNaN(start) || Number.isNaN(end)) {
+		const rangeParts = field.split("-");
+		if (rangeParts.length !== 2) {
 			throw new Error(`Invalid range: ${field}`);
 		}
+		const [start, end] = rangeParts.map(parseCronNumber);
 		for (let i = start; i <= end; i++) {
 			if (i >= min && i <= max) {
 				result.add(i);
@@ -333,8 +350,8 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 		return result;
 	}
 
-	const num = Number.parseInt(field, 10);
-	if (Number.isNaN(num) || num < min || num > max) {
+	const num = parseCronNumber(field);
+	if (num < min || num > max) {
 		throw new Error(`Invalid cron field: ${field} (must be ${min}-${max})`);
 	}
 	result.add(num);

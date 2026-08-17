@@ -357,6 +357,20 @@ describe("webhook commands", () => {
 
 			expect(webhook?.signature_format).toBe("stripe");
 		});
+
+		it("should reject unsupported webhook signature formats", () => {
+			setup();
+			console.log = () => {};
+
+			expect(() =>
+				webhookCreate(db, SITE_ID, ["--name", "invalid-format", "--format", "bogus"]),
+			).toThrow(/Unsupported signature format/);
+
+			webhookCreate(db, SITE_ID, ["--name", "format-test", "--format", "github"]);
+			expect(() =>
+				webhookUpdate(db, SITE_ID, ["--name", "format-test", "--format", "bogus"]),
+			).toThrow(/Unsupported signature format/);
+		});
 	});
 
 	// Task 2: webhookRotateSecret

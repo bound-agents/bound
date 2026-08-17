@@ -43,6 +43,8 @@ export interface TransitionParams {
 	shell: ResolvedShell;
 	/** Resolved filesystem sandbox policy, threaded into re-attach. */
 	sandbox: ResolvedSandboxConfig;
+	/** Context files injected into the system prompt during re-attach. */
+	injectContextFiles?: string[];
 	/** Override deps for testing (avoids mock.module leaks in bun). */
 	deps?: Partial<TransitionDeps>;
 }
@@ -82,6 +84,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 		model,
 		shell,
 		sandbox,
+		injectContextFiles,
 		deps: _deps,
 	} = params;
 
@@ -173,6 +176,7 @@ export async function transitionThread(params: TransitionParams): Promise<Transi
 			confirmFn,
 			shell,
 			sandbox,
+			injectContextFiles,
 		});
 
 		logger.info("transition_complete", {

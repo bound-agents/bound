@@ -73,6 +73,7 @@ describe("transitionThread", () => {
 			logger: mockLogger,
 			inFlightTools: new Map(),
 			sandbox: { enabled: false, writablePaths: [], network: "open", onUnavailable: "passthrough" },
+			injectContextFiles: ["AGENTS.md"],
 			shell: {
 				command: "sh",
 				execFlag: "-c",
@@ -93,6 +94,9 @@ describe("transitionThread", () => {
 		expect(mockClient.getThread).toHaveBeenCalledWith("new-thread");
 		expect(mockDeps.releaseLock).toHaveBeenCalledWith("/config", "old-thread");
 		expect(mockDeps.acquireLock).toHaveBeenCalledWith("/config", "new-thread", "/home/user");
+		expect(mockDeps.performAttach).toHaveBeenCalledWith(
+			expect.objectContaining({ injectContextFiles: ["AGENTS.md"] }),
+		);
 	});
 
 	it("AC7.4: creates new thread for /clear", async () => {
