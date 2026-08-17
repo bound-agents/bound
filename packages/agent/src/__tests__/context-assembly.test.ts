@@ -149,6 +149,56 @@ describe("Context Assembly Pipeline", () => {
 
 			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
 		});
+
+		// Aux loops replace the persona slot with the aux identity. The slot
+		// used to ALWAYS load the main persona from cluster_config, with the
+		// aux persona appended to systemPromptAddition underneath it — so
+		// every aux thread spoke as the main agent (live bug: bug-sweeper aux
+		// threads opened reports in the main persona's voice, 2026-08-17).
+		it("personaOverride replaces the main persona in the system prompt", () => {
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am the MAIN persona.", new Date().toISOString()],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				personaOverride: "A meticulous software investigator.",
+			});
+
+			expect(result.systemPrompt).toContain("meticulous software investigator");
+			expect(result.systemPrompt).not.toContain("MAIN persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
+		});
+
+		it("empty personaOverride renders no persona slot at all", () => {
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am the MAIN persona.", new Date().toISOString()],
+			);
+
+			const result = assembleContext({ db, threadId, userId, personaOverride: "" });
+
+			expect(result.systemPrompt).not.toContain("MAIN persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
+		});
+
+		it("undefined personaOverride keeps the main persona", () => {
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am the MAIN persona.", new Date().toISOString()],
+			);
+
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(result.systemPrompt).toContain("MAIN persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
+		});
 	});
 
 	it("should assemble context with message history", async () => {

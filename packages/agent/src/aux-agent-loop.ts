@@ -67,6 +67,10 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			recentHardCeilingDeflator: 1,
 			platformInstructions: this.config.platformInstructions,
 			systemPromptAddition: this.config.systemPromptAddition,
+			// The aux identity IS the persona: replaces the main persona in the
+			// stable prefix instead of riding as a suffix under it (aux threads
+			// used to speak as the main agent).
+			personaOverride: this.config.personaOverride,
 			commandRegistry: this.ctx.commandRegistry,
 			stableSubsectionCache: sharedStableSubsectionCache,
 			clock: assemblyClock,

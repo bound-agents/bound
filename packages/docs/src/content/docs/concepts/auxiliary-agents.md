@@ -56,8 +56,10 @@ scheduler. A tool allowlist can narrow the remaining capabilities for an identit
 An invocation inherits the dispatching thread's surface context as well as its eligible
 client tools. A Boundless invocation therefore receives the same working directory, Git
 context, and injected context files as its parent; connector and web invocations preserve
-their corresponding platform context. The auxiliary persona is appended after that inherited
-context. Inheritance does not remove orchestration restrictions, and host access still follows
+their corresponding platform context. The auxiliary persona **replaces** the main agent's
+persona in the child thread's system prompt — the identity speaks as itself, not as the
+main agent with a persona appended. Inheritance does not remove orchestration restrictions,
+and host access still follows
 the [sandbox and filesystem model](/bound/concepts/sandbox/). [Security
 boundaries](/bound/concepts/security-boundaries/) places these identity and capability limits
 in the broader trust model.
