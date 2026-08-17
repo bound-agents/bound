@@ -241,6 +241,13 @@ const BOOTSTRAP_SOURCE = `(() => {
 		if (typeof request.prompt !== "string") {
 			throw new TypeError("infer() request requires a prompt string");
 		}
+		// Same interpolation trap as aux() instructions: pass structured data
+		// through request.input, or JSON.stringify() it into the prompt.
+		if (request.prompt.indexOf("[object Object]") !== -1) {
+			throw new TypeError(
+				'infer() prompt contains "[object Object]" - a structured value was interpolated into a template string and its content was lost. Pass structured data via request.input, or JSON.stringify() it.',
+			);
+		}
 		assertJsonCompatible(request, "infer() request");
 		return brand({ kind: "inference", model: model, request: request });
 	};
@@ -251,6 +258,16 @@ const BOOTSTRAP_SOURCE = `(() => {
 		}
 		if (typeof instructions !== "string" || instructions.length === 0) {
 			throw new TypeError("aux() requires instructions");
+		}
+		// Interpolating a structured value into a template string coerces it to
+		// the literal "[object Object]" and the receiving agent gets no data at
+		// all (live incident: two review objects handed to a remediation agent
+		// as "[object Object]" - it saw no findings and no-oped). Fail loudly at
+		// construction, where the program can still fix the interpolation.
+		if (instructions.indexOf("[object Object]") !== -1) {
+			throw new TypeError(
+				'aux() instructions contain "[object Object]" - a structured value was interpolated into a template string and its content was lost. JSON.stringify() the value (or extract the fields you need) before embedding it.',
+			);
 		}
 		const extra = options === undefined ? {} : options;
 		return toolCtor("aux", Object.assign({ action: "invoke", name: name, instructions: instructions }, extra));
