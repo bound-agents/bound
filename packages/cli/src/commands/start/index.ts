@@ -142,7 +142,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 		onModelBackendsChanged: async (oldConfig, newConfig) => {
 			if (!modelRouter) {
 				appContext.logger.warn(
-					"[sighup] model_backends.js changed but no router is registered — restart to apply",
+					"[sighup] model backends config changed but no router is registered — restart to apply",
 				);
 				return;
 			}

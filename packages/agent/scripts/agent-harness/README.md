@@ -18,15 +18,15 @@ bun run packages/agent/scripts/agent-harness/run.ts \
 
 `--budget` is required and has no default. The harness aborts at three checkpoints (pre-flight estimate, per-turn projection, post-turn hard stop with 5% slack) against this value. There is no environment-variable foot-gun guard — every invocation explicitly states its dollar ceiling.
 
-Credentials come from whatever `model_backends.js` already configures for the chosen `--backend` (e.g., the `profile` field for Bedrock). If the daemon can use the backend, the harness can use the backend — the harness adds no parallel auth surface.
+Credentials come from the precedence-selected `model_backends.js` or `model_backends.json` config already configures for the chosen `--backend` (e.g., the `profile` field for Bedrock). If the daemon can use the backend, the harness can use the backend — the harness adds no parallel auth surface.
 
 ## CLI flags
 
 | flag | required | default | meaning |
 | --- | --- | --- | --- |
 | `--budget <usd>` | YES | — | Hard ceiling in USD. Bare invocation without this fails. |
-| `--config-dir <path>` | no | `./config` | Where `model_backends.js` lives. |
-| `--backend <id>` | no | router default | Backend ID from `model_backends.js` to drive. |
+| `--config-dir <path>` | no | `./config` | Where `model_backends.js` or fallback `model_backends.json` lives. |
+| `--backend <id>` | no | router default | Backend ID from the selected model backends config to drive. |
 | `--fixture <name>` | YES | — | Fixture from `fixtures/` to run. |
 | `--diagnostic <name[,...]>` | no | `cache` | Diagnostic plugin(s) to run; comma-separated for multiple. |
 | `--turns <n>` | no | `5` | Number of turns to drive. |

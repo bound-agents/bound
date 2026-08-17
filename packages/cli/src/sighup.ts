@@ -27,7 +27,7 @@ interface SighupHandlerConfig {
 	 */
 	onWsConfigChanged?: (newWsConfig: WsConfig | undefined) => Promise<void>;
 	/**
-	 * Callback invoked when model_backends.js changes during a reload.
+	 * Callback invoked when the selected model backends config changes during a reload.
 	 * Allows the caller to rebuild the ModelRouter in place (see
 	 * ModelRouter.reload) and refresh anything that captured derived state
 	 * (hosts.models advertisement, commandContext.modelRouter, etc.).

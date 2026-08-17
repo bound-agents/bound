@@ -16,12 +16,12 @@ replicates or belongs to a single request or thread.
 
 | Scope | Meaning | Entries on this page |
 | --- | --- | --- |
-| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.json`, `model_backends.js`, `network.json`, `platforms.json`, `sync.json`, `keyring.json`, `mcp.json`, `memory.json` |
+| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.json`, `model_backends.js` / `model_backends.json`, `network.json`, `platforms.json`, `sync.json`, `keyring.json`, `mcp.json`, `memory.json` |
 | **Replicated control state** | Stored outside the configuration-file set and replicated to hosts. | [`persona`](#persona) |
 | **Per-thread or client-local concept** | Selected or derived for a thread, turn, or client rather than defined as replicated cluster control state. | Per-thread backend cache windows and per-call model effort |
 
 Unless a field description explicitly says otherwise, a file entry configures the host that
-reads it. For example, `model_backends.js` lists backends that the host can serve locally,
+reads it. For example, the precedence-selected model backends config lists backends that the host can serve locally,
 and fetch-specific headers apply on the host that performs the fetch.
 
 ## Configuration files
@@ -29,7 +29,7 @@ and fetch-specific headers apply on the host that performs the fetch.
 | File | Required | Purpose |
 |------|----------|---------|
 | [`allowlist.json`](#allowlistjson) | Yes | Who may talk to the agent |
-| [`model_backends.js`](#model_backendsjs) | Yes | LLM backends, routing, pricing, caching |
+| [`model_backends.js` / `model_backends.json`](#model_backendsjs) | Yes | LLM backends, routing, pricing, caching |
 | [`network.json`](#networkjson) | No | Outbound HTTP policy for sandbox and just-bash execution |
 | [`platforms.json`](#platformsjson) | No | Platform connectors (Discord, etc.) |
 | [`sync.json`](#syncjson) | No | Hub URL, relay, WebSocket sync tuning |
@@ -61,7 +61,7 @@ Maps Bound users to identities on supported platforms.
 
 ## `model_backends.js`
 
-An ESM-like JavaScript module that `export default`s the LLM backends and routing configuration. The module runs in Bound's bounded QuickJS evaluator; only supported runtime fields such as a backend `price(turn)` callback may be functions. All other configuration remains strictly validated.
+Bound first loads `model_backends.js` when it exists; otherwise it loads the legacy `model_backends.json`. The JavaScript form is an ESM-like module that `export default`s the LLM backends and routing configuration and runs in Bound's bounded QuickJS evaluator. Only the JavaScript form permits a backend `price(turn)` callback; JSON remains strict static configuration. Both forms reject undeclared fields through the same strict schema.
 
 The LLM backends and how inference routes across them. An **empty `backends` array is
 valid** for a hub-only node that relays all inference to spokes; in that case `default`

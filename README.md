@@ -55,7 +55,7 @@ After `bound init`, `config/` contains:
 | File | Required | Description |
 |------|----------|-------------|
 | `allowlist.json` | Yes | Users permitted to interact; `default_web_user` + user map with display names and platform handles |
-| `model_backends.js` | Yes | ESM `export default` backend configuration: routing, pricing callbacks, cache warming, extended thinking, capability overrides |
+| `model_backends.js` / `model_backends.json` | Yes | JS takes precedence when present; otherwise JSON static backend configuration is loaded. Only JS supports `backend.price(turn)` callbacks. |
 | `network.json` | No | Outbound HTTP allowlist for the sandbox, with per-URL header injection |
 | `platforms.json` | No | Platform connectors (Discord token, allowed users, leadership role, failover threshold) |
 | `sync.json` | No | Hub URL (on spokes), relay tuning, WebSocket settings |
