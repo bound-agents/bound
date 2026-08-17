@@ -77,6 +77,17 @@ describe("model_backends.js loader", () => {
 		expect(config.backends[0]).not.toHaveProperty("price");
 	});
 
+	it("loads a helper-prefixed default export with an arrow price callback", async () => {
+		writeFileSync(
+			join(configDir, "model_backends.js"),
+			`const price = (turn) => turn.inputTokens / 1_000_000;
+export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1", price }], default: "local" };`,
+		);
+
+		const config = await loadModelBackendsConfig(configDir);
+		expect(config.default).toBe("local");
+	});
+
 	it("rejects functions outside backend.price", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),

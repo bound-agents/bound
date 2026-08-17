@@ -38,7 +38,7 @@ async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPrici
 	runtime.setInterruptHandler(() => Date.now() > deadline);
 	const vm = runtime.newContext();
 	try {
-		const body = source.replace(/^\s*export\s+default\s+/, "return (").replace(/;?\s*$/, ");");
+		const body = source.replace(/\bexport\s+default\s+/, "return (").replace(/;?\s*$/, ");");
 		const result = vm.evalCode(
 			`(() => {
 				"use strict";
@@ -56,7 +56,14 @@ async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPrici
 					if (backend.price !== undefined && typeof backend.price !== "function") {
 						throw new Error(\`backend[\${index}].price must be a function\`);
 					}
-					return backend.price === undefined ? undefined : "function " + backend.price.toString();
+					if (backend.price === undefined) return undefined;
+					const priceSource = backend.price.toString();
+					// Method shorthand ("price(turn) { ... }") is not a valid expression on
+					// its own; prefix the function keyword. Arrows and function
+					// declarations are already evaluable and pass through unchanged.
+					return /^[A-Za-z_$][\\w$]*\\s*\\(/.test(priceSource)
+						? "function " + priceSource
+						: priceSource;
 				});
 			})()`,
 			"model_backends.js",

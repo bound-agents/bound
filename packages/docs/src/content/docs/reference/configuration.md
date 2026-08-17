@@ -43,7 +43,7 @@ and fetch-specific headers apply on the host that performs the fetch.
 
 Every operator config supports a JavaScript alternative: `allowlist.js`, `model_backends.js`, `network.js`, `platforms.js`, `sync.js`, `keyring.js`, `mcp.js`, and `memory.js`. When both forms exist, Bound selects `.js`; it never falls back to JSON after a selected JavaScript file fails to evaluate or validate. This keeps a broken override visible and makes startup/reload transactional: the previous loaded configuration remains active on a hot reload.
 
-A JavaScript file is an ESM-like module that `export default`s one object. Bound evaluates it in a bounded QuickJS runtime, expands `${NAME}` and `${NAME:-default}` strings, then applies the same strict Zod schema as JSON. JavaScript is configuration, not a general plugin surface: `model_backends.js` alone may contain `backend.price(turn)` callbacks; all other config values must be data.
+A JavaScript file is an ESM-like module that `export default`s one object. Comments and helper declarations (for example a shared pricing function assigned to a `const`) may precede the export. Bound evaluates it in a bounded QuickJS runtime, expands `${NAME}` and `${NAME:-default}` strings, then applies the same strict Zod schema as JSON. JavaScript is configuration, not a general plugin surface: `model_backends.js` alone may contain `backend.price(turn)` callbacks; all other config values must be data.
 
 ## `allowlist.js` / `allowlist.json`
 
@@ -97,7 +97,7 @@ must be `""`.
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
-| `price` | function | absent | Optional `price(turn)` callback returning this turn’s USD cost. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to static pricing. |
+| `price` | function | absent | Optional `price(turn)` callback returning this turn’s USD cost. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to static pricing. When `price` is set, the static `price_per_m_*` fields may be omitted entirely — they default to `0` and only matter as the fallback when the callback fails. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
 | `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |

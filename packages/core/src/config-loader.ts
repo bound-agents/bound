@@ -44,7 +44,7 @@ async function evaluateJavaScriptConfig(source: string, filename: string): Promi
 	runtime.setInterruptHandler(() => Date.now() > deadline);
 	const vm = runtime.newContext();
 	try {
-		const body = source.replace(/^\s*export\s+default\s+/, "return (").replace(/;?\s*$/, ");");
+		const body = source.replace(/\bexport\s+default\s+/, "return (").replace(/;?\s*$/, ");");
 		const result = vm.evalCode(
 			`(() => { "use strict"; const config = (() => { ${body} })(); if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("${filename} must export an object"); return config; })()`,
 			filename,
