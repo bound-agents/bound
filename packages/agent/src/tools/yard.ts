@@ -315,6 +315,8 @@ type YardInput = z.infer<typeof yardSchema>;
 
 const YARD_DESCRIPTION = `Execute a bounded JavaScript generator while retaining intermediate values outside conversation history. This is a HIGH-LEVEL ORCHESTRATION tool: the unit of work is normally an agent — scatter \`aux()\` specialists across partitions, gather their findings into structured form with \`infer()\`, re-scatter implementers, gate acceptance with a reviewer — while corpus-scale intermediates stay inside the program and only the final JSON value returns to you.
 
+Before writing a nontrivial program, activate the \`yard-recipes\` skill — it carries the working recipes (scatter-gather, review gates, partitioning doctrine) and the failure modes that waste runs. The \`aux-agents\` skill covers designing the identities those recipes dispatch.
+
 The \`program\` must define \`function* main(input) { ... }\` and return a JSON-compatible value. Yard has no ambient I/O — no fetch, process, filesystem, modules, clock, randomness, timers, promises, or async/await. Request external work by yielding branded effects created only by these globals:
 
 - \`input\` — deeply frozen JSON-compatible \`input\` from this tool call.

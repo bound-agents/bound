@@ -113,7 +113,9 @@ context or identity along. The persona says who it IS (temperament, working
 style, standing habits), not what it's for; the job rides in the invocation's
 instructions. `define` refuses an existing active name (identity sprawl splits a
 namespace); `retire` hides it from list/invoke but keeps its memory namespace
-readable. Invocation (running one) is a separate slice.
+readable. Invocation (running one) is a separate slice. The `aux-agents` skill
+carries the roster doctrine: persona vs errand, role coverage, and the
+overprompting smell that means an identity is missing.
 
 ### `yard`
 Execute a bounded JavaScript generator in a QuickJS sandbox, keeping
@@ -143,7 +145,8 @@ whole task on the FIRST attempt: a partition is the smallest unit one agent
 can exhaustively cover and verify (a directory or a few files, not a group
 of packages), and dozens of concurrent aux agents is the normal shape for
 repo-wide work, not an escalation. Return per-partition outcomes so coverage
-is checkable from the result.
+is checkable from the result. The `yard-recipes` skill carries the full
+working recipes and the failure modes that waste runs.
 Avoid using it for a lone trivial read where the orchestration
 cost adds nothing. The guest has no ambient I/O; only the final JSON value,
 usage counts, and a trace id return to context. Optional `budget`
