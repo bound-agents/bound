@@ -122,9 +122,10 @@ and concurrent effects read as siblings in dispatch order. Glyphs are color-code
 their own colors, and finished effects show elapsed time graded by magnitude. A fan-out
 that dispatches the same agent across many partitions packs into one dense row —
 `aux:scout ×24` with a per-member glyph cluster — and failed members keep an indexed
-detail line with the failure reason. While the run is live, previews are clamped to one
-line and the graph section is capped to the viewport (rows past the budget collapse into
-“… +N more effects”), so the card never outgrows the terminal. The processing indicator
+detail line with the failure reason. While the run is live, the card shows the head of the
+generator program (syntax-highlighted, elided past a few lines), previews are clamped to
+one line, and the graph section is capped to the viewport (rows past the budget collapse
+into “… +N more effects”), so the card never outgrows the terminal. The processing indicator
 reflects the invocation as a whole — `Yard · 3/12 effects` with elapsed anchored at the
 run's start rather than a per-segment “Thinking” counter that resets between loop turns —
 and the status-bar session cost refreshes as lifecycle events arrive instead of freezing

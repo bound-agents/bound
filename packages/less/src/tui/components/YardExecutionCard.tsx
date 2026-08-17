@@ -61,6 +61,14 @@ function prettyJson(text: string): string | null {
 	}
 }
 
+/**
+ * Rows of generator source shown on the LIVE card. The program is the best
+ * signal of what a run is doing while it works, but the live card sits in
+ * Ink's dynamic region where height is a budget — show the head and elide
+ * the rest; the committed card renders the full source.
+ */
+const LIVE_PROGRAM_ROWS = 6;
+
 type NodeState = YardTreeSnapshot["nodes"][number];
 
 function label(node: NodeState): string {
@@ -267,12 +275,25 @@ export function YardExecutionCard({
 	maxGraphRows,
 }: YardExecutionCardProps): React.ReactElement {
 	let rows = flattenTree(tree);
+	// Rows the live program section will consume (label + head + elide line),
+	// charged against the graph budget so program + graph together never
+	// outgrow the viewport (the febfe45e flicker class).
+	const programLineCount = tree.programPreview ? tree.programPreview.split("\n").length : 0;
+	const liveProgramRows =
+		running && programLineCount > 0
+			? 1 +
+				Math.min(programLineCount, LIVE_PROGRAM_ROWS) +
+				(programLineCount > LIVE_PROGRAM_ROWS ? 1 : 0)
+			: 0;
 	// Live-card height guard: cap the graph section so the dynamic region
 	// never outgrows the viewport (constant-flicker regression, febfe45e).
-	if (running && maxGraphRows !== undefined && rows.length > maxGraphRows) {
-		const keep = Math.max(1, maxGraphRows - 1);
-		const hidden = rows.length - keep;
-		rows = [...rows.slice(0, keep), { key: "overflow", kind: "overflow", count: hidden }];
+	if (running && maxGraphRows !== undefined) {
+		const budget = Math.max(1, maxGraphRows - liveProgramRows);
+		if (rows.length > budget) {
+			const keep = Math.max(1, budget - 1);
+			const hidden = rows.length - keep;
+			rows = [...rows.slice(0, keep), { key: "overflow", kind: "overflow", count: hidden }];
+		}
 	}
 	const effectCount = tree.nodes.filter((node) => node.node.kind !== "run").length;
 	// Mirrors MessageBlock's stripeWidth computation so Yard turns align
@@ -303,11 +324,26 @@ export function YardExecutionCard({
 				{effectCount} {effectCount === 1 ? "effect" : "effects"}
 				{treeMs !== null ? <DurationFragment ms={treeMs} /> : null}
 			</Text>
-			{!running && tree.programPreview ? (
-				<>
-					<Text dimColor>program</Text>
-					<HighlightedCodeBlock code={tree.programPreview} lang="js" />
-				</>
+			{tree.programPreview ? (
+				running ? (
+					<>
+						<Text dimColor>program</Text>
+						<HighlightedCodeBlock
+							code={tree.programPreview.split("\n").slice(0, LIVE_PROGRAM_ROWS).join("\n")}
+							lang="js"
+						/>
+						{tree.programPreview.split("\n").length > LIVE_PROGRAM_ROWS ? (
+							<Text dimColor>
+								… +{tree.programPreview.split("\n").length - LIVE_PROGRAM_ROWS} more lines
+							</Text>
+						) : null}
+					</>
+				) : (
+					<>
+						<Text dimColor>program</Text>
+						<HighlightedCodeBlock code={tree.programPreview} lang="js" />
+					</>
+				)
 			) : null}
 			{tree.inputPreview ? (
 				running || prettyInput === null ? (
