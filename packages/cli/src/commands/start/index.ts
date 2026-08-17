@@ -6,7 +6,7 @@
 export type { StartArgs } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
-import { HandleMessageTracker, compileDynamicPricing } from "@bound/agent";
+import { HandleMessageTracker } from "@bound/agent";
 import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
 import { markAwsCredentialCacheStale } from "@bound/llm";
 import { registerSighupHandler } from "../../sighup.js";
@@ -139,7 +139,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 				newConfig,
 			});
 		},
-		onModelBackendsChanged: async (oldConfig, newConfig) => {
+		onModelBackendsChanged: async (_oldConfig, newConfig) => {
 			if (!modelRouter) {
 				appContext.logger.warn(
 					"[sighup] model backends config changed but no router is registered — restart to apply",
@@ -147,23 +147,18 @@ export async function runStart(args: StartArgs): Promise<void> {
 				return;
 			}
 
-			try {
-				// The loader has already evaluated and sample-validated the candidate,
-				// including its pricing functions. Reload builds router state before it
-				// swaps it, so both derived states are ready before SIGHUP publishes
-				// appContext.config.modelBackends.
-				modelRouter.reload(toRouterConfig(newConfig));
-				advertiseLocalModels(appContext, modelRouter, newConfig);
-				appContext.config.modelBackends = newConfig;
-				wireBackendReadiness(appContext, modelRouter);
-				appContext.logger.info("[sighup] Model router reloaded", {
-					backends: modelRouter.listBackends().map((b) => b.id),
-					default: modelRouter.getDefaultId(),
-				});
-			} catch (err) {
-				await compileDynamicPricing(oldConfig.backends);
-				throw err;
-			}
+			// loadModelBackendsConfig() has already evaluated, schema-validated,
+			// sample-validated, and atomically published the candidate pricing
+			// callbacks. Schema rows no longer contain those functions, so compiling
+			// oldConfig here would clear the live registry rather than restore it.
+			modelRouter.reload(toRouterConfig(newConfig));
+			advertiseLocalModels(appContext, modelRouter, newConfig);
+			appContext.config.modelBackends = newConfig;
+			wireBackendReadiness(appContext, modelRouter);
+			appContext.logger.info("[sighup] Model router reloaded", {
+				backends: modelRouter.listBackends().map((b) => b.id),
+				default: modelRouter.getDefaultId(),
+			});
 		},
 		onWsConfigChanged: async (newWsConfig) => {
 			// Update WS client config. Changes take effect on next reconnection/connection.
