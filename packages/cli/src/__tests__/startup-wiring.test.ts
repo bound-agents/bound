@@ -17,6 +17,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { calculateTurnCost } from "@bound/agent";
 import {
 	applyMetricsSchema,
 	applySchema,
@@ -1390,11 +1391,23 @@ describe("model_backends.js startup configuration", () => {
 		try {
 			await Bun.write(
 				join(configDir, "model_backends.js"),
-				`export default { default: "local", backends: [{ id: "local", provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen", context_window: 8192, tier: 1, price(turn) { return 0; } }] };`,
+				`export default { default: "local", backends: [{ id: "local", provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen", context_window: 8192, tier: 1, price(turn) { return turn.inputTokens / 100; } }] };`,
 			);
 
 			const config = await loadStartupModelBackends(configDir);
 			expect(config.default).toBe("local");
+			expect(
+				calculateTurnCost(
+					"local",
+					{
+						inputTokens: 100,
+						outputTokens: 0,
+						cacheReadTokens: 0,
+						cacheWriteTokens: 0,
+					},
+					config.backends,
+				),
+			).toBe(1);
 		} finally {
 			await cleanupTmpDir(configDir);
 		}
