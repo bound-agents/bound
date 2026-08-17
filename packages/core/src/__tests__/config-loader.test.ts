@@ -471,6 +471,18 @@ describe("Config Loader", async () => {
 			if (result.ok) expect(result.value.hub).toBe("https://json.example.com");
 		});
 
+		it("evaluates a default export preceded by comments and helper declarations", async () => {
+			writeFileSync(
+				join(configDir, "sync.js"),
+				`// Shared constants live above the export.
+const hub = "https://js.example.com";
+export default { hub };`,
+			);
+			const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.value.hub).toBe("https://js.example.com");
+		});
+
 		it("reports JavaScript syntax and schema errors against the selected JavaScript file", async () => {
 			writeFileSync(
 				join(configDir, "sync.json"),
