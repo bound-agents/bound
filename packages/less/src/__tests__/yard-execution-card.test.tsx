@@ -50,6 +50,51 @@ describe("YardExecutionCard", () => {
 		expect(frame).not.toContain("result ·");
 	});
 
+	// The program is the best signal of what a run is doing while it works
+	// (Kara, 2026-08-17): the LIVE card shows the generator head — capped at
+	// LIVE_PROGRAM_ROWS with an elide line — and charges those rows against
+	// the graph budget so program + graph never outgrow the viewport.
+	it("shows the program head on the live card and charges it against the graph budget", () => {
+		const program = Array.from({ length: 10 }, (_, i) => `  // line ${i + 1}`).join("\n");
+		const live: YardTreeSnapshot = {
+			...tree,
+			phase: "started",
+			programPreview: `function* main(input) {\n${program}\n}`,
+		};
+		const { lastFrame } = render(
+			React.createElement(YardExecutionCard, {
+				tree: live,
+				running: true,
+				terminalColumns: 100,
+				maxGraphRows: 12,
+			}),
+		);
+		const frame = lastFrame() ?? "";
+		// Head renders, tail elides: 12 source lines, 6 shown.
+		expect(frame).toContain("program");
+		expect(frame).toContain("function* main(input)");
+		expect(frame).toContain("// line 5");
+		expect(frame).not.toContain("// line 7");
+		expect(frame).toContain("+6 more lines");
+		// Graph still renders under the program within the shared budget.
+		expect(frame).toContain("aux:skeptic");
+	});
+
+	it("renders the full program on the committed card", () => {
+		const committed: YardTreeSnapshot = {
+			...tree,
+			programPreview:
+				"function* main(input) {\n  // alpha\n  // beta\n  // gamma\n  // delta\n  // epsilon\n  // zeta\n  return 1;\n}",
+		};
+		const { lastFrame } = render(
+			React.createElement(YardExecutionCard, { tree: committed, terminalColumns: 100 }),
+		);
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("// zeta");
+		expect(frame).toContain("return 1;");
+		expect(frame).not.toContain("more lines");
+	});
+
 	// Durations ride the lifecycle events' started_at/finished_at instants and
 	// render with MessageBlock's magnitude grading, so a slow effect pops out
 	// of a wall of green rows. The header carries the whole run's elapsed on
