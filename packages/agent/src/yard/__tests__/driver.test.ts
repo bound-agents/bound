@@ -277,6 +277,55 @@ describe("runYardProgram — aux sugar", () => {
 			},
 		]);
 	});
+
+	// Live incident (thread 41cb32eb, trace 2f0dae8f): two structured review
+	// results were interpolated into an aux instruction template; JS coerced
+	// them to literal "[object Object]" and the remediation agent received no
+	// findings at all — it saw nothing to fix and no-oped. The constructors
+	// fail loudly at construction, where the program can still fix it.
+	it("aux() rejects instructions carrying [object Object] from template interpolation", async () => {
+		await expect(
+			runYardProgram({
+				program: `function* main() {
+					const review = { pass: false, objections: "lost coverage" };
+					return yield aux("fixer", \`Address this review: \${review}\`);
+				}`,
+				host: fakeHost({}),
+			}),
+		).rejects.toThrow(/\[object Object\].*JSON\.stringify/);
+	});
+
+	it("infer() rejects prompts carrying [object Object] from template interpolation", async () => {
+		await expect(
+			runYardProgram({
+				program: `function* main() {
+					const surveys = [{ pkg: "a" }, { pkg: "b" }];
+					return yield infer("opus", { prompt: \`Summarize: \${surveys[0]}\` });
+				}`,
+				host: fakeHost({}),
+			}),
+		).rejects.toThrow(/\[object Object\].*request\.input/);
+	});
+
+	it("aux() still accepts stringified structured data", async () => {
+		const calls: Array<{ name: string; args: unknown }> = [];
+		const host = fakeHost({
+			dispatchTool: async (name, args) => {
+				calls.push({ name, args });
+				return "ok";
+			},
+		});
+		const out = await runYardProgram({
+			program: `function* main() {
+				const review = { pass: false, objections: "lost coverage" };
+				return yield aux("fixer", \`Address this review: \${JSON.stringify(review)}\`);
+			}`,
+			host,
+		});
+		expect(out.result).toBe("ok");
+		const instructions = (calls[0]?.args as { instructions: string }).instructions;
+		expect(instructions).toContain('"objections":"lost coverage"');
+	});
 });
 
 describe("runYardProgram — limits", () => {
