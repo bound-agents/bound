@@ -210,6 +210,18 @@ function* main(input) {
   implementer has not already done so" makes two agents responsible for one
   irreversible step. Exactly one errand owns commit/push; everyone else
   reports.
+- **The program ends at the scatter.** Survey results are values in scope
+  only inside the program. Returning them raw to your own loop and starting
+  a second Yard discards the pipeline: the gather stage (schema-validated
+  work orders) and the re-scatter must ride the SAME program. Observed
+  live: 13 exhaustive package surveys (~186 KB of ranked candidates with
+  exact files and symbols) returned to the orchestrator; the follow-up
+  implementer was told to "independently inspect" instead, and repo-wide
+  coverage collapsed to two fixes.
+- **Review after release.** The review gate holds work BEFORE the release
+  errand fires; a reviewer inspecting an already-pushed commit can only fix
+  forward. Sequence: implement (no commit) → review → rework if failed →
+  one release errand ships the approved diff.
 
 ## Roster
 
