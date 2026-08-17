@@ -75,8 +75,8 @@ export function taskUpdate(db: Database, siteId: string, args: string[]): void {
 	}
 
 	if (alertRaw !== undefined) {
-		const n = Number.parseInt(alertRaw, 10);
-		if (!Number.isFinite(n) || n <= 0) {
+		const n = Number(alertRaw);
+		if (!Number.isInteger(n) || n <= 0) {
 			throw new Error("--alert-threshold must be an integer greater than 0");
 		}
 		updates.alert_threshold = n;

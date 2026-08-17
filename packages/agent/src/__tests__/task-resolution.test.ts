@@ -56,6 +56,30 @@ describe("task-resolution", () => {
 			expect(next.getUTCMinutes() % 30).toBe(0);
 		});
 
+		it("treats wildcard day-of-month and restricted day-of-week as the weekday only", () => {
+			const from = new Date("2026-03-23T00:00:00Z"); // Monday
+			const next = computeNextRunAt("0 9 * * 2", from);
+			expect(next.toISOString()).toBe("2026-03-24T09:00:00.000Z");
+		});
+
+		it("treats restricted day-of-month and wildcard day-of-week as the month day only", () => {
+			const from = new Date("2026-03-23T00:00:00Z");
+			const next = computeNextRunAt("0 9 25 * *", from);
+			expect(next.toISOString()).toBe("2026-03-25T09:00:00.000Z");
+		});
+
+		it("rejects zero and negative cron steps", () => {
+			for (const expression of ["*/0 * * * *", "*/-1 * * * *"]) {
+				expect(() => computeNextRunAt(expression)).toThrow("Invalid step value");
+			}
+		});
+
+		it("rejects trailing garbage in numeric cron tokens", () => {
+			for (const expression of ["1x * * * *", "*/2x * * * *", "1-2x * * * *"]) {
+				expect(() => computeNextRunAt(expression)).toThrow();
+			}
+		});
+
 		it("throws on invalid cron expression", () => {
 			expect(() => {
 				computeNextRunAt("invalid");

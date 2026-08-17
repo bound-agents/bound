@@ -143,6 +143,17 @@ describe("task commands", () => {
 			);
 		});
 
+		it("should reject non-integer alert_threshold values", () => {
+			setup();
+			const id = seedTask();
+
+			for (const value of ["7.5", "7x"]) {
+				expect(() => taskUpdate(db, SITE_ID, [id, "--alert-threshold", value])).toThrow(
+					/integer greater than 0/,
+				);
+			}
+		});
+
 		it("should throw when no id is provided", () => {
 			setup();
 			expect(() => taskUpdate(db, SITE_ID, ["--no-history"])).toThrow(/--id is required/);

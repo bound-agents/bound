@@ -89,6 +89,8 @@ export interface AppProps {
 	initialThreadTitle?: string | null;
 	/** Terminal title controller owned by boundless.tsx so shutdown can restore it. */
 	terminalTitle?: TerminalTitleController;
+	/** Context files injected into the system prompt during thread transitions. */
+	contextFiles?: string[];
 	/** Resolved shell for the bash-family tool (streaming + spawn invocation). */
 	shell: ResolvedShell;
 	/** Resolved filesystem sandbox policy for the bash-family tool. */
@@ -116,6 +118,7 @@ export function App({
 	toolHandlers,
 	initialThreadTitle = null,
 	terminalTitle = NULL_TERMINAL_TITLE,
+	contextFiles,
 	shell,
 	sandbox,
 }: AppProps): React.ReactElement {
@@ -245,6 +248,7 @@ export function App({
 				logger,
 				inFlightTools: abortMap,
 				model: state.model,
+				injectContextFiles: contextFiles,
 				shell,
 				sandbox,
 			});
@@ -297,6 +301,7 @@ export function App({
 			logger,
 			inFlightTools,
 			replaceMessages,
+			contextFiles,
 			shell,
 			sandbox,
 		],
@@ -331,6 +336,7 @@ export function App({
 			logger,
 			inFlightTools: abortMap,
 			model: state.model,
+			injectContextFiles: contextFiles,
 			shell,
 			sandbox,
 		});
@@ -358,6 +364,7 @@ export function App({
 		client,
 		state.threadId,
 		state.model,
+		contextFiles,
 		configDir,
 		cwd,
 		hostname,

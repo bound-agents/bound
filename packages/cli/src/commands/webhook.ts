@@ -19,6 +19,15 @@ import {
 } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 
+const SIGNATURE_FORMATS = new Set<SignatureFormat>(["github", "stripe", "slack", "raw", "none"]);
+
+function parseSignatureFormat(value: string): SignatureFormat {
+	if (!SIGNATURE_FORMATS.has(value as SignatureFormat)) {
+		throw new Error(`Unsupported signature format '${value}'.`);
+	}
+	return value as SignatureFormat;
+}
+
 /**
  * Throws unless the cluster-wide unauthenticated-webhook switch
  * (`cluster_config['webhooks_allow_unauthenticated']`) is set to `"true"`.
@@ -74,7 +83,7 @@ export function webhookSetUnauthenticated(db: Database, siteId: string, allow: b
 export function webhookCreate(db: Database, siteId: string, args: string[]): void {
 	// Parse args: --name, --format, --description, --prompt, --model, --no-history
 	const name = getArgValue(args, "--name");
-	const format = (getArgValue(args, "--format") || "github") as SignatureFormat;
+	const format = parseSignatureFormat(getArgValue(args, "--format") || "github");
 	const description = getArgValue(args, "--description");
 	const prompt = getArgValue(args, "--prompt");
 	const modelHint = getArgValue(args, "--model");
@@ -303,7 +312,8 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 	const name = getArgValue(args, "--name");
 	const prompt = getArgValue(args, "--prompt");
 	const description = getArgValue(args, "--description");
-	const format = getArgValue(args, "--format");
+	const formatRaw = getArgValue(args, "--format");
+	const format = formatRaw === undefined ? undefined : parseSignatureFormat(formatRaw);
 	// Three-state semantics for --model:
 	//   flag absent           → leave existing model_hint alone
 	//   --model ""            → clear back to system default (null)
@@ -370,7 +380,7 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 			"webhooks",
 			webhook.id,
 			{
-				signature_format: format as SignatureFormat,
+				signature_format: format,
 			},
 			siteId,
 		);
