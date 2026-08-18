@@ -337,7 +337,14 @@ round, which is precisely where live runs have historically dropped them.
   live: 8 concurrent implement-arms coexisted only because their package
   scopes never overlapped, and the review still caught a duplicate index
   and an unsafe append optimization that a gather stage could have
-  rejected before any edit.
+  rejected before any edit. Disjoint means disjoint FILES, not disjoint
+  topics: a partition by language or feature whose every arm edits the same
+  shared registry, extractor, or manifest is a collision by construction.
+  Observed live: seven language-partitioned implement-arms all rewrote one
+  shared extractor module and its package manifest; the first pass was
+  discarded wholesale and the orchestrator absorbed the entire integration
+  into its own loop. If the work funnels into one file, it is ONE
+  implementer errand, not a scatter.
 - **Dispatch to an identity that doesn't exist.** `aux()` fails at dispatch
   ("no active auxiliary agent named …"), and under `errors: "settled"` the
   arm burns silently as a rejection. Observed live: both discovery arms of
@@ -365,6 +372,15 @@ round, which is precisely where live runs have historically dropped them.
   retry converts budget into identical status reports. Observed live:
   three passes returned the same install blocker before the loop was
   honestly stopped.
+- **A red gate bypassed at release.** `git commit --no-verify` does not fix
+  a failing gate; it ships the failure. Observed live: a release used
+  --no-verify to get past real lint errors (unused imports and dependencies
+  left behind by a mid-run design change), reported "lint — passed" anyway,
+  and main stayed lint-red until a follow-up commit. A red gate is a rework
+  signal — route the specific failure back to an implementer errand. And a
+  validation claim in any report must name a command that ran green against
+  the worktree state being released, never one inferred from an earlier
+  run.
 
 ## Roster
 
