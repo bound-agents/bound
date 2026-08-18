@@ -1,7 +1,15 @@
 import Parser from "tree-sitter";
+import Bash from "tree-sitter-bash";
+import C from "tree-sitter-c";
+import Cpp from "tree-sitter-cpp";
 import Go from "tree-sitter-go";
+import Java from "tree-sitter-java";
+import Kotlin from "tree-sitter-kotlin";
+import Php from "tree-sitter-php";
 import Python from "tree-sitter-python";
+import Ruby from "tree-sitter-ruby";
 import Rust from "tree-sitter-rust";
+import Swift from "tree-sitter-swift";
 import ts from "typescript";
 import { computeLineHash } from "./hashline";
 
@@ -36,6 +44,17 @@ export const SUPPORTED_SOURCE_STRUCTURE_GRAMMAR =
 const PYTHON_EXTENSIONS = [".py", ".pyi"] as const;
 const GO_EXTENSIONS = [".go"] as const;
 const RUST_EXTENSIONS = [".rs"] as const;
+const RUBY_EXTENSIONS = [".rb", ".rake", ".gemspec"] as const;
+const PHP_EXTENSIONS = [".php", ".php3", ".php4", ".php5", ".phtml"] as const;
+const JAVA_EXTENSIONS = [".java"] as const;
+const KOTLIN_EXTENSIONS = [".kt", ".kts"] as const;
+const C_EXTENSIONS = [".c", ".h"] as const;
+const CPP_EXTENSIONS = [".cc", ".cp", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx"] as const;
+const CSHARP_EXTENSIONS = [".cs", ".csx"] as const;
+const SWIFT_EXTENSIONS = [".swift"] as const;
+const LUA_EXTENSIONS = [".lua"] as const;
+const SHELL_EXTENSIONS = [".sh", ".bash", ".zsh", ".ksh"] as const;
+const SQL_EXTENSIONS = [".sql"] as const;
 
 const TYPESCRIPT_EXTENSIONS = [
 	".d.mts",
@@ -56,6 +75,17 @@ function extensionForPath(path: string): string | undefined {
 		...PYTHON_EXTENSIONS,
 		...GO_EXTENSIONS,
 		...RUST_EXTENSIONS,
+		...RUBY_EXTENSIONS,
+		...PHP_EXTENSIONS,
+		...JAVA_EXTENSIONS,
+		...KOTLIN_EXTENSIONS,
+		...C_EXTENSIONS,
+		...CPP_EXTENSIONS,
+		...CSHARP_EXTENSIONS,
+		...SWIFT_EXTENSIONS,
+		...LUA_EXTENSIONS,
+		...SHELL_EXTENSIONS,
+		...SQL_EXTENSIONS,
 	].find((extension) => lowerPath.endsWith(extension));
 }
 
@@ -123,7 +153,7 @@ function extractTypeScriptStructure(source: string, path: string): ExtractedSymb
 }
 
 function parserExtractor(
-	language: unknown,
+	language: Parameters<Parser["setLanguage"]>[0],
 	nodeTypes: readonly string[],
 	nameField = "name",
 ): StructureExtractor {
@@ -194,11 +224,133 @@ const extractRustStructure = parserExtractor(Rust, [
 	"const_item",
 ]);
 
+
+
+const extractJavaStructure = parserExtractor(Java, [
+	"class_declaration", "interface_declaration", "enum_declaration", "record_declaration", "annotation_type_declaration",
+]);
+const extractKotlinStructure: StructureExtractor = (source) => {
+	const symbols: ExtractedSymbol[] = [];
+	const declaration = /^(?:\s*(?:public|private|protected|internal|open|abstract|sealed|data|enum|annotation|companion|inline|suspend|tailrec|operator|infix|external|expect|actual)\s+)*(?:class|interface|object|fun|val|var|typealias)\s+([A-Za-z_][\w]*)/gm;
+	for (const match of source.matchAll(declaration)) {
+		const name = match[1];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+
+const extractCStructure: StructureExtractor = (source) => {
+	const symbols: ExtractedSymbol[] = [];
+	const declaration = /^(?:\s*(?:typedef\s+)?(?:struct|union|enum)\s+([A-Za-z_][\w]*)|\s*(?:[A-Za-z_][\w]*(?:\s*\*+)?\s+)+([A-Za-z_][\w]*)\s*\()/gm;
+	for (const match of source.matchAll(declaration)) {
+		const name = match[1] ?? match[2];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+const extractCppStructure: StructureExtractor = (source) => {
+	const symbols: ExtractedSymbol[] = [];
+	const declaration = /^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum|namespace)\s+([A-Za-z_][\w]*)|^\s*(?:[A-Za-z_][\w:<>]*(?:\s*[*&]+)?\s+)+([A-Za-z_~][\w:]*)\s*\(/gm;
+	for (const match of source.matchAll(declaration)) {
+		const name = match[1] ?? match[2];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+
+const extractCSharpStructure: StructureExtractor = (source) => {
+	const symbols: ExtractedSymbol[] = [];
+	const declaration = /^(?:\s*(?:public|private|protected|internal|static|abstract|sealed|partial|async|new|unsafe|readonly|ref|file)\s+)*(?:class|interface|struct|enum|record(?:\s+(?:class|struct))?|delegate)\s+([A-Za-z_][\w]*)|^\s*namespace\s+([A-Za-z_][\w.]*)/gm;
+	for (const match of source.matchAll(declaration)) {
+		const name = match[1] ?? match[2];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+const extractSwiftStructure = parserExtractor(Swift, [
+	"class_declaration", "protocol_declaration", "function_declaration", "property_declaration", "typealias_declaration",
+]);
+
+const extractLuaStructure: StructureExtractor = (source) => {
+	const symbols: ExtractedSymbol[] = [];
+	const declaration = /^(?:local\s+)?function\s+([A-Za-z_][\w]*(?:[.:][A-Za-z_][\w]*)?)|^(?:local\s+)?([A-Za-z_][\w]*)\s*=/gm;
+	for (const match of source.matchAll(declaration)) {
+		const name = match[1] ?? match[2];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+
+const extractShellStructure: StructureExtractor = (source) => {
+	const parser = new Parser();
+	parser.setLanguage(Bash);
+	const tree = parser.parse(source);
+	if (tree.rootNode.hasError) throw new Error(SOURCE_STRUCTURE_PARSE_ERROR);
+	return tree.rootNode.namedChildren.flatMap((node) => {
+		if (node.type === "function_definition") {
+			const name = node.childForFieldName("name");
+			return name ? [{ name: name.text, offset: node.startIndex }] : [];
+		}
+		if (node.type === "variable_assignment") {
+			const name = node.childForFieldName("name");
+			return name ? [{ name: name.text, offset: node.startIndex }] : [];
+		}
+		return [];
+	});
+};
+
+const extractSqlStructure: StructureExtractor = (source) => {
+	const statement = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|(?:UNIQUE\s+)?INDEX|(?:OR\s+REPLACE\s+)?FUNCTION|TYPE|DOMAIN)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[A-Za-z_][\w$]*\.)?([A-Za-z_][\w$]*)/gi;
+	const symbols: ExtractedSymbol[] = [];
+	for (const match of source.matchAll(statement)) {
+		const name = match[1];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+
+const extractRubyStructure: StructureExtractor = (source) => {
+	const parser = new Parser();
+	parser.setLanguage(Ruby);
+	const tree = parser.parse(source);
+	if (tree.rootNode.hasError) throw new Error(SOURCE_STRUCTURE_PARSE_ERROR);
+	return tree.rootNode.namedChildren.flatMap((node) => {
+		if (node.type === "assignment") {
+			const name = node.childForFieldName("left");
+			return name?.type === "constant" ? [{ name: name.text, offset: node.startIndex }] : [];
+		}
+		if (!["class", "module", "method", "singleton_method"].includes(node.type)) return [];
+		const name = node.childForFieldName("name");
+		return name ? [{ name: name.text, offset: node.startIndex }] : [];
+	});
+};
+
+const extractPhpStructure: StructureExtractor = (source) => {
+	const symbols: ExtractedSymbol[] = [];
+	const declaration = /^\s*(?:namespace\s+([A-Za-z_][\w\\]*)|(?:abstract\s+|final\s+|readonly\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][\w]*)|function\s+([A-Za-z_][\w]*)|const\s+([A-Za-z_][\w]*))/gm;
+	for (const match of source.matchAll(declaration)) {
+		const name = match[1] ?? match[2] ?? match[3] ?? match[4];
+		if (name) symbols.push({ name, offset: match.index ?? 0 });
+	}
+	return symbols;
+};
+
 const EXTRACTORS: ReadonlyMap<string, StructureExtractor> = new Map([
 	...TYPESCRIPT_EXTENSIONS.map((extension) => [extension, extractTypeScriptStructure] as const),
 	...PYTHON_EXTENSIONS.map((extension) => [extension, extractPythonStructure] as const),
 	...GO_EXTENSIONS.map((extension) => [extension, extractGoStructure] as const),
 	...RUST_EXTENSIONS.map((extension) => [extension, extractRustStructure] as const),
+	...RUBY_EXTENSIONS.map((extension) => [extension, extractRubyStructure] as const),
+	...PHP_EXTENSIONS.map((extension) => [extension, extractPhpStructure] as const),
+	...JAVA_EXTENSIONS.map((extension) => [extension, extractJavaStructure] as const),
+	...KOTLIN_EXTENSIONS.map((extension) => [extension, extractKotlinStructure] as const),
+	...C_EXTENSIONS.map((extension) => [extension, extractCStructure] as const),
+	...CPP_EXTENSIONS.map((extension) => [extension, extractCppStructure] as const),
+	...CSHARP_EXTENSIONS.map((extension) => [extension, extractCSharpStructure] as const),
+	...SWIFT_EXTENSIONS.map((extension) => [extension, extractSwiftStructure] as const),
+	...LUA_EXTENSIONS.map((extension) => [extension, extractLuaStructure] as const),
+	...SHELL_EXTENSIONS.map((extension) => [extension, extractShellStructure] as const),
+	...SQL_EXTENSIONS.map((extension) => [extension, extractSqlStructure] as const),
 ]);
 
 function lineStarts(source: string): number[] {
