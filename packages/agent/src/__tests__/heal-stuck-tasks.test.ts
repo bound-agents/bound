@@ -460,8 +460,15 @@ describe("healStuckTasks", () => {
 			cleanupDb();
 			const taskId = randomUUID();
 			insertStuckTask(taskId, "deferred", "failed", DEFERRED_MAX_RETRIES - 1, "in 10m");
-			const now = new Date();
-			expect(healStuckTasks(db, appContext.logger, siteId, now)).toBe(1);
+			// retryDeferredTask reads Date.now() internally (the `now` param to
+			// healStuckTasks is only the user-interaction anchor), so the exact
+			// backoff instant can't be predicted from a single clock read — the
+			// old `toBe(now + backoff)` assert flaked whenever a millisecond
+			// ticked between the test's Date and the implementation's. Bracket
+			// the call instead.
+			const before = Date.now();
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date(before))).toBe(1);
+			const after = Date.now();
 			const updated = db
 				.query(
 					"SELECT status, claimed_by, claimed_at, lease_id, consecutive_failures, next_run_at FROM tasks WHERE id = ?",
@@ -474,8 +481,10 @@ describe("healStuckTasks", () => {
 				lease_id: null,
 				consecutive_failures: DEFERRED_MAX_RETRIES,
 			});
-			const expected = now.getTime() + DEFERRED_RETRY_BACKOFF_MS_DEFAULT * DEFERRED_MAX_RETRIES;
-			expect(new Date(updated?.next_run_at ?? 0).getTime()).toBe(expected);
+			const backoff = DEFERRED_RETRY_BACKOFF_MS_DEFAULT * DEFERRED_MAX_RETRIES;
+			const nextRunAt = new Date(updated?.next_run_at ?? 0).getTime();
+			expect(nextRunAt).toBeGreaterThanOrEqual(before + backoff);
+			expect(nextRunAt).toBeLessThanOrEqual(after + backoff);
 		});
 
 		it("still revives a cancelled heartbeat (uncancellable by design)", () => {
