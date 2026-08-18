@@ -272,6 +272,13 @@ round, which is precisely where live runs have historically dropped them.
   finely; return per-partition outcomes.
 - **`background: true` on aux inside Yard** — rejected at dispatch. Yard
   invocations are synchronous; concurrency comes from `all()`.
+- **`aux()` inside an aux agent's Yard** — fails at construction. An aux
+  toolset structurally excludes the `aux` tool, so nested fan-out cannot
+  run; the first `aux(` call site throws before anything dispatches. Do the
+  errand's work with `tool()` and `infer()` effects, or return findings so
+  the MAIN agent orchestrates further aux dispatch. Observed live: an aux
+  discovered the exclusion mid-graph at dispatch and degraded into a
+  20-minute serial `tool()` grind.
 - **Nested `tool("yard", ...)` with a `budget`** — rejected. Nested runs
   inherit the root deadline and concurrency unchanged.
 - **Schema violation from `infer()`** — fails the effect; there is no hidden
