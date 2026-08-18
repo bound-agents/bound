@@ -98,6 +98,15 @@ export interface RunYardProgramOptions {
 	input?: JsonValue;
 	host: YardHost;
 	limits?: Partial<YardLimits>;
+	/**
+	 * When set, aux() is structurally unavailable in this run (e.g. the Yard is
+	 * executing inside an auxiliary agent, whose toolset excludes `aux`). The
+	 * guest constructor throws this reason AT CONSTRUCTION — before anything
+	 * dispatches — so a program written around aux() fails at its first aux(
+	 * call site instead of discovering the boundary mid-graph at dispatch and
+	 * degrading into a serial tool() grind.
+	 */
+	auxUnavailableReason?: string;
 }
 
 /** Validated effect payload copied out of the guest (known fields only). */
@@ -120,6 +129,16 @@ export type YardEffectPayload =
 const BOOTSTRAP_SOURCE = `(() => {
 	"use strict";
 	const BRAND = Symbol("yard.effect");
+
+	// Host-injected before this bootstrap evaluates, then removed from the
+	// global: when set, aux() is structurally unavailable in this run and the
+	// constructor throws the reason AT CONSTRUCTION (see
+	// RunYardProgramOptions.auxUnavailableReason).
+	const auxUnavailableReason =
+		typeof globalThis.__YARD_AUX_UNAVAILABLE__ === "string"
+			? globalThis.__YARD_AUX_UNAVAILABLE__
+			: null;
+	try { delete globalThis.__YARD_AUX_UNAVAILABLE__; } catch (e) {}
 
 	// Dynamic code compilation is disabled (design plan, "Execution").
 	// Best-effort within the guest realm; the JSON bridge and host-side
@@ -281,6 +300,9 @@ const BOOTSTRAP_SOURCE = `(() => {
 	};
 
 	const auxCtor = (name, instructions, options) => {
+		if (auxUnavailableReason !== null) {
+			throw new Error(auxUnavailableReason);
+		}
 		if (typeof name !== "string" || name.length === 0) {
 			throw new TypeError("aux() requires an identity name string");
 		}
@@ -642,6 +664,14 @@ export async function runYardProgram(options: RunYardProgramOptions): Promise<Ya
 	};
 
 	try {
+		// Host-side injection for the bootstrap's aux() availability check. Set
+		// BEFORE the bootstrap evaluates (it captures and deletes the global) so
+		// the constructor can fail at construction, not at dispatch.
+		if (options.auxUnavailableReason !== undefined) {
+			const reasonHandle = vm.newString(options.auxUnavailableReason);
+			vm.setProp(vm.global, "__YARD_AUX_UNAVAILABLE__", reasonHandle);
+			reasonHandle.dispose();
+		}
 		stepFn = unwrapGuest(vm.evalCode(BOOTSTRAP_SOURCE, "yard-bootstrap.js"), "bootstrap");
 
 		const programResult = unwrapGuest(

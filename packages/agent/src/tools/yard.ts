@@ -313,6 +313,22 @@ const yardSchema = z.object({
 
 type YardInput = z.infer<typeof yardSchema>;
 
+/**
+ * Steering error for a Yard running inside an auxiliary agent (ctx.agentId
+ * set). The aux toolset structurally excludes `aux` (EXCLUDED_TOOLS in
+ * agent-factory): nested fan-out would deadlock the shared concurrency cap
+ * and escalate past the capability boundary. Incident 5411b76f/5076d967: an
+ * aux discovered this only at dispatch, mid-graph, and degraded into a
+ * 20-minute serial tool() grind. The message names the alternative, not just
+ * the prohibition.
+ */
+const AUX_INSIDE_AUX_REASON =
+	"aux() is not available inside an auxiliary agent: the aux toolset structurally excludes the aux tool, so nested aux fan-out cannot run. Do the errand's work directly with tool() effects, or return your findings and let the main agent orchestrate any further aux dispatch.";
+
+/** Prepended to the yard description an aux agent sees, so the doomed program is never written. */
+const AUX_UNAVAILABLE_NOTICE =
+	"NOTE: aux() is not available in this Yard — you are running inside an auxiliary agent, and nested aux dispatch is structurally excluded. Use tool() and infer() effects to do the work directly, or return your findings so the main agent can orchestrate further aux fan-out.";
+
 const YARD_DESCRIPTION = `Execute a bounded JavaScript generator while retaining intermediate values outside conversation history. This is a HIGH-LEVEL ORCHESTRATION tool: the unit of work is normally an agent — scatter \`aux()\` specialists across partitions, gather their findings into structured form with \`infer()\`, re-scatter implementers, gate acceptance with a reviewer — while corpus-scale intermediates stay inside the program and only the final JSON value returns to you.
 
 Before writing a nontrivial program, activate the \`yard-recipes\` skill — it carries the working recipes (scatter-gather, review gates, partitioning doctrine) and the failure modes that waste runs. The \`aux-agents\` skill covers designing the identities those recipes dispatch.
@@ -504,6 +520,12 @@ function createYardHost(
 				{ kind: "tool", name: lifecycleName },
 				{ "yard.effect.kind": "tool", "yard.effect.tool": name },
 				async () => {
+					// Dispatch-time guard for the raw tool("aux", ...) bypass: the aux()
+					// constructor already fails at construction, but the driver never
+					// trusts guest memory — the same steering error fires here.
+					if (name === "aux" && ctx.agentId) {
+						throw new Error(AUX_INSIDE_AUX_REASON);
+					}
 					const registry = ctx.getToolRegistry?.();
 					if (!registry) throw new Error("yard has no tool registry wired on this host");
 					const tool = registry.get(name);
@@ -762,6 +784,10 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 						program: params.program,
 						input: normalizeYardInput(params.input) as JsonValue | undefined,
 						host,
+						// Inside an aux agent, aux() fails at CONSTRUCTION with the
+						// steering message — before any effect dispatches — instead of
+						// discovering the exclusion mid-graph at dispatch time.
+						...(ctx.agentId ? { auxUnavailableReason: AUX_INSIDE_AUX_REASON } : {}),
 					});
 					out.usage.inference_tokens += counters.inferenceTokens;
 					span.setAttributes({
@@ -821,6 +847,12 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 
 export function createYardTool(ctx: ToolContext): RegisteredTool {
 	const jsonSchema = zodToToolParams(yardSchema);
+	// Description-time steering: an aux agent's Yard carries the warning up
+	// front so the doomed aux() program is never written (the construction-
+	// and dispatch-time guards below remain the enforcement).
+	const description = ctx.agentId
+		? `${AUX_UNAVAILABLE_NOTICE}\n\n${YARD_DESCRIPTION}`
+		: YARD_DESCRIPTION;
 
 	return {
 		kind: "builtin",
@@ -828,7 +860,7 @@ export function createYardTool(ctx: ToolContext): RegisteredTool {
 			type: "function",
 			function: {
 				name: "yard",
-				description: YARD_DESCRIPTION,
+				description,
 				parameters: jsonSchema,
 			},
 		},
