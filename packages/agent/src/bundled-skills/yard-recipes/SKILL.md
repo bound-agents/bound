@@ -195,6 +195,13 @@ when the middle rounds depend on what the early rounds find.
 ```js
 function* main(input) {
   const history = [];
+  // Roster FIRST, inside the program: the planner may dispatch ONLY
+  // identities that exist. An invented name fails at dispatch, and with
+  // errors:"settled" the arm burns silently (live run: both discovery
+  // arms dispatched to a nonexistent "repo-scout"; the round returned
+  // nothing but rejections).
+  const roster = String(yield tool("aux", { action: "list" }));
+
   // Seed round: read-only survey of every area.
   let results = yield all(
     input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.model })),
@@ -204,23 +211,36 @@ function* main(input) {
   for (let round = 0; round < input.max_rounds; round++) {
     // PLAN: the dispatcher decides the next round from actual results.
     // infer() has no tools — it plans purely from the data handed to it,
-    // which is exactly the discipline a dispatcher should have.
-    const plan = yield infer(input.model, {
-      prompt:
-        `You dispatch aux errands toward: ${input.goal}. Decide the next round from the results. ` +
-        "Rules: findings-free narration is MISSING coverage (re-dispatch that scope, smaller). " +
-        "Route repairs to a write-shaped identity carrying the reviewer's objections verbatim. " +
-        "Implementation rounds must precede a review round; nothing releases unreviewed. " +
-        "When the work is complete and reviewed, return done=true with exactly one release errand.",
-      input: { round, results, history },
-      schema: { type: "object", properties: {
-        done: { type: "boolean" },
-        errands: { type: "array", items: { type: "object", properties: {
-          identity: { type: "string" },
-          instructions: { type: "string" },
-        }, required: ["identity", "instructions"] } },
-      }, required: ["done", "errands"] },
-    });
+    // which is exactly the discipline a dispatcher should have. This step
+    // is also the run's single point of failure: one malformed planner
+    // output gets one explicit retry instead of ending the whole run
+    // (live run: a 250s invocation died whole on one schema violation).
+    let plan;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        plan = yield infer(input.model, {
+          prompt:
+            `You dispatch aux errands toward: ${input.goal}. Decide the next round from the results. ` +
+            `Dispatch ONLY identities that appear on this roster:\n${roster}\n` +
+            "Rules: findings-free narration is MISSING coverage (re-dispatch that scope, smaller). " +
+            "Route repairs to a write-shaped identity carrying the reviewer's objections verbatim. " +
+            "Implementation rounds must precede a review round; nothing releases unreviewed. " +
+            "A missing dependency or tool is an ERRAND (install it, lock it, test it), not a reason to narrow the goal. " +
+            "When the work is complete and reviewed, return done=true with exactly one release errand.",
+          input: { round, results, history },
+          schema: { type: "object", properties: {
+            done: { type: "boolean" },
+            errands: { type: "array", items: { type: "object", properties: {
+              identity: { type: "string" },
+              instructions: { type: "string" },
+            }, required: ["identity", "instructions"] } },
+          }, required: ["done", "errands"] },
+        });
+        break;
+      } catch (err) {
+        if (attempt >= 1) throw err;
+      }
+    }
     history.push({ round, decision: plan });
     if (plan.done && plan.errands.length === 0) break;
 
@@ -318,6 +338,28 @@ round, which is precisely where live runs have historically dropped them.
   scopes never overlapped, and the review still caught a duplicate index
   and an unsafe append optimization that a gather stage could have
   rejected before any edit.
+- **Dispatch to an identity that doesn't exist.** `aux()` fails at dispatch
+  ("no active auxiliary agent named …"), and under `errors: "settled"` the
+  arm burns silently as a rejection. Observed live: both discovery arms of
+  a run went to an invented "repo-scout" and the round returned nothing.
+  Read the roster inside the program (`tool("aux", { action: "list" })`)
+  and constrain the planner to it; define missing roles BEFORE the run.
+- **A missing dependency treated as a boundary.** Second occurrence of the
+  narrow-to-fit reflex: asked for all major languages, a run shipped only
+  the family whose parser was already installed and framed the narrowing
+  as correctness. A missing library is an errand step — add it, lock it,
+  test it — not a scope limit. If installation genuinely fails, the report
+  must carry the exact failing command and why it is environmental, and
+  must be checked against prior evidence in the same effort before being
+  relayed upward (the same run later claimed installs were impossible an
+  hour after three grammar packages had installed cleanly).
+- **Retrying a blocked errand unchanged.** The same blocker returned by
+  consecutive runs means the PLAN must change — smaller scope, different
+  route, or a one-command minimal reproduction run as glue to verify the
+  blocker is real — or the blocker goes to the operator. An unchanged
+  retry converts budget into identical status reports. Observed live:
+  three passes returned the same install blocker before the loop was
+  honestly stopped.
 
 ## Roster
 
