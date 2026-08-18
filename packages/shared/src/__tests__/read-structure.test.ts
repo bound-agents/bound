@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { computeLineHash, extractSourceStructure, formatSourceStructure } from "../index";
+import {
+	MAX_SOURCE_STRUCTURE_INPUT_BYTES,
+	computeLineHash,
+	extractSourceStructure,
+	formatSourceStructure,
+} from "../index";
 
 describe("extractSourceStructure", () => {
 	it("recognizes the supported top-level declaration matrix and excludes nested bodies", () => {
@@ -64,19 +69,45 @@ describe("extractSourceStructure", () => {
 		]);
 	});
 
-	it("parses JSX syntax only when the target file extension supports it", () => {
-		const source = ["export const view = <main>Hello</main>;", "export const after = 1;"].join(
-			"\n",
-		);
+	it("parses TS and declaration-file syntax", () => {
+		expect(
+			extractSourceStructure(
+				"export interface Shape {}\nexport type Id = string;",
+				"types.d.ts",
+			).map((symbol) => symbol.name),
+		).toEqual(["Shape", "Id"]);
+	});
 
+	it("parses TSX and JSX syntax only for JSX-capable extensions", () => {
+		const source = "export const view = <main>Hello</main>;\nexport const after = 1;";
 		expect(extractSourceStructure(source, "component.tsx").map((symbol) => symbol.name)).toEqual([
 			"view",
 			"after",
 		]);
-		expect(extractSourceStructure(source, "component.ts").map((symbol) => symbol.name)).toEqual([
+		expect(extractSourceStructure(source, "component.jsx").map((symbol) => symbol.name)).toEqual([
 			"view",
 			"after",
 		]);
+		expect(() => extractSourceStructure(source, "component.ts")).toThrow(
+			"could not parse source structure",
+		);
+	});
+
+	it("parses JavaScript module variants", () => {
+		for (const path of ["module.js", "module.mjs", "module.cjs"]) {
+			expect(
+				extractSourceStructure(
+					"export const visible = 1;\nexport { visible as renamed };",
+					path,
+				).map((symbol) => symbol.name),
+			).toEqual(["visible", "renamed"]);
+		}
+	});
+
+	it("rejects malformed supported source", () => {
+		expect(() => extractSourceStructure("export const = ;", "broken.ts")).toThrow(
+			"could not parse source structure",
+		);
 	});
 
 	it("anchors each symbol at its AST declaration rather than leading trivia", () => {
@@ -101,5 +132,27 @@ describe("extractSourceStructure", () => {
 		const result = formatSourceStructure(source, "structure.ts", 250);
 		expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(250);
 		expect(result).toContain("[truncated;");
+	});
+});
+
+describe("source structure registry", () => {
+	it("returns exactly empty output for unregistered and extensionless paths", () => {
+		for (const path of ["README", "sample.py", "sample.go", "sample.rs", "sample.txt"]) {
+			expect(extractSourceStructure("export const accidental = 1;", path)).toEqual([]);
+			expect(formatSourceStructure("export const accidental = 1;", path)).toBe("");
+		}
+	});
+
+	it("normalizes line endings before hashing physical source lines", () => {
+		const lf = "export const café = '☕';\n";
+		const crlf = lf.replace(/\n/g, "\r\n");
+		expect(formatSourceStructure(crlf, "sample.ts")).toBe(formatSourceStructure(lf, "sample.ts"));
+	});
+
+	it("rejects input above the shared pre-parse byte limit", () => {
+		const source = "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1);
+		expect(() => formatSourceStructure(source, "sample.ts")).toThrow(
+			"source file exceeds read_structure input limit",
+		);
 	});
 });

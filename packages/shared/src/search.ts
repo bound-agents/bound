@@ -176,10 +176,9 @@ function buildPreview(
 	return preview;
 }
 
-/** Heuristic binary check: a NUL byte in the first slice means "don't search". */
+/** Heuristic binary check: a NUL byte anywhere in text-decoded content means "don't search". */
 export function isLikelyBinary(content: string): boolean {
-	const sample = content.length > 8192 ? content.slice(0, 8192) : content;
-	return sample.includes("\u0000");
+	return content.includes("\u0000");
 }
 
 /**

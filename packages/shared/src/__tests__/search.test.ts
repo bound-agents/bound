@@ -196,8 +196,8 @@ describe("shouldSearchPath", () => {
 });
 
 describe("isLikelyBinary", () => {
-	it("flags content with a NUL byte", () => {
-		expect(isLikelyBinary("abc\u0000def")).toBe(true);
+	it("flags content with a NUL byte anywhere in the input", () => {
+		expect(isLikelyBinary(`${"a".repeat(8192)}\u0000def`)).toBe(true);
 	});
 
 	it("treats normal text as non-binary", () => {

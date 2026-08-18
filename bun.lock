@@ -193,6 +193,7 @@
       "name": "@bound/shared",
       "version": "0.0.1",
       "dependencies": {
+        "typescript": "6.0.2",
         "@noble/hashes": "^1.7.1",
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/context-async-hooks": "^2.7.1",

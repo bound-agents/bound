@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { computeLineHash } from "@bound/shared";
+import { MAX_SOURCE_STRUCTURE_INPUT_BYTES, computeLineHash } from "@bound/shared";
 import { InMemoryFs, MountableFs } from "just-bash";
 import { type BuiltInTool, createBuiltInTools } from "../built-in-tools";
 
@@ -67,7 +67,7 @@ describe("built-in-tools", () => {
 		});
 
 		it("rejects invalid paths, missing files, directories, binary files, and host-shaped paths", async () => {
-			fs.writeFileSync("/home/user/binary.bin", "binary\0content");
+			fs.writeFileSync("/home/user/binary.bin", `${"a".repeat(8192)}\0content`);
 			fs.mkdirSync("/home/user/folder");
 			const cases = [
 				{},
@@ -85,6 +85,15 @@ describe("built-in-tools", () => {
 						: result.map((block) => (block.type === "text" ? block.text : "")).join("\n");
 				expect(text, JSON.stringify(input)).toContain("Error");
 			}
+		});
+
+		it("returns empty structure for unsupported extensions and rejects oversized inputs", async () => {
+			fs.writeFileSync("/home/user/foreign.py", "export const accidental = 1;");
+			expect(await tool("bms_read_structure").execute({ path: "/home/user/foreign.py" })).toBe("");
+			fs.writeFileSync("/home/user/too-large.ts", "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1));
+			expect(await tool("bms_read_structure").execute({ path: "/home/user/too-large.ts" })).toBe(
+				"Error: source file exceeds read_structure input limit",
+			);
 		});
 
 		it("bounds large structure output", async () => {
