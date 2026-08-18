@@ -11,9 +11,9 @@ import {
 	computeWritableRoots,
 	decideSandboxSpawn,
 	formatWriteDenied,
+	nonInteractiveEnv,
 	resolveSandboxConfig,
 } from "../tools/sandbox-policy";
-
 /**
  * Cross-platform coverage for the mxc filesystem-sandbox PURE logic. Everything
  * here imports only `../tools/sandbox-policy`, which pulls in NO `@microsoft/
@@ -516,5 +516,34 @@ describe("formatWriteDenied", () => {
 		// only the disable-the-guard hatch is offered.
 		expect(msg).toContain('"sandbox": false');
 		expect(msg).not.toContain("sandbox.writablePaths");
+	});
+});
+
+describe("nonInteractiveEnv (bun install cache confinement)", () => {
+	afterEach(() => {
+		// NOT `= undefined`: assigning undefined to a process.env key coerces
+		// to the string "undefined". Reflect.deleteProperty removes the key
+		// without the delete operator biome's noDelete rejects.
+		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
+	});
+
+	it("does not touch BUN_INSTALL_CACHE_DIR by default (unsandboxed spawns keep the warm global cache)", () => {
+		const env = nonInteractiveEnv();
+		expect(env.BUN_INSTALL_CACHE_DIR).toBeUndefined();
+		// The non-interactive pager/prompt contract is unchanged.
+		expect(env.GIT_PAGER).toBe("cat");
+		expect(env.PAGER).toBe("cat");
+		expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+	});
+
+	it("confineBunCache points bun's install cache at a tmpdir-local path", () => {
+		const env = nonInteractiveEnv({ confineBunCache: true });
+		expect(env.BUN_INSTALL_CACHE_DIR).toBe(join(tmpdir(), "bound-bun-install-cache"));
+	});
+
+	it("honors an operator-set BUN_INSTALL_CACHE_DIR over the confinement default", () => {
+		process.env.BUN_INSTALL_CACHE_DIR = "/opt/custom-bun-cache";
+		const env = nonInteractiveEnv({ confineBunCache: true });
+		expect(env.BUN_INSTALL_CACHE_DIR).toBe("/opt/custom-bun-cache");
 	});
 });

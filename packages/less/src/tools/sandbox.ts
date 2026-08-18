@@ -206,7 +206,10 @@ export async function spawnSandboxed(
 	// `usePty: false` returns a Node ChildProcess (vs a node-pty handle);
 	// `experimental: true` is required by the SDK to opt into the non-pty path.
 	// 3rd arg is workingDirectory, 4th is the child env — see the non-interactive
-	// pager/prompt rationale on `nonInteractiveEnv`.
+	// pager/prompt rationale on `nonInteractiveEnv`. `confineBunCache` points
+	// bun's install cache at a tmpdir-local path so `bun add`/`bun install`
+	// work under write confinement (the global ~/.bun cache is outside the
+	// writable roots and fails with a misleading tempdir error).
 	const child = spawnSandboxFromConfig(
 		config,
 		{
@@ -214,7 +217,7 @@ export async function spawnSandboxed(
 			experimental: true,
 		} as Parameters<typeof spawnSandboxFromConfig>[1],
 		cwd,
-		nonInteractiveEnv(),
+		nonInteractiveEnv({ confineBunCache: true }),
 	) as unknown as ChildProcess;
 	return adaptChildProcess(child);
 }

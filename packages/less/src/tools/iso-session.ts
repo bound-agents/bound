@@ -312,7 +312,9 @@ async function execInSessionOnce(
 		process: {
 			commandLine: `${shell.command} ${shell.execFlag} ${command}`,
 			cwd: execCwd,
-			env: toEnvArray(nonInteractiveEnv()),
+			// confineBunCache: same rationale as the seatbelt/bubblewrap path in
+			// sandbox.ts — bun's global install cache is outside the writable roots.
+			env: toEnvArray(nonInteractiveEnv({ confineBunCache: true })),
 		},
 	});
 	return adaptPty(pty);
