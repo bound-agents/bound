@@ -87,6 +87,17 @@ describe("buildToolSet", () => {
 		expect(Object.keys(params.properties)).toEqual(["path"]);
 	});
 
+	it("describes every registered read-structure language", () => {
+		const { tools } = buildToolSet("/tmp", "localhost");
+		const structure = tools.find((t) => t.function.name === "boundless_read_structure");
+		expect(structure).toBeDefined();
+
+		const description = structure?.function.description ?? "";
+		for (const extension of [".py", ".pyi", ".go", ".rs"]) {
+			expect(description).toContain(extension);
+		}
+	});
+
 	it("shell tool exposes optional timeout + cwd params, command required", () => {
 		const { tools } = buildToolSet("/tmp", "localhost");
 

@@ -154,12 +154,21 @@ function parserExtractor(
 				node.type === "var_declaration" ||
 				node.type === "type_declaration"
 			) {
-				return node.namedChildren.flatMap((spec) => {
+				const specs = node.namedChildren.flatMap((child) =>
+					child.type.endsWith("_spec_list") ? child.namedChildren : [child],
+				);
+				return specs.flatMap((spec) => {
 					const name = spec.childForFieldName(nameField);
 					return name ? [{ name: name.text, offset: node.startIndex }] : [];
 				});
 			}
 			if (!nodeTypes.includes(node.type)) return [];
+			if (node.type === "impl_item") {
+				const trait = node.childForFieldName("trait")?.text;
+				const type = node.childForFieldName("type")?.text;
+				const name = trait && type ? `${trait} for ${type}` : type;
+				return name ? [{ name, offset: node.startIndex }] : [];
+			}
 			const name = node.childForFieldName(nameField);
 			return name ? [{ name: name.text, offset: node.startIndex }] : [];
 		});
