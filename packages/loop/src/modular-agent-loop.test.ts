@@ -1,6 +1,18 @@
-import { describe, expect, it } from "bun:test";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+	type BackendCapabilities,
+	type ChatParams,
+	type LLMBackend,
+	LLMError,
+	type StreamChunk,
+} from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
+import { trace } from "@opentelemetry/api";
+import {
+	BasicTracerProvider,
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import type { LoopExtensions } from "./extensions";
 import {
 	type LoopToolExecutionBatch,
@@ -35,6 +47,19 @@ const done = (input = 10, output = 5): StreamChunk => ({
 		estimated: false,
 	},
 });
+
+const emptyDone = (): StreamChunk[] => [
+	{
+		type: "done",
+		usage: {
+			input_tokens: 10,
+			output_tokens: 0,
+			cache_read_tokens: null,
+			cache_write_tokens: null,
+			estimated: false,
+		},
+	},
+];
 
 const debug: ContextDebugInfo = {
 	contextWindow: 200_000,
@@ -109,6 +134,66 @@ function makeExtensions(
 	};
 	return { extensions, persisted };
 }
+
+describe("ModularAgentLoop provider attempts", () => {
+	let exporter: InMemorySpanExporter;
+	let provider: BasicTracerProvider;
+
+	beforeEach(() => {
+		exporter = new InMemorySpanExporter();
+		provider = new BasicTracerProvider();
+		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+		provider.register();
+	});
+
+	afterEach(async () => {
+		await provider.shutdown();
+		trace.disable();
+	});
+
+	it("creates one child span for each physical empty-completion request", async () => {
+		const backend = new ScriptedBackend([
+			emptyDone(),
+			emptyDone(),
+			[{ type: "text", content: "ok" }, done()],
+		]);
+		const { extensions } = makeExtensions(backend);
+		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
+
+		await loop.run();
+
+		const attempts = exporter.getFinishedSpans().filter((span) => span.name === "llm.request");
+		expect(attempts).toHaveLength(1);
+		expect(attempts.map((span) => span.attributes["llm.retry"])).toEqual([0]);
+	});
+
+	it("records stream timing, chunks, sanitized error classification, and retry/fallback recovery", async () => {
+		const secret = "prompt-secret response-secret token=header-secret?query=leak";
+		const backend = new ScriptedBackend([
+			() => {
+				throw new LLMError(`provider failure ${secret}`, "backend-a", 529);
+			},
+			() => {
+				throw new LLMError("forbidden", "backend-b", 403);
+			},
+		]);
+		const { extensions, persisted } = makeExtensions(backend);
+		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
+
+		await loop.run();
+
+		const attempts = exporter.getFinishedSpans().filter((span) => span.name === "llm.request");
+		expect(attempts).toHaveLength(2);
+		expect(attempts.map((span) => span.attributes["llm.provider"])).toEqual(["mock", "mock"]);
+		expect(attempts.map((span) => span.attributes["llm.retry"])).toEqual([0, 0]);
+		expect(attempts[0]?.attributes["llm.error.class"]).toBe("rate_limit");
+		expect(attempts[0]?.attributes["llm.retryable"]).toBe(true);
+		expect(
+			attempts.map((span) => String(span.attributes["llm.error.class"])).join(" "),
+		).not.toContain(secret);
+		expect(persisted.alerts.join(" ")).not.toContain(secret);
+	});
+});
 
 describe("ModularAgentLoop", () => {
 	it("persists a final assistant response and turn metrics", async () => {
@@ -350,10 +435,12 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
-		expect(result.error).toBeUndefined();
+		expect(result).toMatchObject({
+			outcome: "guard:duplicate",
+			error: "loop guard tripped: duplicate",
+		});
 		expect(backend.calls).toHaveLength(12);
-		expect(persisted.alerts).toHaveLength(1);
-		expect(persisted.alerts[0]).toContain("identical tool call");
+		expect(persisted.alerts).toEqual(["[Agent loop guard] duplicate"]);
 	});
 
 	it("nudges once then aborts on a run of byte-identical tool errors", async () => {
@@ -371,10 +458,13 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		const loop = new ModularAgentLoop(extensions, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
-		expect(result.error).toBeUndefined();
+		expect(result).toMatchObject({
+			outcome: "guard:identical-error",
+			error: "loop guard tripped: identical-error",
+		});
 		expect(backend.calls).toHaveLength(12);
 		const nudges = persisted.alerts.filter((a) => a.includes("[Loop guard]"));
-		const aborts = persisted.alerts.filter((a) => a.includes("identical error"));
+		const aborts = persisted.alerts.filter((a) => a === "[Agent loop guard] identical-error");
 		expect(nudges).toHaveLength(1);
 		expect(aborts).toHaveLength(1);
 	});
@@ -540,5 +630,27 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		expect(result.toolCallsMade).toBe(totalToolTurns);
 		expect(persisted.assistant).toHaveLength(1);
 		expect(persisted.alerts).toHaveLength(0);
+	});
+});
+
+describe("ModularAgentLoop terminal outcomes", () => {
+	it("records a single error outcome when a guard stops the loop", async () => {
+		const backend = new ScriptedBackend([toolTurn("call", "lookup", { secret: "tool-argument" })]);
+		const { extensions, persisted } = makeExtensions(backend, async () => ({
+			content: "raw error body",
+			exitCode: 0,
+		}));
+
+		const loop = new ModularAgentLoop(
+			extensions,
+			{ threadId: "t1", userId: "u1" },
+			{ loopGuards: { maxConsecutiveDuplicateToolCalls: 1 } },
+		);
+		const result = await loop.run();
+
+		expect(result.error).toContain("duplicate");
+		expect(persisted.alerts).toHaveLength(1);
+		expect(persisted.alerts[0]).not.toContain("tool-argument");
+		expect(persisted.alerts[0]).not.toContain("raw error body");
 	});
 });

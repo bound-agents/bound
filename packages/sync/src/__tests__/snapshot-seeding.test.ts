@@ -565,3 +565,47 @@ describe("seedNewPeer detection", () => {
 		expect(minHlc).toBe(HLC_ZERO);
 	});
 });
+
+describe("snapshot skipped-apply diagnostics", () => {
+	it("applies independent rows while reporting one sanitized sample for rejected rows", () => {
+		const db = tempDb();
+		createSyncedTables(db);
+		const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
+		const logger = {
+			debug() {},
+			info() {},
+			error() {},
+			isLevelEnabled() {
+				return true;
+			},
+			warn(message: string, context?: Record<string, unknown>) {
+				warnings.push({ message, context });
+			},
+		};
+		const rows = [
+			{
+				id: "good",
+				display_name: "Good",
+				platform_ids: null,
+				first_seen_at: "2025-01-01T00:00:00.000Z",
+				modified_at: "2025-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			{ id: "secret-one", platform_ids: "payload-secret" },
+			{ id: "secret-two", platform_ids: "payload-secret" },
+		];
+		expect(applySnapshotRows(db, "users", rows, logger)).toBe(1);
+		expect(warnings).toEqual([
+			{
+				message: "[snapshot] Batch apply failed, retrying per-row",
+				context: { tableName: "users", rowCount: 3, reason: "constraint" },
+			},
+			{
+				message: "[snapshot] Skipped snapshot rows",
+				context: { tableName: "users", reason: "constraint", skipped: 2 },
+			},
+		]);
+		expect(JSON.stringify(warnings)).not.toContain("secret");
+		db.close();
+	});
+});

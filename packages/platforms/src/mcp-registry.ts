@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox, insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
-import type { Logger, TypedEventEmitter } from "@bound/shared";
+import { type Logger, type TypedEventEmitter, injectTraceContext } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -577,6 +577,8 @@ export class PlatformMcpRegistry {
 		// e2 survives. The batch boundary was only ever an artifact of the
 		// 2s flush timer — it carries no semantics worth preserving.
 		const now = new Date().toISOString();
+		const traceContext = injectTraceContext();
+		const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
 
 		// 4. Route each event so the woken task's wakeup carries it — exactly
 		// ONE delivery vehicle per branch. Delivering the same event as BOTH a
@@ -613,7 +615,7 @@ export class PlatformMcpRegistry {
 					}),
 					created_at: now,
 					expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-					trace_context: null,
+					trace_context: serializedTraceContext,
 				});
 				if (!inserted) continue;
 				insertRow(
@@ -659,7 +661,7 @@ export class PlatformMcpRegistry {
 					expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
 					received_at: now,
 					processed: 0,
-					trace_context: null,
+					trace_context: serializedTraceContext,
 				});
 			}
 		}

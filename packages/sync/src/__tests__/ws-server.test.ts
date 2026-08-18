@@ -3,6 +3,7 @@ import type { KeyringConfig } from "@bound/shared";
 import { deriveSiteId, exportPublicKey, generateKeypair } from "../crypto.js";
 import { KeyManager } from "../key-manager.js";
 import { signRequest } from "../signing.js";
+import { WsMessageType, encodeFrame } from "../ws-frames.js";
 import { type WsConnectionData, authenticateWsUpgrade } from "../ws-server.js";
 
 describe("authenticateWsUpgrade", () => {
@@ -697,6 +698,133 @@ describe("createWsHandlers", async () => {
 
 			expect(handlers.websocket.idleTimeout).toBe(120);
 			expect(handlers.websocket.backpressureLimit).toBe(2097152);
+		});
+
+		describe("transport failure boundaries", () => {
+			const peerSiteId = "peer-site";
+			const symmetricKey = new Uint8Array(32);
+
+			const createMockWs = () => {
+				const closeCalls: Array<[number | undefined, string | undefined]> = [];
+				return {
+					data: {
+						siteId: peerSiteId,
+						symmetricKey,
+						fingerprint: "0123456789abcdef",
+						sendState: "ready" as const,
+						pendingDrain: null,
+					},
+					close: (code?: number, reason?: string) => closeCalls.push([code, reason]),
+					closeCalls,
+				};
+			};
+
+			it.each([
+				[WsMessageType.CHANGELOG_PUSH, "handleChangelogPush", { entries: [] }],
+				[WsMessageType.RELAY_SEND, "handleRelaySend", { entries: [] }],
+				[WsMessageType.SNAPSHOT_ACK, "handleSnapshotAck", { snapshot_hlc: "1" }],
+			] as const)(
+				"contains a throwing %s handler and records the peer, frame type, and error class",
+				(frameType, handlerName, payload) => {
+					const manager = new WsConnectionManager();
+					const { keyring, keyManager } = createMockKeyringAndManager();
+					const errors: Array<{ message: string; context?: Record<string, unknown> }> = [];
+					const transport = new Proxy(
+						{},
+						{
+							get: (_target, property) =>
+								property === handlerName
+									? () => {
+											throw new RangeError("storage detail must not be logged");
+										}
+									: () => {},
+						},
+					) as any;
+					const handlers = createWsHandlers({
+						connectionManager: manager,
+						keyring,
+						keyManager,
+						wsTransport: transport,
+						logger: {
+							debug: () => {},
+							info: () => {},
+							warn: () => {},
+							error: (message: string, context?: Record<string, unknown>) =>
+								errors.push({ message, context }),
+						} as any,
+					});
+					const ws = createMockWs();
+
+					expect(() =>
+						handlers.websocket.message?.(ws as any, encodeFrame(frameType, payload, symmetricKey)),
+					).not.toThrow();
+					expect(errors).toHaveLength(1);
+					expect(errors[0]).toMatchObject({
+						context: {
+							peer_site_id: peerSiteId,
+							frame_type: WsMessageType[frameType],
+							error_class: "RangeError",
+						},
+					});
+					expect(ws.closeCalls).toEqual([[1011, "Internal server error"]]);
+				},
+			);
+
+			it("warns once without logging a payload when ws.send throws", () => {
+				const manager = new WsConnectionManager();
+				const { keyring, keyManager } = createMockKeyringAndManager();
+				const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
+				let sendFrame: ((frame: Uint8Array) => boolean) | undefined;
+				const handlers = createWsHandlers({
+					connectionManager: manager,
+					keyring,
+					keyManager,
+					wsTransport: {
+						addPeer: (_peer, send) => {
+							sendFrame = send;
+						},
+						removePeer: () => {},
+						handleChangelogPush: () => {},
+						handleChangelogAck: () => {},
+						drainChangelog: () => {},
+						handleRelaySend: () => {},
+						handleRelayAck: () => {},
+						drainRelayInbox: () => {},
+						seedNewPeer: () => {},
+						handleSnapshotAck: () => {},
+						continueSnapshotSeed: () => {},
+						handleReseedRequest: () => {},
+						handleConsistencyRequest: () => {},
+						handleRowPullRequest: () => {},
+						handleRowPullAck: () => {},
+						continueRowPull: () => {},
+						continueConsistencyStream: () => {},
+					},
+					logger: {
+						debug: () => {},
+						info: () => {},
+						warn: (message: string, context?: Record<string, unknown>) =>
+							warnings.push({ message, context }),
+						error: () => {},
+					} as any,
+				});
+				const ws = {
+					...createMockWs(),
+					send: () => {
+						throw new Error("secret payload must not be logged");
+					},
+				};
+				handlers.websocket.open?.(ws as any);
+				const frame = new Uint8Array([1, 2, 3, 4]);
+
+				expect(sendFrame?.(frame)).toBe(false);
+				expect(sendFrame?.(frame)).toBe(false);
+				expect(warnings).toHaveLength(1);
+				expect(warnings[0]).toMatchObject({
+					context: { peer_site_id: peerSiteId, frame_size: frame.length },
+				});
+				expect(JSON.stringify(warnings[0])).not.toContain("secret payload");
+			});
 		});
 	});
 });

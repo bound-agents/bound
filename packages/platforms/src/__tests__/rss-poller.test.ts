@@ -160,6 +160,32 @@ describe("RssPoller", () => {
 		expect(seen).toContain("guid-1");
 	});
 
+	it("persists the active W3C context when supplied by the intake runtime", async () => {
+		const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
+		const poller = new RssPoller({
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: fetchReturning(RSS_DOC),
+			traceContext: () => ({
+				traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+			}),
+		});
+
+		await poller.tick();
+
+		const row = db
+			.query("SELECT trace_context FROM relay_inbox WHERE ref_id = ?")
+			.get(feed.thread_id) as {
+			trace_context: string | null;
+		};
+		expect(row.trace_context).not.toBeNull();
+		const carrier = JSON.parse(row.trace_context as string) as Record<string, string>;
+		expect(carrier.traceparent).toMatch(/^00-/);
+		expect(row.trace_context).not.toContain("Second post");
+		expect(row.trace_context).not.toContain("https://example.com/2");
+	});
+
 	it("delivers only unseen items as rss_intake rows and emits connector:event", async () => {
 		const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
 		const poller = new RssPoller({

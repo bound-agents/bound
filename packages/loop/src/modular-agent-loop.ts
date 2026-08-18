@@ -21,6 +21,7 @@ import {
 	type AgentLoopConfig,
 	type AgentLoopResult,
 	type AgentLoopState,
+	type LoopTerminalOutcome,
 	type ToolExecutionResult,
 	VALID_TRANSITIONS,
 } from "./types";
@@ -86,7 +87,7 @@ export type LoopTurnDecision =
 	// persisted context (e.g. a degenerate-turn notification) is re-assembled
 	// into the message array. Omitted/false reuses the in-memory frame.
 	| { action: "retry"; rebuildFrame?: boolean }
-	| { action: "stop" }
+	| { action: "stop"; outcome?: LoopTerminalOutcome; reason?: string }
 	| { action: "yield" }
 	| { action: "error"; error: string };
 
@@ -239,6 +240,7 @@ export class ModularAgentLoop {
 	}
 
 	async run(): Promise<AgentLoopResult> {
+		let result: AgentLoopResult | undefined;
 		const tracer = trace.getTracer("bound.loop");
 		const loopSpan = tracer.startSpan("loop.run", {
 			attributes: {
@@ -255,7 +257,8 @@ export class ModularAgentLoop {
 				const error = resolution.error ?? "model resolution failed";
 				await this.persistAlert(`Loop error: ${error}`);
 				loopSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
-				return this.result({ error });
+				result = this.result({ error, outcome: "model-resolution-failed" });
+				return result;
 			}
 			if (resolution.max_context === undefined) {
 				// No advertised context window means the loop can't budget the
@@ -264,7 +267,8 @@ export class ModularAgentLoop {
 				const error = `Model "${resolution.modelId}" resolved but advertises no context window`;
 				await this.persistAlert(`Loop error: ${error}`);
 				loopSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
-				return this.result({ error });
+				result = this.result({ error, outcome: "model-resolution-failed" });
+				return result;
 			}
 
 			const frameResolution = {
@@ -312,7 +316,8 @@ export class ModularAgentLoop {
 					continue;
 				}
 				if (turnOutcome.action === "return") {
-					return turnOutcome.result;
+					result = turnOutcome.result;
+					return result;
 				}
 				currentDebug = { ...currentDebug, totalEstimated: currentDebug.totalEstimated };
 			}
@@ -320,9 +325,17 @@ export class ModularAgentLoop {
 			const error = `Loop exceeded maxTurns=${maxTurns}`;
 			await this.persistAlert(error);
 			loopSpan.setStatus({ code: SpanStatusCode.ERROR, message: error });
-			return this.result({ error });
+			result = this.result({ error, outcome: "max-turns" });
+			return result;
 		} finally {
-			await this.afterRun();
+			try {
+				await this.afterRun();
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				loopSpan.setStatus({ code: SpanStatusCode.ERROR, message });
+				result = this.result({ error: message, outcome: "after-run-failed" });
+			}
+			if (result) this.recordLoopOutcome(loopSpan, result);
 			loopSpan.end();
 		}
 	}
@@ -386,11 +399,14 @@ export class ModularAgentLoop {
 			});
 			return {
 				action: "return",
-				result: this.result({ yielded: this.shouldYield() || undefined }),
+				result: this.result({
+					outcome: this.shouldYield() ? "yielded" : "aborted",
+					yielded: this.shouldYield() || undefined,
+				}),
 			};
 		}
 		if (this.shouldYield()) {
-			return { action: "return", result: this.result({ yielded: true }) };
+			return { action: "return", result: this.result({ yielded: true, outcome: "yielded" }) };
 		}
 
 		const turnSpan = tracer.startSpan(
@@ -440,7 +456,7 @@ export class ModularAgentLoop {
 					await this.handleFinalResponse(parsed, frame);
 					turnSpan.setStatus({ code: SpanStatusCode.OK });
 					turnSpan.end();
-					return { action: "return", result: this.result() };
+					return { action: "return", result: this.result({ outcome: "completed" }) };
 				}
 
 				const toolDecision = await this.handleToolCalls(parsed, frame, turn);
@@ -559,7 +575,7 @@ export class ModularAgentLoop {
 		spans.turnSpan.setStatus({ code: SpanStatusCode.ERROR, message });
 		spans.turnSpan.end();
 		spans.loopSpan.setStatus({ code: SpanStatusCode.ERROR, message });
-		return this.result({ error: message });
+		return this.result({ error: message, outcome: "model-failed" });
 	}
 
 	protected async applyTurnDecision(
@@ -576,11 +592,26 @@ export class ModularAgentLoop {
 			case "yield":
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.OK });
 				spans.turnSpan?.end();
-				return { action: "return", result: this.result({ yielded: true }) };
-			case "stop":
-				spans.turnSpan?.setStatus({ code: SpanStatusCode.OK });
+				return { action: "return", result: this.result({ yielded: true, outcome: "yielded" }) };
+			case "stop": {
+				const outcome = decision.outcome ?? "completed";
+				const isGuard = outcome.startsWith("guard:");
+				spans.turnSpan?.setStatus(
+					isGuard
+						? { code: SpanStatusCode.ERROR, message: decision.reason }
+						: { code: SpanStatusCode.OK },
+				);
 				spans.turnSpan?.end();
-				return { action: "return", result: this.result() };
+				if (isGuard)
+					spans.loopSpan?.setStatus({ code: SpanStatusCode.ERROR, message: decision.reason });
+				return {
+					action: "return",
+					result: this.result({
+						outcome,
+						...(isGuard ? { error: decision.reason ?? outcome } : {}),
+					}),
+				};
+			}
 			case "error":
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.ERROR, message: decision.error });
 				spans.turnSpan?.end();
@@ -649,13 +680,75 @@ export class ModularAgentLoop {
 		const chunks: StreamChunk[] = [];
 		let attempt = 0;
 		for (;;) {
+			const requestSpan = trace.getTracer("bound.loop").startSpan(
+				"llm.request",
+				{
+					attributes: {
+						"llm.provider": frame.resolution.modelId,
+						"llm.retry": attempt,
+					},
+				},
+				context.active(),
+			);
+			const startedAt = performance.now();
+			let firstChunkAt: number | null = null;
+			let chunkCount = 0;
 			await this.beforeModelStreamAttempt(frame, _turn, attempt);
 			try {
 				const stream = await this.openModelStream(frame, _turn, attempt);
-				await this.collectModelStream(stream, chunks, frame, _turn, attempt);
+				const source =
+					stream.useSilenceTimeout === false
+						? stream.chunks
+						: this.withSilenceTimeout(
+								stream.chunks,
+								stream.silenceTimeoutMs ??
+									this.loopOptions.silenceTimeoutMs ??
+									DEFAULT_SILENCE_TIMEOUT_MS,
+								stream.onSilenceHeartbeat ?? this.loopConfig.onActivity,
+							);
+				for await (const chunk of source) {
+					if (firstChunkAt === null) firstChunkAt = performance.now();
+					chunkCount++;
+					if (this.shouldAbort()) break;
+					if (this.shouldYield()) {
+						this.onModelStreamYield(frame, _turn, attempt);
+						this.aborted = true;
+						break;
+					}
+					if (chunk.type === "heartbeat") {
+						this.loopConfig.onActivity?.();
+						continue;
+					}
+					await this.afterModelStreamChunk(chunk, chunks, frame, _turn, attempt);
+					this.loopConfig.onStreamChunk?.(chunk);
+					chunks.push(chunk);
+				}
+				requestSpan.setAttributes({
+					"llm.chunk_count": chunkCount,
+					"llm.first_chunk_delay_ms":
+						firstChunkAt === null ? -1 : Math.round(firstChunkAt - startedAt),
+				});
+				requestSpan.setStatus({ code: SpanStatusCode.OK });
+				requestSpan.end();
 				await this.afterModelStreamComplete(chunks, frame, _turn, attempt);
 				return chunks;
 			} catch (error) {
+				const statusCode = getLlmStatusCode(error);
+				const retryable = isTransientLLMError(error) || isRateLimitStatus(statusCode, "");
+				requestSpan.setAttributes({
+					"llm.chunk_count": chunkCount,
+					"llm.first_chunk_delay_ms":
+						firstChunkAt === null ? -1 : Math.round(firstChunkAt - startedAt),
+					"llm.error.class":
+						statusCode === 401 || statusCode === 403
+							? "auth"
+							: isRateLimitStatus(statusCode, "")
+								? "rate_limit"
+								: "provider",
+					"llm.retryable": retryable,
+				});
+				requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "provider stream failed" });
+				requestSpan.end();
 				await this.afterModelStreamError(error, chunks, frame, _turn, attempt);
 				if (await this.shouldRetryModelStreamError(error, chunks, frame, _turn, attempt)) {
 					attempt++;
@@ -966,7 +1059,7 @@ export class ModularAgentLoop {
 		frame: PreparedLoopFrame,
 		turn: number,
 	): Promise<LoopTurnDecision> {
-		const preGuardDecision = this.runPreExecutionGuards(parsed);
+		const preGuardDecision = await this.runPreExecutionGuards(parsed);
 		if (preGuardDecision.action !== "continue") {
 			return preGuardDecision;
 		}
@@ -996,7 +1089,7 @@ export class ModularAgentLoop {
 	 * emitting truncated tool calls or byte-identical calls turn after turn.
 	 * Runs before any tool executes, so it costs nothing when it fires.
 	 */
-	protected runPreExecutionGuards(parsed: ParsedResponse): LoopTurnDecision {
+	protected async runPreExecutionGuards(parsed: ParsedResponse): Promise<LoopTurnDecision> {
 		const firstTruncated = parsed.toolCalls.find((tc) => tc.truncated);
 		if (firstTruncated) {
 			if (this.lastTruncatedToolName === firstTruncated.name) {
@@ -1006,11 +1099,10 @@ export class ModularAgentLoop {
 				this.lastTruncatedToolName = firstTruncated.name;
 			}
 			if (this.consecutiveTruncatedTurns >= this.guardThresholds.maxConsecutiveTruncatedTurns) {
-				this.onLoopGuardTripped(
+				return this.tripGuard(
 					"truncated",
 					`[Agent loop aborted] Detected ${this.consecutiveTruncatedTurns} consecutive turns with truncated "${firstTruncated.name}" tool calls. Aborting to prevent runaway token usage.`,
 				);
-				return { action: "stop" };
 			}
 		} else {
 			this.consecutiveTruncatedTurns = 0;
@@ -1028,11 +1120,10 @@ export class ModularAgentLoop {
 			this.consecutiveDuplicateToolCalls >= this.guardThresholds.maxConsecutiveDuplicateToolCalls
 		) {
 			const dupToolNames = [...new Set(parsed.toolCalls.map((tc) => tc.name))].join(", ");
-			this.onLoopGuardTripped(
+			return this.tripGuard(
 				"duplicate",
 				`[Agent loop aborted] Detected ${this.consecutiveDuplicateToolCalls} consecutive turns issuing the identical tool call(s) ("${dupToolNames}"). Aborting to prevent runaway token usage.`,
 			);
-			return { action: "stop" };
 		}
 
 		return { action: "continue" };
@@ -1075,10 +1166,10 @@ export class ModularAgentLoop {
 	 * identical-error chain, and inject a single corrective nudge before the
 	 * generic error abort. Runs after persistence so tool results are recorded.
 	 */
-	protected runPostExecutionGuards(
+	protected async runPostExecutionGuards(
 		batch: LoopToolExecutionBatch,
 		frame: PreparedLoopFrame,
-	): LoopTurnDecision {
+	): Promise<LoopTurnDecision> {
 		const results = batch.results;
 		if (
 			this.consecutiveRoutingErrorSignature >=
@@ -1086,20 +1177,18 @@ export class ModularAgentLoop {
 		) {
 			const lastResult = results[results.length - 1];
 			const errToolNames = [...new Set(results.map((r) => r.toolCall.name))].join(", ");
-			this.onLoopGuardTripped(
+			return this.tripGuard(
 				"routing-error",
 				`[Agent loop aborted] The "${errToolNames}" tool returned a cross-tool routing error ${this.consecutiveRoutingErrorSignature} turns in a row. Last error: ${truncateForNudge(lastResult?.result.content ?? "")}`,
 			);
-			return { action: "stop" };
 		}
 		if (this.consecutiveErrorSignature >= this.guardThresholds.maxConsecutiveErrorToolCalls) {
 			const lastResult = results[results.length - 1];
 			const errToolNames = [...new Set(results.map((r) => r.toolCall.name))].join(", ");
-			this.onLoopGuardTripped(
+			return this.tripGuard(
 				"identical-error",
 				`[Agent loop aborted] The "${errToolNames}" tool returned the identical error ${this.consecutiveErrorSignature} turns in a row. Last error: ${truncateForNudge(lastResult?.result.content ?? "")}`,
 			);
-			return { action: "stop" };
 		}
 		if (
 			!this.errorNudgeInjected &&
@@ -1122,8 +1211,19 @@ export class ModularAgentLoop {
 	 * surfaces the message as an alert so resilient extension agents see trips
 	 * without extra wiring; hosts override to persist a developer message, etc.
 	 */
-	protected onLoopGuardTripped(_reason: LoopGuardReason, detail: string): void {
-		void this.persistAlert(detail);
+	protected onLoopGuardTripped(_reason: LoopGuardReason, _detail: string): void {}
+
+	protected async tripGuard(reason: LoopGuardReason, detail: string): Promise<LoopTurnDecision> {
+		try {
+			await this.persistAlert(`[Agent loop guard] ${reason}`);
+		} catch (error) {
+			this.loopExtensions.context.logger.warn("[loop] Failed to persist guard alert", {
+				reason,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this.onLoopGuardTripped(reason, detail);
+		return { action: "stop", outcome: `guard:${reason}`, reason: `loop guard tripped: ${reason}` };
 	}
 
 	/**
@@ -1279,11 +1379,17 @@ export class ModularAgentLoop {
 		return buildAssistantToolCallBlocks(textContent, thinking, toolCalls);
 	}
 
+	protected recordLoopOutcome(loopSpan: Span, result: AgentLoopResult): void {
+		loopSpan.addEvent("bound.loop.outcome", { "loop.outcome": result.outcome });
+		loopSpan.setAttribute("loop.outcome", result.outcome);
+	}
+
 	protected result(extra: Partial<AgentLoopResult> = {}): AgentLoopResult {
-		const result = {
+		const result: AgentLoopResult = {
 			messagesCreated: this.messagesCreated,
 			toolCallsMade: this.toolCallsMade,
 			filesChanged: 0,
+			outcome: "completed",
 			...extra,
 		};
 		void this.loopExtensions.afterRun?.(result);

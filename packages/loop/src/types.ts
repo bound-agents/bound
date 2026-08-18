@@ -161,10 +161,22 @@ export interface AgentLoopConfig {
 	handleMessageTracker?: DispatchSpanTracker;
 }
 
+export type LoopTerminalOutcome =
+	| "completed"
+	| "aborted"
+	| "yielded"
+	| "model-resolution-failed"
+	| "model-failed"
+	| "max-turns"
+	| `guard:${string}`
+	| "after-run-failed";
+
 export interface AgentLoopResult {
 	messagesCreated: number;
 	toolCallsMade: number;
 	filesChanged: number;
+	/** Terminal classification for one complete loop invocation. */
+	outcome: LoopTerminalOutcome;
 	error?: string;
 	yielded?: boolean;
 }

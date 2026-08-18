@@ -16,6 +16,8 @@ import {
 	errorPayloadSchema,
 	parseJsonSafe,
 } from "@bound/shared";
+import { injectTraceContext } from "@bound/shared";
+import { context } from "@opentelemetry/api";
 import { resolveClientSessionHost } from "./delegation";
 import { createRelayOutboxEntry } from "./relay-router";
 
@@ -209,12 +211,17 @@ export async function dispatchAwaitableClientTool(
 		args: deps.args,
 		timeout_ms: deps.timeoutMs,
 	};
+	const traceContext = context.with(context.active(), () => injectTraceContext());
 	const outbox = createRelayOutboxEntry(
 		sessionHost.site_id,
 		deps.siteId,
 		"client_tool",
 		JSON.stringify(payload),
 		deps.timeoutMs,
+		undefined,
+		undefined,
+		undefined,
+		traceContext ? JSON.stringify(traceContext) : undefined,
 	);
 	writeOutbox(deps.db, outbox);
 	return waitForRemoteResult(deps, outbox.id);

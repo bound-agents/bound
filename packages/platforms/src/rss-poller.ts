@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox, listActiveRssFeeds, updateRow } from "@bound/core";
-import { RSS_SEEN_GUIDS_CAP } from "@bound/shared";
+import { RSS_SEEN_GUIDS_CAP, injectTraceContext } from "@bound/shared";
 import type { RssFeed, TypedEventEmitter } from "@bound/shared";
 
 /**
@@ -155,6 +155,8 @@ export interface RssPollerDeps {
 	fetchImpl?: typeof fetch;
 	/** Injectable clock for tests. */
 	now?: () => number;
+	/** Captures the active W3C context at durable intake time. */
+	traceContext?: () => Record<string, string> | null;
 }
 
 interface FeedRuntimeState {
@@ -318,6 +320,8 @@ export class RssPoller {
 		}
 
 		let delivered = 0;
+		const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
+		const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
 		if (!isFirstPoll) {
 			for (const item of fresh) {
 				const inserted = insertInbox(this.deps.db, {
@@ -331,7 +335,7 @@ export class RssPoller {
 					expires_at: new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString(),
 					received_at: new Date(nowMs).toISOString(),
 					processed: 0,
-					trace_context: null,
+					trace_context: serializedTraceContext,
 				});
 				if (inserted) delivered++;
 			}

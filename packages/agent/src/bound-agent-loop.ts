@@ -569,10 +569,11 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	protected override result(extra: Partial<AgentLoopResult> = {}): AgentLoopResult {
-		const result = {
+		const result: AgentLoopResult = {
 			messagesCreated: this.messagesCreated,
 			toolCallsMade: this.toolCallsMade,
 			filesChanged: this.filesChanged,
+			outcome: "completed",
 			...extra,
 		};
 		this.latestResult = result;
