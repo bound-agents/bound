@@ -136,6 +136,11 @@ describe("volatile-context snapshots", () => {
 		db.close();
 	});
 
+	// 5000 detail entries × (insertRow + change-log row) puts this fixture's
+	// build alone past bun's 5s default test timeout on a loaded host — it sat
+	// right at the line and flaked in three consecutive pre-commit gates
+	// (2026-08-17/18) before failing in isolation too. Explicit budget: this
+	// is a snapshot-equality test, not a perf assertion.
 	it("Memory state with 80 pinned + 50 summary + 5000 detail entries (R-VC15 Tier 3 heading-only compression with M=20 cap).", async () => {
 		// Override BOUND_VC15_M for fixture reviewability
 		process.env.BOUND_VC15_M = "5";
@@ -172,7 +177,7 @@ describe("volatile-context snapshots", () => {
 		);
 
 		db.close();
-	});
+	}, 30_000);
 
 	it("Memory state with critical budget pressure (R-VC14 active) and deltas inside Working Knowledge (verifying R-VC11 markers preserved while Live State and Discoverable Archive are shed).", async () => {
 		const db = createTempDb();
@@ -478,7 +483,7 @@ describe("volatile-context snapshots", () => {
 		);
 
 		db.close();
-	});
+	}, 30_000);
 
 	it("Memory state with task digest entries, sibling-thread metadata, and a boundless host attachment rendering under Live State alongside file / advisory entries.", async () => {
 		const db = createTempDb();

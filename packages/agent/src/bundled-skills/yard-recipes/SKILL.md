@@ -181,6 +181,65 @@ function* main(input) {
 }
 ```
 
+## Recipe: dynamic multi-round orchestration
+
+The rounds do NOT need to be known when the program is written. Results are
+ordinary values, so the next fan-out can be COMPUTED from the last one — an
+`infer()` planning step between rounds turns the program into a dispatcher
+that keeps working until the job is done, instead of a fixed pipeline that
+ends after its last authored stage and hands control back to your loop.
+Prefer this shape whenever you cannot enumerate every stage up front:
+survey → plan → work → review → repair → release can be ONE program even
+when the middle rounds depend on what the early rounds find.
+
+```js
+function* main(input) {
+  const history = [];
+  // Seed round: read-only survey of every area.
+  let results = yield all(
+    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.model })),
+    { concurrency: 6, errors: "settled" },
+  );
+
+  for (let round = 0; round < input.max_rounds; round++) {
+    // PLAN: the dispatcher decides the next round from actual results.
+    // infer() has no tools — it plans purely from the data handed to it,
+    // which is exactly the discipline a dispatcher should have.
+    const plan = yield infer(input.model, {
+      prompt:
+        `You dispatch aux errands toward: ${input.goal}. Decide the next round from the results. ` +
+        "Rules: findings-free narration is MISSING coverage (re-dispatch that scope, smaller). " +
+        "Route repairs to a write-shaped identity carrying the reviewer's objections verbatim. " +
+        "Implementation rounds must precede a review round; nothing releases unreviewed. " +
+        "When the work is complete and reviewed, return done=true with exactly one release errand.",
+      input: { round, results, history },
+      schema: { type: "object", properties: {
+        done: { type: "boolean" },
+        errands: { type: "array", items: { type: "object", properties: {
+          identity: { type: "string" },
+          instructions: { type: "string" },
+        }, required: ["identity", "instructions"] } },
+      }, required: ["done", "errands"] },
+    });
+    history.push({ round, decision: plan });
+    if (plan.done && plan.errands.length === 0) break;
+
+    results = yield all(
+      plan.errands.map((e) => aux(e.identity, e.instructions, { model: input.model })),
+      { concurrency: 4, errors: "settled" },
+    );
+    if (plan.done) break; // release round dispatched; stop after it lands
+  }
+  return { history };
+}
+```
+
+The round cap is a budget guard, not a plan — the planner ends the run by
+returning `done`, and the cap only stops a dispatcher that never converges.
+Give the planner the standing rules (coverage skepticism, repair routing,
+review-before-release) in its prompt: it makes those calls between every
+round, which is precisely where live runs have historically dropped them.
+
 ## Failure modes that waste runs
 
 - **`infer()` asked to act.** It has no tools. It will explain that it
@@ -219,9 +278,15 @@ function* main(input) {
   implementer was told to "independently inspect" instead, and repo-wide
   coverage collapsed to two fixes. The rule is about VALUES dying at the
   program boundary. A STAGED sequence of Yards — survey/implement, then
-  review, then scoped repairs — is legitimate when the pipeline artifact is
-  the shared worktree itself: an uncommitted diff survives between runs; a
-  survey report does not.
+  review, then scoped repairs — can be legitimate because the pipeline
+  artifact is the shared worktree (an uncommitted diff survives between
+  runs; a survey report does not), but it is the FALLBACK, not the goal:
+  every return to your loop hand-carries verdicts across the boundary,
+  spends main-thread context on transfer, and offers one more chance to
+  absorb the work yourself. When the later stages depend on earlier
+  results, plan them INSIDE one program instead (see Recipe: dynamic
+  multi-round orchestration). Reserve staged Yards for a genuine operator
+  decision between stages.
 - **Review after release.** The review gate holds work BEFORE the release
   errand fires; a reviewer inspecting an already-pushed commit can only fix
   forward. Sequence: implement (no commit) → review → rework if failed →
