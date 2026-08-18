@@ -225,7 +225,7 @@ function* main(input) {
             "Rules: findings-free narration is MISSING coverage (re-dispatch that scope, smaller). " +
             "Route repairs to a write-shaped identity carrying the reviewer's objections verbatim. " +
             "Implementation rounds must precede a review round; nothing releases unreviewed. " +
-            "A missing dependency or tool is an ERRAND (install it, lock it, test it), not a reason to narrow the goal. " +
+            "A missing dependency is USUALLY an errand (install it, lock it, test it); treat it as a boundary only with evidence — the exact failing command plus a failed alternate route — and carry that evidence in the report. " +
             "When the work is complete and reviewed, return done=true with exactly one release errand.",
           input: { round, results, history },
           schema: { type: "object", properties: {
@@ -344,15 +344,23 @@ round, which is precisely where live runs have historically dropped them.
   a run went to an invented "repo-scout" and the round returned nothing.
   Read the roster inside the program (`tool("aux", { action: "list" })`)
   and constrain the planner to it; define missing roles BEFORE the run.
-- **A missing dependency treated as a boundary.** Second occurrence of the
-  narrow-to-fit reflex: asked for all major languages, a run shipped only
-  the family whose parser was already installed and framed the narrowing
-  as correctness. A missing library is an errand step — add it, lock it,
-  test it — not a scope limit. If installation genuinely fails, the report
-  must carry the exact failing command and why it is environmental, and
-  must be checked against prior evidence in the same effort before being
-  relayed upward (the same run later claimed installs were impossible an
-  hour after three grammar packages had installed cleanly).
+- **A missing dependency misclassified.** Two opposite failures, one
+  discipline: classify from EVIDENCE, not disposition. One run, asked for
+  all major languages, shipped only the family whose parser was already
+  installed and framed the narrowing as correctness — there the missing
+  libraries were an errand (add, lock, test), not a scope limit. The same
+  run later reported installation as fundamentally impossible while
+  grammar packages had installed cleanly an hour earlier — there a real
+  environment quirk was misread as a wall (bun's install staging fails
+  against its GLOBAL cache under the write-confined boundless shell, and
+  the "tempdir" error text misdirects; `BUN_INSTALL_CACHE_DIR="$PWD/.bun-cache"`
+  routes around it — see docs/gotchas.md). Whether a missing dependency is
+  a boundary is use-case dependent. The rule: reproduce the exact failing
+  command, attempt one alternate route, reconcile with prior evidence in
+  the same effort (earlier successful installs demand an explanation of
+  what differs — they do not by themselves disprove the blocker), and
+  report ground state either way. If the route succeeds, finish the errand:
+  commit the lockfile change and remove scratch caches.
 - **Retrying a blocked errand unchanged.** The same blocker returned by
   consecutive runs means the PLAN must change — smaller scope, different
   route, or a one-command minimal reproduction run as glue to verify the
