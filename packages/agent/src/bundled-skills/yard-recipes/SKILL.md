@@ -351,16 +351,13 @@ round, which is precisely where live runs have historically dropped them.
   libraries were an errand (add, lock, test), not a scope limit. The same
   run later reported installation as fundamentally impossible while
   grammar packages had installed cleanly an hour earlier — there a real
-  environment quirk was misread as a wall (bun's install staging fails
-  against its GLOBAL cache under the write-confined boundless shell, and
-  the "tempdir" error text misdirects; `BUN_INSTALL_CACHE_DIR="$PWD/.bun-cache"`
-  routes around it — see docs/gotchas.md). Whether a missing dependency is
+  environment quirk was misread as a wall. Whether a missing dependency is
   a boundary is use-case dependent. The rule: reproduce the exact failing
   command, attempt one alternate route, reconcile with prior evidence in
   the same effort (earlier successful installs demand an explanation of
   what differs — they do not by themselves disprove the blocker), and
   report ground state either way. If the route succeeds, finish the errand:
-  commit the lockfile change and remove scratch caches.
+  commit the lockfile change and remove scratch state.
 - **Retrying a blocked errand unchanged.** The same blocker returned by
   consecutive runs means the PLAN must change — smaller scope, different
   route, or a one-command minimal reproduction run as glue to verify the

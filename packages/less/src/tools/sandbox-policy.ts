@@ -104,14 +104,33 @@ export const DISABLED_SANDBOX: ResolvedSandboxConfig = {
  *
  * These override inherited values (e.g. a host `PAGER=less`) on purpose: an
  * interactive pager cannot function in this context regardless of preference.
+ *
+ * `confineBunCache` (set by the SANDBOXED spawn paths only): bun stages
+ * package installs in its global cache (`~/.bun/install/cache`) before
+ * linking into node_modules, and that path sits outside the sandbox's
+ * writable roots (cwd + tmpdir) — so every `bun add` / `bun install` under
+ * confinement dies with the misleading "unable to write files to tempdir:
+ * PermissionDenied" (TMPDIR is irrelevant; the write that fails is the cache
+ * dir's). Pointing `BUN_INSTALL_CACHE_DIR` at a tmpdir-local cache keeps
+ * installs working with zero caller ceremony. Installed packages are ordinary
+ * files (hardlink count 1), so a cleared tmp cache never breaks an existing
+ * node_modules. An operator-set `BUN_INSTALL_CACHE_DIR` is honored — they may
+ * have deliberately pointed it somewhere writable. Unsandboxed spawns keep
+ * the warm global cache.
  */
-export function nonInteractiveEnv(): Record<string, string | undefined> {
-	return {
+export function nonInteractiveEnv(
+	opts: { confineBunCache?: boolean } = {},
+): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = {
 		...process.env,
 		GIT_PAGER: "cat",
 		PAGER: "cat",
 		GIT_TERMINAL_PROMPT: "0",
 	};
+	if (opts.confineBunCache && !process.env.BUN_INSTALL_CACHE_DIR) {
+		env.BUN_INSTALL_CACHE_DIR = join(tmpdir(), "bound-bun-install-cache");
+	}
+	return env;
 }
 
 /**
