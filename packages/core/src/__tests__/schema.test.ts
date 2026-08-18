@@ -89,6 +89,26 @@ describe("Database Schema", () => {
 
 		expect(indexNames).toContain("idx_threads_user");
 		expect(indexNames).toContain("idx_messages_thread");
+		expect(indexNames).toContain("idx_messages_live_thread_created");
+		expect(indexNames).toContain("idx_relay_inbox_ref_unprocessed_received");
+
+		const messagePlan = db
+			.query(
+				"EXPLAIN QUERY PLAN SELECT * FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at ASC",
+			)
+			.all("thread-1") as Array<{ detail: string }>;
+		expect(messagePlan.map((row) => row.detail).join(" ")).toContain(
+			"idx_messages_live_thread_created",
+		);
+
+		const relayPlan = db
+			.query(
+				"EXPLAIN QUERY PLAN SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ? ORDER BY received_at ASC",
+			)
+			.all("thread-1", "webhook_intake") as Array<{ detail: string }>;
+		expect(relayPlan.map((row) => row.detail).join(" ")).toContain(
+			"idx_relay_inbox_ref_unprocessed_received",
+		);
 		expect(indexNames).toContain("idx_memory_key");
 		expect(indexNames).toContain("idx_files_path");
 		expect(indexNames).toContain("idx_skills_name");

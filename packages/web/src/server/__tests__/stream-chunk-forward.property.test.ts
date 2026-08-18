@@ -18,7 +18,7 @@
  *      delivery; re-subscribing resumes it.
  */
 
-import { afterEach, beforeEach, describe, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
 import type { ServerWebSocket } from "bun";
 import fc from "fast-check";
@@ -160,6 +160,29 @@ describe("WebSocket stream:chunk forwarding — property tests", () => {
 			}),
 			{ numRuns: 200 },
 		);
+	});
+
+	it("serializes a stream chunk once before fanning out to every subscriber", () => {
+		const sockets = Array.from({ length: 3 }, () => {
+			const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			handler.open(ws);
+			handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: "thread-hot" }));
+			return ws;
+		});
+		const stringify = spyOn(JSON, "stringify");
+		try {
+			eventBus.emit("stream:chunk", {
+				thread_id: "thread-hot",
+				chunk: { type: "text", content: "one shared encoding" },
+			});
+			expect(stringify).toHaveBeenCalledTimes(1);
+			for (const ws of sockets) {
+				expect((ws as unknown as MockWebSocket).messages).toHaveLength(1);
+			}
+		} finally {
+			stringify.mockRestore();
+			for (const ws of sockets) handler.close(ws);
+		}
 	});
 
 	it("F4: subscription lifecycle — unsubscribe stops delivery, re-subscribe resumes", () => {

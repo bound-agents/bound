@@ -121,6 +121,31 @@ describe("wrapWithMemoryTracking", () => {
 		expect(tracker.getMemoryUsage()).toBeGreaterThan(beforeAppend);
 	});
 
+	test("accounts for an existing untracked file before appending", async () => {
+		const fs = new InMemoryFs();
+		await fs.writeFile("/test.txt", "hello");
+
+		const tracker = new MemoryTracker();
+		wrapWithMemoryTracking(fs, tracker);
+		await fs.appendFile("/test.txt", " world");
+
+		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("hello world"));
+	});
+
+	test("tracks appended bytes without rereading a known tracked file", async () => {
+		const fs = new InMemoryFs();
+		const tracker = new MemoryTracker();
+		wrapWithMemoryTracking(fs, tracker);
+
+		await fs.writeFile("/test.txt", "hello");
+		fs.readFile = async () => {
+			throw new Error("known tracked append must not reread the file");
+		};
+
+		await fs.appendFile("/test.txt", " world");
+		expect(tracker.getMemoryUsage()).toBe(Buffer.byteLength("hello world"));
+	});
+
 	test("returns the same filesystem reference", () => {
 		const fs = new InMemoryFs();
 		const tracker = new MemoryTracker();

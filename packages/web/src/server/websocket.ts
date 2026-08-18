@@ -1256,17 +1256,16 @@ export function createWebSocketHandler(
 	};
 
 	const handleStreamChunk = (data: { thread_id: string; chunk: WsStreamChunk }): void => {
+		// Streaming emits one event per LLM chunk. Encode it once, then share the
+		// immutable wire payload among every viewport subscribed to this thread.
+		const message = JSON.stringify({
+			type: "stream:chunk",
+			thread_id: data.thread_id,
+			chunk: data.chunk,
+		});
 		for (const [, conn] of clients) {
-			if (conn.subscriptions.has(data.thread_id)) {
-				if (conn.ws.readyState === 1) {
-					conn.ws.send(
-						JSON.stringify({
-							type: "stream:chunk",
-							thread_id: data.thread_id,
-							chunk: data.chunk,
-						}),
-					);
-				}
+			if (conn.subscriptions.has(data.thread_id) && conn.ws.readyState === 1) {
+				conn.ws.send(message);
 			}
 		}
 	};

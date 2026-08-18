@@ -227,6 +227,15 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at)
 	`);
 
+	// Context assembly and web history repeatedly fetch live thread messages in
+	// chronological order. The general index above includes tombstones, so this
+	// partial index keeps the hot live-only path compact and ordered.
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_messages_live_thread_created
+		ON messages(thread_id, created_at)
+		WHERE deleted = 0
+	`);
+
 	// 4. semantic_memory
 	db.run(`
 		CREATE TABLE IF NOT EXISTS semantic_memory (
@@ -637,6 +646,14 @@ export function applySchema(db: Database): void {
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_relay_inbox_unprocessed
 		ON relay_inbox(processed)
+		WHERE processed = 0
+	`);
+
+	// Event-task wakeups drain inbox entries by (ref_id, kind) in receive
+	// order. This avoids scanning every unprocessed relay row as backlog grows.
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_relay_inbox_ref_unprocessed_received
+		ON relay_inbox(ref_id, kind, received_at)
 		WHERE processed = 0
 	`);
 
