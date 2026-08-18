@@ -201,6 +201,12 @@ export class ModularAgentLoop {
 		protected readonly loopOptions: ModularAgentLoopOptions = {},
 	) {
 		this.guardThresholds = { ...DEFAULT_LOOP_GUARD_THRESHOLDS, ...loopOptions.loopGuards };
+		// A signal that is already aborted at construction never fires its
+		// listener — check the current state too, or a loop dispatched under an
+		// aborted parent (e.g. a sync aux invoke after agent:cancel) runs anyway.
+		if (loopConfig.abortSignal?.aborted) {
+			this.aborted = true;
+		}
 		loopConfig.abortSignal?.addEventListener("abort", () => {
 			this.aborted = true;
 		});

@@ -64,6 +64,15 @@ export interface AuxLoopParentContext {
 	systemPromptAddition?: string;
 	/** Connector/platform-authored instructions from the dispatching loop. */
 	platformInstructions?: string;
+	/**
+	 * The dispatching loop's abort signal. A synchronous aux invocation blocks
+	 * the parent in `await auxLoop.run()`, so the parent cannot observe its own
+	 * abort until the child returns — the child must share the brake line.
+	 * Without this, `agent:cancel` aborted the parent's controller while the
+	 * nested aux kept issuing LLM calls for its full natural lifetime
+	 * (observed live: ten minutes past three operator cancels).
+	 */
+	abortSignal?: AbortSignal;
 }
 
 export interface AgentLoopFactory {
@@ -365,6 +374,10 @@ export function createAgentLoopFactory(
 				// Carries the parent's WS connection so the inline client-tool
 				// dispatch takes the local path rather than resolving a relay host.
 				connectionId: parent.connectionId,
+				// Couple the parent's brake line: agent:cancel aborts the parent's
+				// controller, and a synchronous aux blocks the parent until it
+				// returns — so the nested loop must observe the same signal.
+				abortSignal: parent.abortSignal,
 			});
 
 			const loopResult = await auxLoop.run();
@@ -532,6 +545,7 @@ export function createAgentLoopFactory(
 			platform: config.platform,
 			systemPromptAddition: config.systemPromptAddition,
 			platformInstructions: config.platformInstructions,
+			abortSignal: config.abortSignal,
 		});
 
 		// Yard dispatches yielded tool effects through the same unified registry
