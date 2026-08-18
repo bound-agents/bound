@@ -222,6 +222,22 @@ function* main(input) {
   errand fires; a reviewer inspecting an already-pushed commit can only fix
   forward. Sequence: implement (no commit) → review → rework if failed →
   one release errand ships the approved diff.
+- **"Fulfilled" is not "reported."** An aux errand that runs out of budget
+  mid-work returns its last progress note as its result, and `all()` marks
+  it fulfilled. The gather stage must treat a findings-free narration ("I'm
+  tracing X now…") as MISSING coverage — re-dispatch that scope with a
+  smaller partition, or name it unexamined in the outcomes. Observed live:
+  2 of 6 survey arms (covering the two largest packages) returned progress
+  notes; synthesis emitted zero work orders for them and the audit silently
+  lost those packages. Partition size is also a budget question: the
+  single-package arms returned 17–45 KB reports while the multi-package
+  arms ran out of room — an errand must FIT inside one aux run.
+- **Repairs handed to the finder.** When a review surfaces defects, the
+  rework goes to the write-shaped identity carrying the finder's
+  objections — not back to the analyst who found them, however natural
+  "fix what you found" feels. And when a repair errand fails, narrow it and
+  re-dispatch; absorbing the implementation into your own loop discards
+  the parallelism, context isolation, and reviewability you paid for.
 
 ## Roster
 
