@@ -128,6 +128,13 @@ describe("built-in-tools", () => {
 			expect(result).toContain("[truncated;");
 		});
 
+		it("describes every registered source language", () => {
+			const description = tool("bms_read_structure").toolDefinition.function.description;
+			expect(description).toContain(".py");
+			expect(description).toContain(".go");
+			expect(description).toContain(".rs");
+		});
+
 		it("exposes only the path parameter", () => {
 			const parameters = tool("bms_read_structure").toolDefinition.function.parameters as {
 				required: string[];

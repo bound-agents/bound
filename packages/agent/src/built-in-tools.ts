@@ -422,7 +422,7 @@ function createReadStructureTool(fs: IFileSystem): BuiltInTool {
 			function: {
 				name: "bms_read_structure",
 				description:
-					"Return a supported JS/TS file's top-level declaration structure without source bodies. Registered extensions: .ts, .tsx, .js, .jsx, .mjs, .cjs, .d.ts, .d.mts, .d.cts; other extensions return empty. Each symbol includes a hashline-compatible LINE:HASH anchor.",
+					"Return a supported source file's top-level declaration structure without source bodies. Registered extensions: .ts, .tsx, .js, .jsx, .mjs, .cjs, .d.ts, .d.mts, .d.cts, .py, .pyi, .go, .rs; other extensions return empty. Each symbol includes a hashline-compatible LINE:HASH anchor.",
 				parameters: zodToToolParams(readStructureSchema),
 			},
 		},

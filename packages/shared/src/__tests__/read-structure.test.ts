@@ -134,6 +134,26 @@ describe("extractSourceStructure", () => {
 		).toEqual(["Service", "ANSWER", "greeting", "hidden"]);
 	});
 
+	it("extracts Go grouped var declarations", () => {
+		expect(
+			extractSourceStructure(
+				["package example", "", "var (", "\tVisible int", "\tCount = 2", ")", ""].join("\n"),
+				"grouped.go",
+			).map((symbol) => symbol.name),
+		).toEqual(["Visible", "Count"]);
+	});
+
+	it("extracts Rust implementation targets", () => {
+		expect(
+			extractSourceStructure(
+				["struct Service;", "impl Service { fn nested() {} }", "impl Trait for Service {}"].join(
+					"\n",
+				),
+				"service.rs",
+			).map((symbol) => symbol.name),
+		).toEqual(["Service", "Service", "Trait for Service"]);
+	});
+
 	it("parses JavaScript module variants", () => {
 		for (const path of ["module.js", "module.mjs", "module.cjs"]) {
 			expect(
