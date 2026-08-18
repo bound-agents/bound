@@ -9,6 +9,7 @@ import { CONTEXT_FILE_CANDIDATES, collectContextFiles } from "./context-files";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
+import { createReadStructureTool } from "./read-structure";
 import type { ResolvedSandboxConfig } from "./sandbox";
 import { createSearchTool } from "./search";
 import { type ResolvedShell, resolveShell } from "./shell";
@@ -69,6 +70,24 @@ export function buildToolSet(
 						limit: {
 							type: "number",
 							description: "Number of lines to read (optional)",
+						},
+					},
+				},
+			},
+		},
+		{
+			type: "function",
+			function: {
+				name: "boundless_read_structure",
+				description:
+					"Return a file's declaration structure without source bodies. Each symbol includes a hashline-compatible LINE:HASH anchor.",
+				parameters: {
+					type: "object",
+					required: ["path"],
+					properties: {
+						path: {
+							type: "string",
+							description: "Path to a file (relative to cwd if not absolute).",
 						},
 					},
 				},
@@ -246,6 +265,7 @@ export function buildToolSet(
 
 	toolDefinitions.push(...coreToolDefs);
 	handlers.set("boundless_read", createReadTool(hostname));
+	handlers.set("boundless_read_structure", createReadStructureTool(hostname));
 	handlers.set(
 		"boundless_write",
 		createWriteTool(hostname, sandbox, contextFiles ?? CONTEXT_FILE_CANDIDATES),

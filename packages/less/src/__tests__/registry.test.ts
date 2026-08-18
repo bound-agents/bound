@@ -21,12 +21,13 @@ describe("buildToolSet", () => {
 	it("returns core tools with correct structure", () => {
 		const { tools, handlers } = buildToolSet("/tmp", "localhost");
 
-		// Should have exactly 6 core tools (read, write, edit, shell, copy, search)
-		expect(tools).toHaveLength(6);
+		// Should have exactly 7 core tools (read, structure, write, edit, shell, copy, search)
+		expect(tools).toHaveLength(7);
 
 		// Check tool names
 		const toolNames = tools.map((t) => t.function.name);
 		expect(toolNames).toContain("boundless_read");
+		expect(toolNames).toContain("boundless_read_structure");
 		expect(toolNames).toContain("boundless_write");
 		expect(toolNames).toContain("boundless_edit");
 		expect(toolNames).toContain(SHELL_TOOL_NAME);
@@ -34,8 +35,9 @@ describe("buildToolSet", () => {
 		expect(toolNames).toContain("boundless_search");
 
 		// Check handlers exist
-		expect(handlers.size).toBe(6);
+		expect(handlers.size).toBe(7);
 		expect(handlers.has("boundless_read")).toBe(true);
+		expect(handlers.has("boundless_read_structure")).toBe(true);
 		expect(handlers.has("boundless_write")).toBe(true);
 		expect(handlers.has("boundless_edit")).toBe(true);
 		expect(handlers.has(SHELL_TOOL_NAME)).toBe(true);
@@ -71,6 +73,18 @@ describe("buildToolSet", () => {
 		expect(properties.file_path).toBeDefined();
 		expect(properties.offset).toBeDefined();
 		expect(properties.limit).toBeDefined();
+	});
+
+	it("exposes only path for boundless_read_structure", () => {
+		const { tools } = buildToolSet("/tmp", "localhost");
+		const structure = tools.find((t) => t.function.name === "boundless_read_structure");
+		expect(structure).toBeDefined();
+		const params = structure?.function.parameters as {
+			required: string[];
+			properties: Record<string, unknown>;
+		};
+		expect(params.required).toEqual(["path"]);
+		expect(Object.keys(params.properties)).toEqual(["path"]);
 	});
 
 	it("shell tool exposes optional timeout + cwd params, command required", () => {
@@ -165,12 +179,13 @@ describe("buildToolSet", () => {
 
 		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 1 MCP tool
-		expect(tools).toHaveLength(7);
+		// Should have 7 core + 1 MCP tool
+		expect(tools).toHaveLength(8);
 
 		// Check MCP tool name
 		const coreNames = [
 			"boundless_read",
+			"boundless_read_structure",
 			"boundless_write",
 			"boundless_edit",
 			SHELL_TOOL_NAME,
@@ -215,8 +230,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 1 MCP tool (no collision)
-		expect(tools).toHaveLength(7);
+		// Should have 7 core + 1 MCP tool (no collision)
+		expect(tools).toHaveLength(8);
 
 		// MCP tool should be present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_testserver_test")).toBeDefined();
@@ -273,8 +288,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core tools only (both MCP servers rejected due to collision)
-		expect(tools).toHaveLength(6);
+		// Should have 7 core tools only (both MCP servers rejected due to collision)
+		expect(tools).toHaveLength(7);
 
 		// Verify the colliding tools are NOT present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_a_b_read")).toBeUndefined();
@@ -335,8 +350,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 3 MCP tools
-		expect(tools).toHaveLength(9);
+		// Should have 7 core + 3 MCP tools
+		expect(tools).toHaveLength(10);
 
 		// All MCP tools should be present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_github_list_repos")).toBeDefined();
@@ -394,8 +409,8 @@ describe("buildToolSet", () => {
 
 		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 2 MCP tools
-		expect(tools).toHaveLength(8);
+		// Should have 7 core + 2 MCP tools
+		expect(tools).toHaveLength(9);
 
 		// Check both MCP tools present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_github_list_repos")).toBeDefined();
@@ -446,8 +461,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 2 MCP tools (delete excluded)
-		expect(tools).toHaveLength(8);
+		// Should have 7 core + 2 MCP tools (delete excluded)
+		expect(tools).toHaveLength(9);
 
 		// Check allowed tools are present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_fileserver_read")).toBeDefined();
@@ -683,8 +698,8 @@ describe("buildToolSet", () => {
 
 		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
 
-		// Should have 6 core + 2 MCP tools (delete excluded)
-		expect(tools).toHaveLength(8);
+		// Should have 7 core + 2 MCP tools (delete excluded)
+		expect(tools).toHaveLength(9);
 
 		// read should exist without confirmation
 		expect(tools.find((t) => t.function.name === "boundless_mcp_admin_read")).toBeDefined();

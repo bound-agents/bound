@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeLineHash } from "@bound/shared";
@@ -236,5 +236,111 @@ describe("boundless_read", () => {
 			(b) => b.type === "text" && b.text?.includes("Binary file"),
 		);
 		expect(textBlock).toBeDefined();
+	});
+	it("returns declaration symbols with shared hashline anchors without source bodies", async () => {
+		const testFile = join(tempDir, "sample.ts");
+		writeFileSync(
+			testFile,
+			"export function greeting(name: string) {\n  return `hello ${name}`;\n}\n",
+		);
+
+		const { readStructureTool } = await import("../tools/read-structure");
+		const result = await readStructureTool(
+			{ path: "sample.ts" },
+			new AbortController().signal,
+			tempDir,
+		);
+		const text = result.content[1]?.text ?? "";
+
+		expect(result.isError).toBeUndefined();
+		expect(text).toContain("greeting");
+		expect(text).toContain(`${1}:${computeLineHash("export function greeting(name: string) {")}`);
+		expect(text).not.toContain("return `hello ${name}`");
+	});
+});
+
+describe("boundless_read_structure", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `boundless-structure-${randomBytes(4).toString("hex")}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => rmSync(tempDir, { recursive: true, force: true }));
+
+	it("rejects missing and non-string paths", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		for (const args of [{}, { path: 1 }]) {
+			const result = await readStructureTool(args, new AbortController().signal, tempDir);
+			expect(result.isError).toBe(true);
+		}
+	});
+
+	it("handles missing files, directories, binary files, and both confined path forms", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		writeFileSync(join(tempDir, "source.ts"), "export const item = 1;\n");
+		writeFileSync(join(tempDir, "binary.bin"), Buffer.from([0, 1, 2]));
+		for (const path of ["missing.ts", ".", "binary.bin"]) {
+			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+			expect(result.isError).toBe(true);
+		}
+		for (const path of ["source.ts", join(tempDir, "source.ts")]) {
+			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+			expect(result.isError).toBeUndefined();
+			expect(result.content[1]?.text).toContain("item");
+		}
+	});
+
+	it("rejects paths outside the working directory, including traversal", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		const outside = join(tmpdir(), `boundless-outside-${randomBytes(4).toString("hex")}.ts`);
+		writeFileSync(outside, "export const secret = 1;\n");
+		try {
+			for (const path of [outside, `../${outside.split("/").at(-1)}`]) {
+				const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+				expect(result.isError).toBe(true);
+				expect(result.content[1]?.text).toContain("outside the working directory");
+			}
+		} finally {
+			rmSync(outside, { force: true });
+		}
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"rejects symlinks that escape the working directory",
+		async () => {
+			const { readStructureTool } = await import("../tools/read-structure");
+			const outside = join(tmpdir(), `boundless-outside-${randomBytes(4).toString("hex")}.ts`);
+			const link = join(tempDir, "escape.ts");
+			writeFileSync(outside, "export const secret = 1;\n");
+			symlinkSync(outside, link);
+			try {
+				const result = await readStructureTool(
+					{ path: "escape.ts" },
+					new AbortController().signal,
+					tempDir,
+				);
+				expect(result.isError).toBe(true);
+				expect(result.content[1]?.text).toContain("outside the working directory");
+			} finally {
+				rmSync(outside, { force: true });
+			}
+		},
+	);
+
+	it("bounds large outputs", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		writeFileSync(
+			join(tempDir, "large.ts"),
+			Array.from({ length: 4000 }, (_, i) => `export const item${i} = ${i};`).join("\n"),
+		);
+		const result = await readStructureTool(
+			{ path: "large.ts" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(Buffer.byteLength(result.content[1]?.text ?? "", "utf8")).toBeLessThanOrEqual(50_000);
+		expect(result.content[1]?.text).toContain("[truncated;");
 	});
 });

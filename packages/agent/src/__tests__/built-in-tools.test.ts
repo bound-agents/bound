@@ -30,8 +30,9 @@ describe("built-in-tools", () => {
 	}
 
 	it("creates exactly five tools: read, write, edit, search, retrieve_task", () => {
-		expect(tools.size).toBe(5);
+		expect(tools.size).toBe(6);
 		expect(tools.has("bms_read")).toBe(true);
+		expect(tools.has("bms_read_structure")).toBe(true);
 		expect(tools.has("bms_write")).toBe(true);
 		expect(tools.has("bms_edit")).toBe(true);
 		expect(tools.has("bms_search")).toBe(true);
@@ -45,6 +46,67 @@ describe("built-in-tools", () => {
 			expect(typeof tool.toolDefinition.function.description).toBe("string");
 			expect(tool.toolDefinition.function.parameters).toBeDefined();
 		}
+	});
+
+	// ─── read structure ─────────────────────────────────────────────────
+
+	describe("read structure", () => {
+		it("reads through the VFS and returns anchored symbols without function bodies", async () => {
+			fs.writeFileSync(
+				"/home/user/sample.ts",
+				"export function greeting(name: string) {\n  return `hello ${name}`;\n}\n",
+			);
+			const result = (await tool("bms_read_structure").execute({
+				path: "/home/user/sample.ts",
+			})) as string;
+			expect(result).toContain("greeting");
+			expect(result).toContain(
+				`${1}:${computeLineHash("export function greeting(name: string) {")}`,
+			);
+			expect(result).not.toContain("return `hello ${name}`");
+		});
+
+		it("rejects invalid paths, missing files, directories, binary files, and host-shaped paths", async () => {
+			fs.writeFileSync("/home/user/binary.bin", "binary\0content");
+			fs.mkdirSync("/home/user/folder");
+			const cases = [
+				{},
+				{ path: 1 },
+				{ path: "/home/user/missing.ts" },
+				{ path: "/home/user/folder" },
+				{ path: "/home/user/binary.bin" },
+				{ path: "C:\\host.ts" },
+			];
+			for (const input of cases) {
+				const result = await tool("bms_read_structure").execute(input as Record<string, unknown>);
+				const text =
+					typeof result === "string"
+						? result
+						: result.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+				expect(text, JSON.stringify(input)).toContain("Error");
+			}
+		});
+
+		it("bounds large structure output", async () => {
+			fs.writeFileSync(
+				"/home/user/large.ts",
+				Array.from({ length: 4000 }, (_, i) => `export const item${i} = ${i};`).join("\n"),
+			);
+			const result = String(
+				await tool("bms_read_structure").execute({ path: "/home/user/large.ts" }),
+			);
+			expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(50_000);
+			expect(result).toContain("[truncated;");
+		});
+
+		it("exposes only the path parameter", () => {
+			const parameters = tool("bms_read_structure").toolDefinition.function.parameters as {
+				required: string[];
+				properties: Record<string, unknown>;
+			};
+			expect(parameters.required).toEqual(["path"]);
+			expect(Object.keys(parameters.properties)).toEqual(["path"]);
+		});
 	});
 
 	// ─── read ───────────────────────────────────────────────────────────

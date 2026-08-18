@@ -5,6 +5,7 @@ import {
 	applyHashlineEdits,
 	computeLineHash,
 	formatSearchResults,
+	formatSourceStructure,
 	isLikelyBinary,
 	searchFiles,
 	shouldSearchPath,
@@ -38,6 +39,10 @@ const readSchema = z.object({
 		.int()
 		.optional()
 		.describe("Maximum number of lines to return. Defaults to 2000."),
+});
+
+const readStructureSchema = z.object({
+	path: z.string().describe("Absolute sandbox VFS path to inspect (POSIX-style; not a host path)."),
 });
 
 const writeSchema = z.object({
@@ -410,6 +415,35 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 	};
 }
 
+function createReadStructureTool(fs: IFileSystem): BuiltInTool {
+	return {
+		toolDefinition: {
+			type: "function",
+			function: {
+				name: "bms_read_structure",
+				description:
+					"Return a sandbox VFS file's declaration structure without source bodies. Each symbol includes a hashline-compatible LINE:HASH anchor.",
+				parameters: zodToToolParams(readStructureSchema),
+			},
+		},
+		async execute(inputRaw) {
+			const parsed = parseToolInput(readStructureSchema, inputRaw, "bms_read_structure");
+			if (!parsed.ok) return parsed.error;
+			const shapeError = hostShapedPathError(parsed.value.path);
+			if (shapeError) return shapeError;
+			try {
+				const content = await fs.readFile(parsed.value.path);
+				if (isLikelyBinary(content)) {
+					return "Error: binary file is not supported by read_structure";
+				}
+				return formatSourceStructure(content, parsed.value.path);
+			} catch (err) {
+				return `Error: ${(err as Error).message}`;
+			}
+		},
+	};
+}
+
 function createWriteTool(fs: IFileSystem): BuiltInTool {
 	const jsonSchema = zodToToolParams(writeSchema);
 
@@ -672,6 +706,7 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 export function createBuiltInTools(fs: IFileSystem): Map<string, BuiltInTool> {
 	const map = new Map<string, BuiltInTool>();
 	map.set("bms_read", createReadTool(fs));
+	map.set("bms_read_structure", createReadStructureTool(fs));
 	map.set("bms_write", createWriteTool(fs));
 	map.set("bms_edit", createEditTool(fs));
 	map.set("bms_search", createSearchTool(fs));
