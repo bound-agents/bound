@@ -93,6 +93,47 @@ describe("extractSourceStructure", () => {
 		);
 	});
 
+	it("extracts parser-backed Python, Go, and Rust top-level declarations", () => {
+		expect(
+			extractSourceStructure(
+				[
+					"@decorator",
+					"class Service:",
+					"    def nested(self): pass",
+					"",
+					"def greeting(name):",
+					"    return name",
+					"ANSWER = 42",
+				].join("\n"),
+				"service.py",
+			).map((symbol) => symbol.name),
+		).toEqual(["Service", "greeting", "ANSWER"]);
+		expect(
+			extractSourceStructure(
+				[
+					"package example",
+					"",
+					"type Service struct{}",
+					"const Answer = 42",
+					"var Pending bool",
+					"func Greeting(name string) string { return name }",
+				].join("\n"),
+				"service.go",
+			).map((symbol) => symbol.name),
+		).toEqual(["Service", "Answer", "Pending", "Greeting"]);
+		expect(
+			extractSourceStructure(
+				[
+					"pub struct Service;",
+					"pub const ANSWER: u32 = 42;",
+					"pub fn greeting(name: &str) -> &str { name }",
+					"mod hidden { pub fn nested() {} }",
+				].join("\n"),
+				"service.rs",
+			).map((symbol) => symbol.name),
+		).toEqual(["Service", "ANSWER", "greeting", "hidden"]);
+	});
+
 	it("parses JavaScript module variants", () => {
 		for (const path of ["module.js", "module.mjs", "module.cjs"]) {
 			expect(
@@ -137,7 +178,7 @@ describe("extractSourceStructure", () => {
 
 describe("source structure registry", () => {
 	it("returns exactly empty output for unregistered and extensionless paths", () => {
-		for (const path of ["README", "sample.py", "sample.go", "sample.rs", "sample.txt"]) {
+		for (const path of ["README", "sample.txt"]) {
 			expect(extractSourceStructure("export const accidental = 1;", path)).toEqual([]);
 			expect(formatSourceStructure("export const accidental = 1;", path)).toBe("");
 		}

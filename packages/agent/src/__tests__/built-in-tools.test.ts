@@ -87,9 +87,29 @@ describe("built-in-tools", () => {
 			}
 		});
 
-		it("returns empty structure for unsupported extensions and rejects oversized inputs", async () => {
-			fs.writeFileSync("/home/user/foreign.py", "export const accidental = 1;");
-			expect(await tool("bms_read_structure").execute({ path: "/home/user/foreign.py" })).toBe("");
+		it("extracts Python, Go, and Rust declarations through the VFS and rejects oversized inputs", async () => {
+			const fixtures = [
+				[
+					"python.py",
+					"class Service:\n    pass\n\ndef greeting():\n    pass\n",
+					"Service",
+					"greeting",
+				],
+				[
+					"go.go",
+					"package example\n\ntype Service struct{}\nfunc Greeting() {}\n",
+					"Service",
+					"Greeting",
+				],
+				["rust.rs", "pub struct Service;\npub fn greeting() {}\n", "Service", "greeting"],
+			] as const;
+			for (const [path, source, ...names] of fixtures) {
+				fs.writeFileSync(`/home/user/${path}`, source);
+				const result = String(
+					await tool("bms_read_structure").execute({ path: `/home/user/${path}` }),
+				);
+				for (const name of names) expect(result).toContain(name);
+			}
 			fs.writeFileSync("/home/user/too-large.ts", "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1));
 			expect(await tool("bms_read_structure").execute({ path: "/home/user/too-large.ts" })).toBe(
 				"Error: source file exceeds read_structure input limit",
