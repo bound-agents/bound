@@ -1,10 +1,8 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { formatSourceStructure } from "@bound/shared";
+import { formatSourceStructure, isLikelyBinary } from "@bound/shared";
 import { formatProvenance } from "./provenance";
 import type { ToolHandler, ToolResult } from "./types";
-
-const BINARY_CHECK_BYTES = 8192;
 
 export function createReadStructureTool(hostname: string): ToolHandler {
 	return async (args, _signal, cwd) => readStructureToolImpl(hostname, args, cwd);
@@ -42,7 +40,7 @@ async function readStructureToolImpl(
 			};
 		}
 		const buffer = readFileSync(resolvedPath);
-		if (buffer.subarray(0, BINARY_CHECK_BYTES).includes(0)) {
+		if (isLikelyBinary(buffer.toString("utf8"))) {
 			return {
 				content: [
 					provenance,

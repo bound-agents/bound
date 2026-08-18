@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeLineHash } from "@bound/shared";
+import { MAX_SOURCE_STRUCTURE_INPUT_BYTES, computeLineHash } from "@bound/shared";
 import { readTool } from "../tools/read";
 
 /** Expected hashline read rendering for a given line. */
@@ -280,7 +280,10 @@ describe("boundless_read_structure", () => {
 	it("handles missing files, directories, binary files, and both confined path forms", async () => {
 		const { readStructureTool } = await import("../tools/read-structure");
 		writeFileSync(join(tempDir, "source.ts"), "export const item = 1;\n");
-		writeFileSync(join(tempDir, "binary.bin"), Buffer.from([0, 1, 2]));
+		writeFileSync(
+			join(tempDir, "binary.bin"),
+			Buffer.concat([Buffer.alloc(8192, 0x61), Buffer.from([0, 1, 2])]),
+		);
 		for (const path of ["missing.ts", ".", "binary.bin"]) {
 			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
 			expect(result.isError).toBe(true);
@@ -328,6 +331,27 @@ describe("boundless_read_structure", () => {
 			}
 		},
 	);
+
+	it("returns empty structure for unsupported extensions and rejects oversized inputs", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		writeFileSync(join(tempDir, "foreign.py"), "export const accidental = 1;");
+		const foreign = await readStructureTool(
+			{ path: "foreign.py" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(foreign.content[1]?.text).toBe("");
+		writeFileSync(join(tempDir, "too-large.ts"), "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1));
+		const oversized = await readStructureTool(
+			{ path: "too-large.ts" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(oversized.isError).toBe(true);
+		expect(oversized.content[1]?.text).toBe(
+			"Error: source file exceeds read_structure input limit",
+		);
+	});
 
 	it("bounds large outputs", async () => {
 		const { readStructureTool } = await import("../tools/read-structure");
