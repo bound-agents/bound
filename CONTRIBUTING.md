@@ -152,6 +152,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Mantle GPT-5.x automatic prompt cache is exact-match, not prefix](docs/gotchas.md#mantle-gpt-5x-automatic-prompt-cache-is-exact-match-not-prefix)
 - [Importing a package can create logs/bound.log in cwd](docs/gotchas.md#importing-a-package-can-create-logsboundlog-in-cwd)
 - [Yard's `input` can arrive as JSON text, not a value](docs/gotchas.md#yards-input-can-arrive-as-json-text-not-a-value)
+- [`bun add` / `bun install` fail against the global cache under the boundless sandbox](docs/gotchas.md#bun-add--bun-install-fail-against-the-global-cache-under-the-boundless-sandbox)
 
 ## Recurring Checklists
 
