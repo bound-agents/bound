@@ -42,6 +42,7 @@ Copy the full thread ID if you want to resume this thread later.
 The client registers these tools against the working directory:
 
 - `boundless_read` reads files with stable line anchors.
+- `boundless_read_structure` parses JavaScript/TypeScript and returns supported top-level declarations without source bodies: functions, classes, variables, interfaces, type aliases, enums, namespaces, modules, and named exports. Anonymous default exports, imports, export stars, and nested declarations are omitted. Its `LINE:HASH` anchors are compatible with `boundless_edit`; unsupported files and files with no supported declarations return an empty result.
 - `boundless_write` creates or replaces files atomically.
 - `boundless_edit` applies anchored edits from a prior read.
 - `boundless_search` searches files with regular expressions.
