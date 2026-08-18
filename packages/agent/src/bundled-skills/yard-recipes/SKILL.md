@@ -217,7 +217,11 @@ function* main(input) {
   live: 13 exhaustive package surveys (~186 KB of ranked candidates with
   exact files and symbols) returned to the orchestrator; the follow-up
   implementer was told to "independently inspect" instead, and repo-wide
-  coverage collapsed to two fixes.
+  coverage collapsed to two fixes. The rule is about VALUES dying at the
+  program boundary. A STAGED sequence of Yards — survey/implement, then
+  review, then scoped repairs — is legitimate when the pipeline artifact is
+  the shared worktree itself: an uncommitted diff survives between runs; a
+  survey report does not.
 - **Review after release.** The review gate holds work BEFORE the release
   errand fires; a reviewer inspecting an already-pushed commit can only fix
   forward. Sequence: implement (no commit) → review → rework if failed →
@@ -238,6 +242,17 @@ function* main(input) {
   "fix what you found" feels. And when a repair errand fails, narrow it and
   re-dispatch; absorbing the implementation into your own loop discards
   the parallelism, context isolation, and reviewability you paid for.
+- **Write-arms sharing a worktree.** A scatter whose arms implement
+  directly merges scout and implementer: the gather/prioritization stage
+  disappears (no cross-scope synthesis to reject weak candidates early),
+  N concurrent arms edit one worktree at once, and repairs have no
+  distinct write identity to route to — the finder IS the writer. If you
+  take this shortcut, arm scopes must be disjoint by construction (one
+  package per arm) and the pre-release review gate is mandatory. Observed
+  live: 8 concurrent implement-arms coexisted only because their package
+  scopes never overlapped, and the review still caught a duplicate index
+  and an unsafe append optimization that a gather stage could have
+  rejected before any edit.
 
 ## Roster
 
