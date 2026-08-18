@@ -251,6 +251,8 @@ export function createWsHandlers(config: WsServerConfig): {
 		idleTimeout = 120,
 		backpressureLimit = 2097152,
 	} = config;
+	const sendFailureWarnings = new Map<string, number>();
+	const SEND_FAILURE_WARNING_INTERVAL_MS = 60_000;
 
 	const handleUpgrade = async (
 		req: Request,
@@ -307,6 +309,15 @@ export function createWsHandlers(config: WsServerConfig): {
 						ws.close(1011, "Internal server error");
 						return false;
 					} catch {
+						const now = Date.now();
+						const lastWarningAt = sendFailureWarnings.get(ws.data.siteId) ?? 0;
+						if (now - lastWarningAt >= SEND_FAILURE_WARNING_INTERVAL_MS) {
+							sendFailureWarnings.set(ws.data.siteId, now);
+							logger?.warn("WS send threw", {
+								peer_site_id: ws.data.siteId,
+								frame_size: frame.length,
+							});
+						}
 						return false;
 					}
 				};
@@ -359,36 +370,46 @@ export function createWsHandlers(config: WsServerConfig): {
 
 			const decodedFrame = decodeResult.value;
 
-			// Dispatch to WsTransport handlers
+			// Dispatch failures indicate a local storage/reducer/invariant problem, not
+			// malformed peer input. Close to stop further mutation on this connection.
 			if (config.wsTransport) {
-				if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
-					config.wsTransport.handleChangelogPush(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
-					config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
-					config.wsTransport.handleRelaySend(
-						ws.data.siteId,
-						decodedFrame.payload as RelaySendPayload,
-					);
-				} else if (decodedFrame.type === WsMessageType.RELAY_DELIVER) {
-					logger?.warn("WS received relay_deliver from spoke (unexpected)", {
-						siteId: ws.data.siteId,
+				try {
+					if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
+						config.wsTransport.handleChangelogPush(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
+						config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
+						config.wsTransport.handleRelaySend(
+							ws.data.siteId,
+							decodedFrame.payload as RelaySendPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.RELAY_DELIVER) {
+						logger?.warn("WS received relay_deliver from spoke (unexpected)", {
+							siteId: ws.data.siteId,
+						});
+					} else if (decodedFrame.type === WsMessageType.RELAY_ACK) {
+						config.wsTransport.handleRelayAck(
+							ws.data.siteId,
+							decodedFrame.payload as RelayAckPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.SNAPSHOT_ACK) {
+						config.wsTransport.handleSnapshotAck(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.RESEED_REQUEST) {
+						config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.CONSISTENCY_REQUEST) {
+						config.wsTransport.handleConsistencyRequest(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.ROW_PULL_REQUEST) {
+						config.wsTransport.handleRowPullRequest(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.ROW_PULL_ACK) {
+						config.wsTransport.handleRowPullAck(ws.data.siteId, decodedFrame.payload);
+					}
+				} catch (error) {
+					logger?.error("WS transport frame dispatch failed", {
+						peer_site_id: ws.data.siteId,
+						frame_type: WsMessageType[decodedFrame.type],
+						error_class: error instanceof Error ? error.constructor.name : "NonError",
 					});
-				} else if (decodedFrame.type === WsMessageType.RELAY_ACK) {
-					config.wsTransport.handleRelayAck(
-						ws.data.siteId,
-						decodedFrame.payload as RelayAckPayload,
-					);
-				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_ACK) {
-					config.wsTransport.handleSnapshotAck(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.RESEED_REQUEST) {
-					config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.CONSISTENCY_REQUEST) {
-					config.wsTransport.handleConsistencyRequest(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.ROW_PULL_REQUEST) {
-					config.wsTransport.handleRowPullRequest(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.ROW_PULL_ACK) {
-					config.wsTransport.handleRowPullAck(ws.data.siteId, decodedFrame.payload);
+					ws.close(1011, "Internal server error");
 				}
 			}
 		},

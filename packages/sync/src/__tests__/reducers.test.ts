@@ -1071,3 +1071,91 @@ describe("reducers", () => {
 		});
 	});
 });
+
+describe("reducer skipped-apply diagnostics", () => {
+	let db: Database;
+	const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
+	const logger = {
+		debug() {},
+		info() {},
+		warn(message: string, context?: Record<string, unknown>) {
+			warnings.push({ message, context });
+		},
+		error() {},
+		isLevelEnabled() {
+			return true;
+		},
+	};
+
+	beforeEach(() => {
+		warnings.length = 0;
+		db = new Database(":memory:");
+		db.run(`CREATE TABLE semantic_memory (
+			id TEXT PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL, source TEXT NOT NULL,
+			created_at TEXT NOT NULL, modified_at TEXT NOT NULL, last_accessed_at TEXT NOT NULL,
+			deleted INTEGER NOT NULL DEFAULT 0
+		)`);
+		db.run(`CREATE TABLE change_log (
+			hlc TEXT PRIMARY KEY, table_name TEXT NOT NULL, row_id TEXT NOT NULL, site_id TEXT NOT NULL,
+			timestamp TEXT NOT NULL, row_data TEXT NOT NULL
+		)`);
+	});
+
+	afterEach(() => db.close());
+
+	it("preserves rejected remote insert semantics and emits one sanitized reducer warning", () => {
+		const malformed: ChangeLogEntry = {
+			hlc: "2026-01-01T00:00:00.000Z_0001_remote",
+			table_name: "semantic_memory",
+			row_id: "raw-row-id-secret",
+			site_id: "remote-secret",
+			timestamp: "2026-01-01T00:00:00Z",
+			row_data: JSON.stringify({ id: "raw-row-id-secret", key: "payload-secret" }),
+		};
+		const result = replayEvents(db, [malformed, malformed], { logger });
+		expect(result).toEqual({ applied: 0, skipped: 2 });
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toEqual({
+			message: "[reducers] Skipped remote apply",
+			context: { tableName: "semantic_memory", reason: "constraint" },
+		});
+		expect(JSON.stringify(warnings)).not.toContain("secret");
+	});
+
+	it("preserves replay results while reporting bounded changelog and onApplied listener failures", () => {
+		const event: ChangeLogEntry = {
+			hlc: "2026-01-01T00:00:00.000Z_0001_remote",
+			table_name: "semantic_memory",
+			row_id: "private-id",
+			site_id: "private-site",
+			timestamp: "2026-01-01T00:00:00Z",
+			row_data: JSON.stringify({
+				id: "private-id",
+				key: "k",
+				value: "payload",
+				source: "s",
+				created_at: "2026-01-01T00:00:00Z",
+				modified_at: "2026-01-01T00:00:00Z",
+				last_accessed_at: "2026-01-01T00:00:00Z",
+			}),
+		};
+		const eventBus = {
+			emit() {
+				throw new Error("SQL private-id payload");
+			},
+		} as unknown as TypedEventEmitter;
+		const result = replayEvents(db, [event], {
+			logger,
+			eventBus,
+			onApplied() {
+				throw new Error("payload");
+			},
+		});
+		expect(result).toEqual({ applied: 1, skipped: 0 });
+		expect(warnings).toEqual([
+			{ message: "[reducers] Changelog listener failed", context: { reason: "listener" } },
+			{ message: "[reducers] Applied listener failed", context: { reason: "listener" } },
+		]);
+		expect(JSON.stringify(warnings)).not.toContain("private");
+	});
+});

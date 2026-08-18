@@ -168,7 +168,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			// truncate against the CURRENT transcript rather than the invocation's
 			// opening size. Run the normal post-execution guards here first because
 			// returning retry makes the base runTurn skip its guard call.
-			const guardDecision = this.runPostExecutionGuards(batch, frame);
+			const guardDecision = await this.runPostExecutionGuards(batch, frame);
 			if (guardDecision.action !== "continue") return guardDecision;
 			return { action: "retry", rebuildFrame: true };
 		}
@@ -252,7 +252,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		// Check the ordinary loop guards, then discard the growing live frame and
 		// reassemble from persisted rows so context budgeting runs before the next
 		// inference call.
-		const guardDecision = this.runPostExecutionGuards(batch, frame);
+		const guardDecision = await this.runPostExecutionGuards(batch, frame);
 		if (guardDecision.action !== "continue") return guardDecision;
 		return { action: "retry", rebuildFrame: true };
 	}
