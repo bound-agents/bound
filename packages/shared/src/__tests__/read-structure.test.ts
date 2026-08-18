@@ -154,6 +154,38 @@ describe("extractSourceStructure", () => {
 		).toEqual(["Service", "Service", "Trait for Service"]);
 	});
 
+
+	it("extracts the added language-family declaration outlines", () => {
+		const cases: Array<[string, string, string[]]> = [
+			["Service.java", "public class Service {}\ninterface Worker {}\nenum State { READY }\nrecord Point(int x) {}", ["Service", "Worker", "State", "Point"]],
+			["service.kt", "class Service {}\ninterface Worker {}\nfun greeting() {}\nval answer = 42\ntypealias Id = String", ["Service", "Worker", "greeting", "answer", "Id"]],
+			["service.c", "struct Point { int x; };\nenum State { Ready };\nint greeting(void) { return 0; }", ["Point", "State", "greeting"]],
+			["service.cpp", "class Service {};\nnamespace Domain {}\nint greeting() { return 0; }", ["Service", "Domain", "greeting"]],
+			["Service.cs", "public class Service {}\npublic interface Worker {}\nnamespace Domain {}", ["Service", "Worker", "Domain"]],
+			["service.rb", "class Service; end\nmodule Domain; end\ndef greeting; end\nANSWER = 42", ["Service", "Domain", "greeting", "ANSWER"]],
+			["service.php", "<?php\nnamespace Domain;\nclass Service {}\nfunction greeting() {}\nconst ANSWER = 42;", ["Domain", "Service", "greeting", "ANSWER"]],
+			["service.swift", "protocol Worker {}\nclass Service {}\nstruct Point {}\nfunc greeting() {}\ntypealias Id = String", ["Worker", "Service", "Point", "greeting", "Id"]],
+			["service.lua", "function greeting() end\nlocal function helper() end\nlocal answer = 42", ["greeting", "helper", "answer"]],
+			["service.sh", "greeting() { :; }\nANSWER=42", ["greeting", "ANSWER"]],
+		];
+		for (const [path, source, names] of cases) {
+			expect(extractSourceStructure(source, path).map((symbol) => symbol.name)).toEqual(names);
+		}
+	});
+
+	it("extracts SQL schema declarations", () => {
+		expect(
+			extractSourceStructure(
+				[
+					"CREATE TABLE accounts (id integer);",
+					"CREATE INDEX accounts_id_idx ON accounts (id);",
+					"CREATE FUNCTION account_count() RETURNS integer AS 'SELECT 1' LANGUAGE sql;",
+				].join("\n"),
+				"schema.sql",
+			).map((symbol) => symbol.name),
+		).toEqual(["accounts", "accounts_id_idx", "account_count"]);
+	});
+
 	it("parses JavaScript module variants", () => {
 		for (const path of ["module.js", "module.mjs", "module.cjs"]) {
 			expect(
