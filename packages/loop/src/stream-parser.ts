@@ -176,25 +176,35 @@ export function parseResponseChunks(
 
 export function dropSupersededToolCallDrafts<T extends ParsedToolCall>(calls: T[]): T[] {
 	if (calls.length < 2) return calls;
+
+	// Drafts can only supersede calls with the same tool name. Grouping avoids
+	// comparing unrelated calls: tool-heavy turns with distinct names used to
+	// pay O(n²) here after every streamed response.
+	const callsByTool = new Map<string, Array<{ call: T; index: number }>>();
 	const emptyCountsByTool = new Map<string, number>();
-	for (const call of calls) {
+	for (let index = 0; index < calls.length; index++) {
+		const call = calls[index];
+		const group = callsByTool.get(call.name);
+		if (group) group.push({ call, index });
+		else callsByTool.set(call.name, [{ call, index }]);
 		if (isEmptyObjectCall(call)) {
 			emptyCountsByTool.set(call.name, (emptyCountsByTool.get(call.name) ?? 0) + 1);
 		}
 	}
 
 	const keep = calls.map(() => true);
-	for (let i = 0; i < calls.length; i++) {
-		for (let j = i + 1; j < calls.length; j++) {
-			if (
-				isSupersededToolCallDraft(calls[i], calls[j], emptyCountsByTool.get(calls[i].name) ?? 0)
-			) {
-				keep[i] = false;
-				break;
+	for (const [name, group] of callsByTool) {
+		const emptySameToolCount = emptyCountsByTool.get(name) ?? 0;
+		for (let i = 0; i < group.length; i++) {
+			for (let j = i + 1; j < group.length; j++) {
+				if (isSupersededToolCallDraft(group[i].call, group[j].call, emptySameToolCount)) {
+					keep[group[i].index] = false;
+					break;
+				}
 			}
 		}
 	}
-	return calls.filter((_, i) => keep[i]);
+	return calls.filter((_, index) => keep[index]);
 }
 
 function isSupersededToolCallDraft(

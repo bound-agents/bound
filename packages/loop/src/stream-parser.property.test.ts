@@ -244,6 +244,55 @@ const parsedToolCallArb: fc.Arbitrary<ParsedToolCall> = fc
 		return { id: `${name}-${argsJson}`, name, input, argsJson, truncated };
 	});
 
+function dropSupersededToolCallDraftsReference<T extends ParsedToolCall>(calls: T[]): T[] {
+	const emptyCountsByTool = new Map<string, number>();
+	for (const call of calls) {
+		if (call.argsJson.trim() === "{}" && !call.truncated && Object.keys(call.input).length === 0) {
+			emptyCountsByTool.set(call.name, (emptyCountsByTool.get(call.name) ?? 0) + 1);
+		}
+	}
+
+	return calls.filter(
+		(earlier, i) =>
+			!calls.slice(i + 1).some((later) => {
+				if (earlier.name !== later.name || later.truncated) return false;
+				const earlierArgs = earlier.argsJson.trim();
+				const laterArgs = later.argsJson.trim();
+				if (earlier.truncated && (earlierArgs === "" || laterArgs.startsWith(earlierArgs)))
+					return true;
+				const earlierIsEmpty =
+					!earlier.truncated && earlierArgs === "{}" && Object.keys(earlier.input).length === 0;
+				const laterIsEmpty =
+					!later.truncated && laterArgs === "{}" && Object.keys(later.input).length === 0;
+				return (emptyCountsByTool.get(earlier.name) ?? 0) > 1 && earlierIsEmpty && !laterIsEmpty;
+			}),
+	);
+}
+
+describe("dropSupersededToolCallDrafts — scalable grouping", () => {
+	it("matches the reference implementation across mixed, interleaved tool names", () => {
+		fc.assert(
+			fc.property(fc.array(parsedToolCallArb, { maxLength: 24 }), (calls) => {
+				expect(dropSupersededToolCallDrafts(calls)).toEqual(
+					dropSupersededToolCallDraftsReference(calls),
+				);
+			}),
+		);
+	});
+
+	it("keeps distinct-name grouping as a large functional fixture", () => {
+		const calls: ParsedToolCall[] = Array.from({ length: 8_000 }, (_, i) => ({
+			id: `id-${i}`,
+			name: `tool-${i}`,
+			input: {},
+			argsJson: "{}",
+			truncated: false,
+		}));
+
+		expect(dropSupersededToolCallDrafts(calls)).toEqual(calls);
+	});
+});
+
 describe("dropSupersededToolCallDrafts (D1–D4)", () => {
 	it("returns an order-preserving subsequence (D1)", () => {
 		fc.assert(

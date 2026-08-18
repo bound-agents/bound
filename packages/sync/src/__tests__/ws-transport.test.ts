@@ -850,6 +850,45 @@ describe("WsTransport", () => {
 			expect(decodedB.ok && decodedB.value.type === WsMessageType.RELAY_DELIVER).toBe(true);
 		});
 
+		it("preserves relay delivery wire payloads when draining durable entries", () => {
+			const frames: Uint8Array[] = [];
+			const key = new Uint8Array(32).fill(1);
+			transport.addPeer(
+				"spoke-b",
+				(frame) => {
+					frames.push(frame);
+					return true;
+				},
+				key,
+			);
+
+			const payload = JSON.stringify({ text: "durable payload", nested: { value: 42 } });
+			const now = new Date().toISOString();
+			for (let i = 0; i < 100; i++) {
+				db.run(
+					`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, payload, created_at, expires_at, delivered)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+					[`relay-${i}`, "hub", "spoke-b", "stream_chunk", `ref-${i}`, payload, now, now],
+				);
+			}
+
+			transport.drainRelayInbox("spoke-b");
+
+			expect(frames).toHaveLength(1);
+			const delivery = decodeFrame(frames[0], key);
+			expect(delivery.ok).toBe(true);
+			if (delivery.ok) {
+				const entries = (delivery.value.payload as RelayDeliverPayload).entries;
+				expect(entries).toHaveLength(100);
+				expect(entries[0]).toMatchObject({
+					id: "relay-0",
+					source_site_id: "hub",
+					ref_id: "ref-0",
+					payload: JSON.parse(payload),
+				});
+			}
+		});
+
 		it("hub-local request dispatch: request goes to relay_inbox", () => {
 			const spokeASendFrames: Uint8Array[] = [];
 			const spokeAKey = new Uint8Array(32).fill(1);
