@@ -520,11 +520,26 @@ describe("formatWriteDenied", () => {
 });
 
 describe("nonInteractiveEnv (bun install cache confinement)", () => {
+	// This suite may itself run inside a sandboxed boundless shell, where the
+	// deployed confinement has ALREADY set BUN_INSTALL_CACHE_DIR in the ambient
+	// environment — which nonInteractiveEnv() faithfully spreads. Clear it
+	// around each test and restore the ambient value after, so the assertions
+	// exercise the function's own behavior, not the host it happens to run on.
+	let ambientCacheDir: string | undefined;
+
+	beforeEach(() => {
+		ambientCacheDir = process.env.BUN_INSTALL_CACHE_DIR;
+		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
+	});
+
 	afterEach(() => {
 		// NOT `= undefined`: assigning undefined to a process.env key coerces
 		// to the string "undefined". Reflect.deleteProperty removes the key
 		// without the delete operator biome's noDelete rejects.
 		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
+		if (ambientCacheDir !== undefined) {
+			process.env.BUN_INSTALL_CACHE_DIR = ambientCacheDir;
+		}
 	});
 
 	it("does not touch BUN_INSTALL_CACHE_DIR by default (unsandboxed spawns keep the warm global cache)", () => {

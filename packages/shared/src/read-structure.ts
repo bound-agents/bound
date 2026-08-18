@@ -1,11 +1,7 @@
 import Parser from "tree-sitter";
 import Bash from "tree-sitter-bash";
-import C from "tree-sitter-c";
-import Cpp from "tree-sitter-cpp";
 import Go from "tree-sitter-go";
 import Java from "tree-sitter-java";
-import Kotlin from "tree-sitter-kotlin";
-import Php from "tree-sitter-php";
 import Python from "tree-sitter-python";
 import Ruby from "tree-sitter-ruby";
 import Rust from "tree-sitter-rust";
@@ -224,14 +220,17 @@ const extractRustStructure = parserExtractor(Rust, [
 	"const_item",
 ]);
 
-
-
 const extractJavaStructure = parserExtractor(Java, [
-	"class_declaration", "interface_declaration", "enum_declaration", "record_declaration", "annotation_type_declaration",
+	"class_declaration",
+	"interface_declaration",
+	"enum_declaration",
+	"record_declaration",
+	"annotation_type_declaration",
 ]);
 const extractKotlinStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
-	const declaration = /^(?:\s*(?:public|private|protected|internal|open|abstract|sealed|data|enum|annotation|companion|inline|suspend|tailrec|operator|infix|external|expect|actual)\s+)*(?:class|interface|object|fun|val|var|typealias)\s+([A-Za-z_][\w]*)/gm;
+	const declaration =
+		/^(?:\s*(?:public|private|protected|internal|open|abstract|sealed|data|enum|annotation|companion|inline|suspend|tailrec|operator|infix|external|expect|actual)\s+)*(?:class|interface|object|fun|val|var|typealias)\s+([A-Za-z_][\w]*)/gm;
 	for (const match of source.matchAll(declaration)) {
 		const name = match[1];
 		if (name) symbols.push({ name, offset: match.index ?? 0 });
@@ -241,7 +240,8 @@ const extractKotlinStructure: StructureExtractor = (source) => {
 
 const extractCStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
-	const declaration = /^(?:\s*(?:typedef\s+)?(?:struct|union|enum)\s+([A-Za-z_][\w]*)|\s*(?:[A-Za-z_][\w]*(?:\s*\*+)?\s+)+([A-Za-z_][\w]*)\s*\()/gm;
+	const declaration =
+		/^(?:\s*(?:typedef\s+)?(?:struct|union|enum)\s+([A-Za-z_][\w]*)|\s*(?:[A-Za-z_][\w]*(?:\s*\*+)?\s+)+([A-Za-z_][\w]*)\s*\()/gm;
 	for (const match of source.matchAll(declaration)) {
 		const name = match[1] ?? match[2];
 		if (name) symbols.push({ name, offset: match.index ?? 0 });
@@ -250,7 +250,8 @@ const extractCStructure: StructureExtractor = (source) => {
 };
 const extractCppStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
-	const declaration = /^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum|namespace)\s+([A-Za-z_][\w]*)|^\s*(?:[A-Za-z_][\w:<>]*(?:\s*[*&]+)?\s+)+([A-Za-z_~][\w:]*)\s*\(/gm;
+	const declaration =
+		/^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum|namespace)\s+([A-Za-z_][\w]*)|^\s*(?:[A-Za-z_][\w:<>]*(?:\s*[*&]+)?\s+)+([A-Za-z_~][\w:]*)\s*\(/gm;
 	for (const match of source.matchAll(declaration)) {
 		const name = match[1] ?? match[2];
 		if (name) symbols.push({ name, offset: match.index ?? 0 });
@@ -260,7 +261,8 @@ const extractCppStructure: StructureExtractor = (source) => {
 
 const extractCSharpStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
-	const declaration = /^(?:\s*(?:public|private|protected|internal|static|abstract|sealed|partial|async|new|unsafe|readonly|ref|file)\s+)*(?:class|interface|struct|enum|record(?:\s+(?:class|struct))?|delegate)\s+([A-Za-z_][\w]*)|^\s*namespace\s+([A-Za-z_][\w.]*)/gm;
+	const declaration =
+		/^(?:\s*(?:public|private|protected|internal|static|abstract|sealed|partial|async|new|unsafe|readonly|ref|file)\s+)*(?:class|interface|struct|enum|record(?:\s+(?:class|struct))?|delegate)\s+([A-Za-z_][\w]*)|^\s*namespace\s+([A-Za-z_][\w.]*)/gm;
 	for (const match of source.matchAll(declaration)) {
 		const name = match[1] ?? match[2];
 		if (name) symbols.push({ name, offset: match.index ?? 0 });
@@ -268,12 +270,17 @@ const extractCSharpStructure: StructureExtractor = (source) => {
 	return symbols;
 };
 const extractSwiftStructure = parserExtractor(Swift, [
-	"class_declaration", "protocol_declaration", "function_declaration", "property_declaration", "typealias_declaration",
+	"class_declaration",
+	"protocol_declaration",
+	"function_declaration",
+	"property_declaration",
+	"typealias_declaration",
 ]);
 
 const extractLuaStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
-	const declaration = /^(?:local\s+)?function\s+([A-Za-z_][\w]*(?:[.:][A-Za-z_][\w]*)?)|^(?:local\s+)?([A-Za-z_][\w]*)\s*=/gm;
+	const declaration =
+		/^(?:local\s+)?function\s+([A-Za-z_][\w]*(?:[.:][A-Za-z_][\w]*)?)|^(?:local\s+)?([A-Za-z_][\w]*)\s*=/gm;
 	for (const match of source.matchAll(declaration)) {
 		const name = match[1] ?? match[2];
 		if (name) symbols.push({ name, offset: match.index ?? 0 });
@@ -300,7 +307,8 @@ const extractShellStructure: StructureExtractor = (source) => {
 };
 
 const extractSqlStructure: StructureExtractor = (source) => {
-	const statement = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|(?:UNIQUE\s+)?INDEX|(?:OR\s+REPLACE\s+)?FUNCTION|TYPE|DOMAIN)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[A-Za-z_][\w$]*\.)?([A-Za-z_][\w$]*)/gi;
+	const statement =
+		/\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|(?:UNIQUE\s+)?INDEX|(?:OR\s+REPLACE\s+)?FUNCTION|TYPE|DOMAIN)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[A-Za-z_][\w$]*\.)?([A-Za-z_][\w$]*)/gi;
 	const symbols: ExtractedSymbol[] = [];
 	for (const match of source.matchAll(statement)) {
 		const name = match[1];
@@ -327,7 +335,8 @@ const extractRubyStructure: StructureExtractor = (source) => {
 
 const extractPhpStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
-	const declaration = /^\s*(?:namespace\s+([A-Za-z_][\w\\]*)|(?:abstract\s+|final\s+|readonly\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][\w]*)|function\s+([A-Za-z_][\w]*)|const\s+([A-Za-z_][\w]*))/gm;
+	const declaration =
+		/^\s*(?:namespace\s+([A-Za-z_][\w\\]*)|(?:abstract\s+|final\s+|readonly\s+)?(?:class|interface|trait|enum)\s+([A-Za-z_][\w]*)|function\s+([A-Za-z_][\w]*)|const\s+([A-Za-z_][\w]*))/gm;
 	for (const match of source.matchAll(declaration)) {
 		const name = match[1] ?? match[2] ?? match[3] ?? match[4];
 		if (name) symbols.push({ name, offset: match.index ?? 0 });
