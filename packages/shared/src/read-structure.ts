@@ -1,3 +1,7 @@
+import Parser from "tree-sitter";
+import Go from "tree-sitter-go";
+import Python from "tree-sitter-python";
+import Rust from "tree-sitter-rust";
 import ts from "typescript";
 import { computeLineHash } from "./hashline";
 
@@ -29,6 +33,10 @@ export const SOURCE_STRUCTURE_PARSE_ERROR = "could not parse source structure";
 export const SUPPORTED_SOURCE_STRUCTURE_GRAMMAR =
 	"top-level function, class, variable, interface, type alias, enum, namespace, module, and named export declarations";
 
+const PYTHON_EXTENSIONS = [".py", ".pyi"] as const;
+const GO_EXTENSIONS = [".go"] as const;
+const RUST_EXTENSIONS = [".rs"] as const;
+
 const TYPESCRIPT_EXTENSIONS = [
 	".d.mts",
 	".d.cts",
@@ -43,7 +51,12 @@ const TYPESCRIPT_EXTENSIONS = [
 
 function extensionForPath(path: string): string | undefined {
 	const lowerPath = path.toLowerCase();
-	return TYPESCRIPT_EXTENSIONS.find((extension) => lowerPath.endsWith(extension));
+	return [
+		...TYPESCRIPT_EXTENSIONS,
+		...PYTHON_EXTENSIONS,
+		...GO_EXTENSIONS,
+		...RUST_EXTENSIONS,
+	].find((extension) => lowerPath.endsWith(extension));
 }
 
 function getDeclarationName(node: ts.Node): string | undefined {
@@ -109,9 +122,75 @@ function extractTypeScriptStructure(source: string, path: string): ExtractedSymb
 	return symbols;
 }
 
-const EXTRACTORS: ReadonlyMap<string, StructureExtractor> = new Map(
-	TYPESCRIPT_EXTENSIONS.map((extension) => [extension, extractTypeScriptStructure]),
-);
+function parserExtractor(
+	language: unknown,
+	nodeTypes: readonly string[],
+	nameField = "name",
+): StructureExtractor {
+	return (source) => {
+		const parser = new Parser();
+		parser.setLanguage(language);
+		const tree = parser.parse(source);
+		if (tree.rootNode.hasError) throw new Error(SOURCE_STRUCTURE_PARSE_ERROR);
+		return tree.rootNode.namedChildren.flatMap((node) => {
+			if (node.type === "decorated_definition") {
+				const definition = node.childForFieldName("definition");
+				const name = definition?.childForFieldName(nameField);
+				return definition &&
+					name &&
+					["class_definition", "function_definition"].includes(definition.type)
+					? [{ name: name.text, offset: node.startIndex }]
+					: [];
+			}
+			if (node.type === "expression_statement") {
+				const assignment = node.namedChild(0);
+				const name = assignment?.childForFieldName("left");
+				return assignment?.type === "assignment" && name?.type === "identifier"
+					? [{ name: name.text, offset: node.startIndex }]
+					: [];
+			}
+			if (
+				node.type === "const_declaration" ||
+				node.type === "var_declaration" ||
+				node.type === "type_declaration"
+			) {
+				return node.namedChildren.flatMap((spec) => {
+					const name = spec.childForFieldName(nameField);
+					return name ? [{ name: name.text, offset: node.startIndex }] : [];
+				});
+			}
+			if (!nodeTypes.includes(node.type)) return [];
+			const name = node.childForFieldName(nameField);
+			return name ? [{ name: name.text, offset: node.startIndex }] : [];
+		});
+	};
+}
+
+const extractPythonStructure = parserExtractor(Python, ["class_definition", "function_definition"]);
+const extractGoStructure = parserExtractor(Go, [
+	"type_declaration",
+	"function_declaration",
+	"method_declaration",
+]);
+const extractRustStructure = parserExtractor(Rust, [
+	"struct_item",
+	"enum_item",
+	"union_item",
+	"function_item",
+	"trait_item",
+	"impl_item",
+	"type_item",
+	"mod_item",
+	"static_item",
+	"const_item",
+]);
+
+const EXTRACTORS: ReadonlyMap<string, StructureExtractor> = new Map([
+	...TYPESCRIPT_EXTENSIONS.map((extension) => [extension, extractTypeScriptStructure] as const),
+	...PYTHON_EXTENSIONS.map((extension) => [extension, extractPythonStructure] as const),
+	...GO_EXTENSIONS.map((extension) => [extension, extractGoStructure] as const),
+	...RUST_EXTENSIONS.map((extension) => [extension, extractRustStructure] as const),
+]);
 
 function lineStarts(source: string): number[] {
 	const starts = [0];

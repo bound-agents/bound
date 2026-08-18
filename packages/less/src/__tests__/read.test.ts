@@ -332,15 +332,28 @@ describe("boundless_read_structure", () => {
 		},
 	);
 
-	it("returns empty structure for unsupported extensions and rejects oversized inputs", async () => {
+	it("extracts Python, Go, and Rust declarations and rejects oversized inputs", async () => {
 		const { readStructureTool } = await import("../tools/read-structure");
-		writeFileSync(join(tempDir, "foreign.py"), "export const accidental = 1;");
-		const foreign = await readStructureTool(
-			{ path: "foreign.py" },
-			new AbortController().signal,
-			tempDir,
-		);
-		expect(foreign.content[1]?.text).toBe("");
+		const fixtures = [
+			[
+				"python.py",
+				"class Service:\n    pass\n\ndef greeting():\n    pass\n",
+				"Service",
+				"greeting",
+			],
+			[
+				"go.go",
+				"package example\n\ntype Service struct{}\nfunc Greeting() {}\n",
+				"Service",
+				"Greeting",
+			],
+			["rust.rs", "pub struct Service;\npub fn greeting() {}\n", "Service", "greeting"],
+		] as const;
+		for (const [path, source, ...names] of fixtures) {
+			writeFileSync(join(tempDir, path), source);
+			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+			for (const name of names) expect(result.content[1]?.text).toContain(name);
+		}
 		writeFileSync(join(tempDir, "too-large.ts"), "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1));
 		const oversized = await readStructureTool(
 			{ path: "too-large.ts" },
