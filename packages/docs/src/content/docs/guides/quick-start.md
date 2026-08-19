@@ -85,12 +85,13 @@ only the command for the backend you want to configure:
 ```bash
 bound init --bedrock --region us-east-1
 bound init --opencode-go
+bound init --umans
 ```
 
-API-backed presets read their documented credentials from the environment. Bound also
-provides presets for Cerebras and z.AI; see the [`bound init`
-reference](/bound/guides/cli-operations/#bound-init) for all presets and credential
-variables.
+The `--umans` preset requires `UMANS_API_KEY`. API-backed presets read their documented
+credentials from the environment. Bound also provides presets for Cerebras and z.AI; see
+the [`bound init` reference](/bound/guides/cli-operations/#bound-init) for all presets and
+credential variables.
 
 ## Optional next step
 

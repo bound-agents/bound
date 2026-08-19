@@ -84,15 +84,15 @@ must be `""`.
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `id` | string (non-empty) | — | Logical alias you route to (e.g. `"opus"`). Distinct from `model`. |
-| `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`. |
-| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model id for the selected `provider_mode` (for example, `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). |
+| `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`, `umans`. |
+| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model id for the selected `provider_mode` (for example, `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). **Omitted for `umans`** (the model lineup is fetched at runtime — see below). |
 | `provider_mode` | enum `anthropic`\|`openai_responses` | — | Required for `bedrock-mantle`. Selects the Mantle protocol surface: Anthropic Messages (`/anthropic/v1/messages`) or OpenAI Responses (`/openai/v1/responses`). |
-| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle`; its default is derived from `region` and `provider_mode`. |
-| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
+| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region` and `provider_mode`) and `umans` (default `https://api.code.umans.ai`). |
+| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`, `umans`. Unused by `bedrock-mantle` (auth is AWS SigV4, not a bearer token). |
 | `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
-| `context_window` | int > 0 | — | Token budget bound for context assembly. |
-| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. |
+| `context_window` | int > 0 | — | Token budget bound for context assembly. **Omitted for `umans`** (fetched per-model). |
+| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. **Omitted and rejected for `umans`.** |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
@@ -157,6 +157,24 @@ export default {
   default: "example",
 };
 ```
+
+
+### umans.ai
+
+A minimal `umans` backend entry contains `provider`, `id`, and `api_key`. The top-level
+`default` field is a sibling of `backends` and names the entry's `id`; it is not a backend
+entry field.
+
+```js
+export default {
+  backends: [{ provider: "umans", id: "umans", api_key: "sk-…" }],
+  default: "umans",
+};
+```
+
+Do not set `model`, `tier`, `context_window`, `capabilities`, or nondefault pricing fields
+on a `umans` entry; they are rejected. Other generic optional backend fields may be
+accepted by the schema. Set up with `bound init --umans` (reads `UMANS_API_KEY`).
 
 ---
 
