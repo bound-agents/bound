@@ -174,12 +174,19 @@ function* main(input) {
   const hits = String(yield tool("boundless_search", { pattern: input.pattern, path: input.path }));
   if (!hits.includes(":")) throw new Error(`pattern not found: ${input.pattern}`);
 
-  const report = yield aux("implementer", `Apply this change at the sites below, then run ${input.verify_command} and report per-file outcomes.\n\nChange: ${input.instruction}\n\nSites:\n${hits}`, { model: input.model });
+  const report = yield aux("implementer", `Apply this change at the sites below, then run ${input.verify_command} and report per-file outcomes. Do NOT commit or push.\n\nChange: ${input.instruction}\n\nSites:\n${hits}`, { model: input.model });
 
   const check = String(yield tool("boundless_bash", { command: input.verify_command }));
-  return { report, verified: check.includes("Exit code: 0") };
+  if (!check.includes("Exit code: 0")) return { report, verified: false, released: false };
+
+  const release = yield aux("implementer", `The verified uncommitted diff for "${input.instruction}" is approved. Commit it with the required author, let the pre-commit gate run (never --no-verify), push, and report the commit hash.`, { model: input.model });
+  return { report, verified: true, release };
 }
 ```
+
+Even in this smallest shape the release is its own errand, dispatched only
+after verification — an implement errand that commits pre-empts every gate
+downstream of it.
 
 ## Recipe: dynamic multi-round orchestration
 
@@ -317,7 +324,11 @@ round, which is precisely where live runs have historically dropped them.
 - **Review after release.** The review gate holds work BEFORE the release
   errand fires; a reviewer inspecting an already-pushed commit can only fix
   forward. Sequence: implement (no commit) → review → rework if failed →
-  one release errand ships the approved diff.
+  one release errand ships the approved diff. The commonest cause is the
+  operator's goal ("commit/push when done") pasted verbatim into the
+  implement errand — observed recurring even with this entry in context.
+  "When done" means when the PROGRAM is done; the release instruction
+  rides only in the final errand.
 - **"Fulfilled" is not "reported."** An aux errand that runs out of budget
   mid-work returns its last progress note as its result, and `all()` marks
   it fulfilled. The gather stage must treat a findings-free narration ("I'm
@@ -371,7 +382,14 @@ round, which is precisely where live runs have historically dropped them.
   the same effort (earlier successful installs demand an explanation of
   what differs — they do not by themselves disprove the blocker), and
   report ground state either way. If the route succeeds, finish the errand:
-  commit the lockfile change and remove scratch state.
+  commit the lockfile change and remove scratch state. Checked-in probe
+  evidence obeys the release rule too: regenerate it in the run that ships
+  it. Environments change between attempts — a binding that failed
+  yesterday may load today — and stale copied-forward evidence
+  contradicting the shipped code is a release-blocking defect (observed
+  live: an evidence file recorded a grammar as failing while the same
+  release shipped it parser-backed; the reviewer's live re-probe caught
+  the contradiction).
 - **Retrying a blocked errand unchanged.** The same blocker returned by
   consecutive runs means the PLAN must change — smaller scope, different
   route, or a one-command minimal reproduction run as glue to verify the
