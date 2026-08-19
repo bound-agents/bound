@@ -153,6 +153,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Importing a package can create logs/bound.log in cwd](docs/gotchas.md#importing-a-package-can-create-logsboundlog-in-cwd)
 - [Yard's `input` can arrive as JSON text, not a value](docs/gotchas.md#yards-input-can-arrive-as-json-text-not-a-value)
 - [`bun add` / `bun install` fail against the global cache under the boundless sandbox](docs/gotchas.md#bun-add--bun-install-fail-against-the-global-cache-under-the-boundless-sandbox)
+- [`bun --cwd <pkg> run <script>` silently no-ops](docs/gotchas.md#bun---cwd-pkg-run-script-silently-no-ops)
 
 ## Recurring Checklists
 
