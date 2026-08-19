@@ -27,7 +27,7 @@ For lifecycle, scheduling, and connector context, see [Agent system](/bound/conc
 | `hostinfo` | Displays registered-host and capability information. |
 | `connector` | Manages connector access when platform connectors make it available. |
 | `aux` | Defines, changes, invokes, and retires durable auxiliary-agent identities. |
-| `yard` | Runs bounded JavaScript generator orchestration for bulk data work while retaining intermediates outside conversation history. Use it for multi-stage or concurrent workflows, not a single tool call or one auxiliary-agent errand. See [Orchestrate work with Yard](/bound/guides/orchestrate-with-yard/) and [Yard reference](/bound/reference/yard/). |
+| `yard` | Coordinates bounded, multi-stage or concurrent work while retaining intermediate findings during the operation. An agent can report completed work and any gaps or failures in its result. See [Understand Yard-backed work](/bound/guides/orchestrate-with-yard/). |
 
 `connector` is conditionally available where configured platform connectors support it.
 Native tools are distinct from the other tool sources described in [Tool sources](#tool-sources).
