@@ -13,6 +13,7 @@ Bound is a personal agent that maintains state across multiple hosts. Messages, 
   - [Ollama](https://ollama.com) running locally — easiest to start
   - AWS Bedrock access
   - Any OpenAI-compatible endpoint (Cerebras, z.AI, OpenCode Go, etc.)
+  - [umans.ai](https://code.umans.ai) — self-configuring; routed through its Anthropic Messages API with prompt caching (`UMANS_API_KEY`)
 
 ## Quick start
 
@@ -28,6 +29,7 @@ sudo mv bound /usr/local/bin/
 bound init --ollama
 bound init --bedrock --region us-east-1
 bound init --opencode-go
+bound init --umans          # needs UMANS_API_KEY; self-configuring
 
 bound start
 ```
