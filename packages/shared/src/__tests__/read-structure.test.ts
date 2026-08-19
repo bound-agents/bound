@@ -154,6 +154,26 @@ describe("extractSourceStructure", () => {
 		).toEqual(["Service", "Service", "Trait for Service"]);
 	});
 
+	it("uses parser-backed extractors for Kotlin, C, and C++ syntax beyond the scanner grammar", () => {
+		expect(
+			extractSourceStructure('@Deprecated("migration")\nclass Service {}', "service.kt").map(
+				(symbol) => symbol.name,
+			),
+		).toEqual(["Service"]);
+		expect(
+			extractSourceStructure(
+				"#define GREETING(name) name\nint greeting(void) { return 0; }",
+				"service.c",
+			).map((symbol) => symbol.name),
+		).toEqual(["greeting"]);
+		expect(
+			extractSourceStructure(
+				"#define GREETING(name) name\nint greeting() { return 0; }",
+				"service.cpp",
+			).map((symbol) => symbol.name),
+		).toEqual(["greeting"]);
+	});
+
 	it("extracts the added language-family declaration outlines", () => {
 		const cases: Array<[string, string, string[]]> = [
 			[
