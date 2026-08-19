@@ -34,7 +34,7 @@ export const sidebar: SidebarGroup[] = [
 			{ label: "How Bound fits together", slug: "concepts/system-model" },
 			{ label: "Agent loop and tools", slug: "concepts/agent-system" },
 			{ label: "Work lifecycle and reliability", slug: "concepts/work-lifecycle" },
-			{ label: "Yard-backed work", slug: "guides/orchestrate-with-yard" },
+			{ label: "Work orchestration with Yards", slug: "guides/orchestrate-with-yard" },
 			{ label: "State, consistency, and multi-host operation", slug: "concepts/sync" },
 			{ label: "Security and execution boundaries", slug: "concepts/security-boundaries" },
 			{ label: "Sandbox and filesystems", slug: "concepts/sandbox" },
