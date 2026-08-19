@@ -59,7 +59,7 @@ spoke can use to reach the hub. For example:
 Use `wss://` when the sync endpoint is configured for TLS. In the spoke's `keyring.json`, add
 a matching entry for that exact hub URL and the hub's public key. Neither `bound init` nor the
 connection handshake discovers, adds, or repoints this entry. Follow the instructions printed
-by `bound init` and the [`sync.json` configuration reference](/bound/reference/configuration/#syncjson)
+by `bound init` and the [`sync.json` configuration reference](/bound/reference/configuration/#syncjs--syncjson)
 for the keyring and URL fields.
 
 ## 3. Start the hub, then the spoke
@@ -193,7 +193,7 @@ inference timeout, edit the spoke's `sync.json` while preserving its full hub UR
 }
 ```
 
-See the [`sync.json` reference](/bound/reference/configuration/#syncjson) for all relay and
+See the [`sync.json` reference](/bound/reference/configuration/#syncjs--syncjson) for all relay and
 WebSocket fields. A larger timeout changes how long the relay waits; it doesn't establish
 that a failed inference request is safe to retry.
 

@@ -13,7 +13,6 @@ Bound is a personal agent that maintains state across multiple hosts. Messages, 
   - [Ollama](https://ollama.com) running locally — easiest to start
   - AWS Bedrock access
   - Any OpenAI-compatible endpoint (Cerebras, z.AI, OpenCode Go, etc.)
-  - [umans.ai](https://code.umans.ai) — self-configuring; routed through its Anthropic Messages API with prompt caching (`UMANS_API_KEY`)
 
 ## Quick start
 
@@ -29,7 +28,6 @@ sudo mv bound /usr/local/bin/
 bound init --ollama
 bound init --bedrock --region us-east-1
 bound init --opencode-go
-bound init --umans          # needs UMANS_API_KEY; self-configuring
 
 bound start
 ```
@@ -38,7 +36,7 @@ Open [http://localhost:3001](http://localhost:3001). The sync protocol listens o
 
 ## Boundless — terminal coding agent
 
-`boundless` connects to a running bound server and registers local filesystem and shell tools into the agent's tool set. The agent reads and edits files and runs commands in your working directory; all messages, memory, and tool calls live in bound, so every other interface sees the same state. Shell results show up to 32 visual rows directly in the transcript; longer output keeps a 16-row head and tail around an elision marker. Consecutive reads, searches, and database queries collapse into one shared result group, with query rows reporting the SQL and returned row and column counts. Wrapped pipe-delimited tables retain their final-column alignment across continuation rows, and terminal-control-only reporter rows do not create phantom spacing.
+`boundless` connects a terminal workspace to a running Bound server and supplies local file and shell tools for that session. The agent can read, edit, and run commands in the working directory while conversations, memory, and tasks remain in Bound. See the [Boundless guide](https://bound-agents.github.io/bound/guides/boundless/) for its tool contract and safety boundaries.
 
 ```bash
 boundless
