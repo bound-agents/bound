@@ -1,7 +1,10 @@
 import Parser from "tree-sitter";
 import Bash from "tree-sitter-bash";
+import C from "tree-sitter-c";
+import Cpp from "tree-sitter-cpp";
 import Go from "tree-sitter-go";
 import Java from "tree-sitter-java";
+import Kotlin from "tree-sitter-kotlin";
 import Python from "tree-sitter-python";
 import Ruby from "tree-sitter-ruby";
 import Rust from "tree-sitter-rust";
@@ -227,38 +230,89 @@ const extractJavaStructure = parserExtractor(Java, [
 	"record_declaration",
 	"annotation_type_declaration",
 ]);
-const extractKotlinStructure: StructureExtractor = (source) => {
-	const symbols: ExtractedSymbol[] = [];
-	const declaration =
-		/^(?:\s*(?:public|private|protected|internal|open|abstract|sealed|data|enum|annotation|companion|inline|suspend|tailrec|operator|infix|external|expect|actual)\s+)*(?:class|interface|object|fun|val|var|typealias)\s+([A-Za-z_][\w]*)/gm;
-	for (const match of source.matchAll(declaration)) {
-		const name = match[1];
-		if (name) symbols.push({ name, offset: match.index ?? 0 });
-	}
-	return symbols;
-};
+function parserExtractorWithName(
+	language: Parameters<Parser["setLanguage"]>[0],
+	nodeTypes: readonly string[],
+	nameForNode: (node: Parser.SyntaxNode) => string | undefined,
+): StructureExtractor {
+	return (source) => {
+		const parser = new Parser();
+		parser.setLanguage(language);
+		const tree = parser.parse(source);
+		if (tree.rootNode.hasError) throw new Error(SOURCE_STRUCTURE_PARSE_ERROR);
+		return tree.rootNode.namedChildren.flatMap((node) => {
+			if (!nodeTypes.includes(node.type)) return [];
+			const name = nameForNode(node);
+			return name ? [{ name, offset: node.startIndex }] : [];
+		});
+	};
+}
 
-const extractCStructure: StructureExtractor = (source) => {
-	const symbols: ExtractedSymbol[] = [];
-	const declaration =
-		/^(?:\s*(?:typedef\s+)?(?:struct|union|enum)\s+([A-Za-z_][\w]*)|\s*(?:[A-Za-z_][\w]*(?:\s*\*+)?\s+)+([A-Za-z_][\w]*)\s*\()/gm;
-	for (const match of source.matchAll(declaration)) {
-		const name = match[1] ?? match[2];
-		if (name) symbols.push({ name, offset: match.index ?? 0 });
-	}
-	return symbols;
-};
-const extractCppStructure: StructureExtractor = (source) => {
-	const symbols: ExtractedSymbol[] = [];
-	const declaration =
-		/^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum|namespace)\s+([A-Za-z_][\w]*)|^\s*(?:[A-Za-z_][\w:<>]*(?:\s*[*&]+)?\s+)+([A-Za-z_~][\w:]*)\s*\(/gm;
-	for (const match of source.matchAll(declaration)) {
-		const name = match[1] ?? match[2];
-		if (name) symbols.push({ name, offset: match.index ?? 0 });
-	}
-	return symbols;
-};
+const extractKotlinStructure = parserExtractorWithName(
+	Kotlin,
+	[
+		"class_declaration",
+		"object_declaration",
+		"function_declaration",
+		"property_declaration",
+		"type_alias",
+	],
+	(node) => {
+		if (node.type === "property_declaration") {
+			return node.descendantsOfType("simple_identifier")[0]?.text;
+		}
+		const identifier = node.namedChildren.find((child) =>
+			["simple_identifier", "type_identifier"].includes(child.type),
+		);
+		return identifier?.text;
+	},
+);
 
+function declaratorName(node: Parser.SyntaxNode): string | undefined {
+	if (
+		node.type === "identifier" ||
+		node.type === "field_identifier" ||
+		node.type === "qualified_identifier"
+	) {
+		return node.text;
+	}
+	for (const child of node.namedChildren) {
+		const name = declaratorName(child);
+		if (name) return name;
+	}
+	return undefined;
+}
+
+const extractCStructure = parserExtractorWithName(
+	C,
+	["struct_specifier", "union_specifier", "enum_specifier", "function_definition"],
+	(node) =>
+		node.childForFieldName("name")?.text ??
+		declaratorName(node.childForFieldName("declarator") ?? node),
+);
+
+const extractCppStructure = parserExtractorWithName(
+	Cpp,
+	[
+		"class_specifier",
+		"struct_specifier",
+		"union_specifier",
+		"enum_specifier",
+		"namespace_definition",
+		"function_definition",
+	],
+	(node) =>
+		node.childForFieldName("name")?.text ??
+		declaratorName(node.childForFieldName("declarator") ?? node),
+);
+
+/**
+ * See docs/evidence/read-structure-grammar-probes.json and
+ * packages/shared/scripts/probe-read-structure-grammars.ts. C#, PHP, Lua,
+ * and SQL remain scanner-backed because their locked bindings fail the
+ * synchronous Bun loading path. Kotlin, C, and C++ passed that probe and use
+ * parser extractors.
+ */
 const extractCSharpStructure: StructureExtractor = (source) => {
 	const symbols: ExtractedSymbol[] = [];
 	const declaration =
