@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { MAX_SOURCE_STRUCTURE_INPUT_BYTES, computeLineHash } from "@bound/shared";
 import { readTool } from "../tools/read";
 
@@ -300,7 +300,12 @@ describe("boundless_read_structure", () => {
 		const outside = join(tmpdir(), `boundless-outside-${randomBytes(4).toString("hex")}.ts`);
 		writeFileSync(outside, "export const secret = 1;\n");
 		try {
-			for (const path of [outside, `../${outside.split("/").at(-1)}`]) {
+			// basename(), not split("/"): on Windows the tmpdir path uses
+			// backslashes, so split("/").at(-1) returned the WHOLE path and the
+			// "traversal" case degenerated into a nonexistent garbage path whose
+			// ENOENT error fails the assertion — the deterministic Windows CI red
+			// on every run since this suite landed.
+			for (const path of [outside, `../${basename(outside)}`]) {
 				const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
 				expect(result.isError).toBe(true);
 				expect(result.content[1]?.text).toContain("outside the working directory");
