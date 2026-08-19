@@ -26,6 +26,7 @@ export const sidebar: SidebarGroup[] = [
 			{ label: "Create a webhook", slug: "guides/webhooks" },
 			{ label: "Add an RSS feed", slug: "guides/rss-feeds" },
 			{ label: "Manage skills", slug: "guides/manage-skills" },
+			{ label: "Orchestrate work with Yard", slug: "guides/orchestrate-with-yard" },
 		],
 	},
 	{
@@ -49,6 +50,7 @@ export const sidebar: SidebarGroup[] = [
 			{ label: "Web UI", slug: "concepts/web-ui" },
 			{ label: "CLI and operations", slug: "guides/cli-operations" },
 			{ label: "Agent tools", slug: "reference/agent-tools" },
+			{ label: "Yard reference", slug: "reference/yard" },
 			{ label: "Configuration", slug: "reference/configuration" },
 			{ label: "Architecture", slug: "reference/architecture" },
 			{ label: "Responses API", slug: "reference/responses-api" },
