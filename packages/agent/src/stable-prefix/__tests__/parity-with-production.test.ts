@@ -104,7 +104,18 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 			tunables: { n: 1000, m: 20 },
 			skillIndex: [{ name: "alpha", description: "the alpha skill" }],
 			clusterModels: [
-				{ name: "opus", hosts: ["7cf34dd659c0"], local: true },
+				// One entry with full decision metadata, one bare — parity must hold
+				// across both forms (string-alias host rows produce no metadata).
+				{
+					name: "opus",
+					hosts: ["7cf34dd659c0"],
+					local: true,
+					tier: 1,
+					contextWindow: 700000,
+					maxOutput: 64000,
+					vision: true,
+					thinking: true,
+				},
 				{ name: "deepseek-v4-pro", hosts: ["MSI"], local: false },
 			],
 		};

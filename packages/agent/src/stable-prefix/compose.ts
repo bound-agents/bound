@@ -86,15 +86,36 @@ export function composeStableVolatileSubsection(inputs: StableVolatileInputs): s
  * XML-safe, and an unescaped `&` would make the fragment ill-formed.
  */
 export function renderClusterModels(
-	models: ReadonlyArray<{ name: string; hosts: ReadonlyArray<string>; local: boolean }>,
+	models: ReadonlyArray<{
+		name: string;
+		hosts: ReadonlyArray<string>;
+		local: boolean;
+		tier?: number;
+		contextWindow?: number;
+		maxOutput?: number;
+		vision?: boolean;
+		thinking?: boolean;
+	}>,
 ): string[] {
 	if (models.length === 0) return [];
-	const lines: string[] = ["<stable-context>"];
+	// The legend rides the opening tag so the metadata is self-describing:
+	// without it, "tier" is an opaque number and the agent is back to guessing.
+	const lines: string[] = [
+		'<stable-context note="tier 1 is the most capable class, higher numbers are lighter/cheaper; context and max_output are token counts; prefer explicit metadata over model-name vibes when picking aux/infer() models">',
+	];
 	for (const m of models) {
-		lines.push(
+		let attrs =
 			`<model name="${escapeXmlAttr(m.name)}" local="${m.local}"` +
-				` hosts="${escapeXmlAttr(m.hosts.join(","))}"/>`,
-		);
+			` hosts="${escapeXmlAttr(m.hosts.join(","))}"`;
+		// Decision metadata (optional — absent for string-alias host rows).
+		// Numerics are validated finite upstream (loadClusterModels), so plain
+		// interpolation is XML-safe without escaping.
+		if (m.tier !== undefined) attrs += ` tier="${m.tier}"`;
+		if (m.contextWindow !== undefined) attrs += ` context="${m.contextWindow}"`;
+		if (m.maxOutput !== undefined) attrs += ` max_output="${m.maxOutput}"`;
+		if (m.vision !== undefined) attrs += ` vision="${m.vision}"`;
+		if (m.thinking !== undefined) attrs += ` thinking="${m.thinking}"`;
+		lines.push(`${attrs}/>`);
 	}
 	lines.push("</stable-context>");
 	return lines;
