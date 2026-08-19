@@ -119,6 +119,16 @@ function canonicalizeInputs(inputs: StableVolatileInputs): CanonicalInputs {
 			name: m.name,
 			hosts: [...m.hosts],
 			local: m.local,
+			// Decision metadata is byte-influencing (renderClusterModels emits it
+			// as attributes), so it must ride the fingerprint: omitting it would
+			// classify a metadata-driven rerender as a compose leak. `?? null`
+			// keeps JSON.stringify from dropping absent fields, so "undefined" and
+			// "absent" canonicalize identically.
+			tier: m.tier ?? null,
+			contextWindow: m.contextWindow ?? null,
+			maxOutput: m.maxOutput ?? null,
+			vision: m.vision ?? null,
+			thinking: m.thinking ?? null,
 		})),
 	};
 }

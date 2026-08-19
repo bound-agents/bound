@@ -154,8 +154,23 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 		return [];
 	}
 
+	interface MetaAccumulator {
+		tier?: number;
+		contextWindow?: number;
+		maxOutput?: number;
+		vision?: boolean;
+		thinking?: boolean;
+	}
 	const hostsByModel = new Map<string, Set<string>>();
+	const metaByModel = new Map<string, MetaAccumulator>();
 	const localModels = new Set<string>();
+	const mergeMin = (a: number | undefined, b: number | undefined): number | undefined =>
+		a === undefined ? b : b === undefined ? a : Math.min(a, b);
+	const mergeAnd = (a: boolean | undefined, b: boolean | undefined): boolean | undefined =>
+		a === undefined ? b : b === undefined ? a : a && b;
+	const asFiniteNumber = (v: unknown): number | undefined =>
+		typeof v === "number" && Number.isFinite(v) ? v : undefined;
+	const asBoolean = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
 	for (const row of rows) {
 		if (!row.models) continue;
 		let parsed: unknown;
@@ -177,15 +192,49 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 			set.add(row.host_name);
 			hostsByModel.set(name, set);
 			if (siteId && row.site_id === siteId) localModels.add(name);
+			// Decision metadata (tier / context / output / vision / thinking) from
+			// the object entry form. Conservative cross-host merge: MIN for
+			// numerics (a bound that holds wherever the relay routes the call),
+			// AND for booleans (only advertise what every serving host has).
+			if (entry && typeof entry === "object") {
+				const obj = entry as {
+					tier?: unknown;
+					max_output_tokens?: unknown;
+					capabilities?: {
+						max_context?: unknown;
+						vision?: unknown;
+						extended_thinking?: unknown;
+					};
+				};
+				const prior = metaByModel.get(name) ?? {};
+				metaByModel.set(name, {
+					tier: mergeMin(prior.tier, asFiniteNumber(obj.tier)),
+					contextWindow: mergeMin(
+						prior.contextWindow,
+						asFiniteNumber(obj.capabilities?.max_context),
+					),
+					maxOutput: mergeMin(prior.maxOutput, asFiniteNumber(obj.max_output_tokens)),
+					vision: mergeAnd(prior.vision, asBoolean(obj.capabilities?.vision)),
+					thinking: mergeAnd(prior.thinking, asBoolean(obj.capabilities?.extended_thinking)),
+				});
+			}
 		}
 	}
 
 	return [...hostsByModel.entries()]
-		.map(([name, set]) => ({
-			name,
-			hosts: [...set].sort(compareBytewise),
-			local: localModels.has(name),
-		}))
+		.map(([name, set]) => {
+			const meta = metaByModel.get(name) ?? {};
+			return {
+				name,
+				hosts: [...set].sort(compareBytewise),
+				local: localModels.has(name),
+				tier: meta.tier,
+				contextWindow: meta.contextWindow,
+				maxOutput: meta.maxOutput,
+				vision: meta.vision,
+				thinking: meta.thinking,
+			};
+		})
 		.sort((a, b) => compareBytewise(a.name, b.name));
 }
 

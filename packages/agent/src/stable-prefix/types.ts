@@ -120,6 +120,22 @@ export interface ClusterModelView {
 	name: string;
 	hosts: ReadonlyArray<string>;
 	local: boolean;
+	/**
+	 * Decision metadata parsed from the same `hosts.models` JSON (absent when
+	 * a host row declares only string aliases). These exist so the agent can
+	 * make grounded model choices for aux/`infer()` dispatch instead of
+	 * guessing from names. When hosts disagree, the merge is conservative:
+	 * numeric fields take the MINIMUM across declaring hosts (a planning
+	 * bound that holds wherever the relay routes), booleans AND (only
+	 * advertise a capability every serving host has). All of it derives from
+	 * host config, so it shifts only with the model set — the same covering
+	 * `hosts` change_log write the drift detector already keys on.
+	 */
+	tier?: number;
+	contextWindow?: number;
+	maxOutput?: number;
+	vision?: boolean;
+	thinking?: boolean;
 }
 
 /**
