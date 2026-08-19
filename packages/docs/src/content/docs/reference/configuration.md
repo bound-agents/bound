@@ -158,7 +158,6 @@ export default {
 };
 ```
 
-
 ### umans.ai
 
 A minimal `umans` backend entry contains `provider`, `id`, and `api_key`. The top-level
