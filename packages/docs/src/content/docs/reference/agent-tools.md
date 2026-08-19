@@ -27,7 +27,7 @@ For lifecycle, scheduling, and connector context, see [Agent system](/bound/conc
 | `hostinfo` | Displays registered-host and capability information. |
 | `connector` | Manages connector access when platform connectors make it available. |
 | `aux` | Defines, changes, invokes, and retires durable auxiliary-agent identities. |
-| `yard` | Runs a bounded JavaScript generator in a QuickJS sandbox for bulk data work, keeping intermediates out of conversation history. |
+| `yard` | Coordinates bounded tool calls, inference, and auxiliary-agent work in a JavaScript generator while retaining intermediate values outside conversation history. See [Yard reference](/bound/reference/yard/). |
 
 `connector` is conditionally available where configured platform connectors support it.
 Native tools are distinct from the other tool sources described in [Tool sources](#tool-sources).
@@ -62,6 +62,20 @@ those management operations are not `skill` tool actions.
 | `read` | Reads a skill's instructions. |
 | `activate` | Adds a skill's instructions to the current thread. |
 | `deactivate` | Removes a skill's instructions from the current thread. |
+
+## Yard
+
+Use `yard` to coordinate a bounded, multi-stage workflow in one JavaScript generator.
+A program yields effects for tools, inference, or auxiliary-agent errands, then resumes with
+their results. It can run independent effects concurrently and retain their intermediate
+values until it returns one JSON-compatible result.
+
+Use direct tool calls for a single operation and `aux` for one substantial errand. Use Yard
+when you need to coordinate those operations, such as a parallel review followed by
+structured synthesis or a survey, implementation, and review workflow.
+
+See [Orchestrate work with Yard](/bound/guides/orchestrate-with-yard/) for the
+generator model, effect behavior, limits, error handling, and practical patterns.
 
 ## Auxiliary-agent actions
 
