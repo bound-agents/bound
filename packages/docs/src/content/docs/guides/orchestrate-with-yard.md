@@ -21,16 +21,31 @@ Yard. The agent can handle those requests with its ordinary tools.
 
 ## How the work proceeds
 
-The agent may split independent scopes and work on them concurrently. It can retain
-intermediate findings during the run, so large reports don't need to be copied into the
-conversation before the agent can use them.
+Yard is the bounded coordination plan behind the work. Auxiliary agents are its specialist
+workers: each receives a focused errand, works in its own child thread, and returns a result
+for the main agent to use. The main agent remains responsible for the request, the plan, and
+the final response.
 
-Depending on the request, the work may move through investigation, planning, implementation,
-review, and targeted correction. These stages aren't fixed, and not every request needs all
-of them.
+A substantial request can therefore take a recognizable shape:
+
+1. **Parallel investigation** — specialists examine separate, independent scopes at the same
+   time.
+2. **Synthesis** — the main agent compares their findings and turns them into a decision or
+   concrete next steps.
+3. **Implementation and review** — a worker may make a focused change while another checks the
+   actual result against the request.
+4. **Targeted repair** — a failed check or review finding goes back only to the relevant scope,
+   rather than restarting all of the work.
+
+These are possible shapes, not a fixed ceremony. A request may need only one specialist, or it
+may stop after investigation when the evidence does not support a change. The agent may retain
+intermediate findings during the run, so large reports do not need to be copied into the
+conversation before they can inform later stages.
 
 Progress may be grouped by scope or stage rather than reported as a stream of every internal
-step. This keeps the conversation focused on decisions, results, and exceptions.
+step. This keeps the conversation focused on decisions, results, and exceptions. See
+[Auxiliary agents](/bound/concepts/auxiliary-agents/) for their identity, isolation, and
+capability boundaries.
 
 ## Safeguards
 
