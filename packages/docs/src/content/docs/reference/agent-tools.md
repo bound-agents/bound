@@ -27,7 +27,7 @@ For lifecycle, scheduling, and connector context, see [Agent system](/bound/conc
 | `hostinfo` | Displays registered-host and capability information. |
 | `connector` | Manages connector access when platform connectors make it available. |
 | `aux` | Defines, changes, invokes, and retires durable auxiliary-agent identities. |
-| `yard` | Internally coordinates substantial, bounded, multi-stage work and retains intermediate findings during a run. You ask for an outcome rather than authoring a workflow. See [Yard-backed work](/bound/guides/orchestrate-with-yard/). |
+| `yard` | Internally coordinates substantial, bounded, multi-stage work and retains intermediate findings during a run. You ask for an outcome rather than authoring a workflow. See [Work orchestration with Yards](/bound/guides/orchestrate-with-yard/). |
 
 `connector` is conditionally available where configured platform connectors support it.
 Native tools are distinct from the other tool sources described in [Tool sources](#tool-sources).
