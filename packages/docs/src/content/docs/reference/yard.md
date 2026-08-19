@@ -1,176 +1,188 @@
 ---
 title: Yard reference
-description: Reference for the Yard orchestration tool, its generator program, effects, budgets, and failure behavior.
+description: Look up Yard invocation fields, effects, results, budgets, failures, and runtime limits.
 ---
 
-Yard runs a bounded JavaScript generator that coordinates Bound tools, inference, and auxiliary agents. Use [Orchestrate work with Yard](/bound/guides/orchestrate-with-yard/) for a guided workflow and [Agent tools](/bound/reference/agent-tools/) for the native-tools index.
+Yard executes a bounded JavaScript generator that coordinates Bound tools, inference, and auxiliary agents. This page defines its invocation and runtime contracts. For workflow patterns, see [Orchestrate work with Yard](/bound/guides/orchestrate-with-yard/).
 
 ## Invocation
 
-Call `yard` with the following object:
+The `yard` tool accepts one object.
 
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `program` | string | Yes | A complete program defining `function* main(input) { ... }`. |
-| `input` | JSON-compatible value | No | Read-only value exposed as `input` and passed to `main`. A JSON string containing an object or array is decoded before the program starts; scalar strings remain strings. |
-| `budget` | object | No | Root limits for the complete Yard tree. Omit it to use the defaults. |
-| `budget.timeout_seconds` | positive number | Yes, with `budget` | Absolute deadline for the full tree. Default: `300`. |
-| `budget.concurrency` | integer, at least 1 | Yes, with `budget` | Tree-wide cap on concurrently running leaf tools, inferences, and auxiliary agents. Default: `4`. |
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `program` | string | Yes | — | Complete JavaScript source that defines a top-level `function* main(input) { ... }`. |
+| `input` | JSON-compatible value | No | `undefined` | Value passed to `main` and exposed as the deeply frozen `input` global. A string containing a JSON object or array is decoded before execution. Other strings remain strings. |
+| `budget` | object | No | See below | Root limits for the complete recursive Yard tree. Nested Yard calls must omit this field. |
+| `budget.timeout_seconds` | positive number | With `budget` | `300` when `budget` is omitted | Absolute wall-clock deadline, in seconds, for the complete tree. |
+| `budget.concurrency` | integer of at least 1 | With `budget` | `4` when `budget` is omitted | Tree-wide maximum number of concurrent leaf tool, inference, and auxiliary-agent effects. |
 
-The tool returns a JSON object with:
+`budget` is strict: it accepts only `timeout_seconds` and `concurrency`, and both fields are required when the object is present.
 
-| Field | Description |
-| --- | --- |
-| `result` | The JSON-compatible value returned by `main`. |
-| `trace_id` | Identifier for the Yard execution tree. |
-| `usage` | Counts for tool calls and inference calls, inference tokens, and elapsed time. |
+A successful invocation returns this JSON object:
 
-## Program model
+| Field | Type | Description |
+| --- | --- | --- |
+| `result` | JSON-compatible value | Value returned by `main`. A missing or `undefined` return becomes `null`. |
+| `trace_id` | string | Identifier shared by every Yard run in the recursive tree. |
+| `usage.tool_calls` | integer | Number of dispatched leaf tool effects, including auxiliary-agent calls. |
+| `usage.inference_calls` | integer | Number of dispatched inference effects. |
+| `usage.inference_tokens` | integer | Input and output tokens reported by completed inference effects. |
+| `usage.elapsed_ms` | integer | Elapsed time for this Yard run. |
 
-A Yard program must define a top-level generator named `main`:
+An uncaught run failure returns a tool error string prefixed with `Error:` instead of the success object.
 
-```js
-function* main(input) {
-  const result = yield tool("query", { sql: "SELECT 1" });
-  return { result };
-}
-```
+## Program contract
 
-Effect constructors create descriptions of work; they do not start it. `yield` suspends the generator, Yard performs the effect, and the generator resumes with the result. A failed effect is thrown into the generator as an `Error`, so a program can catch a failure and choose how to proceed.
+`program` must define a top-level generator named `main`. Yard calls it with `input` and drives it until it returns.
 
-Programs and values crossing the Yard boundary must be JSON-compatible: `null`, booleans, finite numbers, strings, arrays, and plain objects containing those values. The input is deeply frozen. Returning a function, `undefined`, a non-finite number, or another non-JSON value fails the run.
+Effect constructors describe work but do not start it. Yielding an effect suspends the generator. Yard dispatches the effect and resumes the generator with its result. A dispatch failure is thrown into the generator as an `Error` whose name is `YardEffectError`.
+
+Only branded effects created by `tool()`, `infer()`, `aux()`, `all()`, or `sequence()` can be yielded. Plain objects that resemble effects are rejected.
+
+### JSON boundary
+
+Values crossing between the generator and host must be JSON-compatible:
+
+- `null`
+- booleans
+- finite numbers
+- strings
+- arrays of JSON-compatible values
+- objects whose enumerable values are JSON-compatible
+
+Functions, `undefined` inside a returned structure, symbols, big integers, and non-finite numbers fail boundary validation. The input is deeply frozen. Each dispatched result is serialized through the same boundary; an `undefined` effect result becomes `null`.
+
+Yard rejects implicit plain-object-to-string coercion that would produce `[object Object]`. Pass structured data through `infer()`'s `input` field or serialize it explicitly with `JSON.stringify()`.
 
 ## Effects
 
 ### `tool(name, args)`
 
-Creates one call to an ordinary Bound tool in the current effective toolset.
+Creates an effect for one ordinary tool in the current effective toolset.
 
-```js
-const matches = yield tool("boundless_search", {
-  pattern: "TODO",
-  path: "packages/agent",
-});
-```
+| Parameter | Type | Required | Default |
+| --- | --- | --- | --- |
+| `name` | non-empty string | Yes | — |
+| `args` | JSON-compatible value | No | `{}` |
 
-Use the target tool's normal argument schema. Tool availability and the usual tool permissions still apply. Use `tool()` for small coordination operations such as enumeration or a final validation. For a substantial errand requiring multiple tools and judgment, use `aux()` instead.
+The named tool must be available in the current tool registry and retain its normal schema, execution path, and capability restrictions. Yard does not grant tools or permissions. A tool result that contains JSON is returned to the generator as structured data; other output is returned as a string. Deferred or background tool results are rejected because the running generator cannot resolve them.
+
+Nested Yard runs use `tool("yard", { program, input })`. See [Budgets and nesting](#budgets-and-nesting).
 
 ### `infer(modelId, request)`
 
-Creates a text-to-text inference request. `modelId` is required and must name a model available to Bound.
+Creates an inference effect with an explicit model ID.
 
-```js
-const plan = yield infer(input.model, {
-  prompt: "Turn these survey reports into work orders.",
-  input: reports,
-  schema: {
-    type: "array",
-    items: {
-      type: "object",
-      properties: {
-        scope: { type: "string" },
-        skip: { type: "boolean" },
-        order: { type: "string" },
-      },
-      required: ["scope", "skip", "order"],
-    },
-  },
-  max_tokens: 1200,
-});
-```
+| Parameter | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `modelId` | non-empty string | Yes | — | Model resolved through Bound's model router. |
+| `request.prompt` | string | Yes | — | User prompt sent to the model. |
+| `request.input` | JSON-compatible value | No | — | Serialized after the prompt under an `Input:` label. |
+| `request.schema` | JSON-compatible schema object | No | — | Requests and validates structured JSON output. |
+| `request.max_tokens` | number | No | `4096` | Requested maximum output tokens, capped by the resolved model's maximum when one is configured. |
 
-Without `schema`, the result is a string. With `schema`, Yard parses the response as JSON and returns the parsed value only when it satisfies the supported schema fields:
+Without `schema`, the result is the model's trimmed text. With `schema`, Yard requests JSON-only output, removes one optional `json` Markdown fence, parses the text as JSON, and validates it. The validator implements these schema keywords:
 
-- `type`
+- `type`, including `integer`
+- `enum`
 - `properties`
 - `required`
 - `items`
-- `enum`
 
-A malformed response or schema violation fails the effect. Yard does not make a repair request automatically; catch the error and retry explicitly when that is appropriate.
+Unknown schema keywords are ignored. Yard does not automatically repair malformed JSON or schema violations. Either failure rejects the effect.
 
-`infer()` has no tools, filesystem, or access to the repository. It receives only `prompt` and optional structured `input`. Use it to classify, plan, extract, or synthesize information collected by other effects. Do not ask it to inspect files or apply changes.
+An inference effect has no tools, filesystem, repository, or conversation context. It receives only the generated user message containing `prompt`, optional `input`, and optional schema instructions.
 
 ### `aux(name, instructions, options?)`
 
-Creates a synchronous auxiliary-agent invocation. It is shorthand for an `aux` tool invocation with `action: "invoke"`.
+Creates a synchronous auxiliary-agent invocation. It is equivalent to:
 
 ```js
-const report = yield aux(
-  "scout",
-  "Survey packages/agent for error paths. Do not edit files. Report paths and findings.",
-  { model: input.model },
-);
+tool("aux", {
+  action: "invoke",
+  name,
+  instructions,
+  ...options,
+})
 ```
 
-Use `all()` to run several auxiliary errands concurrently. `background: true` is not supported inside Yard because a background result has no resolution path back into the running generator.
+`name` and `instructions` must be non-empty strings. `options` is merged into the ordinary `aux` invocation, so accepted options and their validation come from that tool's current schema.
 
-An auxiliary agent cannot use `aux()` from its own Yard program. That boundary prevents nested delegation; use direct `tool()` and `infer()` effects in the auxiliary errand, or return findings to the main agent for further fan-out.
+Background invocation is unsupported. A result marked as deferred is rejected because it has no path back into the running generator. Use `all()` for concurrent synchronous auxiliary-agent calls.
+
+A Yard program running inside an auxiliary agent cannot construct or dispatch another auxiliary-agent call. `aux()` fails at construction before any sibling effects dispatch; raw `tool("aux", ...)` is also rejected at dispatch. The auxiliary agent must use its available `tool()` and `infer()` effects directly or return findings to the main agent.
 
 ### `all(effects, options?)`
 
-Runs child effects concurrently and returns results in the same order as the input effects.
+Creates a concurrent compound effect. `effects` must be an array of branded effects.
 
-| Option | Default | Behavior |
-| --- | --- | --- |
-| `concurrency` | Number of children | Maximum number of this `all()` effect's children started at once. The root tree-wide budget still applies. |
-| `errors` | `"fail-fast"` | Use `"settled"` to receive one status object per child instead of throwing at the first observed failure. |
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `concurrency` | number of at least 1 | Number of children | Local maximum number of child effects started at once. The root tree-wide concurrency budget also applies. |
+| `errors` | `"fail-fast"` or `"settled"` | `"fail-fast"` | Controls child-failure handling. |
 
-With `errors: "settled"`, each entry is either `{ status: "fulfilled", value }` or `{ status: "rejected", reason }`.
+Results preserve input order, regardless of completion order.
+
+With `errors: "fail-fast"`, the first observed child failure is thrown into the generator. No new children start after that failure is observed, but already running children are awaited; they are not automatically cancelled by the compound effect.
+
+With `errors: "settled"`, every child is run and each input position contains one of these objects:
 
 ```js
-const reports = yield all(
-  scopes.map((scope) => aux("scout", `Survey ${scope}; make no edits.`, { model: input.model })),
-  { concurrency: 4, errors: "settled" },
-);
+{ status: "fulfilled", value }
+{ status: "rejected", reason }
 ```
 
-A fulfilled auxiliary result is not proof that the requested coverage happened. Inspect every report and treat incomplete status narration as missing coverage.
+`reason` is the failure message as a string.
 
 ### `sequence(effects)`
 
-Runs child effects in order and returns an array of their results. It stops and throws on the first failure.
+Creates an ordered compound effect. `effects` must be an array of branded effects. Yard runs one child at a time, returns an input-ordered array of results, and stops at the first failure. The failure is thrown into the generator.
 
-```js
-const [listed, checked] = yield sequence([
-  tool("boundless_bash", { command: "git status --short" }),
-  tool("boundless_bash", { command: "bun run check" }),
-]);
-```
+## Failures and retries
 
-## Errors and retries
+Failures before or outside effect dispatch fail the run. These include invalid JavaScript, a missing or non-generator `main`, invalid constructor arguments, unbranded effects, unsupported JSON values, runtime-limit violations, and an uncaught exception from guest code.
 
-Effect failures are thrown into the generator as `YardEffectError` instances. Handle only failures for which the program has a concrete recovery path:
+Dispatch failures are thrown at the corresponding `yield` as `YardEffectError`. Examples include unavailable tools or models, tool execution errors, structured-output parse or schema failures, delegation-boundary violations, and deadline expiry. Guest code can catch that error.
 
-```js
-function* main(input) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return yield infer(input.model, {
-        prompt: "Return a JSON decision.",
-        schema: { type: "object", properties: { decision: { type: "string" } }, required: ["decision"] },
-      });
-    } catch (error) {
-      if (attempt === 1) throw error;
-    }
-  }
-}
-```
+Yard performs no general automatic retries. It does not repair and retry structured inference, retry failed tools, or retry failed compound children. A generator can explicitly yield a new effect after catching a failure. Each new dispatch counts in `usage` and remains subject to the original root deadline and concurrency budget.
 
-Invalid JavaScript, a missing generator `main`, invalid effect construction, unsupported non-JSON values, unknown tools, unavailable models, denied tool calls, and expired deadlines fail the invocation. Plain objects that merely resemble effects are rejected; construct effects only with `tool()`, `infer()`, `aux()`, `all()`, or `sequence()`.
+## Budgets and nesting
 
-Do not interpolate a plain object into an instruction or prompt string. Yard rejects the common accidental conversion to `[object Object]`, because it loses the data. Pass data through `infer(..., { input })`, or use `JSON.stringify(value)` when an instruction must contain serialized data.
+The root `budget` creates one absolute deadline and one leaf-work concurrency limit for the entire recursive tree.
 
-## Limits and nesting
+- The deadline includes guest execution, tool calls, inference, auxiliary agents, and nested Yard runs.
+- Deadline expiry aborts the tree and is propagated to in-flight operations that support cancellation.
+- The concurrency limit covers ordinary tools, inference, and auxiliary-agent invocations.
+- A nested Yard call does not acquire a leaf permit while it waits for its child run.
+- `all()` can impose a lower local concurrency limit but cannot bypass the tree-wide limit.
 
-The root `budget` applies to the entire recursive execution tree. A nested Yard program may be invoked through `tool("yard", { program, input })`, but it must not specify `budget`; it inherits the root deadline and concurrency limit. Yard limits nesting depth.
+A nested invocation must omit `budget`; it inherits the root deadline and concurrency unchanged. Each nested invocation uses a fresh isolated JavaScript runtime and returns its own `{ result, trace_id, usage }` object. The tree supports run depths `0` through `3`; attempting a fourth nested child fails with the maximum depth of `4` reached.
 
-`all()` can request a local concurrency cap, but cannot exceed the tree-wide budget. A waiting nested Yard call does not consume a leaf-work slot; ordinary tools, inferences, and auxiliary invocations do.
+Compound-effect payloads support at most eight nested compound levels; a deeper serialized effect payload is rejected.
 
-## Security boundaries
+## Runtime and sandbox limits
 
-Yard runs JavaScript in a restricted environment. It has no ambient network, filesystem, process, module loader, clock, random source, timer, promise, or `async`/`await` support. It can request external work only by yielding a branded effect.
+Each Yard run uses a fresh restricted QuickJS runtime. Guest code has no ambient access to:
 
-The JavaScript runtime also enforces limits on program source size, memory, stack use, uninterrupted CPU time, and the size of values crossing the Yard boundary. These are implementation safety limits, not configurable `yard` parameters.
+- filesystem or network I/O
+- `fetch`, `process`, `require`, `Bun`, or module loading
+- clocks or `Date`
+- randomness through `Math.random()`
+- timers
+- promises or `async`/`await`
+- dynamic code compilation through `eval` or `Function`
 
-A `tool()` effect is subject to the same schema validation, tool availability, and side-effect policy as a direct invocation. Yard does not grant additional permissions. Auxiliary agents retain their own capability boundaries, including the one-level delegation rule.
+External work is available only through yielded effects. Intrinsic constructors and prototypes are frozen; objects and prototypes created by the program remain writable.
+
+The shipped runtime applies these non-configurable safety ceilings:
+
+| Limit | Value | Scope |
+| --- | --- | --- |
+| Program source | 512 KiB | UTF-8 source for one run |
+| Runtime memory | 128 MiB | One QuickJS runtime |
+| Runtime stack | 1 MiB | One QuickJS runtime |
+| Uninterrupted guest CPU | 2 seconds | Each entry into guest code; time awaiting host effects does not count |
+| Boundary value | 4 MiB | Each serialized value crossing between guest and host |
+
+These ceilings are separate from the root wall-clock budget. They cannot be changed through the `yard` invocation.
