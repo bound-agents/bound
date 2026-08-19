@@ -99,7 +99,7 @@ for server support and implementation details.
 
 Check the JSON syntax and remove fields that don't belong to the selected transport. The
 transport schemas reject unknown fields. Compare the file with the
-[`mcp.json` reference](/bound/reference/configuration/#mcpjson).
+[`mcp.json` reference](/bound/reference/configuration/#mcpjs--mcpjson).
 
 ### The server or its tools don't appear
 

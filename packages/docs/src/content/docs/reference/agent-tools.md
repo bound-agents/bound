@@ -16,19 +16,21 @@ For lifecycle, scheduling, and connector context, see [Agent system](/bound/conc
 | `memory` | Stores, retrieves, searches, and removes durable knowledge; it can also maintain relationships between memory entries. |
 | `skill` | Lists, reads, activates, and deactivates reusable instruction sets for the current thread. |
 | `task` | Creates and manages deferred, recurring, and event-driven scheduled work. |
+| `cancel` | Cancels scheduled work. |
 | `model_hint` | Changes the model selection for the current task. |
 | `query` | Runs read-only SQL against Bound's database. |
 | `introspect` | Asks another thread for reflection. |
 | `purge` | Marks distracting or unnecessary messages for context substitution. |
 | `advisory` | Creates and manages operational advisories. |
-| `message` | Sends a message or reminder to a thread. |
+| `notify` | Sends a user-facing notification through an available interface. |
+| `archive` | Archives a thread to long-term storage. |
+| `hostinfo` | Displays registered-host and capability information. |
+| `connector` | Manages connector access when platform connectors make it available. |
 | `aux` | Defines, changes, invokes, and retires durable auxiliary-agent identities. |
 | `yard` | Runs a bounded JavaScript generator in a QuickJS sandbox for bulk data work, keeping intermediates out of conversation history. |
-| `connector` | Where platform connectors are available, manages connector access through Bound's unified connector-management surface. |
 
-`connector` is a conditional native management tool: platform connectors contribute it where
-available. Native tools are distinct from the other tool sources described in [Tool
-sources](#tool-sources).
+`connector` is conditionally available where configured platform connectors support it.
+Native tools are distinct from the other tool sources described in [Tool sources](#tool-sources).
 
 ## Memory actions
 
@@ -89,8 +91,10 @@ webhook, or RSS events. Tasks can depend on earlier tasks and use their results 
 | `introspect` | Requests a reflection from another thread. |
 | `purge` | Marks messages that can be replaced in model context when they are no longer useful. |
 | `advisory` | Creates and manages operational notices. |
-| `message` | Sends a message or reminder to a thread. |
-| `connector` | Manages connector access when platform connectors make this native tool available. |
+| `notify` | Sends a user-facing notification through an available interface. |
+| `archive` | Archives a thread to long-term storage. |
+| `hostinfo` | Displays registered-host and capability information. |
+| `connector` | Manages connector access when platform connectors make it available. |
 
 ## Tool sources
 
@@ -100,7 +104,7 @@ caller.
 | Source | What it provides |
 | --- | --- |
 | Native tools | Bound's built-in agent capabilities, indexed on this page. |
-| Platform connector tools | Tools supplied by available platform connectors. Event-bound threads receive scoped tools; ordinary threads receive read-only platform tools and, when available, the native `connector` management tool. |
+| Platform connector tools | Tools supplied by available platform connectors. Event-bound threads receive scoped tools; ordinary threads receive read-only platform tools. |
 | Configured MCP servers | Commands exposed by each configured Model Context Protocol (MCP) server. See [Connect MCP servers](/bound/guides/mcp-servers/). |
 | Live `boundless` client | Host file and shell tools supplied for the duration of a connected terminal-client session. See [Use the boundless terminal client](/bound/guides/boundless/). |
 | Responses API caller | Function definitions supplied by the caller. Bound returns function calls, and the caller executes them and sends back the results. See [Responses API](/bound/reference/responses-api/). |

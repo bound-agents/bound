@@ -27,7 +27,7 @@ For where these processes and their state run, see
 Create a configuration directory from one backend preset:
 
 ```text
-bound init (--ollama | --bedrock --region REGION | --cerebras | --zai | --opencode-go | --umans | --hub) [OPTIONS]
+bound init (--ollama | --bedrock --region REGION | --cerebras | --zai | --opencode-go | --hub) [OPTIONS]
 ```
 
 Choose exactly one backend preset flag.
@@ -39,7 +39,6 @@ Choose exactly one backend preset flag.
 | `--cerebras` | Cerebras Cloud using `CEREBRAS_API_KEY` |
 | `--zai` | z.AI using `ZAI_API_KEY` |
 | `--opencode-go` | OpenCode Go |
-| `--umans` | Self-configuring umans.ai backend using `UMANS_API_KEY` |
 | `--hub` | Relay hub with no local inference backend |
 
 Common options:
