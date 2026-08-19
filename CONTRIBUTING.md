@@ -49,7 +49,7 @@ bun run typecheck                                    # All packages sequentially
 bun run build
 
 # Documentation
-bun --cwd packages/docs run check                  # Lint, build, links, and structure
+bun run --cwd packages/docs check                  # Lint, build, links, and structure
 ```
 
 ## Repo Layout
