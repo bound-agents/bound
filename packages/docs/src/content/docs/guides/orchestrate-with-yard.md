@@ -1,63 +1,61 @@
 ---
-title: Understand Yard-backed work
-description: Learn what it means when your Bound agent uses Yard for a substantial task.
+title: Yard-backed work
+description: Understand how Bound agents may coordinate substantial work and what to expect from the result.
 ---
 
-Yard is Bound's internal workflow runner for substantial work that benefits from several coordinated steps. Your agent may use it to investigate a broad question, compare independent findings, or complete an implementation that needs review before delivery.
+A Bound agent may use Yard internally when your request benefits from bounded, multi-stage
+work. You request the outcome in ordinary language; you don't author or control the internal
+workflow.
 
-You do not need to configure Yard or write a workflow. This page explains what its use means for the work you requested.
+## When Yard-backed work fits
 
-## When your agent uses Yard
+Yard-backed work is suited to requests such as:
 
-An agent may use Yard when a request needs more than one direct tool call or one isolated auxiliary-agent errand. Typical cases include:
+- a broad audit across several areas;
+- a change that spans multiple independent parts of a project;
+- a comparison that needs evidence from separate sources;
+- work that benefits from distinct investigation and review stages.
 
-- investigating several independent parts of a codebase or system;
-- collecting evidence from multiple sources before making a recommendation;
-- dividing file-disjoint work into separate bounded errands;
-- carrying findings through investigation, planning, implementation, and review without copying large intermediate reports into the conversation.
+A simple question, one direct action, or a small self-contained edit usually doesn't need
+Yard. The agent can handle those requests with its ordinary tools.
 
-For a small, direct request, the agent can use ordinary tools instead. Yard is not a separate service to install or a mode you need to select.
+## How the work proceeds
 
-## What you may see
+The agent may split independent scopes and work on them concurrently. It can retain
+intermediate findings during the run, so large reports don't need to be copied into the
+conversation before the agent can use them.
 
-During a Yard-backed request, Bound reports the work as one coordinated operation rather than as an unstructured stream of every intermediate result.
+Depending on the request, the work may move through investigation, planning, implementation,
+review, and targeted correction. These stages aren't fixed, and not every request needs all
+of them.
 
-In the `boundless` terminal client, a live Yard operation appears as an execution card below the transcript. It shows the current work graph, including tool work, auxiliary-agent work, and inference. Completed, running, and failed work are distinguished, and concurrent work appears as related siblings. Large fan-outs can be summarized in one row with failed members identified separately.
+Progress may be grouped by scope or stage rather than reported as a stream of every internal
+step. This keeps the conversation focused on decisions, results, and exceptions.
 
-The final result is returned when the root operation finishes. It can include a compact conclusion, per-scope outcomes, and any gaps the agent found. Intermediate reports remain available to the workflow while it runs, so the final response can focus on the decision, delivered change, evidence, and unresolved work.
+## Safeguards
 
-In the `boundless` terminal client, live execution events are thread-scoped and ephemeral. A session attached after a run finishes retains ordinary Yard tool-call/result rendering instead of the live execution card.
+Yard doesn't grant the agent additional permissions, tools, or authority. All work remains
+subject to the same access controls, sandboxing, and side-effect rules as direct agent work.
 
-## Boundaries and limits
+Each run has bounded time and parallel work. When multiple scopes can change files, the agent
+should assign non-overlapping change scopes. Work intended for release should be reviewed and
+validated before release.
 
-Yard work is bounded. A single operation has an overall deadline and a cap on simultaneously running tool, inference, and auxiliary-agent work. Those limits apply to the full coordinated operation, including nested internal stages.
+## Limits
 
-Yard does not expand your agent's authority. Tool calls keep their existing schemas, sandboxing, permissions, and side-effect policy. The workflow runtime itself has no ambient filesystem, network, process, module-loading, clock, timer, or random access; external work must still go through Bound's ordinary tool boundaries.
+Yard can coordinate substantial work, but it can't guarantee complete coverage or success.
+Time limits, unavailable tools, failed work, missing evidence, or external blockers can leave
+part of a request incomplete. Review can find problems and trigger targeted correction, but it
+can't turn insufficient evidence into a verified result.
 
-These limits mean that a large request can finish with some work unexamined. A deadline, unavailable tool or model, failed subtask, or incomplete delegated report can leave a scope without sufficient evidence. A completed subtask is not, by itself, proof that it fully covered its assignment.
+## What the result should report
 
-## How incomplete work is handled
+The final response should identify:
 
-Yard can keep successful findings from independent work while also carrying rejected or failed work forward. It does not silently retry failed work until it succeeds; retries occur only when the workflow explicitly provides a recovery path.
+- completed work and its validation;
+- incomplete or unexamined scopes;
+- blockers and remaining risks;
+- resulting artifacts, such as changed files, reports, or other deliverables.
 
-When an agent uses Yard for a broad request, ask for the remaining gaps if the result does not make them clear. Useful status reporting distinguishes:
-
-- what was completed and the evidence for it;
-- what was skipped, failed, or could not be verified;
-- what follow-up would be needed to close a remaining gap.
-
-A completed subtask is not, by itself, proof that it fully covered its assignment.
-
-## Review and safety expectations
-
-For changes that need several stages, an agent can use separate investigation, implementation, and review stages. A sound workflow has review inspect the resulting work against the original acceptance criteria and sends identified defects back for repair before delivery.
-
-If a request includes releasing a change, review and validation should happen before the release step. Yard does not bypass validation, sandboxing, permissions, or other tool safeguards.
-
-Yard coordinates work; it does not make an unreviewed result reliable or grant permission for an otherwise restricted action.
-
-## Related information
-
-- [Use the boundless terminal client](/bound/guides/boundless/#follow-yard-execution) for the terminal execution display.
-- [Auxiliary agents](/bound/concepts/auxiliary-agents/) for the bounded errands that can take part in coordinated work.
-- [Security and execution boundaries](/bound/concepts/security-boundaries/) for Bound's broader permission and sandbox model.
+This reporting boundary lets you evaluate the delivered outcome without needing access to, or
+control over, the internal workflow.
