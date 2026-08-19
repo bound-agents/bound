@@ -10,8 +10,8 @@
 		{
 			"packageName": "tree-sitter-kotlin",
 			"version": "0.3.8",
-			"result": "error",
-			"error": "No native build was found for platform=darwin arch=arm64 runtime=node abi=137"
+			"result": "ok",
+			"rootType": "source_file"
 		},
 		{
 			"packageName": "tree-sitter-c",
@@ -41,13 +41,13 @@
 			"packageName": "tree-sitter-lua",
 			"version": "2.1.3",
 			"result": "error",
-			"error": "Cannot find module '../../build/Release/tree_sitter_lua_binding'"
+			"error": "ResolveMessage: Cannot find module '../../build/Release/tree_sitter_lua_binding' from '/Users/lucalc/Documents/GitHub/bound/node_modules/.bun/tree-sitter-lua@2.1.3/node_modules/tree-sitter-lua/bindings/node/index.js'"
 		},
 		{
 			"packageName": "tree-sitter-sql",
 			"version": "0.1.0",
 			"result": "error",
-			"error": "slice is not valid mach-o file"
+			"error": "Error [ERR_DLOPEN_FAILED]: dlopen(/Users/lucalc/Documents/GitHub/bound/node_modules/.bun/tree-sitter-sql@0.1.0/node_modules/tree-sitter-sql/build/Release/tree_sitter_SQL_binding.node, 0x0001): tried: '/Users/lucalc/Documents/GitHub/bound/node_modules/.bun/tree-sitter-sql@0.1.0/node_modules/tree-sitter-sql/build/Release/tree_sitter_SQL_binding.node' (slice is not valid mach-o file), '/System/Volumes/Preboot/Cryptexes/OS/Users/lucalc/Documents/GitHub/bound/node_modules/.bun/tree-sitter-sql@0.1.0/node_modules/tree-sitter-sql/build/Release/tree_sitter_SQL_binding.node' (no such file), '/Users/lucalc/Documents/GitHub/bound/node_modules/.bun/tree-sitter-sql@0.1.0/node_modules/tree-sitter-sql/build/Release/tree_sitter_SQL_binding.node' (slice is not valid mach-o file)"
 		}
 	]
 }
