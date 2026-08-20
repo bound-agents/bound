@@ -279,7 +279,7 @@ describe("ThreadExecutor", () => {
 	});
 
 	describe("runFn timeout", () => {
-		it("releases the lock when runFn exceeds the timeout", async () => {
+		it("returns at the configured deadline when runFn remains pending", async () => {
 			const threadId = randomUUID();
 			enqueueMessage(db, randomUUID(), threadId);
 
@@ -293,16 +293,23 @@ describe("ThreadExecutor", () => {
 			const timeoutExecutor = new ThreadExecutor(db, errorLogger, {
 				runTimeoutMs: 100,
 			});
+			let resolveRun: ((result: ExecutorRunResult) => void) | undefined;
 
-			await timeoutExecutor.execute(threadId, async () => {
-				// Simulate a hung inference — never resolves within timeout
-				await new Promise((resolve) => setTimeout(resolve, 5000));
-				drainOnce(threadId);
-				return {};
-			});
+			const startedAt = performance.now();
+			await timeoutExecutor.execute(
+				threadId,
+				() =>
+					new Promise<ExecutorRunResult>((resolve) => {
+						resolveRun = resolve;
+					}),
+			);
+			const elapsedMs = performance.now() - startedAt;
 
 			expect(errorLogged).toBe(true);
+			expect(elapsedMs).toBeGreaterThanOrEqual(90);
+			expect(elapsedMs).toBeLessThan(500);
 			expect(timeoutExecutor.isActive(threadId)).toBe(false);
+			resolveRun?.({});
 		});
 
 		it("resets processing entries on timeout so they can be re-claimed", async () => {
@@ -313,20 +320,24 @@ describe("ThreadExecutor", () => {
 			const timeoutExecutor = new ThreadExecutor(db, noopLogger, {
 				runTimeoutMs: 100,
 			});
+			let resolveRun: ((result: ExecutorRunResult) => void) | undefined;
 
-			await timeoutExecutor.execute(threadId, async () => {
-				// Claim the message (sets to processing)
-				claimPending(db, threadId, siteId);
-				// Hang past the timeout
-				await new Promise((resolve) => setTimeout(resolve, 5000));
-				return {};
-			});
+			await timeoutExecutor.execute(
+				threadId,
+				() =>
+					new Promise<ExecutorRunResult>((resolve) => {
+						// Claim the message (sets it to processing) before remaining pending.
+						claimPending(db, threadId, siteId);
+						resolveRun = resolve;
+					}),
+			);
 
-			// The processing entry should have been reset to pending
+			// The processing entry should have been reset to pending.
 			const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
 				status: string;
 			};
 			expect(row.status).toBe("pending");
+			resolveRun?.({});
 		});
 	});
 });

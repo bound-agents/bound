@@ -1368,8 +1368,9 @@ export class ModularAgentLoop {
 		source: AsyncIterable<T>,
 		timeoutMs: number,
 		onHeartbeat?: () => void,
+		onTimeout?: () => void,
 	): AsyncGenerator<T> {
-		return withSilenceTimeout(source, timeoutMs, onHeartbeat);
+		return withSilenceTimeout(source, timeoutMs, onHeartbeat, undefined, onTimeout);
 	}
 
 	protected buildAssistantToolCallBlocks(

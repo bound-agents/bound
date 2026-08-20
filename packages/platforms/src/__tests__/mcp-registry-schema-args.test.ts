@@ -15,7 +15,7 @@
 // shapes via passthrough.
 
 import Database from "bun:sqlite";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
@@ -23,6 +23,16 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { z } from "zod";
 import { createConnectorHandle } from "../connector-handle.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
+
+async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!condition()) {
+		if (Date.now() >= deadline) {
+			throw new Error(`Condition was not met within ${timeoutMs}ms`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 1));
+	}
+}
 
 const mockLogger = {
 	debug: () => {},
@@ -76,6 +86,10 @@ describe("PlatformMcpRegistry — client.request() schema arg validity", () => {
 	let registry: PlatformMcpRegistry;
 	let server: Server;
 
+	afterEach(async () => {
+		await registry.shutdown();
+	});
+
 	beforeEach(async () => {
 		db = new Database(":memory:");
 		applySchema(db);
@@ -86,6 +100,7 @@ describe("PlatformMcpRegistry — client.request() schema arg validity", () => {
 			siteId,
 			eventBus: new SimpleEventBus() as unknown as TypedEventEmitter,
 			logger: mockLogger,
+			pollIntervalSeconds: 0.001,
 		});
 
 		server = new Server({ name: "test-server", version: "1.0.0" });
@@ -207,11 +222,13 @@ describe("PlatformMcpRegistry — client.request() schema arg validity", () => {
 		const { handle } = setupHandleAndTask("poll");
 		await registry.activateSubscription(handle as never);
 
-		// Poll mode schedules a 2s timer in the source; wait for it to fire.
-		await new Promise((resolve) => setTimeout(resolve, 2200));
+		await waitFor(() => captured.some((call) => call.method === "events/poll"));
 
 		const pollCall = captured.find((c) => c.method === "events/poll");
 		expect(pollCall).toBeDefined();
 		assertValidZod4Schema(pollCall?.schema);
-	}, 5000);
+
+		registry.stopSubscription(handle.id);
+		expect(registry.hasPollTimer(handle.id)).toBe(false);
+	});
 });

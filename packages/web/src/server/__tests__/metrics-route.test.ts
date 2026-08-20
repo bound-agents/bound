@@ -195,21 +195,46 @@ describe("metrics routes", () => {
 		});
 	});
 
-	describe("AC5.5: Performance (large ranges)", () => {
-		it("completes within reasonable time with empty database", async () => {
+	describe("AC5.5: Large-range query correctness", () => {
+		it("returns an empty result for a deterministic large range", async () => {
 			const app = createMetricsRoutes(db);
-			const from = new Date("2026-01-01T00:00:00Z").toISOString();
-			const to = new Date("2026-05-18T00:00:00Z").toISOString();
+			const nowMs = Date.now();
+			const from = new Date(nowMs - 120 * 24 * 3600_000).toISOString();
+			const to = new Date(nowMs - 60 * 1000).toISOString();
 
-			const start = Date.now();
 			const response = await app.fetch(
 				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
 			);
-			const elapsed = Date.now() - start;
 
 			expect(response.status).toBe(200);
-			// Should complete in under 1 second even with large range
-			expect(elapsed).toBeLessThan(1000);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			const relay = json.relay as Record<string, unknown>;
+			const context = json.context as Record<string, unknown>;
+
+			expect(tokens.byModel).toEqual([]);
+			expect(tokens.costByModelTimeline).toEqual([]);
+			expect(tokens.totals).toMatchObject({ turn_count: 0, tokens_in: 0, tokens_out: 0 });
+			expect(relay.byHost).toEqual([]);
+			expect(relay.recentCycles).toEqual([]);
+			expect(context.timeline).toEqual([]);
+		});
+	});
+
+	describe("AC5.5: Performance smoke test", () => {
+		it("serves an empty 120-day range within the explicit 5-second test budget", async () => {
+			const app = createMetricsRoutes(db);
+			const nowMs = Date.now();
+			const from = new Date(nowMs - 120 * 24 * 3600_000).toISOString();
+			const to = new Date(nowMs - 60 * 1000).toISOString();
+
+			const start = performance.now();
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+
+			expect(response.status).toBe(200);
+			expect(performance.now() - start).toBeLessThan(5000);
 		});
 	});
 

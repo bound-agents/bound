@@ -957,27 +957,16 @@ describe("MainAgentLoop", () => {
 		expect(mockBash.calls[0]).toBe("cat file.txt");
 	});
 
-	it("should trigger silence timeout when LLM stalls without yielding chunks (R-W6)", async () => {
-		// Create a custom LLM backend that can trigger timeout
+	it("rejects a pending backend on an injected silence timeout and aborts its signal (R-W6)", async () => {
+		let observedAbort = false;
 		const stallBackend: LLMBackend = {
-			async *chat() {
-				yield { type: "text" as const, content: "Starting..." };
-				// Simulate stalling by waiting much longer than the 120s timeout
-				// In real usage, this would trigger the timeout. For the test, we verify
-				// the timeout mechanism is in place by checking the withSilenceTimeout wrapper
-				// exists and would reject after 120s.
-				await new Promise((resolve) => setTimeout(resolve, 130000));
-				// This line should never be reached in real timeout scenario
-				yield {
-					type: "done" as const,
-					usage: {
-						input_tokens: 5,
-						output_tokens: 3,
-						cache_write_tokens: null,
-						cache_read_tokens: null,
-						estimated: false,
-					},
-				};
+			async *chat(params) {
+				await new Promise<void>((resolve) => {
+					params.signal?.addEventListener("abort", () => {
+						observedAbort = true;
+						resolve();
+					});
+				});
 			},
 			capabilities() {
 				return {
@@ -991,66 +980,21 @@ describe("MainAgentLoop", () => {
 			},
 		};
 
-		const mockBash = createMockSandbox();
-		const ctx = makeCtx();
-
-		const _agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(stallBackend), {
-			threadId,
-			userId: "test-user",
-		});
-
-		// Note: This test would normally take 120+ seconds to run.
-		// For practical testing, we verify that:
-		// 1. The withSilenceTimeout wrapper exists in agent-loop.ts (line 105)
-		// 2. It correctly rejects with a timeout error after 120s
-		// 3. The error is caught and persisted as an alert
-
-		// Since running the full timeout is impractical in tests, we verify the error
-		// handling path by checking the code structure. In a real scenario, this would
-		// trigger after 120s of silence.
-
-		// For this test, we'll use a short timeout to verify the mechanism works
-		// by having the test runner timeout first, which proves the silence timeout
-		// would eventually fire.
-
-		// Instead, let's verify the mechanism exists by checking a fast-fail scenario
-		const fastBackend: LLMBackend = {
-			// biome-ignore lint/correctness/useYield: generator throws before yield
-			async *chat() {
-				// Immediately throw an error to simulate what happens after timeout
-				throw new Error("LLM silence timeout: no chunk received for 60000ms");
+		const agentLoop = new MainAgentLoop(
+			makeCtx(),
+			createMockSandbox(),
+			createMockRouter(stallBackend),
+			{
+				threadId,
+				userId: "test-user",
+				silenceTimeoutMs: 20,
 			},
-			capabilities() {
-				return {
-					streaming: true,
-					tool_use: true,
-					system_prompt: true,
-					prompt_caching: false,
-					vision: false,
-					max_context: 8000,
-				};
-			},
-		};
+		);
 
-		const agentLoop2 = new MainAgentLoop(ctx, mockBash, createMockRouter(fastBackend), {
-			threadId,
-			userId: "test-user",
-		});
+		const result = await agentLoop.run();
 
-		const result = await agentLoop2.run();
-
-		// Should have an error about silence timeout
-		expect(result.error).toBeDefined();
-		expect(result.error).toContain("silence timeout");
-		expect(result.error).toContain("60000ms");
-
-		// Verify the error was persisted as an alert
-		const alerts = db
-			.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'alert'")
-			.all(threadId) as Array<{ role: string; content: string }>;
-
-		expect(alerts.length).toBeGreaterThan(0);
-		expect(alerts[0].content).toContain("silence timeout");
+		expect(result.error).toContain("LLM silence timeout: no chunk received for 20ms");
+		expect(observedAbort).toBe(true);
 	});
 
 	it("should not timeout when LLM yields chunks regularly", async () => {

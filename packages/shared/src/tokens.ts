@@ -49,6 +49,7 @@ const tokenCache = new Map<string, number>();
 let tokenCacheBytes = 0;
 let tokenCacheHits = 0;
 let tokenCacheMisses = 0;
+const encodedTexts: string[] = [];
 
 function memoizedEncodeLength(text: string): number {
 	const cached = tokenCache.get(text);
@@ -59,6 +60,7 @@ function memoizedEncodeLength(text: string): number {
 		tokenCacheHits++;
 		return cached;
 	}
+	encodedTexts.push(text);
 	const count = getEncoding().encode(text).length;
 	tokenCache.set(text, count);
 	tokenCacheBytes += text.length;
@@ -210,6 +212,7 @@ export function __tokenCacheStats(): {
 	maxBytes: number;
 	hits: number;
 	misses: number;
+	encodedTexts: readonly string[];
 	has(text: string): boolean;
 	idSize: number;
 	idMaxEntries: number;
@@ -223,6 +226,7 @@ export function __tokenCacheStats(): {
 		maxBytes: TOKEN_CACHE_MAX_BYTES,
 		hits: tokenCacheHits,
 		misses: tokenCacheMisses,
+		encodedTexts,
 		has: (text: string) => tokenCache.has(text),
 		idSize: tokenIdCache.size,
 		idMaxEntries: TOKEN_ID_CACHE_MAX,

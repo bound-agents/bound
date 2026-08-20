@@ -10,11 +10,23 @@ import { findHostSiteIdById } from "./repositories/index.js";
  */
 export const HOST_HEARTBEAT_INTERVAL = 120_000;
 
+export interface HeartbeatTimer {
+	setInterval(callback: () => void, intervalMs: number): unknown;
+	clearInterval(timer: unknown): void;
+}
+
+const systemTimer: HeartbeatTimer = {
+	setInterval,
+	clearInterval,
+};
+
 export interface HeartbeatOptions {
 	/** Heartbeat interval in milliseconds. Defaults to 120_000 (2 minutes). */
 	intervalMs?: number;
 	/** Logger for warning messages when heartbeat fails. */
 	logger?: Logger;
+	/** Timer seam for deterministic tests. */
+	timer?: HeartbeatTimer;
 }
 
 /**
@@ -33,6 +45,7 @@ export function startHostHeartbeat(
 	options?: HeartbeatOptions,
 ): { stop: () => void } {
 	const intervalMs = options?.intervalMs ?? HOST_HEARTBEAT_INTERVAL;
+	const timer = options?.timer ?? systemTimer;
 	let stopped = false;
 
 	const tick = () => {
@@ -51,12 +64,12 @@ export function startHostHeartbeat(
 		}
 	};
 
-	const timerId = setInterval(tick, intervalMs);
+	const timerId = timer.setInterval(tick, intervalMs);
 
 	return {
 		stop: () => {
 			stopped = true;
-			clearInterval(timerId);
+			timer.clearInterval(timerId);
 		},
 	};
 }

@@ -10,6 +10,16 @@ const MAX_TOOL_NAMES = 10;
 
 type RequestSummary = Record<string, unknown>;
 
+export interface TimeoutScheduler {
+	schedule(callback: () => void, delayMs: number): unknown;
+	clear(handle: unknown): void;
+}
+
+const realTimeoutScheduler: TimeoutScheduler = {
+	schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+	clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 function byteSize(body: BodyInit): number | undefined {
 	if (typeof body === "string") return new TextEncoder().encode(body).byteLength;
 	if (body instanceof URLSearchParams) return new TextEncoder().encode(body.toString()).byteLength;
@@ -115,6 +125,7 @@ export function createLoggingFetch(
 	logger: Logger,
 	provider: string,
 	connectTimeoutMs?: number,
+	timeoutScheduler: TimeoutScheduler = realTimeoutScheduler,
 ): typeof fetch {
 	const wrapped = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 		if (logger.isLevelEnabled("debug")) {
@@ -135,7 +146,7 @@ export function createLoggingFetch(
 		// in time, with a message we control. Compose with any inbound signal
 		// (the agent-loop silence/inactivity controller) so either can win.
 		const deadline = new AbortController();
-		const timer = setTimeout(() => {
+		const timer = timeoutScheduler.schedule(() => {
 			deadline.abort(
 				new Error(
 					`bound: no inference response headers from ${provider} within ${connectTimeoutMs}ms (connect/TTFB deadline)`,
@@ -151,10 +162,10 @@ export function createLoggingFetch(
 			// agent-loop signal (still live on the composed `signal`), not our
 			// connect deadline — clear the timer so a slow-but-progressing
 			// stream is never aborted.
-			clearTimeout(timer);
+			timeoutScheduler.clear(timer);
 			return res;
 		} catch (err) {
-			clearTimeout(timer);
+			timeoutScheduler.clear(timer);
 			throw err;
 		}
 	};

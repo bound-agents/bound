@@ -15,6 +15,7 @@ import { applyColumnChunk, clearColumnCache, getPkColumn } from "../reducers.js"
 import type { SnapshotChunkPayload } from "../ws-frames.js";
 import { WsMessageType, decodeFrame } from "../ws-frames.js";
 import { WsTransport } from "../ws-transport.js";
+import { waitForPersistedSnapshotState, waitForSnapshotChunks } from "./wait-helpers.js";
 
 // Minimal event bus that satisfies TypedEventEmitter for the constructor.
 class NoopEventBus extends EventEmitter {
@@ -113,9 +114,8 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		hubTransport.seedNewPeer(spokeSiteId);
 
 		// seedNewPeer creates the sync_state row and schedules chunk sending.
-		// The first frame sent should be SNAPSHOT_BEGIN.
-		// Due to setTimeout(0), the chunks are deferred. Wait for them.
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		// Wait for the observable first frame rather than an arbitrary delay.
+		await waitForSnapshotChunks(() => sentFrames);
 
 		expect(sentFrames.length).toBeGreaterThan(0);
 
@@ -172,15 +172,16 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		// Trigger a reseed request.
 		hubTransport.handleReseedRequest(spokeSiteId, "test force reseed");
 
-		// The handleReseedRequest should:
-		// 1. Reset the cursor to HLC_ZERO
-		// 2. Call seedNewPeer → send SNAPSHOT_BEGIN + chunks
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		// The handleReseedRequest should reset the cursor and start seeding.
+		const cursorAfter = await waitForPersistedSnapshotState(
+			() =>
+				hubDb
+					.query("SELECT last_received FROM sync_state WHERE peer_site_id = ?")
+					.get(spokeSiteId) as { last_received: string } | null,
+		);
+		await waitForSnapshotChunks(() => sentFrames);
 
 		// Verify cursor was reset.
-		const cursorAfter = hubDb
-			.query("SELECT last_received FROM sync_state WHERE peer_site_id = ?")
-			.get(spokeSiteId) as { last_received: string } | null;
 		expect(cursorAfter).not.toBeNull();
 		expect(cursorAfter?.last_received).toBe(HLC_ZERO);
 
@@ -206,7 +207,7 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 
 		// Start a snapshot.
 		hubTransport.handleReseedRequest(spokeSiteId, "first reseed");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitForSnapshotChunks(() => sentFrames);
 
 		const firstBeginCount = sentFrames.filter((t) => t === 0x10).length;
 		expect(firstBeginCount).toBe(1);
@@ -217,7 +218,12 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 
 		// Second call while the snapshot is still active should be ignored.
 		hubTransport.handleReseedRequest(spokeSiteId, "second reseed while active");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitForPersistedSnapshotState(
+			() =>
+				hubDb
+					.query("SELECT last_received FROM sync_state WHERE peer_site_id = ?")
+					.get(spokeSiteId) as { last_received: string } | null,
+		);
 
 		// Cursor should still be HLC_ZERO.
 		const cursorAfter = hubDb
@@ -244,14 +250,19 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 
 		// Fresh peer (HLC_ZERO cursor) — hub auto-starts seeding.
 		hubTransport.seedNewPeer(spokeSiteId);
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitForSnapshotChunks(() => sentFrames);
 
 		const beginCountBeforeReseed = sentFrames.filter((t) => t === 0x10).length;
 		expect(beginCountBeforeReseed).toBe(1);
 
 		// Now spoke sends RESEED_REQUEST (simulating the race).
 		hubTransport.handleReseedRequest(spokeSiteId, "duplicate reseed race");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitForPersistedSnapshotState(
+			() =>
+				hubDb
+					.query("SELECT last_received FROM sync_state WHERE peer_site_id = ?")
+					.get(spokeSiteId) as { last_received: string } | null,
+		);
 
 		// Should NOT have sent a second SNAPSHOT_BEGIN.
 		const beginCountAfterReseed = sentFrames.filter((t) => t === 0x10).length;
@@ -391,7 +402,7 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		);
 
 		hubTransport.seedNewPeer(spokeSiteId);
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		await waitForSnapshotChunks(() => sentFrames, 2, 5_000);
 
 		const maxFrameBytes = 4 * 1024 * 1024;
 		const oversizedFrames = sentFrames.filter((f) => f.length > maxFrameBytes);
@@ -511,7 +522,7 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		);
 
 		hubTransport.seedNewPeer(spokeSiteId);
-		await new Promise((resolve) => setTimeout(resolve, 3000));
+		await waitForSnapshotChunks(() => sentFrames, 2, 5_000);
 
 		const maxFrameBytes = 4 * 1024 * 1024;
 		// No frame should exceed the limit
@@ -588,7 +599,7 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		);
 
 		hubTransport.seedNewPeer(spokeSiteId);
-		await new Promise((resolve) => setTimeout(resolve, 3000));
+		await waitForSnapshotChunks(() => sentFrames, 2, 5_000);
 
 		// Apply all frames to the spoke DB
 		for (const f of sentFrames) {
@@ -647,7 +658,7 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		);
 
 		hubTransport.seedNewPeer(spokeSiteId);
-		await new Promise((resolve) => setTimeout(resolve, 3000));
+		await waitForSnapshotChunks(() => sentFrames, 2, 5_000);
 
 		const chunkPayloads: SnapshotChunkPayload[] = [];
 		for (const f of sentFrames) {
@@ -684,7 +695,7 @@ describe.skip("snapshot seeding (integration) — replaced by consistency-based 
 		hubTransport.addPeer(spokeSiteId, (_frame: Uint8Array): boolean => true, symKey, mockPing);
 
 		hubTransport.seedNewPeer(spokeSiteId);
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await waitForSnapshotChunks(() => [pingCount]);
 
 		expect(pingCount).toBeGreaterThanOrEqual(1);
 	});

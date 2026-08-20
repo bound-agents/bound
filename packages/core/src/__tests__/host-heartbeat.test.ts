@@ -6,6 +6,8 @@ import { createDatabase } from "../database";
 import { startHostHeartbeat } from "../host-heartbeat";
 import { applySchema } from "../schema";
 
+type IntervalCallback = () => void;
+
 describe("Host Heartbeat", () => {
 	let dbPath: string;
 	let db: ReturnType<typeof createDatabase>;
@@ -16,7 +18,6 @@ describe("Host Heartbeat", () => {
 		db = createDatabase(dbPath);
 		applySchema(db);
 
-		// Insert a host row for our test site
 		const now = new Date().toISOString();
 		db.run(
 			"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
@@ -37,34 +38,31 @@ describe("Host Heartbeat", () => {
 		}
 	});
 
-	it("updates hosts.modified_at on each tick", async () => {
-		const initial = db
-			.query<{ modified_at: string }, [string]>("SELECT modified_at FROM hosts WHERE site_id = ?")
-			.get(siteId);
-		expect(initial).toBeDefined();
-		const initialTime = new Date(initial?.modified_at ?? "").getTime();
+	function createTimerSpy() {
+		let callback: IntervalCallback | undefined;
+		const timer = { id: "heartbeat" };
+		return {
+			setInterval: (next: IntervalCallback, _ms: number) => {
+				callback = next;
+				return timer;
+			},
+			clearInterval: (_timer: unknown) => {
+				callback = undefined;
+			},
+			tick: () => callback?.(),
+		};
+	}
 
-		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
+	it("updates hosts.modified_at and writes a change-log entry on each tick", () => {
+		const initialEntryCount = db
+			.query<{ count: number }, [string]>(
+				"SELECT COUNT(*) AS count FROM change_log WHERE table_name = 'hosts' AND row_id = ?",
+			)
+			.get(siteId)?.count;
+		const timer = createTimerSpy();
+		const handle = startHostHeartbeat(db, siteId, { timer });
 
-		// Wait for at least one tick
-		await new Promise((resolve) => setTimeout(resolve, 40));
-
-		handle.stop();
-
-		const updated = db
-			.query<{ modified_at: string }, [string]>("SELECT modified_at FROM hosts WHERE site_id = ?")
-			.get(siteId);
-		expect(updated).toBeDefined();
-		const updatedTime = new Date(updated?.modified_at ?? "").getTime();
-
-		expect(updatedTime).toBeGreaterThan(initialTime);
-	});
-
-	it("creates change_log entries so freshness syncs to peers", async () => {
-		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
-
-		await new Promise((resolve) => setTimeout(resolve, 40));
-
+		timer.tick();
 		handle.stop();
 
 		const entries = db
@@ -73,66 +71,61 @@ describe("Host Heartbeat", () => {
 			)
 			.all(siteId);
 
-		expect(entries.length).toBeGreaterThanOrEqual(1);
+		expect(entries.length).toBe((initialEntryCount ?? 0) + 1);
 	});
 
-	it("stop() clears the timer and prevents further updates", async () => {
-		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
-
-		await new Promise((resolve) => setTimeout(resolve, 40));
-		handle.stop();
-
-		const afterStop = db
-			.query<{ modified_at: string }, [string]>("SELECT modified_at FROM hosts WHERE site_id = ?")
-			.get(siteId);
-		const stoppedTime = new Date(afterStop?.modified_at ?? "").getTime();
-
-		// Wait another interval — should NOT update
-		await new Promise((resolve) => setTimeout(resolve, 40));
-
-		const afterWait = db
-			.query<{ modified_at: string }, [string]>("SELECT modified_at FROM hosts WHERE site_id = ?")
-			.get(siteId);
-		const waitTime = new Date(afterWait?.modified_at ?? "").getTime();
-
-		expect(waitTime).toBe(stoppedTime);
-	});
-
-	it("survives DB errors without crashing", async () => {
-		const handle = startHostHeartbeat(db, siteId, { intervalMs: 30 });
-
-		// Drop the hosts table to force a DB error on next tick
+	it("logs database errors and remains stoppable", () => {
+		const warnings: unknown[][] = [];
+		const timer = createTimerSpy();
+		const handle = startHostHeartbeat(db, siteId, {
+			timer,
+			logger: { warn: (...args: unknown[]) => warnings.push(args) } as never,
+		});
 		db.run("DROP TABLE hosts");
 
-		// Wait for a tick — should not throw
-		await new Promise((resolve) => setTimeout(resolve, 40));
-
-		// Should still be stoppable without error
+		expect(() => timer.tick()).not.toThrow();
+		expect(warnings).toHaveLength(1);
 		expect(() => handle.stop()).not.toThrow();
 	});
 
-	it("does nothing if host row does not exist", async () => {
-		const fakeSiteId = "nonexistent-site";
-		const handle = startHostHeartbeat(db, fakeSiteId, { intervalMs: 30 });
+	it("does nothing if host row does not exist", () => {
+		const timer = createTimerSpy();
+		const handle = startHostHeartbeat(db, "nonexistent-site", { timer });
+		timer.tick();
+		handle.stop();
 
-		await new Promise((resolve) => setTimeout(resolve, 40));
-
-		// No change_log entries for the fake site
 		const entries = db
 			.query<{ row_id: string }, [string]>(
 				"SELECT row_id FROM change_log WHERE table_name = 'hosts' AND row_id = ?",
 			)
-			.all(fakeSiteId);
+			.all("nonexistent-site");
+		expect(entries).toHaveLength(0);
+	});
 
-		expect(entries.length).toBe(0);
+	it("stop cancels future callbacks and prevents subsequent updates", () => {
+		const timer = createTimerSpy();
+		const handle = startHostHeartbeat(db, siteId, { timer });
+		timer.tick();
+		const beforeStop = db
+			.query<{ count: number }, [string]>(
+				"SELECT COUNT(*) AS count FROM change_log WHERE table_name = 'hosts' AND row_id = ?",
+			)
+			.get(siteId)?.count;
 
 		handle.stop();
+		timer.tick();
+
+		const afterStop = db
+			.query<{ count: number }, [string]>(
+				"SELECT COUNT(*) AS count FROM change_log WHERE table_name = 'hosts' AND row_id = ?",
+			)
+			.get(siteId)?.count;
+		expect(afterStop).toBe(beforeStop);
 	});
 
 	it("uses default 2-minute interval when none specified", () => {
-		const handle = startHostHeartbeat(db, siteId);
-
-		// Can't easily test the interval value, but verify it starts and stops cleanly
+		const timer = createTimerSpy();
+		const handle = startHostHeartbeat(db, siteId, { timer });
 		expect(() => handle.stop()).not.toThrow();
 	});
 });

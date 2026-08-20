@@ -10,6 +10,7 @@ import {
 	encodeFrame,
 } from "../ws-frames.js";
 import { WsTransport } from "../ws-transport.js";
+import { waitForCompletedRowPull } from "./wait-helpers.js";
 
 function createTestSchema(db: Database): void {
 	db.run("PRAGMA journal_mode = WAL");
@@ -275,7 +276,19 @@ describe("Hub-side handleRowPullRequest", () => {
 			tables: [{ table: "semantic_memory", pks: ["mem-1", "mem-3"] }],
 		});
 
-		await new Promise((r) => setTimeout(r, 200));
+		await waitForCompletedRowPull(
+			() => sentFrames,
+			(frames) =>
+				frames.some((frame) => {
+					const decoded = decodeFrame(frame, symmetricKey);
+					return (
+						decoded.ok &&
+						decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+						(decoded.value.payload as RowPullResponsePayload).request_id === "rp_1" &&
+						(decoded.value.payload as RowPullResponsePayload).last
+					);
+				}),
+		);
 
 		const responses = sentFrames
 			.map((f) => decodeFrame(f, symmetricKey))
@@ -304,7 +317,19 @@ describe("Hub-side handleRowPullRequest", () => {
 			tables: [{ table: "semantic_memory", pks: ["nonexistent-1", "nonexistent-2"] }],
 		});
 
-		await new Promise((r) => setTimeout(r, 200));
+		await waitForCompletedRowPull(
+			() => sentFrames,
+			(frames) =>
+				frames.some((frame) => {
+					const decoded = decodeFrame(frame, symmetricKey);
+					return (
+						decoded.ok &&
+						decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+						(decoded.value.payload as RowPullResponsePayload).request_id === "rp_2" &&
+						(decoded.value.payload as RowPullResponsePayload).last
+					);
+				}),
+		);
 
 		const responses = sentFrames
 			.map((f) => decodeFrame(f, symmetricKey))
@@ -333,7 +358,19 @@ describe("Hub-side handleRowPullRequest", () => {
 			],
 		});
 
-		await new Promise((r) => setTimeout(r, 200));
+		await waitForCompletedRowPull(
+			() => sentFrames,
+			(frames) =>
+				frames.some((frame) => {
+					const decoded = decodeFrame(frame, symmetricKey);
+					return (
+						decoded.ok &&
+						decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+						(decoded.value.payload as RowPullResponsePayload).request_id === "rp_3" &&
+						(decoded.value.payload as RowPullResponsePayload).last
+					);
+				}),
+		);
 
 		const responses = sentFrames
 			.map((f) => decodeFrame(f, symmetricKey))
@@ -549,7 +586,18 @@ describe("Bidirectional executeBackfill", () => {
 				request_id: "rp_test",
 				tables,
 			});
-			await new Promise((r) => setTimeout(r, 200));
+			await waitForCompletedRowPull(
+				() => hubSentFrames,
+				(frames) =>
+					frames.some((frame) => {
+						const decoded = decodeFrame(frame, symmetricKey);
+						return (
+							decoded.ok &&
+							decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+							(decoded.value.payload as RowPullResponsePayload).last
+						);
+					}),
+			);
 
 			for (const frame of hubSentFrames) {
 				const decoded = decodeFrame(frame, symmetricKey);

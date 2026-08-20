@@ -36,6 +36,8 @@ export interface PlatformMcpRegistryDeps {
 	eventBus: TypedEventEmitter;
 	logger: Logger;
 	hubSiteId?: string;
+	/** Test-only override for the initial poll delay. Production uses two seconds. */
+	pollIntervalSeconds?: number;
 }
 
 /**
@@ -209,9 +211,11 @@ export class PlatformMcpRegistry {
 	private remoteTools = new Map<string, Map<string, PlatformRegisteredTool>>(); // serverName → toolName → PlatformRegisteredTool
 	private remotePlatformRequest: RemotePlatformRequest | null = null;
 	private deps: PlatformMcpRegistryDeps;
+	private readonly pollIntervalSeconds: number;
 
 	constructor(deps: PlatformMcpRegistryDeps) {
 		this.deps = deps;
+		this.pollIntervalSeconds = deps.pollIntervalSeconds ?? 2;
 	}
 
 	/**
@@ -774,7 +778,8 @@ export class PlatformMcpRegistry {
 	/**
 	 * Stops a subscription and cleans up timers.
 	 */
-	private stopSubscription(handleId: string): void {
+	/** @internal Used by tests and lifecycle operations. */
+	stopSubscription(handleId: string): void {
 		const subscription = this.activeSubscriptions.get(handleId);
 		if (!subscription) return;
 
@@ -840,8 +845,7 @@ export class PlatformMcpRegistry {
 				throw err;
 			}
 		} else {
-			// Poll mode: start with 2s interval
-			this.startPollTimer(subscription, 2);
+			this.startPollTimer(subscription, this.pollIntervalSeconds);
 		}
 	}
 
@@ -923,6 +927,11 @@ export class PlatformMcpRegistry {
 	 * Returns platform tools for a specific server (used for per-thread scoping).
 	 * Returns empty map if server not found.
 	 */
+	/** @internal Used by tests to verify timer cleanup. */
+	hasPollTimer(handleId: string): boolean {
+		return this.pollTimers.has(handleId);
+	}
+
 	getToolsForServer(serverName: string): Map<string, PlatformRegisteredTool> {
 		return this.platformTools.get(serverName) ?? new Map();
 	}

@@ -382,7 +382,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		protected config: AgentLoopConfig,
 	) {
 		super(createBoundLoopExtensions(ctx, modelRouter, config), config, {
-			silenceTimeoutMs: SILENCE_TIMEOUT_MS,
+			silenceTimeoutMs: config.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS,
 			maxTransientRetries: MAX_SILENCE_RETRIES,
 			degenerateRetryMax: MAX_DEGENERATE_RETRIES,
 		});
@@ -708,28 +708,39 @@ export class BoundAgentLoop extends ModularAgentLoop {
 
 		const totalEstimatedTokens =
 			(this.lastContextDebug?.totalEstimated ?? 0) + frame.toolTokenEstimate;
-		const effectiveSilenceTimeout = scaledSilenceTimeout(SILENCE_TIMEOUT_MS, totalEstimatedTokens);
+		const effectiveSilenceTimeout = scaledSilenceTimeout(
+			this.config.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS,
+			totalEstimatedTokens,
+		);
 		this.currentDriverSpan = getTracer().startSpan("llm-driver.chat", {
 			attributes: {
 				"llm.model": getResolvedModelId(this.lastModelResolution, this.config.modelId || "unknown"),
 				"llm.provider": "local",
 			},
 		});
+		const silenceAbortController = new AbortController();
+		const abortOnParentAbort = () => silenceAbortController.abort();
+		this.config.abortSignal?.addEventListener("abort", abortOnParentAbort, { once: true });
+		const source = resolution.backend.chat({
+			messages: frame.messages,
+			system: frame.assembled.systemPrompt || undefined,
+			tools: frame.mergedTools,
+			max_tokens: this.resolvedMaxOutputTokens(resolution),
+			thinking: resolution.thinkingConfig,
+			effort: resolution.effort,
+			...(forcedThinkChoice && { tool_choice: forcedThinkChoice }),
+			cache_ttl: resolution.cacheTtl,
+			resolveFileRef: createFileRefResolver(this.ctx.db),
+			signal: silenceAbortController.signal,
+		});
 		return {
-			chunks: resolution.backend.chat({
-				messages: frame.messages,
-				system: frame.assembled.systemPrompt || undefined,
-				tools: frame.mergedTools,
-				max_tokens: this.resolvedMaxOutputTokens(resolution),
-				thinking: resolution.thinkingConfig,
-				effort: resolution.effort,
-				...(forcedThinkChoice && { tool_choice: forcedThinkChoice }),
-				cache_ttl: resolution.cacheTtl,
-				resolveFileRef: createFileRefResolver(this.ctx.db),
-				signal: this.config.abortSignal,
-			}),
-			silenceTimeoutMs: effectiveSilenceTimeout,
-			onSilenceHeartbeat: () => this.config.onActivity?.(),
+			chunks: this.withSilenceAbort(
+				source,
+				effectiveSilenceTimeout,
+				silenceAbortController,
+				abortOnParentAbort,
+			),
+			useSilenceTimeout: false,
 		};
 	}
 
@@ -741,6 +752,29 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			yield* source;
 		} finally {
 			this.restorePhase(previousState);
+		}
+	}
+
+	private async *withSilenceAbort<T>(
+		source: AsyncIterable<T>,
+		timeoutMs: number,
+		controller: AbortController,
+		abortOnParentAbort: () => void,
+	): AsyncGenerator<T> {
+		try {
+			yield* super.withSilenceTimeout(
+				source,
+				timeoutMs,
+				() => this.config.onActivity?.(),
+				() => controller.abort(),
+			);
+		} catch (error) {
+			// Abort before the timeout wrapper finalizes the iterator so a stalled
+			// backend can release its pending next() call.
+			controller.abort();
+			throw error;
+		} finally {
+			this.config.abortSignal?.removeEventListener("abort", abortOnParentAbort);
 		}
 	}
 

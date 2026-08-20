@@ -12,6 +12,16 @@ import { findThreadModelHintById } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
 
+export interface TimeoutScheduler {
+	setTimeout(callback: () => void, delayMs: number): unknown;
+	clearTimeout(timeoutId: unknown): void;
+}
+
+const realTimeoutScheduler: TimeoutScheduler = {
+	setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+	clearTimeout: (timeoutId) => clearTimeout(timeoutId as ReturnType<typeof setTimeout>),
+};
+
 export interface RunLocalLoopParams {
 	eventBus: TypedEventEmitter;
 	threadId: string;
@@ -21,6 +31,8 @@ export interface RunLocalLoopParams {
 	agentLoopFactory: (config: AgentLoopConfig) => MainAgentLoop;
 	/** Override for the 5-minute LLM timeout (milliseconds). Defaults to 300_000. */
 	timeoutMs?: number;
+	/** Scheduler for the inactivity timer; injectable for deterministic tests. */
+	timeoutScheduler?: TimeoutScheduler;
 	/** Cooperative cancellation: checked at yield points in the agent loop. */
 	shouldYield?: () => boolean;
 	/** Platform identifier for platform-scoped threads (e.g. "discord"). */
@@ -88,6 +100,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		// inner budget + 5min grace for pre-stream context assembly, capability
 		// resolution, and tool execution between turns.
 		timeoutMs = 35 * 60 * 1000,
+		timeoutScheduler = realTimeoutScheduler,
 		shouldYield,
 		platform,
 		clientTools,
@@ -104,13 +117,13 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 	activeLoopAbortControllers.set(threadId, abortController);
 
 	// Resettable inactivity timeout — restarted each time the loop signals activity.
-	let timeoutId = setTimeout(() => {
+	let timeoutId = timeoutScheduler.setTimeout(() => {
 		abortController.abort(new Error("LLM response timeout"));
 	}, timeoutMs);
 
 	const resetTimeout = (): void => {
-		clearTimeout(timeoutId);
-		timeoutId = setTimeout(() => {
+		timeoutScheduler.clearTimeout(timeoutId);
+		timeoutId = timeoutScheduler.setTimeout(() => {
 			abortController.abort(new Error("LLM response timeout"));
 		}, timeoutMs);
 	};
@@ -147,7 +160,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };
 	} finally {
-		clearTimeout(timeoutId);
+		timeoutScheduler.clearTimeout(timeoutId);
 		eventBus.off("agent:cancel", onCancel);
 		activeLoopAbortControllers.delete(threadId);
 	}

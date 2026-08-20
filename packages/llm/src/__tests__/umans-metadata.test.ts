@@ -217,7 +217,8 @@ describe("fetchUmansUsage", () => {
 	});
 
 	it("parses a future boxed_until into epoch ms", async () => {
-		const future = new Date(Date.now() + 60_000).toISOString();
+		const now = new Date("2026-08-20T03:28:00.000Z");
+		const future = new Date(now.getTime() + 60_000).toISOString();
 		const fetch = (async () =>
 			new Response(JSON.stringify({ usage: { priority: { boxed_until: future } } }), {
 				status: 200,
@@ -226,7 +227,7 @@ describe("fetchUmansUsage", () => {
 		const res = await fetchUmansUsage("https://api.code.umans.ai", "sk-test", { fetch });
 		expect(res.ok).toBe(true);
 		if (!res.ok) return;
-		expect(res.value.boxedUntil).toBeGreaterThan(Date.now());
+		expect(res.value.boxedUntil).toBeGreaterThan(now.getTime());
 	});
 
 	it("returns ok:false on network failure (no throw)", async () => {

@@ -175,6 +175,28 @@ describe("createLoggingFetch", () => {
 	});
 
 	describe("connect / time-to-first-byte deadline (connectTimeoutMs)", () => {
+		interface ControlledTimer {
+			callback: () => void;
+			cleared: boolean;
+		}
+
+		function controlledTimeoutScheduler() {
+			const timers: ControlledTimer[] = [];
+			return {
+				schedule(callback: () => void): ControlledTimer {
+					const timer = { callback, cleared: false };
+					timers.push(timer);
+					return timer;
+				},
+				clear(timer: ControlledTimer) {
+					timer.cleared = true;
+				},
+				fireAll() {
+					for (const timer of timers) if (!timer.cleared) timer.callback();
+				},
+			};
+		}
+
 		// A fetch mock that never resolves on its own but rejects when the
 		// passed-in signal aborts — mimicking globalThis.fetch's behavior on a
 		// silently-hanging connection (the production Bedrock failure shape).
@@ -205,35 +227,38 @@ describe("createLoggingFetch", () => {
 
 		it("clears the deadline once headers arrive — a slow body is never aborted", async () => {
 			const { logger } = makeLogger(new Set<LogLevel>(["info"]));
-			// Capture the signal the SDK would use to read the streaming body.
+			const scheduler = controlledTimeoutScheduler();
 			let capturedSignal: AbortSignal | undefined;
 			globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
 				capturedSignal = init?.signal ?? undefined;
 				return Promise.resolve(new Response("ok"));
 			}) as typeof fetch;
 
-			const wrapped = createLoggingFetch(logger, "bedrock", 30);
+			const wrapped = createLoggingFetch(logger, "bedrock", 30, scheduler);
 			const res = await wrapped("https://x/", { method: "POST", body: "{}" });
 			expect(await res.text()).toBe("ok");
 
-			// Headers arrived → the deadline timer must have been cleared. Wait
-			// well past it and assert the body-governing signal never aborted.
-			await new Promise((r) => setTimeout(r, 60));
+			// Headers arrived → the deadline was cleared, so firing every
+			// scheduled timeout cannot abort the body-governing signal.
+			scheduler.fireAll();
 			expect(capturedSignal?.aborted).toBe(false);
 		});
 
-		it("honors an inbound init.signal, composed via AbortSignal.any", async () => {
+		it("honors an inbound init.signal before the deadline", async () => {
 			const { logger } = makeLogger(new Set<LogLevel>(["info"]));
+			const scheduler = controlledTimeoutScheduler();
 			globalThis.fetch = hangingFetch();
 
-			// Long connect deadline so the inbound (agent-loop) signal wins the race.
-			const wrapped = createLoggingFetch(logger, "bedrock", 10_000);
+			const wrapped = createLoggingFetch(logger, "bedrock", 10_000, scheduler);
 			const agentLoop = new AbortController();
-			setTimeout(() => agentLoop.abort(new Error("agent-loop silence timeout")), 30);
+			const request = wrapped("https://x/", {
+				method: "POST",
+				body: "{}",
+				signal: agentLoop.signal,
+			});
+			agentLoop.abort(new Error("agent-loop silence timeout"));
 
-			await expect(
-				wrapped("https://x/", { method: "POST", body: "{}", signal: agentLoop.signal }),
-			).rejects.toThrow(/agent-loop silence timeout/);
+			await expect(request).rejects.toThrow(/agent-loop silence timeout/);
 		});
 
 		it("is a pure passthrough when the deadline is unset or <= 0 (no signal injected)", async () => {
@@ -244,13 +269,10 @@ describe("createLoggingFetch", () => {
 				return Promise.resolve(new Response("ok"));
 			}) as typeof fetch;
 
-			// Unset → no deadline controller, so no signal is added to a
-			// signal-less init.
 			let wrapped = createLoggingFetch(logger, "bedrock");
 			await wrapped("https://x/", { method: "POST", body: "{}" });
 			expect(sawSignal).toBeNull();
 
-			// <= 0 → treated as disabled, same passthrough.
 			wrapped = createLoggingFetch(logger, "bedrock", 0);
 			await wrapped("https://x/", { method: "POST", body: "{}" });
 			expect(sawSignal).toBeNull();

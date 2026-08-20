@@ -135,6 +135,8 @@ export interface AgentLoopConfig {
 	noHistory?: boolean;
 	noTools?: boolean;
 	maxOutputTokens?: number;
+	/** Test seam for deterministic silence-timeout coverage. */
+	silenceTimeoutMs?: number;
 	shouldYield?: () => boolean;
 	connectionId?: string;
 	systemPromptAddition?: string;

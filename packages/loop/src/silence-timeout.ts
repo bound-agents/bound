@@ -26,6 +26,7 @@ export async function* withSilenceTimeout<T>(
 	timeoutMs: number,
 	onHeartbeat?: () => void,
 	heartbeatIntervalMs: number = SILENCE_HEARTBEAT_INTERVAL_MS,
+	onTimeout?: () => void,
 ): AsyncGenerator<T> {
 	const iterator = source[Symbol.asyncIterator]();
 	let innerFinalized = false;
@@ -36,6 +37,7 @@ export async function* withSilenceTimeout<T>(
 			let heartbeatId: ReturnType<typeof setInterval> | null = null;
 			const timeoutPromise = new Promise<never>((_, reject) => {
 				timerId = setTimeout(() => {
+					onTimeout?.();
 					reject(new Error(`LLM silence timeout: no chunk received for ${timeoutMs}ms`));
 				}, timeoutMs);
 			});
