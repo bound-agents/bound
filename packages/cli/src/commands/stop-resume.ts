@@ -1,5 +1,11 @@
 import { dirname, join, resolve } from "node:path";
-import { getSiteId, insertRow, softDelete, updateRow } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	getSiteId,
+	insertRow,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface StopResumeArgs {
 	configDir?: string;
@@ -22,7 +28,7 @@ function resolveDataDir(configDir: string | undefined): string {
  * collides with the tombstone's PK. Live reads filter deleted = 0 elsewhere.
  */
 function clusterConfigRowExists(db: ReturnType<typeof openBoundDB>, key: string): boolean {
-	return db.query("SELECT key FROM cluster_config WHERE key = ?").get(key) !== null;
+	return findClusterConfigKeyByKeyIncludingDeleted(db, key) !== null;
 }
 
 export async function runStop(args: StopResumeArgs): Promise<void> {

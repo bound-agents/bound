@@ -1,5 +1,11 @@
 import { dirname, join, resolve } from "node:path";
-import { getSiteId, insertRow, softDelete, updateRow } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	getSiteId,
+	insertRow,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface DrainArgs {
 	newHub: string;
@@ -26,7 +32,7 @@ function upsertClusterConfig(
 	value: string,
 	siteId: string,
 ): void {
-	const exists = db.query("SELECT key FROM cluster_config WHERE key = ?").get(key) !== null;
+	const exists = findClusterConfigKeyByKeyIncludingDeleted(db, key) !== null;
 	if (exists) {
 		updateRow(db, "cluster_config", key, { value, deleted: 0 }, siteId);
 	} else {
@@ -86,7 +92,7 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		console.log("Hub updated.\n");
 		// Step 4: Clear emergency_stop (soft-delete — invariant #2)
 		console.log("Step 4: Clearing emergency_stop...");
-		if (db.query("SELECT key FROM cluster_config WHERE key = ?").get(emergencyStopKey) !== null) {
+		if (findClusterConfigKeyByKeyIncludingDeleted(db, emergencyStopKey) !== null) {
 			softDelete(db, "cluster_config", emergencyStopKey, siteId);
 		}
 		console.log("Emergency stop cleared.\n");

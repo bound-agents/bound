@@ -45,6 +45,32 @@ describe("validate-read-centralization", () => {
 			expect(countInlineReads(content)).toBe(0);
 		});
 
+		it("ignores a raw read with an adjacent one-line justification", () => {
+			const content = [
+				"// Raw read justification: SQLite connection metadata is not table data.",
+				'const x = db.query("SELECT changes() AS count").get();',
+			].join("\n");
+			expect(countInlineReads(content)).toBe(0);
+		});
+
+		it("requires the justification to be adjacent to the read", () => {
+			const content = [
+				"// Raw read justification: SQLite connection metadata is not table data.",
+				"const unrelated = true;",
+				'const x = db.query("SELECT changes() AS count").get();',
+			].join("\n");
+			expect(countInlineReads(content)).toBe(1);
+		});
+
+		it("does not let one justification exempt multiple reads", () => {
+			const content = [
+				"// Raw read justification: these PRAGMAs read SQLite file metadata.",
+				'const before = db.query("PRAGMA page_count").get();',
+				'const after = db.query("PRAGMA page_count").get();',
+			].join("\n");
+			expect(countInlineReads(content)).toBe(1);
+		});
+
 		it("returns 0 when there are no inline reads", () => {
 			expect(countInlineReads("const x = findThreadById(db, id);")).toBe(0);
 		});

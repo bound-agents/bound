@@ -37,6 +37,9 @@ export * from "./memory-edges";
 export * from "./client-sessions";
 export * from "./webhooks";
 export * from "./rss-feeds";
+export * from "./change-log";
+export * from "./host-meta";
+export * from "./sync-state";
 
 export * from "./queries/attached-session-hosts";
 export * from "./queries/client-sessions-with-host";
@@ -58,3 +61,6 @@ export * from "./queries/recent-threads-with-messages";
 export * from "./queries/thread-user-display-name";
 export * from "./queries/threads-directory-listing";
 export * from "./queries/threads-needing-summary";
+export * from "./relay-outbox";
+export * from "./queries/webhook-response-by-id";
+export * from "./queries/interrupted-tool-use";

@@ -5,11 +5,14 @@ import {
 	countUnsyncableLocalOnly,
 	findHostSiteIdAndNameById,
 	findLiveThreadById,
+	getHostMetaHostName,
+	getPeerSiteId,
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
 	listHostsOrderedByName,
 	listRemoteHostModelLiveness,
+	listSyncState,
 } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
@@ -86,19 +89,14 @@ export function createStatusRoutes(
 		try {
 			const hosts = listHostsOrderedByName(db);
 
-			const syncState = db.query("SELECT * FROM sync_state").all() as Array<
-				Record<string, unknown>
-			>;
+			const syncState = listSyncState(db);
 
 			const localSiteId = getSiteId(db);
 
 			// Determine hub: if we have a sync_state peer, that's our hub (spoke mode).
 			// Otherwise we ARE the hub.
 			let hub: { siteId: string; hostName: string } | null = null;
-			const peerRow = db.query("SELECT peer_site_id FROM sync_state LIMIT 1").get() as {
-				peer_site_id: string;
-			} | null;
-			const hubSiteId = peerRow?.peer_site_id ?? localSiteId;
+			const hubSiteId = getPeerSiteId(db) ?? localSiteId;
 			const hubHostRow = findHostSiteIdAndNameById(db, hubSiteId);
 			if (hubHostRow) {
 				hub = { siteId: hubHostRow.site_id, hostName: hubHostRow.host_name };
@@ -197,10 +195,7 @@ export function createStatusRoutes(
 			// Get siteId and hostName for message persistence
 			const localSiteId = getSiteId(db);
 
-			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
-				| { value: string }
-				| undefined;
-			const hostNameValue = hostNameRow?.value ?? "unknown";
+			const hostNameValue = getHostMetaHostName(db) ?? "unknown";
 
 			// Read pending client tool calls BEFORE expiring them (AC3.1)
 			const pendingBefore = getPendingClientToolCalls(db, threadId);

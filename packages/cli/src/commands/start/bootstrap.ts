@@ -1,3 +1,9 @@
+import {
+	INTERRUPTED_TOOL_USE_SCAN_SQL,
+	findHostRowForChangeLog,
+	listInterruptedToolUseThreadIds,
+} from "@bound/core";
+import { findUserIdById } from "@bound/core";
 /**
  * Bootstrap phase: config loading, PID lockfile, AppContext creation,
  * Ed25519 keypair, user seeding, host registration, and crash recovery.
@@ -85,34 +91,6 @@ export const STALE_TASK_RESET_SQL =
  * main-loop dispatcher, while background aux recovery rides its durable seed
  * and dispatch queue rather than this generic interrupted-turn notice.
  */
-export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
-	SELECT thread_id,
-		MAX(CASE
-			WHEN role IN ('tool_call', 'tool_result') AND host_origin = ? THEN created_at
-		END) AS last_local_tool_at,
-		MAX(CASE WHEN role = 'assistant' THEN created_at END) AS last_assistant_at,
-		MAX(CASE
-			WHEN role IN ('system', 'developer')
-			 AND (content LIKE '%interrupted%' OR content LIKE '%cancelled%')
-			THEN created_at
-		END) AS last_interrupt_at
-	FROM messages
-	WHERE deleted = 0
-	GROUP BY thread_id
-)
-SELECT ts.thread_id FROM thread_summary ts
-JOIN threads t ON t.id = ts.thread_id
-WHERE t.deleted = 0
-  AND t.agent_id IS NULL
-  AND ts.last_local_tool_at IS NOT NULL
-  AND (ts.last_assistant_at IS NULL OR ts.last_assistant_at < ts.last_local_tool_at)
-  AND (ts.last_interrupt_at IS NULL OR ts.last_interrupt_at < ts.last_local_tool_at)
-  AND NOT EXISTS (
-	SELECT 1 FROM dispatch_queue dq
-	WHERE dq.thread_id = ts.thread_id
-	  AND dq.event_type = 'client_tool_call'
-	  AND dq.status IN ('pending', 'processing')
-  )`;
 
 export interface StartArgs {
 	configDir?: string;
@@ -284,9 +262,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		const now = new Date().toISOString();
 		for (const [username, entry] of Object.entries(appContext.config.allowlist.users)) {
 			const userId = deterministicUUID(BOUND_NAMESPACE, username);
-			const existingUser = appContext.db.query("SELECT id FROM users WHERE id = ?").get(userId) as {
-				id: string;
-			} | null;
+			const existingUser = findUserIdById(appContext.db, userId);
 
 			if (!existingUser) {
 				insertRow(
@@ -345,9 +321,10 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	appContext.logger.info("Registering host...");
 	{
 		const now = new Date().toISOString();
-		const existingHost = appContext.db
-			.query("SELECT site_id FROM hosts WHERE site_id = ?")
-			.get(appContext.siteId) as { site_id: string } | null;
+		const existingHost = findHostRowForChangeLog<{ site_id: string }>(
+			appContext.db,
+			appContext.siteId,
+		);
 
 		if (existingHost) {
 			withChangeLog(appContext.db, appContext.siteId, () => {
@@ -355,9 +332,13 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 					"UPDATE hosts SET host_name = ?, commit_hash = ?, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
 					[appContext.hostName, COMMIT_HASH, now, now, appContext.siteId],
 				);
-				const updatedRow = appContext.db
-					.query("SELECT * FROM hosts WHERE site_id = ?")
-					.get(appContext.siteId) as Record<string, unknown>;
+				const updatedRow = findHostRowForChangeLog<Record<string, unknown>>(
+					appContext.db,
+					appContext.siteId,
+				);
+				if (!updatedRow) {
+					throw new Error("Failed to read updated host row for changelog");
+				}
 				return {
 					tableName: "hosts" as const,
 					rowId: appContext.siteId,
@@ -439,6 +420,8 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 				 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
 				)
 				.run(now);
+			// Raw read justification: SELECT changes() reads SQLite connection metadata.
+			// Raw read justification: SELECT changes() reads SQLite connection metadata.
 			const row = appContext.db.query("SELECT changes() as c").get() as { c: number } | null;
 			return row?.c ?? 0;
 		})();
@@ -464,11 +447,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		// Scan for interrupted tool-use per R-E13. SQL is exported as
 		// INTERRUPTED_TOOL_USE_SCAN_SQL so the regression tests can pin the same
 		// query the daemon actually runs.
-		const interruptedThreads = appContext.db
-			.query(INTERRUPTED_TOOL_USE_SCAN_SQL)
-			.all(appContext.siteId) as Array<{
-			thread_id: string;
-		}>;
+		const interruptedThreads = listInterruptedToolUseThreadIds(appContext.db, appContext.siteId);
 
 		if (interruptedThreads.length > 0) {
 			const now = new Date().toISOString();
@@ -508,3 +487,5 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 
 	return { appContext, keypair, configDir };
 }
+
+export { INTERRUPTED_TOOL_USE_SCAN_SQL };

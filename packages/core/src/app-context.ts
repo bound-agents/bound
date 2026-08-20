@@ -11,6 +11,7 @@ import type { OptionalConfigs, RequiredConfig } from "./config-loader";
 import { loadOptionalConfigs } from "./config-loader";
 import { bootstrapContainer } from "./container";
 import { ConfigService, DatabaseService, EventBusService, LoggerService } from "./container";
+import { getHostMetaValue } from "./repositories/host-meta";
 import { InMemoryTurnStateStore, type TurnStateStore } from "./turn-state-store";
 
 export interface AppContext {
@@ -53,15 +54,11 @@ export async function createAppContext(
 	const logger = loggerService.getLogger("@bound/core", "app-context");
 
 	// Initialize host_meta table with site_id if not present
-	const hostMeta = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-		| {
-				value: string;
-		  }
-		| undefined;
+	const hostMeta = getHostMetaValue(db, "site_id");
 
 	let siteId: string;
 	if (hostMeta) {
-		siteId = hostMeta.value;
+		siteId = hostMeta;
 	} else {
 		// Generate a new site_id for this host
 		siteId = randomUUID();

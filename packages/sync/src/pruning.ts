@@ -1,15 +1,14 @@
 import type { Database } from "bun:sqlite";
+import { countChangeLogEntries, countSyncStatePeers, getChangeLogHlcAtOffset } from "@bound/core";
 import { pruneAcknowledged, pruneRelayCycles } from "@bound/core";
 import { HLC_ZERO } from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import { getMinConfirmedHlc } from "./peer-cursor.js";
 
 export function determinePruningMode(db: Database): "multi-host" | "single-host" {
-	const row = db.query("SELECT COUNT(*) as count FROM sync_state").get() as
-		| { count: number }
-		| undefined;
+	const peerCount = countSyncStatePeers(db);
 
-	if (!row || row.count === 0) {
+	if (peerCount === 0) {
 		return "single-host";
 	}
 
@@ -25,22 +24,19 @@ export function pruneChangeLog(
 		// Retain recent changelog entries in single-host mode so they are available
 		// when multi-host sync is enabled later. Cap at 100k entries to bound growth.
 		const MAX_SINGLE_HOST_ENTRIES = 100_000;
-		const countRow = db.query("SELECT COUNT(*) as count FROM change_log").get() as
-			| { count: number }
-			| undefined;
-		const count = countRow?.count ?? 0;
+		const count = countChangeLogEntries(db);
 
 		if (count <= MAX_SINGLE_HOST_ENTRIES) {
 			return { deleted: 0 };
 		}
 
 		// Keep the most recent MAX_SINGLE_HOST_ENTRIES, delete the rest
-		const cutoffRow = db
-			.query("SELECT hlc FROM change_log ORDER BY hlc DESC LIMIT 1 OFFSET ?")
-			.get(MAX_SINGLE_HOST_ENTRIES) as { hlc: string } | null;
-		if (!cutoffRow) return { deleted: 0 };
+		const cutoffHlc = getChangeLogHlcAtOffset(db, MAX_SINGLE_HOST_ENTRIES);
+		if (!cutoffHlc) return { deleted: 0 };
 
-		db.query("DELETE FROM change_log WHERE hlc <= ?").run(cutoffRow.hlc);
+		// Raw read justification: this call prunes the local change log; it is not a read.
+		db.query("DELETE FROM change_log WHERE hlc <= ?").run(cutoffHlc);
+		// Raw read justification: SELECT changes() reads SQLite connection metadata.
 		const deletedRow = db.query("SELECT changes() as count").get() as { count: number } | undefined;
 		const deleted = deletedRow?.count ?? 0;
 
@@ -60,8 +56,10 @@ export function pruneChangeLog(
 	}
 
 	// Delete all events up to and including minHlc
+	// Raw read justification: this call prunes the local change log; it is not a read.
 	db.query("DELETE FROM change_log WHERE hlc <= ?").run(minHlc);
 
+	// Raw read justification: SELECT changes() reads SQLite connection metadata.
 	const countResult = db.query("SELECT changes() as count").get() as { count: number } | undefined;
 	const deleted = countResult?.count ?? 0;
 
@@ -79,6 +77,7 @@ export function runIncrementalVacuum(db: Database, pages = 8192): void {
 
 /** Drain the entire freelist on startup so accumulated bloat is reclaimed immediately. */
 export function drainFreelistOnStartup(db: Database, logger?: Logger): void {
+	// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
 	const row = db.query("PRAGMA freelist_count").get() as { freelist_count: number } | null;
 	const freePages = row?.freelist_count ?? 0;
 	if (freePages < 1000) return;

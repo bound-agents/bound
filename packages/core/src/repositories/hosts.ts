@@ -367,3 +367,8 @@ export function listHostSiteIdNameAndModels(
 		models: string | null;
 	}>;
 }
+
+/** Includes tombstones because bootstrap updates the physical host row in place. */
+export function findHostRowForChangeLog<T>(db: Database, siteId: string): T | null {
+	return db.query("SELECT * FROM hosts WHERE site_id = ?").get(siteId) as T | null;
+}

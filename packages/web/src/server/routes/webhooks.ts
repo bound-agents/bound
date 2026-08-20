@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { randomUUID } from "node:crypto";
+import { findWebhookResponseById } from "@bound/core";
 import {
 	findClusterConfigKeyByKeyIncludingDeleted,
 	findClusterConfigValueByKey,
@@ -53,20 +54,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 	// `no_history` is stored as INTEGER (0/1) on the task row; we coerce to a
 	// boolean here so the JSON shape matches what callers expect ergonomically
 	// (and what UpdateWebhookOptions accepts on PATCH).
-	const WEBHOOK_SELECT = `SELECT
-			w.id,
-			w.name,
-			w.signature_format,
-			w.description,
-			w.task_id,
-			w.thread_id,
-			w.created_at,
-			w.modified_at,
-			t.system_prompt_addition AS prompt,
-			t.model_hint AS model_hint,
-			CASE WHEN t.no_history = 1 THEN 1 ELSE 0 END AS no_history
-		FROM webhooks w
-		LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0`;
 
 	// Coerce raw row → response shape: integer no_history becomes boolean.
 	function shapeWebhook(
@@ -391,9 +378,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			// Return full webhook object INCLUDING secret. Re-SELECT through
 			// WEBHOOK_SELECT so the response shape (prompt, model_hint, etc.)
 			// matches GET/PATCH and the client can avoid a follow-up fetch.
-			const fresh = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(webhookId) as
-				| Record<string, unknown>
-				| undefined;
+			const fresh = findWebhookResponseById(db, webhookId);
 			const shaped = shapeWebhook(fresh) ?? {};
 			return c.json({ ...shaped, secret }, 201);
 		} catch (error) {
@@ -511,10 +496,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			}
 
 			// Fetch and return updated webhook (without secret, with prompt)
-			const updated = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(id) as Record<
-				string,
-				unknown
-			>;
+			const updated = findWebhookResponseById(db, id);
 
 			return c.json(shapeWebhook(updated));
 		} catch (error) {

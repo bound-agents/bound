@@ -55,3 +55,19 @@ export function findConnectorHandleServerNameByTaskId(
 		.query("SELECT server_name FROM connector_handles WHERE task_id = ? AND deleted = 0")
 		.get(taskId) as { server_name: string } | null;
 }
+
+export interface ConnectorHandleSyncNotificationRow {
+	id: string;
+	server_name: string;
+	deleted: number;
+}
+
+/** Includes tombstones so callers can suppress activation of deleted handles. */
+export function findConnectorHandleForSyncNotification(
+	db: Database,
+	id: string,
+): ConnectorHandleSyncNotificationRow | null {
+	return db
+		.query("SELECT id, server_name, deleted FROM connector_handles WHERE id = ?")
+		.get(id) as ConnectorHandleSyncNotificationRow | null;
+}
