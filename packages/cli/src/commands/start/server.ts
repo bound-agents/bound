@@ -2,7 +2,6 @@
  * Server subsystem: web server creation, message:created handler wiring,
  * delegation logic, and platform connector initialization.
  */
-
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
@@ -25,6 +24,7 @@ import {
 	ThreadExecutor,
 	acknowledgeBatch,
 	claimPending,
+	countBackgroundToolCallsByThread,
 	enqueueMessage,
 	enqueueNotification,
 	expireClientToolCalls,
@@ -525,7 +525,39 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							appContext.siteId,
 							appContext.eventBus,
 						);
+					} else {
+						// #220: the guard exists to protect a DELIVERED result from a
+						// spurious re-wake — but when the placeholder was never stamped
+						// with the background marker, it inverts into silently dropping
+						// the only delivery (observed live: a completed migration sat
+						// unreported for 7h). Until the missing-stamp root cause is
+						// fixed, log loudly and push the recomputed count so a stale
+						// client indicator converges instead of sticking forever.
+						appContext.logger.error(
+							"[agent] Background aux result found no unresolved placeholder — result NOT delivered to parent",
+							{
+								parentThreadId: seed.parentThreadId,
+								parentCallId: seed.parentCallId,
+								auxThreadId: thread_id,
+								isError,
+								contentHead: content.slice(0, 200),
+							},
+						);
+						appContext.eventBus.emit("background:count", {
+							thread_id: seed.parentThreadId,
+							count: countBackgroundToolCallsByThread(appContext.db, seed.parentThreadId),
+						});
 					}
+					// #220: re-drive the parent loop unconditionally. resolveDeferredToolResult
+					// only ENQUEUES the tool_result wakeup — its updateRow fires no
+					// message:created, and this dispatcher never called handleThread for
+					// the parent — so a resolution landing while the parent loop was idle
+					// stranded the pending entry until an unrelated message arrived
+					// (observed live: two entries pending for 10h). notify:enqueued is
+					// the existing wake channel; enqueueToolResult's (thread, call_id)
+					// dedup makes the re-drive idempotent, and handleThread with nothing
+					// pending is a no-op.
+					appContext.eventBus.emit("notify:enqueued", { thread_id: seed.parentThreadId });
 				};
 
 				try {
