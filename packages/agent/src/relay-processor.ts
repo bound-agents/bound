@@ -92,6 +92,9 @@ import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Allow event handlers to claim pre-existing durable intake after daemon startup. */
+export const INTAKE_RECONCILIATION_STARTUP_GRACE_MS = 20 * 60 * 1000;
+
 const getTracer = () => trace.getTracer("bound.relay");
 
 /**
@@ -180,6 +183,8 @@ export class RelayProcessor {
 	// inputSchema. Populated on first relay tool_call for a server so arg
 	// coercion does not add a listTools round-trip on every call.
 	private toolSchemaCache = new Map<string, Map<string, Tool["inputSchema"]>>();
+	private readonly intakeReconciliationNotBeforeMs: number;
+	private readonly now: () => number;
 
 	/**
 	 * Typed handler map — every HandledRequestKind MUST have an entry.
@@ -225,8 +230,11 @@ export class RelayProcessor {
 		private relayConfig?: RelayConfig,
 		threadAffinityMap: Map<string, string> = new Map(),
 		private agentLoopFactory?: (config: AgentLoopConfig) => MainAgentLoop,
+		now: () => number = Date.now,
 	) {
 		this.threadAffinityMap = threadAffinityMap;
+		this.now = now;
+		this.intakeReconciliationNotBeforeMs = now() + INTAKE_RECONCILIATION_STARTUP_GRACE_MS;
 	}
 
 	/** Inject the agent loop factory after startup completes (avoids circular init order). */
@@ -299,20 +307,22 @@ export class RelayProcessor {
 				// that received the POST. Raises a deduplicated dead-letter advisory
 				// for any webhook_intake left undrained by a dark handler — turning a
 				// silent multi-hour outage into something the operator can act on.
-				try {
-					const { advisoriesRaised, deadLettered } = reconcileStaleWebhookIntake(
-						this.db,
-						this.siteId,
-						{ logger: this.logger },
-					);
-					if (advisoriesRaised > 0 || deadLettered > 0) {
-						this.logger.warn("[relay] Webhook intake reconcile acted", {
-							advisoriesRaised,
-							deadLettered,
-						});
+				if (this.now() >= this.intakeReconciliationNotBeforeMs) {
+					try {
+						const { advisoriesRaised, deadLettered } = reconcileStaleWebhookIntake(
+							this.db,
+							this.siteId,
+							{ logger: this.logger },
+						);
+						if (advisoriesRaised > 0 || deadLettered > 0) {
+							this.logger.warn("[relay] Webhook intake reconcile acted", {
+								advisoriesRaised,
+								deadLettered,
+							});
+						}
+					} catch (error) {
+						this.logger.error("Webhook intake reconcile failed", { error });
 					}
-				} catch (error) {
-					this.logger.error("Webhook intake reconcile failed", { error });
 				}
 				// Connector-side analogue: surface live connector-handle subscriptions
 				// whose backing event task has gone dark (cancelled/deleted/missing).
