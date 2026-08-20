@@ -92,6 +92,16 @@ investigator and overprompted to compensate.
   outcomes and anything skipped, with why").
 - Inside a Yard program, invocations are synchronous (`background: true`
   is rejected); concurrency comes from `all()`.
+- `background: true` is for work whose result you genuinely don't need this
+  turn — it arrives later as a message that wakes the thread. Never
+  dispatch background and then busy-poll the aux thread: observed live, an
+  orchestrator queried one background implementer's messages 21 times in
+  70 seconds (near-identical SQL, repeatedly offloaded results) while the
+  result was already on its way. If the next step depends on the errand,
+  invoke synchronously or run the stage inside a Yard; if it doesn't,
+  dispatch and end the turn with an honest status. And when the wake-up
+  arrives, finish the release — a commit without a push and a final report
+  is work nobody can see.
 - Never interpolate a structured object into instructions — the Yard guest
   throws at the coercion site. `JSON.stringify()` it, or extract fields.
 - The aux inherits the dispatching surface's context (working directory,
