@@ -420,6 +420,21 @@ round, which is precisely where live runs have historically dropped them.
   result; the file is at <path>" — never a guessed status. A report about
   a completed run must be grounded in bytes actually read from its
   result.
+- **A gate with no track past red.** A statically-shaped program whose LAST
+  stage is a review/release gate has nowhere to route a failure: the gate
+  correctly blocks, the generator returns, and the run ends with unshipped
+  work nobody owns. Observed live: implement → review → ONE budgeted
+  repair → final review → release; the single repair round spent itself on
+  the first review's objections, the FINAL review found two fresh
+  blockers, and the program had no edge from "blocked" back to "repair" —
+  it returned a 36-file dirty worktree and two defects as its result. The
+  run scored gate integrity and failed task completion. Every gate needs
+  an outgoing edge: loop repair→review until the review passes or the
+  round cap trips (see Recipe: dynamic multi-round orchestration — the
+  planner ends the run by returning done, and done REQUIRES a passed
+  review). If the cap trips first, the result must say so as a blocked
+  handoff — remaining objections, worktree state, exact failing
+  commands — not as a completed run.
 
 ## Roster
 
