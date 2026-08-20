@@ -406,6 +406,20 @@ round, which is precisely where live runs have historically dropped them.
   validation claim in any report must name a command that ran green against
   the worktree state being released, never one inferred from an earlier
   run.
+- **A status invented after a failed read.** A Yard's offloaded result
+  file IS the ground truth; a report written without reading it is
+  confabulation, however plausible it sounds. Observed live: an
+  orchestrator's completed run returned a correctly BLOCKED release in a
+  164 KB offloaded result; two attempts to read it failed (the second, a
+  broad grep, re-offloaded at 261 KB), and the turn ended with a
+  present-tense "the sweep is running through the Yard now" — false when
+  sent — leaving a blocked release and a 36-file dirty worktree
+  unreported. Read the file with NARROW extraction (parse the JSON and
+  print specific keys; tail a bounded range), and if every read fails,
+  say exactly that — "the run completed but I could not extract the
+  result; the file is at <path>" — never a guessed status. A report about
+  a completed run must be grounded in bytes actually read from its
+  result.
 
 ## Roster
 
