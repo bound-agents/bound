@@ -560,9 +560,14 @@ describe("Task Display Utilities", () => {
 
 			const taskId = randomUUID();
 			const threadId = randomUUID();
-			const now = new Date().toISOString();
-			const claimedAt = new Date(Date.now() - 5000).toISOString();
-			const lastTurnAt = new Date(Date.now()).toISOString();
+			const nowMs = Date.now();
+			const now = new Date(nowMs).toISOString();
+			const claimedAt = new Date(nowMs - 5000).toISOString();
+			const lastTurnAt = new Date(nowMs).toISOString();
+
+			expect(Date.parse(claimedAt)).toBe(nowMs - 5000);
+			expect(Date.parse(lastTurnAt)).toBe(nowMs);
+			expect(Date.parse(now)).toBe(nowMs);
 
 			db.prepare(
 				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, origin_thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at, run_count, max_runs, requires, model_hint, no_history, inject_mode, depends_on, require_success, alert_threshold, consecutive_failures, event_depth, no_quiescence, heartbeat_at, result, error, created_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
@@ -609,8 +614,7 @@ describe("Task Display Utilities", () => {
 			const tasks = (await response.json()) as Array<Record<string, unknown>>;
 			const task = tasks.find((t) => (t as Record<string, unknown>).id === taskId);
 			expect(task).toBeDefined();
-			expect((task as Record<string, unknown>).lastDurationMs).toBeGreaterThan(0);
-			expect((task as Record<string, unknown>).lastDurationMs).toBeLessThanOrEqual(6000);
+			expect((task as Record<string, unknown>).lastDurationMs).toBe(5000);
 		});
 
 		it("sets lastDurationMs to null when claimed_at is null", async () => {
@@ -669,8 +673,8 @@ describe("Task Display Utilities", () => {
 
 			const taskId = randomUUID();
 			const threadId = randomUUID();
-			const now = new Date().toISOString();
-			const claimedAt = new Date(Date.now() - 5000).toISOString();
+			const now = "2026-08-20T03:00:00.000Z";
+			const claimedAt = "2026-08-20T02:59:55.000Z";
 
 			db.prepare(
 				"INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, origin_thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at, run_count, max_runs, requires, model_hint, no_history, inject_mode, depends_on, require_success, alert_threshold, consecutive_failures, event_depth, no_quiescence, heartbeat_at, result, error, created_at, created_by, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",

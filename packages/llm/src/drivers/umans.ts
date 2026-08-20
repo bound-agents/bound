@@ -114,17 +114,21 @@ export class Semaphore {
  * lineup driver; referenced by every per-model driver so they all gate on the
  * same semaphore and share the usage cache.
  */
+export interface UmansRetryScheduler {
+	schedule(delayMs: number, callback: () => void): { cancel(): void };
+}
+
+const realRetryScheduler: UmansRetryScheduler = {
+	schedule(delayMs, callback) {
+		const timer = setTimeout(callback, delayMs);
+		return { cancel: () => clearTimeout(timer) };
+	},
+};
+
 export interface UmansAccount {
 	apiKey: string;
 	baseUrl: string;
-	/**
-	 * Build an AI SDK Anthropic provider whose outgoing request body carries a
-	 * top-level `reasoning_effort` (a umans extension on the Anthropic route —
-	 * native Anthropic has no such field, and `@ai-sdk/anthropic` would drop it
-	 * from `providerOptions`). Constructed per `chat()` call so each call's
-	 * effort is injected race-free. When `reasoningEffort` is undefined the
-	 * provider sends no such field (umans's own default applies).
-	 */
+	/** Build an AI SDK Anthropic provider for an optional reasoning effort. */
 	makeProvider(reasoningEffort?: string): ReturnType<typeof createAnthropic>;
 	semaphore: Semaphore;
 	/** Lazily-refreshed usage cache. */
@@ -133,6 +137,7 @@ export interface UmansAccount {
 	/** Injectable for tests; default = the real fetchers. */
 	metadataFetch: typeof fetchUmansModelMetadata;
 	usageFetch: typeof fetchUmansUsage;
+	retryScheduler: UmansRetryScheduler;
 }
 
 /**
@@ -208,6 +213,7 @@ export function createUmansAccount(config: {
 	connectTimeoutMs?: number;
 	metadataFetch?: typeof fetchUmansModelMetadata;
 	usageFetch?: typeof fetchUmansUsage;
+	scheduler?: UmansRetryScheduler;
 }): UmansAccount {
 	const baseUrl = config.baseUrl ?? UMANS_ANTHROPIC_BASE;
 	const customFetch = resolveProviderFetch(PROVIDER_NAME, config);
@@ -234,6 +240,7 @@ export function createUmansAccount(config: {
 		logger: config.logger,
 		metadataFetch: config.metadataFetch ?? fetchUmansModelMetadata,
 		usageFetch: config.usageFetch ?? fetchUmansUsage,
+		retryScheduler: config.scheduler ?? realRetryScheduler,
 	};
 }
 
@@ -272,6 +279,7 @@ class UmansReadiness implements BackendReadiness {
 	private ready = false;
 	private disposed = false;
 	private readonly controller = new AbortController();
+	private pendingRetry?: { cancel(): void };
 
 	constructor(
 		private readonly account: UmansAccount,
@@ -285,11 +293,12 @@ class UmansReadiness implements BackendReadiness {
 
 	dispose(): void {
 		this.disposed = true;
+		this.pendingRetry?.cancel();
+		this.pendingRetry = undefined;
 		this.controller.abort();
 	}
 
 	start(registrar: ModelRegistrar): void {
-		// Fire-and-forget; bound start does not await this.
 		void this.runFetchLoop(registrar);
 	}
 
@@ -298,10 +307,7 @@ class UmansReadiness implements BackendReadiness {
 		while (!this.disposed) {
 			const metaRes = await this.account.metadataFetch(
 				`${this.account.baseUrl.replace(/\/$/, "")}/v1`,
-				{
-					apiKey: this.account.apiKey,
-					signal: this.controller.signal,
-				},
+				{ apiKey: this.account.apiKey, signal: this.controller.signal },
 			);
 			let usageRes: Awaited<ReturnType<typeof fetchUmansUsage>> | undefined;
 			if (metaRes.ok) {
@@ -311,7 +317,6 @@ class UmansReadiness implements BackendReadiness {
 			}
 
 			if (this.disposed) return;
-
 			if (metaRes.ok && usageRes?.ok) {
 				this.applyLineup(registrar, Array.from(metaRes.value.values()), usageRes.value);
 				this.logger?.info?.("umans lineup ready", {
@@ -321,7 +326,6 @@ class UmansReadiness implements BackendReadiness {
 				return;
 			}
 
-			// AbortError is terminal (dispose path); any other failure retries.
 			const err = (
 				!metaRes.ok ? metaRes.error : usageRes && !usageRes.ok ? usageRes.error : undefined
 			) as Error | undefined;
@@ -334,7 +338,10 @@ class UmansReadiness implements BackendReadiness {
 				delayMs: delay,
 				error: err?.message,
 			});
-			await new Promise((resolve) => setTimeout(resolve, delay));
+			await new Promise<void>((resolve) => {
+				this.pendingRetry = this.account.retryScheduler.schedule(delay, resolve);
+			});
+			this.pendingRetry = undefined;
 		}
 	}
 

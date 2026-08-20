@@ -15,6 +15,64 @@ import pino from "pino";
 
 import { resetLogger } from "../logger.js";
 
+type LogRecord = Record<string, unknown>;
+type CaptureStream = Writable & {
+	waitForRecord(predicate: (record: LogRecord) => boolean): Promise<LogRecord>;
+};
+
+function createCaptureStream(timeoutMs = 1_000): CaptureStream {
+	const records: LogRecord[] = [];
+	const waiters: Array<{
+		predicate: (record: LogRecord) => boolean;
+		resolve: (record: LogRecord) => void;
+		reject: (error: Error) => void;
+		timeout: ReturnType<typeof setTimeout>;
+	}> = [];
+
+	const stream = new Writable({
+		write(chunk: Buffer, _encoding: string, callback: () => void) {
+			for (const line of chunk.toString("utf-8").split("\n")) {
+				if (!line.trim()) continue;
+				try {
+					const record: LogRecord = JSON.parse(line);
+					records.push(record);
+					for (let index = waiters.length - 1; index >= 0; index--) {
+						const waiter = waiters[index];
+						if (waiter.predicate(record)) {
+							clearTimeout(waiter.timeout);
+							waiters.splice(index, 1);
+							waiter.resolve(record);
+						}
+					}
+				} catch {
+					// Not JSON, skip.
+				}
+			}
+			callback();
+		},
+	}) as CaptureStream;
+
+	stream.waitForRecord = (predicate) => {
+		const existing = records.find(predicate);
+		if (existing) return Promise.resolve(existing);
+
+		return new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				const index = waiters.findIndex((waiter) => waiter.timeout === timeout);
+				if (index >= 0) waiters.splice(index, 1);
+				reject(
+					new Error(
+						`Timed out after ${timeoutMs}ms waiting for expected log record. Captured: ${JSON.stringify(records)}`,
+					),
+				);
+			}, timeoutMs);
+			waiters.push({ predicate, resolve, reject, timeout });
+		});
+	};
+
+	return stream;
+}
+
 describe("logger-trace-mixin", () => {
 	beforeEach(() => {
 		resetLogger();
@@ -96,21 +154,7 @@ describe("logger-trace-mixin", () => {
 			expect(activeSpan).toBeFalsy();
 
 			// Create a custom pino logger with a capture transport
-			const capturedLogs: Record<string, unknown>[] = [];
-			const captureStream = new Writable({
-				write(chunk: Buffer, _encoding: string, callback: () => void) {
-					const line = chunk.toString("utf-8").trim();
-					if (line) {
-						try {
-							const parsed = JSON.parse(line);
-							capturedLogs.push(parsed);
-						} catch {
-							// Not JSON, skip
-						}
-					}
-					callback();
-				},
-			});
+			const captureStream = createCaptureStream();
 
 			const testLogger = pino(
 				{
@@ -133,15 +177,11 @@ describe("logger-trace-mixin", () => {
 			const childLogger = testLogger.child({ package: "@bound/test", component: "logger-test" });
 			childLogger.info("test message without span");
 
-			// Give pino time to write
-			await new Promise((r) => setTimeout(r, 100));
-
-			// Assert: Log should NOT have trace_id or span_id
-			expect(capturedLogs.length).toBeGreaterThan(0);
-			const testLog = capturedLogs.find(
+			const testLog = await captureStream.waitForRecord(
 				(log) => typeof log.msg === "string" && log.msg.includes("test message without span"),
 			);
-			expect(testLog).toBeDefined();
+
+			// Assert: Log should NOT have trace_id or span_id
 			expect(testLog).not.toHaveProperty("trace_id");
 			expect(testLog).not.toHaveProperty("span_id");
 		} finally {
@@ -155,21 +195,7 @@ describe("logger-trace-mixin", () => {
 		expect(activeSpan).toBeFalsy();
 
 		// Create a custom pino logger with a capture transport
-		const capturedLogs: Record<string, unknown>[] = [];
-		const captureStream = new Writable({
-			write(chunk: Buffer, _encoding: string, callback: () => void) {
-				const line = chunk.toString("utf-8").trim();
-				if (line) {
-					try {
-						const parsed = JSON.parse(line);
-						capturedLogs.push(parsed);
-					} catch {
-						// Not JSON, skip
-					}
-				}
-				callback();
-			},
-		});
+		const captureStream = createCaptureStream();
 
 		const testLogger = pino(
 			{
@@ -192,15 +218,11 @@ describe("logger-trace-mixin", () => {
 		const childLogger = testLogger.child({ package: "@bound/test", component: "logger-test" });
 		childLogger.info("test message no otel");
 
-		// Give pino time to write
-		await new Promise((r) => setTimeout(r, 100));
-
-		// Assert: Log should NOT have trace_id or span_id (no provider = no span context)
-		expect(capturedLogs.length).toBeGreaterThan(0);
-		const testLog = capturedLogs.find(
+		const testLog = await captureStream.waitForRecord(
 			(log) => typeof log.msg === "string" && log.msg.includes("test message no otel"),
 		);
-		expect(testLog).toBeDefined();
+
+		// Assert: Log should NOT have trace_id or span_id (no provider = no span context)
 		expect(testLog).not.toHaveProperty("trace_id");
 		expect(testLog).not.toHaveProperty("span_id");
 	});

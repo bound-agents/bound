@@ -42,6 +42,7 @@ export class CancelStateMachine {
 	constructor(
 		private threadId: string,
 		private deps: CancelDeps,
+		private readonly clock: () => number = Date.now,
 	) {}
 
 	/**
@@ -71,7 +72,7 @@ export class CancelStateMachine {
 			return;
 		}
 
-		const now = Date.now();
+		const now = this.clock();
 		const withinTwoSeconds = now - this.lastCtrlCTime < 2000;
 
 		if (this.turnActive) {

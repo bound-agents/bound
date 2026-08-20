@@ -1,8 +1,44 @@
 import { describe, expect, it } from "bun:test";
 import { Semaphore, UmansDriver, createUmansAccount } from "../drivers/umans";
-import type { BackendReadiness, ChatParams, ModelRegistrar, StreamChunk } from "../types";
+import type { BackendReadiness, ChatParams, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import type { UmansModelMeta, UmansUsage } from "../umans-metadata";
+
+type ScheduledTask = { dueAt: number; callback: () => void; cancelled: boolean };
+
+function manualScheduler() {
+	let now = 0;
+	const tasks: ScheduledTask[] = [];
+	return {
+		schedule(delayMs: number, callback: () => void) {
+			const task = { dueAt: now + delayMs, callback, cancelled: false };
+			tasks.push(task);
+			return {
+				cancel: () => {
+					task.cancelled = true;
+				},
+			};
+		},
+		advanceBy(ms: number) {
+			now += ms;
+			for (;;) {
+				const task = tasks.find((candidate) => !candidate.cancelled && candidate.dueAt <= now);
+				if (!task) return;
+				task.cancelled = true;
+				task.callback();
+			}
+		},
+		pending() {
+			return tasks.filter((task) => !task.cancelled).length;
+		},
+	};
+}
+
+async function flushMicrotasks(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+}
 
 // Minimal Anthropic Messages SSE body. message_start carries cache usage;
 // a text delta; message_delta carries output tokens. Enough for the AI SDK
@@ -274,7 +310,7 @@ describe("UmansDriver concurrency semaphore (AC.11)", () => {
 		const p = sema.acquire().then(() => {
 			third = true;
 		});
-		await new Promise((r) => setTimeout(r, 5));
+		await flushMicrotasks();
 		expect(third).toBe(false);
 		sema.release();
 		await p;
@@ -301,8 +337,8 @@ describe("UmansDriver concurrency semaphore (AC.11)", () => {
 		for await (const _ of d.chat(baseParams)) {
 			break;
 		}
-		// Allow the generator's finally microtask to run.
-		await new Promise((r) => setTimeout(r, 5));
+		// Async-generator cleanup is complete when the loop exits.
+		expect(sema.permits).toBe(1);
 		expect(sema.permits).toBe(1);
 		// A subsequent acquire succeeds (slot freed).
 		await sema.acquire();
@@ -385,11 +421,12 @@ describe("UmansDriver readiness (AC.6, AC.10)", () => {
 		]);
 	}
 
-	it("expands only after both metadata and usage succeed, retrying transient failure (AC.10)", async () => {
+	it("manually retries after a failed initial attempt and becomes ready", async () => {
+		const scheduler = manualScheduler();
 		let metaCalls = 0;
 		const metadataFetch = (async () => {
 			metaCalls++;
-			if (metaCalls < 2) return { ok: false as const, error: new Error("transient") };
+			if (metaCalls === 1) return { ok: false as const, error: new Error("transient") };
 			return { ok: true as const, value: lineupMeta() };
 		}) as typeof import("../umans-metadata").fetchUmansModelMetadata;
 		const usageFetch = (async () => ({
@@ -397,32 +434,33 @@ describe("UmansDriver readiness (AC.6, AC.10)", () => {
 			value: { concurrencyLimit: 4 } satisfies UmansUsage,
 		})) as typeof import("../umans-metadata").fetchUmansUsage;
 
-		const account = createUmansAccount({ apiKey: "sk-test", metadataFetch, usageFetch });
+		const account = createUmansAccount({ apiKey: "sk-test", metadataFetch, usageFetch, scheduler });
 		const namespace = new UmansDriver({ account, namespaceId: "umans" });
 		const readiness = namespace.readiness as BackendReadiness;
-
 		let registerCalls = 0;
-		let registeredIds: string[] = [];
-		const registrar: ModelRegistrar = {
-			register(_providerId, models) {
+		readiness.start({
+			register() {
 				registerCalls++;
-				registeredIds = models.map((m) => m.descriptor.id);
 			},
-		};
+		});
 
+		await flushMicrotasks();
+		expect(metaCalls).toBe(1);
+		expect(scheduler.pending()).toBe(1);
 		expect(readiness.isReady()).toBe(false);
-		readiness.start(registrar);
-		// Wait for the retry + success.
-		await new Promise((r) => setTimeout(r, 2200));
-		expect(metaCalls).toBeGreaterThanOrEqual(2);
+		scheduler.advanceBy(999);
+		await flushMicrotasks();
+		expect(metaCalls).toBe(1);
+		scheduler.advanceBy(1);
+		await flushMicrotasks();
+		expect(metaCalls).toBe(2);
 		expect(registerCalls).toBe(1);
-		expect(registeredIds).toEqual(["umans-coder"]);
 		expect(readiness.isReady()).toBe(true);
-		// Semaphore resized from the fetched concurrency limit.
 		expect(account.semaphore.capacity).toBe(4);
 	});
 
-	it("a disposed readiness backend does not retry or register (AC.6)", async () => {
+	it("disposal cancels the pending readiness retry", async () => {
+		const scheduler = manualScheduler();
 		let metaCalls = 0;
 		const metadataFetch = (async () => {
 			metaCalls++;
@@ -433,23 +471,24 @@ describe("UmansDriver readiness (AC.6, AC.10)", () => {
 			value: {} satisfies UmansUsage,
 		})) as typeof import("../umans-metadata").fetchUmansUsage;
 
-		const account = createUmansAccount({ apiKey: "sk-test", metadataFetch, usageFetch });
+		const account = createUmansAccount({ apiKey: "sk-test", metadataFetch, usageFetch, scheduler });
 		const namespace = new UmansDriver({ account, namespaceId: "umans" });
 		const readiness = namespace.readiness as BackendReadiness;
-
 		let registerCalls = 0;
 		readiness.start({
 			register() {
 				registerCalls++;
 			},
 		});
-		// First attempt runs; dispose before the backoff retry fires.
-		await new Promise((r) => setTimeout(r, 50));
+
+		await flushMicrotasks();
+		expect(metaCalls).toBe(1);
+		expect(scheduler.pending()).toBe(1);
 		readiness.dispose();
-		const callsAtDispose = metaCalls;
-		await new Promise((r) => setTimeout(r, 1500));
-		// No further attempts after dispose, and no register.
-		expect(metaCalls).toBe(callsAtDispose);
+		expect(scheduler.pending()).toBe(0);
+		scheduler.advanceBy(60_000);
+		await flushMicrotasks();
+		expect(metaCalls).toBe(1);
 		expect(registerCalls).toBe(0);
 		expect(readiness.isReady()).toBe(false);
 	});

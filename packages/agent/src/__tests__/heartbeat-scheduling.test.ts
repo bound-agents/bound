@@ -127,6 +127,37 @@ describe("rescheduleHeartbeat", () => {
 	}
 
 	// AC1.1: Clock alignment - 30min interval at 14:17 should give 14:30
+	it("derives heartbeat interval bounds from one captured clock instant", () => {
+		const realNow = Date.now;
+		const effectiveIntervalMs = 30 * 60 * 1000 * 5;
+		const referenceNow = effectiveIntervalMs * 1_000 + 1;
+		let clockReads = 0;
+
+		Date.now = () => {
+			clockReads += 1;
+			return clockReads === 1 ? referenceNow : referenceNow + effectiveIntervalMs;
+		};
+
+		try {
+			const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
+			const ctx = makeCtx();
+			const lastInteraction = new Date(referenceNow - 5 * 60 * 60 * 1000);
+
+			const task = getTask(taskId);
+			rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
+
+			const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
+			const nextDate = new Date(row.next_run_at);
+			const now = Date.now();
+			const msUntilNext = nextDate.getTime() - now;
+
+			expect(msUntilNext).toBeGreaterThan(0);
+			expect(msUntilNext).toBeLessThanOrEqual(effectiveIntervalMs);
+		} finally {
+			Date.now = realNow;
+		}
+	});
+
 	it("aligns to clock boundaries (AC1.1)", () => {
 		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
 		const ctx = makeCtx();

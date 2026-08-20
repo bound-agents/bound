@@ -436,23 +436,30 @@ describe("Phase 4: capability management", () => {
 		expect(router.isRateLimited("test")).toBe(true);
 	});
 
-	it("isRateLimited returns false after expiry", async () => {
-		const router = createModelRouter({
-			backends: [
-				{
-					id: "test",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-				},
-			],
-			default: "test",
-		});
-		router.markRateLimited("test", 1); // 1ms — expires immediately
-		await new Promise((resolve) => setTimeout(resolve, 5));
+	it("isRateLimited expires exactly at the retry boundary", () => {
+		let now = 1_000;
+		const router = createModelRouter(
+			{
+				backends: [
+					{
+						id: "test",
+						provider: "openai-compatible",
+						apiKey: "test",
+						model: "llama3",
+						baseUrl: "http://localhost:11434",
+						contextWindow: 4096,
+						tier: 1,
+					},
+				],
+				default: "test",
+			},
+			{ clock: () => now },
+		);
+		router.markRateLimited("test", 1_000);
+		expect(router.isRateLimited("test")).toBe(true);
+		now += 999;
+		expect(router.isRateLimited("test")).toBe(true);
+		now += 1;
 		expect(router.isRateLimited("test")).toBe(false);
 	});
 

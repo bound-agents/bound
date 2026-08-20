@@ -143,6 +143,7 @@ export class ModelRouter {
 	private rateLimits: Map<string, number>; // backendId → expiry timestamp (ms)
 	private tiers: Map<string, number>; // backendId → tier number
 	private backendConfigs: Map<string, BackendConfig>; // backendId → raw config
+	private clock: () => number;
 	/**
 	 * Generic readiness gate (parallel to rateLimits): ids of backends whose
 	 * `readiness` exists and `isReady() === false`. A not-ready backend is
@@ -160,6 +161,7 @@ export class ModelRouter {
 		tiers?: Map<string, number>,
 		backendConfigs?: Map<string, BackendConfig>,
 		notReady?: Set<string>,
+		clock: () => number = Date.now,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -169,6 +171,7 @@ export class ModelRouter {
 		this.rateLimits = new Map();
 		this.tiers = tiers ?? new Map();
 		this.backendConfigs = backendConfigs ?? new Map();
+		this.clock = clock;
 		this.notReady =
 			notReady ??
 			new Set(
@@ -317,7 +320,7 @@ export class ModelRouter {
 	 * @param retryAfterMs - Duration in milliseconds (use 60_000 as default if Retry-After header is absent)
 	 */
 	markRateLimited(id: string, retryAfterMs: number): void {
-		this.rateLimits.set(id, Date.now() + retryAfterMs);
+		this.rateLimits.set(id, this.clock() + retryAfterMs);
 	}
 
 	/**
@@ -327,7 +330,7 @@ export class ModelRouter {
 	isRateLimited(id: string): boolean {
 		const expiry = this.rateLimits.get(id);
 		if (expiry === undefined) return false;
-		if (Date.now() >= expiry) {
+		if (this.clock() >= expiry) {
 			this.rateLimits.delete(id); // Clean up expired entry
 			return false;
 		}
@@ -832,6 +835,8 @@ export interface CreateModelRouterOptions {
 	 * unset.
 	 */
 	fetchByBackendId?: Map<string, typeof globalThis.fetch>;
+	/** Optional clock override for deterministic rate-limit handling. */
+	clock?: () => number;
 }
 
 export function createModelRouter(
@@ -845,5 +850,7 @@ export function createModelRouter(
 		state.effectiveCaps,
 		state.tiers,
 		state.backendConfigs,
+		undefined,
+		options?.clock,
 	);
 }

@@ -12,7 +12,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1337,23 +1337,35 @@ describe("Startup Wiring", () => {
 				eventBus.off("agent:cancel", onCancel);
 			});
 
-			it("AbortSignal from timeout must abort the agent loop", async () => {
-				// Verify that setTimeout + AbortController.abort() works as expected
-				const abortController = new AbortController();
-				let timeoutFired = false;
+			it("AbortSignal from timeout aborts only after its deadline", () => {
+				const timers: Array<{ callback: () => void; delay: number }> = [];
+				const originalSetTimeout = globalThis.setTimeout;
+				const setTimeoutMock = mock((callback: () => void, delay: number) => {
+					timers.push({ callback, delay });
+					return 0 as unknown as ReturnType<typeof setTimeout>;
+				});
+				globalThis.setTimeout = setTimeoutMock as typeof setTimeout;
 
-				const timeoutId = setTimeout(() => {
-					abortController.abort(new Error("LLM response timeout"));
-					timeoutFired = true;
-				}, 10); // Very short timeout for testing
+				try {
+					const abortController = new AbortController();
+					let timeoutFired = false;
 
-				// Wait for timeout to fire
-				await new Promise((resolve) => setTimeout(resolve, 20));
+					setTimeout(() => {
+						abortController.abort(new Error("LLM response timeout"));
+						timeoutFired = true;
+					}, 10);
 
-				expect(timeoutFired).toBe(true);
-				expect(abortController.signal.aborted).toBe(true);
+					expect(setTimeoutMock).toHaveBeenCalledTimes(1);
+					expect(timers[0]?.delay).toBe(10);
+					expect(timeoutFired).toBe(false);
+					expect(abortController.signal.aborted).toBe(false);
 
-				clearTimeout(timeoutId);
+					timers[0]?.callback();
+					expect(timeoutFired).toBe(true);
+					expect(abortController.signal.aborted).toBe(true);
+				} finally {
+					globalThis.setTimeout = originalSetTimeout;
+				}
 			});
 
 			it("agent:cancel listeners must be cleaned up after loop completes", async () => {

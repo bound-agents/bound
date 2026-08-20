@@ -152,20 +152,29 @@ describe("createClientTracingSession", () => {
 		expect(traceData).toBeUndefined();
 	});
 
-	it("handles async functions correctly", async () => {
+	it("handles a genuinely pending async callback", async () => {
 		const session = createClientTracingSession();
+		let release!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let callbackStarted = false;
+
 		try {
-			const { result, traceData } = await session.wrapToolCall(
-				traceContext(TRACEPARENT_A),
-				async () => {
-					await new Promise((resolve) => setTimeout(resolve, 10));
-					return { delayed: true };
-				},
-			);
-			expect(result).toEqual({ delayed: true });
+			const wrapped = session.wrapToolCall(traceContext(TRACEPARENT_A), async () => {
+				callbackStarted = true;
+				await pending;
+				return { released: true };
+			});
+
+			await Promise.resolve();
+			expect(callbackStarted).toBe(true);
+
+			release();
+			const { result, traceData } = await wrapped;
+			expect(result).toEqual({ released: true });
 			expect(traceData).toBeDefined();
-			const spans = parseSpans(traceData);
-			expect(spans.length).toBe(1);
+			expect(parseSpans(traceData)).toHaveLength(1);
 		} finally {
 			session.end();
 		}

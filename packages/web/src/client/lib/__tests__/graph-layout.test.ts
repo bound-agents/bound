@@ -48,7 +48,7 @@ describe("computeInitialLayout", () => {
 
 	describe("node sorting and limiting", () => {
 		it("sorts nodes within tier by modifiedAt descending", () => {
-			const now = new Date();
+			const baseMs = Date.UTC(2026, 0, 1);
 			const nodes: MemoryGraphNode[] = [
 				{
 					key: "node-old",
@@ -57,7 +57,7 @@ describe("computeInitialLayout", () => {
 					source: null,
 					sourceThreadTitle: null,
 					lineIndex: 0,
-					modifiedAt: new Date(now.getTime() - 3000).toISOString(),
+					modifiedAt: new Date(baseMs - 3000).toISOString(),
 				},
 				{
 					key: "node-newest",
@@ -66,7 +66,7 @@ describe("computeInitialLayout", () => {
 					source: null,
 					sourceThreadTitle: null,
 					lineIndex: 0,
-					modifiedAt: now.toISOString(),
+					modifiedAt: new Date(baseMs).toISOString(),
 				},
 			];
 

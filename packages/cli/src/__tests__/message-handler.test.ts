@@ -204,32 +204,39 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		expect(capturedSignals[0]?.aborted).toBe(true);
 	});
 
-	it("should reset timeout when onActivity is called by the loop", async () => {
+	it("resets the inactivity timeout for each activity without aborting before the final deadline", async () => {
 		const eventBus = makeEventBus();
 		const threadId = randomUUID();
 		const capturedSignals: AbortSignal[] = [];
+		let nextId = 0;
+		const scheduled = new Map<number, () => void>();
+		const cancelled: number[] = [];
+		const timeoutScheduler = {
+			setTimeout(callback: () => void) {
+				const id = nextId++;
+				scheduled.set(id, callback);
+				return id;
+			},
+			clearTimeout(id: unknown) {
+				cancelled.push(id as number);
+				scheduled.delete(id as number);
+			},
+		};
 
-		// Loop that takes 200ms total, with activity at 60ms and 120ms.
-		// Timeout is 100ms — without reset it would fire at 100ms.
-		// With reset at 60ms → new deadline at 160ms; reset at 120ms → 220ms.
-		// Loop finishes at 200ms before the 220ms deadline.
-		let capturedOnActivity: (() => void) | undefined;
+		let onActivity: (() => void) | undefined;
+		let finish: (() => void) | undefined;
 		const factory = (config: AgentLoopConfig): MainAgentLoop => {
 			if (config.abortSignal) capturedSignals.push(config.abortSignal);
-			capturedOnActivity = config.onActivity;
+			onActivity = config.onActivity;
 			return {
-				run: async (): Promise<AgentLoopResult> => {
-					await new Promise((resolve) => setTimeout(resolve, 60));
-					config.onActivity?.(); // First activity
-					await new Promise((resolve) => setTimeout(resolve, 60));
-					config.onActivity?.(); // Second activity
-					await new Promise((resolve) => setTimeout(resolve, 80));
-					return { messagesCreated: 1, toolCallsMade: 2, filesChanged: 0 };
-				},
+				run: () =>
+					new Promise<AgentLoopResult>((resolve) => {
+						finish = () => resolve({ messagesCreated: 1, toolCallsMade: 2, filesChanged: 0 });
+					}),
 			} as MainAgentLoop;
 		};
 
-		const result = await runLocalAgentLoop({
+		const run = runLocalAgentLoop({
 			eventBus,
 			threadId,
 			userId: "u1",
@@ -237,12 +244,21 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			activeLoopAbortControllers: controllers,
 			agentLoopFactory: factory as any,
 			timeoutMs: 100,
+			timeoutScheduler,
 		});
 
-		// Should NOT have been aborted — activity resets kept pushing deadline out
+		expect([...scheduled.keys()]).toEqual([0]);
+		onActivity?.();
+		expect(cancelled).toEqual([0]);
+		expect([...scheduled.keys()]).toEqual([1]);
+		onActivity?.();
+		expect(cancelled).toEqual([0, 1]);
+		expect([...scheduled.keys()]).toEqual([2]);
+
 		expect(capturedSignals[0]?.aborted).toBe(false);
+		finish?.();
+		const result = await run;
 		expect(result.agentResult.messagesCreated).toBe(1);
-		expect(capturedOnActivity).toBeDefined();
 	});
 
 	it("should abort if no activity resets happen within timeoutMs", async () => {

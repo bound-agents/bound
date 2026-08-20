@@ -2,6 +2,36 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
 import { type WebSocketConfig, createWebSocketHandler } from "../websocket";
 
+type SentMessage = Record<string, unknown>;
+
+async function waitForWebSocketMessage(
+	messages: SentMessage[],
+	predicate: (message: SentMessage) => boolean,
+	description: string,
+	timeoutMs = 1_000,
+): Promise<SentMessage> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const message = messages.find(predicate);
+		if (message) return message;
+		await Bun.sleep(1);
+	}
+	throw new Error(
+		`Timed out after ${timeoutMs}ms waiting for ${description}; received: ${JSON.stringify(messages)}`,
+	);
+}
+
+async function waitForNoWebSocketMessages(
+	messages: SentMessage[],
+	description: string,
+	quietMs = 20,
+): Promise<void> {
+	await Bun.sleep(quietMs);
+	if (messages.length > 0) {
+		throw new Error(`Expected no ${description}; received: ${JSON.stringify(messages)}`);
+	}
+}
+
 describe("WebSocket Handler", () => {
 	let eventBus: TypedEventEmitter;
 	let handler: WebSocketConfig;
@@ -42,11 +72,11 @@ describe("WebSocket Handler", () => {
 	});
 
 	it("broadcasts message:created events to subscribed clients", async () => {
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -67,20 +97,21 @@ describe("WebSocket Handler", () => {
 			thread_id: "thread-1",
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(1);
-		const parsed = JSON.parse(messages[0]);
+		const parsed = await waitForWebSocketMessage(
+			messages,
+			(message) => message.type === "message:created",
+			"message:created",
+		);
 		expect(parsed.type).toBe("message:created");
 		expect(parsed.data.role).toBe("user");
 	});
 
 	it("does not broadcast to clients not subscribed to thread", async () => {
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -101,17 +132,15 @@ describe("WebSocket Handler", () => {
 			thread_id: "thread-2",
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(0);
+		await waitForNoWebSocketMessages(messages, "messages for an unsubscribed thread");
 	});
 
 	it("broadcasts message:broadcast events to subscribed clients", async () => {
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -133,20 +162,21 @@ describe("WebSocket Handler", () => {
 			thread_id: "thread-1",
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(1);
-		const parsed = JSON.parse(messages[0]);
+		const parsed = await waitForWebSocketMessage(
+			messages,
+			(message) => message.type === "message:created",
+			"message:created",
+		);
 		expect(parsed.type).toBe("message:created");
 		expect(parsed.data.role).toBe("assistant");
 	});
 
 	it("does NOT push message:broadcast to non-subscribed clients", async () => {
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -164,9 +194,7 @@ describe("WebSocket Handler", () => {
 			thread_id: "thread-2", // not subscribed
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(0);
+		await waitForNoWebSocketMessages(messages, "messages for an unsubscribed thread");
 	});
 
 	it("handles client disconnection", () => {
@@ -195,11 +223,11 @@ describe("WebSocket Handler", () => {
 	});
 
 	it("broadcasts context:debug events to subscribed clients", async () => {
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -229,10 +257,11 @@ describe("WebSocket Handler", () => {
 			debug: debugInfo,
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(1);
-		const parsed = JSON.parse(messages[0]);
+		const parsed = await waitForWebSocketMessage(
+			messages,
+			(message) => message.type === "context:debug",
+			"context:debug",
+		);
 		expect(parsed.type).toBe("context:debug");
 		expect(parsed.data.turn_id).toBe(42);
 		expect(parsed.data.debug).toEqual(debugInfo);
@@ -242,11 +271,11 @@ describe("WebSocket Handler", () => {
 		// Regression test: the payload previously omitted thread_id, causing the
 		// client-side filter (debugData.thread_id === threadId) to always fail and
 		// the context debugger to never update reactively.
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -265,19 +294,20 @@ describe("WebSocket Handler", () => {
 			},
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(1);
-		const parsed = JSON.parse(messages[0]);
+		const parsed = await waitForWebSocketMessage(
+			messages,
+			(message) => message.type === "context:debug",
+			"context:debug",
+		);
 		expect(parsed.data.thread_id).toBe("thread-1");
 	});
 
 	it("does not broadcast context:debug to clients not subscribed to thread", async () => {
-		const messages: string[] = [];
+		const messages: SentMessage[] = [];
 		const mockWs = {
 			readyState: WebSocket.OPEN,
 			send(data: string): void {
-				messages.push(data);
+				messages.push(JSON.parse(data));
 			},
 		} as unknown as WebSocket;
 
@@ -304,8 +334,6 @@ describe("WebSocket Handler", () => {
 			debug: debugInfo,
 		});
 
-		await new Promise((resolve) => setTimeout(resolve, 10));
-
-		expect(messages.length).toBe(0);
+		await waitForNoWebSocketMessages(messages, "messages for an unsubscribed thread");
 	});
 });
