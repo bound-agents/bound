@@ -4,6 +4,7 @@ import {
 	countProposedAdvisories,
 	findActiveAdvisoryById,
 	findAdvisoryById,
+	getHostMetaSiteId,
 	listActiveAdvisories,
 	listAdvisoriesByStatus,
 } from "@bound/core";
@@ -13,10 +14,7 @@ export function createAdvisoriesRoutes(db: Database, operatorUserId: string): Ho
 	const app = new Hono();
 
 	function getSiteId(): string {
-		const row = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-			| { value: string }
-			| undefined;
-		return row?.value ?? "unknown";
+		return getHostMetaSiteId(db);
 	}
 
 	/**

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getPeerSiteId } from "@bound/core";
 
 /** Cluster topology role of a host: the hub (others connect to it) or a spoke. */
 export type TopologyRole = "hub" | "spoke";
@@ -35,12 +36,5 @@ export function resolveHubSiteId(
 	if (!topologyRole) return undefined;
 	if (topologyRole === "hub") return localSiteId;
 
-	try {
-		const peer = db.prepare("SELECT peer_site_id FROM sync_state LIMIT 1").get() as {
-			peer_site_id: string;
-		} | null;
-		return peer?.peer_site_id ?? undefined;
-	} catch {
-		return undefined;
-	}
+	return getPeerSiteId(db);
 }

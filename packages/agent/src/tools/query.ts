@@ -155,6 +155,7 @@ export function createQueryTool(ctx: ToolContext): RegisteredTool {
 					}
 				}
 
+				// Raw read justification: this operator tool executes validated arbitrary read-only SQL.
 				const stmt = ctx.db.prepare(sqlToRun);
 				const results = stmt.all() as Array<Record<string, unknown>>;
 

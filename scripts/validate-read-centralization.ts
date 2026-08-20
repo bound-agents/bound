@@ -51,7 +51,10 @@ const EXCLUDED_PATHS = [
 
 // Inline SQL read entry points. `db.query(` covers .get()/.all()/.values();
 // `db.prepare(` covers prepared reads. Writes are governed by the outbox guard.
+// A genuinely raw read may be preceded immediately by a one-line
+// `Raw read justification:` comment; that comment exempts exactly one call site.
 const READ_PATTERN = /\bdb\.(query|prepare)\s*\(/;
+const RAW_READ_JUSTIFICATION_PATTERN = /^\/\/\s*Raw read justification:\s*\S/;
 
 export function shouldExclude(filePath: string): boolean {
 	return EXCLUDED_PATHS.some((exc) => path.normalize(filePath).includes(path.normalize(exc)));
@@ -59,10 +62,23 @@ export function shouldExclude(filePath: string): boolean {
 
 export function countInlineReads(content: string): number {
 	let count = 0;
+	let justifiedNextRead = false;
 	for (const line of content.split("\n")) {
 		const trimmed = line.trimStart();
+		if (RAW_READ_JUSTIFICATION_PATTERN.test(trimmed)) {
+			justifiedNextRead = true;
+			continue;
+		}
 		if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
-		if (READ_PATTERN.test(line)) count++;
+		if (!READ_PATTERN.test(line)) {
+			if (trimmed !== "") justifiedNextRead = false;
+			continue;
+		}
+		if (justifiedNextRead) {
+			justifiedNextRead = false;
+			continue;
+		}
+		count++;
 	}
 	return count;
 }

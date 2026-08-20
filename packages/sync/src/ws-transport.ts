@@ -1,5 +1,11 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
+	findChangeLogEntryByHlc,
+	findConnectorHandleForSyncNotification,
+	findMessageForSyncBroadcast,
+	findUndeliveredRelayOutboxById,
+} from "@bound/core";
+import {
 	type ConsistencyEntry,
 	createChangeLogEntry,
 	getBackfillableEntriesSorted,
@@ -261,12 +267,7 @@ export class WsTransport {
 	start(): void {
 		this.changelogWrittenListener = (event) => {
 			// Query the full changelog entry from the database
-			const entry = this.config.db
-				.query(
-					`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
-					FROM change_log WHERE hlc = ?`,
-				)
-				.get(event.hlc) as ChangeLogEntry | null;
+			const entry = findChangeLogEntryByHlc<ChangeLogEntry>(this.config.db, event.hlc);
 
 			if (entry) {
 				this.changelogCoalescer.add(entry);
@@ -280,9 +281,7 @@ export class WsTransport {
 			// if some future caller emits this event for an already-delivered row,
 			// we don't want to re-route it and risk re-triggering the hub-mode
 			// re-entry path in handleRelaySend that originally produced the spin.
-			const entry = this.config.db
-				.query("SELECT * FROM relay_outbox WHERE id = ? AND delivered = 0")
-				.get(event.id) as RelayOutboxEntry | null;
+			const entry = findUndeliveredRelayOutboxById<RelayOutboxEntry>(this.config.db, event.id);
 
 			if (entry) {
 				this.sendRelayOutboxEntry(entry);
@@ -396,9 +395,7 @@ export class WsTransport {
 					// the rest of the system emits (post-trigger defaults, coerced
 					// types, etc.).
 					try {
-						const message = this.config.db
-							.prepare("SELECT * FROM messages WHERE id = ?")
-							.get(info.row_id) as Message | undefined;
+						const message = findMessageForSyncBroadcast<Message>(this.config.db, info.row_id);
 						if (!message) return;
 						this.config.eventBus.emit("message:broadcast", {
 							message,
@@ -413,9 +410,7 @@ export class WsTransport {
 				} else if (info.table_name === "connector_handles") {
 					// Notify the platform leader to activate newly synced handles
 					try {
-						const handle = this.config.db
-							.prepare("SELECT id, server_name, deleted FROM connector_handles WHERE id = ?")
-							.get(info.row_id) as { id: string; server_name: string; deleted: number } | undefined;
+						const handle = findConnectorHandleForSyncNotification(this.config.db, info.row_id);
 						if (handle && !handle.deleted) {
 							this.config.eventBus.emit("connector:handle_synced", {
 								handle_id: handle.id,
@@ -1295,11 +1290,14 @@ export class WsTransport {
 
 		if (!state.stmt) {
 			try {
+				// Raw read justification: snapshot seeding reads a runtime-selected validated table.
+				// Raw read justification: snapshot seeding reads a runtime-selected synchronized table.
 				state.stmt = this.config.db.prepare(
 					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
 				);
 			} catch {
 				try {
+					// Raw read justification: snapshot seeding falls back for tables without deleted.
 					state.stmt = this.config.db.prepare(
 						`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
 					);

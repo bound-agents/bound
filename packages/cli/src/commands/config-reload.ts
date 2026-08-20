@@ -1,5 +1,11 @@
 import { dirname, join, resolve } from "node:path";
-import { getSiteId, insertRow, loadConfigWithPrecedence, updateRow } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	getSiteId,
+	insertRow,
+	loadConfigWithPrecedence,
+	updateRow,
+} from "@bound/core";
 import { mcpSchema } from "@bound/shared";
 import { openBoundDB } from "../lib/db";
 export interface ConfigReloadArgs {
@@ -42,7 +48,7 @@ export async function runConfigReload(args: ConfigReloadArgs): Promise<void> {
 		// rather than colliding on INSERT.
 		const now = new Date().toISOString();
 		const key = "config_reload_requested";
-		const existing = db.query("SELECT key FROM cluster_config WHERE key = ?").get(key);
+		const existing = findClusterConfigKeyByKeyIncludingDeleted(db, key);
 		if (existing) {
 			updateRow(db, "cluster_config", key, { value: now, deleted: 0 }, siteId);
 		} else {

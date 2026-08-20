@@ -487,12 +487,19 @@ EXAMPLES:
 			const db = openBoundDB(dataDir);
 			try {
 				console.log("Running VACUUM...");
+				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
 				const before = db.query("PRAGMA page_count").get() as { page_count: number };
+				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
+				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
 				const freeListBefore = db.query("PRAGMA freelist_count").get() as {
 					freelist_count: number;
 				};
 				db.run("VACUUM");
+				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
+				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
 				const after = db.query("PRAGMA page_count").get() as { page_count: number };
+				// Raw read justification: PRAGMA page_size reads SQLite file metadata.
+				// Raw read justification: PRAGMA page_size reads SQLite file metadata.
 				const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
 				const reclaimedPages = before.page_count - after.page_count;
 				const reclaimedBytes = reclaimedPages * pageSize;

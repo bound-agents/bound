@@ -26,7 +26,7 @@ describe("rankDepartures", () => {
 			{ id: "3", status: "pending", next_run_at: futureTime(BASE_NOW, HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked).toHaveLength(1);
 		expect(ranked[0].id).toBe("3");
@@ -40,7 +40,7 @@ describe("rankDepartures", () => {
 			{ id: "claimed", status: "claimed", next_run_at: t },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		const activeIds = ranked
 			.slice(0, 2)
@@ -68,7 +68,7 @@ describe("rankDepartures", () => {
 			{ id: "middle", status: "pending", next_run_at: futureTime(BASE_NOW, 2 * HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked[0].id).toBe("sooner");
 		expect(ranked[1].id).toBe("middle");
@@ -82,7 +82,7 @@ describe("rankDepartures", () => {
 			next_run_at: futureTime(BASE_NOW, (i + 1) * HOUR),
 		}));
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked).toHaveLength(6);
 	});
@@ -94,7 +94,7 @@ describe("rankDepartures", () => {
 			next_run_at: futureTime(BASE_NOW, (i + 1) * HOUR),
 		}));
 
-		const ranked = rankDepartures(tasks, 3);
+		const ranked = rankDepartures(tasks, 3, BASE_NOW);
 
 		expect(ranked).toHaveLength(3);
 	});
@@ -105,7 +105,7 @@ describe("rankDepartures", () => {
 			{ id: "heartbeat", status: "pending", next_run_at: futureTime(BASE_NOW, HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked).toHaveLength(1);
 		expect(ranked[0].id).toBe("heartbeat");
@@ -117,7 +117,7 @@ describe("rankDepartures", () => {
 			{ id: "running-later", status: "running", next_run_at: futureTime(BASE_NOW, 3 * HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked[0].id).toBe("running-later");
 		expect(ranked[1].id).toBe("pending-soon");
@@ -134,7 +134,7 @@ describe("rankDepartures", () => {
 			{ id: "heartbeat", status: "pending", next_run_at: futureTime(BASE_NOW, HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked.some((t) => t.id === "heartbeat")).toBe(true);
 	});
@@ -144,7 +144,7 @@ describe("rankDepartures", () => {
 			{ id: "running-overdue", status: "running", next_run_at: pastTime(BASE_NOW, HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked).toHaveLength(1);
 		expect(ranked[0].id).toBe("running-overdue");
@@ -156,7 +156,7 @@ describe("rankDepartures", () => {
 			{ id: "has-time", status: "pending", next_run_at: futureTime(BASE_NOW, HOUR) },
 		];
 
-		const ranked = rankDepartures(tasks);
+		const ranked = rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(ranked).toHaveLength(1);
 		expect(ranked[0].id).toBe("has-time");
@@ -169,7 +169,7 @@ describe("rankDepartures", () => {
 		];
 
 		const original = [...tasks];
-		rankDepartures(tasks);
+		rankDepartures(tasks, 6, BASE_NOW);
 
 		expect(tasks).toEqual(original);
 	});

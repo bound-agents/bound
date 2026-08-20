@@ -1,3 +1,4 @@
+import { findLatestChangeLogRowAtOrBefore, listChangeLogRowsAffectedAfter } from "@bound/core";
 import { openBoundDB } from "../lib/db";
 
 import { resolve } from "node:path";
@@ -39,14 +40,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 		console.log(`Restoring to state before: ${safeIso}\n`);
 		// Step 1: Find all unique (table_name, row_id) pairs that have ANY
 		// change_log entry AFTER the safe timestamp.
-		const affectedRows = db
-			.query(
-				`SELECT DISTINCT table_name, row_id
-				FROM change_log
-				WHERE timestamp > ?
-				ORDER BY table_name, row_id`,
-			)
-			.all(safeIso) as AffectedRow[];
+		const affectedRows = listChangeLogRowsAffectedAfter(db, safeIso) as AffectedRow[];
 		// Filter by --tables if provided, and skip append-only tables
 		const tableFilter = args.tables && args.tables.length > 0 ? new Set(args.tables) : null;
 		const candidates = affectedRows.filter((r) => {
@@ -83,15 +77,12 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 				}
 
 				// Step 2a: Find the latest change_log entry at or before the safe timestamp
-				const priorEntry = db
-					.query(
-						`SELECT table_name, row_id, timestamp, row_data
-						FROM change_log
-						WHERE table_name = ? AND row_id = ? AND timestamp <= ?
-						ORDER BY hlc DESC
-						LIMIT 1`,
-					)
-					.get(table_name, row_id, safeIso) as ChangeLogRow | null;
+				const priorEntry = findLatestChangeLogRowAtOrBefore(
+					db,
+					table_name,
+					row_id,
+					safeIso,
+				) as ChangeLogRow | null;
 				if (priorEntry) {
 					// Row existed before safe timestamp — restore to that state
 					let rowData: Record<string, unknown>;
@@ -126,6 +117,7 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 							const v = rowData[c];
 							return v === null || v === undefined ? null : v;
 						});
+						// Raw read justification: this call is a validated dynamic-table restore write, not a read.
 						db.query(
 							`INSERT INTO ${table_name} (${columns.join(", ")})
 							VALUES (${placeholders})
@@ -141,12 +133,14 @@ export async function runRestore(args: RestoreArgs): Promise<void> {
 						console.log(`  TOMBSTONE ${table_name}.${row_id} (created after safe timestamp)`);
 					} else {
 						const now = new Date().toISOString();
+						// Raw read justification: this call is a validated dynamic-table tombstone write, not a read.
 						db.query(`UPDATE ${table_name} SET deleted = 1, modified_at = ? WHERE id = ?`).run(
 							now,
 							row_id,
 						);
 						// Fetch updated row for change_log snapshot
 						const deletedRow = db
+							// Raw read justification: restore reads a runtime-selected, validated table snapshot.
 							.query(`SELECT * FROM ${table_name} WHERE id = ?`)
 							.get(row_id) as Record<string, unknown> | null;
 						if (deletedRow) {

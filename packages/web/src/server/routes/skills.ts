@@ -5,6 +5,7 @@ import {
 	findFileContentByPathActive,
 	findSkillById,
 	findSkillByIdIncludingDeleted,
+	getHostMetaSiteId,
 	listFileIdPathSizeByPrefixActive,
 	listSkills,
 	updateRow,
@@ -17,10 +18,7 @@ export function createSkillsRoutes(db: Database): Hono {
 	const app = new Hono();
 
 	function getSiteId(): string {
-		const row = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-			| { value: string }
-			| undefined;
-		return row?.value ?? "unknown";
+		return getHostMetaSiteId(db);
 	}
 
 	// GET / - List all skills

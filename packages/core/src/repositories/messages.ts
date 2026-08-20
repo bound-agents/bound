@@ -596,3 +596,8 @@ export function findUnresolvedBackgroundPlaceholder(
 		)
 		.get(threadId, callId) as { id: string } | null;
 }
+
+/** Includes tombstones because sync notifications describe the row just applied. */
+export function findMessageForSyncBroadcast<T>(db: Database, id: string): T | null {
+	return db.query("SELECT * FROM messages WHERE id = ?").get(id) as T | null;
+}

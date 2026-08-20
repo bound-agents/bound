@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { getMinSyncReceivedHlc } from "@bound/core";
 import { HLC_ZERO, type SyncState } from "@bound/shared";
 
 export function getPeerCursor(db: Database, peerSiteId: string): SyncState | null {
@@ -83,9 +84,5 @@ export function getConfirmedSyncWatermark(db: Database, peerSiteId: string): str
 }
 
 export function getMinConfirmedHlc(db: Database): string {
-	const result = db.query("SELECT MIN(last_received) as min_hlc FROM sync_state").get() as
-		| { min_hlc: string | null }
-		| undefined;
-
-	return result?.min_hlc ?? HLC_ZERO;
+	return getMinSyncReceivedHlc(db);
 }
