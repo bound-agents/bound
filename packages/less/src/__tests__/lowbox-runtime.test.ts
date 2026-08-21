@@ -59,14 +59,14 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).toContain("CreateProcessW(cleanup watcher)");
 	});
 
-	it("closes the owner control writer before waiting for natural watcher completion", () => {
+	it("closes the owner control writer before reading the watcher terminal report", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const awaitStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus()");
+		const awaitStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus(");
 		const awaitEnd = source.indexOf("bool queryJobTreeEmpty", awaitStart);
 		const awaitWatcher = source.slice(awaitStart, awaitEnd);
 
 		expect(awaitWatcher.indexOf("CloseHandle(watcherControlWrite)")).toBeLessThan(
-			awaitWatcher.indexOf("WaitForSingleObject(cleanupWatcher, INFINITE)"),
+			awaitWatcher.indexOf("ReadFile(watcherReportRead"),
 		);
 	});
 
@@ -116,19 +116,19 @@ describe("Windows lowbox helper materialization", () => {
 		expect(source).toContain("recoverStaleAuthority(testNamespace)");
 	});
 
-	it("reports the exact watcher Win32 operation that fails", () => {
+	it("reports the exact watcher operation that fails over the report pipe", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const watcherStart = source.indexOf("int runCleanupWatcher(");
 		const watcherEnd = source.indexOf("WatcherStartResult startCleanupWatcher(", watcherStart);
 		const watcher = source.slice(watcherStart, watcherEnd);
 
-		expect(watcher).toContain("reportWatcherFailure(");
+		expect(watcher).toContain("failWatcher(");
 		expect(watcher).toContain("WaitForMultipleObjects");
 		expect(watcher).toContain('GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS"');
 		expect(watcher).toContain("cleanupRecoverableAuthorityLocked(journalPath, cleanup)");
-		expect(source).toContain('reportAuthorityCleanupFailure(L"restore ACLs"');
-		expect(source).toContain('reportAuthorityCleanupFailure(L"DeleteAppContainerProfile"');
-		expect(source).toContain('reportAuthorityCleanupFailure(L"DeleteFileW(authority journal)"');
+		expect(watcher).toContain("report.win32 = win32");
+		expect(watcher).toContain("report.hresult = hresult");
+		expect(watcher).toContain("wcsncpy_s(report.operation");
 	});
 
 	it("releases both watcher lowbox handles before authority recovery on success and close failure", () => {
@@ -259,8 +259,8 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher.indexOf("closeWatcherLowboxHandles(childHandle, jobHandle")).toBeLessThan(
 			watcher.indexOf("cleanupRecoverableAuthorityLocked(journalPath, cleanup)"),
 		);
-		expect(source).toContain("LOWBOX_AUTHORITY_CLEANUP");
-		expect(source).not.toContain("LOWBOX_WATCHER_CLEANUP");
+		expect(source).toContain("LOWBOX_WATCHER_CLEANUP");
+		expect(watcher).not.toContain("writeControl(");
 	});
 
 	it("serializes watcher transfer with stale recovery across the exact unpublished-identity interval", () => {
@@ -608,7 +608,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(postSignal).not.toContain("TerminateProcess(watcherProcess, 125)");
 	});
 
-	it("returns indeterminate watcher-owned failure for every Active ACK-loss cancel result", () => {
+	it("reports every Active ACK-loss cancel result through the watcher report", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
 		const startEnd = source.indexOf("}  // namespace", startStart);
@@ -619,15 +619,16 @@ describe("Windows lowbox helper materialization", () => {
 
 		expect(start).toContain("journal.state == AuthorityJournalState::Active");
 		expect(cancel).toContain('const char cancelFrame[] = "CANCEL\\n"');
-		expect(cancel).toContain("LOWBOX_WATCHER_TIMEOUT_MS");
-		expect(cancel).toContain("cancelSent");
-		expect(cancel).toContain("watcherStopped");
-		expect(cancel).toContain("watcherExitCode");
+		expect(cancel).toContain("ReadFile(watcherReportRead.value");
+		expect(cancel).toContain("report.cleanupResult");
+		expect(cancel).toContain("report.operation");
 		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_SENT");
 		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_WRITE_FAILED");
-		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_TIMEOUT");
-		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_ABNORMAL");
+		expect(cancel).toContain("LOWBOX_WATCHER_CLEANUP");
+		expect(cancel).toContain("LOWBOX_WATCHER_REPORT_FAILED");
 		expect(cancel).toContain("WatcherStartOutcome::IndeterminateWatcherOwned");
+		expect(cancel).not.toContain("WaitForSingleObject(watcherProcess");
+		expect(cancel).not.toContain("GetExitCodeProcess(watcherProcess");
 		expect(cancel).not.toContain("WatcherStartOutcome::ConfirmedArmed");
 		expect(cancel).not.toContain("WatcherStartOutcome::FailedPreTransfer");
 	});
@@ -715,34 +716,41 @@ describe("Windows lowbox helper materialization", () => {
 			recovery.indexOf("DeleteAppContainerProfile(parsed.profileName.c_str())"),
 		).toBeGreaterThan(recovery.indexOf("authorityPathMatchesProfile("));
 	});
-	it("routes every post-arm branch through watcher notification and terminal observation", () => {
+	it("transfers child and job handle ownership completely after the watcher arms", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const postArmStart = source.indexOf("const WatcherStartResult watcherStart =");
 		const postArm = source.slice(postArmStart);
+		const armedGate = postArm.indexOf(
+			"watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed",
+		);
+		const terminalWait = postArm.indexOf("awaitArmedWatcherTerminalStatus(");
+		const ownerRuntime = postArm.slice(armedGate, terminalWait);
 
-		for (const branch of [
-			"BOUND_LOWBOX_TEST_FAIL_AFTER_WATCHER",
-			"LOWBOX_FORWARD",
-			"LOWBOX_RESUME",
-			"if (childWait != WAIT_OBJECT_0)",
-			"if (!GetExitCodeProcess(childProcess.value, &exitCode))",
-		]) {
-			const branchStart = postArm.indexOf(branch);
-			expect(branchStart).toBeGreaterThan(0);
-			const branchBody = postArm.slice(branchStart, branchStart + 900);
-			expect(branchBody).toContain("requestArmedWatcherCancelAndObserve(");
-			expect(branchBody).not.toContain("TerminateJobObject(");
-		}
-		for (const forbidden of [
-			"TerminateJobObject(",
-			"SetEvent(",
-			"persistAuthorityJournal(",
-			"restoreMaterializedAuthority(",
-			"markAuthorityJournalRecoverableLocked(",
-			"recoverAuthorityJournalLocked(",
-		]) {
-			expect(postArm).not.toContain(forbidden);
-		}
+		expect(ownerRuntime).toContain("childProcess.reset()");
+		expect(ownerRuntime).toContain("job.reset()");
+		expect(ownerRuntime).not.toContain("WaitForSingleObject(childProcess.value");
+		expect(ownerRuntime).not.toContain("GetExitCodeProcess(childProcess.value");
+		expect(ownerRuntime).not.toContain("queryJobTreeEmpty(job.value");
+	});
+
+	it("receives child exit and cleanup diagnostics from the watcher report pipe", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const watcherStart = source.indexOf("int runCleanupWatcher(");
+		const watcherEnd = source.indexOf("WatcherStartResult startCleanupWatcher(", watcherStart);
+		const watcher = source.slice(watcherStart, watcherEnd);
+		const terminalStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus(");
+		const terminalEnd = source.indexOf("bool queryJobTreeEmpty", terminalStart);
+		const terminal = source.slice(terminalStart, terminalEnd);
+
+		expect(source).toContain("watcherReportRead");
+		expect(source).toContain("watcherReportWrite");
+		expect(watcher).toContain("GetExitCodeProcess(childHandle, &report.childExitCode)");
+		expect(watcher).toContain("WriteFile(reportWrite");
+		expect(watcher).toContain("report.cleanupResult");
+		expect(watcher).not.toContain("writeControl(");
+		expect(terminal).toContain("ReadFile(watcherReportRead");
+		expect(terminal).toContain("WatcherTerminalReport& report");
+		expect(terminal).toContain("report.cleanupResult");
 	});
 
 	it("treats failed job assignment as an uncontained suspended child, not a process tree", () => {
@@ -804,7 +812,7 @@ describe("Windows lowbox helper materialization", () => {
 		);
 	});
 
-	it("distinguishes clean armed cancellation from indeterminate watcher ownership", () => {
+	it("observes handoff-time armed cancellation only through the watcher report", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const start = source.indexOf(
 			"auto requestArmedWatcherCancelAndObserve = [&](DWORD failure) -> WatcherStartResult",
@@ -813,26 +821,15 @@ describe("Windows lowbox helper materialization", () => {
 		const request = source.slice(start, end);
 
 		expect(start).toBeGreaterThan(0);
-		expect(request).toContain("WatcherStartOutcome::FailedAfterWatcherCleanup");
-		expect(request).toContain("watcherClean");
-		expect(request).toContain("WatcherStartOutcome::IndeterminateWatcherOwned");
-	});
-
-	it("closes the startup-path control writer before observing armed cancellation", () => {
-		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const start = source.indexOf(
-			"auto requestArmedWatcherCancelAndObserve = [&](DWORD failure) -> WatcherStartResult",
-		);
-		const end = source.indexOf("auto observeFailedArmedWait", start);
-		const request = source.slice(start, end);
-
-		expect(start).toBeGreaterThan(0);
+		expect(request).toContain('const char cancelFrame[] = "CANCEL\\n"');
 		expect(request.indexOf("controlWrite.reset()")).toBeGreaterThan(
 			request.indexOf("WriteFile(controlWrite.value"),
 		);
-		expect(request.indexOf("controlWrite.reset()")).toBeLessThan(
-			request.indexOf("WaitForSingleObject(watcherProcess"),
-		);
+		expect(request).toContain("ReadFile(watcherReportRead.value");
+		expect(request).toContain("report.cleanupResult");
+		expect(request).toContain("report.operation");
+		expect(request).not.toContain("WaitForSingleObject(watcherProcess");
+		expect(request).not.toContain("GetExitCodeProcess(watcherProcess");
 	});
 
 	it("keeps every post-watcher failure branch on the explicit cancel path", () => {
@@ -842,7 +839,7 @@ describe("Windows lowbox helper materialization", () => {
 		const postWatcherInstall = source.slice(watcherActive);
 		const notifications = postWatcherInstall.match(/requestArmedWatcherCancelAndObserve\(/g) ?? [];
 
-		expect(notifications).toHaveLength(5);
+		expect(notifications).toHaveLength(3);
 		expect(postWatcherInstall).not.toContain("recoverAuthorityJournal(journalPath)");
 		expect(postWatcherInstall).not.toContain("cleanupWatcher = nullptr");
 		expect(postWatcherInstall).not.toContain("restoreMaterializedAuthority(");
