@@ -1777,40 +1777,37 @@ int wmain(int argc, wchar_t** argv) {
 		(argc == 6 || std::wstring(argv[6]) == L"--test-namespace")) {
 		const std::wstring profileName = argv[3];
 		if (argc == 8) testNamespace = argv[7];
-		// Profile registration lives under the supported AppContainer profile registry root. SID
-		// derivation is deterministic and therefore cannot answer whether registration still exists.
-		HKEY profileRoot = nullptr;
-		const HRESULT registryLocation = GetAppContainerRegistryLocation(KEY_READ, &profileRoot);
-		bool profileExists = false;
-		if (FAILED(registryLocation)) {
-			const DWORD registryError = static_cast<DWORD>(registryLocation);
-			const bool missingRegistryRoot = registryLocation == E_FAIL ||
-				registryLocation == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
-				registryLocation == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
-			if (!missingRegistryRoot) {
-				return inspectCleanupFatal(L"GetAppContainerRegistryLocation", registryError);
-			}
-		} else {
-			HKEY profileKey = nullptr;
-			LSTATUS profileStatus = ERROR_FILE_NOT_FOUND;
-			if (profileRoot) {
-				profileStatus = RegOpenKeyExW(profileRoot, profileName.c_str(), 0, KEY_READ, &profileKey);
-				RegCloseKey(profileRoot);
-			}
-			profileExists = profileStatus == ERROR_SUCCESS;
-			if (profileKey) RegCloseKey(profileKey);
-			if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND &&
-				profileStatus != ERROR_PATH_NOT_FOUND) {
-				return inspectCleanupFatal(L"RegOpenKeyExW", profileStatus);
-			}
-		}
-
+		// Registration is represented by the per-SID AppContainer mapping under HKCU. SID
+		// derivation alone is deterministic and therefore cannot answer whether the profile exists.
 		PSID profileSid = nullptr;
 		const HRESULT derived = DeriveAppContainerSidFromAppContainerName(profileName.c_str(), &profileSid);
 		if (FAILED(derived) || !profileSid) {
-			return inspectCleanupFatal(L"DeriveAppContainerSidFromAppContainerName",
-				FAILED(derived) ? HRESULT_CODE(derived) : ERROR_INVALID_SID);
+			const DWORD derivedStatus = FAILED(derived) && HRESULT_FACILITY(derived) == FACILITY_WIN32
+				? HRESULT_CODE(derived)
+				: (FAILED(derived) ? static_cast<DWORD>(derived) : ERROR_INVALID_SID);
+			return inspectCleanupFatal(L"DeriveAppContainerSidFromAppContainerName", derivedStatus);
 		}
+		LPWSTR profileSidString = nullptr;
+		if (!ConvertSidToStringSidW(profileSid, &profileSidString) || !profileSidString) {
+			const DWORD sidStringError = GetLastError();
+			FreeSid(profileSid);
+			return inspectCleanupFatal(L"ConvertSidToStringSidW", sidStringError);
+		}
+		const std::wstring profileMappingPath =
+			L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings\\" +
+			std::wstring(profileSidString);
+		LocalFree(profileSidString);
+		HKEY profileKey = nullptr;
+		const LSTATUS profileStatus = RegOpenKeyExW(HKEY_CURRENT_USER, profileMappingPath.c_str(), 0,
+			KEY_READ, &profileKey);
+		const bool profileExists = profileStatus == ERROR_SUCCESS;
+		if (profileKey) RegCloseKey(profileKey);
+		if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND &&
+			profileStatus != ERROR_PATH_NOT_FOUND) {
+			FreeSid(profileSid);
+			return inspectCleanupFatal(L"RegOpenKeyExW(profile mapping)", profileStatus);
+		}
+
 
 		bool lowboxAce = false;
 		PSECURITY_DESCRIPTOR descriptor = nullptr;
