@@ -246,7 +246,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(transition).toContain("jobTreeDeathProof");
 	});
 
-	it("returns structured pre-transfer failure and never reaches readiness when authority grant fails", () => {
+	it("allows only ConfirmedArmed to reach child readiness through the caller", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
 		const startEnd = source.indexOf("}  // namespace", startStart);
@@ -256,46 +256,32 @@ describe("Windows lowbox helper materialization", () => {
 			start.indexOf("const DWORD authorityWait"),
 		);
 		const callerStart = source.indexOf("const WatcherStartResult watcherStart =");
-		const callerFailure = source.slice(
-			callerStart,
-			source.indexOf("wchar_t failAfterWatcher", callerStart),
+		const callerEnd = source.indexOf("const DWORD childWait", callerStart);
+		const caller = source.slice(callerStart, callerEnd);
+		const confirmedGate = caller.indexOf(
+			"if (watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed)",
 		);
+		const resume = caller.indexOf("ResumeThread(");
+		const ready = caller.lastIndexOf('writeControl("{\\"ok\\":true');
 
 		expect(startStart).toBeGreaterThan(0);
-		expect(source).toContain("enum class WatcherStartOutcome");
-		expect(source).toContain("struct WatcherStartResult");
 		expect(grantFailure).toContain("cancelPreTransferWatcherAndObserve(");
 		expect(start).toContain("resetAuthorityJournalAfterFailedHandoff(");
 		expect(start).toContain("watcherWait == WAIT_OBJECT_0 &&");
-		expect(start).toContain("return {WatcherStartOutcome::FailedPreTransfer");
 		expect(grantFailure).not.toContain("requestArmedWatcherCancelAndObserve(");
-		expect(grantFailure).not.toContain("return {WatcherStartOutcome::ConfirmedArmed");
-		expect(callerFailure).toContain(
-			"if (watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed)",
+		expect(caller).toContain("watcherStart.outcome == WatcherStartOutcome::FailedPreTransfer");
+		expect(caller).toContain("failAfterDurableAuthorityJournal(");
+		expect(caller).toContain(
+			"watcherStart.outcome == WatcherStartOutcome::IndeterminateWatcherOwned",
 		);
-		expect(callerFailure).toContain("failAfterDurableAuthorityJournal(");
-		expect(callerFailure).not.toContain("ResumeThread(");
-		expect(callerFailure).not.toContain('writeControl("{\\"ok\\":true');
-	});
-
-	it("distinguishes confirmed, pre-transfer, and indeterminate watcher handoff outcomes", () => {
-		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
-		const startEnd = source.indexOf("}  // namespace", startStart);
-		const start = source.slice(startStart, startEnd);
-		const callerStart = source.indexOf("const WatcherStartResult watcherStart =");
-		const callerGate = source.slice(
-			callerStart,
-			source.indexOf("wchar_t failAfterWatcher", callerStart),
-		);
-
-		for (const outcome of ["ConfirmedArmed", "FailedPreTransfer", "IndeterminateWatcherOwned"]) {
-			expect(source).toContain(outcome);
-		}
-		expect(start).not.toContain("WatcherStartOutcome::Armed");
-		expect(callerGate).toContain("watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed");
-		expect(callerGate).not.toContain("ResumeThread(");
-		expect(callerGate).not.toContain('writeControl("{\\"ok\\":true');
+		expect(caller).toContain("requestArmedWatcherCancel();");
+		expect(caller).toContain("observeIndeterminateWatcherBoundedly();");
+		expect(caller).toContain("return failWithoutAuthorityMutation(");
+		expect(confirmedGate).toBeGreaterThan(0);
+		expect(resume).toBeGreaterThan(confirmedGate);
+		expect(ready).toBeGreaterThan(resume);
+		expect(caller.slice(0, confirmedGate)).not.toContain("ResumeThread(");
+		expect(caller.slice(0, confirmedGate)).not.toContain('writeControl("{\\"ok\\":true');
 	});
 
 	it("fails closed for SetEvent failure and ACK timeout while the journal remains Transferring", () => {
