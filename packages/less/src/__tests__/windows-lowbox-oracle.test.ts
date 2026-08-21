@@ -8,20 +8,17 @@ import { kill } from "node:process";
 import { createBashTool } from "../tools/bash";
 import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
-import type { ToolResult } from "../tools/types";
 
 async function waitForClose(child: ChildProcess | undefined, timeoutMs = 10_000): Promise<void> {
 	if (!child) return;
-	if (child.exitCode !== null || child.signalCode !== null) {
-		for (const stream of child.stdio) stream?.destroy();
-		return;
+	if (child.exitCode === null && child.signalCode === null) {
+		await Promise.race([
+			new Promise<void>((resolve) => child.once("close", () => resolve())),
+			Bun.sleep(timeoutMs).then(() => {
+				throw new Error(`process ${child.pid ?? "unknown"} did not close within ${timeoutMs}ms`);
+			}),
+		]);
 	}
-	await Promise.race([
-		new Promise<void>((resolve) => child.once("close", () => resolve())),
-		Bun.sleep(timeoutMs).then(() => {
-			throw new Error(`process ${child.pid ?? "unknown"} did not close within ${timeoutMs}ms`);
-		}),
-	]);
 	for (const stream of child.stdio) stream?.destroy();
 }
 
@@ -29,7 +26,46 @@ async function stopAndClose(child: ChildProcess | undefined): Promise<void> {
 	if (!child) return;
 	for (const stream of child.stdio) stream?.destroy();
 	if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-	await waitForClose(child);
+	try {
+		await waitForClose(child);
+	} finally {
+		for (const stream of child.stdio) stream?.destroy();
+		child.removeAllListeners();
+	}
+}
+
+type CleanupState = { Journal: boolean; Profile: boolean; LowboxAces: number };
+
+function inspectCleanup(
+	helper: string,
+	profile: string,
+	path: string,
+	namespace: string,
+): CleanupState {
+	const probe = spawnSync(
+		helper,
+		["inspect-cleanup", "--profile", profile, "--path", path, "--test-namespace", namespace],
+		{ encoding: "utf8", windowsHide: true },
+	);
+	expect(probe.status, probe.stderr).toBe(0);
+	return JSON.parse(probe.stdout) as CleanupState;
+}
+
+async function waitForCleanup(
+	helper: string,
+	profile: string,
+	path: string,
+	namespace: string,
+	timeoutMs = 10_000,
+): Promise<CleanupState> {
+	const deadline = Date.now() + timeoutMs;
+	let cleanup = inspectCleanup(helper, profile, path, namespace);
+	while (cleanup.Journal || cleanup.Profile || cleanup.LowboxAces !== 0) {
+		if (Date.now() >= deadline) return cleanup;
+		await Bun.sleep(50);
+		cleanup = inspectCleanup(helper, profile, path, namespace);
+	}
+	return cleanup;
 }
 /**
  * Mandatory windows-latest oracle for the production Windows sandbox path.
@@ -44,7 +80,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
 			expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
-			const cwd = join(tmpdir(), `bound-lowbox-normal-${randomBytes(4).toString("hex")}`);
+			const runId = randomBytes(8).toString("hex");
+			const cwd = join(tmpdir(), `bound-lowbox-normal-${runId}`);
 			mkdirSync(cwd, { recursive: true });
 			const marker = join(cwd, "normal-ready.txt");
 			const controlFd = 3;
@@ -68,8 +105,13 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						"blocked",
 						"--writable",
 						cwd,
+						"--test-namespace",
+						runId,
 					],
-					{ stdio: ["ignore", "pipe", "pipe", "pipe"], windowsHide: true },
+					{
+						stdio: ["ignore", "pipe", "pipe", "pipe"],
+						windowsHide: true,
+					},
 				);
 				const control = normal.stdio[controlFd];
 				expect(control, "helper control pipe is unavailable").toBeTruthy();
@@ -107,7 +149,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					}
 					const cleanupProbe = spawnSync(
 						helper as string,
-						["inspect-cleanup", "--profile", profile, "--path", cwd],
+						["inspect-cleanup", "--profile", profile, "--path", cwd, "--test-namespace", runId],
 						{ encoding: "utf8", windowsHide: true },
 					);
 					expect(cleanupProbe.status, cleanupProbe.stderr).toBe(0);
@@ -137,7 +179,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
 			expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
-			const cwd = join(tmpdir(), `bound-lowbox-failure-${randomBytes(4).toString("hex")}`);
+			const runId = randomBytes(8).toString("hex");
+			const cwd = join(tmpdir(), `bound-lowbox-failure-${runId}`);
 			mkdirSync(cwd, { recursive: true });
 			const controlFd = 3;
 			let failed: ChildProcess | undefined;
@@ -160,11 +203,16 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						"blocked",
 						"--writable",
 						cwd,
+						"--test-namespace",
+						runId,
 					],
 					{
 						stdio: ["ignore", "pipe", "pipe", "pipe"],
 						windowsHide: true,
-						env: { ...process.env, BOUND_LOWBOX_TEST_FAIL_AFTER_WATCHER: "1" },
+						env: {
+							...process.env,
+							BOUND_LOWBOX_TEST_FAIL_AFTER_WATCHER: "1",
+						},
 					},
 				);
 				const control = failed.stdio[controlFd];
@@ -200,7 +248,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					}
 					const cleanupProbe = spawnSync(
 						helper as string,
-						["inspect-cleanup", "--profile", profile, "--path", cwd],
+						["inspect-cleanup", "--profile", profile, "--path", cwd, "--test-namespace", runId],
 						{ encoding: "utf8", windowsHide: true },
 					);
 					expect(cleanupProbe.status, cleanupProbe.stderr).toBe(0);
@@ -230,7 +278,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
 			expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
-			const cwd = join(tmpdir(), `bound-lowbox-watcher-timeout-${randomBytes(4).toString("hex")}`);
+			const runId = randomBytes(8).toString("hex");
+			const cwd = join(tmpdir(), `bound-lowbox-watcher-timeout-${runId}`);
 			mkdirSync(cwd, { recursive: true });
 			const controlFd = 3;
 			const startedAt = Date.now();
@@ -254,11 +303,16 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						"blocked",
 						"--writable",
 						cwd,
+						"--test-namespace",
+						runId,
 					],
 					{
 						stdio: ["ignore", "pipe", "pipe", "pipe"],
 						windowsHide: true,
-						env: { ...process.env, BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS: "1" },
+						env: {
+							...process.env,
+							BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS: "1",
+						},
 					},
 				);
 				const control = failed.stdio[controlFd];
@@ -294,7 +348,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
 		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
-		const cwd = join(tmpdir(), `bound-lowbox-oracle-${randomBytes(4).toString("hex")}`);
+		const runId = randomBytes(8).toString("hex");
+		const cwd = join(tmpdir(), `bound-lowbox-oracle-${runId}`);
 		mkdirSync(cwd, { recursive: true });
 		const sandbox: ResolvedSandboxConfig = {
 			enabled: true,
@@ -308,9 +363,16 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			warn: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
 		};
 		let crash: ChildProcess | undefined;
+		let crashProfile: string | undefined;
 		try {
-			const tool = createBashTool("windows-latest", resolveShell(undefined), sandbox, logger);
-			const result: ToolResult = await tool(
+			const tool = createBashTool(
+				"windows-latest",
+				resolveShell(undefined),
+				sandbox,
+				logger,
+				runId,
+			);
+			const result = await tool(
 				{
 					command:
 						'[Console]::Out.WriteLine("LOWBOX_STDOUT"); [Console]::Error.WriteLine("LOWBOX_STDERR")',
@@ -320,8 +382,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				cwd,
 			);
 
-			const spawn = events.findLast((entry) => entry.event === "sandbox_spawn");
-			const backend = spawn?.fields?.backend;
+			const spawnEvent = events.findLast((entry) => entry.event === "sandbox_spawn");
+			const backend = spawnEvent?.fields?.backend;
 			expect(backend, "appcontainer_lowbox was not selected").toBe("appcontainer_lowbox");
 			expect(result.isError, "appcontainer_lowbox execution failed").toBeUndefined();
 
@@ -353,6 +415,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					"blocked",
 					"--writable",
 					cwd,
+					"--test-namespace",
+					runId,
 				],
 				{ stdio: ["ignore", "pipe", "pipe", "pipe"], windowsHide: true },
 			);
@@ -375,6 +439,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				);
 			});
 			const ready = JSON.parse(readyLine) as { ok?: boolean; pid?: number; profile?: string };
+			crashProfile = ready.profile;
 			expect(ready.ok, readyLine).toBe(true);
 			expect(typeof ready.pid).toBe("number");
 			expect(ready.profile).toMatch(/^Bound\.Lowbox\./);
@@ -402,7 +467,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 
 				const cleanupProbe = spawnSync(
 					helper as string,
-					["inspect-cleanup", "--profile", profile, "--path", cwd],
+					["inspect-cleanup", "--profile", profile, "--path", cwd, "--test-namespace", runId],
 					{ encoding: "utf8", windowsHide: true },
 				);
 				expect(cleanupProbe.status, cleanupProbe.stderr).toBe(0);
@@ -421,6 +486,10 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
 		} finally {
 			await stopAndClose(crash);
+			if (crashProfile) {
+				const cleanup = await waitForCleanup(helper as string, crashProfile, cwd, runId);
+				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
+			}
 			rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
 	});
