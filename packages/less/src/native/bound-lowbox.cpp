@@ -180,6 +180,7 @@ FailedHandoffResolution resolveFailedHandoffJournal(const std::wstring& path,
 	ULONGLONG watcherCreationTime, HANDLE jobHandle, HANDLE childHandle);
 bool markAuthorityJournalRecoverableLocked(const std::wstring& path, DWORD childPid,
 	ULONGLONG childCreationTime, bool jobTreeDeathProof);
+bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed);
 bool recoverAuthorityJournalLocked(const std::wstring& path);
 bool authorityPathMatchesProfile(const std::wstring& path, const std::wstring& profileName);
 bool isAuthorityPathAllowed(const std::wstring& path);
@@ -906,6 +907,39 @@ bool isAuthorityPathAllowed(const std::wstring& path) {
 	return attributes != INVALID_FILE_ATTRIBUTES;
 }
 
+void reportAuthorityCleanupFailure(const wchar_t* phase, DWORD win32, HRESULT hresult = S_OK) {
+	writeControl("{\"ok\":false,\"code\":\"LOWBOX_AUTHORITY_CLEANUP\",\"phase\":\"" +
+		jsonEscape(utf8(phase)) + "\",\"win32\":" + std::to_string(win32) +
+		",\"hresult\":" + std::to_string(static_cast<long long>(hresult)) +
+		",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
+}
+
+bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed) {
+	for (size_t i = parsed.authorityLines.size(); i >= 2; i -= 2) {
+		if (!isAuthorityPathAllowed(parsed.authorityLines[i - 2]) ||
+			!restoreSecurityFromSddl(parsed.authorityLines[i - 2], parsed.authorityLines[i - 1])) {
+			const DWORD error = GetLastError();
+			reportAuthorityCleanupFailure(L"restore ACLs", error);
+			SetLastError(error);
+			return false;
+		}
+	}
+	const HRESULT deleted = DeleteAppContainerProfile(parsed.profileName.c_str());
+	if (FAILED(deleted) && HRESULT_CODE(deleted) != ERROR_NOT_FOUND) {
+		const DWORD error = HRESULT_CODE(deleted);
+		reportAuthorityCleanupFailure(L"DeleteAppContainerProfile", error, deleted);
+		SetLastError(error);
+		return false;
+	}
+	if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) {
+		const DWORD error = GetLastError();
+		reportAuthorityCleanupFailure(L"DeleteFileW(authority journal)", error);
+		SetLastError(error);
+		return false;
+	}
+	return true;
+}
+
 bool recoverAuthorityJournalLocked(const std::wstring& path) {
 	AuthorityJournal parsed;
 	if (!readAuthorityJournal(path, parsed)) return false;
@@ -913,17 +947,7 @@ bool recoverAuthorityJournalLocked(const std::wstring& path) {
 		parsed.ownerPid != 0 || parsed.ownerCreationTime != 0 || parsed.watcherPid != 0 ||
 		parsed.watcherCreationTime != 0 || parsed.childPid == 0 || parsed.childCreationTime == 0 ||
 		!authorityPathMatchesProfile(path, parsed.profileName)) return false;
-	for (size_t i = parsed.authorityLines.size(); i >= 2; i -= 2) {
-		if (!isAuthorityPathAllowed(parsed.authorityLines[i - 2]) ||
-			!restoreSecurityFromSddl(parsed.authorityLines[i - 2], parsed.authorityLines[i - 1])) return false;
-	}
-	const HRESULT deleted = DeleteAppContainerProfile(parsed.profileName.c_str());
-	if (FAILED(deleted) && HRESULT_CODE(deleted) != ERROR_NOT_FOUND) {
-		SetLastError(HRESULT_CODE(deleted));
-		return false;
-	}
-	if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) return false;
-	return true;
+	return cleanupRecoverableAuthorityLocked(path, parsed);
 }
 
 bool recoverAuthorityJournal(const std::wstring& path) {
@@ -1072,6 +1096,26 @@ int reportWatcherFailure(const wchar_t* operation, DWORD win32 = GetLastError())
 	return 125;
 }
 
+int reportWatcherCleanupFailure(const wchar_t* phase, DWORD win32, HRESULT hresult = S_OK) {
+	writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_CLEANUP\",\"phase\":\"" +
+		jsonEscape(utf8(phase)) + "\",\"win32\":" + std::to_string(win32) +
+		",\"hresult\":" + std::to_string(static_cast<long long>(hresult)) +
+		",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
+	return 125;
+}
+
+bool closeWatcherLowboxHandles(HANDLE& childHandle, HANDLE& jobHandle) {
+	const BOOL childClosed = CloseHandle(childHandle);
+	const DWORD childError = childClosed ? ERROR_SUCCESS : GetLastError();
+	childHandle = nullptr;
+	const BOOL jobClosed = CloseHandle(jobHandle);
+	const DWORD jobError = jobClosed ? ERROR_SUCCESS : GetLastError();
+	jobHandle = nullptr;
+	if (!childClosed) SetLastError(childError);
+	else if (!jobClosed) SetLastError(jobError);
+	return childClosed && jobClosed;
+}
+
 int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	ULONGLONG expectedOwnerCreationTime, HANDLE jobHandle, HANDLE childHandle, HANDLE controlRead,
 	HANDLE readyEvent, HANDLE authorityEvent, HANDLE authorityArmedEvent) {
@@ -1166,17 +1210,29 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	DWORD childPid = GetProcessId(childHandle);
 	ULONGLONG childCreationTime = 0;
 	const bool jobTreeDeathProof = childPid != 0 && processCreationTime(childHandle, childCreationTime);
+	if (!jobTreeDeathProof) return reportWatcherFailure(L"GetProcessTimes(child)");
 	AuthorityRecoveryLock recoveryLock(journalPath);
 	if (!recoveryLock) return reportWatcherFailure(L"AuthorityRecoveryLock");
-	if (!jobTreeDeathProof) return reportWatcherFailure(L"GetProcessTimes(child)");
-	// Exact job-tree death is proved. Publish Recoverable before attempting authority cleanup so any
-	// subsequent watcher failure leaves durable, startup-retryable work instead of an abandoned Active
-	// journal. This transition and all cleanup remain watcher-only.
+	// Exact job-tree death is proved. Publish Recoverable before closing watcher-held lowbox handles
+	// or attempting authority cleanup so every subsequent failure leaves durable, startup-retryable
+	// work instead of an abandoned Active journal. This transition remains watcher-only.
 	if (!markAuthorityJournalRecoverableLocked(journalPath, childPid, childCreationTime,
 		jobTreeDeathProof)) return reportWatcherFailure(L"markAuthorityJournalRecoverableLocked");
-	if (!recoverAuthorityJournalLocked(journalPath)) {
-		return reportWatcherFailure(L"recoverAuthorityJournalLocked");
+	// No process or job handle carrying lowbox authority may survive into profile deletion. Always
+	// attempt both closes before reporting either failure, so a failed child-handle close cannot strand
+	// the job handle until process teardown. A close failure exits the watcher with Recoverable durable;
+	// startup recovery cannot acquire recoveryLock until this scope and process have terminated.
+	if (!closeWatcherLowboxHandles(childHandle, jobHandle)) {
+		return reportWatcherCleanupFailure(L"CloseHandle(lowbox handles)", GetLastError());
 	}
+	AuthorityJournal cleanup;
+	if (!readAuthorityJournal(journalPath, cleanup)) {
+		return reportWatcherCleanupFailure(L"read authority journal", GetLastError());
+	}
+	if (!authorityPathMatchesProfile(journalPath, cleanup.profileName)) {
+		return reportWatcherCleanupFailure(L"validate authority journal", ERROR_INVALID_DATA);
+	}
+	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup)) return 125;
 	return 0;
 }
 
