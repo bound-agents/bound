@@ -835,13 +835,28 @@ describe("Windows lowbox helper materialization", () => {
 		expect(request).toContain("watcherReportWrite.reset()");
 		expect(request).toContain("WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS)");
 		expect(request).not.toContain("GetExitCodeProcess(watcherProcess");
-		expect(request).toContain("cleanupWatcher.reset()");
-		expect(request.indexOf("cleanupWatcher.reset()")).toBeGreaterThan(
+		expect(request).not.toContain("cleanupWatcher.reset()");
+		expect(request).toContain("const HANDLE watcherToClose = cleanupWatcher");
+		expect(request).toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
+		expect(request).toContain("CloseHandle(watcherToClose)");
+		expect(request.indexOf("cleanupWatcher = INVALID_HANDLE_VALUE")).toBeGreaterThan(
 			request.indexOf("WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS)"),
 		);
 		expect(request.indexOf("ReadFile(watcherReportRead.value")).toBeGreaterThan(
-			request.indexOf("cleanupWatcher.reset()"),
+			request.indexOf("CloseHandle(watcherToClose)"),
 		);
+	});
+
+	it("declares cleanupWatcher as a raw HANDLE before every lifecycle use", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const declaration = source.indexOf("HANDLE cleanupWatcher = INVALID_HANDLE_VALUE;");
+		const firstLifecycleUse = source.indexOf("cleanupWatcher", declaration + 1);
+
+		expect(declaration).toBeGreaterThan(0);
+		expect(firstLifecycleUse).toBeGreaterThan(declaration);
+		expect(source).not.toContain("cleanupWatcher.reset()");
+		expect(source).not.toMatch(/cleanupWatcher\s*[!=]=\s*nullptr/);
+		expect(source).not.toContain("cleanupWatcher = nullptr");
 	});
 
 	it("closes every runtime terminal observation handle and stream", () => {
@@ -856,7 +871,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(terminalStart).toBeGreaterThan(closeStart);
 		expect(close).toContain("watcherControlWrite = nullptr");
 		expect(close).toContain("watcherReportRead = nullptr");
-		expect(close).toContain("cleanupWatcher = nullptr");
+		expect(close).toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
 		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS)");
 		expect(terminal.match(/closeArmedWatcherObservationHandles\(\)/g)).toHaveLength(2);
 		expect(
@@ -874,6 +889,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(notifications).toHaveLength(3);
 		expect(postWatcherInstall).not.toContain("recoverAuthorityJournal(journalPath)");
 		expect(postWatcherInstall).not.toContain("cleanupWatcher = nullptr");
+		expect(postWatcherInstall).not.toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
 		expect(postWatcherInstall).not.toContain("restoreMaterializedAuthority(");
 		expect(postWatcherInstall).not.toContain("persistAuthorityJournal(");
 		expect(postWatcherInstall).not.toContain("TerminateJobObject(");
