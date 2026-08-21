@@ -21,6 +21,7 @@
 namespace {
 extern HANDLE cleanupWatcher;
 extern HANDLE watcherControlWrite;
+extern HANDLE watcherReportRead;
 struct Handle {
 	HANDLE value = nullptr;
 	~Handle() { reset(); }
@@ -133,6 +134,7 @@ std::string jsonEscape(const std::string& value) {
 HANDLE controlHandle = INVALID_HANDLE_VALUE;
 HANDLE cleanupWatcher = nullptr;
 HANDLE watcherControlWrite = nullptr;
+HANDLE watcherReportRead = nullptr;
 std::wstring cleanupJournalPath;
 std::wstring testNamespace;
 constexpr DWORD LOWBOX_WATCHER_TIMEOUT_MS = 5000;
@@ -197,8 +199,20 @@ int fail(const char* code, const wchar_t* operation, DWORD win32);
 void writeControl(const std::string& json);
 enum class WatcherTerminalStatus {
 	CleanupComplete,
+	CleanupFailed,
 	WatcherAbnormalExit,
 };
+
+struct WatcherTerminalReport {
+	DWORD magic;
+	DWORD childExitCode;
+	DWORD cleanupResult;
+	DWORD win32;
+	HRESULT hresult;
+	wchar_t operation[96];
+};
+
+constexpr DWORD LOWBOX_WATCHER_REPORT_MAGIC = 0x42575250;
 
 enum class WatcherStartOutcome {
 	ConfirmedArmed,
@@ -213,26 +227,27 @@ struct WatcherStartResult {
 	DWORD win32;
 };
 
-WatcherTerminalStatus awaitArmedWatcherTerminalStatus() {
-	if (cleanupWatcher == nullptr) return WatcherTerminalStatus::WatcherAbnormalExit;
-	// Closing the owner's writer is a natural-completion signal only: the watcher treats EOF as
-	// "no more control frames", never as cancellation. Closing before the wait prevents a live owner
-	// from keeping the watcher and therefore itself alive after the child has exited.
-	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
-	watcherControlWrite = nullptr;
-	// After authority is armed, the watcher owns termination and cleanup. The owner may wait
-	// without a deadline: a slow cleanup is not a failed command, and timing out cannot transfer
-	// authority back to the owner.
-	const DWORD wait = WaitForSingleObject(cleanupWatcher, INFINITE);
-	if (wait != WAIT_OBJECT_0) return WatcherTerminalStatus::WatcherAbnormalExit;
-	DWORD watcherExitCode = 125;
-	if (!GetExitCodeProcess(cleanupWatcher, &watcherExitCode) || watcherExitCode != 0) {
+WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& report) {
+	if (cleanupWatcher == nullptr || watcherReportRead == nullptr) {
 		return WatcherTerminalStatus::WatcherAbnormalExit;
 	}
+	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
+	watcherControlWrite = nullptr;
+	DWORD bytesRead = 0;
+	const bool reportRead = ReadFile(watcherReportRead, &report, sizeof(report), &bytesRead, nullptr) &&
+		bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
+	CloseHandle(watcherReportRead);
+	watcherReportRead = nullptr;
+	const DWORD wait = WaitForSingleObject(cleanupWatcher, INFINITE);
+	DWORD watcherExitCode = 125;
+	const bool watcherClean = wait == WAIT_OBJECT_0 &&
+		GetExitCodeProcess(cleanupWatcher, &watcherExitCode) && watcherExitCode == 0;
 	CloseHandle(cleanupWatcher);
 	cleanupWatcher = nullptr;
 	cleanupJournalPath.clear();
-	return WatcherTerminalStatus::CleanupComplete;
+	if (!reportRead || !watcherClean) return WatcherTerminalStatus::WatcherAbnormalExit;
+	return report.cleanupResult == 0 ? WatcherTerminalStatus::CleanupComplete
+		: WatcherTerminalStatus::CleanupFailed;
 }
 
 bool queryJobTreeEmpty(HANDLE jobHandle, bool& empty) {
@@ -289,9 +304,13 @@ int failWithoutAuthorityMutation(const char* code, const wchar_t* operation, DWO
 
 [[noreturn]] void requestArmedWatcherCancelAndObserve() {
 	requestArmedWatcherCancel();
-	// A failed or late request does not return authority to the owner. The watcher holds an exact owner
-	// process handle, detects owner death independently, and remains the sole lifecycle/cleanup executor.
-	const WatcherTerminalStatus status = awaitArmedWatcherTerminalStatus();
+	WatcherTerminalReport report{};
+	const WatcherTerminalStatus status = awaitArmedWatcherTerminalStatus(report);
+	if (status == WatcherTerminalStatus::CleanupFailed) {
+		writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_CLEANUP\",\"operation\":\"" +
+			jsonEscape(utf8(report.operation)) + "\",\"win32\":" + std::to_string(report.win32) +
+			",\"hresult\":" + std::to_string(report.hresult) + "}");
+	}
 	ExitProcess(status == WatcherTerminalStatus::CleanupComplete ? 125 : 126);
 }
 
@@ -907,11 +926,8 @@ bool isAuthorityPathAllowed(const std::wstring& path) {
 	return attributes != INVALID_FILE_ATTRIBUTES;
 }
 
-void reportAuthorityCleanupFailure(const wchar_t* phase, DWORD win32, HRESULT hresult = S_OK) {
-	writeControl("{\"ok\":false,\"code\":\"LOWBOX_AUTHORITY_CLEANUP\",\"phase\":\"" +
-		jsonEscape(utf8(phase)) + "\",\"win32\":" + std::to_string(win32) +
-		",\"hresult\":" + std::to_string(static_cast<long long>(hresult)) +
-		",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
+void reportAuthorityCleanupFailure(const wchar_t*, DWORD win32, HRESULT = S_OK) {
+	SetLastError(win32);
 }
 
 bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed) {
@@ -1118,42 +1134,51 @@ bool closeWatcherLowboxHandles(HANDLE& childHandle, HANDLE& jobHandle,
 
 int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	ULONGLONG expectedOwnerCreationTime, HANDLE jobHandle, HANDLE childHandle, HANDLE controlRead,
-	HANDLE readyEvent, HANDLE authorityEvent, HANDLE authorityArmedEvent) {
+	HANDLE reportWrite, HANDLE readyEvent, HANDLE authorityEvent, HANDLE authorityArmedEvent) {
+	WatcherTerminalReport report{LOWBOX_WATCHER_REPORT_MAGIC, 125, 1, ERROR_SUCCESS, S_OK, {}};
+	auto sendReport = [&]() {
+		DWORD written = 0;
+		return WriteFile(reportWrite, &report, sizeof(report), &written, nullptr) && written == sizeof(report);
+	};
+	auto failWatcher = [&](const wchar_t* operation, DWORD win32 = GetLastError(), HRESULT hresult = S_OK) {
+		report.cleanupResult = 1;
+		report.win32 = win32;
+		report.hresult = hresult;
+		wcsncpy_s(report.operation, operation, _TRUNCATE);
+		sendReport();
+		return 125;
+	};
+	auto failCleanup = [&]() {
+		return failWatcher(L"authority cleanup", GetLastError());
+	};
 	wchar_t neverArms[2]{};
 	if (GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS", neverArms, 2) > 0) {
 		Sleep(LOWBOX_WATCHER_TIMEOUT_MS * 2);
-		return 125;
+		return failWatcher(L"watcher never arms", ERROR_TIMEOUT);
 	}
 	Handle owner;
 	owner.value = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
-	if (!owner.value) return reportWatcherFailure(L"OpenProcess(owner)");
+	if (!owner.value) return failWatcher(L"OpenProcess(owner)");
 	ULONGLONG ownerCreationTime = 0;
-	if (!processCreationTime(owner.value, ownerCreationTime)) {
-		return reportWatcherFailure(L"GetProcessTimes(owner)");
-	}
+	if (!processCreationTime(owner.value, ownerCreationTime)) return failWatcher(L"GetProcessTimes(owner)");
 	if (ownerCreationTime != expectedOwnerCreationTime) {
-		return reportWatcherFailure(L"owner creation time validation", ERROR_INVALID_DATA);
+		return failWatcher(L"owner creation time validation", ERROR_INVALID_DATA);
 	}
-	// Ready means only that the watcher has validated its inherited authority handles. The owner still
-	// owns Transferring authority until it grants authority and this watcher durably publishes Active.
-	if (!SetEvent(readyEvent)) return reportWatcherFailure(L"SetEvent(ready)");
+	if (!SetEvent(readyEvent)) return failWatcher(L"SetEvent(ready)");
 	const DWORD authorityWait = WaitForSingleObject(authorityEvent, INFINITE);
 	if (authorityWait != WAIT_OBJECT_0) {
-		return reportWatcherFailure(L"WaitForSingleObject(authority)",
+		return failWatcher(L"WaitForSingleObject(authority)",
 			authorityWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
 	}
 	DWORD watcherPid = GetCurrentProcessId();
 	ULONGLONG watcherCreationTime = 0;
 	if (!processCreationTime(GetCurrentProcess(), watcherCreationTime)) {
-		return reportWatcherFailure(L"GetProcessTimes(watcher)");
+		return failWatcher(L"GetProcessTimes(watcher)");
 	}
 	if (!activateAuthorityJournalWatcher(journalPath, watcherPid, watcherCreationTime)) {
-		return reportWatcherFailure(L"activateAuthorityJournalWatcher");
+		return failWatcher(L"activateAuthorityJournalWatcher");
 	}
-	// From this acknowledgement onward, only this watcher may terminate the job, transition the
-	// journal, or clean authority. The pipe carries one explicit framed CANCEL request; pipe EOF is not
-	// cancellation. Owner death is observed separately through the exact owner process handle.
-	if (!SetEvent(authorityArmedEvent)) return reportWatcherFailure(L"SetEvent(authority-armed)");
+	if (!SetEvent(authorityArmedEvent)) return failWatcher(L"SetEvent(authority-armed)");
 	HANDLE lifecycleSignals[] = {childHandle, owner.value};
 	bool terminateJob = false;
 	bool controlPipeOpen = true;
@@ -1166,76 +1191,69 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 			break;
 		}
 		if (lifecycleWait != WAIT_TIMEOUT) {
-			return reportWatcherFailure(L"WaitForMultipleObjects(lifecycleSignals)",
+			return failWatcher(L"WaitForMultipleObjects(lifecycleSignals)",
 				lifecycleWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
 		}
-
 		DWORD controlBytes = 0;
 		if (!PeekNamedPipe(controlRead, nullptr, 0, nullptr, &controlBytes, nullptr)) {
 			const DWORD controlError = GetLastError();
 			if (controlError == ERROR_BROKEN_PIPE) {
-				// EOF means the owner will send no more control frames. Retire the pipe and block on the
-				// child/owner lifecycle handles; EOF itself is not cancellation.
 				controlPipeOpen = false;
 				continue;
 			}
-			return reportWatcherFailure(L"PeekNamedPipe(control)", controlError);
+			return failWatcher(L"PeekNamedPipe(control)", controlError);
 		}
 		if (controlBytes == 0) continue;
 		char controlBuffer[16]{};
 		DWORD bytesRead = 0;
 		if (!ReadFile(controlRead, controlBuffer, sizeof(controlBuffer), &bytesRead, nullptr)) {
-			return reportWatcherFailure(L"ReadFile(control)");
+			return failWatcher(L"ReadFile(control)");
 		}
 		const std::string controlFrame(controlBuffer, bytesRead);
 		const char cancelFrame[] = "CANCEL\n";
 		if (controlFrame != cancelFrame) {
-			return reportWatcherFailure(L"ReadFile(control): invalid frame", ERROR_INVALID_DATA);
+			return failWatcher(L"ReadFile(control): invalid frame", ERROR_INVALID_DATA);
 		}
 		terminateJob = true;
 		break;
 	}
 	if (terminateJob && !TerminateJobObject(jobHandle, 125) &&
 		WaitForSingleObject(childHandle, 0) != WAIT_OBJECT_0) {
-		return reportWatcherFailure(L"TerminateJobObject");
+		return failWatcher(L"TerminateJobObject");
 	}
 	const DWORD childWait = WaitForSingleObject(childHandle, INFINITE);
 	if (childWait != WAIT_OBJECT_0) {
-		return reportWatcherFailure(L"WaitForSingleObject(child)",
+		return failWatcher(L"WaitForSingleObject(child)",
 			childWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
 	}
-	if (!waitForJobTreeDeath(jobHandle, childHandle, INFINITE)) {
-		return reportWatcherFailure(L"waitForJobTreeDeath");
+	if (!GetExitCodeProcess(childHandle, &report.childExitCode)) {
+		return failWatcher(L"GetExitCodeProcess(child)");
 	}
+	if (!waitForJobTreeDeath(jobHandle, childHandle, INFINITE)) return failWatcher(L"waitForJobTreeDeath");
 	DWORD childPid = GetProcessId(childHandle);
 	ULONGLONG childCreationTime = 0;
 	const bool jobTreeDeathProof = childPid != 0 && processCreationTime(childHandle, childCreationTime);
-	if (!jobTreeDeathProof) return reportWatcherFailure(L"GetProcessTimes(child)");
+	if (!jobTreeDeathProof) return failWatcher(L"GetProcessTimes(child)");
 	AuthorityRecoveryLock recoveryLock(journalPath);
-	if (!recoveryLock) return reportWatcherFailure(L"AuthorityRecoveryLock");
-	// Exact job-tree death is proved. Publish Recoverable before closing watcher-held lowbox handles
-	// or attempting authority cleanup so every subsequent failure leaves durable, startup-retryable
-	// work instead of an abandoned Active journal. This transition remains watcher-only.
+	if (!recoveryLock) return failWatcher(L"AuthorityRecoveryLock");
 	if (!markAuthorityJournalRecoverableLocked(journalPath, childPid, childCreationTime,
-		jobTreeDeathProof)) return reportWatcherFailure(L"markAuthorityJournalRecoverableLocked");
-	// No process or job handle carrying lowbox authority may survive into profile deletion. Always
-	// attempt both closes before reporting either failure, so a failed child-handle close cannot strand
-	// the job handle until process teardown. A close failure exits the watcher with Recoverable durable;
-	// startup recovery cannot acquire recoveryLock until this scope and process have terminated.
+		jobTreeDeathProof)) return failWatcher(L"markAuthorityJournalRecoverableLocked");
 	if (!closeWatcherLowboxHandles(childHandle, jobHandle, reportAuthorityCleanupFailure)) {
-		return 125;
+		return failWatcher(L"CloseHandle(lowbox authority)");
 	}
 	AuthorityJournal cleanup;
-	if (!readAuthorityJournal(journalPath, cleanup)) {
-		const DWORD error = GetLastError();
-		reportAuthorityCleanupFailure(L"read authority journal", error);
-		return 125;
-	}
+	if (!readAuthorityJournal(journalPath, cleanup)) return failWatcher(L"read authority journal");
 	if (!authorityPathMatchesProfile(journalPath, cleanup.profileName)) {
-		reportAuthorityCleanupFailure(L"validate authority journal", ERROR_INVALID_DATA);
-		return 125;
+		return failWatcher(L"validate authority journal", ERROR_INVALID_DATA);
 	}
-	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup)) return 125;
+	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup)) {
+		return failCleanup();
+	}
+	report.cleanupResult = 0;
+	report.win32 = ERROR_SUCCESS;
+	report.hresult = S_OK;
+	report.operation[0] = L'\0';
+	if (!sendReport()) return 125;
 	return 0;
 }
 
@@ -1245,11 +1263,16 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	if (!transferLock) return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	Handle controlRead;
 	Handle controlWrite;
+	Handle watcherReportRead;
+	Handle watcherReportWrite;
 	SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, TRUE};
 	SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
 	if (!CreatePipe(&controlRead.value, &controlWrite.value, &pipeSecurity, 0) ||
 		!SetHandleInformation(controlWrite.value, HANDLE_FLAG_INHERIT, 0) ||
-		!SetHandleInformation(controlRead.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+		!SetHandleInformation(controlRead.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) ||
+		!CreatePipe(&watcherReportRead.value, &watcherReportWrite.value, &pipeSecurity, 0) ||
+		!SetHandleInformation(watcherReportRead.value, HANDLE_FLAG_INHERIT, 0) ||
+		!SetHandleInformation(watcherReportWrite.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
 		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	Handle readyEvent;
@@ -1287,15 +1310,16 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		L" --owner-created " + std::to_wstring(ownerCreationTime) +
 		L" --job-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(inheritedJob.value)) +
 		L" --child-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(inheritedChild.value)) +
-		L" --control-read-handle " +
-		std::to_wstring(reinterpret_cast<uintptr_t>(controlRead.value)) +
+		L" --control-read-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(controlRead.value)) +
+		L" --report-write-handle " +
+		std::to_wstring(reinterpret_cast<uintptr_t>(watcherReportWrite.value)) +
 		L" --ready-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(readyEvent.value)) +
 		L" --authority-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(authorityEvent.value)) +
 		L" --authority-armed-handle " +
 		std::to_wstring(reinterpret_cast<uintptr_t>(authorityArmedEvent.value));
 
-	HANDLE inherited[] = {inheritedJob.value, inheritedChild.value, controlRead.value, readyEvent.value,
-		authorityEvent.value, authorityArmedEvent.value};
+	HANDLE inherited[] = {inheritedJob.value, inheritedChild.value, controlRead.value,
+		watcherReportWrite.value, readyEvent.value, authorityEvent.value, authorityArmedEvent.value};
 	SIZE_T bytes = 0;
 	InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
 	AttributeList attributes;
@@ -1357,30 +1381,30 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		DWORD written = 0;
 		const bool cancelSent = WriteFile(controlWrite.value, cancelFrame, sizeof(cancelFrame) - 1,
 			&written, nullptr) && written == sizeof(cancelFrame) - 1;
-		// This startup path owns the local writer until ConfirmedArmed. Close it before observing the
-		// watcher so cancellation never depends on eventual owner process teardown.
+		const DWORD cancelError = cancelSent ? ERROR_SUCCESS : GetLastError();
 		controlWrite.reset();
-		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
-		const bool watcherStopped = watcherWait == WAIT_OBJECT_0;
-		DWORD watcherExitCode = 125;
-		const bool watcherClean = watcherStopped && GetExitCodeProcess(watcherProcess, &watcherExitCode) &&
-			watcherExitCode == 0;
+
+		WatcherTerminalReport report{};
+		DWORD bytesRead = 0;
+		const bool reportRead = ReadFile(watcherReportRead.value, &report, sizeof(report), &bytesRead,
+			nullptr) && bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
+		watcherReportRead.reset();
+		const bool watcherClean = reportRead && report.cleanupResult == 0;
 		const char* cancelCode = !cancelSent ? "LOWBOX_WATCHER_CANCEL_WRITE_FAILED"
-			: watcherWait == WAIT_TIMEOUT ? "LOWBOX_WATCHER_CANCEL_TIMEOUT"
 			: watcherClean ? "LOWBOX_WATCHER_CANCEL_SENT"
-			: "LOWBOX_WATCHER_CANCEL_ABNORMAL";
-		const DWORD cancelError = watcherWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+			: reportRead ? "LOWBOX_WATCHER_CLEANUP"
+			: "LOWBOX_WATCHER_REPORT_FAILED";
+		const std::wstring operation = reportRead ? report.operation : L"ReadFile(watcher report)";
+		const DWORD diagnosticWin32 = !cancelSent ? cancelError
+			: reportRead ? report.win32
+			: GetLastError();
+		const HRESULT diagnosticHresult = reportRead ? report.hresult : S_OK;
 		writeControl("{\"ok\":false,\"code\":\"" + std::string(cancelCode) +
-			"\",\"operation\":\"WriteFile/WaitForSingleObject/GetExitCodeProcess\",\"win32\":" +
-			std::to_string(cancelError) + "}");
-		if (watcherStopped) {
-			CloseHandle(watcherProcess);
-			watcherProcess = nullptr;
-		}
-		if (watcherClean) {
-			return {WatcherStartOutcome::FailedAfterWatcherCleanup, failure};
-		}
-		return {WatcherStartOutcome::IndeterminateWatcherOwned, failure};
+			"\",\"operation\":\"" + jsonEscape(utf8(operation)) + "\",\"win32\":" +
+			std::to_string(diagnosticWin32) + ",\"hresult\":" +
+			std::to_string(static_cast<long long>(diagnosticHresult)) + "}");
+		return {watcherClean ? WatcherStartOutcome::FailedAfterWatcherCleanup
+			: WatcherStartOutcome::IndeterminateWatcherOwned, failure};
 	};
 
 	auto observeFailedArmedWait = [&](DWORD failure) -> WatcherStartResult {
@@ -1428,6 +1452,8 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		return observeFailedArmedWait(authorityError);
 	}
 	watcherControlWrite = controlWrite.release();
+	watcherReportWrite.reset();
+	::watcherReportRead = watcherReportRead.release();
 	return {WatcherStartOutcome::ConfirmedArmed, ERROR_SUCCESS};
 }
 }  // namespace
@@ -1474,24 +1500,26 @@ int wmain(int argc, wchar_t** argv) {
 			<< ",\"LowboxAces\":" << (lowboxAce ? 1 : 0) << "}" << std::endl;
 		return 0;
 	}
-	if (argc >= 20 && std::wstring(argv[1]) == L"cleanup-watch" &&
+	if (argc >= 22 && std::wstring(argv[1]) == L"cleanup-watch" &&
 		std::wstring(argv[2]) == L"--journal" && std::wstring(argv[4]) == L"--owner-pid" &&
 		std::wstring(argv[6]) == L"--owner-created" &&
 		std::wstring(argv[8]) == L"--job-handle" &&
 		std::wstring(argv[10]) == L"--child-handle" &&
 		std::wstring(argv[12]) == L"--control-read-handle" &&
-		std::wstring(argv[14]) == L"--ready-handle" &&
-		std::wstring(argv[16]) == L"--authority-handle" &&
-		std::wstring(argv[18]) == L"--authority-armed-handle") {
+		std::wstring(argv[14]) == L"--report-write-handle" &&
+		std::wstring(argv[16]) == L"--ready-handle" &&
+		std::wstring(argv[18]) == L"--authority-handle" &&
+		std::wstring(argv[20]) == L"--authority-armed-handle") {
 		HANDLE job = INVALID_HANDLE_VALUE, child = INVALID_HANDLE_VALUE;
-		HANDLE controlRead = INVALID_HANDLE_VALUE, ready = INVALID_HANDLE_VALUE;
-		HANDLE authority = INVALID_HANDLE_VALUE, authorityArmed = INVALID_HANDLE_VALUE;
+		HANDLE controlRead = INVALID_HANDLE_VALUE, reportWrite = INVALID_HANDLE_VALUE;
+		HANDLE ready = INVALID_HANDLE_VALUE, authority = INVALID_HANDLE_VALUE;
+		HANDLE authorityArmed = INVALID_HANDLE_VALUE;
 		if (!parseInheritedHandle(argv[9], job) || !parseInheritedHandle(argv[11], child) ||
-			!parseInheritedHandle(argv[13], controlRead) || !parseInheritedHandle(argv[15], ready) ||
-			!parseInheritedHandle(argv[17], authority) ||
-			!parseInheritedHandle(argv[19], authorityArmed)) return 125;
+			!parseInheritedHandle(argv[13], controlRead) || !parseInheritedHandle(argv[15], reportWrite) ||
+			!parseInheritedHandle(argv[17], ready) || !parseInheritedHandle(argv[19], authority) ||
+			!parseInheritedHandle(argv[21], authorityArmed)) return 125;
 		return runCleanupWatcher(argv[3], wcstoul(argv[5], nullptr, 10),
-			_wcstoui64(argv[7], nullptr, 10), job, child, controlRead, ready, authority,
+			_wcstoui64(argv[7], nullptr, 10), job, child, controlRead, reportWrite, ready, authority,
 			authorityArmed);
 	}
 
@@ -1659,6 +1687,10 @@ int wmain(int argc, wchar_t** argv) {
 		return failWithoutAuthorityMutation("LOWBOX_WATCHER_INVALID_OUTCOME", L"startCleanupWatcher",
 			ERROR_INVALID_STATE);
 	}
+	// ConfirmedArmed transfers practical ownership completely. The watcher already holds duplicate
+	// handles and reports terminal status; the owner must not retain handles that block profile deletion.
+	childProcess.reset();
+	job.reset();
 	wchar_t failAfterWatcher[2]{};
 	if (GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_FAIL_AFTER_WATCHER", failAfterWatcher, 2) > 0) {
 		writeControl("{\"ok\":true,\"pid\":" + std::to_string(process.dwProcessId) +
@@ -1689,21 +1721,19 @@ int wmain(int argc, wchar_t** argv) {
 			std::to_string(win32) + ",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
 		requestArmedWatcherCancelAndObserve();
 	}
+	childThread.reset();
 	writeControl("{\"ok\":true,\"pid\":" + std::to_string(process.dwProcessId) +
 		",\"profile\":\"" + jsonEscape(utf8(profile.name)) + "\"}");
 
-	const DWORD childWait = WaitForSingleObject(childProcess.value, INFINITE);
-	if (childWait != WAIT_OBJECT_0) {
-		requestArmedWatcherCancelAndObserve();
+	WatcherTerminalReport report{};
+	const WatcherTerminalStatus watcherStatus = awaitArmedWatcherTerminalStatus(report);
+	if (watcherStatus == WatcherTerminalStatus::CleanupFailed) {
+		writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_CLEANUP\",\"operation\":\"" +
+			jsonEscape(utf8(report.operation)) + "\",\"win32\":" + std::to_string(report.win32) +
+			",\"hresult\":" + std::to_string(report.hresult) + "}");
 	}
-	DWORD exitCode = 1;
-	if (!GetExitCodeProcess(childProcess.value, &exitCode)) {
-		requestArmedWatcherCancelAndObserve();
-	}
-
-	const WatcherTerminalStatus watcherStatus = awaitArmedWatcherTerminalStatus();
 	if (watcherStatus != WatcherTerminalStatus::CleanupComplete) reportArmedWatcherAbnormalExit();
 	WaitForSingleObject(stdoutThread.value, INFINITE);
 	WaitForSingleObject(stderrThread.value, INFINITE);
-	return static_cast<int>(exitCode);
+	return static_cast<int>(report.childExitCode);
 }
