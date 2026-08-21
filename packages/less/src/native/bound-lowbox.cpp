@@ -1424,8 +1424,6 @@ int wmain(int argc, wchar_t** argv) {
 			watcherStart.win32, job.value, childProcess.value, 125, profile, aclScope);
 	}
 	if (watcherStart.outcome == WatcherStartOutcome::IndeterminateWatcherOwned) {
-		requestArmedWatcherCancel();
-		observeIndeterminateWatcherBoundedly();
 		return failWithoutAuthorityMutation("LOWBOX_WATCHER_INDETERMINATE", L"startCleanupWatcher",
 			watcherStart.win32);
 	}

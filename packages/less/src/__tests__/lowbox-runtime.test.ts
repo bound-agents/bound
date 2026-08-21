@@ -291,8 +291,8 @@ describe("Windows lowbox helper materialization", () => {
 		expect(caller).toContain(
 			"watcherStart.outcome == WatcherStartOutcome::IndeterminateWatcherOwned",
 		);
-		expect(caller).toContain("requestArmedWatcherCancel();");
-		expect(caller).toContain("observeIndeterminateWatcherBoundedly();");
+		expect(caller).not.toContain("requestArmedWatcherCancel();");
+		expect(caller).not.toContain("observeIndeterminateWatcherBoundedly();");
 		expect(caller).toContain("return failWithoutAuthorityMutation(");
 		expect(confirmedGate).toBeGreaterThan(0);
 		expect(resume).toBeGreaterThan(confirmedGate);
