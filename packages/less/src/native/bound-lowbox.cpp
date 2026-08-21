@@ -243,8 +243,21 @@ WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& rep
 	}
 	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
 	watcherControlWrite = nullptr;
+	const ULONGLONG started = GetTickCount64();
+	bool reportReady = false;
+	for (;;) {
+		DWORD available = 0;
+		if (!PeekNamedPipe(watcherReportRead, nullptr, 0, nullptr, &available, nullptr)) break;
+		if (available >= sizeof(report)) {
+			reportReady = true;
+			break;
+		}
+		if (WaitForSingleObject(cleanupWatcher, 0) == WAIT_OBJECT_0) break;
+		if (GetTickCount64() - started >= LOWBOX_WATCHER_TIMEOUT_MS) break;
+		Sleep(10);
+	}
 	DWORD bytesRead = 0;
-	const bool reportRead =
+	const bool reportRead = reportReady &&
 		ReadFile(watcherReportRead, &report, sizeof(report), &bytesRead, nullptr) &&
 		bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
 	closeArmedWatcherObservationHandles();
