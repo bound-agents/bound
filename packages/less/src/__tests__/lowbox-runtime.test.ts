@@ -299,6 +299,9 @@ describe("Windows lowbox helper materialization", () => {
 		const start = source.indexOf("bool saveAndProtectGitControlSurface");
 		const end = source.indexOf("bool makePipe", start);
 		const protection = source.slice(start, end);
+		const findHandleStart = source.indexOf("struct FindHandle");
+		const findHandleEnd = source.indexOf("struct Profile", findHandleStart);
+		const findHandle = source.slice(findHandleStart, findHandleEnd);
 
 		expect(protection).toContain('L"\\\\config"');
 		expect(protection).toContain('L"\\\\hooks"');
@@ -312,6 +315,10 @@ describe("Windows lowbox helper materialization", () => {
 		expect(descendantCollection).toBeGreaterThan(hooksRootCheck);
 		expect(protection).toContain("FindFirstFileW");
 		expect(protection).toContain("FindNextFileW");
+		expect(findHandle).toContain("struct FindHandle");
+		expect(findHandle).toContain("FindClose(value)");
+		expect(protection).toContain("FindHandle search;");
+		expect(source).not.toContain("Handle search(FindFirstFileW");
 		expect(protection).toContain("FILE_ATTRIBUTE_DIRECTORY");
 		expect(protection).toContain("NO_INHERITANCE");
 		expect(protection).toContain("PROTECTED_DACL_SECURITY_INFORMATION");

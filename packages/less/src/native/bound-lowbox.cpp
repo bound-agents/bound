@@ -46,6 +46,17 @@ struct Handle {
 	operator HANDLE() const { return value; }
 };
 
+struct FindHandle {
+	HANDLE value = INVALID_HANDLE_VALUE;
+	~FindHandle() {
+		if (value != INVALID_HANDLE_VALUE) FindClose(value);
+	}
+	FindHandle() = default;
+	FindHandle(const FindHandle&) = delete;
+	FindHandle& operator=(const FindHandle&) = delete;
+	operator HANDLE() const { return value; }
+};
+
 struct Profile {
 	std::wstring name;
 	PSID sid = nullptr;
@@ -1051,10 +1062,9 @@ bool recoverStaleAuthority(const std::wstring& namespaceValue) {
 	WIN32_FIND_DATAW found{};
 	const std::wstring pattern = authorityJournalPattern(namespaceValue);
 	if (pattern.empty()) return false;
-	Handle search;
+	FindHandle search;
 	search.value = FindFirstFileW(pattern.c_str(), &found);
 	if (search.value == INVALID_HANDLE_VALUE) {
-		search.value = nullptr;
 		return GetLastError() == ERROR_FILE_NOT_FOUND;
 	}
 	do {
@@ -1217,9 +1227,9 @@ bool saveAndProtectGitControlSurface(const std::wstring& rawPath, PSID sid, DWOR
 bool collectExistingHookDescendants(const std::wstring& directory,
 	std::vector<std::pair<std::wstring, bool>>& descendants) {
 	WIN32_FIND_DATAW entry{};
-	Handle search(FindFirstFileW((directory + L"\\*").c_str(), &entry));
+	FindHandle search;
+	search.value = FindFirstFileW((directory + L"\\*").c_str(), &entry);
 	if (search.value == INVALID_HANDLE_VALUE) {
-		search.value = nullptr;
 		return GetLastError() == ERROR_FILE_NOT_FOUND;
 	}
 	do {
