@@ -23,6 +23,23 @@ const sandbox = {
 };
 
 describe("Windows lowbox helper materialization", () => {
+	it("defines checked local authority restoration instead of only declaring it", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const signature =
+			"LocalAuthorityCleanupResult restoreMaterializedAuthority(Profile& profile, AclScope& aclScope)";
+		const occurrences = source.split(signature).length - 1;
+
+		expect(occurrences).toBe(2);
+		expect(source).toContain(`${signature} {`);
+	});
+	it("uses complete SECURITY_ATTRIBUTES types in native aggregate initializers", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+
+		expect(source).not.toContain("SECURITY_ATTRIBUTES inherit{sizeof(inherit)");
+		expect(source).toContain(
+			"SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};",
+		);
+	});
 	it("ships checked-in native source with the required security primitives", () => {
 		expect(lowboxHelperSourcePath()).toEndWith(join("native", "bound-lowbox.cpp"));
 		expect(existsSync(lowboxHelperSourcePath())).toBe(true);
@@ -265,10 +282,10 @@ describe("Windows lowbox helper materialization", () => {
 		const ready = caller.lastIndexOf('writeControl("{\\"ok\\":true');
 
 		expect(startStart).toBeGreaterThan(0);
-		expect(grantFailure).toContain("cancelPreTransferWatcherAndObserve(");
+		expect(grantFailure).not.toContain("cancelPreTransferWatcherAndObserve(");
 		expect(start).toContain("resetAuthorityJournalAfterFailedHandoff(");
 		expect(start).toContain("watcherWait == WAIT_OBJECT_0 &&");
-		expect(grantFailure).not.toContain("requestArmedWatcherCancelAndObserve(");
+		expect(grantFailure).toContain("requestArmedWatcherCancelAndObserve(");
 		expect(caller).toContain("watcherStart.outcome == WatcherStartOutcome::FailedPreTransfer");
 		expect(caller).toContain("failAfterDurableAuthorityJournal(");
 		expect(caller).toContain(
@@ -284,25 +301,23 @@ describe("Windows lowbox helper materialization", () => {
 		expect(caller.slice(0, confirmedGate)).not.toContain('writeControl("{\\"ok\\":true');
 	});
 
-	it("fails closed for SetEvent failure and ACK timeout while the journal remains Transferring", () => {
+	it("never kills a watcher once authority signaling can race durable Active ownership", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
 		const startEnd = source.indexOf("}  // namespace", startStart);
 		const start = source.slice(startStart, startEnd);
-		const setEventFailure = start.slice(
-			start.indexOf("if (!SetEvent(authorityEvent.value))"),
-			start.indexOf("const DWORD authorityWait"),
+		const preTransferEnd = start.indexOf("auto requestArmedWatcherCancelAndObserve");
+		const preTransferCancel = start.slice(
+			start.indexOf("auto cancelPreTransferWatcherAndObserve"),
+			preTransferEnd,
 		);
-		const ackFailure = start.slice(
-			start.indexOf("if (authorityWait != WAIT_OBJECT_0)"),
-			start.indexOf("watcherControlWrite = controlWrite.release()"),
-		);
+		const postSignal = start.slice(start.indexOf("if (!SetEvent(authorityEvent.value))"));
 
-		expect(setEventFailure).toContain("cancelPreTransferWatcherAndObserve(");
-		expect(ackFailure).toContain("observeFailedArmedWait(");
-		expect(start).toContain("journal.state == AuthorityJournalState::Transferring");
-		expect(start).toContain("cancelPreTransferWatcherAndObserve(failure)");
-		expect(start).toContain("WatcherStartOutcome::FailedPreTransfer");
+		expect(preTransferCancel).toContain("TerminateProcess(watcherProcess, 125)");
+		expect(postSignal).not.toContain("cancelPreTransferWatcherAndObserve(");
+		expect(postSignal).toContain("requestArmedWatcherCancelAndObserve(");
+		expect(postSignal).toContain("observeFailedArmedWait(");
+		expect(postSignal).not.toContain("TerminateProcess(watcherProcess, 125)");
 	});
 
 	it("returns indeterminate watcher-owned failure for every Active ACK-loss cancel result", () => {
