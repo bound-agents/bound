@@ -140,6 +140,7 @@ jobs:
         # recorded test failure) that the raw JUnit reports as green. An earlier
         # build/oracle failure can skip the unit-test step, so create the input
         # directory before invoking the summary script.
+        shell: bash
         run: |
           mkdir -p test-results
           bun run scripts/ci-test-summary.ts test-results

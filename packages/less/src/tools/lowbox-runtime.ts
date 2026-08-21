@@ -29,14 +29,18 @@ export function lowboxHelperSourcePath(): string {
 interface ResolveLowboxHelperOptions {
 	platform?: NodeJS.Platform;
 	executablePath?: string;
+	helperPath?: string;
 }
 
 export function resolveLowboxHelperPath(options: ResolveLowboxHelperOptions = {}): string {
 	const platform = options.platform ?? process.platform;
 	if (platform !== "win32") throw new LowboxUnavailableError(`unsupported platform ${platform}`);
 	const helper =
-		process.env.BOUND_LOWBOX_HELPER ||
-		join(dirname(options.executablePath ?? process.execPath), "bound-lowbox.exe");
+		"helperPath" in options
+			? (options.helperPath ??
+				join(dirname(options.executablePath ?? process.execPath), "bound-lowbox.exe"))
+			: (process.env.BOUND_LOWBOX_HELPER ??
+				join(dirname(options.executablePath ?? process.execPath), "bound-lowbox.exe"));
 	if (!existsSync(helper)) throw new LowboxUnavailableError(`native helper not found at ${helper}`);
 	return helper;
 }
@@ -87,6 +91,10 @@ export function parseLowboxFailure(line: string): LowboxFailure | null {
 	return null;
 }
 
+type SpawnLowboxOptions = {
+	spawn?: typeof spawn;
+};
+
 export async function spawnLowbox(
 	command: string,
 	cwd: string,
@@ -94,10 +102,11 @@ export async function spawnLowbox(
 	shell: ResolvedShell,
 	cfg: ResolvedSandboxConfig,
 	testNamespace?: string,
+	options: SpawnLowboxOptions = {},
 ): Promise<SandboxSpawnResult> {
 	const helper = resolveLowboxHelperPath();
 	const controlFd = 3;
-	const child = spawn(
+	const child = (options.spawn ?? spawn)(
 		helper,
 		buildLowboxArgs(
 			command,
