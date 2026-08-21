@@ -95,6 +95,8 @@ jobs:
         # what let a wedged worker burn ~6h on the Windows lane.
         timeout-minutes: 20
         shell: bash
+        env:
+          BOUND_LOWBOX_HELPER: ${{ runner.os == 'Windows' && format('{0}\\dist\\bound-lowbox.exe', github.workspace) || '' }}
         run: |
           # bun test --recursive silently skips 5 packages on Linux due to a
           # workspace test-discovery bug. Run each package explicitly instead.
