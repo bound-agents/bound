@@ -1081,11 +1081,21 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	if (childPid == 0 || !processCreationTime(childProcess, childCreationTime)) {
 		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
+	Handle inheritedJob;
+	Handle inheritedChild;
+	if (!DuplicateHandle(GetCurrentProcess(), jobHandle, GetCurrentProcess(), &inheritedJob.value, 0,
+		TRUE, DUPLICATE_SAME_ACCESS)) {
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
+	}
+	if (!DuplicateHandle(GetCurrentProcess(), childProcess, GetCurrentProcess(), &inheritedChild.value, 0,
+		TRUE, DUPLICATE_SAME_ACCESS)) {
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
+	}
 	std::wstring commandLine = quoteArgument(executable) + L" cleanup-watch --journal " +
 		quoteArgument(journalPath) + L" --owner-pid " + std::to_wstring(ownerPid) +
 		L" --owner-created " + std::to_wstring(ownerCreationTime) +
-		L" --job-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(jobHandle)) +
-		L" --child-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(childProcess)) +
+		L" --job-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(inheritedJob.value)) +
+		L" --child-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(inheritedChild.value)) +
 		L" --control-read-handle " +
 		std::to_wstring(reinterpret_cast<uintptr_t>(controlRead.value)) +
 		L" --ready-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(readyEvent.value)) +
@@ -1093,7 +1103,7 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		L" --authority-armed-handle " +
 		std::to_wstring(reinterpret_cast<uintptr_t>(authorityArmedEvent.value));
 
-	HANDLE inherited[] = {jobHandle, childProcess, controlRead.value, readyEvent.value,
+	HANDLE inherited[] = {inheritedJob.value, inheritedChild.value, controlRead.value, readyEvent.value,
 		authorityEvent.value, authorityArmedEvent.value};
 	SIZE_T bytes = 0;
 	InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);

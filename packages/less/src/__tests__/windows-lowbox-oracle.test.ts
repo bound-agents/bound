@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,27 @@ import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
 import type { ToolResult } from "../tools/types";
 
+async function waitForClose(child: ChildProcess | undefined, timeoutMs = 10_000): Promise<void> {
+	if (!child) return;
+	if (child.exitCode !== null || child.signalCode !== null) {
+		for (const stream of child.stdio) stream?.destroy();
+		return;
+	}
+	await Promise.race([
+		new Promise<void>((resolve) => child.once("close", () => resolve())),
+		Bun.sleep(timeoutMs).then(() => {
+			throw new Error(`process ${child.pid ?? "unknown"} did not close within ${timeoutMs}ms`);
+		}),
+	]);
+	for (const stream of child.stdio) stream?.destroy();
+}
+
+async function stopAndClose(child: ChildProcess | undefined): Promise<void> {
+	if (!child) return;
+	for (const stream of child.stdio) stream?.destroy();
+	if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	await waitForClose(child);
+}
 /**
  * Mandatory windows-latest oracle for the production Windows sandbox path.
  *
@@ -27,8 +48,9 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			mkdirSync(cwd, { recursive: true });
 			const marker = join(cwd, "normal-ready.txt");
 			const controlFd = 3;
+			let normal: ChildProcess | undefined;
 			try {
-				const normal = spawn(
+				normal = spawn(
 					helper as string,
 					[
 						"spawn",
@@ -62,8 +84,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						clearTimeout(timeout);
 						resolve(pending.slice(0, newline));
 					});
-					normal.once("error", reject);
-					normal.once("exit", (code) =>
+					normal?.once("error", reject);
+					normal?.once("exit", (code) =>
 						reject(new Error(`helper exited before readiness (${code})`)),
 					);
 				});
@@ -99,10 +121,11 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					}
 					await Bun.sleep(50);
 				} while (Date.now() < observationDeadline);
-				await new Promise<void>((resolve) => normal.once("close", () => resolve()));
+				await waitForClose(normal);
 				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
 				expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
 			} finally {
+				await stopAndClose(normal);
 				rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 			}
 		});
@@ -117,8 +140,9 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const cwd = join(tmpdir(), `bound-lowbox-failure-${randomBytes(4).toString("hex")}`);
 			mkdirSync(cwd, { recursive: true });
 			const controlFd = 3;
+			let failed: ChildProcess | undefined;
 			try {
-				const failed = spawn(
+				failed = spawn(
 					helper as string,
 					[
 						"spawn",
@@ -156,7 +180,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						clearTimeout(timeout);
 						resolve(pending.slice(0, newline));
 					});
-					failed.once("error", reject);
+					failed?.once("error", reject);
 				});
 				const ready = JSON.parse(readyLine) as { ok?: boolean; pid?: number; profile?: string };
 				expect(ready.ok, readyLine).toBe(true);
@@ -190,12 +214,11 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					}
 					await Bun.sleep(50);
 				} while (Date.now() < observationDeadline);
-				if (failed.exitCode === null) {
-					await new Promise<void>((resolve) => failed.once("close", () => resolve()));
-				}
+				await waitForClose(failed);
 				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
 				expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
 			} finally {
+				await stopAndClose(failed);
 				rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 			}
 		});
@@ -211,7 +234,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			mkdirSync(cwd, { recursive: true });
 			const controlFd = 3;
 			const startedAt = Date.now();
-			let failed: ReturnType<typeof spawn> | undefined;
+			let failed: ChildProcess | undefined;
 			try {
 				failed = spawn(
 					helper as string,
@@ -260,7 +283,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				expect(Date.now() - startedAt).toBeLessThan(15_000);
 				expect(failed.exitCode).toBeNull();
 			} finally {
-				if (failed?.pid) kill(failed.pid, "SIGKILL");
+				await stopAndClose(failed);
 				rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 			}
 		});
@@ -284,7 +307,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			info: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
 			warn: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
 		};
-
+		let crash: ChildProcess | undefined;
 		try {
 			const tool = createBashTool("windows-latest", resolveShell(undefined), sandbox, logger);
 			const result: ToolResult = await tool(
@@ -312,7 +335,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 
 			const marker = join(cwd, "helper-ready.txt");
 			const controlFd = 3;
-			const crash = spawn(
+			crash = spawn(
 				helper as string,
 				[
 					"spawn",
@@ -346,8 +369,10 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					clearTimeout(timeout);
 					resolve(pending.slice(0, newline));
 				});
-				crash.once("error", reject);
-				crash.once("exit", (code) => reject(new Error(`helper exited before readiness (${code})`)));
+				crash?.once("error", reject);
+				crash?.once("exit", (code) =>
+					reject(new Error(`helper exited before readiness (${code})`)),
+				);
 			});
 			const ready = JSON.parse(readyLine) as { ok?: boolean; pid?: number; profile?: string };
 			expect(ready.ok, readyLine).toBe(true);
@@ -359,7 +384,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				"lowbox child was not alive at helper readiness",
 			).not.toThrow();
 			crash.kill();
-			await new Promise<void>((resolve) => crash.once("close", () => resolve()));
+			await waitForClose(crash);
 
 			const profile = ready.profile as string;
 			const observationDeadline = Date.now() + 10_000;
@@ -395,6 +420,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
 			expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
 		} finally {
+			await stopAndClose(crash);
 			rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
 	});
