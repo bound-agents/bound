@@ -660,6 +660,21 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			["junction", join(junction, "junction.txt")],
 		] as const;
 		const mutableGit = mutableGitTargets.map((path, index) => [`git-${index}`, path] as const);
+		const protectedGitOperations = [
+			["config-modify", psTryWrite("config-modify", gitConfig, "tampered")],
+			["pre-commit-modify", psTryWrite("pre-commit-modify", preCommit, "tampered")],
+			["commit-msg-modify", psTryWrite("commit-msg-modify", commitMsg, "tampered")],
+			["nested-hook-modify", psTryWrite("nested-hook-modify", nestedHook, "tampered")],
+			[
+				"nested-hook-append",
+				`try { Add-Content -LiteralPath ${psLiteral(nestedHook)} -Value 'tampered' -ErrorAction Stop; 'nested-hook-append=OK' } catch { 'nested-hook-append=DENIED' }`,
+			],
+			[
+				"nested-hook-delete",
+				`try { Remove-Item -LiteralPath ${psLiteral(nestedHook)} -Force -ErrorAction Stop; 'nested-hook-delete=OK' } catch { 'nested-hook-delete=DENIED' }`,
+			],
+			["hook-create", psTryWrite("hook-create", newHook, "tampered")],
+		] as const;
 		const assertions = [
 			...allowed.map(([id, path]) => psTryWrite(id, path, "allowed")),
 			...denied.map(([id, path]) => psTryWrite(id, path, "denied")),
@@ -668,13 +683,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			`try { if ((Get-Content -LiteralPath ${psLiteral(preCommit)} -Raw) -eq ${psLiteral(hookBytes.toString())}) { 'pre-commit-read=OK' } else { 'pre-commit-read=WRONG' } } catch { 'pre-commit-read=DENIED' }`,
 			`try { if ((Get-Content -LiteralPath ${psLiteral(commitMsg)} -Raw) -eq ${psLiteral(secondHookBytes.toString())}) { 'commit-msg-read=OK' } else { 'commit-msg-read=WRONG' } } catch { 'commit-msg-read=DENIED' }`,
 			`try { if ((Get-Content -LiteralPath ${psLiteral(nestedHook)} -Raw) -eq ${psLiteral(nestedHookBytes.toString())}) { 'nested-hook-read=OK' } else { 'nested-hook-read=WRONG' } } catch { 'nested-hook-read=DENIED' }`,
-			psTryWrite("config-modify", gitConfig, "tampered"),
-			psTryWrite("pre-commit-modify", preCommit, "tampered"),
-			psTryWrite("commit-msg-modify", commitMsg, "tampered"),
-			psTryWrite("nested-hook-modify", nestedHook, "tampered"),
-			`try { Add-Content -LiteralPath ${psLiteral(nestedHook)} -Value 'tampered'; 'nested-hook-append=OK' } catch { 'nested-hook-append=DENIED' }`,
-			`try { Remove-Item -LiteralPath ${psLiteral(nestedHook)} -Force -ErrorAction Stop; 'nested-hook-delete=OK' } catch { 'nested-hook-delete=DENIED' }`,
-			psTryWrite("hook-create", newHook, "tampered"),
+			...protectedGitOperations.map(([, operation]) => operation),
 		].join("; ");
 		const sandbox: ResolvedSandboxConfig = {
 			enabled: true,
@@ -707,16 +716,12 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				for (const [id] of mutableGit) expect(outcomes.has(`${id}=OK`), id).toBe(true);
 				for (const id of ["config-read", "pre-commit-read", "commit-msg-read", "nested-hook-read"])
 					expect(outcomes.has(`${id}=OK`), id).toBe(true);
-				for (const id of [
-					"config-modify",
-					"pre-commit-modify",
-					"commit-msg-modify",
-					"nested-hook-modify",
-					"nested-hook-append",
-					"nested-hook-delete",
-					"hook-create",
-				])
-					expect(outcomes.has(`${id}=DENIED`), id).toBe(true);
+				for (const [id] of protectedGitOperations) {
+					expect(
+						outcomes.has(`${id}=DENIED`),
+						`${id}: expected DENIED; outcomes=${[...outcomes].join(", ")}`,
+					).toBe(true);
+				}
 			} finally {
 				if (priorTemp === undefined) process.env.TEMP = undefined;
 				else process.env.TEMP = priorTemp;
@@ -829,7 +834,9 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				.filter((block) => block.type === "text")
 				.map((block) => block.text)
 				.join("\n");
-			expect(output).toMatch(/Exit code:\s*[1-9]\d*/);
+			const exitCodeMatch = output.match(/Exit code:\s*(-?\d+)/);
+			expect(exitCodeMatch, `missing numeric exit code in output: ${output}`).not.toBeNull();
+			expect(Number(exitCodeMatch?.[1]), `cancellation returned success: ${output}`).not.toBe(0);
 			const exitDeadline = Date.now() + 10_000;
 			while (processExists(descendantPid) && Date.now() < exitDeadline) await Bun.sleep(20);
 			expect(processExists(descendantPid), "descendant survived job cancellation").toBe(false);

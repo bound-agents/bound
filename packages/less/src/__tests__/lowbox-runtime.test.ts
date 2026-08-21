@@ -294,7 +294,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(selfTest).toContain("negativeNumber");
 		expect(selfTest).toContain("overflowNumber");
 	});
-	it("builds protected git control-surface DACLs without inherited lowbox writes", () => {
+	it("filters only inherited writable AppContainer package ACEs from protected git DACLs", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const start = source.indexOf("bool saveAndProtectGitControlSurface");
 		const end = source.indexOf("bool makePipe", start);
@@ -326,6 +326,19 @@ describe("Windows lowbox helper materialization", () => {
 		expect(protection).toContain("SUB_CONTAINERS_AND_OBJECTS_INHERIT");
 		expect(protection).toContain("INHERITED_ACE");
 		expect(protection).toContain("EqualSid");
+		expect(protection).toContain("WinBuiltinAnyPackageSid");
+		expect(protection).toContain("WinBuiltinAnyRestrictedPackageSid");
+		expect(source).toContain("CreateWellKnownSid");
+		expect(source).toContain("FILE_WRITE_DATA");
+		expect(source).toContain("FILE_APPEND_DATA");
+		expect(source).toContain("FILE_ADD_FILE");
+		expect(source).toContain("FILE_ADD_SUBDIRECTORY");
+		expect(source).toContain("FILE_DELETE_CHILD");
+		expect(source).toContain("DELETE");
+		expect(source).toContain("WRITE_DAC");
+		expect(source).toContain("WRITE_OWNER");
+		expect(source).not.toContain("WinBuiltinUsersSid");
+		expect(source).not.toContain("WinWorldSid");
 		expect(protection).toContain("record->dacl->AclSize");
 		expect(protection).toContain("explicitReadAceCapacity");
 		expect(protection).toContain("GetSecurityDescriptorControl");
