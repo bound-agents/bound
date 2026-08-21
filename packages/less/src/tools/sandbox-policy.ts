@@ -23,18 +23,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
  * `@microsoft/mxc-sdk@0.6.1`. A missing or out-of-window version throws at
  * spawn. Bump this in lockstep with the dependency.
  *
- * NOT a backend selector. The schema version does NOT pick the platform backend:
- * `createConfigFromPolicy` maps the abstract "process" containment to a fixed
- * per-OS structure (seatbelt / bubblewrap / Windows BaseContainer) regardless of
- * version, and there is no `appcontainer` containment branch in the SDK at all.
- * An earlier revision pinned win32 to 0.4.0-alpha believing it would fall back to
- * AppContainer — verified inert: the wire payload carried 0.4.0-alpha and the
- * native `wxc-exec` still selected BaseContainer (the `wxc-exec --probe` detector
- * picks `base-container` whenever the BaseContainer API symbol resolves, which it
- * does on 24H2+). Do not re-introduce a per-platform version pin to change the
- * backend; it cannot. The Windows sandbox is gated on feature-velocity keys, not
- * the schema version — see `checkSandboxAvailable` in `./sandbox` and the
- * "boundless" sandbox section in README.md.
+ * NOT a backend selector. This schema version applies only to the mxc-backed
+ * POSIX path (seatbelt on macOS and bubblewrap on Linux). Windows dispatches
+ * directly to Bound's native lowbox helper before this policy reaches mxc, so a
+ * per-platform version pin cannot change the Windows backend.
  */
 export const POLICY_VERSION = "0.6.0-alpha";
 
@@ -289,24 +281,14 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
  * a missing source aborts the sandbox, and a non-repo cwd (or a worktree/submodule
  * whose `.git` is a file, not a dir) simply has nothing to bind.
  *
- * WINDOWS CARVE-OUT (returns `[]` on win32): none of mxc's Windows backends can
- * express "readable but not writable" for a subpath of a writable parent. The
- * DACL and base-container tiers only have additive allow-ACLs plus a full-access
- * *deny* — and a full-access deny on `.git/config` would also block git's own
- * *reads* of config and break the repo. There is no write-only deny primitive,
- * so the only Windows options are "no protection" or "break git"; we choose no
- * protection and leave `.git` writable there until mxc grows the primitive
- * (tracked upstream — see CONTRIBUTING "Common Gotchas" and the bound issue).
- * Linux (bubblewrap) and the in-process file-tool guard still apply on every
- * other platform.
+ * The protected path set is platform-independent. POSIX shell confinement
+ * consumes it as read-only bind paths; the bound-owned Windows lowbox helper
+ * enforces the same carve-out through scoped DACLs. Keeping it here also makes
+ * the in-process file tools refuse writes consistently on every platform.
  */
 const GIT_EXEC_SURFACE_RELPATHS = [".git/hooks", ".git/config"] as const;
 
-export function computeGitProtectedPaths(
-	cwd: string,
-	platform: NodeJS.Platform = process.platform,
-): string[] {
-	if (platform === "win32") return [];
+export function computeGitProtectedPaths(cwd: string, _platform?: NodeJS.Platform): string[] {
 	const protectedPaths: string[] = [];
 	for (const rel of GIT_EXEC_SURFACE_RELPATHS) {
 		try {

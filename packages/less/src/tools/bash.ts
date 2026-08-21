@@ -95,8 +95,8 @@ async function spawnForBash(
 	logger?: BashEventLogger,
 	testNamespace?: string,
 ): Promise<{ proc: SandboxSpawnResult; note?: string }> {
-	// Windows always uses Bound's AppContainer lowbox. Never probe or select the
-	// dead mxc IsolationSession/BaseContainer backend there.
+	// Windows always uses Bound's AppContainer lowbox. The generic mxc path is
+	// POSIX-only and is never probed on Windows.
 	if (sandbox.enabled && process.platform === "win32") {
 		const lowbox = await trySandboxedViaLowbox(
 			command,
