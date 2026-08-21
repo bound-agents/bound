@@ -8,7 +8,7 @@ import type {
 	Task,
 	Thread,
 } from "@bound/shared";
-import { injectTraceContext } from "@bound/shared";
+import { injectTraceContext } from "@bound/shared/trace-collector";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { type ClientTracingSession, createClientTracingSession } from "./tracing.js";
