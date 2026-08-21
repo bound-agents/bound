@@ -247,14 +247,15 @@ async function build() {
 		process.exit(1);
 	}
 
-	// Step 2b: Stage mxc sandbox binary for embedding into the boundless binary.
-	// Non-fatal: a missing/unsupported binary degrades to passthrough at runtime
-	// rather than breaking the build.
-	console.log("\n2b. Preparing mxc sandbox runtime...");
+	// Step 2b: Windows helper compilation runs after boundless so both artifacts
+	// are materialized in the same output directory. Non-Windows builds skip it.
+
+	// Step 2c: Stage mxc for the remaining macOS/Linux sandbox paths.
+	console.log("\n2c. Preparing mxc sandbox runtime...");
 	try {
 		execSync("bun run scripts/build-mxc-runtime.ts", { stdio: "inherit" });
 	} catch {
-		console.warn("mxc runtime staging failed; boundless filesystem sandbox will be unavailable.");
+		console.warn("mxc runtime staging failed; mxc filesystem sandbox will be unavailable.");
 	}
 
 	// Step 3: Compile bound (main agent binary) — needs both OTel esnext
@@ -280,13 +281,31 @@ async function build() {
 
 	// Step 5: Compile boundless (terminal client)
 	console.log("\n5. Compiling boundless binary...");
+	let boundlessBuilt = false;
 	try {
 		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
 			stubNodePty: true,
 		});
+		boundlessBuilt = true;
 	} catch (e) {
 		console.error("boundless compilation failed:", e instanceof Error ? e.message : e);
 		console.log("Use 'bun packages/less/src/boundless.tsx' to run directly");
+	}
+
+	if (process.platform === "win32" && boundlessBuilt) {
+		console.log("\n5b. Building Windows lowbox helper beside boundless...");
+		try {
+			execSync("bun run scripts/build-lowbox-helper.ts", {
+				stdio: "inherit",
+				env: {
+					...process.env,
+					BOUND_LOWBOX_STAGE_BESIDE: join(process.cwd(), "dist", "boundless.exe"),
+				},
+			});
+		} catch {
+			console.error("Windows lowbox helper build failed.");
+			process.exit(1);
+		}
 	}
 
 	// Summary

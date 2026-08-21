@@ -74,9 +74,16 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build Windows AppContainer lowbox helper
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: bun run scripts/build-lowbox-helper.ts
+
       - name: Mandatory Windows AppContainer lowbox oracle
         if: ${{ runner.os == 'Windows' }}
         shell: bash
+        env:
+          BOUND_LOWBOX_HELPER: ${{ github.workspace }}\dist\bound-lowbox.exe
         run: bun test packages/less/src/__tests__/windows-lowbox-oracle.test.ts --timeout 30000
 
       - name: Unit tests
