@@ -57,10 +57,11 @@ async function trySandboxedViaLowbox(
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): Promise<SandboxSpawnResult | null> {
 	if (process.platform !== "win32") return null;
 	try {
-		const proc = await spawnLowbox(command, cwd, policyCwd, shell, sandbox);
+		const proc = await spawnLowbox(command, cwd, policyCwd, shell, sandbox, testNamespace);
 		logger?.info("sandbox_spawn", {
 			cwd,
 			pid: proc.pid,
@@ -92,11 +93,20 @@ async function spawnForBash(
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): Promise<{ proc: SandboxSpawnResult; note?: string }> {
 	// Windows always uses Bound's AppContainer lowbox. Never probe or select the
 	// dead mxc IsolationSession/BaseContainer backend there.
 	if (sandbox.enabled && process.platform === "win32") {
-		const lowbox = await trySandboxedViaLowbox(command, cwd, policyCwd, shell, sandbox, logger);
+		const lowbox = await trySandboxedViaLowbox(
+			command,
+			cwd,
+			policyCwd,
+			shell,
+			sandbox,
+			logger,
+			testNamespace,
+		);
 		if (lowbox) return { proc: lowbox };
 		if (sandbox.onUnavailable === "passthrough") {
 			logger?.warn("sandbox_passthrough", {
@@ -209,9 +219,20 @@ export function createBashTool(
 	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): ToolHandler {
 	return (args, signal, cwd) => {
-		return bashToolWithStreaming(args, signal, cwd, undefined, hostname, shell, sandbox, logger);
+		return bashToolWithStreaming(
+			args,
+			signal,
+			cwd,
+			undefined,
+			hostname,
+			shell,
+			sandbox,
+			logger,
+			testNamespace,
+		);
 	};
 }
 
@@ -224,6 +245,7 @@ export async function bashToolWithStreaming(
 	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): Promise<ToolResult> {
 	const {
 		command,
@@ -291,6 +313,7 @@ export async function bashToolWithStreaming(
 				shell,
 				sandbox,
 				logger,
+				testNamespace,
 			);
 
 			// Handle abort: SIGTERM -> 2s wait -> SIGKILL

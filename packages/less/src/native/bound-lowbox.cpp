@@ -134,6 +134,7 @@ HANDLE controlHandle = INVALID_HANDLE_VALUE;
 HANDLE cleanupWatcher = nullptr;
 HANDLE watcherControlWrite = nullptr;
 std::wstring cleanupJournalPath;
+std::wstring testNamespace;
 constexpr DWORD LOWBOX_WATCHER_TIMEOUT_MS = 5000;
 constexpr DWORD LOWBOX_RECOVERY_RETRY_MS = 1000;
 
@@ -163,6 +164,7 @@ struct AuthorityJournal {
 };
 
 std::wstring authorityJournalPath(const std::wstring& profileName);
+std::wstring authorityJournalPattern(const std::wstring& namespaceValue);
 bool verifyAuthorityJournal(const std::wstring& path);
 bool publishAuthorityJournalWatcher(const std::wstring& path, DWORD watcherPid,
 	ULONGLONG watcherCreationTime);
@@ -401,7 +403,7 @@ bool parseInheritedHandle(const std::wstring& value, HANDLE& handle) {
 
 bool parseArguments(int argc, wchar_t** argv, HANDLE& control, std::wstring& cwd,
 	std::wstring& shell, std::wstring& shellFlag, std::wstring& command, std::wstring& network,
-	std::vector<std::wstring>& writable) {
+	std::vector<std::wstring>& writable, std::wstring& namespaceValue) {
 	if (argc < 2 || std::wstring(argv[1]) != L"spawn") return false;
 	for (int i = 2; i < argc; i += 2) {
 		if (i + 1 >= argc) return false;
@@ -415,6 +417,7 @@ bool parseArguments(int argc, wchar_t** argv, HANDLE& control, std::wstring& cwd
 		else if (flag == L"--command") command = value;
 		else if (flag == L"--network") network = value;
 		else if (flag == L"--writable") writable.push_back(value);
+		else if (flag == L"--test-namespace") namespaceValue = value;
 		else return false;
 	}
 	return control != INVALID_HANDLE_VALUE && !cwd.empty() && !shell.empty() && !shellFlag.empty() &&
@@ -490,7 +493,16 @@ std::wstring authorityJournalPath(const std::wstring& profileName) {
 	wchar_t temp[MAX_PATH]{};
 	const DWORD length = GetTempPathW(MAX_PATH, temp);
 	if (!length || length >= MAX_PATH) return {};
-	return std::wstring(temp) + L"bound-lowbox-" + profileName + L".authority";
+	const std::wstring namespacePart = testNamespace.empty() ? L"" : L"-" + testNamespace;
+	return std::wstring(temp) + L"bound-lowbox" + namespacePart + L"-" + profileName + L".authority";
+}
+
+std::wstring authorityJournalPattern(const std::wstring& namespaceValue) {
+	wchar_t temp[MAX_PATH]{};
+	const DWORD length = GetTempPathW(MAX_PATH, temp);
+	if (!length || length >= MAX_PATH) return {};
+	const std::wstring namespacePart = namespaceValue.empty() ? L"" : L"-" + namespaceValue;
+	return std::wstring(temp) + L"bound-lowbox" + namespacePart + L"-Bound.Lowbox.*.authority";
 }
 
 bool writeJournalLine(std::ofstream& journal, const std::wstring& value) {
@@ -838,12 +850,13 @@ bool recoverAuthorityJournal(const std::wstring& path) {
 	return recoverAuthorityJournalLocked(path);
 }
 
-bool recoverStaleAuthority() {
+bool recoverStaleAuthority(const std::wstring& namespaceValue) {
 	wchar_t temp[MAX_PATH]{};
 	const DWORD length = GetTempPathW(MAX_PATH, temp);
 	if (!length || length >= MAX_PATH) return false;
 	WIN32_FIND_DATAW found{};
-	const std::wstring pattern = std::wstring(temp) + L"bound-lowbox-Bound.Lowbox.*.authority";
+	const std::wstring pattern = authorityJournalPattern(namespaceValue);
+	if (pattern.empty()) return false;
 	Handle search;
 	search.value = FindFirstFileW(pattern.c_str(), &found);
 	if (search.value == INVALID_HANDLE_VALUE) {
@@ -970,6 +983,13 @@ DWORD WINAPI forwardPipe(LPVOID value) {
 
 
 
+int reportWatcherFailure(const wchar_t* operation, DWORD win32 = GetLastError()) {
+	writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_RUNTIME\",\"operation\":\"" +
+		jsonEscape(utf8(operation)) + "\",\"win32\":" + std::to_string(win32) +
+		",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
+	return 125;
+}
+
 int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	ULONGLONG expectedOwnerCreationTime, HANDLE jobHandle, HANDLE childHandle, HANDLE controlRead,
 	HANDLE readyEvent, HANDLE authorityEvent, HANDLE authorityArmedEvent) {
@@ -980,22 +1000,34 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	}
 	Handle owner;
 	owner.value = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
-	if (!owner.value) return 125;
+	if (!owner.value) return reportWatcherFailure(L"OpenProcess(owner)");
 	ULONGLONG ownerCreationTime = 0;
-	if (!processCreationTime(owner.value, ownerCreationTime) ||
-		ownerCreationTime != expectedOwnerCreationTime) return 125;
+	if (!processCreationTime(owner.value, ownerCreationTime)) {
+		return reportWatcherFailure(L"GetProcessTimes(owner)");
+	}
+	if (ownerCreationTime != expectedOwnerCreationTime) {
+		return reportWatcherFailure(L"owner creation time validation", ERROR_INVALID_DATA);
+	}
 	// Ready means only that the watcher has validated its inherited authority handles. The owner still
 	// owns Transferring authority until it grants authority and this watcher durably publishes Active.
-	if (!SetEvent(readyEvent)) return 125;
-	if (WaitForSingleObject(authorityEvent, INFINITE) != WAIT_OBJECT_0) return 125;
+	if (!SetEvent(readyEvent)) return reportWatcherFailure(L"SetEvent(ready)");
+	const DWORD authorityWait = WaitForSingleObject(authorityEvent, INFINITE);
+	if (authorityWait != WAIT_OBJECT_0) {
+		return reportWatcherFailure(L"WaitForSingleObject(authority)",
+			authorityWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
+	}
 	DWORD watcherPid = GetCurrentProcessId();
 	ULONGLONG watcherCreationTime = 0;
-	if (!processCreationTime(GetCurrentProcess(), watcherCreationTime) ||
-		!activateAuthorityJournalWatcher(journalPath, watcherPid, watcherCreationTime)) return 125;
+	if (!processCreationTime(GetCurrentProcess(), watcherCreationTime)) {
+		return reportWatcherFailure(L"GetProcessTimes(watcher)");
+	}
+	if (!activateAuthorityJournalWatcher(journalPath, watcherPid, watcherCreationTime)) {
+		return reportWatcherFailure(L"activateAuthorityJournalWatcher");
+	}
 	// From this acknowledgement onward, only this watcher may terminate the job, transition the
 	// journal, or clean authority. The pipe carries one explicit framed CANCEL request; pipe EOF is not
 	// cancellation. Owner death is observed separately through the exact owner process handle.
-	if (!SetEvent(authorityArmedEvent)) return 125;
+	if (!SetEvent(authorityArmedEvent)) return reportWatcherFailure(L"SetEvent(authority-armed)");
 	HANDLE lifecycleSignals[] = {childHandle, owner.value, controlRead};
 	bool terminateJob = false;
 	for (;;) {
@@ -1005,19 +1037,26 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 			terminateJob = true;
 			break;
 		}
-		if (lifecycleWait != WAIT_OBJECT_0 + 2) return 125;
+		if (lifecycleWait != WAIT_OBJECT_0 + 2) {
+			return reportWatcherFailure(L"WaitForMultipleObjects(lifecycleSignals)",
+				lifecycleWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
+		}
 
 		char controlBuffer[16]{};
 		DWORD controlBytes = 0;
 		if (ReadFile(controlRead, controlBuffer, sizeof(controlBuffer), &controlBytes, nullptr)) {
 			const std::string controlFrame(controlBuffer, controlBytes);
 			const char cancelFrame[] = "CANCEL\n";
-			if (controlFrame != cancelFrame) return 125;
+			if (controlFrame != cancelFrame) {
+				return reportWatcherFailure(L"ReadFile(control): invalid frame", ERROR_INVALID_DATA);
+			}
 			terminateJob = true;
 			break;
 		}
 		const DWORD controlError = GetLastError();
-		if (controlError != ERROR_BROKEN_PIPE) return 125;
+		if (controlError != ERROR_BROKEN_PIPE) {
+			return reportWatcherFailure(L"ReadFile(control)", controlError);
+		}
 		// EOF is not a cancel request. Stop watching the closed pipe and wait for natural child exit or
 		// independently observed owner death.
 		if (WaitForSingleObject(owner.value, 0) == WAIT_OBJECT_0) {
@@ -1027,25 +1066,39 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 		HANDLE remainingSignals[] = {childHandle, owner.value};
 		const DWORD remainingWait = WaitForMultipleObjects(2, remainingSignals, FALSE, INFINITE);
 		if (remainingWait == WAIT_OBJECT_0) break;
-		if (remainingWait != WAIT_OBJECT_0 + 1) return 125;
+		if (remainingWait != WAIT_OBJECT_0 + 1) {
+			return reportWatcherFailure(L"WaitForMultipleObjects(remainingSignals)",
+				remainingWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
+		}
 		terminateJob = true;
 		break;
 	}
 	if (terminateJob && !TerminateJobObject(jobHandle, 125) &&
-		WaitForSingleObject(childHandle, 0) != WAIT_OBJECT_0) return 125;
-	if (WaitForSingleObject(childHandle, INFINITE) != WAIT_OBJECT_0) return 125;
-	if (!waitForJobTreeDeath(jobHandle, childHandle, INFINITE)) return 125;
+		WaitForSingleObject(childHandle, 0) != WAIT_OBJECT_0) {
+		return reportWatcherFailure(L"TerminateJobObject");
+	}
+	const DWORD childWait = WaitForSingleObject(childHandle, INFINITE);
+	if (childWait != WAIT_OBJECT_0) {
+		return reportWatcherFailure(L"WaitForSingleObject(child)",
+			childWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
+	}
+	if (!waitForJobTreeDeath(jobHandle, childHandle, INFINITE)) {
+		return reportWatcherFailure(L"waitForJobTreeDeath");
+	}
 	DWORD childPid = GetProcessId(childHandle);
 	ULONGLONG childCreationTime = 0;
 	const bool jobTreeDeathProof = childPid != 0 && processCreationTime(childHandle, childCreationTime);
 	AuthorityRecoveryLock recoveryLock(journalPath);
-	if (!recoveryLock || !jobTreeDeathProof) return 125;
+	if (!recoveryLock) return reportWatcherFailure(L"AuthorityRecoveryLock");
+	if (!jobTreeDeathProof) return reportWatcherFailure(L"GetProcessTimes(child)");
 	// Exact job-tree death is proved. Publish Recoverable before attempting authority cleanup so any
 	// subsequent watcher failure leaves durable, startup-retryable work instead of an abandoned Active
 	// journal. This transition and all cleanup remain watcher-only.
 	if (!markAuthorityJournalRecoverableLocked(journalPath, childPid, childCreationTime,
-		jobTreeDeathProof)) return 125;
-	if (!recoverAuthorityJournalLocked(journalPath)) return 125;
+		jobTreeDeathProof)) return reportWatcherFailure(L"markAuthorityJournalRecoverableLocked");
+	if (!recoverAuthorityJournalLocked(journalPath)) {
+		return reportWatcherFailure(L"recoverAuthorityJournalLocked");
+	}
 	return 0;
 }
 
@@ -1058,7 +1111,8 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, TRUE};
 	SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
 	if (!CreatePipe(&controlRead.value, &controlWrite.value, &pipeSecurity, 0) ||
-		!SetHandleInformation(controlWrite.value, HANDLE_FLAG_INHERIT, 0)) {
+		!SetHandleInformation(controlWrite.value, HANDLE_FLAG_INHERIT, 0) ||
+		!SetHandleInformation(controlRead.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
 		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	Handle readyEvent;
@@ -1103,16 +1157,21 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		L" --authority-armed-handle " +
 		std::to_wstring(reinterpret_cast<uintptr_t>(authorityArmedEvent.value));
 
-	HANDLE inherited[] = {inheritedJob.value, inheritedChild.value, controlRead.value, readyEvent.value,
+	HANDLE inherited[] = {inheritedChild.value, controlRead.value, readyEvent.value,
 		authorityEvent.value, authorityArmedEvent.value};
 	SIZE_T bytes = 0;
 	InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
 	AttributeList attributes;
 	attributes.value = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(HeapAlloc(GetProcessHeap(), 0, bytes));
-	if (!attributes.value || !InitializeProcThreadAttributeList(attributes.value, 1, 0, &bytes) ||
-		!UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
-			sizeof(inherited), nullptr, nullptr)) {
+	if (!attributes.value || !InitializeProcThreadAttributeList(attributes.value, 1, 0, &bytes)) {
 		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
+	}
+	if (!UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
+			sizeof(inherited), nullptr, nullptr)) {
+		const DWORD error = GetLastError();
+		writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_START\",\"operation\":\"UpdateProcThreadAttribute(watcher handles)\",\"win32\":" +
+			std::to_string(error) + "}");
+		return {WatcherStartOutcome::FailedPreTransfer, error};
 	}
 	STARTUPINFOEXW startup{};
 	startup.StartupInfo.cb = sizeof(startup);
@@ -1120,7 +1179,10 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	PROCESS_INFORMATION process{};
 	if (!CreateProcessW(executable.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
 		CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &process)) {
-		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
+		const DWORD error = GetLastError();
+		writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_START\",\"operation\":\"CreateProcessW(cleanup watcher)\",\"win32\":" +
+			std::to_string(error) + "}");
+		return {WatcherStartOutcome::FailedPreTransfer, error};
 	}
 	CloseHandle(process.hThread);
 	watcherProcess = process.hProcess;
@@ -1222,9 +1284,11 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-	if (argc == 6 && std::wstring(argv[1]) == L"inspect-cleanup" &&
-		std::wstring(argv[2]) == L"--profile" && std::wstring(argv[4]) == L"--path") {
+	if ((argc == 6 || argc == 8) && std::wstring(argv[1]) == L"inspect-cleanup" &&
+		std::wstring(argv[2]) == L"--profile" && std::wstring(argv[4]) == L"--path" &&
+		(argc == 6 || std::wstring(argv[6]) == L"--test-namespace")) {
 		const std::wstring profileName = argv[3];
+		if (argc == 8) testNamespace = argv[7];
 		PSID profileSid = nullptr;
 		const HRESULT derived = DeriveAppContainerSidFromAppContainerName(profileName.c_str(), &profileSid);
 		const bool profileExists = SUCCEEDED(derived);
@@ -1284,10 +1348,11 @@ int wmain(int argc, wchar_t** argv) {
 
 	std::wstring cwd, shell, shellFlag, command, network;
 	std::vector<std::wstring> writable;
-	if (!parseArguments(argc, argv, controlHandle, cwd, shell, shellFlag, command, network, writable)) {
+	if (!parseArguments(argc, argv, controlHandle, cwd, shell, shellFlag, command, network, writable,
+		testNamespace)) {
 		return 125;
 	}
-	if (!recoverStaleAuthority()) {
+	if (!recoverStaleAuthority(testNamespace)) {
 		return fail("LOWBOX_STALE_AUTHORITY", L"recoverAuthorityJournal");
 	}
 

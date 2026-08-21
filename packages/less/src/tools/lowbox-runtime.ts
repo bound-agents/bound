@@ -49,6 +49,7 @@ export function buildLowboxArgs(
 	cfg: ResolvedSandboxConfig,
 	tempRoot: string,
 	controlHandle: string,
+	testNamespace?: string,
 ): string[] {
 	return [
 		"spawn",
@@ -64,6 +65,7 @@ export function buildLowboxArgs(
 		command,
 		"--network",
 		cfg.network,
+		...(testNamespace ? ["--test-namespace", testNamespace] : []),
 		...[policyCwd, cwd, tempRoot, ...cfg.writablePaths].flatMap((root) => ["--writable", root]),
 	];
 }
@@ -91,6 +93,7 @@ export async function spawnLowbox(
 	policyCwd: string,
 	shell: ResolvedShell,
 	cfg: ResolvedSandboxConfig,
+	testNamespace?: string,
 ): Promise<SandboxSpawnResult> {
 	const helper = resolveLowboxHelperPath();
 	const controlFd = 3;
@@ -104,6 +107,7 @@ export async function spawnLowbox(
 			cfg,
 			process.env.TEMP ?? cwd,
 			String(controlFd),
+			testNamespace,
 		),
 		{
 			cwd,

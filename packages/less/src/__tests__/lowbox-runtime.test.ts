@@ -40,6 +40,44 @@ describe("Windows lowbox helper materialization", () => {
 			"SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};",
 		);
 	});
+	it("passes only explicitly inheritable restricted handles to the cleanup watcher", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const watcherStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
+		const watcherEnd = source.indexOf("}  // namespace", watcherStart);
+		const watcher = source.slice(watcherStart, watcherEnd);
+
+		expect(watcher).toContain("HANDLE inherited[] = {inheritedChild.value");
+		expect(watcher).not.toContain("HANDLE inherited[] = {inheritedJob.value");
+		expect(watcher).toContain("TRUE, DUPLICATE_SAME_ACCESS");
+		expect(watcher).toContain(
+			"SetHandleInformation(controlRead.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)",
+		);
+		expect(watcher).toContain(
+			"CreateProcessW(executable.c_str(), commandLine.data(), nullptr, nullptr, TRUE",
+		);
+		expect(watcher).toContain("UpdateProcThreadAttribute(watcher handles)");
+		expect(watcher).toContain("CreateProcessW(cleanup watcher)");
+	});
+
+	it("scopes stale-authority recovery to the current oracle namespace", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+
+		expect(source).toContain('flag == L"--test-namespace"');
+		expect(source).toContain("authorityJournalPattern(namespaceValue)");
+		expect(source).toContain("recoverStaleAuthority(testNamespace)");
+	});
+
+	it("reports the exact watcher Win32 operation that fails", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const watcherStart = source.indexOf("int runCleanupWatcher(");
+		const watcherEnd = source.indexOf("WatcherStartResult startCleanupWatcher(", watcherStart);
+		const watcher = source.slice(watcherStart, watcherEnd);
+
+		expect(watcher).toContain("reportWatcherFailure(");
+		expect(watcher).toContain("WaitForMultipleObjects");
+		expect(watcher).toContain('GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS"');
+	});
+
 	it("ships checked-in native source with the required security primitives", () => {
 		expect(lowboxHelperSourcePath()).toEndWith(join("native", "bound-lowbox.cpp"));
 		expect(existsSync(lowboxHelperSourcePath())).toBe(true);
@@ -128,7 +166,7 @@ describe("Windows lowbox helper materialization", () => {
 			"if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)",
 		);
 		expect(source).toContain("if (!recoverAuthorityJournalLocked(path)) return false;");
-		expect(source).toContain("if (!recoverStaleAuthority())");
+		expect(source).toContain("if (!recoverStaleAuthority(testNamespace))");
 		expect(source).toContain('return fail("LOWBOX_STALE_AUTHORITY"');
 		expect(recovery).toContain("return true");
 		expect(recovery.indexOf("DeleteFileW(path.c_str())")).toBeGreaterThan(
@@ -138,7 +176,9 @@ describe("Windows lowbox helper materialization", () => {
 
 	it("serializes watcher transfer with stale recovery across the exact unpublished-identity interval", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const recoveryStart = source.indexOf("bool recoverStaleAuthority()");
+		const recoveryStart = source.indexOf(
+			"bool recoverStaleAuthority(const std::wstring& namespaceValue)",
+		);
 		const recoveryEnd = source.indexOf("std::wstring fullPath", recoveryStart);
 		const recovery = source.slice(recoveryStart, recoveryEnd);
 		const publicationStart = source.indexOf("std::wstring journalPath;");
@@ -194,9 +234,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(duplicateWatcherJob).toBeLessThan(duplicateWatcherChild);
 		expect(duplicateWatcherChild).toBeLessThan(createWatcher);
 		expect(watcherLaunch).toContain("TRUE, DUPLICATE_SAME_ACCESS");
-		expect(watcherLaunch).toContain(
-			"HANDLE inherited[] = {inheritedJob.value, inheritedChild.value",
-		);
+		expect(watcherLaunch).toContain("HANDLE inherited[] = {inheritedChild.value");
 		const watcherReadyWait = watcherLaunch.indexOf("WaitForSingleObject(readyEvent.value");
 		const publishIdentity = watcherLaunch.indexOf("publishAuthorityJournalWatcher(");
 		const transferReleaseAfterPublish = watcherLaunch.indexOf(
@@ -358,7 +396,9 @@ describe("Windows lowbox helper materialization", () => {
 
 	it("fails closed for abandoned Active and Transferring journals and cleans only Recoverable", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const recoveryStart = source.indexOf("bool recoverStaleAuthority()");
+		const recoveryStart = source.indexOf(
+			"bool recoverStaleAuthority(const std::wstring& namespaceValue)",
+		);
 		const recoveryEnd = source.indexOf("std::wstring fullPath", recoveryStart);
 		const recovery = source.slice(recoveryStart, recoveryEnd);
 
@@ -414,7 +454,9 @@ describe("Windows lowbox helper materialization", () => {
 
 	it("fails closed for abandoned Active and Transferring journals and cleans only valid Recoverable work", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const startupStart = source.indexOf("bool recoverStaleAuthority()");
+		const startupStart = source.indexOf(
+			"bool recoverStaleAuthority(const std::wstring& namespaceValue)",
+		);
 		const startupEnd = source.indexOf("std::wstring fullPath", startupStart);
 		const startup = source.slice(startupStart, startupEnd);
 		const recoveryStart = source.indexOf("bool recoverAuthorityJournalLocked(");
