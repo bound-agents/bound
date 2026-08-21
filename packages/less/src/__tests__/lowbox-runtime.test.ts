@@ -207,7 +207,7 @@ describe("Windows lowbox helper materialization", () => {
 			transferRelease,
 		);
 		expect(watcherLaunch).toContain("watcherWait == WAIT_OBJECT_0");
-		expect(watcherLaunch).toContain("WatcherStartOutcome::PreTransferFailure");
+		expect(watcherLaunch).toContain("WatcherStartOutcome::FailedPreTransfer");
 		const durableJournal = preWatcher.slice(preWatcher.indexOf("if (!persistAuthorityJournal("));
 		expect(durableJournal).not.toContain("cleanupAuthorityAfterProvenDeath(");
 		expect(durableJournal).toContain("failAfterDurableAuthorityJournal(");
@@ -267,39 +267,80 @@ describe("Windows lowbox helper materialization", () => {
 		expect(grantFailure).toContain("cancelPreTransferWatcherAndObserve(");
 		expect(start).toContain("resetAuthorityJournalAfterFailedHandoff(");
 		expect(start).toContain("watcherWait == WAIT_OBJECT_0 &&");
-		expect(start).toContain("return {WatcherStartOutcome::PreTransferFailure");
+		expect(start).toContain("return {WatcherStartOutcome::FailedPreTransfer");
 		expect(grantFailure).not.toContain("requestArmedWatcherCancelAndObserve(");
-		expect(grantFailure).not.toContain("return {WatcherStartOutcome::Armed");
-		expect(callerFailure).toContain("if (watcherStart.outcome != WatcherStartOutcome::Armed)");
+		expect(grantFailure).not.toContain("return {WatcherStartOutcome::ConfirmedArmed");
+		expect(callerFailure).toContain(
+			"if (watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed)",
+		);
 		expect(callerFailure).toContain("failAfterDurableAuthorityJournal(");
 		expect(callerFailure).not.toContain("ResumeThread(");
 		expect(callerFailure).not.toContain('writeControl("{\\"ok\\":true');
 	});
 
-	it("returns structured pre-transfer failure and never reaches readiness when ARMED times out", () => {
+	it("distinguishes confirmed, pre-transfer, and indeterminate watcher handoff outcomes", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
 		const startEnd = source.indexOf("}  // namespace", startStart);
 		const start = source.slice(startStart, startEnd);
-		const ackFailure = start.slice(
-			start.indexOf("if (authorityWait != WAIT_OBJECT_0)"),
-			start.indexOf("return {WatcherStartOutcome::Armed"),
-		);
 		const callerStart = source.indexOf("const WatcherStartResult watcherStart =");
-		const callerFailure = source.slice(
+		const callerGate = source.slice(
 			callerStart,
 			source.indexOf("wchar_t failAfterWatcher", callerStart),
 		);
 
-		expect(ackFailure).toContain("cancelPreTransferWatcherAndObserve(");
-		expect(start).toContain("resetAuthorityJournalAfterFailedHandoff(");
-		expect(start).toContain("watcherWait == WAIT_OBJECT_0 &&");
-		expect(start).toContain("return {WatcherStartOutcome::PreTransferFailure");
-		expect(ackFailure).not.toContain("requestArmedWatcherCancelAndObserve(");
-		expect(ackFailure).not.toContain("return {WatcherStartOutcome::Armed");
-		expect(callerFailure).toContain("failAfterDurableAuthorityJournal(");
-		expect(callerFailure).not.toContain("ResumeThread(");
-		expect(callerFailure).not.toContain('writeControl("{\\"ok\\":true');
+		for (const outcome of ["ConfirmedArmed", "FailedPreTransfer", "IndeterminateWatcherOwned"]) {
+			expect(source).toContain(outcome);
+		}
+		expect(start).not.toContain("WatcherStartOutcome::Armed");
+		expect(callerGate).toContain("watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed");
+		expect(callerGate).not.toContain("ResumeThread(");
+		expect(callerGate).not.toContain('writeControl("{\\"ok\\":true');
+	});
+
+	it("fails closed for SetEvent failure and ACK timeout while the journal remains Transferring", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
+		const startEnd = source.indexOf("}  // namespace", startStart);
+		const start = source.slice(startStart, startEnd);
+		const setEventFailure = start.slice(
+			start.indexOf("if (!SetEvent(authorityEvent.value))"),
+			start.indexOf("const DWORD authorityWait"),
+		);
+		const ackFailure = start.slice(
+			start.indexOf("if (authorityWait != WAIT_OBJECT_0)"),
+			start.indexOf("watcherControlWrite = controlWrite.release()"),
+		);
+
+		expect(setEventFailure).toContain("cancelPreTransferWatcherAndObserve(");
+		expect(ackFailure).toContain("observeFailedArmedWait(");
+		expect(start).toContain("journal.state == AuthorityJournalState::Transferring");
+		expect(start).toContain("cancelPreTransferWatcherAndObserve(failure)");
+		expect(start).toContain("WatcherStartOutcome::FailedPreTransfer");
+	});
+
+	it("returns indeterminate watcher-owned failure for every Active ACK-loss cancel result", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
+		const startEnd = source.indexOf("}  // namespace", startStart);
+		const start = source.slice(startStart, startEnd);
+		const cancelStart = start.indexOf("requestArmedWatcherCancelAndObserve");
+		const cancelEnd = start.indexOf("observeFailedArmedWait", cancelStart);
+		const cancel = start.slice(cancelStart, cancelEnd);
+
+		expect(start).toContain("journal.state == AuthorityJournalState::Active");
+		expect(cancel).toContain('const char cancelFrame[] = "CANCEL\\n"');
+		expect(cancel).toContain("LOWBOX_WATCHER_TIMEOUT_MS");
+		expect(cancel).toContain("cancelSent");
+		expect(cancel).toContain("watcherStopped");
+		expect(cancel).toContain("watcherExitCode");
+		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_SENT");
+		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_WRITE_FAILED");
+		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_TIMEOUT");
+		expect(cancel).toContain("LOWBOX_WATCHER_CANCEL_ABNORMAL");
+		expect(cancel).toContain("WatcherStartOutcome::IndeterminateWatcherOwned");
+		expect(cancel).not.toContain("WatcherStartOutcome::ConfirmedArmed");
+		expect(cancel).not.toContain("WatcherStartOutcome::FailedPreTransfer");
 	});
 
 	it("fails closed for abandoned Active and Transferring journals and cleans only Recoverable", () => {
