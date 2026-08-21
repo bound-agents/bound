@@ -1,4 +1,8 @@
-import { type SerializedSpan, extractTraceContext, serializeReadableSpan } from "@bound/shared";
+import {
+	type SerializedSpan,
+	extractTraceContext,
+	serializeReadableSpan,
+} from "@bound/shared/trace-collector";
 import { SpanKind, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	BasicTracerProvider,
