@@ -327,7 +327,14 @@ describe("Windows lowbox helper materialization", () => {
 		expect(protection).toContain("INHERITED_ACE");
 		expect(protection).toContain("EqualSid");
 		expect(protection).toContain("WinBuiltinAnyPackageSid");
-		expect(protection).toContain("WinBuiltinAnyRestrictedPackageSid");
+		expect(protection).toContain("SECURITY_APP_PACKAGE_AUTHORITY");
+		expect(protection).toContain("AllocateAndInitializeSid(&appPackageAuthority, 2, 2, 2,");
+		expect(protection).not.toContain("SECURITY_CAPABILITY_BASE_RID");
+		expect(protection).toContain("AllocateAndInitializeSid");
+		expect(protection).toContain("ConvertSidToStringSidW");
+		expect(protection).toContain('L"S-1-15-2-1"');
+		expect(protection).toContain('L"S-1-15-2-2"');
+		expect(protection).not.toContain("WinBuiltinAnyRestrictedPackageSid");
 		expect(source).toContain("CreateWellKnownSid");
 		expect(source).toContain("FILE_WRITE_DATA");
 		expect(source).toContain("FILE_APPEND_DATA");
