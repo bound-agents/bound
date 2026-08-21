@@ -544,6 +544,9 @@ describe("Windows lowbox helper materialization", () => {
 		expect(selfTest).toContain("AuthorityJournalState::Active");
 		expect(selfTest).toContain("AuthorityJournalState::Recoverable");
 		expect(selfTest).toContain('testNamespace = L"journal-self-test"');
+		expect(selfTest).toContain('testNamespace = L"separate-watcher"');
+		expect(selfTest).toContain("!validateRecoverableAuthorityJournal(path, transitioned)");
+		expect(selfTest).toContain("testNamespace = parentNamespace");
 		expect(source).toContain("AUTHORITY_JOURNAL_VERSION");
 		expect(selfTest).toContain("journalFieldsMatch(parsed, expected)");
 		expect(selfTest).toContain("malformed");
@@ -555,6 +558,27 @@ describe("Windows lowbox helper materialization", () => {
 		expect(selfTest).toContain("writeLegacyJournal(transferring)");
 		expect(selfTest).toContain("journalFieldsMatch(transitionedTransferring, transferring)");
 		expect(source).toContain('std::wstring(argv[1]) == L"self-test-authority-journal"');
+	});
+
+	it("propagates and parses the test namespace before cleanup-watcher validation", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const startBegin = source.indexOf("WatcherStartResult startCleanupWatcher(");
+		const startEnd = source.indexOf("int selfTestAuthorityJournal()", startBegin);
+		const start = source.slice(startBegin, startEnd);
+		const parserBegin = source.indexOf(
+			'if (argc == 24 && std::wstring(argv[1]) == L"cleanup-watch"',
+		);
+		const parserEnd = source.indexOf("std::wstring cwd", parserBegin);
+		const parser = source.slice(parserBegin, parserEnd);
+
+		expect(startBegin).toBeGreaterThan(0);
+		expect(start).toContain('L" --test-namespace " + quoteArgument(testNamespace)');
+		expect(parserBegin).toBeGreaterThan(0);
+		expect(parser).toContain('std::wstring(argv[22]) == L"--test-namespace"');
+		expect(parser).toContain("testNamespace = argv[23]");
+		expect(parser.indexOf("testNamespace = argv[23]")).toBeLessThan(
+			parser.indexOf("runCleanupWatcher("),
+		);
 	});
 
 	it("declares native helper types and functions before their first use", () => {

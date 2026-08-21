@@ -1384,7 +1384,8 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		L" --ready-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(readyEvent.value)) +
 		L" --authority-handle " + std::to_wstring(reinterpret_cast<uintptr_t>(authorityEvent.value)) +
 		L" --authority-armed-handle " +
-		std::to_wstring(reinterpret_cast<uintptr_t>(authorityArmedEvent.value));
+		std::to_wstring(reinterpret_cast<uintptr_t>(authorityArmedEvent.value)) +
+		L" --test-namespace " + quoteArgument(testNamespace);
 
 	HANDLE inherited[] = {inheritedJob.value, inheritedChild.value, controlRead.value,
 		watcherReportWrite.value, readyEvent.value, authorityEvent.value, authorityArmedEvent.value};
@@ -1637,6 +1638,11 @@ int selfTestAuthorityJournal() {
 	if (!readAuthorityJournal(path, transitioned) || !journalFieldsMatch(transitioned, recoverable) ||
 		!validateRecoverableAuthorityJournal(path, transitioned) ||
 		path != authorityJournalPath(profileName)) return code++;
+	const std::wstring parentNamespace = testNamespace;
+	testNamespace = L"separate-watcher";
+	if (validateRecoverableAuthorityJournal(path, transitioned)) return code++;
+	testNamespace = parentNamespace;
+	if (!validateRecoverableAuthorityJournal(path, transitioned)) return code++;
 	{
 		std::ifstream rewritten(path, std::ios::binary);
 		std::string versioned((std::istreambuf_iterator<char>(rewritten)),
@@ -1813,7 +1819,7 @@ int wmain(int argc, wchar_t** argv) {
 			<< ",\"LowboxAces\":" << (lowboxAce ? 1 : 0) << "}" << std::endl;
 		return 0;
 	}
-	if (argc >= 22 && std::wstring(argv[1]) == L"cleanup-watch" &&
+	if (argc == 24 && std::wstring(argv[1]) == L"cleanup-watch" &&
 		std::wstring(argv[2]) == L"--journal" && std::wstring(argv[4]) == L"--owner-pid" &&
 		std::wstring(argv[6]) == L"--owner-created" &&
 		std::wstring(argv[8]) == L"--job-handle" &&
@@ -1822,7 +1828,9 @@ int wmain(int argc, wchar_t** argv) {
 		std::wstring(argv[14]) == L"--report-write-handle" &&
 		std::wstring(argv[16]) == L"--ready-handle" &&
 		std::wstring(argv[18]) == L"--authority-handle" &&
-		std::wstring(argv[20]) == L"--authority-armed-handle") {
+		std::wstring(argv[20]) == L"--authority-armed-handle" &&
+		std::wstring(argv[22]) == L"--test-namespace") {
+		testNamespace = argv[23];
 		HANDLE job = INVALID_HANDLE_VALUE, child = INVALID_HANDLE_VALUE;
 		HANDLE controlRead = INVALID_HANDLE_VALUE, reportWrite = INVALID_HANDLE_VALUE;
 		HANDLE ready = INVALID_HANDLE_VALUE, authority = INVALID_HANDLE_VALUE;
