@@ -34,6 +34,21 @@ async function stopAndClose(child: ChildProcess | undefined): Promise<void> {
 	}
 }
 
+async function removeFixtureAfterHandlesClose(path: string): Promise<void> {
+	const deadline = Date.now() + 10_000;
+	let lastError: unknown;
+	while (Date.now() < deadline) {
+		try {
+			rmSync(path, { recursive: true, force: true });
+			return;
+		} catch (error) {
+			lastError = error;
+			await Bun.sleep(50);
+		}
+	}
+	throw lastError;
+}
+
 type CleanupState = { Journal: boolean; Profile: boolean; LowboxAces: number };
 
 function inspectCleanup(
@@ -168,7 +183,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
 			} finally {
 				await stopAndClose(normal);
-				rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+				await removeFixtureAfterHandlesClose(cwd);
 			}
 		});
 	});
@@ -267,7 +282,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
 			} finally {
 				await stopAndClose(failed);
-				rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+				await removeFixtureAfterHandlesClose(cwd);
 			}
 		});
 	});
@@ -338,7 +353,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				expect(failed.exitCode).toBeNull();
 			} finally {
 				await stopAndClose(failed);
-				rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+				await removeFixtureAfterHandlesClose(cwd);
 			}
 		});
 	});
@@ -490,7 +505,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				const cleanup = await waitForCleanup(helper as string, crashProfile, cwd, runId);
 				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
 			}
-			rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			await removeFixtureAfterHandlesClose(cwd);
 		}
 	});
 });

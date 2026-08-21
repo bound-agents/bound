@@ -137,6 +137,7 @@ std::wstring cleanupJournalPath;
 std::wstring testNamespace;
 constexpr DWORD LOWBOX_WATCHER_TIMEOUT_MS = 5000;
 constexpr DWORD LOWBOX_RECOVERY_RETRY_MS = 1000;
+constexpr DWORD LOWBOX_FAILED_HANDOFF_RESOLUTION_ATTEMPTS = 5;
 
 enum class LocalAuthorityCleanupResult {
 	CleanupComplete,
@@ -168,8 +169,9 @@ std::wstring authorityJournalPattern(const std::wstring& namespaceValue);
 bool verifyAuthorityJournal(const std::wstring& path);
 bool publishAuthorityJournalWatcher(const std::wstring& path, DWORD watcherPid,
 	ULONGLONG watcherCreationTime);
-bool resetAuthorityJournalAfterFailedHandoff(const std::wstring& path, DWORD watcherPid,
-	ULONGLONG watcherCreationTime);
+FailedHandoffResolution resolveFailedHandoffJournal(const std::wstring& path,
+	const std::wstring& profileName, DWORD ownerPid, ULONGLONG ownerCreationTime, DWORD watcherPid,
+	ULONGLONG watcherCreationTime, HANDLE jobHandle, HANDLE childHandle);
 bool markAuthorityJournalRecoverableLocked(const std::wstring& path, DWORD childPid,
 	ULONGLONG childCreationTime, bool jobTreeDeathProof);
 bool recoverAuthorityJournalLocked(const std::wstring& path);
@@ -192,6 +194,12 @@ enum class WatcherTerminalStatus {
 enum class WatcherStartOutcome {
 	ConfirmedArmed,
 	FailedPreTransfer,
+	IndeterminateWatcherOwned,
+};
+
+enum class FailedHandoffResolution {
+	OwnerAuthorityRetained,
+	OwnerTeardownComplete,
 	IndeterminateWatcherOwned,
 };
 
@@ -786,20 +794,85 @@ bool activateAuthorityJournalWatcher(const std::wstring& path, DWORD watcherPid,
 		parsed.childCreationTime, false);
 }
 
-bool resetAuthorityJournalAfterFailedHandoff(const std::wstring& path, DWORD watcherPid,
-	ULONGLONG watcherCreationTime) {
-	AuthorityRecoveryLock recoveryLock(path);
-	if (!recoveryLock) return false;
-	AuthorityJournal parsed;
-	if (!readAuthorityJournal(path, parsed) ||
-		parsed.state != AuthorityJournalState::Transferring ||
-		parsed.watcherPid != watcherPid || parsed.watcherCreationTime != watcherCreationTime ||
-		parsed.jobTreeDeathProof) {
+bool restoreAuthorityFromJournalLocked(const std::wstring& path, const AuthorityJournal& parsed) {
+	if (!authorityPathMatchesProfile(path, parsed.profileName)) return false;
+	for (size_t i = parsed.authorityLines.size(); i >= 2; i -= 2) {
+		if (!isAuthorityPathAllowed(parsed.authorityLines[i - 2]) ||
+			!restoreSecurityFromSddl(parsed.authorityLines[i - 2], parsed.authorityLines[i - 1])) return false;
+	}
+	const HRESULT deleted = DeleteAppContainerProfile(parsed.profileName.c_str());
+	if (FAILED(deleted) && HRESULT_CODE(deleted) != ERROR_NOT_FOUND) {
+		SetLastError(HRESULT_CODE(deleted));
 		return false;
 	}
-	return rewriteAuthorityJournal(path, parsed, AuthorityJournalState::Transferring,
-		parsed.ownerPid, parsed.ownerCreationTime, 0, 0, parsed.childPid,
-		parsed.childCreationTime, false);
+	return true;
+}
+
+FailedHandoffResolution resolveFailedHandoffJournal(const std::wstring& path,
+	const std::wstring& profileName, DWORD ownerPid, ULONGLONG ownerCreationTime, DWORD watcherPid,
+	ULONGLONG watcherCreationTime, HANDLE jobHandle, HANDLE childHandle) {
+	AuthorityJournal parsed;
+	{
+		AuthorityRecoveryLock recoveryLock(path);
+		if (!recoveryLock) return FailedHandoffResolution::IndeterminateWatcherOwned;
+		if (!readAuthorityJournal(path, parsed)) {
+			return FailedHandoffResolution::IndeterminateWatcherOwned;
+		}
+		if (parsed.state == AuthorityJournalState::Active) {
+			return FailedHandoffResolution::IndeterminateWatcherOwned;
+		}
+		if (parsed.state != AuthorityJournalState::Transferring || parsed.ownerPid != ownerPid ||
+			parsed.ownerCreationTime != ownerCreationTime || parsed.profileName != profileName ||
+			parsed.watcherPid != watcherPid || parsed.watcherCreationTime != watcherCreationTime ||
+			parsed.jobTreeDeathProof) {
+			return FailedHandoffResolution::IndeterminateWatcherOwned;
+		}
+		if (rewriteAuthorityJournal(path, parsed, AuthorityJournalState::Transferring,
+			ownerPid, ownerCreationTime, 0, 0, parsed.childPid, parsed.childCreationTime, false)) {
+			return FailedHandoffResolution::OwnerAuthorityRetained;
+		}
+	}
+	// The reset rewrite can fail after another actor advances the journal. Reacquire the recovery
+	// lock and re-read before exercising any parent teardown authority; keep this lock through kill
+	// initiation so the watcher cannot publish Active between the decision and TerminateJobObject.
+	AuthorityRecoveryLock fallbackLock(path);
+	if (!fallbackLock) return FailedHandoffResolution::IndeterminateWatcherOwned;
+	AuthorityJournal fresh;
+	if (!readAuthorityJournal(path, fresh) || fresh.state == AuthorityJournalState::Active ||
+		fresh.state != AuthorityJournalState::Transferring || fresh.ownerPid != ownerPid ||
+		fresh.ownerCreationTime != ownerCreationTime || fresh.profileName != profileName ||
+		fresh.watcherPid != watcherPid || fresh.watcherCreationTime != watcherCreationTime ||
+		fresh.childPid != parsed.childPid || fresh.childCreationTime != parsed.childCreationTime ||
+		fresh.jobTreeDeathProof) {
+		return FailedHandoffResolution::IndeterminateWatcherOwned;
+	}
+	parsed = std::move(fresh);
+	const BOOL terminated = TerminateJobObject(jobHandle, 125);
+	if ((!terminated && WaitForSingleObject(childHandle, 0) != WAIT_OBJECT_0) ||
+		!waitForJobTreeDeath(jobHandle, childHandle, LOWBOX_WATCHER_TIMEOUT_MS)) {
+		return FailedHandoffResolution::IndeterminateWatcherOwned;
+	}
+	bool authorityRestored = false;
+	for (DWORD attempt = 0; attempt < LOWBOX_FAILED_HANDOFF_RESOLUTION_ATTEMPTS; attempt++) {
+		if (!authorityRestored) {
+			authorityRestored = restoreAuthorityFromJournalLocked(path, parsed);
+		}
+		if (authorityRestored &&
+			(DeleteFileW(path.c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND)) {
+			return FailedHandoffResolution::OwnerTeardownComplete;
+		}
+		if (attempt + 1 < LOWBOX_FAILED_HANDOFF_RESOLUTION_ATTEMPTS) {
+			Sleep(LOWBOX_RECOVERY_RETRY_MS);
+		}
+	}
+	if (!authorityRestored) return FailedHandoffResolution::IndeterminateWatcherOwned;
+	// Teardown is complete, so deletion failure must not leave the dead watcher encoded as an
+	// authority holder. Persist owner-only Transferring state for a later checked owner retry.
+	if (rewriteAuthorityJournal(path, parsed, AuthorityJournalState::Transferring,
+		ownerPid, ownerCreationTime, 0, 0, parsed.childPid, parsed.childCreationTime, true)) {
+		return FailedHandoffResolution::OwnerAuthorityRetained;
+	}
+	return FailedHandoffResolution::IndeterminateWatcherOwned;
 }
 
 bool markAuthorityJournalRecoverableLocked(const std::wstring& path, DWORD childPid,
@@ -1103,7 +1176,7 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 }
 
 WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std::wstring& journalPath,
-	HANDLE jobHandle, HANDLE childProcess, HANDLE& watcherProcess) {
+	const std::wstring& profileName, HANDLE jobHandle, HANDLE childProcess, HANDLE& watcherProcess) {
 	AuthorityRecoveryLock transferLock(journalPath);
 	if (!transferLock) return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	Handle controlRead;
@@ -1186,27 +1259,32 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	}
 	CloseHandle(process.hThread);
 	watcherProcess = process.hProcess;
+	// The watcher owns this duplicate after CreateProcess succeeds. Closing the parent's copy is
+	// required before fixture teardown can prove every child-process handle has drained.
+	inheritedChild.reset();
 	ULONGLONG watcherCreationTime = 0;
 
 	auto cancelPreTransferWatcherAndObserve = [&](DWORD failure) -> WatcherStartResult {
 		// ARMED has not been acknowledged. This is launch rollback, not the post-arm CANCEL protocol.
-		// Do not return authority to the caller until this exact watcher is proved stopped and the
-		// durable journal is normalized back to fail-closed Transferring ownership. An Active journal
-		// proves the watcher crossed the durable handoff boundary even if its ARMED event was lost.
-		for (;;) {
-			TerminateProcess(watcherProcess, 125);
-			const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
-			if (watcherWait == WAIT_OBJECT_0 &&
-				resetAuthorityJournalAfterFailedHandoff(journalPath, process.dwProcessId,
-					watcherCreationTime)) break;
-			failure = watcherWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
-			writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_STOP_RECOVERY_RETRY\","
-				"\"operation\":\"TerminateProcess/WaitForSingleObject/resetAuthorityJournalAfterFailedHandoff\"}");
-			Sleep(LOWBOX_RECOVERY_RETRY_MS);
+		// The exact watcher must stop before the recovery mutex can normalize or tear down authority.
+		TerminateProcess(watcherProcess, 125);
+		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
+		const bool watcherStopped = watcherWait == WAIT_OBJECT_0;
+		FailedHandoffResolution resolution = FailedHandoffResolution::IndeterminateWatcherOwned;
+		if (watcherStopped) {
+			resolution = resolveFailedHandoffJournal(journalPath, profileName, ownerPid,
+				ownerCreationTime, process.dwProcessId, watcherCreationTime, jobHandle, childProcess);
+			CloseHandle(watcherProcess);
+			watcherProcess = nullptr;
 		}
-		CloseHandle(watcherProcess);
-		watcherProcess = nullptr;
-		return {WatcherStartOutcome::FailedPreTransfer, failure};
+		if (resolution == FailedHandoffResolution::OwnerAuthorityRetained) {
+			return {WatcherStartOutcome::FailedPreTransfer, failure};
+		}
+		if (resolution == FailedHandoffResolution::OwnerTeardownComplete) {
+			return {WatcherStartOutcome::FailedPreTransfer, failure};
+		}
+		return {WatcherStartOutcome::IndeterminateWatcherOwned,
+			watcherWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : failure};
 	};
 
 	auto requestArmedWatcherCancelAndObserve = [&](DWORD failure) -> WatcherStartResult {
@@ -1493,7 +1571,8 @@ int wmain(int argc, wchar_t** argv) {
 	}
 	cleanupJournalPath = journalPath;
 	const WatcherStartResult watcherStart =
-		startCleanupWatcher(executable, journalPath, job.value, childProcess.value, cleanupWatcher);
+		startCleanupWatcher(executable, journalPath, profile.name, job.value, childProcess.value,
+			cleanupWatcher);
 	if (watcherStart.outcome == WatcherStartOutcome::FailedPreTransfer) {
 		return failAfterDurableAuthorityJournal("LOWBOX_WATCHER", L"startCleanupWatcher",
 			watcherStart.win32, job.value, childProcess.value, 125, profile, aclScope);
