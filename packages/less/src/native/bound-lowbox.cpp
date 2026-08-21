@@ -1096,24 +1096,24 @@ int reportWatcherFailure(const wchar_t* operation, DWORD win32 = GetLastError())
 	return 125;
 }
 
-int reportWatcherCleanupFailure(const wchar_t* phase, DWORD win32, HRESULT hresult = S_OK) {
-	writeControl("{\"ok\":false,\"code\":\"LOWBOX_WATCHER_CLEANUP\",\"phase\":\"" +
-		jsonEscape(utf8(phase)) + "\",\"win32\":" + std::to_string(win32) +
-		",\"hresult\":" + std::to_string(static_cast<long long>(hresult)) +
-		",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
-	return 125;
-}
+using AuthorityCleanupReporter = void (*)(const wchar_t*, DWORD, HRESULT);
 
-bool closeWatcherLowboxHandles(HANDLE& childHandle, HANDLE& jobHandle) {
-	const BOOL childClosed = CloseHandle(childHandle);
-	const DWORD childError = childClosed ? ERROR_SUCCESS : GetLastError();
+bool closeWatcherLowboxHandles(HANDLE& childHandle, HANDLE& jobHandle,
+	AuthorityCleanupReporter reportFailure) {
+	bool closed = true;
+	if (!CloseHandle(childHandle)) {
+		const DWORD error = GetLastError();
+		reportFailure(L"close child handle", error, S_OK);
+		closed = false;
+	}
 	childHandle = nullptr;
-	const BOOL jobClosed = CloseHandle(jobHandle);
-	const DWORD jobError = jobClosed ? ERROR_SUCCESS : GetLastError();
+	if (!CloseHandle(jobHandle)) {
+		const DWORD error = GetLastError();
+		reportFailure(L"close job handle", error, S_OK);
+		closed = false;
+	}
 	jobHandle = nullptr;
-	if (!childClosed) SetLastError(childError);
-	else if (!jobClosed) SetLastError(jobError);
-	return childClosed && jobClosed;
+	return closed;
 }
 
 int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
@@ -1222,15 +1222,18 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	// attempt both closes before reporting either failure, so a failed child-handle close cannot strand
 	// the job handle until process teardown. A close failure exits the watcher with Recoverable durable;
 	// startup recovery cannot acquire recoveryLock until this scope and process have terminated.
-	if (!closeWatcherLowboxHandles(childHandle, jobHandle)) {
-		return reportWatcherCleanupFailure(L"CloseHandle(lowbox handles)", GetLastError());
+	if (!closeWatcherLowboxHandles(childHandle, jobHandle, reportAuthorityCleanupFailure)) {
+		return 125;
 	}
 	AuthorityJournal cleanup;
 	if (!readAuthorityJournal(journalPath, cleanup)) {
-		return reportWatcherCleanupFailure(L"read authority journal", GetLastError());
+		const DWORD error = GetLastError();
+		reportAuthorityCleanupFailure(L"read authority journal", error);
+		return 125;
 	}
 	if (!authorityPathMatchesProfile(journalPath, cleanup.profileName)) {
-		return reportWatcherCleanupFailure(L"validate authority journal", ERROR_INVALID_DATA);
+		reportAuthorityCleanupFailure(L"validate authority journal", ERROR_INVALID_DATA);
+		return 125;
 	}
 	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup)) return 125;
 	return 0;
