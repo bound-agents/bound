@@ -182,7 +182,14 @@ FailedHandoffResolution resolveFailedHandoffJournal(const std::wstring& path,
 	ULONGLONG watcherCreationTime, HANDLE jobHandle, HANDLE childHandle);
 bool markAuthorityJournalRecoverableLocked(const std::wstring& path, DWORD childPid,
 	ULONGLONG childCreationTime, bool jobTreeDeathProof);
-bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed);
+struct AuthorityCleanupFailure {
+	std::wstring operation;
+	DWORD win32 = ERROR_SUCCESS;
+	HRESULT hresult = S_OK;
+};
+
+bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed,
+	AuthorityCleanupFailure* failure = nullptr);
 bool recoverAuthorityJournalLocked(const std::wstring& path);
 bool authorityPathMatchesProfile(const std::wstring& path, const std::wstring& profileName);
 bool isAuthorityPathAllowed(const std::wstring& path);
@@ -947,12 +954,23 @@ void reportAuthorityCleanupFailure(const wchar_t*, DWORD win32, HRESULT = S_OK) 
 	SetLastError(win32);
 }
 
-bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed) {
+void captureAuthorityCleanupFailure(AuthorityCleanupFailure* failure, const wchar_t* operation,
+	DWORD win32, HRESULT hresult = S_OK) {
+	if (failure) {
+		failure->operation = operation;
+		failure->win32 = win32;
+		failure->hresult = hresult;
+	}
+	reportAuthorityCleanupFailure(operation, win32, hresult);
+}
+
+bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed,
+	AuthorityCleanupFailure* failure) {
 	for (size_t i = parsed.authorityLines.size(); i >= 2; i -= 2) {
 		if (!isAuthorityPathAllowed(parsed.authorityLines[i - 2]) ||
 			!restoreSecurityFromSddl(parsed.authorityLines[i - 2], parsed.authorityLines[i - 1])) {
 			const DWORD error = GetLastError();
-			reportAuthorityCleanupFailure(L"restore ACLs", error);
+			captureAuthorityCleanupFailure(failure, L"restore ACLs", error);
 			SetLastError(error);
 			return false;
 		}
@@ -960,13 +978,13 @@ bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const Authority
 	const HRESULT deleted = DeleteAppContainerProfile(parsed.profileName.c_str());
 	if (FAILED(deleted) && HRESULT_CODE(deleted) != ERROR_NOT_FOUND) {
 		const DWORD error = HRESULT_CODE(deleted);
-		reportAuthorityCleanupFailure(L"DeleteAppContainerProfile", error, deleted);
+		captureAuthorityCleanupFailure(failure, L"DeleteAppContainerProfile", error, deleted);
 		SetLastError(error);
 		return false;
 	}
 	if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) {
 		const DWORD error = GetLastError();
-		reportAuthorityCleanupFailure(L"DeleteFileW(authority journal)", error);
+		captureAuthorityCleanupFailure(failure, L"DeleteFileW(authority journal)", error);
 		SetLastError(error);
 		return false;
 	}
@@ -1165,8 +1183,8 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 		sendReport();
 		return 125;
 	};
-	auto failCleanup = [&]() {
-		return failWatcher(L"authority cleanup", GetLastError());
+	auto failCleanup = [&](const AuthorityCleanupFailure& failure) {
+		return failWatcher(failure.operation.c_str(), failure.win32, failure.hresult);
 	};
 	wchar_t neverArms[2]{};
 	if (GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS", neverArms, 2) > 0) {
@@ -1263,8 +1281,9 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	if (!authorityPathMatchesProfile(journalPath, cleanup.profileName)) {
 		return failWatcher(L"validate authority journal", ERROR_INVALID_DATA);
 	}
-	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup)) {
-		return failCleanup();
+	AuthorityCleanupFailure cleanupFailure;
+	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)) {
+		return failCleanup(cleanupFailure);
 	}
 	report.cleanupResult = 0;
 	report.win32 = ERROR_SUCCESS;
@@ -1492,10 +1511,22 @@ int wmain(int argc, wchar_t** argv) {
 		(argc == 6 || std::wstring(argv[6]) == L"--test-namespace")) {
 		const std::wstring profileName = argv[3];
 		if (argc == 8) testNamespace = argv[7];
+		// Profile registration lives under the supported AppContainer profile registry root. SID
+		// derivation is deterministic and therefore cannot answer whether registration still exists.
+		HKEY profileRoot = nullptr;
+		const HRESULT registryLocation = GetAppContainerRegistryLocation(KEY_READ, &profileRoot);
+		if (FAILED(registryLocation)) return 125;
+		HKEY profileKey = nullptr;
+		const LSTATUS profileStatus = RegOpenKeyExW(profileRoot, profileName.c_str(), 0, KEY_READ,
+			&profileKey);
+		RegCloseKey(profileRoot);
+		const bool profileExists = profileStatus == ERROR_SUCCESS;
+		if (profileKey) RegCloseKey(profileKey);
+		if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND) return 125;
+
 		PSID profileSid = nullptr;
 		const HRESULT derived = DeriveAppContainerSidFromAppContainerName(profileName.c_str(), &profileSid);
-		const bool profileExists = SUCCEEDED(derived);
-		if (profileSid) FreeSid(profileSid);
+		if (FAILED(derived) || !profileSid) return 125;
 
 		bool lowboxAce = false;
 		PSECURITY_DESCRIPTOR descriptor = nullptr;
@@ -1521,6 +1552,7 @@ int wmain(int argc, wchar_t** argv) {
 			}
 		}
 		if (descriptor) LocalFree(descriptor);
+		FreeSid(profileSid);
 		const bool journalExists = GetFileAttributesW(authorityJournalPath(profileName).c_str()) !=
 			INVALID_FILE_ATTRIBUTES;
 		std::cout << "{\"Journal\":" << (journalExists ? "true" : "false")
