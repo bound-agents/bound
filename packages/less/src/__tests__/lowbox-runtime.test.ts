@@ -23,6 +23,25 @@ const sandbox = {
 	onUnavailable: "error" as const,
 };
 
+describe("Windows bash dispatch", () => {
+	it("routes enabled Windows commands only through lowbox and onUnavailable", () => {
+		const source = readFileSync(join(import.meta.dir, "../tools/bash.ts"), "utf8");
+		const start = source.indexOf("async function spawnForBash(");
+		const end = source.indexOf("\n}\n\n/**", start);
+		const dispatch = source.slice(start, end);
+
+		expect(start).toBeGreaterThan(0);
+		expect(dispatch).toContain('process.platform === "win32"');
+		expect(dispatch).toContain("trySandboxedViaLowbox(");
+		expect(dispatch).toContain('sandbox.onUnavailable === "passthrough"');
+		expect(dispatch).toContain("ran UNSANDBOXED");
+		expect(dispatch).toContain("refusing to run the command unsandboxed");
+		expect(dispatch).toContain("explicit unsandboxed fallback");
+		expect(dispatch).not.toContain("IsolationSession");
+		expect(dispatch).not.toContain("iso-session");
+	});
+});
+
 it("captures helper close before awaiting readiness", async () => {
 	const { PassThrough } = await import("node:stream");
 	const { EventEmitter } = await import("node:events");

@@ -384,12 +384,10 @@ describe("checkWritePath (in-process write guard)", () => {
 });
 
 // The `.git` exec-surface carve-out: hooks + config are kept read-only even
-// though they live inside the otherwise-writable cwd. Enforced on bubblewrap
-// (via buildPolicy.readonlyPaths) and for the in-process file tools everywhere
-// EXCEPT Windows, which has no mxc backend able to express "readable but not
-// writable" for a subpath — so `.git` stays writable there (see
-// computeGitProtectedPaths). These tests pass an explicit `platform` where the
-// behavior is platform-dependent so they assert the same thing on every runner.
+// though they live inside the otherwise-writable cwd. POSIX shell confinement
+// consumes these paths through buildPolicy; the Windows lowbox helper enforces
+// the same boundary through scoped DACLs. The in-process file tools use this
+// platform-independent list directly.
 describe(".git exec-surface protection", () => {
 	const cfg: ResolvedSandboxConfig = {
 		enabled: true,
@@ -415,16 +413,13 @@ describe(".git exec-surface protection", () => {
 		if (repo) rmSync(repo, { recursive: true, force: true });
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"denies a write to a hook script even though it is inside cwd (non-win32)",
-		() => {
-			const check = checkWritePath(".git/hooks/post-checkout", repo, cfg);
-			expect(check.allowed).toBe(false);
-			expect(check.gitProtected).toBe(true);
-		},
-	);
+	it("denies a write to a hook script even though it is inside cwd", () => {
+		const check = checkWritePath(".git/hooks/post-checkout", repo, cfg);
+		expect(check.allowed).toBe(false);
+		expect(check.gitProtected).toBe(true);
+	});
 
-	it.skipIf(process.platform === "win32")("denies overwriting .git/config (non-win32)", () => {
+	it("denies overwriting .git/config", () => {
 		const check = checkWritePath(".git/config", repo, cfg);
 		expect(check.allowed).toBe(false);
 		expect(check.gitProtected).toBe(true);
@@ -448,13 +443,10 @@ describe(".git exec-surface protection", () => {
 		expect(paths).toContain(realpathSync(join(repo, ".git", "config")));
 	});
 
-	it("returns [] on Windows — .git stays writable where mxc can't carve it out", () => {
-		expect(computeGitProtectedPaths(repo, "win32")).toEqual([]);
-		// And the in-process guard agrees: the same write the non-win32 lanes deny
-		// is allowed once the platform gate trips. (checkWritePath uses the real
-		// process.platform, so this asserts the gate via the helper directly.)
+	it("protects hooks and config on Windows too", () => {
 		const winProtected = computeGitProtectedPaths(repo, "win32");
-		expect(winProtected.some((p) => p.includes(".git"))).toBe(false);
+		expect(winProtected).toContain(realpathSync(join(repo, ".git", "hooks")));
+		expect(winProtected).toContain(realpathSync(join(repo, ".git", "config")));
 	});
 
 	it("returns [] for a non-repo cwd — nothing to protect, no broken bind", () => {

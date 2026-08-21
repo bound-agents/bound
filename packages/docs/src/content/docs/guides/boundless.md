@@ -53,7 +53,12 @@ Anchored reads let the agent address exact lines without reproducing their full 
 
 :::danger[Filesystem access]
 Read access follows the operating-system permissions of the `boundless` process. Writes are
-confined to the working directory and temporary directories allowed by the platform sandbox.
+confined to the working directory and temporary directories allowed by the platform sandbox:
+seatbelt on macOS, bubblewrap on Linux, and Bound's one-shot AppContainer lowbox on Windows.
+The Windows backend also keeps `.git/config` and `.git/hooks` read-only while ordinary Git
+state remains writable. It creates an unprivileged per-command profile; if host policy blocks
+profile creation, the default `sandbox.onUnavailable: "error"` refuses the command with
+guidance. Set `"passthrough"` only to opt explicitly into a visibly unsandboxed fallback.
 Start `boundless` in a directory whose contents are appropriate for the thread to access.
 :::
 
@@ -161,6 +166,19 @@ Copy the full thread ID from the status area and pass that value to `--attach`.
 
 Shell output longer than 32 visual rows is elided in the middle. Output over 256 KiB is
 offloaded before it reaches the transcript.
+
+### Windows lowbox is unavailable
+
+Windows commands do not fall back to mxc or a persisted sandbox session. Bound creates a
+one-shot AppContainer profile and lowbox token for each command, then a watcher owns process-
+tree cancellation and profile/ACL/journal cleanup. A policy that prevents an unprivileged
+user from calling `CreateAppContainerProfile` makes this backend unavailable. Restore
+unprivileged profile creation, or set `sandbox.onUnavailable` to `"passthrough"` only if you
+intend to run commands without write confinement; the tool reports `ran UNSANDBOXED`.
+
+The Windows CI confinement matrix validates writes inside allowed roots; denial of sibling,
+traversal, and junction escapes; read-only `.git/config` and `.git/hooks` including nested
+existing hooks; descendant-tree cancellation; and watcher-owned cleanup.
 
 ## Related concepts
 

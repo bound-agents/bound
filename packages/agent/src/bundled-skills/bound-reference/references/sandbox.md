@@ -82,6 +82,14 @@ while `bms_edit` would (silently, harmlessly) write into the VFS instead. The
 through your context — its `source`/`target` take `"main"` (the VFS) or `"satellite"`
 (the host disk).
 
+Boundless shell writes are OS-confined: seatbelt on macOS, bubblewrap on Linux, and a
+Bound-owned one-shot AppContainer lowbox on Windows. The Windows backend never falls
+back to a persisted IsolationSession. It keeps `.git/config` and `.git/hooks` read-only
+while ordinary Git state remains writable, kills descendant process trees through a Job
+Object, and leaves profile/ACL/journal cleanup to its watcher. If host policy blocks
+unprivileged AppContainer profile creation, the default `onUnavailable: "error"` refuses
+the command with guidance; `"passthrough"` is an explicit, visibly unsandboxed fallback.
+
 ## What is NOT in the sandbox
 
 Host configuration. The `config/` directory lives on the host's real disk and is
