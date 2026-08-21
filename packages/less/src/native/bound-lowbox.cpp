@@ -243,17 +243,13 @@ WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& rep
 	}
 	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
 	watcherControlWrite = nullptr;
-	const DWORD wait = WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS);
-	DWORD watcherExitCode = 125;
-	const bool watcherClean = wait == WAIT_OBJECT_0 &&
-		GetExitCodeProcess(cleanupWatcher, &watcherExitCode) && watcherExitCode == 0;
 	DWORD bytesRead = 0;
-	const bool reportRead = watcherClean &&
+	const bool reportRead =
 		ReadFile(watcherReportRead, &report, sizeof(report), &bytesRead, nullptr) &&
 		bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
 	closeArmedWatcherObservationHandles();
 	cleanupJournalPath.clear();
-	if (!reportRead || !watcherClean) return WatcherTerminalStatus::WatcherAbnormalExit;
+	if (!reportRead) return WatcherTerminalStatus::WatcherAbnormalExit;
 	return report.cleanupResult == 0 ? WatcherTerminalStatus::CleanupComplete
 		: WatcherTerminalStatus::CleanupFailed;
 }
@@ -1393,19 +1389,18 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		controlWrite.reset();
 		watcherReportWrite.reset();
 
-		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
-		const HANDLE watcherToClose = cleanupWatcher;
-		const BOOL watcherClosed = CloseHandle(watcherToClose);
-		const DWORD watcherCloseError = watcherClosed ? ERROR_SUCCESS : GetLastError();
-		cleanupWatcher = INVALID_HANDLE_VALUE;
 		WatcherTerminalReport report{};
 		DWORD bytesRead = 0;
-		const BOOL reportReadCall = watcherWait == WAIT_OBJECT_0 &&
+		const BOOL reportReadCall =
 			ReadFile(watcherReportRead.value, &report, sizeof(report), &bytesRead, nullptr);
 		const DWORD reportReadError = reportReadCall ? ERROR_SUCCESS : GetLastError();
 		const bool reportRead = reportReadCall && bytesRead == sizeof(report) &&
 			report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
 		watcherReportRead.reset();
+		const HANDLE watcherToClose = watcherProcess;
+		const BOOL watcherClosed = CloseHandle(watcherToClose);
+		const DWORD watcherCloseError = watcherClosed ? ERROR_SUCCESS : GetLastError();
+		watcherProcess = INVALID_HANDLE_VALUE;
 		const bool watcherClean = reportRead && report.cleanupResult == 0;
 		const char* cancelCode = !cancelSent ? "LOWBOX_WATCHER_CANCEL_WRITE_FAILED"
 			: !watcherClosed ? "LOWBOX_WATCHER_HANDLE_CLOSE_FAILED"

@@ -59,7 +59,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).toContain("CreateProcessW(cleanup watcher)");
 	});
 
-	it("closes the owner control/report streams and watcher handle on every runtime terminal path", () => {
+	it("waits for the watcher report stream before closing its observational process handle", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const awaitStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus(");
 		const awaitEnd = source.indexOf("bool queryJobTreeEmpty", awaitStart);
@@ -68,7 +68,10 @@ describe("Windows lowbox helper materialization", () => {
 		expect(awaitWatcher.indexOf("CloseHandle(watcherControlWrite)")).toBeLessThan(
 			awaitWatcher.indexOf("ReadFile(watcherReportRead"),
 		);
-		expect(awaitWatcher).toContain("closeArmedWatcherObservationHandles()");
+		expect(awaitWatcher).not.toContain("WaitForSingleObject(cleanupWatcher");
+		expect(awaitWatcher).not.toContain("GetExitCodeProcess(cleanupWatcher");
+		const terminalClose = awaitWatcher.lastIndexOf("closeArmedWatcherObservationHandles()");
+		expect(terminalClose).toBeGreaterThan(awaitWatcher.indexOf("ReadFile(watcherReportRead"));
 		expect(awaitWatcher).not.toContain("WaitForSingleObject(child");
 		expect(awaitWatcher).not.toContain("WaitForSingleObject(job");
 	});
@@ -630,7 +633,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(cancel).toContain("LOWBOX_WATCHER_CLEANUP");
 		expect(cancel).toContain("LOWBOX_WATCHER_REPORT_FAILED");
 		expect(cancel).toContain("WatcherStartOutcome::IndeterminateWatcherOwned");
-		expect(cancel).toContain("WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS)");
+		expect(cancel).not.toContain("WaitForSingleObject(watcherProcess");
 		expect(cancel).not.toContain("GetExitCodeProcess(watcherProcess");
 		expect(cancel).not.toContain("WatcherStartOutcome::ConfirmedArmed");
 		expect(cancel).not.toContain("WatcherStartOutcome::FailedPreTransfer");
@@ -803,8 +806,8 @@ describe("Windows lowbox helper materialization", () => {
 		expect(request).toContain("CloseHandle(watcherControlWrite)");
 		expect(source).not.toContain("closeCleanupWatcher");
 		expect(source).toContain("requestArmedWatcherCancelAndObserve();");
-		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS)");
-		expect(terminal).toContain("GetExitCodeProcess(cleanupWatcher, &watcherExitCode)");
+		expect(terminal).not.toContain("WaitForSingleObject(cleanupWatcher");
+		expect(terminal).not.toContain("GetExitCodeProcess(cleanupWatcher");
 		expect(source).not.toContain("awaitArmedWatcherTerminalStatusOrRetry");
 		expect(watcher).toContain("markAuthorityJournalRecoverableLocked(");
 		expect(watcher.indexOf("markAuthorityJournalRecoverableLocked(")).toBeLessThan(
@@ -833,16 +836,13 @@ describe("Windows lowbox helper materialization", () => {
 		expect(request).toContain("report.operation");
 		expect(request).toContain("watcherReportRead.reset()");
 		expect(request).toContain("watcherReportWrite.reset()");
-		expect(request).toContain("WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS)");
+		expect(request).not.toContain("WaitForSingleObject(watcherProcess");
 		expect(request).not.toContain("GetExitCodeProcess(watcherProcess");
 		expect(request).not.toContain("cleanupWatcher.reset()");
-		expect(request).toContain("const HANDLE watcherToClose = cleanupWatcher");
-		expect(request).toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
+		expect(request).toContain("const HANDLE watcherToClose = watcherProcess");
+		expect(request).toContain("watcherProcess = INVALID_HANDLE_VALUE");
 		expect(request).toContain("CloseHandle(watcherToClose)");
-		expect(request.indexOf("cleanupWatcher = INVALID_HANDLE_VALUE")).toBeGreaterThan(
-			request.indexOf("WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS)"),
-		);
-		expect(request.indexOf("ReadFile(watcherReportRead.value")).toBeGreaterThan(
+		expect(request.indexOf("ReadFile(watcherReportRead.value")).toBeLessThan(
 			request.indexOf("CloseHandle(watcherToClose)"),
 		);
 	});
@@ -872,7 +872,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(close).toContain("watcherControlWrite = nullptr");
 		expect(close).toContain("watcherReportRead = nullptr");
 		expect(close).toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
-		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS)");
+		expect(terminal).not.toContain("WaitForSingleObject(cleanupWatcher");
 		expect(terminal.match(/closeArmedWatcherObservationHandles\(\)/g)).toHaveLength(2);
 		expect(
 			terminal.indexOf("closeArmedWatcherObservationHandles()", terminal.indexOf("ReadFile(")),
