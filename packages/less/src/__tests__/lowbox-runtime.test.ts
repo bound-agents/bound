@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -23,16 +23,6 @@ const sandbox = {
 	onUnavailable: "error" as const,
 };
 
-const defaultSpawnMock = () => {
-	throw new Error("spawn mock not configured");
-};
-
-mock.module("node:child_process", () => ({ spawn: defaultSpawnMock }));
-
-afterEach(() => {
-	mock.module("node:child_process", () => ({ spawn: defaultSpawnMock }));
-});
-
 it("captures helper close before awaiting readiness", async () => {
 	const { PassThrough } = await import("node:stream");
 	const { EventEmitter } = await import("node:events");
@@ -47,17 +37,15 @@ it("captures helper close before awaiting readiness", async () => {
 	child.stderr = new PassThrough();
 	child.stdio = [null, child.stdout, child.stderr, control];
 	child.kill = () => true;
-	mock.module("node:child_process", () => ({
-		spawn: () => {
-			queueMicrotask(() => {
-				child.emit("spawn");
-				control.write('{"ok":true,"pid":4242}\n');
-				child.emit("exit", 0);
-				child.emit("close", 0);
-			});
-			return child;
-		},
-	}));
+	const spawn = () => {
+		queueMicrotask(() => {
+			child.emit("spawn");
+			control.write('{"ok":true,"pid":4242}\n');
+			child.emit("exit", 0);
+			child.emit("close", 0);
+		});
+		return child;
+	};
 	const originalHelper = process.env.BOUND_LOWBOX_HELPER;
 	process.env.BOUND_LOWBOX_HELPER = process.execPath;
 	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
@@ -70,6 +58,7 @@ it("captures helper close before awaiting readiness", async () => {
 			shell,
 			sandbox,
 			"close-before-return-test",
+			{ spawn },
 		);
 		expect(result.pid).toBe(4242);
 		expect(await Promise.race([result.exited, Bun.sleep(100).then(() => "timeout")])).toBe(0);
@@ -1150,7 +1139,11 @@ describe("Windows lowbox helper materialization", () => {
 
 	it("refuses an absent helper with a structured availability error", () => {
 		expect(() =>
-			resolveLowboxHelperPath({ platform: "win32", executablePath: "Z:\\missing.exe" }),
+			resolveLowboxHelperPath({
+				platform: "win32",
+				executablePath: "Z:\\missing.exe",
+				helperPath: undefined,
+			}),
 		).toThrow(/LOWBOX_HELPER_UNAVAILABLE/);
 	});
 
