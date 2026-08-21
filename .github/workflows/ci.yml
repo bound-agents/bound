@@ -74,6 +74,11 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Mandatory Windows AppContainer lowbox oracle
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: bun test packages/less/src/__tests__/windows-lowbox-oracle.test.ts --timeout 30000
+
       - name: Unit tests
         # Step-level (not job-level) timeout: a wedged test fails THIS step
         # without cancelling the job, so the summary + upload steps below
