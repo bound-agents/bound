@@ -214,6 +214,7 @@ describe("Windows lowbox helper materialization", () => {
 			inspect.indexOf("DeriveAppContainerSidFromAppContainerName"),
 		);
 		expect(inspect).not.toContain("const bool profileExists = SUCCEEDED(derived)");
+		expect(inspect).toContain("profileStatus != ERROR_PATH_NOT_FOUND");
 	});
 
 	it("validates the durable Recoverable journal before any watcher authority teardown", () => {
