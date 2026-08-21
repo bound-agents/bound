@@ -59,7 +59,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).toContain("CreateProcessW(cleanup watcher)");
 	});
 
-	it("closes the owner control writer before reading the watcher terminal report", () => {
+	it("closes the owner control/report streams and watcher handle on every runtime terminal path", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const awaitStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus(");
 		const awaitEnd = source.indexOf("bool queryJobTreeEmpty", awaitStart);
@@ -68,6 +68,9 @@ describe("Windows lowbox helper materialization", () => {
 		expect(awaitWatcher.indexOf("CloseHandle(watcherControlWrite)")).toBeLessThan(
 			awaitWatcher.indexOf("ReadFile(watcherReportRead"),
 		);
+		expect(awaitWatcher).toContain("closeArmedWatcherObservationHandles()");
+		expect(awaitWatcher).not.toContain("WaitForSingleObject(child");
+		expect(awaitWatcher).not.toContain("WaitForSingleObject(job");
 	});
 
 	it("retires the synchronous control pipe after EOF without treating EOF as cancellation", () => {
@@ -843,21 +846,22 @@ describe("Windows lowbox helper materialization", () => {
 
 	it("closes every runtime terminal observation handle and stream", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const closeStart = source.indexOf("void closeArmedWatcherObservationHandles()");
 		const terminalStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus(");
 		const terminalEnd = source.indexOf("bool queryJobTreeEmpty", terminalStart);
+		const close = source.slice(closeStart, terminalStart);
 		const terminal = source.slice(terminalStart, terminalEnd);
 
-		expect(terminalStart).toBeGreaterThan(0);
-		expect(terminal).toContain("watcherControlWrite = nullptr");
-		expect(terminal).toContain("watcherReportRead = nullptr");
+		expect(closeStart).toBeGreaterThan(0);
+		expect(terminalStart).toBeGreaterThan(closeStart);
+		expect(close).toContain("watcherControlWrite = nullptr");
+		expect(close).toContain("watcherReportRead = nullptr");
+		expect(close).toContain("cleanupWatcher = nullptr");
 		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS)");
-		expect(terminal).toContain("cleanupWatcher = nullptr");
-		expect(terminal.lastIndexOf("cleanupWatcher = nullptr")).toBeGreaterThan(
-			terminal.indexOf("WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS)"),
-		);
-		expect(terminal.indexOf("ReadFile(watcherReportRead")).toBeGreaterThan(
-			terminal.lastIndexOf("cleanupWatcher = nullptr"),
-		);
+		expect(terminal.match(/closeArmedWatcherObservationHandles\(\)/g)).toHaveLength(2);
+		expect(
+			terminal.indexOf("closeArmedWatcherObservationHandles()", terminal.indexOf("ReadFile(")),
+		).toBeGreaterThan(terminal.indexOf("ReadFile(watcherReportRead"));
 	});
 
 	it("keeps every post-watcher failure branch on the explicit cancel path", () => {
