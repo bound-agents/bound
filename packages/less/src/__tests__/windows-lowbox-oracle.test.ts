@@ -51,6 +51,41 @@ async function removeFixtureAfterHandlesClose(path: string): Promise<void> {
 
 type CleanupState = { Journal: boolean; Profile: boolean; LowboxAces: number };
 
+function collectControlLines(control: NodeJS.ReadableStream): {
+	lines: string[];
+	waitForFirstLine: (timeoutMs?: number) => Promise<string>;
+} {
+	const lines: string[] = [];
+	let pending = "";
+	control.setEncoding("utf8");
+	control.on("data", (chunk: string) => {
+		pending += chunk;
+		for (;;) {
+			const newline = pending.indexOf("\n");
+			if (newline < 0) break;
+			lines.push(pending.slice(0, newline));
+			pending = pending.slice(newline + 1);
+		}
+	});
+	control.on("end", () => {
+		if (pending) lines.push(pending);
+		pending = "";
+	});
+	return {
+		lines,
+		waitForFirstLine: async (timeoutMs = 10_000) => {
+			const deadline = Date.now() + timeoutMs;
+			while (lines.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+			if (lines.length === 0) throw new Error("helper readiness timed out");
+			return lines[0] as string;
+		},
+	};
+}
+
+function watcherDiagnostics(lines: string[]): string {
+	return lines.slice(1).join("\n");
+}
+
 function inspectCleanup(
 	helper: string,
 	profile: string,
@@ -130,22 +165,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				);
 				const control = normal.stdio[controlFd];
 				expect(control, "helper control pipe is unavailable").toBeTruthy();
-				const readyLine = await new Promise<string>((resolve, reject) => {
-					let pending = "";
-					const timeout = setTimeout(() => reject(new Error("helper readiness timed out")), 10_000);
-					control?.setEncoding("utf8");
-					control?.on("data", (chunk: string) => {
-						pending += chunk;
-						const newline = pending.indexOf("\n");
-						if (newline < 0) return;
-						clearTimeout(timeout);
-						resolve(pending.slice(0, newline));
-					});
-					normal?.once("error", reject);
-					normal?.once("exit", (code) =>
-						reject(new Error(`helper exited before readiness (${code})`)),
-					);
-				});
+				const controlReports = collectControlLines(control as NodeJS.ReadableStream);
+				const readyLine = await controlReports.waitForFirstLine();
 				const ready = JSON.parse(readyLine) as { ok?: boolean; pid?: number; profile?: string };
 				expect(ready.ok, readyLine).toBe(true);
 				const childPid = ready.pid as number;
@@ -179,8 +200,14 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					await Bun.sleep(50);
 				} while (Date.now() < observationDeadline);
 				await waitForClose(normal);
-				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
-				expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
+				expect(cleanup, watcherDiagnostics(controlReports.lines)).toEqual({
+					Journal: false,
+					Profile: false,
+					LowboxAces: 0,
+				});
+				expect(cleanupObservedAt, watcherDiagnostics(controlReports.lines)).toBeGreaterThanOrEqual(
+					childDeadAt,
+				);
 			} finally {
 				await stopAndClose(normal);
 				await removeFixtureAfterHandlesClose(cwd);
@@ -232,19 +259,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				);
 				const control = failed.stdio[controlFd];
 				expect(control, "helper control pipe is unavailable").toBeTruthy();
-				const readyLine = await new Promise<string>((resolve, reject) => {
-					let pending = "";
-					const timeout = setTimeout(() => reject(new Error("helper readiness timed out")), 10_000);
-					control?.setEncoding("utf8");
-					control?.on("data", (chunk: string) => {
-						pending += chunk;
-						const newline = pending.indexOf("\n");
-						if (newline < 0) return;
-						clearTimeout(timeout);
-						resolve(pending.slice(0, newline));
-					});
-					failed?.once("error", reject);
-				});
+				const controlReports = collectControlLines(control as NodeJS.ReadableStream);
+				const readyLine = await controlReports.waitForFirstLine();
 				const ready = JSON.parse(readyLine) as { ok?: boolean; pid?: number; profile?: string };
 				expect(ready.ok, readyLine).toBe(true);
 				const childPid = ready.pid as number;
@@ -278,8 +294,14 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					await Bun.sleep(50);
 				} while (Date.now() < observationDeadline);
 				await waitForClose(failed);
-				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
-				expect(cleanupObservedAt).toBeGreaterThanOrEqual(childDeadAt);
+				expect(cleanup, watcherDiagnostics(controlReports.lines)).toEqual({
+					Journal: false,
+					Profile: false,
+					LowboxAces: 0,
+				});
+				expect(cleanupObservedAt, watcherDiagnostics(controlReports.lines)).toBeGreaterThanOrEqual(
+					childDeadAt,
+				);
 			} finally {
 				await stopAndClose(failed);
 				await removeFixtureAfterHandlesClose(cwd);

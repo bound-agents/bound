@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -6,6 +6,7 @@ import {
 	lowboxHelperSourcePath,
 	parseLowboxFailure,
 	resolveLowboxHelperPath,
+	spawnLowbox,
 } from "../tools/lowbox-runtime";
 
 const shell = {
@@ -21,6 +22,62 @@ const sandbox = {
 	network: "open" as const,
 	onUnavailable: "error" as const,
 };
+
+const defaultSpawnMock = () => {
+	throw new Error("spawn mock not configured");
+};
+
+mock.module("node:child_process", () => ({ spawn: defaultSpawnMock }));
+
+afterEach(() => {
+	mock.module("node:child_process", () => ({ spawn: defaultSpawnMock }));
+});
+
+it("captures helper close before awaiting readiness", async () => {
+	const { PassThrough } = await import("node:stream");
+	const { EventEmitter } = await import("node:events");
+	const child = new EventEmitter() as EventEmitter & {
+		stdio: Array<PassThrough | null>;
+		stdout: PassThrough;
+		stderr: PassThrough;
+		kill: () => boolean;
+	};
+	const control = new PassThrough();
+	child.stdout = new PassThrough();
+	child.stderr = new PassThrough();
+	child.stdio = [null, child.stdout, child.stderr, control];
+	child.kill = () => true;
+	mock.module("node:child_process", () => ({
+		spawn: () => {
+			queueMicrotask(() => {
+				child.emit("spawn");
+				control.write('{"ok":true,"pid":4242}\n');
+				child.emit("exit", 0);
+				child.emit("close", 0);
+			});
+			return child;
+		},
+	}));
+	const originalHelper = process.env.BOUND_LOWBOX_HELPER;
+	process.env.BOUND_LOWBOX_HELPER = process.execPath;
+	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+	Object.defineProperty(process, "platform", { value: "win32" });
+	try {
+		const result = await spawnLowbox(
+			"echo ok",
+			process.cwd(),
+			process.cwd(),
+			shell,
+			sandbox,
+			"close-before-return-test",
+		);
+		expect(result.pid).toBe(4242);
+		expect(await Promise.race([result.exited, Bun.sleep(100).then(() => "timeout")])).toBe(0);
+	} finally {
+		if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
+		process.env.BOUND_LOWBOX_HELPER = originalHelper;
+	}
+});
 
 describe("Windows lowbox helper materialization", () => {
 	it("defines checked local authority restoration instead of only declaring it", () => {
@@ -122,19 +179,41 @@ describe("Windows lowbox helper materialization", () => {
 		expect(source).toContain("recoverStaleAuthority(testNamespace)");
 	});
 
-	it("reports the exact watcher operation that fails over the report pipe", () => {
+	it("preserves the exact cleanup phase and HRESULT through the watcher report pipe", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const watcherStart = source.indexOf("int runCleanupWatcher(");
 		const watcherEnd = source.indexOf("WatcherStartResult startCleanupWatcher(", watcherStart);
 		const watcher = source.slice(watcherStart, watcherEnd);
+		const cleanupStart = source.indexOf(
+			"bool cleanupRecoverableAuthorityLocked(",
+			source.indexOf("void reportAuthorityCleanupFailure("),
+		);
+		const cleanupEnd = source.indexOf("bool recoverAuthorityJournalLocked(", cleanupStart);
+		const cleanup = source.slice(cleanupStart, cleanupEnd);
 
-		expect(watcher).toContain("failWatcher(");
-		expect(watcher).toContain("WaitForMultipleObjects");
-		expect(watcher).toContain('GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_WATCHER_NEVER_ARMS"');
-		expect(watcher).toContain("cleanupRecoverableAuthorityLocked(journalPath, cleanup)");
-		expect(watcher).toContain("report.win32 = win32");
-		expect(watcher).toContain("report.hresult = hresult");
-		expect(watcher).toContain("wcsncpy_s(report.operation");
+		expect(cleanup).toContain("AuthorityCleanupFailure* failure");
+		expect(cleanup).toContain(
+			'captureAuthorityCleanupFailure(failure, L"DeleteAppContainerProfile", error, deleted)',
+		);
+		expect(watcher).toContain("AuthorityCleanupFailure cleanupFailure");
+		expect(watcher).toContain("failWatcher(failure.operation.c_str()");
+		expect(watcher).toContain("failure.hresult");
+		expect(watcher).not.toContain('failWatcher(L"authority cleanup", GetLastError())');
+	});
+
+	it("queries profile registration independently from deterministic SID derivation", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const inspectStart = source.indexOf('std::wstring(argv[1]) == L"inspect-cleanup"');
+		const inspectEnd = source.indexOf('std::wstring(argv[1]) == L"cleanup-watch"', inspectStart);
+		const inspect = source.slice(inspectStart, inspectEnd);
+
+		expect(inspect).toContain("GetAppContainerRegistryLocation");
+		expect(inspect).toContain("RegOpenKeyExW");
+		expect(inspect).toContain("DeriveAppContainerSidFromAppContainerName");
+		expect(inspect.indexOf("RegOpenKeyExW")).toBeLessThan(
+			inspect.indexOf("DeriveAppContainerSidFromAppContainerName"),
+		);
+		expect(inspect).not.toContain("const bool profileExists = SUCCEEDED(derived)");
 	});
 
 	it("releases both watcher lowbox handles before authority recovery on success and close failure", () => {
@@ -148,7 +227,7 @@ describe("Windows lowbox helper materialization", () => {
 		);
 		const closeFailure = watcher.indexOf("if (!closeWatcherLowboxHandles(");
 		const sharedCleanup = watcher.indexOf(
-			"cleanupRecoverableAuthorityLocked(journalPath, cleanup)",
+			"cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)",
 		);
 
 		expect(recoverable).toBeGreaterThan(watcher.indexOf("waitForJobTreeDeath(jobHandle"));
@@ -253,17 +332,19 @@ describe("Windows lowbox helper materialization", () => {
 			expect(source).toContain(phase);
 		}
 		expect(cleanup).toContain("HRESULT deleted = DeleteAppContainerProfile(");
-		expect(cleanup).toContain("reportAuthorityCleanupFailure(");
+		expect(cleanup).toContain("captureAuthorityCleanupFailure(");
 		expect(cleanup.indexOf("DeleteFileW(path.c_str())")).toBeGreaterThan(
 			cleanup.indexOf("DeleteAppContainerProfile("),
 		);
 		expect(recovery).toContain("cleanupRecoverableAuthorityLocked(path, parsed)");
-		expect(watcher).toContain("cleanupRecoverableAuthorityLocked(journalPath, cleanup)");
+		expect(watcher).toContain(
+			"cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)",
+		);
 		expect(watcher).toContain(
 			"closeWatcherLowboxHandles(childHandle, jobHandle, reportAuthorityCleanupFailure)",
 		);
 		expect(watcher.indexOf("closeWatcherLowboxHandles(childHandle, jobHandle")).toBeLessThan(
-			watcher.indexOf("cleanupRecoverableAuthorityLocked(journalPath, cleanup)"),
+			watcher.indexOf("cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)"),
 		);
 		expect(source).toContain("LOWBOX_WATCHER_CLEANUP");
 		expect(watcher).not.toContain("writeControl(");
@@ -417,7 +498,8 @@ describe("Windows lowbox helper materialization", () => {
 			"FailedHandoffResolution resolveFailedHandoffJournal(",
 		);
 		const recoveryStart = source.indexOf(
-			"bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const AuthorityJournal& parsed) {",
+			"bool cleanupRecoverableAuthorityLocked(",
+			source.indexOf("void reportAuthorityCleanupFailure("),
 		);
 		const recoveryEnd = source.indexOf(
 			"FailedHandoffResolution resolveFailedHandoffJournal(",
@@ -684,7 +766,9 @@ describe("Windows lowbox helper materialization", () => {
 			watcher.indexOf("markAuthorityJournalRecoverableLocked("),
 		);
 		expect(watcher).toContain("AuthorityRecoveryLock recoveryLock(journalPath)");
-		expect(watcher).toContain("cleanupRecoverableAuthorityLocked(journalPath, cleanup)");
+		expect(watcher).toContain(
+			"cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)",
+		);
 
 		for (const forbidden of [
 			"TerminateJobObject(",
@@ -811,7 +895,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(source).not.toContain("awaitArmedWatcherTerminalStatusOrRetry");
 		expect(watcher).toContain("markAuthorityJournalRecoverableLocked(");
 		expect(watcher.indexOf("markAuthorityJournalRecoverableLocked(")).toBeLessThan(
-			watcher.indexOf("cleanupRecoverableAuthorityLocked(journalPath, cleanup)"),
+			watcher.indexOf("cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)"),
 		);
 		expect(source).toContain(
 			"if (watcherStatus != WatcherTerminalStatus::CleanupComplete) reportArmedWatcherAbnormalExit();",
@@ -938,6 +1022,19 @@ describe("Windows lowbox helper materialization", () => {
 			win32: 5,
 			message: "Access is denied.\r\n",
 		});
+	});
+
+	it("drains terminal watcher diagnostics separately from child streams", () => {
+		const source = readFileSync(join(import.meta.dir, "..", "tools", "lowbox-runtime.ts"), "utf8");
+		const readinessStart = source.indexOf('let controlPending = ""');
+		const returnStart = source.indexOf("const toWeb", readinessStart);
+		const runtime = source.slice(readinessStart, returnStart);
+
+		expect(runtime).toContain("terminalWatcherDiagnostics");
+		expect(runtime).toContain('control.on("data"');
+		expect(runtime).toContain('control.on("end"');
+		expect(runtime).toContain("console.error");
+		expect(runtime).not.toContain("child.stderr?.push");
 	});
 
 	it("refuses an absent helper with a structured availability error", () => {

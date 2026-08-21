@@ -115,69 +115,103 @@ export async function spawnLowbox(
 			windowsHide: true,
 		},
 	);
-	await new Promise<void>((resolve, reject) => {
+	const spawned = new Promise<void>((resolve, reject) => {
 		child.once("spawn", resolve);
 		child.once("error", (error) =>
 			reject(new LowboxUnavailableError(`native helper failed to launch: ${error.message}`)),
 		);
 	});
+	const exited = new Promise<number>((resolve) => {
+		child.once("close", (code) => resolve(code ?? -1));
+	});
+	await spawned;
 	const control = child.stdio[controlFd] as import("node:stream").Readable | null;
 	if (!control) {
 		child.kill();
 		throw new LowboxUnavailableError("native helper control pipe is unavailable");
 	}
-	const ready = await new Promise<{ pid: number }>((resolve, reject) => {
-		let settled = false;
-		let pending = "";
-		const finish = (callback: () => void) => {
-			if (settled) return;
-			settled = true;
-			callback();
-		};
-		control.setEncoding("utf8");
-		control.on("data", (chunk: string) => {
-			pending += chunk;
-			const newline = pending.indexOf("\n");
+	let controlPending = "";
+	let readySettled = false;
+	let resolveReady!: (value: { pid: number }) => void;
+	let rejectReady!: (reason: Error) => void;
+	const ready = new Promise<{ pid: number }>((resolve, reject) => {
+		resolveReady = resolve;
+		rejectReady = reject;
+	});
+	const terminalWatcherDiagnostics: string[] = [];
+	const reportTerminalWatcherDiagnostic = (line: string) => {
+		terminalWatcherDiagnostics.push(line);
+		console.error(`[boundless] lowbox watcher: ${line}`);
+	};
+	const consumeControlLines = () => {
+		for (;;) {
+			const newline = controlPending.indexOf("\n");
 			if (newline < 0) return;
-			const line = pending.slice(0, newline);
+			const line = controlPending.slice(0, newline);
+			controlPending = controlPending.slice(newline + 1);
+			if (!line) continue;
+			if (readySettled) {
+				reportTerminalWatcherDiagnostic(line);
+				continue;
+			}
 			try {
 				const value = JSON.parse(line) as { ok?: boolean; pid?: number };
+				readySettled = true;
 				if (value.ok === true && typeof value.pid === "number") {
-					finish(() => resolve({ pid: value.pid as number }));
+					resolveReady({ pid: value.pid });
 				} else {
 					const failure = parseLowboxFailure(line);
-					finish(() =>
-						reject(
-							new LowboxUnavailableError(
-								failure
-									? `${failure.code} (${failure.operation}): ${failure.message}`
-									: `invalid native helper response: ${line}`,
-							),
+					rejectReady(
+						new LowboxUnavailableError(
+							failure
+								? `${failure.code} (${failure.operation}): ${failure.message}`
+								: `invalid native helper response: ${line}`,
 						),
 					);
 				}
 			} catch {
-				finish(() => reject(new LowboxUnavailableError(`invalid native helper response: ${line}`)));
+				readySettled = true;
+				rejectReady(new LowboxUnavailableError(`invalid native helper response: ${line}`));
 			}
-		});
-		child.once("error", (error) =>
-			finish(() => reject(new LowboxUnavailableError(`native helper failed: ${error.message}`))),
-		);
-		child.once("exit", (code) =>
-			finish(() =>
-				reject(new LowboxUnavailableError(`native helper exited before readiness (${code ?? -1})`)),
-			),
-		);
+		}
+	};
+	control.setEncoding("utf8");
+	control.on("data", (chunk: string) => {
+		controlPending += chunk;
+		consumeControlLines();
 	});
+	control.on("end", () => {
+		if (controlPending) {
+			if (readySettled) reportTerminalWatcherDiagnostic(controlPending);
+			else
+				rejectReady(
+					new LowboxUnavailableError(`invalid native helper response: ${controlPending}`),
+				);
+			controlPending = "";
+		}
+	});
+	child.once("error", (error) => {
+		if (!readySettled) {
+			readySettled = true;
+			rejectReady(new LowboxUnavailableError(`native helper failed: ${error.message}`));
+		}
+	});
+	child.once("exit", (code) => {
+		if (!readySettled) {
+			readySettled = true;
+			rejectReady(
+				new LowboxUnavailableError(`native helper exited before readiness (${code ?? -1})`),
+			);
+		}
+	});
+	const readyResult = await ready;
 	const toWeb = (stream: NodeJS.ReadableStream | null): ReadableStream<Uint8Array> | null =>
 		stream ? (Readable.toWeb(stream as Readable) as unknown as ReadableStream<Uint8Array>) : null;
 	return {
 		stdout: toWeb(child.stdout),
 		stderr: toWeb(child.stderr),
-		exited: new Promise<number>((resolve) => {
-			child.once("close", (code) => resolve(code ?? -1));
-		}),
-		pid: ready.pid,
+		exited,
+		pid: readyResult.pid,
 		kill: () => child.kill(),
 	};
 }
