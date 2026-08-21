@@ -132,7 +132,7 @@ std::string jsonEscape(const std::string& value) {
 }
 
 HANDLE controlHandle = INVALID_HANDLE_VALUE;
-HANDLE cleanupWatcher = nullptr;
+HANDLE cleanupWatcher = INVALID_HANDLE_VALUE;
 HANDLE watcherControlWrite = nullptr;
 HANDLE watcherReportRead = nullptr;
 std::wstring cleanupJournalPath;
@@ -232,12 +232,12 @@ void closeArmedWatcherObservationHandles() {
 	watcherControlWrite = nullptr;
 	if (watcherReportRead != nullptr) CloseHandle(watcherReportRead);
 	watcherReportRead = nullptr;
-	if (cleanupWatcher != nullptr) CloseHandle(cleanupWatcher);
-	cleanupWatcher = nullptr;
+	if (cleanupWatcher != INVALID_HANDLE_VALUE) CloseHandle(cleanupWatcher);
+	cleanupWatcher = INVALID_HANDLE_VALUE;
 }
 
 WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& report) {
-	if (cleanupWatcher == nullptr || watcherReportRead == nullptr) {
+	if (cleanupWatcher == INVALID_HANDLE_VALUE || watcherReportRead == nullptr) {
 		closeArmedWatcherObservationHandles();
 		return WatcherTerminalStatus::WatcherAbnormalExit;
 	}
@@ -297,7 +297,7 @@ void requestArmedWatcherCancel() {
 }
 
 void observeIndeterminateWatcherBoundedly() {
-	if (cleanupWatcher == nullptr) return;
+	if (cleanupWatcher == INVALID_HANDLE_VALUE) return;
 	WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS);
 }
 
@@ -416,7 +416,7 @@ int fail(const char* code, const wchar_t* operation, DWORD win32) {
 		std::to_string(win32) + ",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) +
 		"\"}";
 	writeControl(json);
-	if (cleanupWatcher != nullptr) {
+	if (cleanupWatcher != INVALID_HANDLE_VALUE) {
 		// Report the failure with an explicit framed request, then observe only. The owner never executes
 		// job termination, authority transition, or cleanup after the watcher is armed.
 		requestArmedWatcherCancelAndObserve();
@@ -1394,22 +1394,30 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		watcherReportWrite.reset();
 
 		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
-		cleanupWatcher.reset();
+		const HANDLE watcherToClose = cleanupWatcher;
+		const BOOL watcherClosed = CloseHandle(watcherToClose);
+		const DWORD watcherCloseError = watcherClosed ? ERROR_SUCCESS : GetLastError();
+		cleanupWatcher = INVALID_HANDLE_VALUE;
 		WatcherTerminalReport report{};
 		DWORD bytesRead = 0;
-		const bool reportRead = watcherWait == WAIT_OBJECT_0 &&
-			ReadFile(watcherReportRead.value, &report, sizeof(report), &bytesRead, nullptr) &&
-			bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
+		const BOOL reportReadCall = watcherWait == WAIT_OBJECT_0 &&
+			ReadFile(watcherReportRead.value, &report, sizeof(report), &bytesRead, nullptr);
+		const DWORD reportReadError = reportReadCall ? ERROR_SUCCESS : GetLastError();
+		const bool reportRead = reportReadCall && bytesRead == sizeof(report) &&
+			report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
 		watcherReportRead.reset();
 		const bool watcherClean = reportRead && report.cleanupResult == 0;
 		const char* cancelCode = !cancelSent ? "LOWBOX_WATCHER_CANCEL_WRITE_FAILED"
+			: !watcherClosed ? "LOWBOX_WATCHER_HANDLE_CLOSE_FAILED"
 			: watcherClean ? "LOWBOX_WATCHER_CANCEL_SENT"
 			: reportRead ? "LOWBOX_WATCHER_CLEANUP"
 			: "LOWBOX_WATCHER_REPORT_FAILED";
-		const std::wstring operation = reportRead ? report.operation : L"ReadFile(watcher report)";
+		const std::wstring operation = !watcherClosed ? L"CloseHandle(cleanup watcher)"
+			: reportRead ? report.operation : L"ReadFile(watcher report)";
 		const DWORD diagnosticWin32 = !cancelSent ? cancelError
+			: !watcherClosed ? watcherCloseError
 			: reportRead ? report.win32
-			: GetLastError();
+			: reportReadError;
 		const HRESULT diagnosticHresult = reportRead ? report.hresult : S_OK;
 		writeControl("{\"ok\":false,\"code\":\"" + std::string(cancelCode) +
 			"\",\"operation\":\"" + jsonEscape(utf8(operation)) + "\",\"win32\":" +
