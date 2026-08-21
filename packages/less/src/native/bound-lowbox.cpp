@@ -1122,7 +1122,24 @@ bool saveAndApplyAcl(const std::wstring& rawPath, PSID sid, DWORD accessMask, AC
 	return true;
 }
 
+bool containsReparsePoint(const std::wstring& rawPath) {
+	const std::wstring path = fullPath(rawPath);
+	if (path.empty()) return true;
+	const size_t rootLength = path.size() >= 3 && path[1] == L':' && path[2] == L'\\' ? 3 : 0;
+	if (rootLength == 0) return true;
+	for (size_t end = path.find(L'\\', rootLength);; end = path.find(L'\\', end + 1)) {
+		const std::wstring component = end == std::wstring::npos ? path : path.substr(0, end);
+		if (isReparsePoint(component)) return true;
+		if (end == std::wstring::npos) break;
+	}
+	return false;
+}
+
 bool grantWritableRoot(const std::wstring& root, PSID sid, AclScope& scope) {
+	if (containsReparsePoint(root)) {
+		SetLastError(ERROR_ACCESS_DENIED);
+		return false;
+	}
 	return saveAndApplyAcl(root, sid,
 		FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_GENERIC_WRITE | DELETE, GRANT_ACCESS,
 		SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope);
@@ -1131,16 +1148,17 @@ bool grantWritableRoot(const std::wstring& root, PSID sid, AclScope& scope) {
 bool protectGitControlSurfaces(const std::wstring& root, PSID sid, AclScope& scope) {
 	const std::wstring git = fullPath(root + L"\\.git");
 	if (git.empty() || GetFileAttributesW(git.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
-	const DWORD deniedWrites = FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER;
-	for (const wchar_t* relative : {L"config", L"hooks"}) {
-		const std::wstring path = git + L"\\" + relative;
-		const DWORD attributes = GetFileAttributesW(path.c_str());
-		if (attributes == INVALID_FILE_ATTRIBUTES) continue;
-		const DWORD inheritance = (attributes & FILE_ATTRIBUTE_DIRECTORY)
-			? SUB_CONTAINERS_AND_OBJECTS_INHERIT
-			: NO_INHERITANCE;
-		if (!saveAndApplyAcl(path, sid, deniedWrites, DENY_ACCESS, inheritance, scope)) return false;
-	}
+	const DWORD deniedFileWrites = FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER;
+	const std::wstring config = git + L"\\config";
+	if (GetFileAttributesW(config.c_str()) != INVALID_FILE_ATTRIBUTES &&
+		!saveAndApplyAcl(config, sid, deniedFileWrites, DENY_ACCESS, NO_INHERITANCE, scope)) return false;
+	const std::wstring hooks = git + L"\\hooks";
+	if (GetFileAttributesW(hooks.c_str()) != INVALID_FILE_ATTRIBUTES &&
+		!saveAndApplyAcl(hooks, sid,
+			FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_WRITE_DATA | FILE_APPEND_DATA |
+			FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_DELETE_CHILD | DELETE |
+			WRITE_DAC | WRITE_OWNER,
+			DENY_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope)) return false;
 	return true;
 }
 
