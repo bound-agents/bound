@@ -6,6 +6,7 @@
 #include <sddl.h>
 #include <io.h>
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cwctype>
 #include <fstream>
@@ -140,6 +141,7 @@ std::wstring testNamespace;
 constexpr DWORD LOWBOX_WATCHER_TIMEOUT_MS = 5000;
 constexpr DWORD LOWBOX_RECOVERY_RETRY_MS = 1000;
 constexpr DWORD LOWBOX_FAILED_HANDOFF_RESOLUTION_ATTEMPTS = 5;
+constexpr wchar_t AUTHORITY_JOURNAL_VERSION[] = L"bound-lowbox-authority-v1";
 
 enum class LocalAuthorityCleanupResult {
 	CleanupComplete,
@@ -192,6 +194,7 @@ bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const Authority
 	AuthorityCleanupFailure* failure = nullptr);
 bool recoverAuthorityJournalLocked(const std::wstring& path);
 bool authorityPathMatchesProfile(const std::wstring& path, const std::wstring& profileName);
+bool validateRecoverableAuthorityJournal(const std::wstring& path, const AuthorityJournal& parsed);
 bool isAuthorityPathAllowed(const std::wstring& path);
 bool isReparsePoint(const std::wstring& path);
 
@@ -629,6 +632,7 @@ bool persistAuthorityJournal(const Profile& profile, const AclScope& scope,
 	const std::wstring partialPath = journalPath + L".partial";
 	std::ofstream journal(partialPath, std::ios::binary | std::ios::trunc);
 	bool complete = journal &&
+		writeJournalLine(journal, AUTHORITY_JOURNAL_VERSION) &&
 		writeJournalLine(journal, state == AuthorityJournalState::Transferring ? L"transferring" :
 			state == AuthorityJournalState::Active ? L"active" : L"recoverable") &&
 		writeJournalLine(journal, std::to_wstring(ownerPid)) &&
@@ -682,45 +686,68 @@ bool restoreSecurityFromSddl(const std::wstring& path, const std::wstring& sddl)
 	return true;
 }
 
+bool parseJournalDword(const std::string& text, DWORD& value) {
+	if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) return false;
+	errno = 0;
+	wchar_t* end = nullptr;
+	const std::wstring valueText = wide(text);
+	const unsigned long parsed = wcstoul(valueText.c_str(), &end, 10);
+	if (errno == ERANGE || !end || *end != L'\0' || parsed > MAXDWORD) return false;
+	value = static_cast<DWORD>(parsed);
+	return true;
+}
+
+bool parseJournalUlonglong(const std::string& text, ULONGLONG& value) {
+	if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) return false;
+	errno = 0;
+	wchar_t* end = nullptr;
+	const std::wstring valueText = wide(text);
+	const unsigned long long parsed = _wcstoui64(valueText.c_str(), &end, 10);
+	if (errno == ERANGE || !end || *end != L'\0') return false;
+	value = static_cast<ULONGLONG>(parsed);
+	return true;
+}
+
 bool readAuthorityJournal(const std::wstring& path, AuthorityJournal& parsed) {
 	std::ifstream journal(path, std::ios::binary);
 	if (!journal) return false;
 	std::vector<std::string> lines;
 	std::string line;
 	while (std::getline(journal, line)) lines.push_back(line);
-	if (!journal.eof() || lines.size() < 9 || lines.size() % 2 == 0) return false;
-	if (lines[0] == "transferring") parsed.state = AuthorityJournalState::Transferring;
-	else if (lines[0] == "active") parsed.state = AuthorityJournalState::Active;
-	else if (lines[0] == "recoverable") parsed.state = AuthorityJournalState::Recoverable;
+	if (!journal.eof() || lines.empty()) return false;
+
+	const std::string currentVersion = utf8(AUTHORITY_JOURNAL_VERSION);
+	const bool versioned = lines[0] == currentVersion;
+	const bool legacy = lines[0] == "transferring" || lines[0] == "active" ||
+		lines[0] == "recoverable";
+	if (!versioned && !legacy) return false;
+	const size_t fieldOffset = versioned ? 1 : 0;
+	constexpr size_t legacyFieldCount = 9;
+	const size_t fieldCount = legacyFieldCount + fieldOffset;
+	if (lines.size() < fieldCount || (lines.size() - fieldCount) % 2 != 0) return false;
+	AuthorityJournal candidate;
+	if (lines[fieldOffset] == "transferring") candidate.state = AuthorityJournalState::Transferring;
+	else if (lines[fieldOffset] == "active") candidate.state = AuthorityJournalState::Active;
+	else if (lines[fieldOffset] == "recoverable") candidate.state = AuthorityJournalState::Recoverable;
 	else return false;
-	wchar_t* end = nullptr;
-	parsed.ownerPid = wcstoul(wide(lines[1]).c_str(), &end, 10);
-	if (!end || *end != L'\0') return false;
-	end = nullptr;
-	parsed.ownerCreationTime = _wcstoui64(wide(lines[2]).c_str(), &end, 10);
-	if (!end || *end != L'\0') return false;
-	end = nullptr;
-	parsed.watcherPid = wcstoul(wide(lines[3]).c_str(), &end, 10);
-	if (!end || *end != L'\0') return false;
-	end = nullptr;
-	parsed.watcherCreationTime = _wcstoui64(wide(lines[4]).c_str(), &end, 10);
-	if (!end || *end != L'\0') return false;
-	end = nullptr;
-	parsed.childPid = wcstoul(wide(lines[5]).c_str(), &end, 10);
-	if (!end || *end != L'\0') return false;
-	end = nullptr;
-	parsed.childCreationTime = _wcstoui64(wide(lines[6]).c_str(), &end, 10);
-	if (!end || *end != L'\0') return false;
-	if (lines[7] == "job-tree-dead") parsed.jobTreeDeathProof = true;
-	else if (lines[7] == "unproven") parsed.jobTreeDeathProof = false;
+	if (!parseJournalDword(lines[fieldOffset + 1], candidate.ownerPid) ||
+		!parseJournalUlonglong(lines[fieldOffset + 2], candidate.ownerCreationTime) ||
+		!parseJournalDword(lines[fieldOffset + 3], candidate.watcherPid) ||
+		!parseJournalUlonglong(lines[fieldOffset + 4], candidate.watcherCreationTime) ||
+		!parseJournalDword(lines[fieldOffset + 5], candidate.childPid) ||
+		!parseJournalUlonglong(lines[fieldOffset + 6], candidate.childCreationTime)) return false;
+	if (lines[fieldOffset + 7] == "job-tree-dead") candidate.jobTreeDeathProof = true;
+	else if (lines[fieldOffset + 7] == "unproven") candidate.jobTreeDeathProof = false;
 	else return false;
-	if (lines[8].empty()) return false;
-	parsed.profileName = wide(lines[8]);
-	for (size_t i = 9; i < lines.size(); ++i) {
+	if (lines[fieldOffset + 8].empty()) return false;
+	candidate.profileName = wide(lines[fieldOffset + 8]);
+	for (size_t i = fieldCount; i < lines.size(); ++i) {
 		if (lines[i].empty()) return false;
-		parsed.authorityLines.push_back(wide(lines[i]));
+		candidate.authorityLines.push_back(wide(lines[i]));
 	}
-	return parsed.authorityLines.size() % 2 == 0;
+	if (candidate.authorityLines.size() % 2 != 0) return false;
+	parsed = std::move(candidate);
+	return true;
 }
 
 bool verifyAuthorityJournal(const std::wstring& path) {
@@ -800,6 +827,7 @@ bool rewriteAuthorityJournal(const std::wstring& path, const AuthorityJournal& p
 	const std::wstring partialPath = path + L".partial";
 	std::ofstream journal(partialPath, std::ios::binary | std::ios::trunc);
 	bool complete = journal &&
+		writeJournalLine(journal, AUTHORITY_JOURNAL_VERSION) &&
 		writeJournalLine(journal, state == AuthorityJournalState::Transferring ? L"transferring" :
 			state == AuthorityJournalState::Active ? L"active" : L"recoverable") &&
 		writeJournalLine(journal, std::to_wstring(ownerPid)) &&
@@ -944,6 +972,13 @@ bool authorityPathMatchesProfile(const std::wstring& path, const std::wstring& p
 	return !profileName.empty() && path == authorityJournalPath(profileName);
 }
 
+bool validateRecoverableAuthorityJournal(const std::wstring& path, const AuthorityJournal& parsed) {
+	return parsed.state == AuthorityJournalState::Recoverable && parsed.jobTreeDeathProof &&
+		parsed.ownerPid == 0 && parsed.ownerCreationTime == 0 && parsed.watcherPid == 0 &&
+		parsed.watcherCreationTime == 0 && parsed.childPid != 0 && parsed.childCreationTime != 0 &&
+		authorityPathMatchesProfile(path, parsed.profileName);
+}
+
 bool isAuthorityPathAllowed(const std::wstring& path) {
 	if (path.empty() || isReparsePoint(path)) return false;
 	const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -994,10 +1029,7 @@ bool cleanupRecoverableAuthorityLocked(const std::wstring& path, const Authority
 bool recoverAuthorityJournalLocked(const std::wstring& path) {
 	AuthorityJournal parsed;
 	if (!readAuthorityJournal(path, parsed)) return false;
-	if (parsed.state != AuthorityJournalState::Recoverable || !parsed.jobTreeDeathProof ||
-		parsed.ownerPid != 0 || parsed.ownerCreationTime != 0 || parsed.watcherPid != 0 ||
-		parsed.watcherCreationTime != 0 || parsed.childPid == 0 || parsed.childCreationTime == 0 ||
-		!authorityPathMatchesProfile(path, parsed.profileName)) return false;
+	if (!validateRecoverableAuthorityJournal(path, parsed)) return false;
 	return cleanupRecoverableAuthorityLocked(path, parsed);
 }
 
@@ -1273,13 +1305,13 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	if (!recoveryLock) return failWatcher(L"AuthorityRecoveryLock");
 	if (!markAuthorityJournalRecoverableLocked(journalPath, childPid, childCreationTime,
 		jobTreeDeathProof)) return failWatcher(L"markAuthorityJournalRecoverableLocked");
-	if (!closeWatcherLowboxHandles(childHandle, jobHandle, reportAuthorityCleanupFailure)) {
-		return failWatcher(L"CloseHandle(lowbox authority)");
-	}
 	AuthorityJournal cleanup;
 	if (!readAuthorityJournal(journalPath, cleanup)) return failWatcher(L"read authority journal");
-	if (!authorityPathMatchesProfile(journalPath, cleanup.profileName)) {
+	if (!validateRecoverableAuthorityJournal(journalPath, cleanup)) {
 		return failWatcher(L"validate authority journal", ERROR_INVALID_DATA);
+	}
+	if (!closeWatcherLowboxHandles(childHandle, jobHandle, reportAuthorityCleanupFailure)) {
+		return failWatcher(L"CloseHandle(lowbox authority)");
 	}
 	AuthorityCleanupFailure cleanupFailure;
 	if (!cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)) {
@@ -1503,9 +1535,223 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	::watcherReportRead = watcherReportRead.release();
 	return {WatcherStartOutcome::ConfirmedArmed, ERROR_SUCCESS};
 }
+int selfTestAuthorityJournal() {
+	testNamespace = L"journal-self-test";
+	const std::wstring profileName = L"Bound.Lowbox.AuthorityJournalSelfTest";
+	const std::wstring path = authorityJournalPath(profileName);
+	const std::wstring partialPath = path + L".partial";
+	DeleteFileW(path.c_str());
+	DeleteFileW(partialPath.c_str());
+
+	const auto journalFieldsMatch = [](const AuthorityJournal& parsed,
+		const AuthorityJournal& expected) {
+		return parsed.state == expected.state && parsed.ownerPid == expected.ownerPid &&
+			parsed.ownerCreationTime == expected.ownerCreationTime &&
+			parsed.watcherPid == expected.watcherPid &&
+			parsed.watcherCreationTime == expected.watcherCreationTime &&
+			parsed.childPid == expected.childPid &&
+			parsed.childCreationTime == expected.childCreationTime &&
+			parsed.jobTreeDeathProof == expected.jobTreeDeathProof &&
+			parsed.profileName == expected.profileName &&
+			parsed.authorityLines == expected.authorityLines;
+	};
+	const auto writeLegacyJournal = [&](const AuthorityJournal& candidate) {
+		std::ofstream legacy(path, std::ios::binary | std::ios::trunc);
+		bool complete = legacy &&
+			writeJournalLine(legacy, candidate.state == AuthorityJournalState::Transferring ? L"transferring" :
+				candidate.state == AuthorityJournalState::Active ? L"active" : L"recoverable") &&
+			writeJournalLine(legacy, std::to_wstring(candidate.ownerPid)) &&
+			writeJournalLine(legacy, std::to_wstring(candidate.ownerCreationTime)) &&
+			writeJournalLine(legacy, std::to_wstring(candidate.watcherPid)) &&
+			writeJournalLine(legacy, std::to_wstring(candidate.watcherCreationTime)) &&
+			writeJournalLine(legacy, std::to_wstring(candidate.childPid)) &&
+			writeJournalLine(legacy, std::to_wstring(candidate.childCreationTime)) &&
+			writeJournalLine(legacy, candidate.jobTreeDeathProof ? L"job-tree-dead" : L"unproven") &&
+			writeJournalLine(legacy, candidate.profileName);
+		for (const auto& value : candidate.authorityLines) complete = complete && writeJournalLine(legacy, value);
+		legacy.flush();
+		return complete && legacy.good();
+	};
+	const auto writeVersionedJournal = [&](const AuthorityJournal& candidate) {
+		return rewriteAuthorityJournal(path, candidate, candidate.state, candidate.ownerPid,
+			candidate.ownerCreationTime, candidate.watcherPid, candidate.watcherCreationTime,
+			candidate.childPid, candidate.childCreationTime, candidate.jobTreeDeathProof);
+	};
+	const auto roundTrips = [&](const AuthorityJournal& expected, bool legacy) {
+		if (!(legacy ? writeLegacyJournal(expected) : writeVersionedJournal(expected))) return false;
+		AuthorityJournal parsed;
+		return readAuthorityJournal(path, parsed) && journalFieldsMatch(parsed, expected);
+	};
+
+	AuthorityJournal active;
+	active.state = AuthorityJournalState::Active;
+	active.ownerPid = 41;
+	active.ownerCreationTime = 42000000001;
+	active.watcherPid = 43;
+	active.watcherCreationTime = 44000000002;
+	active.childPid = 45;
+	active.childCreationTime = 46000000003;
+	active.profileName = profileName;
+	active.authorityLines = {
+		L"C:\\authority-self-test-a", L"D:(A;;FA;;;SY)",
+		L"C:\\authority-self-test-b", L"D:(A;;FR;;;SY)",
+	};
+	AuthorityJournal transferring = active;
+	transferring.state = AuthorityJournalState::Transferring;
+	transferring.watcherPid = 0;
+	transferring.watcherCreationTime = 0;
+	AuthorityJournal recoverable = active;
+	recoverable.state = AuthorityJournalState::Recoverable;
+	recoverable.ownerPid = 0;
+	recoverable.ownerCreationTime = 0;
+	recoverable.watcherPid = 0;
+	recoverable.watcherCreationTime = 0;
+	recoverable.jobTreeDeathProof = true;
+
+	int code = 1;
+	for (const auto& candidate : {transferring, active, recoverable}) {
+		if (!roundTrips(candidate, false)) return code;
+		++code;
+	}
+	const AuthorityJournal legacyTransferring = transferring;
+	const AuthorityJournal legacyActive = active;
+	const AuthorityJournal legacyRecoverable = recoverable;
+	for (const auto& candidate : {legacyTransferring, legacyActive, legacyRecoverable}) {
+		if (!roundTrips(candidate, true)) return code;
+		++code;
+	}
+
+	if (!writeLegacyJournal(active)) return code++;
+	AuthorityJournal parsedActive;
+	if (!readAuthorityJournal(path, parsedActive) || !journalFieldsMatch(parsedActive, active) ||
+		!rewriteAuthorityJournal(path, parsedActive, AuthorityJournalState::Recoverable, 0, 0, 0, 0,
+			parsedActive.childPid, parsedActive.childCreationTime, true)) return code++;
+	AuthorityJournal transitioned;
+	if (!readAuthorityJournal(path, transitioned) || !journalFieldsMatch(transitioned, recoverable) ||
+		!validateRecoverableAuthorityJournal(path, transitioned) ||
+		path != authorityJournalPath(profileName)) return code++;
+	{
+		std::ifstream rewritten(path, std::ios::binary);
+		std::string versioned((std::istreambuf_iterator<char>(rewritten)),
+			std::istreambuf_iterator<char>());
+		if (versioned.rfind(utf8(AUTHORITY_JOURNAL_VERSION) + "\n", 0) != 0) return code++;
+	}
+
+	if (!writeLegacyJournal(transferring)) return code++;
+	AuthorityJournal parsedTransferring;
+	if (!readAuthorityJournal(path, parsedTransferring) ||
+		!journalFieldsMatch(parsedTransferring, transferring) ||
+		!rewriteAuthorityJournal(path, parsedTransferring, AuthorityJournalState::Transferring,
+			parsedTransferring.ownerPid, parsedTransferring.ownerCreationTime,
+			parsedTransferring.watcherPid, parsedTransferring.watcherCreationTime,
+			parsedTransferring.childPid, parsedTransferring.childCreationTime,
+			parsedTransferring.jobTreeDeathProof)) return code++;
+	AuthorityJournal transitionedTransferring;
+	if (!readAuthorityJournal(path, transitionedTransferring) ||
+		!journalFieldsMatch(transitionedTransferring, transferring)) return code++;
+
+	auto malformed = recoverable;
+	auto rejectsMalformed = [&](const AuthorityJournal& candidate) {
+		if (!writeVersionedJournal(candidate)) return false;
+		AuthorityJournal reparsed;
+		return readAuthorityJournal(path, reparsed) &&
+			!validateRecoverableAuthorityJournal(path, reparsed);
+	};
+	malformed.state = AuthorityJournalState::Active;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.jobTreeDeathProof = false;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.ownerPid = 1;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.ownerCreationTime = 1;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.watcherPid = 1;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.watcherCreationTime = 1;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.childPid = 0;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.childCreationTime = 0;
+	if (!rejectsMalformed(malformed)) return code++;
+	malformed = recoverable;
+	malformed.profileName += L".forged";
+	if (!rejectsMalformed(malformed)) return code++;
+	if (validateRecoverableAuthorityJournal(path + L".forged", recoverable)) return code++;
+
+	if (!writeVersionedJournal(recoverable)) return code++;
+	{
+		std::ifstream current(path, std::ios::binary);
+		std::string validBody((std::istreambuf_iterator<char>(current)),
+			std::istreambuf_iterator<char>());
+		const std::string currentVersion = utf8(AUTHORITY_JOURNAL_VERSION) + "\n";
+		if (validBody.rfind(currentVersion, 0) != 0) return code++;
+		std::ofstream unknownVersion(path, std::ios::binary | std::ios::trunc);
+		unknownVersion << "bound-lowbox-authority-v2\n"
+			<< validBody.substr(currentVersion.size());
+	}
+	AuthorityJournal unknownVersion;
+	if (readAuthorityJournal(path, unknownVersion)) return code++;
+	if (!writeVersionedJournal(recoverable)) return code++;
+	{
+		std::ifstream current(path, std::ios::binary);
+		std::string negativeNumber((std::istreambuf_iterator<char>(current)),
+			std::istreambuf_iterator<char>());
+		const std::string ownerPid = "recoverable\n0\n";
+		const size_t ownerPidOffset = negativeNumber.find(ownerPid);
+		if (ownerPidOffset == std::string::npos) return code++;
+		negativeNumber.replace(ownerPidOffset, ownerPid.size(), "recoverable\n-1\n");
+		std::ofstream malformedNumber(path, std::ios::binary | std::ios::trunc);
+		malformedNumber << negativeNumber;
+	}
+	AuthorityJournal negativeNumber;
+	if (readAuthorityJournal(path, negativeNumber)) return code++;
+	if (!writeVersionedJournal(recoverable)) return code++;
+	{
+		std::ifstream current(path, std::ios::binary);
+		std::string overflowNumber((std::istreambuf_iterator<char>(current)),
+			std::istreambuf_iterator<char>());
+		const std::string childPid = "\n" + std::to_string(recoverable.childPid) + "\n";
+		const size_t childPidOffset = overflowNumber.find(childPid);
+		if (childPidOffset == std::string::npos) return code++;
+		overflowNumber.replace(childPidOffset, childPid.size(), "\n4294967296\n");
+		std::ofstream malformedNumber(path, std::ios::binary | std::ios::trunc);
+		malformedNumber << overflowNumber;
+	}
+	AuthorityJournal overflowNumber;
+	if (readAuthorityJournal(path, overflowNumber)) return code++;
+	{
+		std::ofstream truncated(path, std::ios::binary | std::ios::trunc);
+		truncated << "recoverable\n0\n0\n0\n0\n";
+	}
+	AuthorityJournal truncated;
+	if (readAuthorityJournal(path, truncated)) return code++;
+	if (!writeVersionedJournal(recoverable)) return code++;
+	{
+		std::ofstream extra(path, std::ios::binary | std::ios::app);
+		extra << "forged-extra-line\n";
+	}
+	AuthorityJournal malformedSchema;
+	if (readAuthorityJournal(path, malformedSchema)) return code++;
+
+	DeleteFileW(path.c_str());
+	DeleteFileW(partialPath.c_str());
+	std::cout << "{\"ok\":true}" << std::endl;
+	return 0;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+	if (argc == 2 && std::wstring(argv[1]) == L"self-test-authority-journal") {
+		return selfTestAuthorityJournal();
+	}
 	if ((argc == 6 || argc == 8) && std::wstring(argv[1]) == L"inspect-cleanup" &&
 		std::wstring(argv[2]) == L"--profile" && std::wstring(argv[4]) == L"--path" &&
 		(argc == 6 || std::wstring(argv[6]) == L"--test-namespace")) {
