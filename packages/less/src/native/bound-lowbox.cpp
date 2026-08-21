@@ -1624,8 +1624,15 @@ int selfTestAuthorityJournal() {
 	if (!writeLegacyJournal(active)) return code++;
 	AuthorityJournal parsedActive;
 	if (!readAuthorityJournal(path, parsedActive) || !journalFieldsMatch(parsedActive, active) ||
-		!rewriteAuthorityJournal(path, parsedActive, AuthorityJournalState::Recoverable, 0, 0, 0, 0,
-			parsedActive.childPid, parsedActive.childCreationTime, true)) return code++;
+		!rewriteAuthorityJournal(path, parsedActive, AuthorityJournalState::Active,
+			parsedActive.ownerPid, parsedActive.ownerCreationTime, parsedActive.watcherPid,
+			parsedActive.watcherCreationTime, parsedActive.childPid,
+			parsedActive.childCreationTime, parsedActive.jobTreeDeathProof)) return code++;
+	AuthorityJournal versionedActive;
+	if (!readAuthorityJournal(path, versionedActive) ||
+		!journalFieldsMatch(versionedActive, active) ||
+		!rewriteAuthorityJournal(path, versionedActive, AuthorityJournalState::Recoverable, 0, 0, 0, 0,
+			versionedActive.childPid, versionedActive.childCreationTime, true)) return code++;
 	AuthorityJournal transitioned;
 	if (!readAuthorityJournal(path, transitioned) || !journalFieldsMatch(transitioned, recoverable) ||
 		!validateRecoverableAuthorityJournal(path, transitioned) ||
