@@ -1783,8 +1783,11 @@ int wmain(int argc, wchar_t** argv) {
 		const HRESULT registryLocation = GetAppContainerRegistryLocation(KEY_READ, &profileRoot);
 		bool profileExists = false;
 		if (FAILED(registryLocation)) {
-			const DWORD registryError = HRESULT_CODE(registryLocation);
-			if (registryError != ERROR_FILE_NOT_FOUND && registryError != ERROR_PATH_NOT_FOUND) {
+			const DWORD registryError = static_cast<DWORD>(registryLocation);
+			const bool missingRegistryRoot = registryLocation == E_FAIL ||
+				registryLocation == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
+				registryLocation == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
+			if (!missingRegistryRoot) {
 				return inspectCleanupFatal(L"GetAppContainerRegistryLocation", registryError);
 			}
 		} else {

@@ -208,9 +208,10 @@ describe("Windows lowbox helper materialization", () => {
 		const inspect = source.slice(inspectStart, inspectEnd);
 
 		expect(inspect).toContain("GetAppContainerRegistryLocation");
-		expect(inspect).toContain("HRESULT_CODE(registryLocation)");
-		expect(inspect).toContain("registryError != ERROR_FILE_NOT_FOUND");
-		expect(inspect).toContain("registryError != ERROR_PATH_NOT_FOUND");
+		expect(inspect).toContain("static_cast<DWORD>(registryLocation)");
+		expect(inspect).toContain("registryLocation == E_FAIL");
+		expect(inspect).toContain("registryLocation == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)");
+		expect(inspect).toContain("registryLocation == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND)");
 		expect(inspect).toContain("if (profileRoot)");
 		expect(inspect).toContain("RegOpenKeyExW");
 		expect(inspect).toContain("DeriveAppContainerSidFromAppContainerName");
