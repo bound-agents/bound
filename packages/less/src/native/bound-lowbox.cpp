@@ -57,6 +57,17 @@ struct FindHandle {
 	operator HANDLE() const { return value; }
 };
 
+struct LocalSid {
+	PSID value = nullptr;
+	~LocalSid() {
+		if (value) FreeSid(value);
+	}
+	LocalSid() = default;
+	LocalSid(const LocalSid&) = delete;
+	LocalSid& operator=(const LocalSid&) = delete;
+	operator PSID() const { return value; }
+};
+
 struct Profile {
 	std::wstring name;
 	PSID sid = nullptr;
@@ -1193,13 +1204,36 @@ bool saveAndProtectGitControlSurface(const std::wstring& rawPath, PSID sid, DWOR
 	record->daclProtected = (control & SE_DACL_PROTECTED) != 0;
 
 	std::vector<unsigned char> allApplicationPackagesStorage;
-	std::vector<unsigned char> allRestrictedApplicationPackagesStorage;
 	PSID allApplicationPackages = nullptr;
-	PSID allRestrictedApplicationPackages = nullptr;
 	if (!createWellKnownSidBuffer(
-			WinBuiltinAnyPackageSid, allApplicationPackagesStorage, allApplicationPackages) ||
-		!createWellKnownSidBuffer(WinBuiltinAnyRestrictedPackageSid,
-			allRestrictedApplicationPackagesStorage, allRestrictedApplicationPackages)) {
+			WinBuiltinAnyPackageSid, allApplicationPackagesStorage, allApplicationPackages)) {
+		return false;
+	}
+	SID_IDENTIFIER_AUTHORITY appPackageAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
+	LocalSid allRestrictedApplicationPackages;
+	if (!AllocateAndInitializeSid(&appPackageAuthority, 2, 2, 2,
+			0, 0, 0, 0, 0, 0,
+			&allRestrictedApplicationPackages.value)) {
+		return false;
+	}
+	LPWSTR allApplicationPackagesText = nullptr;
+	LPWSTR allRestrictedApplicationPackagesText = nullptr;
+	if (!ConvertSidToStringSidW(allApplicationPackages, &allApplicationPackagesText) ||
+		!ConvertSidToStringSidW(allRestrictedApplicationPackages,
+			&allRestrictedApplicationPackagesText)) {
+		const DWORD error = GetLastError();
+		if (allApplicationPackagesText) LocalFree(allApplicationPackagesText);
+		if (allRestrictedApplicationPackagesText) LocalFree(allRestrictedApplicationPackagesText);
+		SetLastError(error);
+		return false;
+	}
+	const bool packageSidIdentitiesMatch =
+		wcscmp(allApplicationPackagesText, L"S-1-15-2-1") == 0 &&
+		wcscmp(allRestrictedApplicationPackagesText, L"S-1-15-2-2") == 0;
+	LocalFree(allApplicationPackagesText);
+	LocalFree(allRestrictedApplicationPackagesText);
+	if (!packageSidIdentitiesMatch) {
+		SetLastError(ERROR_INVALID_SID);
 		return false;
 	}
 
