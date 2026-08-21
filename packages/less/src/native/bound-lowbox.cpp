@@ -227,14 +227,18 @@ struct WatcherStartResult {
 	DWORD win32;
 };
 
+void closeArmedWatcherObservationHandles() {
+	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
+	watcherControlWrite = nullptr;
+	if (watcherReportRead != nullptr) CloseHandle(watcherReportRead);
+	watcherReportRead = nullptr;
+	if (cleanupWatcher != nullptr) CloseHandle(cleanupWatcher);
+	cleanupWatcher = nullptr;
+}
+
 WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& report) {
 	if (cleanupWatcher == nullptr || watcherReportRead == nullptr) {
-		if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
-		watcherControlWrite = nullptr;
-		if (watcherReportRead != nullptr) CloseHandle(watcherReportRead);
-		watcherReportRead = nullptr;
-		if (cleanupWatcher != nullptr) CloseHandle(cleanupWatcher);
-		cleanupWatcher = nullptr;
+		closeArmedWatcherObservationHandles();
 		return WatcherTerminalStatus::WatcherAbnormalExit;
 	}
 	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
@@ -243,14 +247,11 @@ WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& rep
 	DWORD watcherExitCode = 125;
 	const bool watcherClean = wait == WAIT_OBJECT_0 &&
 		GetExitCodeProcess(cleanupWatcher, &watcherExitCode) && watcherExitCode == 0;
-	CloseHandle(cleanupWatcher);
-	cleanupWatcher = nullptr;
 	DWORD bytesRead = 0;
 	const bool reportRead = watcherClean &&
 		ReadFile(watcherReportRead, &report, sizeof(report), &bytesRead, nullptr) &&
 		bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
-	CloseHandle(watcherReportRead);
-	watcherReportRead = nullptr;
+	closeArmedWatcherObservationHandles();
 	cleanupJournalPath.clear();
 	if (!reportRead || !watcherClean) return WatcherTerminalStatus::WatcherAbnormalExit;
 	return report.cleanupResult == 0 ? WatcherTerminalStatus::CleanupComplete
