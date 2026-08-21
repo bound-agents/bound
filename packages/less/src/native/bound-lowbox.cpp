@@ -498,6 +498,30 @@ bool writeJournalLine(std::ofstream& journal, const std::wstring& value) {
 	return journal.good();
 }
 
+LocalAuthorityCleanupResult restoreMaterializedAuthority(Profile& profile, AclScope& aclScope) {
+	for (auto it = aclScope.saved.rbegin(); it != aclScope.saved.rend(); ++it) {
+		SavedSecurity& record = **it;
+		const DWORD status = SetNamedSecurityInfoW(const_cast<LPWSTR>(record.path.c_str()),
+			SE_FILE_OBJECT,
+			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+			record.owner, record.group, record.dacl, nullptr);
+		if (status != ERROR_SUCCESS) {
+			SetLastError(status);
+			return LocalAuthorityCleanupResult::AclRestoreFailed;
+		}
+	}
+	aclScope.saved.clear();
+
+	if (profile.owned) {
+		const HRESULT deleted = DeleteAppContainerProfile(profile.name.c_str());
+		if (FAILED(deleted)) {
+			SetLastError(HRESULT_CODE(deleted));
+			return LocalAuthorityCleanupResult::ProfileDeleteFailed;
+		}
+		profile.owned = false;
+	}
+	return LocalAuthorityCleanupResult::CleanupComplete;
+}
 
 [[noreturn]] void retryMaterializedAuthorityRecovery(Profile& profile, AclScope& scope,
 	DWORD journalError) {
@@ -1032,7 +1056,7 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	Handle controlRead;
 	Handle controlWrite;
 	SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, TRUE};
-	SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+	SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
 	if (!CreatePipe(&controlRead.value, &controlWrite.value, &pipeSecurity, 0) ||
 		!SetHandleInformation(controlWrite.value, HANDLE_FLAG_INHERIT, 0)) {
 		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
@@ -1169,12 +1193,12 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	if (!publishAuthorityJournalWatcher(journalPath, process.dwProcessId, watcherCreationTime)) {
 		return cancelPreTransferWatcherAndObserve(GetLastError());
 	}
-	// The journal remains Transferring while the owner grants authority. The child remains suspended
-	// until the watcher durably publishes Active and acknowledges ARMED. Before that acknowledgement
-	// this function rolls launch back and returns a structured pre-transfer failure.
+	// The journal remains Transferring while the owner grants authority. Once signaling is attempted,
+	// the watcher may durably publish Active even if SetEvent or the ARMED acknowledgement is lost.
+	// From that point uncertainty is watcher-owned: request CANCEL and never kill the watcher locally.
 	transferLock.release();
 	if (!SetEvent(authorityEvent.value)) {
-		return cancelPreTransferWatcherAndObserve(GetLastError());
+		return requestArmedWatcherCancelAndObserve(GetLastError());
 	}
 	const DWORD authorityWait =
 		WaitForSingleObject(authorityArmedEvent.value, LOWBOX_WATCHER_TIMEOUT_MS);
@@ -1282,7 +1306,7 @@ int wmain(int argc, wchar_t** argv) {
 		return failAfterCheckedLocalAuthorityCleanup("LOWBOX_PIPE", L"CreatePipe", win32, profile,
 			aclScope);
 	}
-	SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+	SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
 	stdinNull.value = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
 		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (stdinNull.value == INVALID_HANDLE_VALUE) {
