@@ -188,8 +188,9 @@ enum class WatcherTerminalStatus {
 };
 
 enum class WatcherStartOutcome {
-	Armed,
-	PreTransferFailure,
+	ConfirmedArmed,
+	FailedPreTransfer,
+	IndeterminateWatcherOwned,
 };
 
 struct WatcherStartResult {
@@ -741,8 +742,7 @@ bool resetAuthorityJournalAfterFailedHandoff(const std::wstring& path, DWORD wat
 	if (!recoveryLock) return false;
 	AuthorityJournal parsed;
 	if (!readAuthorityJournal(path, parsed) ||
-		(parsed.state != AuthorityJournalState::Transferring &&
-			parsed.state != AuthorityJournalState::Active) ||
+		parsed.state != AuthorityJournalState::Transferring ||
 		parsed.watcherPid != watcherPid || parsed.watcherCreationTime != watcherCreationTime ||
 		parsed.jobTreeDeathProof) {
 		return false;
@@ -1014,13 +1014,13 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std::wstring& journalPath,
 	HANDLE jobHandle, HANDLE childProcess, HANDLE& watcherProcess) {
 	AuthorityRecoveryLock transferLock(journalPath);
-	if (!transferLock) return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+	if (!transferLock) return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	Handle controlRead;
 	Handle controlWrite;
 	SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, TRUE};
 	if (!CreatePipe(&controlRead.value, &controlWrite.value, &pipeSecurity, 0) ||
 		!SetHandleInformation(controlWrite.value, HANDLE_FLAG_INHERIT, 0)) {
-		return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	Handle readyEvent;
 	readyEvent.value = CreateEventW(&inherit, TRUE, FALSE, nullptr);
@@ -1029,18 +1029,18 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	Handle authorityArmedEvent;
 	authorityArmedEvent.value = CreateEventW(&inherit, TRUE, FALSE, nullptr);
 	if (!readyEvent.value || !authorityEvent.value || !authorityArmedEvent.value) {
-		return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 
 	const DWORD ownerPid = GetCurrentProcessId();
 	ULONGLONG ownerCreationTime = 0;
 	if (!processCreationTime(GetCurrentProcess(), ownerCreationTime)) {
-		return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	const DWORD childPid = GetProcessId(childProcess);
 	ULONGLONG childCreationTime = 0;
 	if (childPid == 0 || !processCreationTime(childProcess, childCreationTime)) {
-		return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	std::wstring commandLine = quoteArgument(executable) + L" cleanup-watch --journal " +
 		quoteArgument(journalPath) + L" --owner-pid " + std::to_wstring(ownerPid) +
@@ -1063,7 +1063,7 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	if (!attributes.value || !InitializeProcThreadAttributeList(attributes.value, 1, 0, &bytes) ||
 		!UpdateProcThreadAttribute(attributes.value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
 			sizeof(inherited), nullptr, nullptr)) {
-		return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	STARTUPINFOEXW startup{};
 	startup.StartupInfo.cb = sizeof(startup);
@@ -1071,15 +1071,17 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	PROCESS_INFORMATION process{};
 	if (!CreateProcessW(executable.c_str(), commandLine.data(), nullptr, nullptr, TRUE,
 		CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &process)) {
-		return {WatcherStartOutcome::PreTransferFailure, GetLastError()};
+		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
 	}
 	CloseHandle(process.hThread);
 	watcherProcess = process.hProcess;
+	ULONGLONG watcherCreationTime = 0;
 
 	auto cancelPreTransferWatcherAndObserve = [&](DWORD failure) -> WatcherStartResult {
 		// ARMED has not been acknowledged. This is launch rollback, not the post-arm CANCEL protocol.
 		// Do not return authority to the caller until this exact watcher is proved stopped and the
-		// durable journal is normalized back to fail-closed Transferring ownership.
+		// durable journal is normalized back to fail-closed Transferring ownership. An Active journal
+		// proves the watcher crossed the durable handoff boundary even if its ARMED event was lost.
 		for (;;) {
 			TerminateProcess(watcherProcess, 125);
 			const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
@@ -1093,10 +1095,54 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		}
 		CloseHandle(watcherProcess);
 		watcherProcess = nullptr;
-		return {WatcherStartOutcome::PreTransferFailure, failure};
+		return {WatcherStartOutcome::FailedPreTransfer, failure};
 	};
 
-	ULONGLONG watcherCreationTime = 0;
+	auto requestArmedWatcherCancelAndObserve = [&](DWORD failure) -> WatcherStartResult {
+		const char cancelFrame[] = "CANCEL\n";
+		DWORD written = 0;
+		const bool cancelSent = WriteFile(controlWrite.value, cancelFrame, sizeof(cancelFrame) - 1,
+			&written, nullptr) && written == sizeof(cancelFrame) - 1;
+		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
+		const bool watcherStopped = watcherWait == WAIT_OBJECT_0;
+		DWORD watcherExitCode = 125;
+		const bool watcherClean = watcherStopped && GetExitCodeProcess(watcherProcess, &watcherExitCode) &&
+			watcherExitCode == 0;
+		const char* cancelCode = !cancelSent ? "LOWBOX_WATCHER_CANCEL_WRITE_FAILED"
+			: watcherWait == WAIT_TIMEOUT ? "LOWBOX_WATCHER_CANCEL_TIMEOUT"
+			: watcherClean ? "LOWBOX_WATCHER_CANCEL_SENT"
+			: "LOWBOX_WATCHER_CANCEL_ABNORMAL";
+		const DWORD cancelError = watcherWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+		writeControl("{\"ok\":false,\"code\":\"" + std::string(cancelCode) +
+			"\",\"operation\":\"WriteFile/WaitForSingleObject/GetExitCodeProcess\",\"win32\":" +
+			std::to_string(cancelError) + "}");
+		if (watcherStopped) {
+			CloseHandle(watcherProcess);
+			watcherProcess = nullptr;
+		}
+		return {WatcherStartOutcome::IndeterminateWatcherOwned, failure};
+	};
+
+	auto observeFailedArmedWait = [&](DWORD failure) -> WatcherStartResult {
+		AuthorityRecoveryLock stateLock(journalPath);
+		AuthorityJournal journal;
+		if (!stateLock || !readAuthorityJournal(journalPath, journal) ||
+			journal.watcherPid != process.dwProcessId ||
+			journal.watcherCreationTime != watcherCreationTime) {
+			stateLock.release();
+			return {WatcherStartOutcome::IndeterminateWatcherOwned, failure};
+		}
+		if (journal.state == AuthorityJournalState::Active) {
+			stateLock.release();
+			return requestArmedWatcherCancelAndObserve(failure);
+		}
+		if (journal.state == AuthorityJournalState::Transferring) {
+			stateLock.release();
+			return cancelPreTransferWatcherAndObserve(failure);
+		}
+		stateLock.release();
+		return {WatcherStartOutcome::IndeterminateWatcherOwned, failure};
+	};
 	if (!processCreationTime(watcherProcess, watcherCreationTime)) {
 		return cancelPreTransferWatcherAndObserve(GetLastError());
 	}
@@ -1119,10 +1165,10 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		WaitForSingleObject(authorityArmedEvent.value, LOWBOX_WATCHER_TIMEOUT_MS);
 	if (authorityWait != WAIT_OBJECT_0) {
 		const DWORD authorityError = authorityWait == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
-		return cancelPreTransferWatcherAndObserve(authorityError);
+		return observeFailedArmedWait(authorityError);
 	}
 	watcherControlWrite = controlWrite.release();
-	return {WatcherStartOutcome::Armed, ERROR_SUCCESS};
+	return {WatcherStartOutcome::ConfirmedArmed, ERROR_SUCCESS};
 }
 }  // namespace
 
@@ -1334,7 +1380,7 @@ int wmain(int argc, wchar_t** argv) {
 	cleanupJournalPath = journalPath;
 	const WatcherStartResult watcherStart =
 		startCleanupWatcher(executable, journalPath, job.value, childProcess.value, cleanupWatcher);
-	if (watcherStart.outcome != WatcherStartOutcome::Armed) {
+	if (watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed) {
 		return failAfterDurableAuthorityJournal("LOWBOX_WATCHER", L"startCleanupWatcher",
 			watcherStart.win32, job.value, childProcess.value, 125, profile, aclScope);
 	}
