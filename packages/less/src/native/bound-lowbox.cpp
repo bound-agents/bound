@@ -164,6 +164,12 @@ struct AuthorityJournal {
 	std::vector<std::wstring> authorityLines;
 };
 
+enum class FailedHandoffResolution {
+	OwnerAuthorityRetained,
+	OwnerTeardownComplete,
+	IndeterminateWatcherOwned,
+};
+
 std::wstring authorityJournalPath(const std::wstring& profileName);
 std::wstring authorityJournalPattern(const std::wstring& namespaceValue);
 bool verifyAuthorityJournal(const std::wstring& path);
@@ -175,6 +181,8 @@ FailedHandoffResolution resolveFailedHandoffJournal(const std::wstring& path,
 bool markAuthorityJournalRecoverableLocked(const std::wstring& path, DWORD childPid,
 	ULONGLONG childCreationTime, bool jobTreeDeathProof);
 bool recoverAuthorityJournalLocked(const std::wstring& path);
+bool authorityPathMatchesProfile(const std::wstring& path, const std::wstring& profileName);
+bool isAuthorityPathAllowed(const std::wstring& path);
 bool isReparsePoint(const std::wstring& path);
 
 LocalAuthorityCleanupResult restoreMaterializedAuthority(Profile& profile, AclScope& aclScope);
@@ -197,11 +205,6 @@ enum class WatcherStartOutcome {
 	IndeterminateWatcherOwned,
 };
 
-enum class FailedHandoffResolution {
-	OwnerAuthorityRetained,
-	OwnerTeardownComplete,
-	IndeterminateWatcherOwned,
-};
 
 struct WatcherStartResult {
 	WatcherStartOutcome outcome;
