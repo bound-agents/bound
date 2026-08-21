@@ -135,8 +135,12 @@ jobs:
         # per failure so failures surface inline without scrolling the log.
         # Also reconciles each package's exit-code sidecar against its JUnit
         # failure count and flags process-level failures (nonzero exit, no
-        # recorded test failure) that the raw JUnit reports as green.
-        run: bun run scripts/ci-test-summary.ts test-results
+        # recorded test failure) that the raw JUnit reports as green. An earlier
+        # build/oracle failure can skip the unit-test step, so create the input
+        # directory before invoking the summary script.
+        run: |
+          mkdir -p test-results
+          bun run scripts/ci-test-summary.ts test-results
 
       - name: Upload test results
         if: ${{ !cancelled() }}

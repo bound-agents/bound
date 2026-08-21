@@ -181,7 +181,7 @@ bool persistAuthorityJournal(const Profile& profile, const AclScope& scope,
 [[noreturn]] void retryMaterializedAuthorityRecovery(Profile& profile, AclScope& scope,
 	DWORD journalError);
 int fail(const char* code, const wchar_t* operation, DWORD win32);
-
+void writeControl(const std::string& json);
 enum class WatcherTerminalStatus {
 	CleanupComplete,
 	WatcherAbnormalExit,
@@ -253,6 +253,20 @@ void requestArmedWatcherCancel() {
 	WriteFile(watcherControlWrite, cancelFrame, sizeof(cancelFrame) - 1, &written, nullptr);
 }
 
+void observeIndeterminateWatcherBoundedly() {
+	if (cleanupWatcher == nullptr) return;
+	WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS);
+}
+
+int failWithoutAuthorityMutation(const char* code, const wchar_t* operation, DWORD win32) {
+	const std::string json = "{\"ok\":false,\"code\":\"" + std::string(code) +
+		"\",\"operation\":\"" + jsonEscape(utf8(operation)) + "\",\"win32\":" +
+		std::to_string(win32) + ",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) +
+		"\"}";
+	writeControl(json);
+	return 125;
+}
+
 [[noreturn]] void requestArmedWatcherCancelAndObserve() {
 	requestArmedWatcherCancel();
 	// A failed or late request does not return authority to the owner. The watcher holds an exact owner
@@ -310,10 +324,10 @@ int cleanupAuthorityAfterUncontainedSuspendedChildDeath(HANDLE childHandle, DWOR
 	}
 	const LocalAuthorityCleanupResult cleanup = restoreMaterializedAuthority(profile, aclScope);
 	if (cleanup == LocalAuthorityCleanupResult::AclRestoreFailed) {
-		return fail("LOWBOX_ASSIGN_JOB_CLEANUP", L"SetNamedSecurityInfoW(restore)");
+		return fail("LOWBOX_ASSIGN_JOB_CLEANUP", L"SetNamedSecurityInfoW(restore)", GetLastError());
 	}
 	if (cleanup == LocalAuthorityCleanupResult::ProfileDeleteFailed) {
-		return fail("LOWBOX_ASSIGN_JOB_PROFILE_DELETE", L"DeleteAppContainerProfile");
+		return fail("LOWBOX_ASSIGN_JOB_PROFILE_DELETE", L"DeleteAppContainerProfile", GetLastError());
 	}
 	return fail(code, operation, win32);
 }
@@ -1018,6 +1032,7 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	Handle controlRead;
 	Handle controlWrite;
 	SECURITY_ATTRIBUTES pipeSecurity{sizeof(pipeSecurity), nullptr, TRUE};
+	SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
 	if (!CreatePipe(&controlRead.value, &controlWrite.value, &pipeSecurity, 0) ||
 		!SetHandleInformation(controlWrite.value, HANDLE_FLAG_INHERIT, 0)) {
 		return {WatcherStartOutcome::FailedPreTransfer, GetLastError()};
@@ -1380,9 +1395,19 @@ int wmain(int argc, wchar_t** argv) {
 	cleanupJournalPath = journalPath;
 	const WatcherStartResult watcherStart =
 		startCleanupWatcher(executable, journalPath, job.value, childProcess.value, cleanupWatcher);
-	if (watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed) {
+	if (watcherStart.outcome == WatcherStartOutcome::FailedPreTransfer) {
 		return failAfterDurableAuthorityJournal("LOWBOX_WATCHER", L"startCleanupWatcher",
 			watcherStart.win32, job.value, childProcess.value, 125, profile, aclScope);
+	}
+	if (watcherStart.outcome == WatcherStartOutcome::IndeterminateWatcherOwned) {
+		requestArmedWatcherCancel();
+		observeIndeterminateWatcherBoundedly();
+		return failWithoutAuthorityMutation("LOWBOX_WATCHER_INDETERMINATE", L"startCleanupWatcher",
+			watcherStart.win32);
+	}
+	if (watcherStart.outcome != WatcherStartOutcome::ConfirmedArmed) {
+		return failWithoutAuthorityMutation("LOWBOX_WATCHER_INVALID_OUTCOME", L"startCleanupWatcher",
+			ERROR_INVALID_STATE);
 	}
 	wchar_t failAfterWatcher[2]{};
 	if (GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_FAIL_AFTER_WATCHER", failAfterWatcher, 2) > 0) {
