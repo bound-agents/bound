@@ -68,7 +68,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(awaitWatcher.indexOf("CloseHandle(watcherControlWrite)")).toBeLessThan(
 			awaitWatcher.indexOf("ReadFile(watcherReportRead"),
 		);
-		expect(awaitWatcher).not.toContain("WaitForSingleObject(cleanupWatcher");
+		expect(awaitWatcher).toContain("WaitForSingleObject(cleanupWatcher, 0)");
 		expect(awaitWatcher).not.toContain("GetExitCodeProcess(cleanupWatcher");
 		const terminalClose = awaitWatcher.lastIndexOf("closeArmedWatcherObservationHandles()");
 		expect(terminalClose).toBeGreaterThan(awaitWatcher.indexOf("ReadFile(watcherReportRead"));
@@ -806,7 +806,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(request).toContain("CloseHandle(watcherControlWrite)");
 		expect(source).not.toContain("closeCleanupWatcher");
 		expect(source).toContain("requestArmedWatcherCancelAndObserve();");
-		expect(terminal).not.toContain("WaitForSingleObject(cleanupWatcher");
+		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher, 0)");
 		expect(terminal).not.toContain("GetExitCodeProcess(cleanupWatcher");
 		expect(source).not.toContain("awaitArmedWatcherTerminalStatusOrRetry");
 		expect(watcher).toContain("markAuthorityJournalRecoverableLocked(");
@@ -859,7 +859,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(source).not.toContain("cleanupWatcher = nullptr");
 	});
 
-	it("closes every runtime terminal observation handle and stream", () => {
+	it("bounds runtime watcher-report observation and closes every handle and stream", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const closeStart = source.indexOf("void closeArmedWatcherObservationHandles()");
 		const terminalStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus(");
@@ -872,7 +872,9 @@ describe("Windows lowbox helper materialization", () => {
 		expect(close).toContain("watcherControlWrite = nullptr");
 		expect(close).toContain("watcherReportRead = nullptr");
 		expect(close).toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
-		expect(terminal).not.toContain("WaitForSingleObject(cleanupWatcher");
+		expect(terminal).toContain("PeekNamedPipe(watcherReportRead");
+		expect(terminal).toContain("LOWBOX_WATCHER_TIMEOUT_MS");
+		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher");
 		expect(terminal.match(/closeArmedWatcherObservationHandles\(\)/g)).toHaveLength(2);
 		expect(
 			terminal.indexOf("closeArmedWatcherObservationHandles()", terminal.indexOf("ReadFile(")),
