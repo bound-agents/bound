@@ -55,8 +55,24 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).toContain(
 			"CreateProcessW(executable.c_str(), commandLine.data(), nullptr, nullptr, TRUE",
 		);
+		expect(watcher).toContain("inheritedChild.reset()");
 		expect(watcher).toContain("UpdateProcThreadAttribute(watcher handles)");
 		expect(watcher).toContain("CreateProcessW(cleanup watcher)");
+	});
+
+	it("returns pre-transfer authority only after the watcher stops and its journal identity is cleared", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const start = source.indexOf("auto cancelPreTransferWatcherAndObserve");
+		const end = source.indexOf("auto requestArmedWatcherCancelAndObserve", start);
+		const rollback = source.slice(start, end);
+
+		expect(rollback).not.toContain("for (;;)");
+		expect(rollback).not.toContain("LOWBOX_WATCHER_STOP_RECOVERY_RETRY");
+		expect(rollback).toContain("TerminateProcess(watcherProcess, 125)");
+		expect(rollback).toContain("resolveFailedHandoffJournal");
+		expect(rollback).toContain("WatcherStartOutcome::IndeterminateWatcherOwned");
+		expect(rollback).toContain("FailedHandoffResolution::OwnerAuthorityRetained");
+		expect(rollback).toContain("FailedHandoffResolution::OwnerTeardownComplete");
 	});
 
 	it("scopes stale-authority recovery to the current oracle namespace", () => {
@@ -333,9 +349,9 @@ describe("Windows lowbox helper materialization", () => {
 
 		expect(startStart).toBeGreaterThan(0);
 		expect(grantFailure).not.toContain("cancelPreTransferWatcherAndObserve(");
-		expect(start).toContain("resetAuthorityJournalAfterFailedHandoff(");
-		expect(start).toContain("watcherWait == WAIT_OBJECT_0 &&");
-		expect(grantFailure).toContain("requestArmedWatcherCancelAndObserve(");
+		expect(start).toContain("resolveFailedHandoffJournal(");
+		expect(start).toContain("const bool watcherStopped = watcherWait == WAIT_OBJECT_0");
+		expect(start).toContain("FailedHandoffResolution::OwnerAuthorityRetained");
 		expect(caller).toContain("watcherStart.outcome == WatcherStartOutcome::FailedPreTransfer");
 		expect(caller).toContain("failAfterDurableAuthorityJournal(");
 		expect(caller).toContain(
@@ -349,6 +365,127 @@ describe("Windows lowbox helper materialization", () => {
 		expect(ready).toBeGreaterThan(resume);
 		expect(caller.slice(0, confirmedGate)).not.toContain("ResumeThread(");
 		expect(caller.slice(0, confirmedGate)).not.toContain('writeControl("{\\"ok\\":true');
+	});
+	it("bounds failed-handoff teardown retries until no dead-watcher journal survives", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const resolutionStart = source.indexOf(
+			"FailedHandoffResolution resolveFailedHandoffJournal(",
+			source.indexOf("bool restoreAuthorityFromJournalLocked("),
+		);
+		const resolutionEnd = source.indexOf(
+			"bool markAuthorityJournalRecoverableLocked(",
+			resolutionStart,
+		);
+		const resolution = source.slice(resolutionStart, resolutionEnd);
+
+		expect(resolution).toContain("LOWBOX_FAILED_HANDOFF_RESOLUTION_ATTEMPTS");
+		expect(resolution).toContain("restoreAuthorityFromJournalLocked(path, parsed)");
+		expect(resolution).toContain("DeleteFileW(path.c_str())");
+		expect(resolution).toContain("Sleep(LOWBOX_RECOVERY_RETRY_MS)");
+		expect(resolution).not.toContain(
+			"if (!restoreAuthorityFromJournalLocked(path, parsed)) {\n\t\treturn FailedHandoffResolution::IndeterminateWatcherOwned;",
+		);
+		expect(resolution).not.toContain(
+			"if (!DeleteFileW(path.c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) {\n\t\treturn FailedHandoffResolution::IndeterminateWatcherOwned;",
+		);
+	});
+
+	it("resolves failed pre-transfer journal reset without leaving dead watcher contamination", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const resolutionStart = source.indexOf(
+			"FailedHandoffResolution resolveFailedHandoffJournal(",
+			source.indexOf("bool restoreAuthorityFromJournalLocked("),
+		);
+		const resolutionEnd = source.indexOf(
+			"bool markAuthorityJournalRecoverableLocked(",
+			resolutionStart,
+		);
+		const resolution = source.slice(resolutionStart, resolutionEnd);
+		const cancelStart = source.indexOf("auto cancelPreTransferWatcherAndObserve");
+		const cancelEnd = source.indexOf("auto requestArmedWatcherCancelAndObserve", cancelStart);
+		const cancel = source.slice(cancelStart, cancelEnd);
+
+		expect(resolutionStart).toBeGreaterThan(0);
+		expect(resolution).toContain("AuthorityRecoveryLock recoveryLock(path)");
+		expect(resolution).toContain("parsed.state == AuthorityJournalState::Active");
+		expect(resolution).toContain("FailedHandoffResolution::IndeterminateWatcherOwned");
+		expect(resolution).toContain("parsed.ownerPid != ownerPid");
+		expect(resolution).toContain("parsed.ownerCreationTime != ownerCreationTime");
+		expect(resolution).toContain("parsed.profileName != profileName");
+		expect(resolution).toContain("parsed.watcherPid != watcherPid");
+		expect(resolution).toContain("parsed.watcherCreationTime != watcherCreationTime");
+		expect(resolution).toContain("rewriteAuthorityJournal(");
+		expect(resolution).toContain("TerminateJobObject(jobHandle, 125)");
+		expect(resolution).toContain(
+			"waitForJobTreeDeath(jobHandle, childHandle, LOWBOX_WATCHER_TIMEOUT_MS)",
+		);
+		expect(resolution).toContain("restoreAuthorityFromJournalLocked(path, parsed)");
+		expect(resolution).toContain("DeleteFileW(path.c_str())");
+		expect(cancel).toContain("resolveFailedHandoffJournal(");
+		expect(cancel).toContain("FailedHandoffResolution::OwnerAuthorityRetained");
+		expect(cancel).toContain("FailedHandoffResolution::OwnerTeardownComplete");
+	});
+
+	it("rechecks exact transferring ownership under a fresh lock before parent teardown", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const resolutionStart = source.indexOf(
+			"FailedHandoffResolution resolveFailedHandoffJournal(",
+			source.indexOf("bool restoreAuthorityFromJournalLocked("),
+		);
+		const resolutionEnd = source.indexOf(
+			"bool markAuthorityJournalRecoverableLocked(",
+			resolutionStart,
+		);
+		const resolution = source.slice(resolutionStart, resolutionEnd);
+		const rewrite = resolution.indexOf("if (rewriteAuthorityJournal(");
+		const recoveryScopeEnd = resolution.indexOf("\n\t}\n\t// The reset rewrite can fail", rewrite);
+		const fallbackLock = resolution.indexOf(
+			"AuthorityRecoveryLock fallbackLock(path)",
+			recoveryScopeEnd,
+		);
+		const freshRead = resolution.indexOf("readAuthorityJournal(path, fresh)", fallbackLock);
+		const activeGuard = resolution.indexOf(
+			"fresh.state == AuthorityJournalState::Active",
+			freshRead,
+		);
+		const identityGuard = resolution.indexOf("fresh.ownerPid != ownerPid", activeGuard);
+		const childGuard = resolution.indexOf("fresh.childPid != parsed.childPid", identityGuard);
+		const terminate = resolution.indexOf("TerminateJobObject(jobHandle, 125)", childGuard);
+
+		expect(rewrite).toBeGreaterThan(0);
+		expect(recoveryScopeEnd).toBeGreaterThan(rewrite);
+		expect(fallbackLock).toBeGreaterThan(recoveryScopeEnd);
+		expect(freshRead).toBeGreaterThan(fallbackLock);
+		expect(activeGuard).toBeGreaterThan(freshRead);
+		expect(identityGuard).toBeGreaterThan(activeGuard);
+		expect(childGuard).toBeGreaterThan(identityGuard);
+		expect(terminate).toBeGreaterThan(childGuard);
+		expect(resolution.slice(fallbackLock, terminate)).not.toContain("}\n\tconst BOOL terminated");
+	});
+
+	it("does not leave dead-watcher identity when journal deletion exhausts its retries", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const resolutionStart = source.indexOf(
+			"FailedHandoffResolution resolveFailedHandoffJournal(",
+			source.indexOf("bool restoreAuthorityFromJournalLocked("),
+		);
+		const resolutionEnd = source.indexOf(
+			"bool markAuthorityJournalRecoverableLocked(",
+			resolutionStart,
+		);
+		const resolution = source.slice(resolutionStart, resolutionEnd);
+
+		expect(resolution).toContain("ownerPid, ownerCreationTime, 0, 0");
+		expect(resolution).toContain("DeleteFileW(path.c_str())");
+		expect(resolution).toContain("rewriteAuthorityJournal(");
+		expect(resolution).toContain(
+			"if (!authorityRestored) return FailedHandoffResolution::IndeterminateWatcherOwned;",
+		);
+		expect(resolution).toContain(
+			"ownerPid, ownerCreationTime, 0, 0, parsed.childPid, parsed.childCreationTime, true",
+		);
+		expect(resolution).toContain("FailedHandoffResolution::OwnerAuthorityRetained");
+		expect(resolution).not.toContain("AuthorityJournalState::Recoverable");
 	});
 
 	it("never kills a watcher once authority signaling can race durable Active ownership", () => {
