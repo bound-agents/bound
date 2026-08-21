@@ -329,6 +329,32 @@ describe("Windows lowbox helper materialization", () => {
 		expect(transition).toContain("jobTreeDeathProof");
 	});
 
+	it("declares native helper types and functions before their first use", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const failedHandoffEnum = source.indexOf("enum class FailedHandoffResolution {");
+		const failedHandoffDeclaration = source.indexOf(
+			"FailedHandoffResolution resolveFailedHandoffJournal(",
+		);
+		const recoveryStart = source.indexOf(
+			"bool recoverAuthorityJournalLocked(const std::wstring& path) {",
+		);
+		const recoveryEnd = source.indexOf(
+			"FailedHandoffResolution resolveFailedHandoffJournal(",
+			recoveryStart,
+		);
+		const recovery = source.slice(recoveryStart, recoveryEnd);
+
+		expect(failedHandoffEnum).toBeGreaterThan(0);
+		expect(failedHandoffDeclaration).toBeGreaterThan(failedHandoffEnum);
+		for (const functionName of ["authorityPathMatchesProfile", "isAuthorityPathAllowed"]) {
+			const declaration = source.indexOf(`bool ${functionName}(`);
+			const use = recovery.indexOf(`${functionName}(`);
+			expect(declaration).toBeGreaterThan(0);
+			expect(use).toBeGreaterThan(0);
+			expect(declaration).toBeLessThan(recoveryStart);
+		}
+	});
+
 	it("allows only ConfirmedArmed to reach child readiness through the caller", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const startStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
