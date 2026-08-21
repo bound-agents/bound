@@ -1781,7 +1781,8 @@ int wmain(int argc, wchar_t** argv) {
 		RegCloseKey(profileRoot);
 		const bool profileExists = profileStatus == ERROR_SUCCESS;
 		if (profileKey) RegCloseKey(profileKey);
-		if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND) return 125;
+		if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND &&
+			profileStatus != ERROR_PATH_NOT_FOUND) return 125;
 
 		PSID profileSid = nullptr;
 		const HRESULT derived = DeriveAppContainerSidFromAppContainerName(profileName.c_str(), &profileSid);
