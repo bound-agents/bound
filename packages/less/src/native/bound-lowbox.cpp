@@ -1160,6 +1160,17 @@ bool grantWritableRoot(const std::wstring& root, PSID sid, AclScope& scope) {
 		SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope);
 }
 
+bool createWellKnownSidBuffer(WELL_KNOWN_SID_TYPE type, std::vector<unsigned char>& storage,
+	PSID& sid) {
+	DWORD size = SECURITY_MAX_SID_SIZE;
+	storage.resize(size);
+	sid = storage.data();
+	return CreateWellKnownSid(type, nullptr, sid, &size) != FALSE;
+}
+
+constexpr DWORD protectedGitWriteMask = FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_ADD_FILE |
+	FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
+
 bool saveAndProtectGitControlSurface(const std::wstring& rawPath, PSID sid, DWORD inheritance,
 	AclScope& scope) {
 	const std::wstring path = fullPath(rawPath);
@@ -1181,6 +1192,17 @@ bool saveAndProtectGitControlSurface(const std::wstring& rawPath, PSID sid, DWOR
 	if (!GetSecurityDescriptorControl(record->descriptor, &control, &revision)) return false;
 	record->daclProtected = (control & SE_DACL_PROTECTED) != 0;
 
+	std::vector<unsigned char> allApplicationPackagesStorage;
+	std::vector<unsigned char> allRestrictedApplicationPackagesStorage;
+	PSID allApplicationPackages = nullptr;
+	PSID allRestrictedApplicationPackages = nullptr;
+	if (!createWellKnownSidBuffer(
+			WinBuiltinAnyPackageSid, allApplicationPackagesStorage, allApplicationPackages) ||
+		!createWellKnownSidBuffer(WinBuiltinAnyRestrictedPackageSid,
+			allRestrictedApplicationPackagesStorage, allRestrictedApplicationPackages)) {
+		return false;
+	}
+
 	const DWORD explicitReadAceCapacity =
 		static_cast<DWORD>(sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(sid));
 	std::vector<unsigned char> aclStorage(record->dacl
@@ -1193,10 +1215,20 @@ bool saveAndProtectGitControlSurface(const std::wstring& rawPath, PSID sid, DWOR
 		if (!GetAce(record->dacl, index, &rawAce)) return false;
 		const auto* header = static_cast<ACE_HEADER*>(rawAce);
 		PSID aceSid = nullptr;
+		DWORD aceMask = 0;
 		if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
-			aceSid = reinterpret_cast<PSID>(&static_cast<ACCESS_ALLOWED_ACE*>(rawAce)->SidStart);
+			const auto* allowed = static_cast<ACCESS_ALLOWED_ACE*>(rawAce);
+			aceSid = reinterpret_cast<PSID>(const_cast<DWORD*>(&allowed->SidStart));
+			aceMask = allowed->Mask;
 		}
-		if ((header->AceFlags & INHERITED_ACE) != 0 && aceSid && EqualSid(aceSid, sid)) continue;
+		const bool inherited = (header->AceFlags & INHERITED_ACE) != 0;
+		const bool profileAce = aceSid && EqualSid(aceSid, sid);
+		const bool packageGroupAce = aceSid &&
+			(EqualSid(aceSid, allApplicationPackages) ||
+				EqualSid(aceSid, allRestrictedApplicationPackages));
+		if (inherited && (profileAce || (packageGroupAce && (aceMask & protectedGitWriteMask) != 0))) {
+			continue;
+		}
 		if (!AddAce(filtered, ACL_REVISION, MAXDWORD, rawAce, header->AceSize)) return false;
 	}
 	EXPLICIT_ACCESSW readEntry{};
