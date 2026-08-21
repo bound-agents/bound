@@ -201,13 +201,17 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).not.toContain('failWatcher(L"authority cleanup", GetLastError())');
 	});
 
-	it("queries profile registration independently from deterministic SID derivation", () => {
+	it("treats a missing profile registry root as an empty profile set and diagnoses fatal probes", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const inspectStart = source.indexOf('std::wstring(argv[1]) == L"inspect-cleanup"');
 		const inspectEnd = source.indexOf('std::wstring(argv[1]) == L"cleanup-watch"', inspectStart);
 		const inspect = source.slice(inspectStart, inspectEnd);
 
 		expect(inspect).toContain("GetAppContainerRegistryLocation");
+		expect(inspect).toContain("HRESULT_CODE(registryLocation)");
+		expect(inspect).toContain("registryError != ERROR_FILE_NOT_FOUND");
+		expect(inspect).toContain("registryError != ERROR_PATH_NOT_FOUND");
+		expect(inspect).toContain("if (profileRoot)");
 		expect(inspect).toContain("RegOpenKeyExW");
 		expect(inspect).toContain("DeriveAppContainerSidFromAppContainerName");
 		expect(inspect.indexOf("RegOpenKeyExW")).toBeLessThan(
@@ -215,6 +219,10 @@ describe("Windows lowbox helper materialization", () => {
 		);
 		expect(inspect).not.toContain("const bool profileExists = SUCCEEDED(derived)");
 		expect(inspect).toContain("profileStatus != ERROR_PATH_NOT_FOUND");
+		expect(inspect).toContain('inspectCleanupFatal(L"GetAppContainerRegistryLocation"');
+		expect(inspect).toContain('inspectCleanupFatal(L"RegOpenKeyExW"');
+		expect(inspect).toContain('inspectCleanupFatal(L"DeriveAppContainerSidFromAppContainerName"');
+		expect(inspect).toContain('inspectCleanupFatal(L"GetNamedSecurityInfoW"');
 	});
 
 	it("validates the durable Recoverable journal before any watcher authority teardown", () => {

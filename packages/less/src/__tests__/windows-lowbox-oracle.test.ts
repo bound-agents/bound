@@ -97,7 +97,10 @@ function inspectCleanup(
 		["inspect-cleanup", "--profile", profile, "--path", path, "--test-namespace", namespace],
 		{ encoding: "utf8", windowsHide: true },
 	);
-	expect(probe.status, probe.stderr).toBe(0);
+	expect(
+		probe.status,
+		`inspect-cleanup status=${probe.status}\nstdout=${probe.stdout}\nstderr=${probe.stderr}`,
+	).toBe(0);
 	return JSON.parse(probe.stdout) as CleanupState;
 }
 
@@ -201,7 +204,10 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						["inspect-cleanup", "--profile", profile, "--path", cwd, "--test-namespace", runId],
 						{ encoding: "utf8", windowsHide: true },
 					);
-					expect(cleanupProbe.status, cleanupProbe.stderr).toBe(0);
+					expect(
+						cleanupProbe.status,
+						`inspect-cleanup status=${cleanupProbe.status}\nstdout=${cleanupProbe.stdout}\nstderr=${cleanupProbe.stderr}`,
+					).toBe(0);
 					cleanup = JSON.parse(cleanupProbe.stdout);
 					if (!cleanup.Journal && !cleanup.Profile && cleanup.LowboxAces === 0) {
 						cleanupObservedAt = Date.now();
@@ -295,7 +301,10 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 						["inspect-cleanup", "--profile", profile, "--path", cwd, "--test-namespace", runId],
 						{ encoding: "utf8", windowsHide: true },
 					);
-					expect(cleanupProbe.status, cleanupProbe.stderr).toBe(0);
+					expect(
+						cleanupProbe.status,
+						`inspect-cleanup status=${cleanupProbe.status}\nstdout=${cleanupProbe.stdout}\nstderr=${cleanupProbe.stderr}`,
+					).toBe(0);
 					cleanup = JSON.parse(cleanupProbe.stdout);
 					if (!cleanup.Journal && !cleanup.Profile && cleanup.LowboxAces === 0) {
 						cleanupObservedAt = Date.now();
@@ -535,7 +544,10 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					["inspect-cleanup", "--profile", profile, "--path", cwd, "--test-namespace", runId],
 					{ encoding: "utf8", windowsHide: true },
 				);
-				expect(cleanupProbe.status, cleanupProbe.stderr).toBe(0);
+				expect(
+					cleanupProbe.status,
+					`inspect-cleanup status=${cleanupProbe.status}\nstdout=${cleanupProbe.stdout}\nstderr=${cleanupProbe.stderr}`,
+				).toBe(0);
 				cleanup = JSON.parse(cleanupProbe.stdout);
 				if (!cleanup.Journal && !cleanup.Profile && cleanup.LowboxAces === 0) {
 					cleanupObservedAt = Date.now();

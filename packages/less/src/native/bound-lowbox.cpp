@@ -1759,6 +1759,13 @@ int selfTestAuthorityJournal() {
 	return 0;
 }
 
+int inspectCleanupFatal(const wchar_t* phase, unsigned long status) {
+	std::wcerr << L"inspect-cleanup phase=" << phase << L" status=" << status << std::endl;
+	writeControl("{\"ok\":false,\"code\":\"LOWBOX_INSPECT_CLEANUP_FAILED\",\"phase\":\"" +
+		jsonEscape(utf8(phase)) + "\",\"status\":" + std::to_string(status) + "}");
+	return 125;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -1774,26 +1781,43 @@ int wmain(int argc, wchar_t** argv) {
 		// derivation is deterministic and therefore cannot answer whether registration still exists.
 		HKEY profileRoot = nullptr;
 		const HRESULT registryLocation = GetAppContainerRegistryLocation(KEY_READ, &profileRoot);
-		if (FAILED(registryLocation)) return 125;
-		HKEY profileKey = nullptr;
-		const LSTATUS profileStatus = RegOpenKeyExW(profileRoot, profileName.c_str(), 0, KEY_READ,
-			&profileKey);
-		RegCloseKey(profileRoot);
-		const bool profileExists = profileStatus == ERROR_SUCCESS;
-		if (profileKey) RegCloseKey(profileKey);
-		if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND &&
-			profileStatus != ERROR_PATH_NOT_FOUND) return 125;
+		bool profileExists = false;
+		if (FAILED(registryLocation)) {
+			const DWORD registryError = HRESULT_CODE(registryLocation);
+			if (registryError != ERROR_FILE_NOT_FOUND && registryError != ERROR_PATH_NOT_FOUND) {
+				return inspectCleanupFatal(L"GetAppContainerRegistryLocation", registryError);
+			}
+		} else {
+			HKEY profileKey = nullptr;
+			LSTATUS profileStatus = ERROR_FILE_NOT_FOUND;
+			if (profileRoot) {
+				profileStatus = RegOpenKeyExW(profileRoot, profileName.c_str(), 0, KEY_READ, &profileKey);
+				RegCloseKey(profileRoot);
+			}
+			profileExists = profileStatus == ERROR_SUCCESS;
+			if (profileKey) RegCloseKey(profileKey);
+			if (!profileExists && profileStatus != ERROR_FILE_NOT_FOUND &&
+				profileStatus != ERROR_PATH_NOT_FOUND) {
+				return inspectCleanupFatal(L"RegOpenKeyExW", profileStatus);
+			}
+		}
 
 		PSID profileSid = nullptr;
 		const HRESULT derived = DeriveAppContainerSidFromAppContainerName(profileName.c_str(), &profileSid);
-		if (FAILED(derived) || !profileSid) return 125;
+		if (FAILED(derived) || !profileSid) {
+			return inspectCleanupFatal(L"DeriveAppContainerSidFromAppContainerName",
+				FAILED(derived) ? HRESULT_CODE(derived) : ERROR_INVALID_SID);
+		}
 
 		bool lowboxAce = false;
 		PSECURITY_DESCRIPTOR descriptor = nullptr;
 		PACL dacl = nullptr;
 		const DWORD aclStatus = GetNamedSecurityInfoW(argv[5], SE_FILE_OBJECT,
 			DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr, &descriptor);
-		if (aclStatus != ERROR_SUCCESS) return 125;
+		if (aclStatus != ERROR_SUCCESS) {
+			FreeSid(profileSid);
+			return inspectCleanupFatal(L"GetNamedSecurityInfoW", aclStatus);
+		}
 		for (DWORD index = 0; dacl && index < dacl->AceCount; ++index) {
 			void* rawAce = nullptr;
 			if (!GetAce(dacl, index, &rawAce)) continue;
