@@ -1,7 +1,7 @@
-import { SYNTAX_THEME, getHighlighter, normalizeLang } from "@bound/shared";
 import DOMPurify from "dompurify";
 import { Marked, type Tokens } from "marked";
 import { markedHighlight } from "marked-highlight";
+import { SYNTAX_THEME, getHighlighter, normalizeLang } from "./syntax-highlighter";
 
 // ---------------------------------------------------------------------------
 // Sanitizer type and config
@@ -26,9 +26,8 @@ const browserSanitize: Sanitizer = (html) => DOMPurify.sanitize(html, DOMPURIFY_
  * Falls back to plaintext for unsupported languages.
  * Output is sanitized with DOMPurify for safe {@html} injection.
  *
- * Backed by the shared `@bound/shared` highlighter singleton — same theme,
- * same language list, same Oniguruma WASM as the TUI. Add a language
- * there once and both surfaces pick it up.
+ * Backed by a browser-only Shiki singleton so the UI never pulls server-side
+ * native code intelligence into its production bundle.
  *
  * @param code The source code string to highlight.
  * @param lang The language identifier (e.g., "typescript", "python").
@@ -149,7 +148,7 @@ export function splitOnThinkingBlocks(content: string): Segment[] {
  * blocks) to sanitized HTML safe for injection via Svelte `{@html}`.
  *
  * - Thinking blocks are wrapped in `<details class="thinking-block"><summary>Thinking...</summary>`.
- * - Fenced code blocks are syntax-highlighted by the shared Shiki singleton (tokyo-night theme).
+ * - Fenced code blocks are syntax-highlighted by the browser Shiki singleton (tokyo-night theme).
  * - All output is sanitized by DOMPurify with Shiki style attributes and
  *   details/summary tags explicitly allowed.
  *

@@ -13,7 +13,7 @@
 //    instance for UI-bearing tools (sharing the same in-flight promise the app
 //    consumes), and returns the flattened textual result the agent loop needs.
 import type { ToolCallRequest, ToolCallResult } from "@bound/client";
-import { stripToolDuration } from "@bound/shared";
+import { stripToolDuration } from "@bound/shared/strings";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { writable } from "svelte/store";
 import type { UiResourceClient } from "./mcp-app-bridge";
