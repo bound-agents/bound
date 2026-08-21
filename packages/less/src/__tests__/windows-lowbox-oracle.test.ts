@@ -124,6 +124,19 @@ async function waitForCleanup(
  * before the bound-owned lowbox backend exists, the Windows lane must stay red.
  */
 describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracle", () => {
+	it("round-trips and rejects malformed Recoverable authority journals", () => {
+		const helper = process.env.BOUND_LOWBOX_HELPER;
+		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
+
+		const probe = spawnSync(helper as string, ["self-test-authority-journal"], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+		expect(probe.status, probe.stderr || probe.stdout).toBe(0);
+		expect(JSON.parse(probe.stdout)).toEqual({ ok: true });
+	});
+
 	describe("normal completion", () => {
 		it("observes child death before authority cleanup", async () => {
 			const helper = process.env.BOUND_LOWBOX_HELPER;
@@ -379,12 +392,15 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					[
 						"-NoProfile",
 						"-Command",
-						`$journal = Get-ChildItem -Path $env:TEMP -Filter 'bound-lowbox-${runId}-Bound.Lowbox.*.authority' | Select-Object -First 1; if (-not $journal) { exit 2 }; (Get-Content -LiteralPath $journal.FullName -TotalCount 1).Trim()`,
+						`$journal = Get-ChildItem -Path $env:TEMP -Filter 'bound-lowbox-${runId}-Bound.Lowbox.*.authority' | Select-Object -First 1; if (-not $journal) { exit 2 }; $lines = @(Get-Content -LiteralPath $journal.FullName); if ($lines.Count -lt 2) { exit 3 }; Write-Output $lines[0].Trim(); Write-Output $lines[1].Trim()`,
 					],
 					{ encoding: "utf8", windowsHide: true },
 				);
 				expect(journal.status, journal.stderr).toBe(0);
-				expect(journal.stdout.trim()).toBe("transferring");
+				expect(journal.stdout.trim().split(/\r?\n/)).toEqual([
+					"bound-lowbox-authority-v1",
+					"transferring",
+				]);
 			} finally {
 				await stopAndClose(failed);
 				await removeFixtureAfterHandlesClose(cwd);

@@ -216,12 +216,16 @@ describe("Windows lowbox helper materialization", () => {
 		expect(inspect).not.toContain("const bool profileExists = SUCCEEDED(derived)");
 	});
 
-	it("releases both watcher lowbox handles before authority recovery on success and close failure", () => {
+	it("validates the durable Recoverable journal before any watcher authority teardown", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
 		const watcherStart = source.indexOf("int runCleanupWatcher(");
 		const watcherEnd = source.indexOf("WatcherStartResult startCleanupWatcher(", watcherStart);
 		const watcher = source.slice(watcherStart, watcherEnd);
 		const recoverable = watcher.indexOf("markAuthorityJournalRecoverableLocked(");
+		const readJournal = watcher.indexOf("readAuthorityJournal(journalPath, cleanup)");
+		const validateJournal = watcher.indexOf(
+			"validateRecoverableAuthorityJournal(journalPath, cleanup)",
+		);
 		const closeHandles = watcher.indexOf(
 			"closeWatcherLowboxHandles(childHandle, jobHandle, reportAuthorityCleanupFailure)",
 		);
@@ -229,15 +233,52 @@ describe("Windows lowbox helper materialization", () => {
 		const sharedCleanup = watcher.indexOf(
 			"cleanupRecoverableAuthorityLocked(journalPath, cleanup, &cleanupFailure)",
 		);
+		const validationFailure = watcher.slice(validateJournal, closeHandles);
+		const destructiveCalls = [
+			"CloseHandle(childHandle)",
+			"CloseHandle(jobHandle)",
+			"restoreAuthorityLines(",
+			"DeleteAppContainerProfile(",
+			"DeleteFileW(",
+		];
 
 		expect(recoverable).toBeGreaterThan(watcher.indexOf("waitForJobTreeDeath(jobHandle"));
-		expect(recoverable).toBeLessThan(closeHandles);
+		expect(watcher.indexOf("AuthorityRecoveryLock recoveryLock(journalPath)")).toBeLessThan(
+			recoverable,
+		);
+		expect(recoverable).toBeLessThan(readJournal);
+		expect(readJournal).toBeLessThan(validateJournal);
+		expect(validateJournal).toBeLessThan(closeHandles);
+		expect(validationFailure).toContain(
+			'return failWatcher(L"validate authority journal", ERROR_INVALID_DATA);',
+		);
+		for (const call of destructiveCalls) {
+			expect(watcher.slice(recoverable, validateJournal)).not.toContain(call);
+			expect(validationFailure).not.toContain(call);
+		}
 		expect(closeFailure).toBeLessThan(sharedCleanup);
 		expect(source).toContain(
 			"bool closeWatcherLowboxHandles(HANDLE& childHandle, HANDLE& jobHandle,",
 		);
 		expect(source).toContain('reportFailure(L"close child handle", error, S_OK);');
 		expect(source).toContain('reportFailure(L"close job handle", error, S_OK);');
+	});
+
+	it("strictly parses journal numbers into a fresh authority value", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const parserStart = source.indexOf("bool readAuthorityJournal(");
+		const parserEnd = source.indexOf("bool verifyAuthorityJournal(", parserStart);
+		const parser = source.slice(parserStart, parserEnd);
+		const selfTestStart = source.indexOf("int selfTestAuthorityJournal()");
+		const selfTestEnd = source.indexOf("int wmain(", selfTestStart);
+		const selfTest = source.slice(selfTestStart, selfTestEnd);
+
+		expect(parser).toContain("AuthorityJournal candidate;");
+		expect(parser).toContain("parsed = std::move(candidate);");
+		expect(parser).toContain("parseJournalDword(");
+		expect(parser).toContain("parseJournalUlonglong(");
+		expect(selfTest).toContain("negativeNumber");
+		expect(selfTest).toContain("overflowNumber");
 	});
 
 	it("ships checked-in native source with the required security primitives", () => {
@@ -490,6 +531,31 @@ describe("Windows lowbox helper materialization", () => {
 		expect(transition).toContain("childCreationTime");
 		expect(transition).toContain("jobTreeDeathProof");
 	});
+	it("exposes an executable versioned, namespaced authority-journal round-trip and rejection self-test", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const selfTestStart = source.indexOf("int selfTestAuthorityJournal()");
+		const selfTestEnd = source.indexOf("int wmain(", selfTestStart);
+		const selfTest = source.slice(selfTestStart, selfTestEnd);
+
+		expect(selfTestStart).toBeGreaterThan(0);
+		expect(selfTest).toContain("rewriteAuthorityJournal(");
+		expect(selfTest).toContain("readAuthorityJournal(");
+		expect(selfTest).toContain("validateRecoverableAuthorityJournal(");
+		expect(selfTest).toContain("AuthorityJournalState::Active");
+		expect(selfTest).toContain("AuthorityJournalState::Recoverable");
+		expect(selfTest).toContain('testNamespace = L"journal-self-test"');
+		expect(source).toContain("AUTHORITY_JOURNAL_VERSION");
+		expect(selfTest).toContain("journalFieldsMatch(parsed, expected)");
+		expect(selfTest).toContain("malformed");
+		expect(selfTest).toContain("legacyTransferring");
+		expect(selfTest).toContain("legacyRecoverable");
+		expect(selfTest).toContain("legacyActive");
+		expect(selfTest).toContain("writeLegacyJournal(active)");
+		expect(selfTest).toContain("journalFieldsMatch(transitioned, recoverable)");
+		expect(selfTest).toContain("writeLegacyJournal(transferring)");
+		expect(selfTest).toContain("journalFieldsMatch(transitionedTransferring, transferring)");
+		expect(source).toContain('std::wstring(argv[1]) == L"self-test-authority-journal"');
+	});
 
 	it("declares native helper types and functions before their first use", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
@@ -509,7 +575,7 @@ describe("Windows lowbox helper materialization", () => {
 
 		expect(failedHandoffEnum).toBeGreaterThan(0);
 		expect(failedHandoffDeclaration).toBeGreaterThan(failedHandoffEnum);
-		for (const functionName of ["authorityPathMatchesProfile", "isAuthorityPathAllowed"]) {
+		for (const functionName of ["validateRecoverableAuthorityJournal", "isAuthorityPathAllowed"]) {
 			const declaration = source.indexOf(`bool ${functionName}(`);
 			const use = recovery.indexOf(`${functionName}(`);
 			expect(declaration).toBeGreaterThan(0);
@@ -796,15 +862,11 @@ describe("Windows lowbox helper materialization", () => {
 		expect(startup).toContain("journal.state != AuthorityJournalState::Recoverable");
 		expect(startup).toContain("reportStaleAuthorityDiagnostic(path, journal)");
 		expect(startup).not.toContain("isProcessIdentityAlive(");
-		expect(recovery).toContain("parsed.state != AuthorityJournalState::Recoverable");
-		expect(recovery).toContain("!parsed.jobTreeDeathProof");
-		expect(recovery).toContain("parsed.ownerPid != 0");
-		expect(recovery).toContain("parsed.watcherPid != 0");
-		expect(recovery).toContain("authorityPathMatchesProfile(path, parsed.profileName)");
+		expect(recovery).toContain("validateRecoverableAuthorityJournal(path, parsed)");
 		expect(recovery).toContain("isAuthorityPathAllowed(parsed.authorityLines[i - 2])");
 		expect(
 			recovery.indexOf("DeleteAppContainerProfile(parsed.profileName.c_str())"),
-		).toBeGreaterThan(recovery.indexOf("authorityPathMatchesProfile("));
+		).toBeGreaterThan(recovery.indexOf("validateRecoverableAuthorityJournal("));
 	});
 	it("transfers child and job handle ownership completely after the watcher arms", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
