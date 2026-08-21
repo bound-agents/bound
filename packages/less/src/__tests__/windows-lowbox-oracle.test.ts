@@ -348,9 +348,21 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					});
 					failed?.once("error", reject);
 				});
-				expect(failureLine).toContain('"code":"LOWBOX_WATCHER"');
+				expect(failureLine).toContain('"code":"LOWBOX_WATCHER_INDETERMINATE"');
 				expect(Date.now() - startedAt).toBeLessThan(15_000);
-				expect(failed.exitCode).toBeNull();
+				await waitForClose(failed);
+				expect(failed.exitCode).toBe(125);
+				const journal = spawnSync(
+					"powershell.exe",
+					[
+						"-NoProfile",
+						"-Command",
+						`$journal = Get-ChildItem -Path $env:TEMP -Filter 'bound-lowbox-${runId}-Bound.Lowbox.*.authority' | Select-Object -First 1; if (-not $journal) { exit 2 }; (Get-Content -LiteralPath $journal.FullName -TotalCount 1).Trim()`,
+					],
+					{ encoding: "utf8", windowsHide: true },
+				);
+				expect(journal.status, journal.stderr).toBe(0);
+				expect(journal.stdout.trim()).toBe("transferring");
 			} finally {
 				await stopAndClose(failed);
 				await removeFixtureAfterHandlesClose(cwd);

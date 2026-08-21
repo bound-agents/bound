@@ -46,8 +46,7 @@ describe("Windows lowbox helper materialization", () => {
 		const watcherEnd = source.indexOf("}  // namespace", watcherStart);
 		const watcher = source.slice(watcherStart, watcherEnd);
 
-		expect(watcher).toContain("HANDLE inherited[] = {inheritedChild.value");
-		expect(watcher).not.toContain("HANDLE inherited[] = {inheritedJob.value");
+		expect(watcher).toContain("HANDLE inherited[] = {inheritedJob.value, inheritedChild.value");
 		expect(watcher).toContain("TRUE, DUPLICATE_SAME_ACCESS");
 		expect(watcher).toContain(
 			"SetHandleInformation(controlRead.value, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)",
@@ -58,6 +57,40 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).toContain("inheritedChild.reset()");
 		expect(watcher).toContain("UpdateProcThreadAttribute(watcher handles)");
 		expect(watcher).toContain("CreateProcessW(cleanup watcher)");
+	});
+
+	it("closes the owner control writer before waiting for natural watcher completion", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const awaitStart = source.indexOf("WatcherTerminalStatus awaitArmedWatcherTerminalStatus()");
+		const awaitEnd = source.indexOf("bool queryJobTreeEmpty", awaitStart);
+		const awaitWatcher = source.slice(awaitStart, awaitEnd);
+
+		expect(awaitWatcher.indexOf("CloseHandle(watcherControlWrite)")).toBeLessThan(
+			awaitWatcher.indexOf("WaitForSingleObject(cleanupWatcher, INFINITE)"),
+		);
+	});
+
+	it("retires the synchronous control pipe after EOF without treating EOF as cancellation", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const watcherStart = source.indexOf("int runCleanupWatcher(");
+		const watcherEnd = source.indexOf("WatcherStartResult startCleanupWatcher(", watcherStart);
+		const watcher = source.slice(watcherStart, watcherEnd);
+
+		expect(watcher).not.toContain(
+			"HANDLE lifecycleSignals[] = {childHandle, owner.value, controlRead}",
+		);
+		expect(watcher).toContain("PeekNamedPipe(controlRead");
+		expect(watcher).toContain("controlPipeOpen = false");
+		expect(watcher).not.toContain("if (controlError == ERROR_BROKEN_PIPE) continue;");
+	});
+
+	it("passes the watcher its inherited job authority handle", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const watcherStart = source.indexOf("WatcherStartResult startCleanupWatcher(");
+		const watcherEnd = source.indexOf("}  // namespace", watcherStart);
+		const watcher = source.slice(watcherStart, watcherEnd);
+
+		expect(watcher).toContain("HANDLE inherited[] = {inheritedJob.value, inheritedChild.value");
 	});
 
 	it("returns pre-transfer authority only after the watcher stops and its journal identity is cleared", () => {
@@ -250,7 +283,9 @@ describe("Windows lowbox helper materialization", () => {
 		expect(duplicateWatcherJob).toBeLessThan(duplicateWatcherChild);
 		expect(duplicateWatcherChild).toBeLessThan(createWatcher);
 		expect(watcherLaunch).toContain("TRUE, DUPLICATE_SAME_ACCESS");
-		expect(watcherLaunch).toContain("HANDLE inherited[] = {inheritedChild.value");
+		expect(watcherLaunch).toContain(
+			"HANDLE inherited[] = {inheritedJob.value, inheritedChild.value",
+		);
 		const watcherReadyWait = watcherLaunch.indexOf("WaitForSingleObject(readyEvent.value");
 		const publishIdentity = watcherLaunch.indexOf("publishAuthorityJournalWatcher(");
 		const transferReleaseAfterPublish = watcherLaunch.indexOf(
@@ -594,7 +629,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(watcher).toContain('const char cancelFrame[] = "CANCEL\\n"');
 		expect(watcher).toContain("controlFrame != cancelFrame");
 		expect(watcher).toContain("ERROR_BROKEN_PIPE");
-		expect(watcher).toContain("HANDLE remainingSignals[] = {childHandle, owner.value}");
+		expect(watcher).toContain("HANDLE lifecycleSignals[] = {childHandle, owner.value}");
 		expect(watcher).toContain("TerminateJobObject(jobHandle, 125)");
 		expect(watcher).toContain("WaitForSingleObject(childHandle, INFINITE)");
 		expect(watcher).toContain("waitForJobTreeDeath(jobHandle, childHandle, INFINITE)");
@@ -714,7 +749,7 @@ describe("Windows lowbox helper materialization", () => {
 		expect(source).not.toContain("WatcherTimedOut");
 		expect(request).toContain('const char cancelFrame[] = "CANCEL\\n"');
 		expect(request).toContain("WriteFile(watcherControlWrite");
-		expect(request).not.toContain("CloseHandle(watcherControlWrite)");
+		expect(request).toContain("CloseHandle(watcherControlWrite)");
 		expect(source).not.toContain("closeCleanupWatcher");
 		expect(source).toContain("requestArmedWatcherCancelAndObserve();");
 		expect(terminal).toContain("WaitForSingleObject(cleanupWatcher, INFINITE)");
@@ -726,6 +761,37 @@ describe("Windows lowbox helper materialization", () => {
 		);
 		expect(source).toContain(
 			"if (watcherStatus != WatcherTerminalStatus::CleanupComplete) reportArmedWatcherAbnormalExit();",
+		);
+	});
+
+	it("distinguishes clean armed cancellation from indeterminate watcher ownership", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const start = source.indexOf(
+			"auto requestArmedWatcherCancelAndObserve = [&](DWORD failure) -> WatcherStartResult",
+		);
+		const end = source.indexOf("auto observeFailedArmedWait", start);
+		const request = source.slice(start, end);
+
+		expect(start).toBeGreaterThan(0);
+		expect(request).toContain("WatcherStartOutcome::FailedAfterWatcherCleanup");
+		expect(request).toContain("watcherClean");
+		expect(request).toContain("WatcherStartOutcome::IndeterminateWatcherOwned");
+	});
+
+	it("closes the startup-path control writer before observing armed cancellation", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const start = source.indexOf(
+			"auto requestArmedWatcherCancelAndObserve = [&](DWORD failure) -> WatcherStartResult",
+		);
+		const end = source.indexOf("auto observeFailedArmedWait", start);
+		const request = source.slice(start, end);
+
+		expect(start).toBeGreaterThan(0);
+		expect(request.indexOf("controlWrite.reset()")).toBeGreaterThan(
+			request.indexOf("WriteFile(controlWrite.value"),
+		);
+		expect(request.indexOf("controlWrite.reset()")).toBeLessThan(
+			request.indexOf("WaitForSingleObject(watcherProcess"),
 		);
 	});
 

@@ -202,6 +202,7 @@ enum class WatcherTerminalStatus {
 enum class WatcherStartOutcome {
 	ConfirmedArmed,
 	FailedPreTransfer,
+	FailedAfterWatcherCleanup,
 	IndeterminateWatcherOwned,
 };
 
@@ -213,6 +214,11 @@ struct WatcherStartResult {
 
 WatcherTerminalStatus awaitArmedWatcherTerminalStatus() {
 	if (cleanupWatcher == nullptr) return WatcherTerminalStatus::WatcherAbnormalExit;
+	// Closing the owner's writer is a natural-completion signal only: the watcher treats EOF as
+	// "no more control frames", never as cancellation. Closing before the wait prevents a live owner
+	// from keeping the watcher and therefore itself alive after the child has exited.
+	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
+	watcherControlWrite = nullptr;
 	// After authority is armed, the watcher owns termination and cleanup. The owner may wait
 	// without a deadline: a slow cleanup is not a failed command, and timing out cannot transfer
 	// authority back to the owner.
@@ -224,8 +230,6 @@ WatcherTerminalStatus awaitArmedWatcherTerminalStatus() {
 	}
 	CloseHandle(cleanupWatcher);
 	cleanupWatcher = nullptr;
-	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
-	watcherControlWrite = nullptr;
 	cleanupJournalPath.clear();
 	return WatcherTerminalStatus::CleanupComplete;
 }
@@ -264,6 +268,8 @@ void requestArmedWatcherCancel() {
 	const char cancelFrame[] = "CANCEL\n";
 	DWORD written = 0;
 	WriteFile(watcherControlWrite, cancelFrame, sizeof(cancelFrame) - 1, &written, nullptr);
+	CloseHandle(watcherControlWrite);
+	watcherControlWrite = nullptr;
 }
 
 void observeIndeterminateWatcherBoundedly() {
@@ -1104,47 +1110,43 @@ int runCleanupWatcher(const std::wstring& journalPath, DWORD ownerPid,
 	// journal, or clean authority. The pipe carries one explicit framed CANCEL request; pipe EOF is not
 	// cancellation. Owner death is observed separately through the exact owner process handle.
 	if (!SetEvent(authorityArmedEvent)) return reportWatcherFailure(L"SetEvent(authority-armed)");
-	HANDLE lifecycleSignals[] = {childHandle, owner.value, controlRead};
+	HANDLE lifecycleSignals[] = {childHandle, owner.value};
 	bool terminateJob = false;
+	bool controlPipeOpen = true;
 	for (;;) {
-		const DWORD lifecycleWait = WaitForMultipleObjects(3, lifecycleSignals, FALSE, INFINITE);
+		const DWORD lifecycleWait = WaitForMultipleObjects(2, lifecycleSignals, FALSE,
+			controlPipeOpen ? 25 : INFINITE);
 		if (lifecycleWait == WAIT_OBJECT_0) break;
 		if (lifecycleWait == WAIT_OBJECT_0 + 1) {
 			terminateJob = true;
 			break;
 		}
-		if (lifecycleWait != WAIT_OBJECT_0 + 2) {
+		if (lifecycleWait != WAIT_TIMEOUT) {
 			return reportWatcherFailure(L"WaitForMultipleObjects(lifecycleSignals)",
 				lifecycleWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
 		}
 
-		char controlBuffer[16]{};
 		DWORD controlBytes = 0;
-		if (ReadFile(controlRead, controlBuffer, sizeof(controlBuffer), &controlBytes, nullptr)) {
-			const std::string controlFrame(controlBuffer, controlBytes);
-			const char cancelFrame[] = "CANCEL\n";
-			if (controlFrame != cancelFrame) {
-				return reportWatcherFailure(L"ReadFile(control): invalid frame", ERROR_INVALID_DATA);
+		if (!PeekNamedPipe(controlRead, nullptr, 0, nullptr, &controlBytes, nullptr)) {
+			const DWORD controlError = GetLastError();
+			if (controlError == ERROR_BROKEN_PIPE) {
+				// EOF means the owner will send no more control frames. Retire the pipe and block on the
+				// child/owner lifecycle handles; EOF itself is not cancellation.
+				controlPipeOpen = false;
+				continue;
 			}
-			terminateJob = true;
-			break;
+			return reportWatcherFailure(L"PeekNamedPipe(control)", controlError);
 		}
-		const DWORD controlError = GetLastError();
-		if (controlError != ERROR_BROKEN_PIPE) {
-			return reportWatcherFailure(L"ReadFile(control)", controlError);
+		if (controlBytes == 0) continue;
+		char controlBuffer[16]{};
+		DWORD bytesRead = 0;
+		if (!ReadFile(controlRead, controlBuffer, sizeof(controlBuffer), &bytesRead, nullptr)) {
+			return reportWatcherFailure(L"ReadFile(control)");
 		}
-		// EOF is not a cancel request. Stop watching the closed pipe and wait for natural child exit or
-		// independently observed owner death.
-		if (WaitForSingleObject(owner.value, 0) == WAIT_OBJECT_0) {
-			terminateJob = true;
-			break;
-		}
-		HANDLE remainingSignals[] = {childHandle, owner.value};
-		const DWORD remainingWait = WaitForMultipleObjects(2, remainingSignals, FALSE, INFINITE);
-		if (remainingWait == WAIT_OBJECT_0) break;
-		if (remainingWait != WAIT_OBJECT_0 + 1) {
-			return reportWatcherFailure(L"WaitForMultipleObjects(remainingSignals)",
-				remainingWait == WAIT_FAILED ? GetLastError() : ERROR_INVALID_STATE);
+		const std::string controlFrame(controlBuffer, bytesRead);
+		const char cancelFrame[] = "CANCEL\n";
+		if (controlFrame != cancelFrame) {
+			return reportWatcherFailure(L"ReadFile(control): invalid frame", ERROR_INVALID_DATA);
 		}
 		terminateJob = true;
 		break;
@@ -1233,7 +1235,7 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		L" --authority-armed-handle " +
 		std::to_wstring(reinterpret_cast<uintptr_t>(authorityArmedEvent.value));
 
-	HANDLE inherited[] = {inheritedChild.value, controlRead.value, readyEvent.value,
+	HANDLE inherited[] = {inheritedJob.value, inheritedChild.value, controlRead.value, readyEvent.value,
 		authorityEvent.value, authorityArmedEvent.value};
 	SIZE_T bytes = 0;
 	InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
@@ -1262,8 +1264,9 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 	}
 	CloseHandle(process.hThread);
 	watcherProcess = process.hProcess;
-	// The watcher owns this duplicate after CreateProcess succeeds. Closing the parent's copy is
-	// required before fixture teardown can prove every child-process handle has drained.
+	// The watcher owns these duplicates after CreateProcess succeeds. Closing the parent's copies is
+	// required before fixture teardown can prove every authority handle has drained.
+	inheritedJob.reset();
 	inheritedChild.reset();
 	ULONGLONG watcherCreationTime = 0;
 
@@ -1295,6 +1298,9 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		DWORD written = 0;
 		const bool cancelSent = WriteFile(controlWrite.value, cancelFrame, sizeof(cancelFrame) - 1,
 			&written, nullptr) && written == sizeof(cancelFrame) - 1;
+		// This startup path owns the local writer until ConfirmedArmed. Close it before observing the
+		// watcher so cancellation never depends on eventual owner process teardown.
+		controlWrite.reset();
 		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
 		const bool watcherStopped = watcherWait == WAIT_OBJECT_0;
 		DWORD watcherExitCode = 125;
@@ -1311,6 +1317,9 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 		if (watcherStopped) {
 			CloseHandle(watcherProcess);
 			watcherProcess = nullptr;
+		}
+		if (watcherClean) {
+			return {WatcherStartOutcome::FailedAfterWatcherCleanup, failure};
 		}
 		return {WatcherStartOutcome::IndeterminateWatcherOwned, failure};
 	};
@@ -1579,6 +1588,9 @@ int wmain(int argc, wchar_t** argv) {
 	if (watcherStart.outcome == WatcherStartOutcome::FailedPreTransfer) {
 		return failAfterDurableAuthorityJournal("LOWBOX_WATCHER", L"startCleanupWatcher",
 			watcherStart.win32, job.value, childProcess.value, 125, profile, aclScope);
+	}
+	if (watcherStart.outcome == WatcherStartOutcome::FailedAfterWatcherCleanup) {
+		return fail("LOWBOX_WATCHER", L"startCleanupWatcher", watcherStart.win32);
 	}
 	if (watcherStart.outcome == WatcherStartOutcome::IndeterminateWatcherOwned) {
 		return failWithoutAuthorityMutation("LOWBOX_WATCHER_INDETERMINATE", L"startCleanupWatcher",
