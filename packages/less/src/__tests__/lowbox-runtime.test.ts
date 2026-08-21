@@ -294,6 +294,30 @@ describe("Windows lowbox helper materialization", () => {
 		expect(selfTest).toContain("negativeNumber");
 		expect(selfTest).toContain("overflowNumber");
 	});
+	it("protects only immutable git files while keeping mutable git storage writable", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const start = source.indexOf("bool protectGitControlSurfaces");
+		const end = source.indexOf("bool makePipe", start);
+		const protection = source.slice(start, end);
+
+		expect(protection).toContain('L"\\\\config"');
+		expect(protection).toContain('L"\\\\hooks"');
+		expect(protection).toContain("SUB_CONTAINERS_AND_OBJECTS_INHERIT");
+		expect(protection).toContain("FILE_ADD_FILE");
+		expect(protection).not.toContain('L"index"');
+		expect(protection).not.toContain('L"refs"');
+		expect(protection).not.toContain('L"logs"');
+		expect(protection).not.toContain('L"objects"');
+	});
+
+	it("rejects writable roots whose existing path contains a reparse point", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const start = source.indexOf("bool grantWritableRoot");
+		const end = source.indexOf("bool protectGitControlSurfaces", start);
+		const grant = source.slice(start, end);
+
+		expect(grant).toContain("containsReparsePoint");
+	});
 
 	it("ships checked-in native source with the required security primitives", () => {
 		expect(lowboxHelperSourcePath()).toEndWith(join("native", "bound-lowbox.cpp"));

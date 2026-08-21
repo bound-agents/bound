@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { kill } from "node:process";
 import { createBashTool } from "../tools/bash";
 import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
@@ -120,6 +120,24 @@ async function waitForCleanup(
 	}
 	return cleanup;
 }
+
+function psLiteral(value: string): string {
+	return `'${value.replaceAll("'", "''")}'`;
+}
+
+function psTryWrite(id: string, path: string, value: string): string {
+	return `try { Set-Content -LiteralPath ${psLiteral(path)} -Value ${psLiteral(value)} -ErrorAction Stop; ${psLiteral(`${id}=OK`)} } catch { ${psLiteral(`${id}=DENIED`)} }`;
+}
+
+function processExists(pid: number): boolean {
+	try {
+		kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Mandatory windows-latest oracle for the production Windows sandbox path.
  *
@@ -567,6 +585,191 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				const cleanup = await waitForCleanup(helper as string, crashProfile, cwd, runId);
 				expect(cleanup).toEqual({ Journal: false, Profile: false, LowboxAces: 0 });
 			}
+			await removeFixtureAfterHandlesClose(cwd);
+		}
+	});
+
+	it("confines writes to explicit roots and preserves protected git control surfaces", async () => {
+		const helper = process.env.BOUND_LOWBOX_HELPER;
+		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
+
+		const runId = randomBytes(8).toString("hex");
+		const fixture = join(tmpdir(), `bound-lowbox-confinement-${runId}`);
+		const cwd = join(fixture, "repo");
+		const configuredTemp = join(fixture, "configured-temp");
+		const extraWritable = join(fixture, "extra-writable");
+		const sibling = join(fixture, "sibling-denied");
+		const absoluteHome = join(process.env.USERPROFILE as string, `bound-lowbox-home-${runId}.txt`);
+		const junction = join(cwd, "escape-junction");
+		const git = join(cwd, ".git");
+		const gitConfig = join(git, "config");
+		const preCommit = join(git, "hooks", "pre-commit");
+		const commitMsg = join(git, "hooks", "commit-msg");
+		const newHook = join(git, "hooks", "post-commit");
+		const mutableGitTargets = [
+			join(git, "index"),
+			join(git, "index.lock"),
+			join(git, "packed-refs"),
+			join(git, "packed-refs.lock"),
+			join(git, "refs", "heads", "s3"),
+			join(git, "refs", "heads", "s3.lock"),
+			join(git, "logs", "HEAD"),
+			join(git, "logs", "HEAD.lock"),
+			join(git, "objects", "aa", "object"),
+			join(git, "objects", "aa", "object.lock"),
+		];
+		const configBytes = Buffer.from("[core]\n\trepositoryformatversion = 0\n", "utf8");
+		const hookBytes = Buffer.from("#!/bin/sh\nexit 0\n", "utf8");
+		const secondHookBytes = Buffer.from("#!/bin/sh\necho commit-msg\n", "utf8");
+		for (const path of [
+			cwd,
+			configuredTemp,
+			extraWritable,
+			sibling,
+			join(git, "hooks"),
+			join(git, "refs", "heads"),
+			join(git, "logs"),
+			join(git, "objects", "aa"),
+		]) {
+			mkdirSync(path, { recursive: true });
+		}
+		writeFileSync(gitConfig, configBytes);
+		writeFileSync(preCommit, hookBytes);
+		writeFileSync(commitMsg, secondHookBytes);
+		const junctionProbe = spawnSync("cmd.exe", ["/d", "/c", "mklink", "/J", junction, sibling], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+		expect(junctionProbe.status, junctionProbe.stderr || junctionProbe.stdout).toBe(0);
+
+		const allowed = [
+			["cwd", join(cwd, "cwd.txt")],
+			["temp", join(configuredTemp, "temp.txt")],
+			["extra", join(extraWritable, "extra.txt")],
+		] as const;
+		const denied = [
+			["home", absoluteHome],
+			["sibling", join(sibling, "absolute.txt")],
+			["traversal", resolve(cwd, "..", "sibling-denied", "traversal.txt")],
+			["junction", join(junction, "junction.txt")],
+		] as const;
+		const mutableGit = mutableGitTargets.map((path, index) => [`git-${index}`, path] as const);
+		const assertions = [
+			...allowed.map(([id, path]) => psTryWrite(id, path, "allowed")),
+			...denied.map(([id, path]) => psTryWrite(id, path, "denied")),
+			...mutableGit.map(([id, path]) => psTryWrite(id, path, "mutable")),
+			`try { if ((Get-Content -LiteralPath ${psLiteral(gitConfig)} -Raw) -eq ${psLiteral(configBytes.toString())}) { 'config-read=OK' } else { 'config-read=WRONG' } } catch { 'config-read=DENIED' }`,
+			`try { if ((Get-Content -LiteralPath ${psLiteral(preCommit)} -Raw) -eq ${psLiteral(hookBytes.toString())}) { 'pre-commit-read=OK' } else { 'pre-commit-read=WRONG' } } catch { 'pre-commit-read=DENIED' }`,
+			`try { if ((Get-Content -LiteralPath ${psLiteral(commitMsg)} -Raw) -eq ${psLiteral(secondHookBytes.toString())}) { 'commit-msg-read=OK' } else { 'commit-msg-read=WRONG' } } catch { 'commit-msg-read=DENIED' }`,
+			psTryWrite("config-modify", gitConfig, "tampered"),
+			psTryWrite("pre-commit-modify", preCommit, "tampered"),
+			psTryWrite("commit-msg-modify", commitMsg, "tampered"),
+			psTryWrite("hook-create", newHook, "tampered"),
+		].join("; ");
+		const sandbox: ResolvedSandboxConfig = {
+			enabled: true,
+			writablePaths: [extraWritable],
+			network: "blocked",
+			onUnavailable: "error",
+		};
+		try {
+			const priorTemp = process.env.TEMP;
+			process.env.TEMP = configuredTemp;
+			try {
+				const tool = createBashTool(
+					"windows-latest",
+					resolveShell(undefined),
+					sandbox,
+					undefined,
+					runId,
+				);
+				const result = await tool(
+					{ command: assertions, timeout: 30_000 },
+					new AbortController().signal,
+					cwd,
+				);
+				expect(result.isError, result.content[1]?.text).toBeUndefined();
+				const outcomes = new Set(
+					(result.content[1]?.text ?? "").split(/\r?\n/).map((line) => line.trim()),
+				);
+				for (const [id] of allowed) expect(outcomes.has(`${id}=OK`), id).toBe(true);
+				for (const [id] of denied) expect(outcomes.has(`${id}=DENIED`), id).toBe(true);
+				for (const [id] of mutableGit) expect(outcomes.has(`${id}=OK`), id).toBe(true);
+				for (const id of ["config-read", "pre-commit-read", "commit-msg-read"])
+					expect(outcomes.has(`${id}=OK`), id).toBe(true);
+				for (const id of ["config-modify", "pre-commit-modify", "commit-msg-modify", "hook-create"])
+					expect(outcomes.has(`${id}=DENIED`), id).toBe(true);
+			} finally {
+				if (priorTemp === undefined) process.env.TEMP = undefined;
+				else process.env.TEMP = priorTemp;
+			}
+			for (const [, path] of allowed) expect(existsSync(path), path).toBe(true);
+			for (const path of mutableGitTargets) expect(existsSync(path), path).toBe(true);
+			for (const [, path] of denied) expect(existsSync(path), path).toBe(false);
+			expect(existsSync(newHook), newHook).toBe(false);
+			expect(readFileSync(gitConfig)).toEqual(configBytes);
+			expect(readFileSync(preCommit)).toEqual(hookBytes);
+			expect(readFileSync(commitMsg)).toEqual(secondHookBytes);
+		} finally {
+			rmSync(absoluteHome, { force: true });
+			await removeFixtureAfterHandlesClose(fixture);
+		}
+	});
+
+	it("cancellation kills the complete job tree before delayed descendant output", async () => {
+		const helper = process.env.BOUND_LOWBOX_HELPER;
+		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
+		const runId = randomBytes(8).toString("hex");
+		const cwd = join(tmpdir(), `bound-lowbox-cancel-tree-${runId}`);
+		mkdirSync(cwd, { recursive: true });
+		const pidFile = join(cwd, "descendant.pid");
+		const sentinel = join(cwd, "descendant-sentinel.txt");
+		const controller = new AbortController();
+		const sandbox: ResolvedSandboxConfig = {
+			enabled: true,
+			writablePaths: [],
+			network: "blocked",
+			onUnavailable: "error",
+		};
+		try {
+			const tool = createBashTool(
+				"windows-latest",
+				resolveShell(undefined),
+				sandbox,
+				undefined,
+				runId,
+			);
+			const command = `$child = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-Command',${psLiteral(`Start-Sleep -Seconds 3; Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`)}); Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id; Start-Sleep -Seconds 30`;
+			const running = tool({ command, timeout: 30_000 }, controller.signal, cwd);
+			const deadline = Date.now() + 10_000;
+			while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(20);
+			expect(existsSync(pidFile), "descendant pid was not published").toBe(true);
+			const descendantPid = Number(readFileSync(pidFile, "utf8").trim());
+			expect(processExists(descendantPid), "descendant was not alive before cancellation").toBe(
+				true,
+			);
+			controller.abort();
+			const result = await running;
+			expect(result.isError).toBe(true);
+			const exitDeadline = Date.now() + 10_000;
+			while (processExists(descendantPid) && Date.now() < exitDeadline) await Bun.sleep(20);
+			expect(processExists(descendantPid), "descendant survived job cancellation").toBe(false);
+			await Bun.sleep(3_500);
+			expect(existsSync(sentinel), "delayed descendant output escaped cancellation").toBe(false);
+		} finally {
+			const journals = spawnSync(
+				"powershell.exe",
+				[
+					"-NoProfile",
+					"-Command",
+					`@(Get-ChildItem -Path $env:TEMP -Filter 'bound-lowbox-${runId}-Bound.Lowbox.*.authority').Count`,
+				],
+				{ encoding: "utf8", windowsHide: true },
+			);
+			expect(journals.status, journals.stderr).toBe(0);
+			expect(Number(journals.stdout.trim()), "cancellation left an authority journal").toBe(0);
 			await removeFixtureAfterHandlesClose(cwd);
 		}
 	});
