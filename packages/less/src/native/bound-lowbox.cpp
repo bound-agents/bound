@@ -229,21 +229,28 @@ struct WatcherStartResult {
 
 WatcherTerminalStatus awaitArmedWatcherTerminalStatus(WatcherTerminalReport& report) {
 	if (cleanupWatcher == nullptr || watcherReportRead == nullptr) {
+		if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
+		watcherControlWrite = nullptr;
+		if (watcherReportRead != nullptr) CloseHandle(watcherReportRead);
+		watcherReportRead = nullptr;
+		if (cleanupWatcher != nullptr) CloseHandle(cleanupWatcher);
+		cleanupWatcher = nullptr;
 		return WatcherTerminalStatus::WatcherAbnormalExit;
 	}
 	if (watcherControlWrite != nullptr) CloseHandle(watcherControlWrite);
 	watcherControlWrite = nullptr;
-	DWORD bytesRead = 0;
-	const bool reportRead = ReadFile(watcherReportRead, &report, sizeof(report), &bytesRead, nullptr) &&
-		bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
-	CloseHandle(watcherReportRead);
-	watcherReportRead = nullptr;
-	const DWORD wait = WaitForSingleObject(cleanupWatcher, INFINITE);
+	const DWORD wait = WaitForSingleObject(cleanupWatcher, LOWBOX_WATCHER_TIMEOUT_MS);
 	DWORD watcherExitCode = 125;
 	const bool watcherClean = wait == WAIT_OBJECT_0 &&
 		GetExitCodeProcess(cleanupWatcher, &watcherExitCode) && watcherExitCode == 0;
 	CloseHandle(cleanupWatcher);
 	cleanupWatcher = nullptr;
+	DWORD bytesRead = 0;
+	const bool reportRead = watcherClean &&
+		ReadFile(watcherReportRead, &report, sizeof(report), &bytesRead, nullptr) &&
+		bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
+	CloseHandle(watcherReportRead);
+	watcherReportRead = nullptr;
 	cleanupJournalPath.clear();
 	if (!reportRead || !watcherClean) return WatcherTerminalStatus::WatcherAbnormalExit;
 	return report.cleanupResult == 0 ? WatcherTerminalStatus::CleanupComplete
@@ -1383,11 +1390,15 @@ WatcherStartResult startCleanupWatcher(const std::wstring& executable, const std
 			&written, nullptr) && written == sizeof(cancelFrame) - 1;
 		const DWORD cancelError = cancelSent ? ERROR_SUCCESS : GetLastError();
 		controlWrite.reset();
+		watcherReportWrite.reset();
 
+		const DWORD watcherWait = WaitForSingleObject(watcherProcess, LOWBOX_WATCHER_TIMEOUT_MS);
+		cleanupWatcher.reset();
 		WatcherTerminalReport report{};
 		DWORD bytesRead = 0;
-		const bool reportRead = ReadFile(watcherReportRead.value, &report, sizeof(report), &bytesRead,
-			nullptr) && bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
+		const bool reportRead = watcherWait == WAIT_OBJECT_0 &&
+			ReadFile(watcherReportRead.value, &report, sizeof(report), &bytesRead, nullptr) &&
+			bytesRead == sizeof(report) && report.magic == LOWBOX_WATCHER_REPORT_MAGIC;
 		watcherReportRead.reset();
 		const bool watcherClean = reportRead && report.cleanupResult == 0;
 		const char* cancelCode = !cancelSent ? "LOWBOX_WATCHER_CANCEL_WRITE_FAILED"
