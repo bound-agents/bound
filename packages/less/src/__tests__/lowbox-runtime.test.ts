@@ -152,6 +152,12 @@ describe("Windows lowbox helper materialization", () => {
 			source.indexOf("WatcherStartResult startCleanupWatcher("),
 			source.indexOf("}  // namespace"),
 		);
+		const duplicateWatcherJob = watcherLaunch.indexOf(
+			"DuplicateHandle(GetCurrentProcess(), jobHandle",
+		);
+		const duplicateWatcherChild = watcherLaunch.indexOf(
+			"DuplicateHandle(GetCurrentProcess(), childProcess",
+		);
 		const createWatcher = watcherLaunch.indexOf("CreateProcessW(executable.c_str()");
 		const publicationFunctionStart = source.indexOf(
 			"bool publishAuthorityJournalWatcher(const std::wstring& path, DWORD watcherPid",
@@ -184,7 +190,13 @@ describe("Windows lowbox helper materialization", () => {
 		expect(publicationLock).toBeLessThan(publicationRead);
 		expect(publicationRead).toBeLessThan(publicationRewrite);
 		expect(transferLock).toBeGreaterThanOrEqual(0);
-		expect(transferLock).toBeLessThan(createWatcher);
+		expect(transferLock).toBeLessThan(duplicateWatcherJob);
+		expect(duplicateWatcherJob).toBeLessThan(duplicateWatcherChild);
+		expect(duplicateWatcherChild).toBeLessThan(createWatcher);
+		expect(watcherLaunch).toContain("TRUE, DUPLICATE_SAME_ACCESS");
+		expect(watcherLaunch).toContain(
+			"HANDLE inherited[] = {inheritedJob.value, inheritedChild.value",
+		);
 		const watcherReadyWait = watcherLaunch.indexOf("WaitForSingleObject(readyEvent.value");
 		const publishIdentity = watcherLaunch.indexOf("publishAuthorityJournalWatcher(");
 		const transferReleaseAfterPublish = watcherLaunch.indexOf(
