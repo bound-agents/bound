@@ -606,6 +606,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 		const gitConfig = join(git, "config");
 		const preCommit = join(git, "hooks", "pre-commit");
 		const commitMsg = join(git, "hooks", "commit-msg");
+		const nestedHooks = join(git, "hooks", "nested");
+		const nestedHook = join(nestedHooks, "pre-push");
 		const newHook = join(git, "hooks", "post-commit");
 		const mutableGitTargets = [
 			join(git, "index"),
@@ -622,12 +624,14 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 		const configBytes = Buffer.from("[core]\n\trepositoryformatversion = 0\n", "utf8");
 		const hookBytes = Buffer.from("#!/bin/sh\nexit 0\n", "utf8");
 		const secondHookBytes = Buffer.from("#!/bin/sh\necho commit-msg\n", "utf8");
+		const nestedHookBytes = Buffer.from("#!/bin/sh\necho pre-push\n", "utf8");
 		for (const path of [
 			cwd,
 			configuredTemp,
 			extraWritable,
 			sibling,
 			join(git, "hooks"),
+			nestedHooks,
 			join(git, "refs", "heads"),
 			join(git, "logs"),
 			join(git, "objects", "aa"),
@@ -637,6 +641,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 		writeFileSync(gitConfig, configBytes);
 		writeFileSync(preCommit, hookBytes);
 		writeFileSync(commitMsg, secondHookBytes);
+		writeFileSync(nestedHook, nestedHookBytes);
 		const junctionProbe = spawnSync("cmd.exe", ["/d", "/c", "mklink", "/J", junction, sibling], {
 			encoding: "utf8",
 			windowsHide: true,
@@ -662,9 +667,13 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			`try { if ((Get-Content -LiteralPath ${psLiteral(gitConfig)} -Raw) -eq ${psLiteral(configBytes.toString())}) { 'config-read=OK' } else { 'config-read=WRONG' } } catch { 'config-read=DENIED' }`,
 			`try { if ((Get-Content -LiteralPath ${psLiteral(preCommit)} -Raw) -eq ${psLiteral(hookBytes.toString())}) { 'pre-commit-read=OK' } else { 'pre-commit-read=WRONG' } } catch { 'pre-commit-read=DENIED' }`,
 			`try { if ((Get-Content -LiteralPath ${psLiteral(commitMsg)} -Raw) -eq ${psLiteral(secondHookBytes.toString())}) { 'commit-msg-read=OK' } else { 'commit-msg-read=WRONG' } } catch { 'commit-msg-read=DENIED' }`,
+			`try { if ((Get-Content -LiteralPath ${psLiteral(nestedHook)} -Raw) -eq ${psLiteral(nestedHookBytes.toString())}) { 'nested-hook-read=OK' } else { 'nested-hook-read=WRONG' } } catch { 'nested-hook-read=DENIED' }`,
 			psTryWrite("config-modify", gitConfig, "tampered"),
 			psTryWrite("pre-commit-modify", preCommit, "tampered"),
 			psTryWrite("commit-msg-modify", commitMsg, "tampered"),
+			psTryWrite("nested-hook-modify", nestedHook, "tampered"),
+			`try { Add-Content -LiteralPath ${psLiteral(nestedHook)} -Value 'tampered'; 'nested-hook-append=OK' } catch { 'nested-hook-append=DENIED' }`,
+			`try { Remove-Item -LiteralPath ${psLiteral(nestedHook)} -Force -ErrorAction Stop; 'nested-hook-delete=OK' } catch { 'nested-hook-delete=DENIED' }`,
 			psTryWrite("hook-create", newHook, "tampered"),
 		].join("; ");
 		const sandbox: ResolvedSandboxConfig = {
@@ -696,9 +705,17 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				for (const [id] of allowed) expect(outcomes.has(`${id}=OK`), id).toBe(true);
 				for (const [id] of denied) expect(outcomes.has(`${id}=DENIED`), id).toBe(true);
 				for (const [id] of mutableGit) expect(outcomes.has(`${id}=OK`), id).toBe(true);
-				for (const id of ["config-read", "pre-commit-read", "commit-msg-read"])
+				for (const id of ["config-read", "pre-commit-read", "commit-msg-read", "nested-hook-read"])
 					expect(outcomes.has(`${id}=OK`), id).toBe(true);
-				for (const id of ["config-modify", "pre-commit-modify", "commit-msg-modify", "hook-create"])
+				for (const id of [
+					"config-modify",
+					"pre-commit-modify",
+					"commit-msg-modify",
+					"nested-hook-modify",
+					"nested-hook-append",
+					"nested-hook-delete",
+					"hook-create",
+				])
 					expect(outcomes.has(`${id}=DENIED`), id).toBe(true);
 			} finally {
 				if (priorTemp === undefined) process.env.TEMP = undefined;
@@ -711,8 +728,63 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(readFileSync(gitConfig)).toEqual(configBytes);
 			expect(readFileSync(preCommit)).toEqual(hookBytes);
 			expect(readFileSync(commitMsg)).toEqual(secondHookBytes);
+			expect(readFileSync(nestedHook)).toEqual(nestedHookBytes);
 		} finally {
 			rmSync(absoluteHome, { force: true });
+			await removeFixtureAfterHandlesClose(fixture);
+		}
+	});
+
+	it("rejects a hooks-root junction before traversing its target", async () => {
+		const helper = process.env.BOUND_LOWBOX_HELPER;
+		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
+
+		const runId = randomBytes(8).toString("hex");
+		const fixture = join(tmpdir(), `bound-lowbox-hooks-junction-${runId}`);
+		const cwd = join(fixture, "repo");
+		const git = join(cwd, ".git");
+		const junctionTarget = join(fixture, "hooks-target");
+		const sentinel = join(junctionTarget, "sentinel");
+		mkdirSync(git, { recursive: true });
+		mkdirSync(sentinel, { recursive: true });
+		writeFileSync(join(sentinel, "pre-commit"), "target must not be traversed");
+		const junctionProbe = spawnSync(
+			"cmd.exe",
+			["/d", "/c", "mklink", "/J", join(git, "hooks"), junctionTarget],
+			{ encoding: "utf8", windowsHide: true },
+		);
+		expect(junctionProbe.status, junctionProbe.stderr || junctionProbe.stdout).toBe(0);
+
+		const sandbox: ResolvedSandboxConfig = {
+			enabled: true,
+			writablePaths: [],
+			network: "blocked",
+			onUnavailable: "error",
+		};
+		try {
+			const tool = createBashTool(
+				"windows-latest",
+				resolveShell(undefined),
+				sandbox,
+				undefined,
+				runId,
+			);
+			const result = await tool(
+				{ command: "Write-Output should-not-run", timeout: 30_000 },
+				new AbortController().signal,
+				cwd,
+			);
+			expect(result.isError).toBe(true);
+			const output = result.content
+				.filter((block) => block.type === "text")
+				.map((block) => block.text)
+				.join("\n");
+			expect(output).not.toContain("should-not-run");
+			expect(readFileSync(join(sentinel, "pre-commit"), "utf8")).toBe(
+				"target must not be traversed",
+			);
+		} finally {
 			await removeFixtureAfterHandlesClose(fixture);
 		}
 	});
@@ -752,7 +824,12 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			);
 			controller.abort();
 			const result = await running;
-			expect(result.isError).toBe(true);
+			expect(result.isError).toBeUndefined();
+			const output = result.content
+				.filter((block) => block.type === "text")
+				.map((block) => block.text)
+				.join("\n");
+			expect(output).toMatch(/Exit code:\s*[1-9]\d*/);
 			const exitDeadline = Date.now() + 10_000;
 			while (processExists(descendantPid) && Date.now() < exitDeadline) await Bun.sleep(20);
 			expect(processExists(descendantPid), "descendant survived job cancellation").toBe(false);

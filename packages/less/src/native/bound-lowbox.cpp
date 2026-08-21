@@ -61,6 +61,7 @@ struct SavedSecurity {
 	PSID owner = nullptr;
 	PSID group = nullptr;
 	PACL dacl = nullptr;
+	bool daclProtected = false;
 	~SavedSecurity() {
 		if (descriptor) LocalFree(descriptor);
 	}
@@ -577,9 +578,13 @@ bool writeJournalLine(std::ofstream& journal, const std::wstring& value) {
 LocalAuthorityCleanupResult restoreMaterializedAuthority(Profile& profile, AclScope& aclScope) {
 	for (auto it = aclScope.saved.rbegin(); it != aclScope.saved.rend(); ++it) {
 		SavedSecurity& record = **it;
+		const SECURITY_INFORMATION daclProtection = record.daclProtected
+			? PROTECTED_DACL_SECURITY_INFORMATION
+			: UNPROTECTED_DACL_SECURITY_INFORMATION;
 		const DWORD status = SetNamedSecurityInfoW(const_cast<LPWSTR>(record.path.c_str()),
 			SE_FILE_OBJECT,
-			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION |
+				daclProtection,
 			record.owner, record.group, record.dacl, nullptr);
 		if (status != ERROR_SUCCESS) {
 			SetLastError(status);
@@ -1145,20 +1150,115 @@ bool grantWritableRoot(const std::wstring& root, PSID sid, AclScope& scope) {
 		SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope);
 }
 
+bool saveAndProtectGitControlSurface(const std::wstring& rawPath, PSID sid, DWORD inheritance,
+	AclScope& scope) {
+	const std::wstring path = fullPath(rawPath);
+	if (path.empty() || isReparsePoint(path)) {
+		SetLastError(ERROR_ACCESS_DENIED);
+		return false;
+	}
+	auto record = std::make_unique<SavedSecurity>();
+	record->path = path;
+	DWORD status = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT,
+		OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+		&record->owner, &record->group, &record->dacl, nullptr, &record->descriptor);
+	if (status != ERROR_SUCCESS) {
+		SetLastError(status);
+		return false;
+	}
+	SECURITY_DESCRIPTOR_CONTROL control{};
+	DWORD revision{};
+	if (!GetSecurityDescriptorControl(record->descriptor, &control, &revision)) return false;
+	record->daclProtected = (control & SE_DACL_PROTECTED) != 0;
+
+	const DWORD explicitReadAceCapacity =
+		static_cast<DWORD>(sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(sid));
+	std::vector<unsigned char> aclStorage(record->dacl
+		? record->dacl->AclSize + explicitReadAceCapacity
+		: sizeof(ACL) + explicitReadAceCapacity);
+	PACL filtered = reinterpret_cast<PACL>(aclStorage.data());
+	if (!InitializeAcl(filtered, static_cast<DWORD>(aclStorage.size()), ACL_REVISION)) return false;
+	for (DWORD index = 0; record->dacl && index < record->dacl->AceCount; ++index) {
+		void* rawAce = nullptr;
+		if (!GetAce(record->dacl, index, &rawAce)) return false;
+		const auto* header = static_cast<ACE_HEADER*>(rawAce);
+		PSID aceSid = nullptr;
+		if (header->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+			aceSid = reinterpret_cast<PSID>(&static_cast<ACCESS_ALLOWED_ACE*>(rawAce)->SidStart);
+		}
+		if ((header->AceFlags & INHERITED_ACE) != 0 && aceSid && EqualSid(aceSid, sid)) continue;
+		if (!AddAce(filtered, ACL_REVISION, MAXDWORD, rawAce, header->AceSize)) return false;
+	}
+	EXPLICIT_ACCESSW readEntry{};
+	readEntry.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+	readEntry.grfAccessMode = GRANT_ACCESS;
+	readEntry.grfInheritance = inheritance;
+	readEntry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+	readEntry.Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+	readEntry.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+	PACL protectedDacl = nullptr;
+	status = SetEntriesInAclW(1, &readEntry, filtered, &protectedDacl);
+	if (status != ERROR_SUCCESS) {
+		SetLastError(status);
+		return false;
+	}
+	status = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
+		DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr,
+		protectedDacl, nullptr);
+	LocalFree(protectedDacl);
+	if (status != ERROR_SUCCESS) {
+		SetLastError(status);
+		return false;
+	}
+	scope.saved.push_back(std::move(record));
+	return true;
+}
+
+bool collectExistingHookDescendants(const std::wstring& directory,
+	std::vector<std::pair<std::wstring, bool>>& descendants) {
+	WIN32_FIND_DATAW entry{};
+	Handle search(FindFirstFileW((directory + L"\\*").c_str(), &entry));
+	if (search.value == INVALID_HANDLE_VALUE) {
+		search.value = nullptr;
+		return GetLastError() == ERROR_FILE_NOT_FOUND;
+	}
+	do {
+		if (wcscmp(entry.cFileName, L".") == 0 || wcscmp(entry.cFileName, L"..") == 0) continue;
+		const std::wstring path = directory + L"\\" + entry.cFileName;
+		if ((entry.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+			SetLastError(ERROR_ACCESS_DENIED);
+			return false;
+		}
+		const bool isDirectory = (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		descendants.emplace_back(path, isDirectory);
+		if (isDirectory && !collectExistingHookDescendants(path, descendants)) return false;
+	} while (FindNextFileW(search.value, &entry));
+	return GetLastError() == ERROR_NO_MORE_FILES;
+}
+
 bool protectGitControlSurfaces(const std::wstring& root, PSID sid, AclScope& scope) {
 	const std::wstring git = fullPath(root + L"\\.git");
 	if (git.empty() || GetFileAttributesW(git.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
-	const DWORD deniedFileWrites = FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER;
 	const std::wstring config = git + L"\\config";
 	if (GetFileAttributesW(config.c_str()) != INVALID_FILE_ATTRIBUTES &&
-		!saveAndApplyAcl(config, sid, deniedFileWrites, DENY_ACCESS, NO_INHERITANCE, scope)) return false;
+		!saveAndProtectGitControlSurface(config, sid, NO_INHERITANCE, scope)) return false;
 	const std::wstring hooks = git + L"\\hooks";
-	if (GetFileAttributesW(hooks.c_str()) != INVALID_FILE_ATTRIBUTES &&
-		!saveAndApplyAcl(hooks, sid,
-			FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_WRITE_DATA | FILE_APPEND_DATA |
-			FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_DELETE_CHILD | DELETE |
-			WRITE_DAC | WRITE_OWNER,
-			DENY_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope)) return false;
+	const DWORD hooksAttributes = GetFileAttributesW(hooks.c_str());
+	if (hooksAttributes != INVALID_FILE_ATTRIBUTES) {
+		if ((hooksAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+			SetLastError(ERROR_ACCESS_DENIED);
+			return false;
+		}
+		std::vector<std::pair<std::wstring, bool>> descendants;
+		if (!collectExistingHookDescendants(hooks, descendants)) return false;
+		if (!saveAndProtectGitControlSurface(hooks, sid, SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope)) {
+			return false;
+		}
+		for (const auto& [path, isDirectory] : descendants) {
+			const DWORD inheritance = isDirectory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
+			if (!saveAndProtectGitControlSurface(path, sid, inheritance, scope)) return false;
+		}
+	}
 	return true;
 }
 

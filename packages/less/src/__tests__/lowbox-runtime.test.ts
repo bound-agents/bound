@@ -294,20 +294,54 @@ describe("Windows lowbox helper materialization", () => {
 		expect(selfTest).toContain("negativeNumber");
 		expect(selfTest).toContain("overflowNumber");
 	});
-	it("protects only immutable git files while keeping mutable git storage writable", () => {
+	it("builds protected git control-surface DACLs without inherited lowbox writes", () => {
 		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
-		const start = source.indexOf("bool protectGitControlSurfaces");
+		const start = source.indexOf("bool saveAndProtectGitControlSurface");
 		const end = source.indexOf("bool makePipe", start);
 		const protection = source.slice(start, end);
 
 		expect(protection).toContain('L"\\\\config"');
 		expect(protection).toContain('L"\\\\hooks"');
+		expect(protection).toContain("GetFileAttributesW(hooks.c_str())");
+		expect(protection).toContain("hooksAttributes & FILE_ATTRIBUTE_REPARSE_POINT");
+		const hooksRootCheck = protection.indexOf("hooksAttributes & FILE_ATTRIBUTE_REPARSE_POINT");
+		const descendantCollection = protection.indexOf(
+			"collectExistingHookDescendants(hooks, descendants)",
+		);
+		expect(hooksRootCheck).toBeGreaterThan(-1);
+		expect(descendantCollection).toBeGreaterThan(hooksRootCheck);
+		expect(protection).toContain("FindFirstFileW");
+		expect(protection).toContain("FindNextFileW");
+		expect(protection).toContain("FILE_ATTRIBUTE_DIRECTORY");
+		expect(protection).toContain("NO_INHERITANCE");
+		expect(protection).toContain("PROTECTED_DACL_SECURITY_INFORMATION");
+		expect(protection).toContain("FILE_GENERIC_READ | FILE_GENERIC_EXECUTE");
 		expect(protection).toContain("SUB_CONTAINERS_AND_OBJECTS_INHERIT");
-		expect(protection).toContain("FILE_ADD_FILE");
+		expect(protection).toContain("INHERITED_ACE");
+		expect(protection).toContain("EqualSid");
+		expect(protection).toContain("record->dacl->AclSize");
+		expect(protection).toContain("explicitReadAceCapacity");
+		expect(protection).toContain("GetSecurityDescriptorControl");
 		expect(protection).not.toContain('L"index"');
 		expect(protection).not.toContain('L"refs"');
 		expect(protection).not.toContain('L"logs"');
 		expect(protection).not.toContain('L"objects"');
+	});
+
+	it("restores protected git DACL descriptors during checked cleanup", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		const cleanupStart = source.indexOf(
+			"LocalAuthorityCleanupResult restoreMaterializedAuthority(Profile& profile, AclScope& aclScope) {",
+		);
+		const cleanupEnd = source.indexOf(
+			"[[noreturn]] void retryMaterializedAuthorityRecovery",
+			cleanupStart,
+		);
+		const cleanup = source.slice(cleanupStart, cleanupEnd);
+
+		expect(cleanup).toContain("record.daclProtected");
+		expect(cleanup).toContain("PROTECTED_DACL_SECURITY_INFORMATION");
+		expect(cleanup).toContain("UNPROTECTED_DACL_SECURITY_INFORMATION");
 	});
 
 	it("rejects writable roots whose existing path contains a reparse point", () => {
@@ -331,7 +365,7 @@ describe("Windows lowbox helper materialization", () => {
 			"WinCapabilityInternetClientSid",
 			"JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
 			"SetEntriesInAclW",
-			"DENY_ACCESS",
+			"PROTECTED_DACL_SECURITY_INFORMATION",
 			"DeleteAppContainerProfile",
 			"recoverStaleAuthority",
 		]) {
