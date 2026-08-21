@@ -1412,7 +1412,11 @@ describe("warm-cold-path", () => {
 			expect(secondPathLogs[0]?.path).toBe("warm");
 
 			const secondInference =
-				mockBackend.getCapturedParams()[callsBeforeSecondLoop]?.messages ?? [];
+				mockBackend
+					.getCapturedParams()
+					.slice(callsBeforeSecondLoop)
+					.find((params) => params.messages.some((message) => message.role === "developer"))
+					?.messages ?? [];
 			const earlierIdx = secondInference.findIndex(
 				(message) =>
 					message.role === "user" &&

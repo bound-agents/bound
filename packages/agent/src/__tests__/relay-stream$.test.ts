@@ -352,7 +352,7 @@ describe("createRelayStream$", () => {
 			] as any,
 			aborted$,
 			undefined,
-			{ perHostTimeoutMs: 200, pollIntervalMs: 50 },
+			{ perHostTimeoutMs: 1000, pollIntervalMs: 50 },
 		);
 
 		const subscribed = new Promise<void>((resolve) => {
@@ -368,12 +368,11 @@ describe("createRelayStream$", () => {
 		// Get first outbox entry (spoke-1)
 		const firstStreamId = getStreamIdFromOutbox(db);
 
-		// First host times out after 200ms; the stream then switches to spoke-2
-		// and writes a second 'inference' outbox entry (plus a cancel for the
-		// first host). Poll for that second inference entry rather than sleeping a
-		// fixed 300ms: on a loaded CI runner (observed on macos-latest) the
-		// timeout's downstream cascade can land after a fixed wait, which raced
-		// the cnt===2 assertion below and made this test flaky.
+		// The first host times out; the stream then switches to spoke-2 and
+		// writes a second 'inference' outbox entry (plus a cancel for the first
+		// host). Poll for that second inference entry instead of sleeping. Keep
+		// the timeout comfortably above the polling/SQLite work: this test covers
+		// failover semantics, not a 200ms scheduling deadline on loaded CI.
 		await pollUntil(
 			() =>
 				(

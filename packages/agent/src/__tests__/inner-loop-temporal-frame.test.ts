@@ -713,9 +713,14 @@ describe("inner-loop temporal-frame coherence", () => {
 		const allCalls = mockBackend.getCapturedMessages();
 		expect(allCalls.length).toBeGreaterThan(callsBefore);
 
-		// First call after the second run — the warm path's first inference.
-		const warmCall = allCalls[callsBefore];
-		const developers = warmCall.filter((m) => m.role === "developer");
+		// First inference-shaped call after the second run. Summary extraction is
+		// fire-and-forget and shares this mock, so it may interleave a summary call
+		// before the warm-path inference.
+		const warmCall = allCalls
+			.slice(callsBefore)
+			.find((messages) => messages.some((message) => message.role === "developer"));
+		expect(warmCall).toBeDefined();
+		const developers = warmCall?.filter((m) => m.role === "developer") ?? [];
 		expect(developers.length).toBeGreaterThan(0);
 		// Combine all developer contents — varying content is what we expect
 		// to find here. Stable subsection content (pinned marker, Working
