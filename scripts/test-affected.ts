@@ -17,6 +17,19 @@
  * transitively depends on a directly-affected package, then `bun test` runs
  * once over the union of their source dirs.
  *
+ * Two-layer selection. The package set above comes from the STAGED diff and is
+ * the correctness floor. Within it, `bun test --changed` drops test files the
+ * change cannot reach through the import graph — the file-level filter a
+ * package-level graph walk cannot express (a one-line edit in @bound/shared
+ * expands to all 12 packages by dependency, while only a couple of test files
+ * import the touched module: measured 2/535 files vs 12 whole packages).
+ *
+ * `--changed` compares the WORKING TREE, not the index, so it is only ever a
+ * narrowing layer over the staged determination. Partial staging (`git add -p`)
+ * leaves the working tree a superset of the index, erring toward running MORE
+ * tests. A global-file change skips the narrowing entirely: when bunfig or the
+ * lockfile moves, every test is in scope regardless of what imports what.
+ *
  * Run:           bun run scripts/test-affected.ts
  * Inspect only:  bun run scripts/test-affected.ts --dry-run
  * Wired into:    .githooks/pre-commit
@@ -264,7 +277,22 @@ export function run(): void {
 		process.exit(lastExit);
 	}
 
-	const proc = Bun.spawnSync(["bun", "test", ...testableDirs.map(toTestPathArg)], {
+	// Narrow within the selected dirs by import-graph reachability. The dirs come
+	// from the STAGED diff (authoritative for what this commit ships); `--changed`
+	// then drops test files in those dirs that the change cannot reach, which is a
+	// file-level filter the package-level graph walk above cannot express: a
+	// one-line edit in @bound/shared expands to all 12 packages by dependency, but
+	// only a couple of test files actually import the touched module.
+	//
+	// `--changed` reads the WORKING TREE, not the index, so it is a narrowing
+	// layer and never the gate itself. Partial staging (`git add -p`) leaves the
+	// working tree a superset of the index, so it errs toward running MORE tests.
+	// The global-file branch above deliberately skips it: when bunfig/lockfile
+	// moves, every test is in scope regardless of what imports what.
+	//
+	// "no test files are affected" exits 0, so a dir whose tests are all
+	// unreachable is not a failure.
+	const proc = Bun.spawnSync(["bun", "test", ...testableDirs.map(toTestPathArg), "--changed"], {
 		cwd: root,
 		stdout: "inherit",
 		stderr: "inherit",
