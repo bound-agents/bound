@@ -28,5 +28,8 @@
 		"@opentelemetry/semantic-conventions": "^1.28.0",
 		"fast-check": "^4.8.0",
 		"just-bash": "^2.14.0"
+	},
+	"scripts": {
+		"typecheck": "tsc -p . --noEmit"
 	}
 }

@@ -17,5 +17,8 @@
 	},
 	"devDependencies": {
 		"@types/json-stable-stringify": "^1.0.36"
+	},
+	"scripts": {
+		"typecheck": "tsc -p . --noEmit"
 	}
 }

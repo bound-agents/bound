@@ -10,5 +10,8 @@
 		"@bound/shared": "workspace:*",
 		"just-bash": "^2.14.0",
 		"uuid": "^13.0.0"
+	},
+	"scripts": {
+		"typecheck": "tsc -p . --noEmit"
 	}
 }

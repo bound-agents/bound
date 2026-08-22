@@ -16,5 +16,8 @@
 	"devDependencies": {
 		"@bound/agent": "workspace:*",
 		"fast-check": "^4.8.0"
+	},
+	"scripts": {
+		"typecheck": "tsc -p . --noEmit"
 	}
 }

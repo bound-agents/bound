@@ -24,7 +24,7 @@ Never compare `datetime('now', '-Nh hours')` (which returns `2026-03-28 22:23:33
 
 ### Typecheck is per-package
 
-There is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` or `bun run typecheck` (sequential).
+There is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` for one package, or `bun run typecheck` for all of them — that fans out via `bun run --filter '*' --parallel typecheck`, so each package's diagnostics arrive prefixed with `@bound/<pkg>:typecheck` and a failure in a depended-on package surfaces in every consumer that reaches it, not just the first link of an `&&` chain.
 
 ### bun test cli prints init stdout
 

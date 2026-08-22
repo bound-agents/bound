@@ -43,7 +43,7 @@ bun run lint:fix
 
 # Typecheck (per-package — no composite mode at root)
 tsc -p packages/shared --noEmit
-bun run typecheck                                    # All packages sequentially
+bun run typecheck                                    # All packages in parallel (bun run --parallel)
 
 # Build (produces binaries in dist/)
 bun run build
