@@ -129,13 +129,40 @@ function psTryWrite(id: string, path: string, value: string): string {
 	return `try { Set-Content -LiteralPath ${psLiteral(path)} -Value ${psLiteral(value)} -ErrorAction Stop; ${psLiteral(`${id}=OK`)} } catch { ${psLiteral(`${id}=DENIED`)} }`;
 }
 
-function processExists(pid: number): boolean {
+/**
+ * Resolve a pid. On Windows a process OBJECT outlives termination for as long as
+ * any handle to it stays open, so this answers "is the pid still resolvable",
+ * NOT "is the process still running" — a reaped-but-handle-pinned descendant
+ * still resolves here. Use {@link processRunning} for liveness.
+ */
+function processResolves(pid: number): boolean {
 	try {
 		kill(pid, 0);
 		return true;
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * True only while `pid` is a live, non-exited process.
+ *
+ * `kill(pid, 0)` is not sufficient on Windows: it succeeds against a terminated
+ * process whose object is still pinned by an open handle, which made the
+ * job-tree cancellation assertion flap (CI #1136, #1138). Ask the OS for the
+ * process's actual state instead — Win32's tasklist reports only live pids, so
+ * an empty match means exited regardless of who still holds a handle.
+ */
+function processRunning(pid: number): boolean {
+	if (!processResolves(pid)) return false;
+	const probe = spawnSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
+	// A failed probe must not be read as "exited" — that would let a genuinely
+	// surviving descendant pass the cancellation gate.
+	if (probe.status !== 0) return true;
+	return probe.stdout.includes(`"${pid}"`);
 }
 
 /**
@@ -845,7 +872,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(20);
 			expect(existsSync(pidFile), "descendant pid was not published").toBe(true);
 			const descendantPid = Number(readFileSync(pidFile, "utf8").trim());
-			expect(processExists(descendantPid), "descendant was not alive before cancellation").toBe(
+			expect(processRunning(descendantPid), "descendant was not alive before cancellation").toBe(
 				true,
 			);
 			controller.abort();
@@ -858,11 +885,15 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const exitCodeMatch = output.match(/Exit code:\s*(-?\d+)/);
 			expect(exitCodeMatch, `missing numeric exit code in output: ${output}`).not.toBeNull();
 			expect(Number(exitCodeMatch?.[1]), `cancellation returned success: ${output}`).not.toBe(0);
-			const exitDeadline = Date.now() + 10_000;
-			while (processExists(descendantPid) && Date.now() < exitDeadline) await Bun.sleep(20);
-			expect(processExists(descendantPid), "descendant survived job cancellation").toBe(false);
+			// Behavioral proof first: the descendant sleeps 3s before writing, so an
+			// absent sentinel is the real security property — it did no work after
+			// cancellation. Assert it BEFORE liveness so a lingering pid can never
+			// mask (or fake) an actual escape.
 			await Bun.sleep(3_500);
 			expect(existsSync(sentinel), "delayed descendant output escaped cancellation").toBe(false);
+			const exitDeadline = Date.now() + 10_000;
+			while (processRunning(descendantPid) && Date.now() < exitDeadline) await Bun.sleep(20);
+			expect(processRunning(descendantPid), "descendant survived job cancellation").toBe(false);
 		} finally {
 			const journals = spawnSync(
 				"powershell.exe",
