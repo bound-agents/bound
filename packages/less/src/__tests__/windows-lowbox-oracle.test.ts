@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { kill } from "node:process";
 import { createBashTool } from "../tools/bash";
 import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
