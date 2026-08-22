@@ -83,9 +83,9 @@ through your context — its `source`/`target` take `"main"` (the VFS) or `"sate
 (the host disk).
 
 Boundless shell writes are OS-confined: seatbelt on macOS, bubblewrap on Linux, and a
-Bound-owned one-shot AppContainer lowbox on Windows. The Windows backend never falls
-back to a persisted IsolationSession. It keeps `.git/config` and `.git/hooks` read-only
-while ordinary Git state remains writable, kills descendant process trees through a Job
+Bound-owned one-shot AppContainer lowbox on Windows. The Windows backend has no persisted
+session fallback. It keeps `.git/config` and `.git/hooks` read-only while ordinary Git
+state remains writable, kills descendant process trees through a Job
 Object, and leaves profile/ACL/journal cleanup to its watcher. If host policy blocks
 unprivileged AppContainer profile creation, the default `onUnavailable: "error"` refuses
 the command with guidance; `"passthrough"` is an explicit, visibly unsandboxed fallback.
