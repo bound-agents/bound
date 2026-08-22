@@ -132,6 +132,55 @@ describe("runYardProgram — tool effects", () => {
 	});
 });
 
+// Regression for run 5e0834de's "object is not extensible": brand()
+// deep-freezes the effect payload, and before the detach() copy that
+// freeze reached back into CALLER-owned state passed as args. A planner
+// loop that keeps mutable state across rounds and passes it to
+// tool()/infer() must be able to keep mutating it afterward.
+it("does not freeze caller-owned state passed as effect args (planner-loop topology)", async () => {
+	const host = fakeHost({
+		dispatchTool: async () => "ok",
+	});
+	const out = await runYardProgram({
+		program: `function* main() {
+				const state = { round: 0, history: [] };
+				for (let i = 0; i < 3; i++) {
+					const res = yield tool("bms_bash", { command: "echo x", state: state });
+					// The next round DECORATES the same state object — the exact
+					// move that died with "object is not extensible" when brand()'s
+					// freeze escaped into caller state.
+					state.round = i + 1;
+					state.history.push(res);
+					Object.assign(state, { lastResult: res });
+				}
+				return { rounds: state.round, entries: state.history.length, frozen: Object.isFrozen(state) };
+			}`,
+		host,
+	});
+	expect(out.result).toEqual({ rounds: 3, entries: 3, frozen: false });
+});
+
+it("dispatches a snapshot of args — caller mutations after construction do not leak into dispatch", async () => {
+	const seen: unknown[] = [];
+	const host = fakeHost({
+		dispatchTool: async (_name, args) => {
+			seen.push(args);
+			return "ok";
+		},
+	});
+	await runYardProgram({
+		program: `function* main() {
+				const state = { round: 0 };
+				const effect = tool("bms_bash", { command: "echo x", state: state });
+				state.round = 99; // after construction, before dispatch
+				yield effect;
+				return null;
+			}`,
+		host,
+	});
+	expect(seen).toEqual([{ command: "echo x", state: { round: 0 } }]);
+});
+
 describe("runYardProgram — inference effects", () => {
 	it("dispatches infer() with the explicit model id", async () => {
 		const seen: Array<{ model: string; request: unknown }> = [];
