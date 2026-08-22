@@ -133,7 +133,20 @@ jobs:
           for pkg in shared core sync sandbox llm agent platforms web client cli less; do
             echo "::group::packages/$pkg"
             pkg_code=0
-            bun test "packages/$pkg" --timeout "$TEST_TIMEOUT" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
+            # --parallel spreads a package's test FILES across worker processes
+            # (default: core count). The loop above is sequential across 11
+            # packages, which on a 2-core Windows runner walked the whole step up
+            # to GitHub's 20-minute ceiling and killed it mid-`agent` — nothing
+            # after `llm` ran at all. Measured locally on packages/agent, the
+            # heaviest of the eleven: 67.1s sequential -> 23.4s parallel, same
+            # 2472 pass / 0 fail, JUnit output unaffected.
+            #
+            # --parallel implies --isolate (a fresh global per test file), which
+            # is the stricter contract: files can no longer see each other's
+            # module-registry leftovers, so a suite that passed only through
+            # cross-file leakage now fails honestly rather than depending on
+            # execution order.
+            bun test "packages/$pkg" --parallel --timeout "$TEST_TIMEOUT" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
             echo "$pkg_code" > "test-results/$pkg.exit"
             if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"
