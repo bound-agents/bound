@@ -276,13 +276,27 @@ const BOOTSTRAP_SOURCE = `(() => {
 	};
 	const isEffect = (value) => value !== null && typeof value === "object" && value[BRAND] === true;
 
+	// Detach caller-owned data before it enters a branded payload. brand()
+	// deep-freezes the whole payload graph, and without a copy that freeze
+	// reaches back into the CALLER'S objects: a planner loop that passes its
+	// mutable state as tool()/infer() args finds that state frozen after the
+	// first construction, and the next round's decoration dies with
+	// "object is not extensible" / silent no-op writes (observed live in run
+	// 5e0834de, where it derailed a two-day migration's orchestration and was
+	// misdiagnosed as settled results crossing the boundary frozen — settled
+	// results were always fresh JSON). Args are asserted JSON-compatible
+	// first, so the JSON round-trip is lossless; the copy also gives the
+	// dispatched effect snapshot semantics — later caller mutations cannot
+	// retroactively change what was dispatched.
+	const detach = (value) => (value === null || typeof value !== "object" ? value : JSON.parse(JSON.stringify(value)));
+
 	const toolCtor = (name, args) => {
 		if (typeof name !== "string" || name.length === 0) {
 			throw new TypeError("tool() requires a tool name string");
 		}
 		const a = args === undefined ? {} : args;
 		assertJsonCompatible(a, "tool() args");
-		return brand({ kind: "tool", name: name, args: a });
+		return brand({ kind: "tool", name: name, args: detach(a) });
 	};
 
 	const inferCtor = (model, request) => {
@@ -296,7 +310,7 @@ const BOOTSTRAP_SOURCE = `(() => {
 			throw new TypeError("infer() request requires a prompt string");
 		}
 		assertJsonCompatible(request, "infer() request");
-		return brand({ kind: "inference", model: model, request: request });
+		return brand({ kind: "inference", model: model, request: detach(request) });
 	};
 
 	const auxCtor = (name, instructions, options) => {
