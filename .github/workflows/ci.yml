@@ -117,15 +117,18 @@ jobs:
           # all TimeoutError, none reproducing. 15s gives slow-but-correct
           # tests headroom; the 20-minute step cap above still bounds a hang.
           #
-          # Windows used to get 30s. Measured against the JUnit artifacts from
-          # a green run (CI #1139): of 7339 Windows cases, 6 exceed 5s and the
-          # slowest under this default is 5.5s, so 15s is ~2.7x its worst case.
-          # The one case past 15s (browser-bundle, 22.4s) carries its own
-          # explicit 60s timeout and is unaffected by this flag — and Ubuntu
-          # runs that same test at 19.2s, a 1.16x ratio, so Windows is not
-          # systemically slower. Bun 1.4's sub-15ms Windows timers removed the
-          # tick quantization that made short waits flaky. One value, all lanes.
+          # Windows keeps a larger ceiling. A previous commit cut it to 15s on
+          # the grounds that no Windows test NEEDED more (measured max 5.5s under
+          # the default in a green run, with the one 22.4s case carrying its own
+          # explicit timeout). That measurement was of the wrong quantity: it
+          # sampled durations from an UNCONTENDED run and inferred a ceiling for
+          # a contended one. Windows CI then failed twice on `agent` TimeoutError
+          # — different tests each run, exactly the signature described above,
+          # which is what the larger ceiling had been absorbing. A per-test
+          # ceiling exists to bound a hang, not to assert a performance budget,
+          # so the slack costs nothing when tests pass and buys nothing when cut.
           TEST_TIMEOUT=15000
+          if [ "$RUNNER_OS" = "Windows" ]; then TEST_TIMEOUT=30000; fi
           exit_code=0
           for pkg in shared core sync sandbox llm agent platforms web client cli less; do
             echo "::group::packages/$pkg"
