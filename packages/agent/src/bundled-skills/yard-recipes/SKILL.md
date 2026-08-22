@@ -263,9 +263,29 @@ function* main(input) {
 
 The round cap is a budget guard, not a plan — the planner ends the run by
 returning `done`, and the cap only stops a dispatcher that never converges.
+Caps and abort conditions govern NON-PROGRESS (the same blocker unchanged
+after the route already changed, no accepted units across rounds), never
+productive work — a Yard that is still landing units should keep running.
 Give the planner the standing rules (coverage skepticism, repair routing,
 review-before-release) in its prompt: it makes those calls between every
 round, which is precisely where live runs have historically dropped them.
+
+Two notes that make this shape safe at migration scale:
+
+- **External gates are gates.** CI is a review whose verdict arrives
+  slowly; dispatch a watcher errand for the run and route its failures
+  back as repair errands INSIDE the same program, exactly like reviewer
+  objections. A program that returns at the first CI red hands
+  coordination back to your loop — observed live: a two-day migration
+  collapsed into 75 stateless Yard invocations and 542 child threads,
+  with the parent absorbing every CI diagnosis, because the one
+  generator that should have owned the arc kept terminating.
+- **Planner state is yours to mutate.** Effect constructors snapshot
+  their args (JSON copy at construction), so keeping one mutable state
+  object across rounds — decorate it, push history, pass it to
+  `infer()` — is safe and is the intended shape. Generator locals
+  survive every `yield`; a run lasting days needs no checkpoint
+  feature, just a budget that covers it.
 
 ## Failure modes that waste runs
 
