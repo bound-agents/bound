@@ -60,6 +60,23 @@ own loop first, and not two broad errands that sample the surface.
 - Budget generously (`budget: { timeout_seconds, concurrency }`) rather
   than shrinking the plan to fit a default.
 
+## Choosing models per role
+
+The `<stable-context>` block carries decision metadata per model — tier,
+context window, max output, vision, thinking — with tier 1 the most
+capable class. Choose per ROLE, from that metadata, not from model-name
+vibes:
+
+- tier 1: planning `infer()`, review gates, synthesis, release judgment;
+- tier 2: implementation arms;
+- tier 3: mechanical scatter (surveys, pattern scans, checklist audits).
+
+Pass a models map in `input` (e.g. `{ scout, implementer, reviewer,
+planner }`) instead of one uniform model — a single `input.model` for
+every role reproduces the name-vibes scatter the metadata exists to end.
+Validated live: three consecutive runs tier-matched unprompted once the
+metadata shipped.
+
 ## Recipe: scatter-gather corpus change
 
 Read-agents survey every partition; `infer()` structures the plan;
@@ -75,12 +92,12 @@ function* main(input) {
 
   // SCATTER: a read-agent surveys each partition. No edits yet.
   const surveys = yield all(
-    pkgs.map((pkg) => aux("scout", `Survey ${pkg} for: ${input.goal}. List candidate files with reasons; make NO edits.`, { model: input.model })),
+    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.models.scout })),
     { concurrency: 4 },
   );
 
   // GATHER: structure the free-text reports into per-partition work orders.
-  const orders = yield infer(input.model, {
+  const orders = yield infer(input.models.planner, {
     prompt: `Turn each survey into a concrete work order for: ${input.goal}. No real candidates => skip=true.`,
     input: pkgs.map((pkg, i) => ({ pkg, survey: surveys[i] })),
     schema: { type: "array", items: {
@@ -93,7 +110,7 @@ function* main(input) {
   // RE-SCATTER: a write-agent implements each order.
   let active = orders.filter((o) => !o.skip);
   yield all(
-    active.map((o) => aux("implementer", `In ${o.pkg}, do exactly this, then report per-file outcomes: ${o.order}`, { model: input.model })),
+    active.map((o) => aux("implementer", `In ${o.pkg}, do exactly this, then report per-file outcomes: ${o.order}`, { model: input.models.implementer })),
     { concurrency: 4 },
   );
 
@@ -101,10 +118,10 @@ function* main(input) {
   const outcomes = [];
   for (let round = 0; active.length > 0; round++) {
     const reviews = yield all(
-      active.map((o) => aux("reviewer", `Run git diff -- ${o.pkg} and judge whether the changes satisfy: ${o.order}. Name specific gaps.`, { model: input.model })),
+      active.map((o) => aux("reviewer", `Run git diff -- ${o.pkg} and judge whether the changes satisfy: ${o.order}. Name specific gaps.`, { model: input.models.reviewer })),
       { concurrency: 4 },
     );
-    const verdicts = yield infer(input.model, {
+    const verdicts = yield infer(input.models.planner, {
       prompt: "For each review, decide pass/fail and extract the objections.",
       input: active.map((o, i) => ({ pkg: o.pkg, review: reviews[i] })),
       schema: { type: "array", items: {
@@ -120,7 +137,7 @@ function* main(input) {
     });
     if (failed.length > 0) {
       yield all(
-        failed.map((o) => aux("implementer", `Rework ${o.pkg} — the reviewer rejected it: ${o.objections}. Original order: ${o.order}`, { model: input.model })),
+        failed.map((o) => aux("implementer", `Rework ${o.pkg} — the reviewer rejected it: ${o.objections}. Original order: ${o.order}`, { model: input.models.implementer })),
         { concurrency: 4 },
       );
     }
@@ -140,11 +157,11 @@ partition that needs a human decision.
 ```js
 function* main(input) {
   const reviews = yield all([
-    aux("pricing-skeptic", input.pricing_question, { model: input.model }),
-    aux("reviewer", input.design_question, { model: input.model }),
+    aux("pricing-skeptic", input.pricing_question, { model: input.models.specialist }),
+    aux("reviewer", input.design_question, { model: input.models.specialist }),
   ], { concurrency: 2, errors: "settled" });
 
-  const synthesis = yield infer(input.model, {
+  const synthesis = yield infer(input.models.planner, {
     prompt: "Synthesize a compact decision artifact. Preserve disagreements and name the next implementation slice.",
     input: reviews,
     schema: {
@@ -174,12 +191,12 @@ function* main(input) {
   const hits = String(yield tool("boundless_search", { pattern: input.pattern, path: input.path }));
   if (!hits.includes(":")) throw new Error(`pattern not found: ${input.pattern}`);
 
-  const report = yield aux("implementer", `Apply this change at the sites below, then run ${input.verify_command} and report per-file outcomes. Do NOT commit or push.\n\nChange: ${input.instruction}\n\nSites:\n${hits}`, { model: input.model });
+  const report = yield aux("implementer", `Apply this change at the sites below, then run ${input.verify_command} and report per-file outcomes. Do NOT commit or push.\n\nChange: ${input.instruction}\n\nSites:\n${hits}`, { model: input.models.implementer });
 
   const check = String(yield tool("boundless_bash", { command: input.verify_command }));
   if (!check.includes("Exit code: 0")) return { report, verified: false, released: false };
 
-  const release = yield aux("implementer", `The verified uncommitted diff for "${input.instruction}" is approved. Commit it with the required author, let the pre-commit gate run (never --no-verify), push, and report the commit hash.`, { model: input.model });
+  const release = yield aux("implementer", `The verified uncommitted diff for "${input.instruction}" is approved. Commit it with the required author, let the pre-commit gate run (never --no-verify), push, and report the commit hash.`, { model: input.models.implementer });
   return { report, verified: true, release };
 }
 ```
@@ -211,7 +228,7 @@ function* main(input) {
 
   // Seed round: read-only survey of every area.
   let results = yield all(
-    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.model })),
+    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.models.scout })),
     { concurrency: 6, errors: "settled" },
   );
 
@@ -225,7 +242,7 @@ function* main(input) {
     let plan;
     for (let attempt = 0; ; attempt++) {
       try {
-        plan = yield infer(input.model, {
+        plan = yield infer(input.models.planner, {
           prompt:
             `You dispatch aux errands toward: ${input.goal}. Decide the next round from the results. ` +
             `Dispatch ONLY identities that appear on this roster:\n${roster}\n` +
@@ -252,7 +269,7 @@ function* main(input) {
     if (plan.done && plan.errands.length === 0) break;
 
     results = yield all(
-      plan.errands.map((e) => aux(e.identity, e.instructions, { model: input.model })),
+      plan.errands.map((e) => aux(e.identity, e.instructions, { model: input.models[e.identity] ?? input.models.implementer })),
       { concurrency: 4, errors: "settled" },
     );
     if (plan.done) break; // release round dispatched; stop after it lands
