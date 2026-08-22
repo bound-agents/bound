@@ -50,6 +50,7 @@ let tokenCacheBytes = 0;
 let tokenCacheHits = 0;
 let tokenCacheMisses = 0;
 const encodedTexts: string[] = [];
+let encodeObserver: ((text: string) => void) | undefined;
 
 function memoizedEncodeLength(text: string): number {
 	const cached = tokenCache.get(text);
@@ -61,6 +62,7 @@ function memoizedEncodeLength(text: string): number {
 		return cached;
 	}
 	encodedTexts.push(text);
+	encodeObserver?.(text);
 	const count = getEncoding().encode(text).length;
 	tokenCache.set(text, count);
 	tokenCacheBytes += text.length;
@@ -219,6 +221,7 @@ export function __tokenCacheStats(): {
 	idHits: number;
 	idMisses: number;
 	hasId(id: string, modifiedAt: string): boolean;
+	setEncodeObserver(observer: ((text: string) => void) | undefined): void;
 } {
 	return {
 		size: tokenCache.size,
@@ -233,5 +236,8 @@ export function __tokenCacheStats(): {
 		idHits: tokenIdCacheHits,
 		idMisses: tokenIdCacheMisses,
 		hasId: (id: string, modifiedAt: string) => tokenIdCache.has(`${id} ${modifiedAt}`),
+		setEncodeObserver: (observer) => {
+			encodeObserver = observer;
+		},
 	};
 }

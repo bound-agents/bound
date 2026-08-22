@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import {
 	__tokenCacheStats,
 	countContentTokens,
@@ -90,16 +90,23 @@ describe("tokens", () => {
 				title: "big.pdf",
 			};
 
-			const before = __tokenCacheStats().encodedTexts;
-			const imageCount = countContentTokens([imageBlock]);
-			const documentCount = countContentTokens([documentBlock]);
-			const encodedTexts = __tokenCacheStats().encodedTexts.slice(before);
+			const statsBefore = __tokenCacheStats();
+			const encodeSpy = mock((text: string) => text.length);
+			statsBefore.setEncodeObserver(encodeSpy);
 
-			expect(imageCount).toBeLessThan(10_000);
-			expect(documentCount).toBeLessThan(10_000);
-			expect(encodedTexts).not.toContain(imagePayload);
-			expect(encodedTexts).not.toContain(documentPayload);
-			expect(encodedTexts.every((text) => text.length < 10_000)).toBe(true);
+			try {
+				const imageCount = countContentTokens([imageBlock]);
+				const documentCount = countContentTokens([documentBlock]);
+				const encodedTexts = encodeSpy.mock.calls.map(([text]) => text);
+
+				expect(imageCount).toBeLessThan(10_000);
+				expect(documentCount).toBeLessThan(10_000);
+				expect(encodedTexts).not.toContain(imagePayload);
+				expect(encodedTexts).not.toContain(documentPayload);
+				expect(encodedTexts.every((text) => text.length < 10_000)).toBe(true);
+			} finally {
+				statsBefore.setEncodeObserver(undefined);
+			}
 		});
 
 		it("AC1.2 (ContentBlock[]): mixed text and tool_use blocks", () => {
