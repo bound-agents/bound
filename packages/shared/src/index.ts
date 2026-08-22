@@ -16,6 +16,9 @@ export * from "./errors.js";
 // Config schemas
 export * from "./config-schemas.js";
 
+// Duration parsing for operator-authored config (ISO 8601 via Temporal)
+export * from "./durations.js";
+
 // Token counting
 export * from "./tokens.js";
 
