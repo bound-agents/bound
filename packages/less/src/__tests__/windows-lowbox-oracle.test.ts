@@ -4,7 +4,6 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { kill } from "node:process";
 import { createBashTool } from "../tools/bash";
 import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
@@ -130,39 +129,68 @@ function psTryWrite(id: string, path: string, value: string): string {
 }
 
 /**
- * Resolve a pid. On Windows a process OBJECT outlives termination for as long as
- * any handle to it stays open, so this answers "is the pid still resolvable",
- * NOT "is the process still running" — a reaped-but-handle-pinned descendant
- * still resolves here. Use {@link processRunning} for liveness.
- */
-function processResolves(pid: number): boolean {
-	try {
-		kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * True only while `pid` is a live, non-exited process.
+ * Wait up to `timeoutMs` for `pid` to stop running, returning the observed
+ * terminal state plus a diagnostic string for assertion messages.
  *
- * `kill(pid, 0)` is not sufficient on Windows: it succeeds against a terminated
- * process whose object is still pinned by an open handle, which made the
- * job-tree cancellation assertion flap (CI #1136, #1138). Ask the OS for the
- * process's actual state instead — Win32's tasklist reports only live pids, so
- * an empty match means exited regardless of who still holds a handle.
+ * Two earlier instruments both flaked here. `kill(pid, 0)` alone is wrong on
+ * Windows: a process OBJECT outlives termination while any handle to it stays
+ * open, so a reaped descendant still resolves. Polling `tasklist.exe` instead
+ * was worse — a 20ms poll against a 10s deadline spawns up to 500 processes on
+ * a 2-core runner, manufacturing the very contention it measures, and its
+ * `probe.status !== 0 => still alive` fail-closed branch turned each of its own
+ * spawn failures into a false "survived" verdict (CI #1138, #1140, #1143).
+ *
+ * So: ONE child process, and let the OS do the waiting on a real handle.
+ * `Get-Process` fails for an already-reaped pid (GONE); otherwise
+ * `WaitForExit(ms)` blocks on the process handle and reports whether it exited
+ * within the budget. A pid that has been recycled onto a different process is
+ * reported as RECYCLED rather than counted as a survivor, since the descendant
+ * we care about is identified by start time as well as pid.
  */
-function processRunning(pid: number): boolean {
-	if (!processResolves(pid)) return false;
-	const probe = spawnSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+function waitForProcessExit(
+	pid: number,
+	timeoutMs: number,
+	startedBeforeMs?: number,
+): { running: boolean; state: string; detail: string } {
+	const script = [
+		"$ErrorActionPreference = 'Stop'",
+		"try {",
+		`  $p = Get-Process -Id ${pid} -ErrorAction Stop`,
+		"  $started = try { $p.StartTime.ToUniversalTime().ToString('o') } catch { 'unknown' }",
+		`  if ($p.WaitForExit(${timeoutMs})) { "EXITED|$started" } else { "ALIVE|$started|$($p.ProcessName)" }`,
+		"} catch [Microsoft.PowerShell.Commands.ProcessCommandException] { 'GONE|' }",
+		'catch { "PROBE_ERROR|$($_.Exception.Message)" }',
+	].join("; ");
+	const probe = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
 		encoding: "utf8",
 		windowsHide: true,
+		// Give the child room beyond its own WaitForExit budget so a slow
+		// PowerShell start-up isn't misread as an unfinished wait.
+		timeout: timeoutMs + 20_000,
 	});
-	// A failed probe must not be read as "exited" — that would let a genuinely
-	// surviving descendant pass the cancellation gate.
-	if (probe.status !== 0) return true;
-	return probe.stdout.includes(`"${pid}"`);
+	const raw = `${probe.stdout ?? ""}`.trim();
+	const [state = "", started = "", name = ""] = raw.split("|");
+	const detail = `pid=${pid} probe=${JSON.stringify(raw)} status=${probe.status} stderr=${JSON.stringify(`${probe.stderr ?? ""}`.trim().slice(0, 400))}`;
+
+	// GONE / EXITED are the two ways the descendant is legitimately dead.
+	if (state === "GONE" || state === "EXITED") return { running: false, state, detail };
+	if (state === "ALIVE") {
+		// A pid reused by a process that started AFTER our descendant was launched
+		// is not our descendant surviving.
+		const startedMs = Date.parse(started);
+		if (
+			startedBeforeMs !== undefined &&
+			Number.isFinite(startedMs) &&
+			startedMs > startedBeforeMs
+		) {
+			return { running: false, state: `RECYCLED(${name})`, detail };
+		}
+		return { running: true, state, detail };
+	}
+	// An unreadable probe must not be reported as death — that would let a real
+	// escape through the gate — but it is reported as its own state so a failure
+	// message distinguishes "descendant alive" from "could not tell".
+	return { running: true, state: state || "NO_OUTPUT", detail };
 }
 
 /**
@@ -872,9 +900,11 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(20);
 			expect(existsSync(pidFile), "descendant pid was not published").toBe(true);
 			const descendantPid = Number(readFileSync(pidFile, "utf8").trim());
-			expect(processRunning(descendantPid), "descendant was not alive before cancellation").toBe(
-				true,
-			);
+			const launchedAtMs = Date.now();
+			expect(
+				waitForProcessExit(descendantPid, 0).running,
+				"descendant was not alive before cancellation",
+			).toBe(true);
 			controller.abort();
 			const result = await running;
 			expect(result.isError).toBeUndefined();
@@ -885,15 +915,26 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const exitCodeMatch = output.match(/Exit code:\s*(-?\d+)/);
 			expect(exitCodeMatch, `missing numeric exit code in output: ${output}`).not.toBeNull();
 			expect(Number(exitCodeMatch?.[1]), `cancellation returned success: ${output}`).not.toBe(0);
-			// Behavioral proof first: the descendant sleeps 3s before writing, so an
-			// absent sentinel is the real security property — it did no work after
-			// cancellation. Assert it BEFORE liveness so a lingering pid can never
-			// mask (or fake) an actual escape.
+			// Wait for the descendant to die on ONE process handle, then assert both
+			// signals together. Ordering matters: the sentinel is only meaningful once
+			// enough time has passed for a surviving descendant to have written it
+			// (it sleeps 3s first), so checking it against a fixed sleep while the
+			// process was still running reported "no escape" from a race rather than
+			// from containment.
+			const exit = waitForProcessExit(descendantPid, 15_000, launchedAtMs);
+			// Give a survivor time to finish its 3s sleep and write, so an absent
+			// sentinel means containment rather than "we looked too early".
 			await Bun.sleep(3_500);
-			expect(existsSync(sentinel), "delayed descendant output escaped cancellation").toBe(false);
-			const exitDeadline = Date.now() + 10_000;
-			while (processRunning(descendantPid) && Date.now() < exitDeadline) await Bun.sleep(20);
-			expect(processRunning(descendantPid), "descendant survived job cancellation").toBe(false);
+			// The security property: the descendant did no work after cancellation.
+			expect(
+				existsSync(sentinel),
+				`delayed descendant output escaped cancellation (${exit.state}; ${exit.detail})`,
+			).toBe(false);
+			// And it is actually gone, not merely idle.
+			expect(
+				exit.running,
+				`descendant survived job cancellation (state=${exit.state}; ${exit.detail})`,
+			).toBe(false);
 		} finally {
 			const journals = spawnSync(
 				"powershell.exe",
