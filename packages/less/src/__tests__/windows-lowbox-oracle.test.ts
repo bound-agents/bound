@@ -691,6 +691,22 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			network: "blocked",
 			onUnavailable: "error",
 		};
+		// Capture the spawn path's structured events. `trySandboxedViaLowbox`
+		// swallows the real setup failure into a `null` return, so the refusal the
+		// tool surfaces says only "AppContainer lowbox unavailable" — useless when
+		// this fails intermittently on a runner. Folding `lowbox_unavailable`'s
+		// reason into the assertion message is the difference between a
+		// diagnosable flake and a red board with no cause (CI #1136).
+		const events: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+		const logger = {
+			info: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+			warn: (event: string, fields?: Record<string, unknown>) => events.push({ event, fields }),
+		};
+		const diagnose = () =>
+			events
+				.filter((entry) => entry.event !== "sandbox_spawn")
+				.map((entry) => `${entry.event}: ${JSON.stringify(entry.fields)}`)
+				.join("\n") || "(no lowbox diagnostics emitted)";
 		try {
 			const priorTemp = process.env.TEMP;
 			process.env.TEMP = configuredTemp;
@@ -699,7 +715,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					"windows-latest",
 					resolveShell(undefined),
 					sandbox,
-					undefined,
+					logger,
 					runId,
 				);
 				const result = await tool(
@@ -707,7 +723,12 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					new AbortController().signal,
 					cwd,
 				);
-				expect(result.isError, result.content[1]?.text).toBeUndefined();
+				const spawnEvent = events.findLast((entry) => entry.event === "sandbox_spawn");
+				expect(
+					spawnEvent?.fields?.backend,
+					`appcontainer_lowbox was not selected\n${diagnose()}`,
+				).toBe("appcontainer_lowbox");
+				expect(result.isError, `${result.content[1]?.text}\n${diagnose()}`).toBeUndefined();
 				const outcomes = new Set(
 					(result.content[1]?.text ?? "").split(/\r?\n/).map((line) => line.trim()),
 				);
