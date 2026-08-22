@@ -24,6 +24,27 @@ Unless a field description explicitly says otherwise, a file entry configures th
 reads it. For example, the precedence-selected model backends config lists backends that the host can serve locally,
 and fetch-specific headers apply on the host that performs the fetch.
 
+## Duration fields
+
+Every `*_timeout_ms` / `*_threshold_ms` field accepts either a millisecond
+number or an ISO 8601 duration string, and both resolve to the same value:
+
+```json
+{ "inference_timeout_ms": 300000 }
+{ "inference_timeout_ms": "PT5M" }
+```
+
+`PT30S`, `PT5M`, `PT1H30M`, and `PT0.5S` all parse. Existing numeric configs are
+unaffected — the string is a spelling of the number, not a separate mode.
+
+Durations carrying days or larger (`P1D`, `P2W`, `P1M`) are rejected: a day is
+23, 24, or 25 hours across a DST boundary, so converting one needs a calendar
+reference the config layer has no way to supply. Write `PT24H` when you mean 24
+hours. Negative durations and sub-millisecond precision are rejected too.
+
+Fields documented as `int >= 0` keep `0` as their disabled sentinel; `PT0S`
+works there as well.
+
 ## Configuration files
 
 | File | Required | Purpose |

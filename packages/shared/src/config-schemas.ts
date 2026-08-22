@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { durationMsSchema } from "./durations.js";
 
 // Config schemas use Zod strict mode throughout so unknown keys fail parse
 // with the exact offending key name instead of being silently stripped.
@@ -212,7 +213,7 @@ const modelBackendSchema = z
 		// on whichever host runs the fetch — NOT forwarded over the relay, so a
 		// spoke uses its own deadline rather than honoring a hub-set one. Absent /
 		// `<= 0` → no deadline (pure passthrough). See `createLoggingFetch`.
-		connect_timeout_ms: z.number().int().positive().optional(),
+		connect_timeout_ms: durationMsSchema().optional(),
 		// Arbitrary custom HTTP headers added to every request this backend
 		// sends to its upstream endpoint. A flat key-value map, layered on top
 		// of the provider's own headers (the `api_key`-derived `Authorization`
@@ -384,7 +385,7 @@ const connectorConfigSchema = z
 		signing_secret: z.string().optional(),
 		allowed_users: z.array(z.string()).default([]),
 		leadership: z.enum(["auto", "leader", "standby", "all"]).default("auto"),
-		failover_threshold_ms: z.number().int().positive().default(30_000),
+		failover_threshold_ms: durationMsSchema().default(30_000),
 	})
 	.strict();
 
@@ -405,13 +406,13 @@ export const relaySchema = z
 			.int()
 			.positive()
 			.default(2 * 1024 * 1024),
-		request_timeout_ms: z.number().int().positive().default(30_000),
+		request_timeout_ms: durationMsSchema().default(30_000),
 		prune_interval_seconds: z.number().int().positive().default(60),
 		prune_retention_seconds: z.number().int().positive().default(300),
 		drain_timeout_seconds: z.number().int().positive().default(120),
 		/** Per-host timeout for inference relay streaming (ms). Must account for
 		 *  sync delivery latency + LLM inference time. Default 300s. */
-		inference_timeout_ms: z.number().int().positive().default(300_000),
+		inference_timeout_ms: durationMsSchema().default(300_000),
 	})
 	.strict();
 
@@ -427,13 +428,13 @@ export const wsSchema = z
 		 *  the hub within this window, it tears down the connection and reconnects
 		 *  — the changelog drain may be stuck even though pings keep the socket
 		 *  alive. 0 = disabled, default 300000 (5 min). */
-		receive_timeout_ms: z.number().int().min(0).default(300_000),
+		receive_timeout_ms: durationMsSchema({ min: 0 }).default(300_000),
 		/** Handshake deadline in ms. A spoke socket that reaches neither `open` nor
 		 *  `close` within this window is torn down and reconnected — a stalled
 		 *  upgrade fires no close event, so nothing else re-arms the reconnect
 		 *  timer and the client would latch dark until restart.
 		 *  0 = disabled, default 20000 (20s). */
-		handshake_timeout_ms: z.number().int().min(0).default(20_000),
+		handshake_timeout_ms: durationMsSchema({ min: 0 }).default(20_000),
 	})
 	.strict();
 
