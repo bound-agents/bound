@@ -353,11 +353,11 @@ Example — run concurrent specialist reviews, then synthesize their findings:
 \`\`\`js
 function* main(input) {
   const reviews = yield all([
-    aux("pricing-skeptic", input.pricing_question, { model: input.model }),
-    aux("yard-ui-scout", input.ui_question, { model: input.model }),
+    aux("pricing-skeptic", input.pricing_question, { model: input.models.specialist }),
+    aux("yard-ui-scout", input.ui_question, { model: input.models.specialist }),
   ], { concurrency: 2, errors: "settled" });
 
-  const synthesis = yield infer(input.model, {
+  const synthesis = yield infer(input.models.planner, {
     prompt: "Synthesize a compact decision artifact. Preserve disagreements and name the next implementation slice.",
     input: reviews,
     schema: {
@@ -385,12 +385,12 @@ function* main(input) {
 
   // SCATTER: a read-agent surveys each partition. No edits yet.
   const surveys = yield all(
-    pkgs.map((pkg) => aux("scout", \`Survey \${pkg} for: \${input.goal}. List candidate files with reasons; make NO edits.\`, { model: input.model })),
+    pkgs.map((pkg) => aux("scout", \`Survey \${pkg} for: \${input.goal}. List candidate files with reasons; make NO edits.\`, { model: input.models.scout })),
     { concurrency: 4 },
   );
 
   // GATHER: structure the free-text reports into per-partition work orders.
-  const orders = yield infer(input.model, {
+  const orders = yield infer(input.models.planner, {
     prompt: \`Turn each survey into a concrete work order for: \${input.goal}. No real candidates => skip=true.\`,
     input: pkgs.map((pkg, i) => ({ pkg, survey: surveys[i] })),
     schema: { type: "array", items: {
@@ -403,7 +403,7 @@ function* main(input) {
   // RE-SCATTER: a write-agent implements each order.
   let active = orders.filter((o) => !o.skip);
   yield all(
-    active.map((o) => aux("implementer", \`In \${o.pkg}, do exactly this, then report per-file outcomes: \${o.order}\`, { model: input.model })),
+    active.map((o) => aux("implementer", \`In \${o.pkg}, do exactly this, then report per-file outcomes: \${o.order}\`, { model: input.models.implementer })),
     { concurrency: 4 },
   );
 
@@ -412,10 +412,10 @@ function* main(input) {
   const outcomes = [];
   for (let round = 0; active.length > 0; round++) {
     const reviews = yield all(
-      active.map((o) => aux("reviewer", \`Run git diff -- \${o.pkg} and judge whether the changes satisfy: \${o.order}. Name specific gaps.\`, { model: input.model })),
+      active.map((o) => aux("reviewer", \`Run git diff -- \${o.pkg} and judge whether the changes satisfy: \${o.order}. Name specific gaps.\`, { model: input.models.reviewer })),
       { concurrency: 4 },
     );
-    const verdicts = yield infer(input.model, {
+    const verdicts = yield infer(input.models.planner, {
       prompt: "For each review, decide pass/fail and extract the objections.",
       input: active.map((o, i) => ({ pkg: o.pkg, review: reviews[i] })),
       schema: { type: "array", items: {
@@ -431,7 +431,7 @@ function* main(input) {
     });
     if (failed.length > 0) {
       yield all(
-        failed.map((o) => aux("implementer", \`Rework \${o.pkg} — the reviewer rejected it: \${o.objections}. Original order: \${o.order}\`, { model: input.model })),
+        failed.map((o) => aux("implementer", \`Rework \${o.pkg} — the reviewer rejected it: \${o.objections}. Original order: \${o.order}\`, { model: input.models.implementer })),
         { concurrency: 4 },
       );
     }
