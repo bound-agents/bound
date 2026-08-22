@@ -111,14 +111,21 @@ jobs:
           # teardown error like Windows EBUSY) that a pure-JUnit summary would
           # render as "all green". The sidecar is what makes that case visible.
           mkdir -p test-results
-          # GitHub's Windows runners are ~2-core and I/O-slow; bun's default 5s
-          # per-test timeout trips intermittently under that contention — a
-          # different set of tests each run (core FTS5 queries one run, relay
-          # agent tests the next), all TimeoutError, none reproducing. Give
-          # slow-but-correct tests headroom. The 20-minute step cap above still
-          # bounds a genuine hang; this only raises the per-test ceiling.
+          # Per-test default ceiling. Bun's own default is 5s, which tripped
+          # intermittently on GitHub's ~2-core, I/O-slow runners — a different
+          # set of tests each run (core FTS5 one run, relay agent the next),
+          # all TimeoutError, none reproducing. 15s gives slow-but-correct
+          # tests headroom; the 20-minute step cap above still bounds a hang.
+          #
+          # Windows used to get 30s. Measured against the JUnit artifacts from
+          # a green run (CI #1139): of 7339 Windows cases, 6 exceed 5s and the
+          # slowest under this default is 5.5s, so 15s is ~2.7x its worst case.
+          # The one case past 15s (browser-bundle, 22.4s) carries its own
+          # explicit 60s timeout and is unaffected by this flag — and Ubuntu
+          # runs that same test at 19.2s, a 1.16x ratio, so Windows is not
+          # systemically slower. Bun 1.4's sub-15ms Windows timers removed the
+          # tick quantization that made short waits flaky. One value, all lanes.
           TEST_TIMEOUT=15000
-          if [ "$RUNNER_OS" = "Windows" ]; then TEST_TIMEOUT=30000; fi
           exit_code=0
           for pkg in shared core sync sandbox llm agent platforms web client cli less; do
             echo "::group::packages/$pkg"
