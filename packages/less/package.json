@@ -25,5 +25,8 @@
 		"@types/react": "^18.3.18",
 		"fast-check": "^4.8.0",
 		"ink-testing-library": "^4.0.0"
+	},
+	"scripts": {
+		"typecheck": "tsc -p . --noEmit"
 	}
 }
