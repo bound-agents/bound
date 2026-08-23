@@ -10,11 +10,18 @@
 // path rewrite — see materializeSandboxRuntime() and
 // scripts/build-sandbox-runtime.ts.
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { BunPlugin } from "bun";
 import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
+
+export function buildLowboxHelperCommand(bunExecutable = process.execPath): {
+	command: string;
+	args: string[];
+} {
+	return { command: bunExecutable, args: ["run", "scripts/build-lowbox-helper.ts"] };
+}
 
 /**
  * Many @opentelemetry packages lack an `exports` field and only declare
@@ -294,16 +301,20 @@ async function build() {
 
 	if (process.platform === "win32" && boundlessBuilt) {
 		console.log("\n5b. Building Windows lowbox helper beside boundless...");
+		const invocation = buildLowboxHelperCommand();
 		try {
-			execSync("bun run scripts/build-lowbox-helper.ts", {
+			execFileSync(invocation.command, invocation.args, {
 				stdio: "inherit",
 				env: {
 					...process.env,
 					BOUND_LOWBOX_STAGE_BESIDE: join(process.cwd(), "dist", "boundless.exe"),
 				},
 			});
-		} catch {
-			console.error("Windows lowbox helper build failed.");
+		} catch (error) {
+			console.error(
+				"Windows lowbox helper build failed:",
+				error instanceof Error ? error.message : error,
+			);
 			process.exit(1);
 		}
 	}
