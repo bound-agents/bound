@@ -374,8 +374,14 @@ export async function bashToolWithStreaming(
 					while (true) {
 						const readResult = await raceAbort(reader.read());
 						if (readResult === "aborted") {
-							// Abort fired while waiting on read — cancel the reader to unblock
-							await reader.cancel().catch(() => {});
+							// Do NOT cancel the Web-stream wrapper here. For lowbox,
+							// controller.abort() already asks the native helper/watcher to
+							// terminate the job; the child process then closes its stdout
+							// pipe naturally. Calling reader.cancel() races that native close
+							// through Readable.toWeb and intermittently double-closes the
+							// underlying Windows pipe (`UV_EBADF: recv`, CI #1163). Releasing
+							// the JS lock is sufficient: the process-exit wait below owns the
+							// bounded reap, while the native stream reaches EOF on its own.
 							break;
 						}
 						const { done, value } = readResult;
