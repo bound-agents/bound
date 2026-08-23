@@ -895,38 +895,60 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				undefined,
 				runId,
 			);
-			// The descendant must outlive the test's SETUP, not just its abort. It
-			// sleeps SENTINEL_DELAY_MS before writing, and the liveness precondition
-			// below spawns a PowerShell probe that costs ~1-2s to start on a contended
-			// runner. At a 3s delay the child died of old age mid-setup and the probe
-			// reported EXITED before cancellation ever fired (CI #1154) — a fixture
-			// race misreported as a containment result. 25s leaves room for a slow
-			// pid publish plus a slow probe while staying inside the 30s per-test cap.
+			// The descendant must PROVE it is executing, not merely own a pid.
+			//
+			// Every earlier shape of this test trusted `$child.Id` from
+			// `Start-Process -PassThru`, which is published by the PARENT the instant
+			// CreateProcess returns and says nothing about whether the child ever ran
+			// its script. A Windows process object also outlives termination while any
+			// handle stays open, so `kill(pid, 0)` kept reporting a dead descendant as
+			// alive and the precondition passed vacuously for weeks. When the probe was
+			// tightened to a real handle wait it reported EXITED ~1s after launch
+			// against a 25s sleep (CI #1155) — the descendant had never been running.
+			//
+			// So have the descendant write a marker FIRST, then sleep, then write the
+			// sentinel. The marker is direct evidence the child executed code inside
+			// the lowbox (the same technique the helper-death case above uses), and
+			// waiting on a file costs no PowerShell spawn in the critical path.
+			const startedMarker = join(cwd, "descendant-started.txt");
 			const sentinelDelayMs = 25_000;
-			const command = `$child = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-Command',${psLiteral(`Start-Sleep -Milliseconds ${sentinelDelayMs}; Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`)}); Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id; Start-Sleep -Seconds 60`;
-			const running = tool({ command, timeout: 30_000 }, controller.signal, cwd);
-			const deadline = Date.now() + 10_000;
-			while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(20);
+			const descendantScript = [
+				`Set-Content -LiteralPath ${psLiteral(startedMarker)} -Value running`,
+				`Start-Sleep -Milliseconds ${sentinelDelayMs}`,
+				`Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`,
+			].join("; ");
+			// -NoNewWindow forces the CreateProcess path. Without it Start-Process goes
+			// through ShellExecuteEx, which is not reliable inside an AppContainer and
+			// can hand back a pid for a launcher that exits immediately.
+			const command = `$child = Start-Process powershell.exe -PassThru -NoNewWindow -ArgumentList @('-NoProfile','-Command',${psLiteral(descendantScript)}); Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id; Start-Sleep -Seconds 60`;
+			const running = tool({ command, timeout: 45_000 }, controller.signal, cwd);
+			const deadline = Date.now() + 20_000;
+			while ((!existsSync(pidFile) || !existsSync(startedMarker)) && Date.now() < deadline) {
+				await Bun.sleep(20);
+			}
 			expect(existsSync(pidFile), "descendant pid was not published").toBe(true);
+			// This is the assertion that would have caught the vacuous fixture: the
+			// descendant has to have run its own first statement.
+			expect(
+				existsSync(startedMarker),
+				"descendant never executed inside the lowbox (no started marker)",
+			).toBe(true);
 			const publishedPid = readFileSync(pidFile, "utf8").trim();
 			const descendantPid = Number(publishedPid);
 			// `Start-Process -PassThru` yields $null if the child never launched, and
 			// `Set-Content -Value $null` writes an empty line, which Number() turns
 			// into 0. PID 0 is the System Idle Process: `Get-Process -Id 0` SUCCEEDS,
-			// so the liveness probe below reported PROBE_ERROR ("Access is denied" from
+			// so the liveness probe reported PROBE_ERROR ("Access is denied" from
 			// WaitForExit on Idle) rather than "no such process" — and PROBE_ERROR is
-			// fail-closed to running:true, which made the precondition pass vacuously
-			// and blamed the final assertion on a descendant that never existed. Pin
-			// the fixture before trusting anything downstream of it; 0 and 4 are
-			// System/Idle and can never be our child.
+			// fail-closed to running:true, which let a broken fixture certify itself.
+			// 0 and 4 are System/Idle and can never be our child.
 			expect(
 				Number.isInteger(descendantPid) && descendantPid > 4,
 				`descendant was never launched (pid file contained ${JSON.stringify(publishedPid)})`,
 			).toBe(true);
 			const launchedAtMs = Date.now();
-			// Require a DEFINITE alive reading here. Accepting the fail-closed
-			// running:true from an unreadable probe would let a broken fixture satisfy
-			// its own precondition.
+			// Require a DEFINITE alive reading. Accepting the fail-closed running:true
+			// from an unreadable probe is what allowed the vacuous fixture through.
 			const before = waitForProcessExit(descendantPid, 0);
 			expect(before.state, `descendant was not alive before cancellation (${before.detail})`).toBe(
 				"ALIVE",
