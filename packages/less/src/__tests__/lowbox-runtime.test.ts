@@ -428,7 +428,12 @@ describe("Windows lowbox helper materialization", () => {
 		expect(source).toContain("enum class LocalAuthorityCleanupResult");
 		expect(source).toContain("restoreMaterializedAuthority(profile, aclScope)");
 		expect(preJournal).toContain("failAfterCheckedLocalAuthorityCleanup(");
-		expect(preJournal).toContain("failAfterDurableAuthorityJournal(");
+		// Once a contained process exists, failures either prove that exact
+		// suspended process dead before local cleanup, or (after the authority
+		// journal is durable) transfer to failAfterDurableAuthorityJournal. The
+		// helper-created cancellation peer adds more pre-journal checked-cleanup
+		// branches; it does not make a durable journal exist any earlier.
+		expect(preJournal).toContain("cleanupAuthorityAfterUncontainedSuspendedChildDeath(");
 		expect(preJournal).not.toMatch(/return fail\(/);
 		expect(preJournal).not.toContain("LOWBOX_CLEANUP_JOURNAL_PRESERVED");
 		expect(source).toContain("for (;;) Sleep(LOWBOX_RECOVERY_RETRY_MS)");
@@ -1176,7 +1181,10 @@ describe("Windows lowbox helper materialization", () => {
 		const postWatcherInstall = source.slice(watcherActive);
 		const notifications = postWatcherInstall.match(/requestArmedWatcherCancelAndObserve\(/g) ?? [];
 
-		expect(notifications).toHaveLength(3);
+		// Forwarding failure, test-descendant resume failure, primary-shell resume
+		// failure, and the explicit fail-after-watcher test hook all converge on
+		// the watcher-owned cancel path.
+		expect(notifications).toHaveLength(4);
 		expect(postWatcherInstall).not.toContain("recoverAuthorityJournal(journalPath)");
 		expect(postWatcherInstall).not.toContain("cleanupWatcher = nullptr");
 		expect(postWatcherInstall).not.toContain("cleanupWatcher = INVALID_HANDLE_VALUE");
