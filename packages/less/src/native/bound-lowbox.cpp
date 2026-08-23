@@ -1971,7 +1971,8 @@ int wmain(int argc, wchar_t** argv) {
 		std::wstring(argv[2]) == L"--started" && std::wstring(argv[4]) == L"--sentinel" &&
 		std::wstring(argv[6]) == L"--delay-ms") {
 		auto writeMarker = [](const wchar_t* path, const char* value) -> bool {
-			Handle file(CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+			Handle file;
+			file.reset(CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
 				CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
 			if (file.value == INVALID_HANDLE_VALUE) return false;
 			DWORD written = 0;
