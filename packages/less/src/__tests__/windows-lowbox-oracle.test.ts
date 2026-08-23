@@ -161,7 +161,7 @@ function waitForProcessExit(
 		`  if ($p.WaitForExit(${timeoutMs})) { "EXITED|$started" } else { "ALIVE|$started|$($p.ProcessName)" }`,
 		"} catch [Microsoft.PowerShell.Commands.ProcessCommandException] { 'GONE|' }",
 		'catch { "PROBE_ERROR|$($_.Exception.Message)" }',
-	].join("; ");
+	].join("\n");
 	const probe = spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
 		encoding: "utf8",
 		windowsHide: true,
@@ -900,12 +900,29 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const deadline = Date.now() + 10_000;
 			while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(20);
 			expect(existsSync(pidFile), "descendant pid was not published").toBe(true);
-			const descendantPid = Number(readFileSync(pidFile, "utf8").trim());
-			const launchedAtMs = Date.now();
+			const publishedPid = readFileSync(pidFile, "utf8").trim();
+			const descendantPid = Number(publishedPid);
+			// `Start-Process -PassThru` yields $null if the child never launched, and
+			// `Set-Content -Value $null` writes an empty line, which Number() turns
+			// into 0. PID 0 is the System Idle Process: `Get-Process -Id 0` SUCCEEDS,
+			// so the liveness probe below reported PROBE_ERROR ("Access is denied" from
+			// WaitForExit on Idle) rather than "no such process" — and PROBE_ERROR is
+			// fail-closed to running:true, which made the precondition pass vacuously
+			// and blamed the final assertion on a descendant that never existed. Pin
+			// the fixture before trusting anything downstream of it; 0 and 4 are
+			// System/Idle and can never be our child.
 			expect(
-				waitForProcessExit(descendantPid, 0).running,
-				"descendant was not alive before cancellation",
+				Number.isInteger(descendantPid) && descendantPid > 4,
+				`descendant was never launched (pid file contained ${JSON.stringify(publishedPid)})`,
 			).toBe(true);
+			const launchedAtMs = Date.now();
+			// Require a DEFINITE alive reading here. Accepting the fail-closed
+			// running:true from an unreadable probe would let a broken fixture satisfy
+			// its own precondition.
+			const before = waitForProcessExit(descendantPid, 0);
+			expect(before.state, `descendant was not alive before cancellation (${before.detail})`).toBe(
+				"ALIVE",
+			);
 			controller.abort();
 			const result = await running;
 			expect(result.isError).toBeUndefined();
