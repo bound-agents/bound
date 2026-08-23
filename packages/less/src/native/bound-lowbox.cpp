@@ -2205,6 +2205,78 @@ int wmain(int argc, wchar_t** argv) {
 			"LOWBOX_ASSIGN_JOB", L"AssignProcessToJobObject", win32, profile, aclScope);
 	}
 
+	// Mandatory-oracle hook: create a real second process in the same job from
+	// this unrestricted owner. AppContainer itself denies child creation
+	// (ERROR_ACCESS_DENIED), so asking the sandboxed PowerShell to spawn a child
+	// made the old oracle structurally impossible. The helper can construct the
+	// exact two-process job before either thread runs, which tests the property we
+	// care about: closing/cancelling the job kills every contained process.
+	Handle testDescendantProcess;
+	Handle testDescendantThread;
+	wchar_t testStarted[32768]{};
+	wchar_t testSentinel[32768]{};
+	wchar_t testPidFile[32768]{};
+	wchar_t testDelay[32]{};
+	const DWORD startedLen = GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_DESCENDANT_STARTED",
+		testStarted, 32768);
+	if (startedLen > 0 && startedLen < 32768) {
+		const DWORD sentinelLen = GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_DESCENDANT_SENTINEL",
+			testSentinel, 32768);
+		const DWORD pidLen = GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_DESCENDANT_PID", testPidFile,
+			32768);
+		const DWORD delayLen = GetEnvironmentVariableW(L"BOUND_LOWBOX_TEST_DESCENDANT_DELAY_MS",
+			testDelay, 32);
+		if (sentinelLen == 0 || pidLen == 0 || delayLen == 0) {
+			return cleanupAuthorityAfterUncontainedSuspendedChildDeath(childProcess.value, 125,
+				"LOWBOX_TEST_DESCENDANT_CONFIG", L"GetEnvironmentVariableW", ERROR_INVALID_DATA,
+				profile, aclScope);
+		}
+		wchar_t executable[MAX_PATH]{};
+		if (!GetModuleFileNameW(nullptr, executable, MAX_PATH)) {
+			const DWORD win32 = GetLastError();
+			return cleanupAuthorityAfterUncontainedSuspendedChildDeath(childProcess.value, 125,
+				"LOWBOX_TEST_DESCENDANT_PATH", L"GetModuleFileNameW", win32, profile, aclScope);
+		}
+		std::wstring testCommand = quoteArgument(executable) + L" test-descendant --started " +
+			quoteArgument(testStarted) + L" --sentinel " + quoteArgument(testSentinel) +
+			L" --delay-ms " + quoteArgument(testDelay);
+		STARTUPINFOW testStartup{};
+		testStartup.cb = sizeof(testStartup);
+		PROCESS_INFORMATION testProcess{};
+		if (!CreateProcessW(nullptr, testCommand.data(), nullptr, nullptr, FALSE,
+			CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW, nullptr, cwd.c_str(),
+			&testStartup, &testProcess)) {
+			const DWORD win32 = GetLastError();
+			return cleanupAuthorityAfterUncontainedSuspendedChildDeath(childProcess.value, 125,
+				"LOWBOX_TEST_DESCENDANT_CREATE", L"CreateProcessW(test descendant)", win32, profile,
+				aclScope);
+		}
+		testDescendantProcess.reset(testProcess.hProcess);
+		testDescendantThread.reset(testProcess.hThread);
+		if (!AssignProcessToJobObject(job.value, testDescendantProcess.value)) {
+			const DWORD win32 = GetLastError();
+			TerminateProcess(testDescendantProcess.value, 125);
+			WaitForSingleObject(testDescendantProcess.value, LOWBOX_WATCHER_TIMEOUT_MS);
+			return cleanupAuthorityAfterUncontainedSuspendedChildDeath(childProcess.value, 125,
+				"LOWBOX_TEST_DESCENDANT_JOB", L"AssignProcessToJobObject(test descendant)", win32,
+				profile, aclScope);
+		}
+		const std::string pid = std::to_string(testProcess.dwProcessId);
+		Handle pidFile;
+		pidFile.reset(CreateFileW(testPidFile, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+		DWORD written = 0;
+		if (pidFile.value == INVALID_HANDLE_VALUE ||
+			!WriteFile(pidFile.value, pid.data(), static_cast<DWORD>(pid.size()), &written, nullptr) ||
+			written != pid.size()) {
+			const DWORD win32 = GetLastError();
+			TerminateJobObject(job.value, 125);
+			return cleanupAuthorityAfterUncontainedSuspendedChildDeath(childProcess.value, 125,
+				"LOWBOX_TEST_DESCENDANT_PID", L"WriteFile(test descendant pid)", win32, profile,
+				aclScope);
+		}
+	}
+
 	ULONGLONG ownerCreationTime = 0;
 	if (!processCreationTime(GetCurrentProcess(), ownerCreationTime)) {
 		const DWORD win32 = GetLastError();
@@ -2278,6 +2350,19 @@ int wmain(int argc, wchar_t** argv) {
 		requestArmedWatcherCancelAndObserve();
 	}
 
+	if (testDescendantThread.value &&
+		ResumeThread(testDescendantThread.value) == static_cast<DWORD>(-1)) {
+		const DWORD win32 = GetLastError();
+		writeControl("{\"ok\":false,\"code\":\"LOWBOX_TEST_DESCENDANT_RESUME\",\"operation\":\"ResumeThread(test descendant)\",\"win32\":" +
+			std::to_string(win32) + ",\"message\":\"" + jsonEscape(utf8(windowsMessage(win32))) + "\"}");
+		requestArmedWatcherCancelAndObserve();
+	}
+	testDescendantThread.reset();
+	// The job is the lifetime authority after resume; retaining a separate owner
+	// handle would keep the terminated process object resolvable after the watcher
+	// has killed the job and reintroduce the handle-pinned liveness ambiguity the
+	// oracle was rewritten to eliminate.
+	testDescendantProcess.reset();
 	if (ResumeThread(childThread.value) == static_cast<DWORD>(-1)) {
 		const DWORD win32 = GetLastError();
 		writeControl("{\"ok\":false,\"code\":\"LOWBOX_RESUME\",\"operation\":\"ResumeThread\",\"win32\":" +
