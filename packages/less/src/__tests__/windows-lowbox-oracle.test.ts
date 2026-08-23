@@ -452,9 +452,13 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				expect(control, "helper control pipe is unavailable").toBeTruthy();
 				const failureLine = await new Promise<string>((resolve, reject) => {
 					let pending = "";
+					// The helper reports its unarmed-watcher timeout only after the watcher
+					// deadline elapses, so this is a contention-sensitive wait, not a fast
+					// assertion. The oracle step has been observed at 17s and at 41s on the
+					// same runner image; a 15s ceiling failed on the slow end (CI #1156).
 					const timeout = setTimeout(
 						() => reject(new Error("watcher timeout was not reported")),
-						15_000,
+						30_000,
 					);
 					control?.setEncoding("utf8");
 					control?.on("data", (chunk: string) => {
@@ -911,27 +915,49 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			// the lowbox (the same technique the helper-death case above uses), and
 			// waiting on a file costs no PowerShell spawn in the critical path.
 			const startedMarker = join(cwd, "descendant-started.txt");
+			const spawnDiag = join(cwd, "descendant-spawn.txt");
+			const childOut = join(cwd, "descendant-stdout.txt");
+			const childErr = join(cwd, "descendant-stderr.txt");
 			const sentinelDelayMs = 25_000;
 			const descendantScript = [
 				`Set-Content -LiteralPath ${psLiteral(startedMarker)} -Value running`,
 				`Start-Sleep -Milliseconds ${sentinelDelayMs}`,
 				`Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`,
 			].join("; ");
-			// -NoNewWindow forces the CreateProcess path. Without it Start-Process goes
-			// through ShellExecuteEx, which is not reliable inside an AppContainer and
-			// can hand back a pid for a launcher that exits immediately.
-			const command = `$child = Start-Process powershell.exe -PassThru -NoNewWindow -ArgumentList @('-NoProfile','-Command',${psLiteral(descendantScript)}); Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id; Start-Sleep -Seconds 60`;
+			// CI #1156 proved the descendant never runs its first statement inside the
+			// lowbox, so the interesting question is WHY, and the answer has to come
+			// back from the sandbox rather than from a guess. Capture the child's own
+			// streams plus any Start-Process exception, and fold all three into the
+			// assertion message. -NoNewWindow takes the CreateProcess path instead of
+			// ShellExecuteEx, which is unreliable inside an AppContainer.
+			const command = [
+				"$ErrorActionPreference = 'Stop'",
+				"try {",
+				`  $child = Start-Process powershell.exe -PassThru -NoNewWindow -RedirectStandardOutput ${psLiteral(childOut)} -RedirectStandardError ${psLiteral(childErr)} -ArgumentList @('-NoProfile','-Command',${psLiteral(descendantScript)})`,
+				`  Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id`,
+				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "spawned pid=$($child.Id) hasExited=$($child.HasExited)"`,
+				"} catch {",
+				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "Start-Process threw: $($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
+				"}",
+				"Start-Sleep -Seconds 60",
+			].join("\n");
 			const running = tool({ command, timeout: 45_000 }, controller.signal, cwd);
 			const deadline = Date.now() + 20_000;
 			while ((!existsSync(pidFile) || !existsSync(startedMarker)) && Date.now() < deadline) {
 				await Bun.sleep(20);
 			}
-			expect(existsSync(pidFile), "descendant pid was not published").toBe(true);
-			// This is the assertion that would have caught the vacuous fixture: the
-			// descendant has to have run its own first statement.
+			const readIfPresent = (path: string): string =>
+				existsSync(path) ? readFileSync(path, "utf8").trim().slice(0, 600) : "<absent>";
+			const spawnEvidence = () =>
+				`spawn=${JSON.stringify(readIfPresent(spawnDiag))} childStdout=${JSON.stringify(readIfPresent(childOut))} childStderr=${JSON.stringify(readIfPresent(childErr))}`;
+			expect(existsSync(pidFile), `descendant pid was not published (${spawnEvidence()})`).toBe(
+				true,
+			);
+			// The assertion that caught the vacuous fixture: the descendant has to have
+			// run its own first statement, not merely have been assigned a pid.
 			expect(
 				existsSync(startedMarker),
-				"descendant never executed inside the lowbox (no started marker)",
+				`descendant never executed inside the lowbox (${spawnEvidence()})`,
 			).toBe(true);
 			const publishedPid = readFileSync(pidFile, "utf8").trim();
 			const descendantPid = Number(publishedPid);
