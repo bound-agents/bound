@@ -910,37 +910,21 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			// tightened to a real handle wait it reported EXITED ~1s after launch
 			// against a 25s sleep (CI #1155) — the descendant had never been running.
 			//
-			// So have the descendant write a marker FIRST, then sleep, then write the
-			// sentinel. The marker is direct evidence the child executed code inside
-			// the lowbox (the same technique the helper-death case above uses), and
-			// waiting on a file costs no PowerShell spawn in the critical path.
+			// The descendant must PROVE it is executing, not merely own a pid.
+			// Use a tiny native mode in the freshly-built helper rather than nesting
+			// PowerShell inside PowerShell. CI #1157/#1158 proved Start-Process rejects
+			// that quoting-sensitive launch with ERROR_INVALID_NAME before a child
+			// exists; the native child takes only ordinary path + integer arguments,
+			// writes its started marker itself, waits, then writes the sentinel unless
+			// the enclosing job kills it.
 			const startedMarker = join(cwd, "descendant-started.txt");
 			const spawnDiag = join(cwd, "descendant-spawn.txt");
-			const childErr = join(cwd, "descendant-error.txt");
 			const sentinelDelayMs = 25_000;
-			// The first statement still proves execution. If any later statement
-			// fails, the child records the exact exception itself — no Start-Process
-			// stream-redirection paths are involved (those were what made CI #1157
-			// reject the launch with ERROR_INVALID_NAME).
-			const descendantScript = [
-				"$ErrorActionPreference = 'Stop'",
-				"try {",
-				`  Set-Content -LiteralPath ${psLiteral(startedMarker)} -Value running`,
-				`  Start-Sleep -Milliseconds ${sentinelDelayMs}`,
-				`  Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`,
-				"} catch {",
-				`  Set-Content -LiteralPath ${psLiteral(childErr)} -Value "$($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
-				"  exit 42",
-				"}",
-			].join("\n");
-			// -NoNewWindow takes the CreateProcess path rather than ShellExecuteEx.
-			// The parent records the pid immediately, then waits briefly and records
-			// HasExited/ExitCode so a child that dies before its marker still leaves a
-			// useful native outcome. Accessing ExitCode is guarded by HasExited.
+			const helperPath = helper as string;
 			const command = [
 				"$ErrorActionPreference = 'Stop'",
 				"try {",
-				`  $child = Start-Process powershell.exe -PassThru -NoNewWindow -ArgumentList @('-NoProfile','-Command',${psLiteral(descendantScript)})`,
+				`  $child = Start-Process -FilePath ${psLiteral(helperPath)} -PassThru -NoNewWindow -ArgumentList @('test-descendant','--started',${psLiteral(startedMarker)},'--sentinel',${psLiteral(sentinel)},'--delay-ms','${sentinelDelayMs}')`,
 				`  Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id`,
 				"  Start-Sleep -Milliseconds 750",
 				"  $child.Refresh()",
@@ -958,16 +942,13 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			}
 			const readIfPresent = (path: string): string =>
 				existsSync(path) ? readFileSync(path, "utf8").trim().slice(0, 600) : "<absent>";
-			const spawnEvidence = () =>
-				`spawn=${JSON.stringify(readIfPresent(spawnDiag))} childError=${JSON.stringify(readIfPresent(childErr))}`;
+			const spawnEvidence = () => `spawn=${JSON.stringify(readIfPresent(spawnDiag))}`;
 			expect(existsSync(pidFile), `descendant pid was not published (${spawnEvidence()})`).toBe(
 				true,
 			);
-			// The assertion that caught the vacuous fixture: the descendant has to have
-			// run its own first statement, not merely have been assigned a pid.
 			expect(
 				existsSync(startedMarker),
-				`descendant never executed inside the lowbox (${spawnEvidence()})`,
+				`native descendant never executed inside the lowbox (${spawnEvidence()})`,
 			).toBe(true);
 			const publishedPid = readFileSync(pidFile, "utf8").trim();
 			const descendantPid = Number(publishedPid);
