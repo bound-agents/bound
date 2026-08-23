@@ -789,12 +789,30 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					`appcontainer_lowbox was not selected\n${diagnose()}`,
 				).toBe("appcontainer_lowbox");
 				expect(result.isError, `${result.content[1]?.text}\n${diagnose()}`).toBeUndefined();
-				const outcomes = new Set(
-					(result.content[1]?.text ?? "").split(/\r?\n/).map((line) => line.trim()),
-				);
-				for (const [id] of allowed) expect(outcomes.has(`${id}=OK`), id).toBe(true);
-				for (const [id] of denied) expect(outcomes.has(`${id}=DENIED`), id).toBe(true);
-				for (const [id] of mutableGit) expect(outcomes.has(`${id}=OK`), id).toBe(true);
+				const resultText = result.content[1]?.text ?? "";
+				const outcomes = new Set(resultText.split(/\r?\n/).map((line) => line.trim()));
+				// Allowed-write success is a filesystem property, not a stdout property.
+				// CI #1165 selected lowbox, returned a non-error result, and later found
+				// the created cwd file, but intermittently missed the first `cwd=OK`
+				// marker from stdout. Verify the write directly; retain the marker text
+				// only as failure diagnostics so stream framing cannot make confinement
+				// appear red while the actual ACL contract passed.
+				for (const [id, path] of allowed) {
+					expect(
+						existsSync(path),
+						`${id}: allowed write missing; output=${JSON.stringify(resultText)}; ${diagnose()}`,
+					).toBe(true);
+				}
+				for (const [id] of denied)
+					expect(
+						outcomes.has(`${id}=DENIED`),
+						`${id}: expected DENIED; output=${JSON.stringify(resultText)}`,
+					).toBe(true);
+				for (const [id, path] of mutableGit)
+					expect(
+						existsSync(path),
+						`${id}: mutable git write missing; output=${JSON.stringify(resultText)}`,
+					).toBe(true);
 				for (const id of ["config-read", "pre-commit-read", "commit-msg-read", "nested-hook-read"])
 					expect(outcomes.has(`${id}=OK`), id).toBe(true);
 				for (const [id] of protectedGitOperations) {
