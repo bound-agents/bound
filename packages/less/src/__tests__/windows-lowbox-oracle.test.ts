@@ -891,6 +891,12 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			network: "blocked",
 			onUnavailable: "error",
 		};
+		const previousTestEnv = {
+			started: process.env.BOUND_LOWBOX_TEST_DESCENDANT_STARTED,
+			sentinel: process.env.BOUND_LOWBOX_TEST_DESCENDANT_SENTINEL,
+			pid: process.env.BOUND_LOWBOX_TEST_DESCENDANT_PID,
+			delay: process.env.BOUND_LOWBOX_TEST_DESCENDANT_DELAY_MS,
+		};
 		try {
 			const tool = createBashTool(
 				"windows-latest",
@@ -910,52 +916,29 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			// tightened to a real handle wait it reported EXITED ~1s after launch
 			// against a 25s sleep (CI #1155) — the descendant had never been running.
 			//
-			// The descendant must PROVE it is executing, not merely own a pid.
-			// Use a tiny native mode in the freshly-built helper rather than nesting
-			// PowerShell inside PowerShell. CI #1157/#1158 proved Start-Process rejects
-			// that quoting-sensitive launch with ERROR_INVALID_NAME before a child
-			// exists; the native child takes only ordinary path + integer arguments,
-			// writes its started marker itself, waits, then writes the sentinel unless
-			// the enclosing job kills it.
+			// AppContainer denies child creation outright (CI #1161: Process.Start
+			// returned ERROR_ACCESS_DENIED), so the sandboxed shell cannot construct a
+			// descendant tree for the oracle. Ask the unrestricted native helper to
+			// create the test descendant suspended, assign it to the SAME kill-on-close
+			// job as the shell, publish its pid, and resume both after the watcher is
+			// armed. That tests the actual property directly: cancelling one job must
+			// kill every contained process.
 			const startedMarker = join(cwd, "descendant-started.txt");
-			const spawnDiag = join(cwd, "descendant-spawn.txt");
-			const sentinelDelayMs = 25_000;
-			const helperPath = helper as string;
-			const command = [
-				"$ErrorActionPreference = 'Stop'",
-				"try {",
-				"  $psi = [System.Diagnostics.ProcessStartInfo]::new()",
-				`  $psi.FileName = ${psLiteral(helperPath)}`,
-				"  $psi.UseShellExecute = $false",
-				"  $psi.CreateNoWindow = $true",
-				// ProcessStartInfo.ArgumentList is not available on Windows PowerShell's
-				// .NET Framework, so quote each plain native argument into Arguments.
-				`  $psi.Arguments = 'test-descendant --started ' + ${psLiteral(`"${startedMarker}"`)} + ' --sentinel ' + ${psLiteral(`"${sentinel}"`)} + ' --delay-ms ${sentinelDelayMs}'`,
-				"  $child = [System.Diagnostics.Process]::Start($psi)",
-				`  Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id`,
-				"  Start-Sleep -Milliseconds 750",
-				"  $child.Refresh()",
-				"  $exit = if ($child.HasExited) { $child.ExitCode } else { '<running>' }",
-				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "spawned pid=$($child.Id) hasExited=$($child.HasExited) exitCode=$exit"`,
-				"} catch {",
-				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "Process.Start threw: $($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
-				"}",
-				"Start-Sleep -Seconds 60",
-			].join("\n");
+			const sentinelDelayMs = 12_000;
+			process.env.BOUND_LOWBOX_TEST_DESCENDANT_STARTED = startedMarker;
+			process.env.BOUND_LOWBOX_TEST_DESCENDANT_SENTINEL = sentinel;
+			process.env.BOUND_LOWBOX_TEST_DESCENDANT_PID = pidFile;
+			process.env.BOUND_LOWBOX_TEST_DESCENDANT_DELAY_MS = String(sentinelDelayMs);
+			const command = "Start-Sleep -Seconds 60";
 			const running = tool({ command, timeout: 45_000 }, controller.signal, cwd);
 			const deadline = Date.now() + 20_000;
 			while ((!existsSync(pidFile) || !existsSync(startedMarker)) && Date.now() < deadline) {
 				await Bun.sleep(20);
 			}
-			const readIfPresent = (path: string): string =>
-				existsSync(path) ? readFileSync(path, "utf8").trim().slice(0, 600) : "<absent>";
-			const spawnEvidence = () => `spawn=${JSON.stringify(readIfPresent(spawnDiag))}`;
-			expect(existsSync(pidFile), `descendant pid was not published (${spawnEvidence()})`).toBe(
-				true,
-			);
+			expect(existsSync(pidFile), "helper did not publish the test descendant pid").toBe(true);
 			expect(
 				existsSync(startedMarker),
-				`native descendant never executed inside the lowbox (${spawnEvidence()})`,
+				"helper-created descendant never executed its native started marker",
 			).toBe(true);
 			const publishedPid = readFileSync(pidFile, "utf8").trim();
 			const descendantPid = Number(publishedPid);
@@ -1009,6 +992,14 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				`descendant survived job cancellation (state=${exit.state}; ${exit.detail})`,
 			).toBe(false);
 		} finally {
+			const restoreEnv = (name: string, value: string | undefined): void => {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			};
+			restoreEnv("BOUND_LOWBOX_TEST_DESCENDANT_STARTED", previousTestEnv.started);
+			restoreEnv("BOUND_LOWBOX_TEST_DESCENDANT_SENTINEL", previousTestEnv.sentinel);
+			restoreEnv("BOUND_LOWBOX_TEST_DESCENDANT_PID", previousTestEnv.pid);
+			restoreEnv("BOUND_LOWBOX_TEST_DESCENDANT_DELAY_MS", previousTestEnv.delay);
 			// The watcher deletes its journal AFTER it has proven the job tree dead,
 			// so this is an assertion about a detached process's async cleanup, not
 			// about state the test body controls. It previously borrowed its slack
