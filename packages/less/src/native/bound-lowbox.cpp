@@ -1963,6 +1963,28 @@ int inspectCleanupFatal(const wchar_t* phase, unsigned long status) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+	// Test-only descendant used by the mandatory Windows oracle. Keeping this in
+	// the already-built native helper removes nested PowerShell / Start-Process
+	// parsing from the job-tree test: the process writes proof that it executed,
+	// waits, then writes the escape sentinel unless the enclosing job kills it.
+	if (argc == 8 && std::wstring(argv[1]) == L"test-descendant" &&
+		std::wstring(argv[2]) == L"--started" && std::wstring(argv[4]) == L"--sentinel" &&
+		std::wstring(argv[6]) == L"--delay-ms") {
+		auto writeMarker = [](const wchar_t* path, const char* value) -> bool {
+			Handle file(CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+				CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+			if (file.value == INVALID_HANDLE_VALUE) return false;
+			DWORD written = 0;
+			const DWORD bytes = static_cast<DWORD>(strlen(value));
+			return WriteFile(file.value, value, bytes, &written, nullptr) && written == bytes;
+		};
+		wchar_t* end = nullptr;
+		const unsigned long delay = wcstoul(argv[7], &end, 10);
+		if (!end || *end != L'\0' || delay > 120000) return 132;
+		if (!writeMarker(argv[3], "running")) return 133;
+		Sleep(static_cast<DWORD>(delay));
+		return writeMarker(argv[5], "escaped") ? 0 : 134;
+	}
 	if (argc == 2 && std::wstring(argv[1]) == L"self-test-authority-journal") {
 		return selfTestAuthorityJournal();
 	}
