@@ -90,10 +90,10 @@ jobs:
         # Step-level (not job-level) timeout: a wedged test fails THIS step
         # without cancelling the job, so the summary + upload steps below
         # (gated on !cancelled()) still run and surface partial diagnostics.
-        # The unit suite finishes in a few minutes on every lane; 20 caps a
-        # hang at minutes instead of GitHub's 360-minute default — which is
-        # what let a wedged worker burn ~6h on the Windows lane.
-        timeout-minutes: 20
+        # Windows runs package files serially to avoid worker contention; give
+        # that lane 30 minutes while keeping the other lanes at 20. GitHub's
+        # expression resolves to a number for timeout-minutes.
+        timeout-minutes: ${{ runner.os == 'Windows' && 30 || 20 }}
         shell: bash
         env:
           BOUND_LOWBOX_HELPER: ${{ runner.os == 'Windows' && format('{0}\\dist\\bound-lowbox.exe', github.workspace) || '' }}
@@ -142,14 +142,14 @@ jobs:
             # 0 fail, JUnit output unaffected. On Windows the step dropped from
             # 20m07s (capped) to 11m46s (completed).
             #
-            # macOS is the exception for packages/agent. With isolated workers it
-            # exits nonzero on a different timing-sensitive test set each run
-            # (timeouts plus occasional timer/delivery assertions) while Ubuntu
-            # and Windows pass and the same tests pass serially. Run that one
-            # package serially on macOS; its ~67s local cost still leaves the
-            # whole lane far below the 20-minute cap.
+            # macOS packages/agent and every Windows package run serially.
+            # Isolated workers made macOS agent exit nonzero on a different
+            # timing-sensitive set each run, while on Windows they caused worker
+            # crashes, DB-closed errors, many arbitrary 30s test timeouts, and a
+            # 20-minute step overrun. The worker setup improved nominal throughput
+            # but destroyed per-test latency on the constrained runners.
             PARALLEL_ARG=--parallel
-            if [ "$RUNNER_OS" = "macOS" ] && [ "$pkg" = "agent" ]; then PARALLEL_ARG=; fi
+            if [ "$RUNNER_OS" = "Windows" ] || { [ "$RUNNER_OS" = "macOS" ] && [ "$pkg" = "agent" ]; }; then PARALLEL_ARG=; fi
             #
             # The Windows lowbox oracle is excluded here because the dedicated
             # step above already runs it, serially and with its own timeout. On
