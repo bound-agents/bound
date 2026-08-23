@@ -895,7 +895,15 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				undefined,
 				runId,
 			);
-			const command = `$child = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-Command',${psLiteral(`Start-Sleep -Seconds 3; Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`)}); Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id; Start-Sleep -Seconds 30`;
+			// The descendant must outlive the test's SETUP, not just its abort. It
+			// sleeps SENTINEL_DELAY_MS before writing, and the liveness precondition
+			// below spawns a PowerShell probe that costs ~1-2s to start on a contended
+			// runner. At a 3s delay the child died of old age mid-setup and the probe
+			// reported EXITED before cancellation ever fired (CI #1154) — a fixture
+			// race misreported as a containment result. 25s leaves room for a slow
+			// pid publish plus a slow probe while staying inside the 30s per-test cap.
+			const sentinelDelayMs = 25_000;
+			const command = `$child = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-Command',${psLiteral(`Start-Sleep -Milliseconds ${sentinelDelayMs}; Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`)}); Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id; Start-Sleep -Seconds 60`;
 			const running = tool({ command, timeout: 30_000 }, controller.signal, cwd);
 			const deadline = Date.now() + 10_000;
 			while (!existsSync(pidFile) && Date.now() < deadline) await Bun.sleep(20);
@@ -935,14 +943,15 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			expect(Number(exitCodeMatch?.[1]), `cancellation returned success: ${output}`).not.toBe(0);
 			// Wait for the descendant to die on ONE process handle, then assert both
 			// signals together. Ordering matters: the sentinel is only meaningful once
-			// enough time has passed for a surviving descendant to have written it
-			// (it sleeps 3s first), so checking it against a fixed sleep while the
-			// process was still running reported "no escape" from a race rather than
-			// from containment.
-			const exit = waitForProcessExit(descendantPid, 15_000, launchedAtMs);
-			// Give a survivor time to finish its 3s sleep and write, so an absent
-			// sentinel means containment rather than "we looked too early".
-			await Bun.sleep(3_500);
+			// the descendant's own delay has elapsed relative to ITS launch, so the
+			// wait below is computed from launchedAtMs rather than being a fixed sleep
+			// tuned to a hardcoded delay that has since changed.
+			const exit = waitForProcessExit(descendantPid, 20_000, launchedAtMs);
+			// Sleep until a SURVIVOR would already have written, so an absent sentinel
+			// means containment rather than "we looked too early".
+			const sentinelDue = launchedAtMs + sentinelDelayMs + 1_500;
+			const remaining = sentinelDue - Date.now();
+			if (remaining > 0) await Bun.sleep(remaining);
 			// The security property: the descendant did no work after cancellation.
 			expect(
 				existsSync(sentinel),
