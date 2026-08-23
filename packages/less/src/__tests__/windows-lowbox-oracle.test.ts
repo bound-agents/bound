@@ -916,26 +916,36 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			// waiting on a file costs no PowerShell spawn in the critical path.
 			const startedMarker = join(cwd, "descendant-started.txt");
 			const spawnDiag = join(cwd, "descendant-spawn.txt");
-			const childOut = join(cwd, "descendant-stdout.txt");
-			const childErr = join(cwd, "descendant-stderr.txt");
+			const childErr = join(cwd, "descendant-error.txt");
 			const sentinelDelayMs = 25_000;
+			// The first statement still proves execution. If any later statement
+			// fails, the child records the exact exception itself — no Start-Process
+			// stream-redirection paths are involved (those were what made CI #1157
+			// reject the launch with ERROR_INVALID_NAME).
 			const descendantScript = [
-				`Set-Content -LiteralPath ${psLiteral(startedMarker)} -Value running`,
-				`Start-Sleep -Milliseconds ${sentinelDelayMs}`,
-				`Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`,
-			].join("; ");
-			// CI #1156 proved the descendant never runs its first statement inside the
-			// lowbox, so the interesting question is WHY, and the answer has to come
-			// back from the sandbox rather than from a guess. Capture the child's own
-			// streams plus any Start-Process exception, and fold all three into the
-			// assertion message. -NoNewWindow takes the CreateProcess path instead of
-			// ShellExecuteEx, which is unreliable inside an AppContainer.
+				"$ErrorActionPreference = 'Stop'",
+				"try {",
+				`  Set-Content -LiteralPath ${psLiteral(startedMarker)} -Value running`,
+				`  Start-Sleep -Milliseconds ${sentinelDelayMs}`,
+				`  Set-Content -LiteralPath ${psLiteral(sentinel)} -Value escaped`,
+				"} catch {",
+				`  Set-Content -LiteralPath ${psLiteral(childErr)} -Value "$($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
+				"  exit 42",
+				"}",
+			].join("\n");
+			// -NoNewWindow takes the CreateProcess path rather than ShellExecuteEx.
+			// The parent records the pid immediately, then waits briefly and records
+			// HasExited/ExitCode so a child that dies before its marker still leaves a
+			// useful native outcome. Accessing ExitCode is guarded by HasExited.
 			const command = [
 				"$ErrorActionPreference = 'Stop'",
 				"try {",
-				`  $child = Start-Process powershell.exe -PassThru -NoNewWindow -RedirectStandardOutput ${psLiteral(childOut)} -RedirectStandardError ${psLiteral(childErr)} -ArgumentList @('-NoProfile','-Command',${psLiteral(descendantScript)})`,
+				`  $child = Start-Process powershell.exe -PassThru -NoNewWindow -ArgumentList @('-NoProfile','-Command',${psLiteral(descendantScript)})`,
 				`  Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id`,
-				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "spawned pid=$($child.Id) hasExited=$($child.HasExited)"`,
+				"  Start-Sleep -Milliseconds 750",
+				"  $child.Refresh()",
+				"  $exit = if ($child.HasExited) { $child.ExitCode } else { '<running>' }",
+				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "spawned pid=$($child.Id) hasExited=$($child.HasExited) exitCode=$exit"`,
 				"} catch {",
 				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "Start-Process threw: $($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
 				"}",
@@ -949,7 +959,7 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const readIfPresent = (path: string): string =>
 				existsSync(path) ? readFileSync(path, "utf8").trim().slice(0, 600) : "<absent>";
 			const spawnEvidence = () =>
-				`spawn=${JSON.stringify(readIfPresent(spawnDiag))} childStdout=${JSON.stringify(readIfPresent(childOut))} childStderr=${JSON.stringify(readIfPresent(childErr))}`;
+				`spawn=${JSON.stringify(readIfPresent(spawnDiag))} childError=${JSON.stringify(readIfPresent(childErr))}`;
 			expect(existsSync(pidFile), `descendant pid was not published (${spawnEvidence()})`).toBe(
 				true,
 			);
