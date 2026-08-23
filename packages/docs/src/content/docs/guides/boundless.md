@@ -116,28 +116,13 @@ for background work.
 
 ## Follow Yard execution
 
-A running `yard` call appears as a magenta-striped turn below the transcript — the same
-left-stripe wrapper as every other message, so long content wraps inside the stripe
-instead of shattering a border. The card replaces the ordinary tool request and result
-rows entirely: the request card is suppressed while the run is live and stays suppressed
-after it commits, so one card carries the whole invocation. The card shows the
-initial input and the live execution graph: tool, auxiliary-agent, and inference effects
-hang off their parent with box-drawing branches, nested `yard()` runs indent as subtrees,
-and concurrent effects read as siblings in dispatch order. Glyphs are color-coded by state
-(green done, red failed, yellow running); tool, inference, and nested-run labels carry
-their own colors, and finished effects show elapsed time graded by magnitude. A fan-out
-that dispatches the same agent across many partitions packs into one dense row —
-`aux:scout ×24` with a per-member glyph cluster — and failed members keep an indexed
-detail line with the failure reason. While the run is live, the card shows the head of the
-generator program (syntax-highlighted, elided past a few lines), previews are clamped to
-one line, and the graph section is capped to the viewport (rows past the budget collapse
-into “… +N more effects”), so the card never outgrows the terminal. The processing indicator
-reflects the invocation as a whole — `Yard · 3/12 effects` with elapsed anchored at the
-run's start rather than a per-segment “Thinking” counter that resets between loop turns —
-and the status-bar session cost refreshes as lifecycle events arrive instead of freezing
-until the run terminates. Client tools dispatched from inside the run (for example
-`boundless_bash`) render only as graph nodes, and tools dispatched by auxiliary-agent
-threads never stream under this chat — they belong to their own thread.
+A running `yard` call appears as a magenta-striped card below the transcript. It replaces the ordinary tool request and result rows for the whole invocation.
+
+The card shows the input and a live execution graph. Tool, auxiliary-agent, and inference effects branch from their parent; nested `yard()` runs form subtrees, and concurrent effects appear as siblings. State colors show whether an effect is running, done, or failed. A wide fan-out collapses into one row, with failed members retaining an indexed failure detail.
+
+While the run is live, the card includes a short syntax-highlighted program preview. Previews and graph height are bounded to the viewport. The processing indicator tracks the full invocation, including effect progress and elapsed time, and session cost refreshes as lifecycle events arrive.
+
+Client tools dispatched inside the run, such as `boundless_bash`, appear only as graph nodes. Tools dispatched by auxiliary-agent threads belong to their own thread and do not stream under this chat.
 
 When the root run finishes, the card moves into terminal scrollback at the matching Yard
 result row with the generator program (syntax-highlighted) and the full input and result
