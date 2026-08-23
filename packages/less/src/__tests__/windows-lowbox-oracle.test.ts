@@ -924,14 +924,21 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 			const command = [
 				"$ErrorActionPreference = 'Stop'",
 				"try {",
-				`  $child = Start-Process -FilePath ${psLiteral(helperPath)} -PassThru -NoNewWindow -ArgumentList @('test-descendant','--started',${psLiteral(startedMarker)},'--sentinel',${psLiteral(sentinel)},'--delay-ms','${sentinelDelayMs}')`,
+				"  $psi = [System.Diagnostics.ProcessStartInfo]::new()",
+				`  $psi.FileName = ${psLiteral(helperPath)}`,
+				"  $psi.UseShellExecute = $false",
+				"  $psi.CreateNoWindow = $true",
+				// ProcessStartInfo.ArgumentList is not available on Windows PowerShell's
+				// .NET Framework, so quote each plain native argument into Arguments.
+				`  $psi.Arguments = 'test-descendant --started ' + ${psLiteral(`"${startedMarker}"`)} + ' --sentinel ' + ${psLiteral(`"${sentinel}"`)} + ' --delay-ms ${sentinelDelayMs}'`,
+				"  $child = [System.Diagnostics.Process]::Start($psi)",
 				`  Set-Content -LiteralPath ${psLiteral(pidFile)} -Value $child.Id`,
 				"  Start-Sleep -Milliseconds 750",
 				"  $child.Refresh()",
 				"  $exit = if ($child.HasExited) { $child.ExitCode } else { '<running>' }",
 				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "spawned pid=$($child.Id) hasExited=$($child.HasExited) exitCode=$exit"`,
 				"} catch {",
-				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "Start-Process threw: $($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
+				`  Set-Content -LiteralPath ${psLiteral(spawnDiag)} -Value "Process.Start threw: $($_.Exception.GetType().FullName): $($_.Exception.Message)"`,
 				"}",
 				"Start-Sleep -Seconds 60",
 			].join("\n");
