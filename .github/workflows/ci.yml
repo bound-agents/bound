@@ -134,19 +134,29 @@ jobs:
             echo "::group::packages/$pkg"
             pkg_code=0
             # --parallel spreads a package's test FILES across worker processes
-            # (default: core count). The loop above is sequential across 11
-            # packages, which on a 2-core Windows runner walked the whole step up
-            # to GitHub's 20-minute ceiling and killed it mid-`agent` — nothing
-            # after `llm` ran at all. Measured locally on packages/agent, the
-            # heaviest of the eleven: 67.1s sequential -> 23.4s parallel, same
-            # 2472 pass / 0 fail, JUnit output unaffected.
+            # (default: core count). The loop is sequential across 11 packages,
+            # which on a ~2-core Windows runner walked the whole step up to
+            # GitHub's 20-minute ceiling and killed it mid-`agent` — nothing after
+            # `llm` ran at all. Measured locally on packages/agent, the heaviest
+            # of the eleven: 67.1s sequential -> 23.4s parallel, same 2472 pass /
+            # 0 fail, JUnit output unaffected. On the Windows lane the step went
+            # 20m07s (capped) -> 12m13s (completed).
             #
             # --parallel implies --isolate (a fresh global per test file), which
             # is the stricter contract: files can no longer see each other's
             # module-registry leftovers, so a suite that passed only through
             # cross-file leakage now fails honestly rather than depending on
             # execution order.
-            bun test "packages/$pkg" --parallel --timeout "$TEST_TIMEOUT" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
+            #
+            # The Windows lowbox oracle is excluded here because the dedicated
+            # step above already runs it, serially and with its own timeout. It
+            # spawns real AppContainer processes and asserts on a DETACHED
+            # watcher's cleanup, so running it concurrently with 66 other files
+            # starves that watcher and fails the journal assertion. Duplicating it
+            # was always wasted runner time; under --parallel it was also wrong.
+            # On Linux/macOS all 8 of its cases are win32-gated skips, so
+            # excluding it everywhere costs no coverage.
+            bun test "packages/$pkg" --parallel --timeout "$TEST_TIMEOUT" --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
             echo "$pkg_code" > "test-results/$pkg.exit"
             if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"

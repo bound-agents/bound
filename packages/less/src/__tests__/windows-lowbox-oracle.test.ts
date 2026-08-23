@@ -937,17 +937,36 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 				`descendant survived job cancellation (state=${exit.state}; ${exit.detail})`,
 			).toBe(false);
 		} finally {
-			const journals = spawnSync(
-				"powershell.exe",
-				[
-					"-NoProfile",
-					"-Command",
-					`@(Get-ChildItem -Path $env:TEMP -Filter 'bound-lowbox-${runId}-Bound.Lowbox.*.authority').Count`,
-				],
-				{ encoding: "utf8", windowsHide: true },
-			);
+			// The watcher deletes its journal AFTER it has proven the job tree dead,
+			// so this is an assertion about a detached process's async cleanup, not
+			// about state the test body controls. It previously borrowed its slack
+			// from the 20ms poll loop above; replacing that with a handle wait
+			// removed the incidental delay, and running the suite under --parallel
+			// starves the watcher further, so it needs a bounded wait of its own.
+			const countJournals = (): { count: number; status: number | null; stderr: string } => {
+				const probe = spawnSync(
+					"powershell.exe",
+					[
+						"-NoProfile",
+						"-Command",
+						`@(Get-ChildItem -Path $env:TEMP -Filter 'bound-lowbox-${runId}-Bound.Lowbox.*.authority').Count`,
+					],
+					{ encoding: "utf8", windowsHide: true },
+				);
+				return {
+					count: Number(`${probe.stdout ?? ""}`.trim()),
+					status: probe.status,
+					stderr: `${probe.stderr ?? ""}`.trim(),
+				};
+			};
+			let journals = countJournals();
+			const journalDeadline = Date.now() + 15_000;
+			while (journals.status === 0 && journals.count !== 0 && Date.now() < journalDeadline) {
+				await Bun.sleep(250);
+				journals = countJournals();
+			}
 			expect(journals.status, journals.stderr).toBe(0);
-			expect(Number(journals.stdout.trim()), "cancellation left an authority journal").toBe(0);
+			expect(journals.count, "cancellation left an authority journal").toBe(0);
 			await removeFixtureAfterHandlesClose(cwd);
 		}
 	});
