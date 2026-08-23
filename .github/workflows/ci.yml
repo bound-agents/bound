@@ -139,24 +139,23 @@ jobs:
             # GitHub's 20-minute ceiling and killed it mid-`agent` — nothing after
             # `llm` ran at all. Measured locally on packages/agent, the heaviest
             # of the eleven: 67.1s sequential -> 23.4s parallel, same 2472 pass /
-            # 0 fail, JUnit output unaffected. On the Windows lane the step went
-            # 20m07s (capped) -> 12m13s (completed).
+            # 0 fail, JUnit output unaffected. On Windows the step dropped from
+            # 20m07s (capped) to 11m46s (completed).
             #
-            # --parallel implies --isolate (a fresh global per test file), which
-            # is the stricter contract: files can no longer see each other's
-            # module-registry leftovers, so a suite that passed only through
-            # cross-file leakage now fails honestly rather than depending on
-            # execution order.
+            # macOS is the exception for packages/agent. With isolated workers it
+            # exits nonzero on a different timing-sensitive test set each run
+            # (timeouts plus occasional timer/delivery assertions) while Ubuntu
+            # and Windows pass and the same tests pass serially. Run that one
+            # package serially on macOS; its ~67s local cost still leaves the
+            # whole lane far below the 20-minute cap.
+            PARALLEL_ARG=--parallel
+            if [ "$RUNNER_OS" = "macOS" ] && [ "$pkg" = "agent" ]; then PARALLEL_ARG=; fi
             #
             # The Windows lowbox oracle is excluded here because the dedicated
-            # step above already runs it, serially and with its own timeout. It
-            # spawns real AppContainer processes and asserts on a DETACHED
-            # watcher's cleanup, so running it concurrently with 66 other files
-            # starves that watcher and fails the journal assertion. Duplicating it
-            # was always wasted runner time; under --parallel it was also wrong.
-            # On Linux/macOS all 8 of its cases are win32-gated skips, so
-            # excluding it everywhere costs no coverage.
-            bun test "packages/$pkg" --parallel --timeout "$TEST_TIMEOUT" --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
+            # step above already runs it, serially and with its own timeout. On
+            # Linux/macOS all 8 cases are win32-gated skips, so excluding it
+            # everywhere costs no coverage.
+            bun test "packages/$pkg" $PARALLEL_ARG --timeout "$TEST_TIMEOUT" --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
             echo "$pkg_code" > "test-results/$pkg.exit"
             if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"
