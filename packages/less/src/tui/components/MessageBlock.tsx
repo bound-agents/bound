@@ -28,6 +28,19 @@ const TOOL_RESULT_MAX_LINES = 32;
  */
 const TOOL_RESULT_HEAD_ROWS = 16;
 const TOOL_RESULT_TAIL_ROWS = 16;
+
+function clipToolResultSourceLines(lines: string[]): { text: string; omitted: number } {
+	if (lines.length <= TOOL_RESULT_MAX_LINES) return { text: lines.join("\n"), omitted: 0 };
+	const omitted = lines.length - TOOL_RESULT_HEAD_ROWS - TOOL_RESULT_TAIL_ROWS;
+	const clipped = [
+		...lines.slice(0, TOOL_RESULT_HEAD_ROWS),
+		`… ${omitted} more ${omitted === 1 ? "line" : "lines"}`,
+		...lines.slice(lines.length - TOOL_RESULT_TAIL_ROWS),
+	];
+	const openFences = clipped.reduce((count, line) => (/^\s*```/.test(line) ? count + 1 : count), 0);
+	if (openFences % 2 === 1) clipped.push("```");
+	return { text: clipped.join("\n"), omitted };
+}
 /** Hard cap on rendered diff entries (after hunking) per edit call. */
 const EDIT_DIFF_MAX_LINES = 24;
 /** Preview lines shown under a `boundless_write` call. */
@@ -841,6 +854,22 @@ export function MessageBlock({
 		}
 		const allLines =
 			firstNonEmpty >= 0 ? rawLines.slice(firstNonEmpty, lastNonEmpty + 1) : rawLines;
+		if (resolvedToolName === "aux") {
+			const clipped = clipToolResultSourceLines(allLines);
+			return (
+				<StripeBox color="cyan" width={stripeWidth}>
+					<Box flexDirection="column" paddingLeft={2}>
+						<Text>
+							<Text color="green" bold>
+								✓
+							</Text>
+							<Text dimColor> aux</Text>
+						</Text>
+						<Markdown text={clipped.text} />
+					</Box>
+				</StripeBox>
+			);
+		}
 
 		// Echo the tool name on the result line so the parent tool_call is
 		// visually re-anchored (especially helpful when results scroll past

@@ -11,6 +11,55 @@ import { MessageBlock } from "../tui/components/MessageBlock";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("MessageBlock", () => {
+	it("renders aux tool results as clipped markdown with closed fences", () => {
+		const sourceLines = [
+			"# Aux report",
+			"",
+			"- first",
+			"- second",
+			"",
+			"```ts",
+			...Array.from({ length: 40 }, (_, i) => `const value${i} = ${i};`),
+		];
+		const message = {
+			id: "aux-result",
+			thread_id: "t-1",
+			role: "tool_result" as const,
+			content: sourceLines.join("\n"),
+			tool_name: "aux-1",
+			created_at: new Date().toISOString(),
+		};
+		const frame =
+			render(
+				React.createElement(MessageBlock, { message, toolName: "aux", terminalColumns: 120 }),
+			).lastFrame() ?? "";
+		expect(frame).toContain("Aux report");
+		expect(frame).toContain("• first");
+		expect(frame).toContain("… 14 more lines");
+		expect(frame).not.toContain("```ts");
+		expect(frame).not.toContain("```\n");
+	});
+
+	it("keeps non-aux tool result rendering unchanged", () => {
+		const message = {
+			id: "bash-result",
+			thread_id: "t-1",
+			role: "tool_result" as const,
+			content: "# literal heading\n- literal bullet",
+			tool_name: "bash-1",
+			created_at: new Date().toISOString(),
+		};
+		const frame =
+			render(
+				React.createElement(MessageBlock, {
+					message,
+					toolName: "boundless_bash",
+					terminalColumns: 120,
+				}),
+			).lastFrame() ?? "";
+		expect(frame).toContain("- literal bullet");
+		expect(frame).not.toContain("• literal bullet");
+	});
 	it("keeps syntax colors on edit content while coloring the diff gutter", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "bound-edit-highlight-"));
 		const filePath = join(dir, "sample.ts");
