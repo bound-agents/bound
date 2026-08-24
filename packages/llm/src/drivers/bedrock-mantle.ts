@@ -59,6 +59,7 @@ import {
 import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
 
 // Re-exported for the driver test suite; canonical definition lives in ./shared.
+import { quantizeCacheTtl } from "./bedrock";
 export { withEmptyRetry } from "./shared";
 
 /**
@@ -248,7 +249,7 @@ export class BedrockMantleDriver implements LLMBackend {
 			if (!provider) throw new Error("Bedrock Mantle Anthropic provider was not initialized");
 			const messages = toModelMessages(params.messages, {
 				cacheProvider: "anthropic",
-				cacheTtl: params.cache_ttl,
+				cacheTtl: quantizeCacheTtl(params.cache_ttl),
 				resolveFileRef: params.resolveFileRef,
 				targetEnvelope: ANTHROPIC_ENVELOPE,
 				reasoningProviderOptions: "anthropic",

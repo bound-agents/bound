@@ -97,6 +97,30 @@ describe("ModelRouter — getCacheTtl capability defaulting", () => {
 		expect(router.getCacheTtl(backend.id)).toBeUndefined();
 	});
 
+	it("keeps arbitrary configured cache TTLs available for internal scheduling", () => {
+		const config: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "cached",
+					provider: "bedrock",
+					model: "anthropic.claude-sonnet",
+					region: "us-east-1",
+					cacheTtl: "30m",
+				},
+			],
+			default: "cached",
+		};
+		const backend = new CachingMockBackend("cached");
+		const router = new ModelRouter(
+			new Map([[backend.id, backend]]),
+			backend.id,
+			new Map([[backend.id, backend.capabilities()]]),
+			undefined,
+			new Map([[backend.id, config.backends[0]]]),
+		);
+		expect(router.getCacheTtl("cached")).toBe("30m");
+	});
+
 	it("E3: explicit config cacheTtl='1h' overrides the capability default", () => {
 		const config: ModelBackendsConfig = {
 			backends: [

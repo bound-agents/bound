@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { durationMsSchema } from "./durations.js";
+import { durationMsSchema, durationStringSchema } from "./durations.js";
 
 // Config schemas use Zod strict mode throughout so unknown keys fail parse
 // with the exact offending key name instead of being silently stripped.
@@ -195,7 +195,7 @@ const modelBackendSchema = z
 		// both via `cache_control: { ttl }`. Setting "1h" on a model that
 		// doesn't support extended TTL is silently ignored by the provider
 		// and falls back to the default 5m behavior.
-		cache_ttl: z.enum(["5m", "1h"]).optional(),
+		cache_ttl: durationStringSchema().optional(),
 		// Per-backend opt-in cache-warming (issue #10). When present with
 		// `enabled: true`, the warm-poke driver keeps this backend's threads'
 		// prompt cache hot so the next real message lands on a cache-read. The

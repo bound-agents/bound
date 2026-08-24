@@ -83,6 +83,40 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("accepts arbitrary valid cache durations and rejects garbage", () => {
+			for (const cache_ttl of ["5m", "1h", "30m", "PT30M"]) {
+				const result = modelBackendsSchema.safeParse({
+					backends: [
+						{
+							id: "cached",
+							provider: "bedrock",
+							model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+							region: "us-east-1",
+							context_window: 200_000,
+							tier: 1,
+							cache_ttl,
+						},
+					],
+					default: "cached",
+				});
+				expect(result.success, cache_ttl).toBe(true);
+			}
+
+			const invalid = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "cached",
+						provider: "bedrock",
+						model: "openai.gpt-5.6",
+						region: "us-east-1",
+						cache_ttl: "garbage",
+					},
+				],
+				default: "cached",
+			});
+			expect(invalid.success).toBe(false);
+		});
+
 		it("rejects empty backends array with non-empty default", () => {
 			const config = {
 				backends: [],

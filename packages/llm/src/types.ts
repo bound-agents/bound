@@ -184,7 +184,7 @@ export interface ChatParams {
 	 * cache_control.ttl (Anthropic). Drivers that don't support cache TTL
 	 * configuration ignore this field.
 	 */
-	cache_ttl?: "5m" | "1h";
+	cache_ttl?: string;
 }
 
 export type LLMMessage = {
@@ -395,7 +395,7 @@ export interface BackendConfig {
 	 * Setting "1h" on a model that doesn't support extended TTL is silently
 	 * ignored by the provider and falls back to default 5m behavior.
 	 */
-	cacheTtl?: "5m" | "1h";
+	cacheTtl?: string;
 	/**
 	 * Per-backend cache-warming config (issue #10), consumed only by the
 	 * cache-warming driver — never at inference time. Absent → this backend is
@@ -485,7 +485,7 @@ export interface InferenceRequestPayload {
 		| { type: "disabled" };
 	// Free-form, provider-validated; see ChatParams.effort.
 	effort?: string;
-	cache_ttl?: "5m" | "1h";
+	cache_ttl?: string;
 	timeout_ms: number;
 }
 

@@ -5,7 +5,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
-	CACHE_TTL_MS,
 	HandleMessageTracker,
 	WARM_POKE_MARKER,
 	WARM_POKE_MAX_OUTPUT_TOKENS,
@@ -58,6 +57,7 @@ import {
 	isSubscriptionRejected,
 } from "@bound/platforms";
 import type { ClusterFsResult } from "@bound/sandbox";
+import { parseDurationMs } from "@bound/shared";
 import type { KeyringConfig, Logger, McpConfig, StatusForwardPayload } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
@@ -1222,7 +1222,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				if (!warmCfg?.enabled) return null;
 				const ttl = modelRouter.getCacheTtl(modelId);
 				if (!ttl) return null;
-				return { ttlMs: CACHE_TTL_MS[ttl], maxPokes: warmCfg.maxPokes };
+				return { ttlMs: parseDurationMs(ttl), maxPokes: warmCfg.maxPokes };
 			};
 			warmPokeInterval = setInterval(() => {
 				try {

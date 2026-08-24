@@ -56,6 +56,20 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 	});
 });
 
+describe("inferenceRequestPayloadSchema cache_ttl field", () => {
+	it("mirrors arbitrary valid duration strings across the relay", () => {
+		for (const cache_ttl of ["30m", "PT30M"]) {
+			const result = inferenceRequestPayloadSchema.safeParse({
+				model: "gpt-5.6",
+				segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
+				nowMs: 0,
+				cache_ttl,
+			});
+			expect(result.success, cache_ttl).toBe(true);
+		}
+	});
+});
+
 describe("streamChunkPayloadSchema thinking field", () => {
 	it("accepts payload with thinking content", () => {
 		const payload = {
