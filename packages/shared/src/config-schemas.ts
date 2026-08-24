@@ -189,6 +189,7 @@ const modelBackendSchema = z
 		// time, and when neither is set, omits max_tokens entirely so the
 		// provider uses its own default.
 		max_output_tokens: z.number().int().positive().optional(),
+		system_prompt_suffix: z.string().optional(),
 		// Prompt cache TTL hint forwarded to the provider's cache breakpoint.
 		// Bedrock supports "5m" (default) and "1h" (extended, only for Claude
 		// Opus 4.5+, Sonnet 4.5+, Haiku 4.5+). Anthropic native API supports

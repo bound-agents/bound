@@ -7108,6 +7108,24 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		expect(dev1Content).not.toEqual(dev2Content);
 	});
 
+	describe("model-specific system prompt suffix", () => {
+		it("appends the resolved model suffix to the system prompt", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				currentModel: "configured",
+				systemPromptSuffix: "Configured model only.",
+			});
+			expect(result.systemPrompt.endsWith("Configured model only.")).toBe(true);
+		});
+
+		it("does not append a suffix when the resolved model has none", () => {
+			const result = assembleContext({ db, threadId, userId, currentModel: "plain" });
+			expect(result.systemPrompt).not.toContain("Configured model only.");
+		});
+	});
+
 	describe("systemPromptAddition (AC2.2)", () => {
 		it("should append systemPromptAddition to system suffix when present", () => {
 			const result = assembleContext({

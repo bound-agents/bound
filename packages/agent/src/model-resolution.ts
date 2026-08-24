@@ -30,6 +30,7 @@ export type ModelResolution =
 			// backends with tight limits (e.g. Nova Pro = 10_000) don't 400
 			// with "max_tokens exceeds model limit of N".
 			maxOutputTokens?: number;
+			systemPromptSuffix?: string;
 			// Cache TTL hint for the provider's cachePoint. "5m" or "1h".
 			// See ChatParams.cache_ttl for provider support details.
 			cacheTtl?: ChatParams["cache_ttl"];
@@ -184,6 +185,7 @@ function buildLocalResolution(
 		thinkingTool: modelRouter.usesThinkingTool(modelId),
 		effort: modelRouter.getEffort(modelId),
 		maxOutputTokens: modelRouter.getMaxOutputTokens(modelId),
+		systemPromptSuffix: modelRouter.getSystemPromptSuffix(modelId),
 		cacheTtl: modelRouter.getCacheTtl(modelId),
 		max_context,
 	};

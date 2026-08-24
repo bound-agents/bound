@@ -64,6 +64,37 @@ class CachingMockBackend implements LLMBackend {
 	}
 }
 
+describe("ModelRouter — system prompt suffix", () => {
+	it("returns the configured suffix only for its backend", () => {
+		const configured = new MockBackend("configured");
+		const plain = new MockBackend("plain");
+		const backends = new Map<string, LLMBackend>([
+			[configured.id, configured],
+			[plain.id, plain],
+		]);
+		const router = new ModelRouter(
+			backends,
+			configured.id,
+			undefined,
+			undefined,
+			new Map([
+				[
+					configured.id,
+					{
+						id: configured.id,
+						provider: "bedrock",
+						model: "configured",
+						systemPromptSuffix: "Configured only.",
+					},
+				],
+				[plain.id, { id: plain.id, provider: "bedrock", model: "plain" }],
+			]),
+		);
+		expect(router.getSystemPromptSuffix(configured.id)).toBe("Configured only.");
+		expect(router.getSystemPromptSuffix(plain.id)).toBeUndefined();
+	});
+});
+
 describe("ModelRouter — getCacheTtl capability defaulting", () => {
 	// Live regression: a thread ran with cr=0 across
 	// most of its turns because Sonnet's `model_backends.json` config didn't

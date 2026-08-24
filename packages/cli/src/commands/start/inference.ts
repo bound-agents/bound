@@ -62,6 +62,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				thinking: b.thinking,
 				effort: b.effort,
 				maxOutputTokens: b.max_output_tokens,
+				systemPromptSuffix: b.system_prompt_suffix,
 				cacheTtl: b.cache_ttl,
 				cacheWarming: b.cache_warming
 					? {

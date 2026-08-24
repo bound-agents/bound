@@ -388,6 +388,8 @@ export interface BackendConfig {
 	 * Nova Pro = 10_000) don't trigger "max_tokens exceeds model limit of N".
 	 */
 	maxOutputTokens?: number;
+	/** Text appended to the stable system prompt for turns served by this backend. */
+	systemPromptSuffix?: string;
 	/**
 	 * Prompt cache TTL hint forwarded to the provider's cache breakpoint.
 	 * Bedrock supports "5m" (default) and "1h" (extended, only for newer
