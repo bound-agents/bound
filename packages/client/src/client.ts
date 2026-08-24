@@ -564,6 +564,14 @@ export class BoundClient {
 		});
 	}
 
+	async renameThread(id: string, title: string): Promise<ThreadDetail> {
+		return this.fetchJson(`/api/threads/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title }),
+		});
+	}
+
 	async getThread(id: string): Promise<ThreadDetail> {
 		return this.fetchJson(`/api/threads/${id}`);
 	}

@@ -362,3 +362,24 @@ describe("AC2: BoundClient Merges BoundSocket", () => {
 		});
 	});
 });
+
+describe("thread renaming", () => {
+	it("PATCHes the title and returns the updated thread", async () => {
+		const originalFetch = globalThis.fetch;
+		let request: Request | undefined;
+		globalThis.fetch = async (input, init) => {
+			request = new Request(input, init);
+			return Response.json({ id: "thread-1", title: "New title" });
+		};
+		try {
+			const client = new BoundClient("http://localhost:3001");
+			const thread = await client.renameThread("thread-1", "New title");
+			expect(request?.method).toBe("PATCH");
+			expect(request?.url).toBe("http://localhost:3001/api/threads/thread-1");
+			expect(await request?.json()).toEqual({ title: "New title" });
+			expect(thread.title).toBe("New title");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+});

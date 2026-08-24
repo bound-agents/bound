@@ -177,6 +177,14 @@ async function newThread(): Promise<void> {
 	}
 }
 
+async function renameThread(id: string, title: string): Promise<void> {
+	const updated = await client.renameThread(id, title);
+	const next = new Map(threadsById);
+	const current = next.get(id);
+	if (current) next.set(id, { ...current, title: updated.title });
+	threadsById = next;
+}
+
 function goToThread(id: string): void {
 	navigateTo(`/line/${id}`);
 }
@@ -232,6 +240,7 @@ onDestroy(() => {
 				onSelectThread={(id) => goToThread(id)}
 				onNavigateThread={goToThread}
 				onHoverThread={(id) => (hoveredThreadId = id)}
+				onRenameThread={renameThread}
 				onLoadMore={loadMoreThreads}
 				hasMore={hasMoreThreads && !searchQuery.trim()}
 				isLoadingMore={isLoadingMore}

@@ -9,6 +9,7 @@ import {
 	insertRow,
 	listContextDebugTurnsByThread,
 	listThreadsDirectory,
+	updateRow,
 } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
@@ -215,6 +216,39 @@ export function createThreadsRoutes(
 				},
 				500,
 			);
+		}
+	});
+
+	app.patch("/:id", async (c) => {
+		try {
+			const { id } = c.req.param();
+			const thread = findLiveThreadById(db, id);
+			if (!thread || thread.user_id !== webUserId) {
+				return c.json({ error: "Thread not found" }, 404);
+			}
+
+			let body: unknown;
+			try {
+				body = await c.req.json();
+			} catch {
+				return c.json({ error: "Invalid title", details: "title must be a string" }, 400);
+			}
+			const title =
+				body && typeof body === "object" && "title" in body
+					? (body as Record<string, unknown>).title
+					: undefined;
+			if (typeof title !== "string" || title.trim().length === 0 || title.length > 256) {
+				return c.json(
+					{ error: "Invalid title", details: "title must be between 1 and 256 characters" },
+					400,
+				);
+			}
+
+			updateRow(db, "threads", id, { title: title.trim() }, getSiteId(db));
+			return c.json(findLiveThreadById(db, id));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to rename thread", details: message }, 500);
 		}
 	});
 

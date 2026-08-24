@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { ThreadListEntry } from "@bound/client";
-import { onMount } from "svelte";
+import { Pencil } from "lucide-svelte";
+import { onMount, tick } from "svelte";
 import { formatRelativeTime, isToday } from "../lib/format-time";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import { lineRoute } from "../lib/route-utils";
@@ -13,6 +14,7 @@ interface Props {
 	onSelectThread?: (threadId: string) => void;
 	onNavigateThread?: (threadId: string) => void;
 	onHoverThread?: (threadId: string | null) => void;
+	onRenameThread?: (threadId: string, title: string) => Promise<void>;
 	/**
 	 * Fired when the user scrolls within `LOAD_MORE_THRESHOLD_PX` of the
 	 * bottom of the list AND `hasMore` is true. The parent is responsible
@@ -31,10 +33,59 @@ let {
 	onSelectThread,
 	onNavigateThread,
 	onHoverThread,
+	onRenameThread,
 	onLoadMore,
 	hasMore = false,
 	isLoadingMore = false,
 }: Props = $props();
+
+let editingThreadId = $state<string | null>(null);
+let editingTitle = $state("");
+let titleInput = $state<HTMLInputElement | undefined>();
+let committingThreadId = $state<string | null>(null);
+
+async function startEditing(event: MouseEvent, thread: ThreadListEntry): Promise<void> {
+	event.preventDefault();
+	event.stopPropagation();
+	editingThreadId = thread.id;
+	editingTitle = thread.title?.trim() || "Untitled";
+	await tick();
+	titleInput?.focus();
+	titleInput?.select();
+}
+
+function cancelEditing(event?: Event): void {
+	event?.preventDefault();
+	event?.stopPropagation();
+	editingThreadId = null;
+	editingTitle = "";
+}
+
+async function commitEditing(event: Event, thread: ThreadListEntry): Promise<void> {
+	event.preventDefault();
+	event.stopPropagation();
+	if (editingThreadId !== thread.id || committingThreadId === thread.id) return;
+	const title = editingTitle.trim();
+	if (!title || title.length > 256 || title === thread.title?.trim()) {
+		cancelEditing();
+		return;
+	}
+	committingThreadId = thread.id;
+	try {
+		await onRenameThread?.(thread.id, title);
+		cancelEditing();
+	} finally {
+		committingThreadId = null;
+	}
+}
+
+function onTitleKeydown(event: KeyboardEvent, thread: ThreadListEntry): void {
+	if (event.key === "Escape") {
+		cancelEditing(event);
+	} else if (event.key === "Enter") {
+		void commitEditing(event, thread);
+	}
+}
 
 function sanitizeTitle(title: string | null): string {
 	if (!title || title.trim() === "" || title === ".") return "Untitled";
@@ -265,6 +316,15 @@ onMount(() => {
 								<span class="relative-time tnum">
 									{formatRelativeTime(thread.last_message_at)}
 								</span>
+								<button
+									type="button"
+									class="rename-button"
+									title="Rename thread"
+									aria-label={`Rename ${sanitizeTitle(thread.title)}`}
+									onclick={(event) => startEditing(event, thread)}
+								>
+									<Pencil size={12} />
+								</button>
 								{#if isActive}
 									<span class="live">
 										<span class="live-dot"></span>
@@ -273,9 +333,26 @@ onMount(() => {
 								{/if}
 							</div>
 
-							<h3 class="title" title={sanitizeTitle(thread.title)}>
-								{sanitizeTitle(thread.title)}
-							</h3>
+							{#if editingThreadId === thread.id}
+								<input
+									class="title-input"
+									bind:this={titleInput}
+									bind:value={editingTitle}
+									maxlength="256"
+									disabled={committingThreadId === thread.id}
+									aria-label="Thread title"
+									onclick={(event) => {
+										event.preventDefault();
+										event.stopPropagation();
+									}}
+									onkeydown={(event) => onTitleKeydown(event, thread)}
+									onblur={(event) => commitEditing(event, thread)}
+								/>
+							{:else}
+								<h3 class="title" title={sanitizeTitle(thread.title)}>
+									{sanitizeTitle(thread.title)}
+								</h3>
+							{/if}
 
 							{#if thread.summary}
 								<p class="summary">{thread.summary}</p>
@@ -450,6 +527,22 @@ onMount(() => {
 		color: var(--ink-3);
 	}
 
+	.rename-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2px;
+		border: 0;
+		background: transparent;
+		color: var(--ink-3);
+		cursor: pointer;
+	}
+
+	.rename-button:hover,
+	.rename-button:focus-visible {
+		color: var(--accent);
+	}
+
 	.live {
 		display: inline-flex;
 		align-items: center;
@@ -486,6 +579,21 @@ onMount(() => {
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 		word-break: break-word;
+	}
+
+	.title-input {
+		width: 100%;
+		box-sizing: border-box;
+		margin: 0 0 4px;
+		padding: 3px 5px;
+		border: 1px solid var(--accent);
+		border-radius: 3px;
+		background: var(--paper);
+		color: var(--ink);
+		font-family: var(--font-display);
+		font-size: 15.5px;
+		font-weight: 600;
+		line-height: 1.3;
 	}
 
 	.summary {

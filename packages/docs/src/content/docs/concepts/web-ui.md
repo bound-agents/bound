@@ -23,8 +23,9 @@ explains the states around active and interrupted work.
 
 **Purpose:** Find and inspect conversations and memory relationships.
 
-**Contains:** Thread search, live activity, thread creation, links into **Line**, and an
-interactive memory graph.
+**Contains:** Thread search, live activity, thread creation, inline thread renaming, links into
+**Line**, and an interactive memory graph. Use the pencil beside a thread's timestamp to edit its
+title; Enter or leaving the field saves it, while Escape cancels.
 
 **Related documentation:** [System model](/bound/concepts/system-model/) explains the place
 of threads in Bound. [Memory and knowledge graph](/bound/concepts/memory/) explains the
