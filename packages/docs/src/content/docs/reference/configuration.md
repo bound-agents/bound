@@ -254,7 +254,8 @@ Multi-host sync. Absent means single-host.
 | `prune_interval_seconds` | int > 0 | `60` | How often to prune relay tables. |
 | `prune_retention_seconds` | int > 0 | `300` | How long delivered relay rows are retained. |
 | `drain_timeout_seconds` | int > 0 | `120` | Graceful-drain budget on shutdown. |
-| `inference_timeout_ms` | int > 0 | `300000` (5m) | Per-host inference-streaming timeout. Must cover sync-delivery latency + LLM time. |
+| `inference_timeout_ms` | duration | `300000` (5m) | Per-host inference-streaming inactivity timeout. Relay heartbeats reset it during extended thinking. |
+| `first_token_timeout_ms` | duration | `60000` (1m) | Deadline for the first real model token from a relay host. Heartbeats prove liveness but do not satisfy it; expiry fails over to the next eligible host. |
 
 **`ws` block:**
 

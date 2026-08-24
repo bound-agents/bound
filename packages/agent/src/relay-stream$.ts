@@ -56,13 +56,11 @@ export interface RelayStreamOptions {
 	 */
 	perHostTimeoutMs?: number;
 	/**
-	 * First-chunk timeout: max wait for the *first* signal (chunk or heartbeat)
-	 * from a target. A dead/restarted spoke sends nothing, so a tight value here
-	 * fails the concatMap over to the next eligible host (source redispatch)
-	 * fast, instead of stalling for the full per-chunk timeout. A live target
-	 * heartbeats within ~1s, so this rarely false-fires.
+	 * First-token timeout: max wait for the first real model chunk from a target.
+	 * Source heartbeats reset the inactivity timeout but do not satisfy this
+	 * deadline, so a live backend that makes no progress fails over promptly.
 	 */
-	firstChunkTimeoutMs?: number;
+	firstTokenTimeoutMs?: number;
 	scheduler?: SchedulerLike;
 }
 
@@ -226,7 +224,7 @@ export function createRelayStream$(
 ): Observable<StreamChunk> {
 	const pollIntervalMs = options?.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const perHostTimeoutMs = options?.perHostTimeoutMs ?? 300_000;
-	const firstChunkTimeoutMs = options?.firstChunkTimeoutMs ?? Math.min(perHostTimeoutMs, 60_000);
+	const firstTokenTimeoutMs = options?.firstTokenTimeoutMs ?? 60_000;
 	const timeoutOccurred = { value: false };
 
 	return from(eligibleHosts).pipe(
@@ -300,7 +298,7 @@ export function createRelayStream$(
 				filter((event) => (event as Record<string, unknown>).stream_id === streamId),
 			);
 
-			return merge(pollInterval$, inboxEvents$).pipe(
+			const relayEmissions$ = merge(pollInterval$, inboxEvents$).pipe(
 				scan(createStreamReducer(deps, streamId, host, relayMetadataRef), initialState),
 				takeWhile((s) => !s.done && !s.error, true),
 				tap((s) => {
@@ -314,8 +312,18 @@ export function createRelayStream$(
 						: [...s.chunksToEmit];
 					return from(emissions);
 				}),
-				timeout({ first: firstChunkTimeoutMs, each: perHostTimeoutMs }),
+				// Per-chunk inactivity clock: heartbeats (RELAY_ACTIVITY) reset this,
+				// so a live backend mid-thinking is never falsely failed over.
+				timeout({ each: perHostTimeoutMs }),
+			);
+
+			return relayEmissions$.pipe(
+				// Strip heartbeats BEFORE the first-token deadline: liveness must not
+				// satisfy progress. The deadline arms at host subscribe and is cleared
+				// by the first real model chunk; on expiry the TimeoutError below
+				// fails this host over to the next eligible one (#223).
 				filter((value): value is StreamChunk => value !== RELAY_ACTIVITY),
+				timeout({ first: firstTokenTimeoutMs }),
 				takeUntil(aborted$),
 				catchError((err) => {
 					if (err instanceof TimeoutError) {
