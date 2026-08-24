@@ -8,7 +8,7 @@
 import type { AgentLoopResult, HandleMessageTracker } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
 import type { MainAgentLoop } from "@bound/agent";
-import { findThreadModelHintById } from "@bound/core";
+import { resolveEffectiveModelHint } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
 
@@ -72,17 +72,14 @@ export interface RunLocalLoopResult {
  * Guarantees cleanup (clearTimeout, off("agent:cancel"), map.delete) even on
  * error via a finally block.
  */
-/**
- * Resolves the model to use for a thread by reading threads.model_hint.
- * Falls back to nodeDefault when model_hint is NULL or thread doesn't exist.
- */
+/** Resolve the effective model for either task-bound or ordinary threads. */
 export function resolveThreadModel(
 	db: import("bun:sqlite").Database,
 	threadId: string,
 	nodeDefault: string,
+	taskId?: string,
 ): string {
-	const row = findThreadModelHintById(db, threadId);
-	return row?.model_hint ?? nodeDefault;
+	return resolveEffectiveModelHint(db, threadId, nodeDefault, taskId);
 }
 
 export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<RunLocalLoopResult> {

@@ -5,6 +5,7 @@ import {
 	createChangeLogEntry,
 	insertRow,
 	markProcessed,
+	resolveEffectiveModelHint,
 	updateRow,
 	updateRowIf,
 	withTx,
@@ -801,6 +802,8 @@ interface SchedulerConfig {
 	modelValidator?: (
 		modelId: string,
 	) => { ok: true } | { ok: false; error: string; permanent?: boolean };
+	/** Live node default used after task and thread model hints. */
+	modelDefaultResolver?: () => string;
 	/** Optional tier resolver for cost-equivalent fallback. Returns the tier (1-5)
 	 *  for a model ID, or null if the model is not in the local router. */
 	modelTierResolver?: (modelId: string) => number | null;
@@ -1716,11 +1719,15 @@ export class Scheduler {
 					}
 				}
 
-				const modelId = task.model_hint || undefined;
-				const modelTier =
-					modelId && this.config.modelTierResolver
-						? (this.config.modelTierResolver(modelId) ?? undefined)
-						: undefined;
+				const modelId = resolveEffectiveModelHint(
+					this.ctx.db,
+					threadId,
+					this.config.modelDefaultResolver?.() ?? "default",
+					task.id,
+				);
+				const modelTier = this.config.modelTierResolver
+					? (this.config.modelTierResolver(modelId) ?? undefined)
+					: undefined;
 
 				const loopConfig: AgentLoopConfig = {
 					threadId,

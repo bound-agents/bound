@@ -1,6 +1,7 @@
 import {
 	findLatestLiveMessageCreatedAtByThread,
 	listLiveMessageDeltaByThreadSince,
+	resolveEffectiveModelHint,
 } from "@bound/core";
 import type { ContentBlock } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, SyncConfig } from "@bound/shared";
@@ -12,6 +13,7 @@ import {
 	deltaRequiresColdReassembly,
 	getResolvedModelId,
 	hasOrphanedToolCall,
+	refreshModelHintAtTurnBoundary,
 } from "./agent-loop-utils";
 import {
 	buildCacheMarkers,
@@ -654,11 +656,29 @@ export class MainAgentLoop extends BoundAgentLoop {
 		};
 	}
 
-	protected override beforeTurn(turn: number, frame: BoundPreparedFrame): void {
+	protected override async beforeTurn(turn: number, frame: BoundPreparedFrame): Promise<void> {
 		this.currentTurnId = null;
 		this.relayMetadataRef = {};
 		this.config.onActivity?.();
 		if (turn > 1) {
+			const changed = refreshModelHintAtTurnBoundary(
+				this.config,
+				() =>
+					resolveEffectiveModelHint(
+						this.ctx.db,
+						this.config.threadId,
+						this.modelRouter.getDefaultId(),
+						this.config.taskId,
+					),
+				() => this.clearCachedTurnState(),
+			);
+			if (changed) {
+				const resolution = await this.resolveModel();
+				if (resolution.kind !== "error") {
+					frame.resolution = resolution;
+					frame.resolvedModelForDebug = resolution.modelId;
+				}
+			}
 			this.refreshVolatileTailForNextTurn(
 				frame.messages,
 				frame.relayInfo,
