@@ -97,9 +97,11 @@ describe("formatIsoDurationMs", () => {
 });
 
 describe("toDurationMs", () => {
-	it("passes numbers through untouched and parses strings", () => {
+	it("passes numbers through untouched and parses ISO and Go-style strings", () => {
 		expect(toDurationMs(20_000)).toBe(20_000);
 		expect(toDurationMs("PT20S")).toBe(20_000);
+		expect(toDurationMs("30m")).toBe(30 * 60_000);
+		expect(toDurationMs("1h30m")).toBe(90 * 60_000);
 	});
 });
 

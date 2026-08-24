@@ -3,6 +3,7 @@
  * relay payloads at trust boundaries (incoming relay messages, sync responses).
  */
 import { z } from "zod";
+import { durationStringSchema } from "./durations.js";
 
 export const toolCallPayloadSchema = z.object({
 	tool: z.string().min(1),
@@ -131,7 +132,7 @@ export const inferenceRequestPayloadSchema = z.object({
 	// over the relay so a hub-delegated turn carries whatever level the caller
 	// chose; the executing host's driver validates/maps it.
 	effort: z.string().min(1).optional(),
-	cache_ttl: z.enum(["5m", "1h"]).optional(),
+	cache_ttl: durationStringSchema().optional(),
 });
 
 export const intakePayloadSchema = z.object({

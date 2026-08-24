@@ -542,10 +542,10 @@ export class ModelRouter {
 	 * message-level marker wasn't placed — both layers failed silently,
 	 * caching was completely off.
 	 */
-	getCacheTtl(backendId: string): "5m" | "1h" | undefined {
+	getCacheTtl(backendId: string): string | undefined {
 		const config = this.backendConfigs.get(backendId);
 		const explicit = config?.cacheTtl;
-		if (explicit === "5m" || explicit === "1h") return explicit;
+		if (explicit !== undefined) return explicit;
 		const caps = this.effectiveCaps.get(backendId);
 		if (caps?.prompt_caching === true) return "5m";
 		return undefined;

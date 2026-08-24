@@ -43,14 +43,33 @@ export class DurationParseError extends Error {
 	}
 }
 
+/** Parse a Go-style duration made from `h`, `m`, `s`, and `ms` components. */
+function parseGoDurationMs(input: string): number | null {
+	const component = /(\d+(?:\.\d+)?)(ms|h|m|s)/gy;
+	const factors = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 } as const;
+	let total = 0;
+	let end = 0;
+	for (const match of input.matchAll(component)) {
+		if (match.index !== end) return null;
+		total += Number(match[1]) * factors[match[2] as keyof typeof factors];
+		end = match.index + match[0].length;
+	}
+	return end === input.length && end > 0 && Number.isInteger(total) ? total : null;
+}
+
 /**
- * Parse an ISO 8601 duration string to whole milliseconds.
+ * Parse an ISO 8601 or Go-style duration string to whole milliseconds.
  *
- * Accepts the calendar-free subset (`PT30S`, `PT5M`, `PT1H30M`, `PT0.5S`).
- * Rejects calendar-dependent durations (`P1D`, `P2W`, `P1M`) because resolving
- * them requires a reference date the config layer does not have, and rejects
- * negative durations because every consumer here is a timeout or interval.
+ * Accepts the calendar-free ISO subset (`PT30S`, `PT5M`, `PT1H30M`, `PT0.5S`)
+ * and Go-style shorthand (`30m`, `1h30m`). Rejects calendar-dependent ISO
+ * durations because resolving them requires a reference date.
  */
+export function parseDurationMs(input: string): number {
+	const goDuration = parseGoDurationMs(input);
+	return goDuration ?? parseIsoDurationMs(input);
+}
+
+/** Parse an ISO 8601 duration string to whole milliseconds. */
 export function parseIsoDurationMs(input: string): number {
 	let duration: Temporal.Duration;
 	try {
@@ -93,7 +112,24 @@ export function formatIsoDurationMs(ms: number): string {
  * through {@link parseIsoDurationMs}.
  */
 export function toDurationMs(value: number | string): number {
-	return typeof value === "number" ? value : parseIsoDurationMs(value);
+	return typeof value === "number" ? value : parseDurationMs(value);
+}
+
+/** Validate a duration string while preserving the operator's spelling. */
+export function durationStringSchema() {
+	return z
+		.string()
+		.min(1)
+		.superRefine((value, ctx) => {
+			try {
+				if (parseDurationMs(value) < 1) throw new DurationParseError(value, "must be positive");
+			} catch (err) {
+				ctx.addIssue({
+					code: "custom",
+					message: err instanceof DurationParseError ? err.message : String(err),
+				});
+			}
+		});
 }
 
 /** The units `parseIsoDurationMs` can convert without a calendar reference. */

@@ -18,7 +18,7 @@
 
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
-import type { Logger } from "@bound/shared";
+import { type Logger, parseDurationMs } from "@bound/shared";
 import { streamText } from "ai";
 import type { ModelMessage } from "ai";
 import {
@@ -65,6 +65,12 @@ interface BedrockReasoningConfig {
  * messages array but without a `cachePoint`, preserving wire compatibility
  * for non-caching models.
  */
+export function quantizeCacheTtl(cacheTtl: string | undefined): "5m" | "1h" | undefined {
+	if (cacheTtl === undefined) return undefined;
+	const durationMs = parseDurationMs(cacheTtl);
+	return Math.abs(durationMs - 300_000) <= Math.abs(durationMs - 3_600_000) ? "5m" : "1h";
+}
+
 export interface BuildBedrockSystemMessageParams {
 	/** The system prompt text. When falsy/empty, no system block is produced. */
 	system?: string;
@@ -122,7 +128,7 @@ export function hasBedrockMessageCachePoint(messages: ModelMessage[]): boolean {
 
 export interface ShouldEnableSystemCachePointParams {
 	/** From `ChatParams.cache_ttl`. Caller signals caching intent. */
-	cacheTtl: "5m" | "1h" | undefined;
+	cacheTtl: string | undefined;
 	/** Post-bridge messages — used as a fallback signal for caching intent. */
 	bridgeMessages: ModelMessage[];
 }
@@ -233,7 +239,7 @@ export class BedrockDriver implements LLMBackend {
 		const isAnthropicModel = modelId.includes("anthropic");
 		const bridgeMessages = toModelMessages(params.messages, {
 			cacheProvider: "bedrock",
-			cacheTtl: params.cache_ttl,
+			cacheTtl: quantizeCacheTtl(params.cache_ttl),
 			resolveFileRef: params.resolveFileRef,
 			// Anthropic-on-Bedrock replays its signed reasoning blocks via the
 			// "bedrock" policy. Non-Anthropic Converse models can't carry a
@@ -260,10 +266,10 @@ export class BedrockDriver implements LLMBackend {
 			// markers used to disable the system anchor, killing all
 			// caching for the entire turn.
 			cacheEnabled: shouldEnableSystemCachePoint({
-				cacheTtl: params.cache_ttl,
+				cacheTtl: quantizeCacheTtl(params.cache_ttl),
 				bridgeMessages,
 			}),
-			cacheTtl: params.cache_ttl,
+			cacheTtl: quantizeCacheTtl(params.cache_ttl),
 		});
 		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
 		const tools = toToolSet(params.tools);

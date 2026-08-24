@@ -1149,7 +1149,7 @@ export interface CacheMarker {
 	 * cache_ttl (per critical invariant #17). Stored on the marker so the UI
 	 * can label the tier without re-resolving backend config.
 	 */
-	ttl: "5m" | "1h";
+	ttl: string;
 	/**
 	 * `true` when the resolved backend's `prompt_caching` capability is on AND
 	 * a marker was actually emitted on the wire. `false` when caching was

@@ -54,6 +54,7 @@ import {
 	withEmptyRetry,
 } from "./shared";
 
+import { quantizeCacheTtl } from "./bedrock";
 const PROVIDER_NAME = "umans";
 /** Pro-safe default until the lineup fetch sets the real account limit. */
 const DEFAULT_CONCURRENCY = 3;
@@ -486,7 +487,7 @@ export class UmansDriver implements LLMBackend {
 			cacheProvider: "anthropic",
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: ANTHROPIC_ENVELOPE,
-			cacheTtl: params.cache_ttl,
+			cacheTtl: quantizeCacheTtl(params.cache_ttl),
 			reasoningProviderOptions: "anthropic",
 			midConversationSystem: true,
 		});
