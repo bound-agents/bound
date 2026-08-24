@@ -153,9 +153,13 @@ export function resolveDeferredToolResult(
 	if (row) {
 		// Drop the `background` key rather than setting it false: the in-flight
 		// query counts rows that CARRY the marker, and writeMessageMetadata merges
-		// (so it could never remove a key). Any sibling metadata is preserved.
+		// (so it could never remove a key). Stamp `background_delivered` in its
+		// place so delivery is durable on the row itself — the dispatcher's
+		// clobber guard keys on proof-of-delivery, not on the in-flight marker
+		// having been present (#220: a placeholder that missed its stamp must
+		// still be resolvable). Any sibling metadata is preserved.
 		const { background: _wasBackground, ...rest } = readMessageMetadata(db, row.id) ?? {};
-		const remaining = Object.keys(rest).length > 0 ? JSON.stringify(rest) : null;
+		const remaining = JSON.stringify({ ...rest, background_delivered: true });
 
 		updateRow(
 			db,
