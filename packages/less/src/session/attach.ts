@@ -79,7 +79,42 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	// Cap to 200 messages to avoid OOM on large threads (17k+ messages)
 	const MESSAGE_LIMIT = 200;
 	logger.info("attach_flow_start", { threadId, step: "listMessages" });
-	const messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
+	let messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
+	const turns =
+		typeof client.getContextDebug === "function"
+			? await client
+					.getContextDebug(threadId)
+					.catch(() => [] as Awaited<ReturnType<typeof client.getContextDebug>>)
+			: [];
+	if (turns.length > 0) {
+		messages = messages.map((message) => {
+			if (message.role !== "assistant") return message;
+			const messageTime = Date.parse(message.created_at);
+			const turn = [...turns]
+				.reverse()
+				.find((candidate) => Date.parse(candidate.created_at) <= messageTime);
+			if (!turn || ((turn.tokens_cache_read ?? 0) === 0 && (turn.tokens_cache_write ?? 0) === 0)) {
+				return message;
+			}
+			let metadata: Record<string, unknown> = {};
+			try {
+				const parsed = JSON.parse(message.metadata ?? "null");
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) metadata = parsed;
+			} catch {
+				// Cache usage still renders when unrelated metadata is malformed.
+			}
+			return {
+				...message,
+				metadata: JSON.stringify({
+					...metadata,
+					cache_usage: {
+						read: turn.tokens_cache_read ?? 0,
+						write: turn.tokens_cache_write ?? 0,
+					},
+				}),
+			};
+		});
+	}
 
 	// Scan for unpaired tool calls: a tool_use dispatched without a matching
 	// tool_result. The id lives in the tool_use block of a tool_call row's

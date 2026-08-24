@@ -21,6 +21,7 @@ describe("performAttach", () => {
 
 		// Mock BoundClient
 		mockClient = {
+			getContextDebug: vi.fn(async () => []),
 			listMessages: vi.fn(async () => {
 				callOrder.push("listMessages");
 				return [
