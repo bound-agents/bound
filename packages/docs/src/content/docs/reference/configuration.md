@@ -159,7 +159,7 @@ The poke *window* is not configured — it is derived per-thread from that threa
 
 ### Price callback
 
-Put dynamic pricing beside the backend it prices. For example, cache reads can receive a different rate:
+Put dynamic pricing beside the backend it prices. A callback is evaluated in Bound's isolated pricing runtime, but it retains lexical access to constants and helpers declared in the same `model_backends.js` module. For example, cache reads can receive a different rate:
 
 ```js
 export default {

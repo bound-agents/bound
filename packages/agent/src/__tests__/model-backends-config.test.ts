@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { calculateDynamicPrice } from "../dynamic-pricing";
 import { loadModelBackendsConfig } from "../model-backends-config";
 
 describe("model_backends.js loader", () => {
@@ -86,6 +87,26 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 
 		const config = await loadModelBackendsConfig(configDir);
 		expect(config.default).toBe("local");
+	});
+
+	it("preserves helpers closed over by a price callback", async () => {
+		writeFileSync(
+			join(configDir, "model_backends.js"),
+			`const scaled = (rate, turn) => rate * turn.inputTokens / 1_000_000;
+export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1", price(turn) { return scaled(2, turn); } }], default: "local" };`,
+		);
+
+		await loadModelBackendsConfig(configDir);
+		expect(
+			calculateDynamicPrice("local", {
+				modelId: "local",
+				inputTokens: 100,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				pricesPerM: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+		).toEqual({ value: 0.0002, error: null });
 	});
 
 	it("rejects functions outside backend.price", async () => {
