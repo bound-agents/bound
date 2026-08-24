@@ -99,3 +99,9 @@ The final response should identify:
 
 This reporting boundary lets you evaluate the delivered outcome without needing access to, or control
 over, the internal workflow.
+
+## Reloading execution panels
+
+Yard keeps execution lifecycle events in server memory only while a run is active. When a thread view reconnects, its subscription receives a replay of the active trace and continues rendering the interactive graph live. The replay buffer is evicted when the root run reaches a terminal state, and it is naturally unavailable after a server restart.
+
+Completed executions reload from the existing persisted Yard tool-call and tool-result messages. The UI renders those as compact completed panels rather than inventing an effect graph that the durable transcript does not contain. No separate execution-history table, sync surface, route, or client API is used.

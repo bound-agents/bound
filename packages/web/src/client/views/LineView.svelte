@@ -27,6 +27,7 @@ import { navigateTo } from "../lib/router";
 import {
 	EMPTY_YARD_STATE,
 	type YardExecutionState,
+	reconcileYardExecutions,
 	reduceYardExecution,
 } from "../lib/yard-execution";
 import { shouldClearWaiting } from "../utils/waiting";
@@ -131,6 +132,7 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			const exists = messages.some((m) => m.id === msg.id);
 			if (!exists) {
 				messages = [...messages, last.data as LocalMessage];
+				yardState = reconcileYardExecutions(yardState, messages);
 				// A UI-bearing tool_call/result just streamed in — (re)scan so its
 				// app panel mounts live, not only on the next reload.
 				scanForAppPanels();
@@ -162,6 +164,7 @@ async function pollMessages(): Promise<void> {
 			}
 		}
 		messages = latest;
+		yardState = reconcileYardExecutions(yardState, messages);
 		scanForAppPanels();
 		if (
 			waiting &&
@@ -225,6 +228,7 @@ onMount(async () => {
 	try {
 		thread = await client.getThread(threadId);
 		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+		yardState = reconcileYardExecutions(yardState, messages);
 		scanForAppPanels();
 		connectWebSocket();
 		subscribeToThread(threadId);

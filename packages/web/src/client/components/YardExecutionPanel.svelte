@@ -27,25 +27,32 @@ const heading = $derived(tree.phase === "started" ? "Yard execution" : `Yard ${t
 		</div>
 		<span class:failed={tree.phase === "failed"} class="phase">{tree.phase}</span>
 	</header>
-	<div class="flow-wrap">
-		<SvelteFlow
-			id={`yard-${tree.traceId}`}
-			nodeTypes={nodeTypes}
-			nodes={flow.nodes as Node[]}
-			edges={flow.edges as Edge[]}
-			fitView
-			fitViewOptions={{ padding: 0.25 }}
-			minZoom={0.2}
-			maxZoom={1.5}
-			nodesDraggable={false}
-			nodesConnectable={false}
-			elementsSelectable={false}
-		>
-			<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
-			<Controls showInteractive={false} />
-			<MiniMap pannable zoomable />
-		</SvelteFlow>
-	</div>
+	{#if tree.compact}
+		<div class="compact-result">
+			<strong>Completed execution</strong>
+			<span>Effect graph unavailable after reload.</span>
+		</div>
+	{:else}
+		<div class="flow-wrap">
+			<SvelteFlow
+				id={`yard-${tree.traceId}`}
+				nodeTypes={nodeTypes}
+				nodes={flow.nodes as Node[]}
+				edges={flow.edges as Edge[]}
+				fitView
+				fitViewOptions={{ padding: 0.25 }}
+				minZoom={0.2}
+				maxZoom={1.5}
+				nodesDraggable={false}
+				nodesConnectable={false}
+				elementsSelectable={false}
+			>
+				<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+				<Controls showInteractive={false} />
+				<MiniMap pannable zoomable />
+			</SvelteFlow>
+		</div>
+	{/if}
 	{#if tree.summary}
 		<p class="summary">{tree.summary}</p>
 	{/if}
@@ -73,6 +80,8 @@ const heading = $derived(tree.phase === "started" ? "Yard execution" : `Yard ${t
 	.phase { font: 600 11px var(--font-mono); color: var(--ink-2); text-transform: uppercase; }
 	.phase.failed { color: var(--accent); }
 	.flow-wrap { height: 300px; width: 100%; }
+	.compact-result { display: grid; gap: 4px; padding: 14px 12px; font-size: 12px; color: var(--ink-2); }
+	.compact-result strong { color: var(--ink); }
 	.summary { margin: 0; padding: 9px 12px; border-top: 1px solid var(--rule-soft); color: var(--ink-2); font-size: 12px; white-space: pre-wrap; }
 	:global(.yard-execution-panel .svelte-flow__node) {
 		border: 1px solid var(--ink-2);

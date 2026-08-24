@@ -13,6 +13,8 @@ export interface YardNodeState {
 }
 
 export interface YardTreeSnapshot {
+	/** Reconstructed from persisted tool messages; per-effect history is unavailable. */
+	compact?: boolean;
 	traceId: string;
 	runId: string;
 	phase: "started" | "completed" | "failed";
@@ -146,4 +148,92 @@ export function reduceYardExecution(
 	}
 	nextLive.set(key, tree);
 	return { ...state, live: nextLive, pending };
+}
+
+export interface YardMessageLike {
+	id?: string;
+	role: string;
+	content: string;
+	tool_name?: string | null;
+	created_at?: string;
+}
+
+type ToolUse = { id?: unknown; name?: unknown; input?: unknown };
+
+type YardResult = { trace_id?: unknown; result?: unknown };
+
+function parseJson(value: string): unknown {
+	try {
+		return JSON.parse(value);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Rebuilds completed Yard cards from the durable tool-call/result transcript.
+ * The transcript does not retain individual effect events, so these are
+ * deliberately compact root-only summaries rather than synthetic flow graphs.
+ */
+export function reconstructCompletedYardExecutions(
+	messages: YardMessageLike[],
+): YardTreeSnapshot[] {
+	const results = new Map<string, YardMessageLike>();
+	for (const message of messages) {
+		if (message.role === "tool_result" && message.tool_name)
+			results.set(message.tool_name, message);
+	}
+
+	const completed: YardTreeSnapshot[] = [];
+	for (const message of messages) {
+		if (message.role !== "tool_call") continue;
+		const blocks = parseJson(message.content);
+		if (!Array.isArray(blocks)) continue;
+		for (const block of blocks as ToolUse[]) {
+			if (block?.name !== "yard" || typeof block.id !== "string") continue;
+			const resultMessage = results.get(block.id);
+			if (!resultMessage) continue;
+			const result = parseJson(resultMessage.content) as YardResult | undefined;
+			if (!result || typeof result.trace_id !== "string") continue;
+			const input = block.input as { program?: unknown } | undefined;
+			const programPreview = typeof input?.program === "string" ? input.program : undefined;
+			const resultPreview =
+				result.result === undefined ? resultMessage.content : JSON.stringify(result.result);
+			completed.push({
+				traceId: result.trace_id,
+				runId: result.trace_id,
+				phase: "completed",
+				compact: true,
+				programPreview,
+				resultPreview,
+				toolCallId: block.id,
+				startedAt: message.created_at,
+				finishedAt: resultMessage.created_at,
+				nodes: [],
+			});
+		}
+	}
+	return completed;
+}
+
+/** Message-derived terminal cards supersede transient trace state for that run. */
+export function reconcileYardExecutions(
+	state: YardExecutionState,
+	messages: YardMessageLike[],
+): YardExecutionState {
+	const reconstructed = reconstructCompletedYardExecutions(messages);
+	if (reconstructed.length === 0) return state;
+	const traceIds = new Set(reconstructed.map((tree) => tree.traceId));
+	const live = new Map(state.live);
+	for (const traceId of traceIds) live.delete(traceId);
+	const completed = [
+		...state.completed.filter((tree) => !traceIds.has(tree.traceId)),
+		...reconstructed,
+	];
+	return {
+		...state,
+		live,
+		completed,
+		seenTerminalRoots: new Set([...state.seenTerminalRoots, ...traceIds]),
+	};
 }
