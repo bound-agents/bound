@@ -191,6 +191,7 @@ export function initScheduler(
 							return { ok: true as const };
 						}
 					: undefined,
+				modelDefaultResolver: modelRouter ? () => modelRouter.getDefaultId() : undefined,
 				modelTierResolver: modelRouter
 					? (modelId: string) =>
 							resolveModelTier(modelId, modelRouter, appContext.db, appContext.siteId)

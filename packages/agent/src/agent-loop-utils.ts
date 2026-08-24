@@ -22,6 +22,18 @@ import { isYardClientBookkeepingRow } from "./yard-client-rows";
 const logger = createLogger("@bound/agent", "agent-loop-utils");
 const warnedDynamicPricingFallbacks = new Set<string>();
 
+export function refreshModelHintAtTurnBoundary(
+	config: { modelId?: string },
+	readEffectiveModelHint: () => string,
+	onChange: () => void,
+): boolean {
+	const nextModelId = readEffectiveModelHint();
+	if (nextModelId === config.modelId) return false;
+	config.modelId = nextModelId;
+	onChange();
+	return true;
+}
+
 /**
  * Parse persisted message content for the in-memory LLM message path.
  * When content is a JSON-serialized ContentBlock[] carrying a non-text block

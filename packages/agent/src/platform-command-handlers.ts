@@ -32,12 +32,10 @@ export interface PlatformCommandHandlerDeps {
  *    cannot complete an agent turn, so a command that needed the agent loop
  *    to execute could never fix a broken model.
  *
- * 2. WRITES BOTH HINT COLUMNS. Two resolution paths read two different
- *    columns: scheduler wakeups resolve via `tasks.model_hint`, hub intake
- *    dispatch resolves via `threads.model_hint` (resolveThreadModel). A hint
- *    that lands in only one column works on one path and silently not the
- *    other — the original "/model on Discord doesn't stick" symptom. Setting
- *    both makes the hint hold regardless of which path wakes the thread.
+ * 2. PERSISTS BOTH HINT COLUMNS. Task-bound resolution now gives the task
+ *    column precedence, but the thread column remains the fallback for ordinary
+ *    message intake and after a task binding is removed. Keeping them aligned
+ *    preserves the selected model across both lifecycles.
  */
 export function createModelCommandSpec(deps: PlatformCommandHandlerDeps): PlatformCommandSpec {
 	const resolve = deps.resolveModelFn ?? resolveModel;

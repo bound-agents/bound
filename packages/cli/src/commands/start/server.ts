@@ -31,6 +31,7 @@ import {
 	findAgentById,
 	findBackgroundAuxSeed,
 	findFreshPlatformHost,
+	findLatestTaskSettingsForThread,
 	findThreadAgentIdById,
 	findThreadModelHintById,
 	findThreadUserAndInterfaceById,
@@ -746,21 +747,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							logger: appContext.logger,
 						});
 
-						// Resolve the model for this thread from the authoritative
-						// threads.model_hint column (set by /model command or web UI).
-						// Falls back to the node's LIVE default when model_hint is NULL.
-						// Must be modelRouter.getDefaultId(), not routerConfig.default:
-						// routerConfig is a startup snapshot, and on a umans-configured
-						// node its default is the namespace placeholder id ("umans").
-						// The lineup registrar later retires that id and redirects the
-						// router default to a concrete model, but never rewrites the
-						// frozen snapshot — so any NULL-hint thread dispatched here
-						// would request the retired id and fail resolution
-						// ('Unknown model "umans"').
+						const taskBinding = findLatestTaskSettingsForThread(appContext.db, thread_id);
+						// Use the same task > thread > live node-default precedence as
+						// scheduler wakeups.
 						const activeModelId = resolveThreadModel(
 							appContext.db,
 							thread_id,
 							modelRouter.getDefaultId(),
+							taskBinding?.id,
 						);
 
 						const threadRow = appContext.db
