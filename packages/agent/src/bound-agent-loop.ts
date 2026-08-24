@@ -697,7 +697,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				this.relayMetadataRef,
 				{
 					perHostTimeoutMs: this.inferenceTimeoutMs,
-					firstChunkTimeoutMs: this.firstChunkTimeoutMs,
+					firstTokenTimeoutMs: this.firstTokenTimeoutMs,
 				},
 			);
 			return {
@@ -1846,13 +1846,12 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		return timeoutMs;
 	}
 
-	// First-chunk timeout for relay streaming. A dead/restarted spoke never
-	// emits even a heartbeat, so the relay stream should fail over to the next
-	// eligible host (source redispatch) well before the full per-chunk
-	// inference timeout elapses. Capped at 60s but never above the per-chunk
-	// timeout, so a tighter inference_timeout_ms config still bounds it.
-	private get firstChunkTimeoutMs(): number {
-		return Math.min(this.inferenceTimeoutMs, 60_000);
+	// First-token timeout for relay streaming (#223). Relay heartbeats prove a
+	// live target but no longer satisfy the first deadline — a backend that
+	// heartbeats without producing a real token fails over at this deadline
+	// instead of consuming the full per-chunk inference timeout.
+	private get firstTokenTimeoutMs(): number {
+		return this.relayConfig.first_token_timeout_ms;
 	}
 
 	// Acquires a backend for loop-end summary extraction through cluster-wide

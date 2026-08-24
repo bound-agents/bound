@@ -413,6 +413,9 @@ export const relaySchema = z
 		/** Per-host timeout for inference relay streaming (ms). Must account for
 		 *  sync delivery latency + LLM inference time. Default 300s. */
 		inference_timeout_ms: durationMsSchema().default(300_000),
+		/** Deadline for the first real model token from a relay host. Empty relay
+		 *  heartbeats prove liveness but do not satisfy this deadline. */
+		first_token_timeout_ms: durationMsSchema().default(60_000),
 	})
 	.strict();
 
