@@ -11,9 +11,9 @@ import { stripTerminalControlSequences } from "../util/terminal-control";
  * `@bound/shared` (warmed at TUI boot in boundless.tsx) so syntax colors
  * match the web UI.
  *
- * Color override: callers (e.g. EditDiffBody) can pass `color` to force
- * every token to render with a single color — this is how diff add/remove
- * styling layers on top of syntax highlighting (diff wins, per Kara's spec).
+ * Color override remains available for callers that need a uniform foreground.
+ * Diff renderers do not use it: per #231, the gutter carries add/remove
+ * semantics while source content keeps its per-token syntax colors.
  */
 
 /** Map a file path to a lang tag suitable for shiki / normalizeLang. */
@@ -59,8 +59,7 @@ export interface HighlightedLineProps {
 	lang?: string;
 	/**
 	 * Force every token to this color (overrides per-token shiki colors).
-	 * Used by diff renderers to paint add/remove lines red/green while
-	 * still inheriting the line layout from the shared tokenizer.
+	 * Diff renderers intentionally leave this unset so syntax colors survive.
 	 */
 	color?: string;
 	/** Apply Ink's dimColor on top of token colors. */

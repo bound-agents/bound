@@ -346,7 +346,6 @@ function HashlineEditsBody({
 						<HighlightedLine
 							line={expandTabs(line.text)}
 							lang={lang}
-							color={line.kind === "added" ? "green" : "red"}
 							dim={line.kind === "removed"}
 						/>
 					</Text>
@@ -396,7 +395,7 @@ function HashlineEditsBody({
 			rows.push(
 				<Text key={`l${ei}-${li}`}>
 					<Text color="green">+ </Text>
-					<HighlightedLine line={contentLines[li]} lang={lang} color="green" />
+					<HighlightedLine line={contentLines[li]} lang={lang} />
 				</Text>,
 			);
 		}
