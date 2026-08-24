@@ -207,3 +207,66 @@ describe("yardTreeToFlow", () => {
 		]);
 	});
 });
+
+describe("persisted Yard message reconstruction", () => {
+	it("reconstructs a compact completed panel from an existing yard tool-call/result pair", async () => {
+		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
+		const completed = reconstructCompletedYardExecutions([
+			{
+				id: "call-message",
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "yard-call",
+						name: "yard",
+						input: { program: "function* main() { return 1; }" },
+					},
+				]),
+				created_at: "2026-08-24T20:00:00.000Z",
+			},
+			{
+				role: "tool_result",
+				tool_name: "yard-call",
+				content: JSON.stringify({ result: { shipped: true }, trace_id: "trace-durable" }),
+				created_at: "2026-08-24T20:01:00.000Z",
+			},
+		]);
+
+		expect(completed).toEqual([
+			expect.objectContaining({
+				traceId: "trace-durable",
+				phase: "completed",
+				toolCallId: "yard-call",
+				compact: true,
+				programPreview: "function* main() { return 1; }",
+				resultPreview: JSON.stringify({ shipped: true }),
+			}),
+		]);
+	});
+});
+
+describe("message/live reconciliation", () => {
+	it("replaces a live replay graph with its compact durable completion", async () => {
+		const { reconcileYardExecutions } = await import("../yard-execution");
+		const live = reduceYardExecution(EMPTY_YARD_STATE, event());
+		const state = reconcileYardExecutions(live, [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "call-1", name: "yard", input: { program: "yield tool()" } },
+				]),
+			},
+			{
+				role: "tool_result",
+				tool_name: "call-1",
+				content: JSON.stringify({ trace_id: "trace-1", result: "done" }),
+			},
+		]);
+
+		expect(state.live.size).toBe(0);
+		expect(state.completed).toEqual([
+			expect.objectContaining({ traceId: "trace-1", compact: true }),
+		]);
+	});
+});

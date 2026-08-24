@@ -43,6 +43,7 @@ import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 import { reapStaleClientSessions } from "./client-session-reaper";
 import { storeFile } from "./routes/files";
+import { YardExecutionCache } from "./yard-execution-cache";
 
 // Zod schemas for all client→server message types
 const sessionConfigureSchema = z.object({
@@ -523,6 +524,14 @@ export function createWebSocketHandler(
 		// Re-deliver pending client tool calls on this thread (AC7.1-AC7.2)
 		// In case session:configure happened before thread:subscribe
 		redeliverPendingToolCalls(conn, msg.thread_id);
+
+		// Replaying this server's in-memory trace lets a reload continue an active
+		// graph. Terminal traces are evicted and reconstruct from tool messages.
+		if (conn.ws.readyState === 1) {
+			for (const event of activeYardExecutions.forThread(msg.thread_id)) {
+				conn.ws.send(JSON.stringify({ type: "yard:execution", ...event }));
+			}
+		}
 
 		// Seed the background-tool count for the newly subscribed thread. Always send
 		// zero too: after a disconnected interval, zero is what clears a stale cached
@@ -1274,7 +1283,10 @@ export function createWebSocketHandler(
 		}
 	};
 
+	const activeYardExecutions = new YardExecutionCache();
+
 	const handleYardExecution = (data: YardExecutionEvent): void => {
+		activeYardExecutions.add(data);
 		for (const [, conn] of clients) {
 			if (conn.subscriptions.has(data.thread_id) && conn.ws.readyState === 1) {
 				conn.ws.send(JSON.stringify({ type: "yard:execution", ...data }));
