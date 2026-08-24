@@ -243,3 +243,21 @@ describe("Summary regeneration throttle — boundary-aware byte stability", () =
 		expect(after2.summary).not.toBe(after1.summary);
 	});
 });
+
+describe("event-task summary throttle (#204)", () => {
+	it("regenerates after a developer wakeup but not assistant-only churn", async () => {
+		const threadId = `event-${Date.now()}`;
+		insertThread(threadId);
+		insertMessage(threadId, "developer", "event one");
+		const mock = new NondeterministicMockLLM();
+		const { extractSummaryAndMemories } = await import("../summary-extraction");
+		expect((await extractSummaryAndMemories(db, threadId, mock, "test-site-id")).ok).toBe(true);
+		const summaryAfterFirst = getSummary(threadId).summary;
+		insertMessage(threadId, "assistant", "churn");
+		await extractSummaryAndMemories(db, threadId, mock, "test-site-id");
+		expect(getSummary(threadId).summary).toBe(summaryAfterFirst);
+		insertMessage(threadId, "developer", "event two", new Date(Date.now() + 5_000).toISOString());
+		await extractSummaryAndMemories(db, threadId, mock, "test-site-id");
+		expect(getSummary(threadId).summary).not.toBe(summaryAfterFirst);
+	});
+});

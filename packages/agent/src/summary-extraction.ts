@@ -216,32 +216,14 @@ export async function extractSummaryAndMemories(
 			};
 		}
 
-		// Boundary-aware throttle. Skip regeneration when the latest-user-message
-		// boundary (the same semantic anchor the Stage 7 telescope's recent tier
-		// and the cache-point placer use) has NOT advanced past the current
-		// `summary_through`. In that regime nothing new has been folded out of the
-		// recent window since the last summary, so the summary
-		// doesn't need to absorb anything new — and regenerating would
-		// only produce slightly different LLM output, mutating the bytes
-		// at the head of the wire request and breaking Bedrock's prefix
-		// cache match for the message-level cachePoint.
-		//
-		// Triggering condition: regen is needed when there exists a
-		// `role: "user"` message strictly after `summary_through`. That's
-		// equivalent to "a new user message has arrived since the last
-		// summary, so the boundary now sits at a position that includes
-		// previously-uncompacted assistant + tool_result content from
-		// the prior turn — those messages are about to be absorbed."
-		//
-		// Live evidence: two cold-path assemblies 22 seconds apart sent
-		// different msg[0] bytes because the summary regenerated mid-turn —
-		// the second turn was an inner-loop tool round with no new user
-		// message. The message-level cachePoint's prefix-match missed even
-		// though the bucket-aligned placer held its byte-position stable.
+		// Boundary-aware throttle. A new user message advances an ordinary
+		// conversation; a developer wakeup advances an event-task thread, whose
+		// inputs are persisted as developer messages plus tool results. Assistant
+		// and tool-only churn must not regenerate the summary mid-turn.
 		const previousSummary = thread.summary;
 		if (previousSummary) {
-			const hasNewUserMessage = messages.some((m) => m.role === "user");
-			if (!hasNewUserMessage) {
+			const hasNewInputBoundary = messages.some((m) => m.role === "user" || m.role === "developer");
+			if (!hasNewInputBoundary) {
 				return {
 					ok: true,
 					value: { summaryGenerated: false, memoriesExtracted: 0 },

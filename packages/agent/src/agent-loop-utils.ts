@@ -34,6 +34,20 @@ export function refreshModelHintAtTurnBoundary(
 	return true;
 }
 
+export function acquireSummaryBackendWithFallback<T>(
+	turnModelId: string,
+	defaultModelId: string,
+	modelIds: string[],
+	acquire: (modelId: string) => T | null,
+): T | null {
+	const candidates = [turnModelId, defaultModelId, ...modelIds];
+	for (const modelId of new Set(candidates.filter(Boolean))) {
+		const backend = acquire(modelId);
+		if (backend) return backend;
+	}
+	return null;
+}
+
 /**
  * Parse persisted message content for the in-memory LLM message path.
  * When content is a JSON-serialized ContentBlock[] carrying a non-text block
