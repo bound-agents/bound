@@ -6,10 +6,13 @@ import {
 	groupMessages,
 	toolUseIdsInItem,
 } from "../lib/message-grouping";
+import { anchorYardTrees } from "../lib/yard-anchoring";
+import type { YardTreeSnapshot } from "../lib/yard-execution";
 import McpAppPanel from "./McpAppPanel.svelte";
 import MessageBubble from "./MessageBubble.svelte";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
+import YardExecutionPanel from "./YardExecutionPanel.svelte";
 
 interface Message {
 	role: string;
@@ -46,6 +49,7 @@ interface Props {
 	lineColor?: string;
 	isAgentActive?: boolean;
 	appInstances?: McpAppInstance[];
+	yardTrees?: YardTreeSnapshot[];
 }
 
 const {
@@ -60,6 +64,7 @@ const {
 	lineColor = "#999",
 	isAgentActive = false,
 	appInstances = [],
+	yardTrees = [],
 }: Props = $props();
 
 // --- Auto-scroll logic ---
@@ -203,6 +208,15 @@ type DisplayItem = GroupedDisplayItem<Message>;
 
 const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
 
+// Lifecycle events can precede their persisted tool_call. Keep unmatched trees
+// trailing until polling supplies their source row, then relocate every trace for that call.
+const anchoredYardTrees = $derived.by(() =>
+	anchorYardTrees(
+		yardTrees,
+		displayItems.map((item) => ({ key: item.key, toolCallIds: toolUseIdsInItem(item) })),
+	),
+);
+
 // Anchor each live MCP App panel beneath the display item carrying the tool_use
 // that spawned it (instance.callId === the persisted tool_use.id). `perItem`
 // keys panels by display-item key for inline render; `trailing` holds instances
@@ -266,6 +280,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 
 <div class="board">
 	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
+		{#snippet yardPanelRow(tree: YardTreeSnapshot)}
+			<div class="turn-row" data-message-role="tool_call"><div class="time-gutter mono"></div><div class="rail"><div class="rail-line" style="background: {lineColor}"></div><div class="rail-dot rail-dot-assistant" style="background: {lineColor}; border-color: {lineColor}"></div></div><div class="row-content"><YardExecutionPanel {tree} /></div></div>
+		{/snippet}
 		{#snippet panelRow(instance: McpAppInstance)}
 			<div class="turn-row" data-message-role="tool_call">
 				<div class="time-gutter mono"></div>
@@ -327,6 +344,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 						{/if}
 					</div>
 				</div>
+				{#each anchoredYardTrees.perItem.get(item.key) ?? [] as tree (tree.traceId)}
+					{@render yardPanelRow(tree)}
+				{/each}
 				{#each anchoredInstances.perItem.get(item.key) ?? [] as instance (instance.callId)}
 					{@render panelRow(instance)}
 				{/each}
@@ -366,6 +386,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 				</div>
 			</div>
 		{/if}
+		{#each anchoredYardTrees.trailing as tree (tree.traceId)}
+			{@render yardPanelRow(tree)}
+		{/each}
 		{#each anchoredInstances.trailing as instance (instance.callId)}
 			{@render panelRow(instance)}
 		{/each}

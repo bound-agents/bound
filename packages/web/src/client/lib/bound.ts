@@ -33,6 +33,7 @@ client.on("message:created", bridgeEvent("message:created"));
 client.on("task:updated", bridgeEvent("task:updated"));
 client.on("file:updated", bridgeEvent("file:updated"));
 client.on("context:debug", bridgeEvent("context:debug"));
+client.on("yard:execution", bridgeEvent("yard:execution"));
 
 /** Connect the WebSocket. Safe to call multiple times. */
 export function connectWebSocket(): void {

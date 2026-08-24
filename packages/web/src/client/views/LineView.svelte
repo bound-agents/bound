@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { ThreadDetail } from "@bound/client";
+import type { YardExecutionEvent } from "@bound/shared";
 import { ChevronLeft, Paperclip } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
@@ -23,6 +24,11 @@ import { contentPreviewText } from "../lib/message-grouping";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
+import {
+	EMPTY_YARD_STATE,
+	type YardExecutionState,
+	reduceYardExecution,
+} from "../lib/yard-execution";
 import { shouldClearWaiting } from "../utils/waiting";
 
 const { threadId, from } = $props<{ threadId: string; from?: string }>();
@@ -65,6 +71,12 @@ function scrollToTurn(messageId: string | undefined): void {
 	scrollNonce += 1;
 	scrollRequest = { messageId, nonce: scrollNonce };
 }
+
+let yardState = $state<YardExecutionState>(EMPTY_YARD_STATE);
+const yardTrees = $derived([...yardState.live.values(), ...yardState.completed]);
+const onYardExecution = (event: YardExecutionEvent): void => {
+	if (event.thread_id === threadId) yardState = reduceYardExecution(yardState, event);
+};
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -209,6 +221,7 @@ function handleStreamChunk(data: unknown): void {
 }
 
 onMount(async () => {
+	client.on("yard:execution", onYardExecution);
 	try {
 		thread = await client.getThread(threadId);
 		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
@@ -235,6 +248,7 @@ onMount(async () => {
 });
 
 onDestroy(() => {
+	client.off("yard:execution", onYardExecution);
 	unsubscribeWs();
 	unsubscribeApps();
 	unsubscribeHost();
@@ -433,6 +447,7 @@ function turnPreview(content: string): string {
 				{lineColor}
 				isAgentActive={agentActive}
 				appInstances={threadAppInstances}
+				yardTrees={yardTrees}
 			/>
 
 			<!-- Input bar -->
