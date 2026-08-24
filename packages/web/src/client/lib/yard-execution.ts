@@ -194,14 +194,14 @@ export function reconstructCompletedYardExecutions(
 			const resultMessage = results.get(block.id);
 			if (!resultMessage) continue;
 			const result = parseJson(resultMessage.content) as YardResult | undefined;
-			if (!result || typeof result.trace_id !== "string") continue;
+			const traceId = typeof result?.trace_id === "string" ? result.trace_id : block.id;
 			const input = block.input as { program?: unknown } | undefined;
 			const programPreview = typeof input?.program === "string" ? input.program : undefined;
 			const resultPreview =
-				result.result === undefined ? resultMessage.content : JSON.stringify(result.result);
+				result?.result === undefined ? resultMessage.content : JSON.stringify(result.result);
 			completed.push({
-				traceId: result.trace_id,
-				runId: result.trace_id,
+				traceId,
+				runId: traceId,
 				phase: "completed",
 				compact: true,
 				programPreview,
