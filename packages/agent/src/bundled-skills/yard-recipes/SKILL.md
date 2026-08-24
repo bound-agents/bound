@@ -66,22 +66,20 @@ own loop first, and not two broad errands that sample the surface.
 - Budget generously (`budget: { timeout_seconds, concurrency }`) rather
   than shrinking the plan to fit a default.
 
-## Choosing models per role
+## Models: the roster decides, not the program
 
-The `<stable-context>` block carries decision metadata per model — tier,
-context window, max output, vision, thinking — with tier 1 the most
-capable class. Choose per ROLE, from that metadata, not from model-name
-vibes:
+Do NOT pass `model` on `aux()` effects. The model rides the aux identity's
+`model_hint`, set at definition time from the stable-context metadata — a
+program that overrides per invocation is routing around the roster, and
+the next program to dispatch the same identity inherits none of the
+judgment. If an override feels necessary, the roster is wrong: fix the
+identity's `model_hint` or define the missing role — the `aux-agents`
+skill carries the tier-to-role guidance.
 
-- tier 1: planning `infer()`, review gates, synthesis, release judgment;
-- tier 2: implementation arms;
-- tier 3: mechanical scatter (surveys, pattern scans, checklist audits).
-
-Pass a models map in `input` (e.g. `{ scout, implementer, reviewer,
-planner }`) instead of one uniform model — a single `input.model` for
-every role reproduces the name-vibes scatter the metadata exists to end.
-Validated live: three consecutive runs tier-matched unprompted once the
-metadata shipped.
+`infer()` is the one exception: it has no identity, so it alone takes an
+explicit model id. Planning, verdict extraction, and synthesis are
+judgment work — give it a tier-1 model (pass it in `input`, e.g.
+`input.planner_model`).
 
 ## Recipe: scatter-gather corpus change
 
@@ -98,12 +96,12 @@ function* main(input) {
 
   // SCATTER: a read-agent surveys each partition. No edits yet.
   const surveys = yield all(
-    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.models.scout })),
+    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`)),
     { concurrency: 4 },
   );
 
   // GATHER: structure the free-text reports into per-partition work orders.
-  const orders = yield infer(input.models.planner, {
+  const orders = yield infer(input.planner_model, {
     prompt: `Turn each survey into a concrete work order for: ${input.goal}. No real candidates => skip=true.`,
     input: pkgs.map((pkg, i) => ({ pkg, survey: surveys[i] })),
     schema: { type: "array", items: {
@@ -116,7 +114,7 @@ function* main(input) {
   // RE-SCATTER: a write-agent implements each order.
   let active = orders.filter((o) => !o.skip);
   yield all(
-    active.map((o) => aux("implementer", `In ${o.pkg}, do exactly this, then report per-file outcomes: ${o.order}`, { model: input.models.implementer })),
+    active.map((o) => aux("implementer", `In ${o.pkg}, do exactly this, then report per-file outcomes: ${o.order}`)),
     { concurrency: 4 },
   );
 
@@ -124,10 +122,10 @@ function* main(input) {
   const outcomes = [];
   for (let round = 0; active.length > 0; round++) {
     const reviews = yield all(
-      active.map((o) => aux("reviewer", `Run git diff -- ${o.pkg} and judge whether the changes satisfy: ${o.order}. Name specific gaps.`, { model: input.models.reviewer })),
+      active.map((o) => aux("reviewer", `Run git diff -- ${o.pkg} and judge whether the changes satisfy: ${o.order}. Name specific gaps.`)),
       { concurrency: 4 },
     );
-    const verdicts = yield infer(input.models.planner, {
+    const verdicts = yield infer(input.planner_model, {
       prompt: "For each review, decide pass/fail and extract the objections.",
       input: active.map((o, i) => ({ pkg: o.pkg, review: reviews[i] })),
       schema: { type: "array", items: {
@@ -143,7 +141,7 @@ function* main(input) {
     });
     if (failed.length > 0) {
       yield all(
-        failed.map((o) => aux("implementer", `Rework ${o.pkg} — the reviewer rejected it: ${o.objections}. Original order: ${o.order}`, { model: input.models.implementer })),
+        failed.map((o) => aux("implementer", `Rework ${o.pkg} — the reviewer rejected it: ${o.objections}. Original order: ${o.order}`)),
         { concurrency: 4 },
       );
     }
@@ -163,11 +161,11 @@ partition that needs a human decision.
 ```js
 function* main(input) {
   const reviews = yield all([
-    aux("pricing-skeptic", input.pricing_question, { model: input.models.specialist }),
-    aux("reviewer", input.design_question, { model: input.models.specialist }),
+    aux("pricing-skeptic", input.pricing_question),
+    aux("reviewer", input.design_question),
   ], { concurrency: 2, errors: "settled" });
 
-  const synthesis = yield infer(input.models.planner, {
+  const synthesis = yield infer(input.planner_model, {
     prompt: "Synthesize a compact decision artifact. Preserve disagreements and name the next implementation slice.",
     input: reviews,
     schema: {
@@ -197,12 +195,12 @@ function* main(input) {
   const hits = String(yield tool("boundless_search", { pattern: input.pattern, path: input.path }));
   if (!hits.includes(":")) throw new Error(`pattern not found: ${input.pattern}`);
 
-  const report = yield aux("implementer", `Apply this change at the sites below, then run ${input.verify_command} and report per-file outcomes. Do NOT commit or push.\n\nChange: ${input.instruction}\n\nSites:\n${hits}`, { model: input.models.implementer });
+  const report = yield aux("implementer", `Apply this change at the sites below, then run ${input.verify_command} and report per-file outcomes. Do NOT commit or push.\n\nChange: ${input.instruction}\n\nSites:\n${hits}`);
 
   const check = String(yield tool("boundless_bash", { command: input.verify_command }));
   if (!check.includes("Exit code: 0")) return { report, verified: false, released: false };
 
-  const release = yield aux("implementer", `The verified uncommitted diff for "${input.instruction}" is approved. Commit it with the required author, let the pre-commit gate run (never --no-verify), push, and report the commit hash.`, { model: input.models.implementer });
+  const release = yield aux("implementer", `The verified uncommitted diff for "${input.instruction}" is approved. Commit it with the required author, let the pre-commit gate run (never --no-verify), push, and report the commit hash.`);
   return { report, verified: true, release };
 }
 ```
@@ -234,7 +232,7 @@ function* main(input) {
 
   // Seed round: read-only survey of every area.
   let results = yield all(
-    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`, { model: input.models.scout })),
+    input.areas.map((a) => aux("scout", `Survey ${a} for: ${input.goal}. Make NO edits; report findings or say none.`)),
     { concurrency: 6, errors: "settled" },
   );
 
@@ -248,7 +246,7 @@ function* main(input) {
     let plan;
     for (let attempt = 0; ; attempt++) {
       try {
-        plan = yield infer(input.models.planner, {
+        plan = yield infer(input.planner_model, {
           prompt:
             `You dispatch aux errands toward: ${input.goal}. Decide the next round from the results. ` +
             `Dispatch ONLY identities that appear on this roster:\n${roster}\n` +
@@ -275,7 +273,7 @@ function* main(input) {
     if (plan.done && plan.errands.length === 0) break;
 
     results = yield all(
-      plan.errands.map((e) => aux(e.identity, e.instructions, { model: input.models[e.identity] ?? input.models.implementer })),
+      plan.errands.map((e) => aux(e.identity, e.instructions)),
       { concurrency: 4, errors: "settled" },
     );
     if (plan.done) break; // release round dispatched; stop after it lands
@@ -483,7 +481,7 @@ Two notes that make this shape safe at migration scale:
   WORK is not lost — completed arms live in the worktree and their aux
   threads — and the SHAPE is not wrong. Fix the one line and re-dispatch;
   a repaired program can re-review existing diffs in minutes. Observed
-  live: a well-shaped lane program (per-role models, settled arms, review
+  live: a well-shaped lane program (file-disjoint lanes, settled arms, review
   gate, rework round) ran two full rounds, then died at the synthesis
   step on `String(review.value)` — and instead of a one-line fix, the
   orchestrator abandoned Yard entirely: foreground aux, background aux,
