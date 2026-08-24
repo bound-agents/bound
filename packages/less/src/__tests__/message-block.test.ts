@@ -11,6 +11,40 @@ import { MessageBlock } from "../tui/components/MessageBlock";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("MessageBlock", () => {
+	it("keeps syntax colors on edit content while coloring the diff gutter", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "bound-edit-highlight-"));
+		const filePath = join(dir, "sample.ts");
+		const before = "const oldValue = 1;";
+		writeFileSync(filePath, before);
+		const anchor = formatWithHashes(before).split("|")[0];
+		const edits = [{ start: anchor, end: anchor, content: "const newValue = 2;" }];
+		const message = {
+			id: "call-highlight",
+			role: "tool_call" as const,
+			content: JSON.stringify([
+				{
+					type: "tool_use",
+					id: "edit-highlight",
+					name: "boundless_edit",
+					input: { file_path: filePath, edits },
+				},
+			]),
+			thread_id: "t-1",
+			created_at: new Date().toISOString(),
+		};
+		try {
+			const frame =
+				render(React.createElement(MessageBlock, { message, terminalColumns: 120 })).lastFrame() ??
+				"";
+			expect(frame).toContain("+ const newValue = 2;");
+			const source = await Bun.file("packages/less/src/tui/components/MessageBlock.tsx").text();
+			expect(source).toContain('<Text color={line.kind === "added" ? "green" : "red"}>');
+			expect(source).not.toMatch(/<HighlightedLine[\s\S]{0,160}color=\{line\.kind/);
+			expect(source).not.toContain('lang={lang} color="green"');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 	it("measures hashline edit stats from the real diff and renders removed text", () => {
 		const dir = mkdtempSync(join(tmpdir(), "bound-edit-diff-"));
 		const filePath = join(dir, "sample.ts");
