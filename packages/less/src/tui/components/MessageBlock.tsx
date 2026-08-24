@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type { ContentBlock } from "@bound/llm";
-import type { Message } from "@bound/shared";
+import { type Message, applyHashlineEdits } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
 import { isShellToolName } from "../../tools/shell";
@@ -224,8 +226,11 @@ export function summarizeToolArgs(toolName: string, input: Record<string, unknow
 	);
 }
 
-/** Shape of one hashline edit as carried in `boundless_edit` args. */
+/** Shape of one hashline edit as carried in edit args. */
 type HashlineEditArg = { start: string; end: string; content: string };
+
+type DiffLine = { kind: "same" | "added" | "removed"; text: string };
+type EditDiff = { lines: DiffLine[]; added: number; removed: number; measured: boolean };
 
 /** Narrow an unknown `edits` arg into the hashline edit list (best-effort). */
 function asHashlineEdits(raw: unknown): HashlineEditArg[] {
@@ -245,41 +250,126 @@ function asHashlineEdits(raw: unknown): HashlineEditArg[] {
 	return out;
 }
 
-/**
- * Render the body of a hashline `boundless_edit` tool call. Each edit shows
- * a removal header (`− 12:a3f1 → 14:9c8a · 3 lines`) followed by the
- * replacement lines as green adds. The removed TEXT isn't in the args by
- * design — hashline edits reference anchors instead of reproducing prior
- * content — but the anchors encode the removed SPAN, so the header wears the
- * red minus and the line count explicitly. That keeps the preview visually
- * consistent with the result row's `+N −M` stat: every − the stat claims has
- * a visible source line here. Hard-capped at EDIT_DIFF_MAX_LINES lines total.
- */
+function splitDiffLines(text: string): string[] {
+	if (text === "") return [];
+	return (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+}
+
+/** Small line-level LCS diff; edit previews are capped and source files are ordinary code files. */
+function lineDiff(before: string, after: string): DiffLine[] {
+	const a = splitDiffLines(before);
+	const b = splitDiffLines(after);
+	const lcs = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+	for (let i = a.length - 1; i >= 0; i--) {
+		for (let j = b.length - 1; j >= 0; j--) {
+			lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+		}
+	}
+	const lines: DiffLine[] = [];
+	let i = 0;
+	let j = 0;
+	while (i < a.length || j < b.length) {
+		if (i < a.length && j < b.length && a[i] === b[j]) {
+			lines.push({ kind: "same", text: a[i++] });
+			j++;
+		} else if (j < b.length && (i === a.length || lcs[i][j + 1] >= lcs[i + 1][j])) {
+			lines.push({ kind: "added", text: b[j++] });
+		} else {
+			lines.push({ kind: "removed", text: a[i++] });
+		}
+	}
+	return lines;
+}
+
+function estimateEditDiff(edits: HashlineEditArg[]): EditDiff {
+	let added = 0;
+	let removed = 0;
+	for (const edit of edits) {
+		added += edit.content === "" ? 0 : edit.content.split("\n").length;
+		const start = Number.parseInt(edit.start, 10);
+		const end = Number.parseInt(edit.end, 10);
+		if (Number.isFinite(start) && Number.isFinite(end)) removed += Math.max(0, end - start + 1);
+	}
+	return { lines: [], added, removed, measured: false };
+}
+
+function measureEditDiff(
+	filePath: string | null | undefined,
+	edits: HashlineEditArg[],
+	cwd?: string,
+): EditDiff {
+	const fallback = estimateEditDiff(edits);
+	if (!filePath || edits.length === 0) return fallback;
+	try {
+		const absolute = path.isAbsolute(filePath)
+			? filePath
+			: path.resolve(cwd ?? process.cwd(), filePath);
+		const before = readFileSync(absolute, "utf-8");
+		const applied = applyHashlineEdits(before, edits);
+		if (!applied.ok) return fallback;
+		const lines = lineDiff(before, applied.content);
+		return {
+			lines,
+			added: lines.filter((line) => line.kind === "added").length,
+			removed: lines.filter((line) => line.kind === "removed").length,
+			measured: true,
+		};
+	} catch {
+		return fallback;
+	}
+}
+
+/** Render a measured local edit diff, or the anchor estimate when the file cannot be read. */
 function HashlineEditsBody({
 	edits,
 	filePath,
+	cwd,
 }: {
 	edits: HashlineEditArg[];
 	filePath?: string | null;
+	cwd?: string;
 }): React.ReactElement | null {
 	if (edits.length === 0) return null;
 	const lang = langFromPath(filePath);
+	const diff = measureEditDiff(filePath, edits, cwd);
+	if (diff.measured) {
+		const changed = diff.lines.filter((line) => line.kind !== "same");
+		const visible = changed.slice(0, EDIT_DIFF_MAX_LINES);
+		return (
+			<Box flexDirection="column" paddingLeft={2}>
+				{visible.map((line, idx) => (
+					// biome-ignore lint/suspicious/noArrayIndexKey: diff lines are immutable per render
+					<Text key={idx} dimColor={line.kind === "removed"}>
+						<Text color={line.kind === "added" ? "green" : "red"}>
+							{line.kind === "added" ? "+ " : "− "}
+						</Text>
+						<HighlightedLine
+							line={expandTabs(line.text)}
+							lang={lang}
+							color={line.kind === "added" ? "green" : "red"}
+							dim={line.kind === "removed"}
+						/>
+					</Text>
+				))}
+				{changed.length > visible.length && (
+					<Text dimColor>⋯ {changed.length - visible.length} more lines</Text>
+				)}
+			</Box>
+		);
+	}
 
 	let budget = EDIT_DIFF_MAX_LINES;
 	const rows: React.ReactElement[] = [];
 	let truncatedLines = 0;
-
 	for (let ei = 0; ei < edits.length; ei++) {
 		const edit = edits[ei];
 		const range = edit.start === edit.end ? edit.start : `${edit.start} → ${edit.end}`;
 		const contentLines = edit.content === "" ? [] : expandTabs(edit.content).split("\n");
-
 		if (budget <= 0) {
 			truncatedLines += contentLines.length + 1;
 			continue;
 		}
 		budget--;
-		// Removed-span line count from the anchors (parseInt stops at ':').
 		const startLine = Number.parseInt(edit.start, 10);
 		const endLine = Number.parseInt(edit.end, 10);
 		const removedCount =
@@ -292,12 +382,11 @@ function HashlineEditsBody({
 				<Text dimColor>
 					{range}
 					{removedCount != null
-						? ` · ${removedCount} ${removedCount === 1 ? "line" : "lines"}`
+						? ` · ~${removedCount} ${removedCount === 1 ? "line" : "lines"}`
 						: ""}
 				</Text>
 			</Text>,
 		);
-
 		for (let li = 0; li < contentLines.length; li++) {
 			if (budget <= 0) {
 				truncatedLines += contentLines.length - li;
@@ -312,15 +401,10 @@ function HashlineEditsBody({
 			);
 		}
 	}
-
 	return (
 		<Box flexDirection="column" paddingLeft={2}>
 			{rows}
-			{truncatedLines > 0 && (
-				<Text dimColor>
-					⋯ {truncatedLines} more {truncatedLines === 1 ? "line" : "lines"}
-				</Text>
-			)}
+			{truncatedLines > 0 && <Text dimColor>⋯ {truncatedLines} more lines</Text>}
 		</Box>
 	);
 }
@@ -401,7 +485,7 @@ function ToolCallRow({
 					</Text>
 					<Text dimColor> {linkedPath}</Text>
 				</Text>
-				<HashlineEditsBody edits={edits} filePath={filePath} />
+				<HashlineEditsBody edits={edits} filePath={filePath} cwd={cwd} />
 			</Box>
 		);
 	}
@@ -857,23 +941,9 @@ export function MessageBlock({
 		) {
 			const isEdit = resolvedToolName.endsWith("_edit");
 			const editCount = Array.isArray(toolInput?.edits) ? toolInput.edits.length : null;
-			// Hashline anchors already encode the replaced span (`start: "12:aaaa",
-			// end: "14:bbbb"` = 3 lines out) and content encodes the lines in — so
-			// a real ±diff stat is computable from the args alone, no result
-			// parsing. Anchor line numbers parse leniently (parseInt stops at ':').
 			const hashEdits = isEdit ? asHashlineEdits(toolInput?.edits) : [];
-			let diffStat: { added: number; removed: number } | null = null;
-			if (hashEdits.length > 0) {
-				let added = 0;
-				let removed = 0;
-				for (const e of hashEdits) {
-					added += e.content === "" ? 0 : e.content.split("\n").length;
-					const s = Number.parseInt(e.start, 10);
-					const t = Number.parseInt(e.end, 10);
-					if (Number.isFinite(s) && Number.isFinite(t)) removed += Math.max(0, t - s + 1);
-				}
-				diffStat = { added, removed };
-			}
+			const editPath = typeof toolInput?.file_path === "string" ? toolInput.file_path : filePath;
+			const diffStat = hashEdits.length > 0 ? measureEditDiff(editPath, hashEdits, cwd) : null;
 			const writeLines =
 				typeof toolInput?.content === "string"
 					? toolInput.content.length === 0
@@ -912,7 +982,11 @@ export function MessageBlock({
 								<>
 									<Text dimColor> · </Text>
 									<Text color="green">+{diffStat.added}</Text>
-									<Text color="red"> −{diffStat.removed}</Text>
+									<Text color="red">
+										{" "}
+										−{diffStat.measured ? "" : "~"}
+										{diffStat.removed}
+									</Text>
 								</>
 							) : null}
 							{slow ? <DurationFragment ms={durationMs} /> : null}

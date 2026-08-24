@@ -1,4 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { formatWithHashes } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
 import { MessageBlock } from "../tui/components/MessageBlock";
@@ -7,6 +11,89 @@ import { MessageBlock } from "../tui/components/MessageBlock";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("MessageBlock", () => {
+	it("measures hashline edit stats from the real diff and renders removed text", () => {
+		const dir = mkdtempSync(join(tmpdir(), "bound-edit-diff-"));
+		const filePath = join(dir, "sample.ts");
+		const before = ["const keep = 1;", "const same = 2;", "const old = 3;", "const tail = 4;"].join(
+			"\n",
+		);
+		writeFileSync(filePath, before);
+		const lines = formatWithHashes(before).split("\n");
+		const edits = [
+			{
+				start: lines[0].split("|")[0],
+				end: lines[2].split("|")[0],
+				content: ["const keep = 1;", "const same = 2;", "const fresh = 3;"].join("\n"),
+			},
+		];
+		const call = {
+			id: "call-edit",
+			role: "tool_call" as const,
+			content: JSON.stringify([
+				{
+					type: "tool_use",
+					id: "edit-1",
+					name: "boundless_edit",
+					input: { file_path: filePath, edits },
+				},
+			]),
+			thread_id: "t-1",
+			created_at: new Date().toISOString(),
+		};
+		const result = {
+			...call,
+			id: "result-edit",
+			role: "tool_result" as const,
+			content: "Edited",
+			tool_name: "edit-1",
+		};
+		try {
+			const callFrame =
+				render(
+					React.createElement(MessageBlock, { message: call, terminalColumns: 120 }),
+				).lastFrame() ?? "";
+			expect(callFrame).toContain("const old = 3;");
+			const resultFrame =
+				render(
+					React.createElement(MessageBlock, {
+						message: result,
+						toolName: "boundless_edit",
+						toolInput: { file_path: filePath, edits },
+						filePath,
+						terminalColumns: 120,
+					}),
+				).lastFrame() ?? "";
+			expect(resultFrame).toContain("+1");
+			expect(resultFrame).toContain("−1");
+			expect(resultFrame).not.toContain("+3");
+			expect(resultFrame).not.toContain("−3");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("marks unreadable hashline removal counts as estimates", () => {
+		const edits = [{ start: "4:aaaa", end: "6:bbbb", content: "replacement" }];
+		const message = {
+			id: "result-remote-edit",
+			thread_id: "t-1",
+			role: "tool_result" as const,
+			content: "Edited",
+			tool_name: "edit-1",
+			created_at: new Date().toISOString(),
+		};
+		const frame =
+			render(
+				React.createElement(MessageBlock, {
+					message,
+					toolName: "bms_edit",
+					toolInput: { path: "/missing.ts", edits },
+					terminalColumns: 120,
+				}),
+			).lastFrame() ?? "";
+		expect(frame).toContain("−~3");
+	});
+
 	describe("tool_call rendering", () => {
 		it("formats tool_use blocks with tool names, not raw JSON", async () => {
 			const content = JSON.stringify([
@@ -791,9 +878,9 @@ describe("outcome fact fragments (creative round)", () => {
 		expect(lastFrame() ?? "").toContain("exit 127 (not found)");
 	});
 
-	it("renders a ±diff stat on edit results computed from hashline anchors", async () => {
-		// start 12 → end 14 = 3 lines out; 2 content lines in. Plus a
-		// single-line replacement: 1 out, 1 in. Total +3 −4.
+	it("marks anchor-derived edit result stats as estimates", async () => {
+		// The target is unreadable, so the line-hint arithmetic is explicitly
+		// approximate rather than presented as a measured diff.
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
 				message: {
@@ -820,15 +907,14 @@ describe("outcome fact fragments (creative round)", () => {
 		await tick();
 		const frame = lastFrame() ?? "";
 		expect(frame).toContain("+3");
-		expect(frame).toContain("−4");
+		expect(frame).toContain("−~4");
 	});
 });
 
 describe("edit preview removal headers", () => {
-	it("wears the minus and removed-line count so the ±stat has a visible source", async () => {
-		// Kara's report: the preview showed ONLY green + lines while the
-		// result stat claimed −7 — the minus had no visible source. The
-		// anchor header now carries it: `− 7:f872 → 13:5ede · 7 lines`.
+	it("marks the removal header count as estimated when source text is unavailable", async () => {
+		// Anchor line numbers are hints and may drift; without the pre-edit file,
+		// the header must not present their arithmetic as a measured count.
 		const content = JSON.stringify([
 			{
 				type: "tool_use",
@@ -854,7 +940,7 @@ describe("edit preview removal headers", () => {
 		);
 		await tick();
 		const frame = lastFrame() ?? "";
-		expect(frame).toContain("− 7:f872 → 13:5ede · 7 lines");
+		expect(frame).toContain("− 7:f872 → 13:5ede · ~7 lines");
 		expect(frame).not.toContain("@ 7:f872");
 	});
 });
