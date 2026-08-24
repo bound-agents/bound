@@ -27,8 +27,8 @@ import {
 	resolveDeferredToolResult,
 	updateClaimedBy,
 } from "../dispatch";
+import { findBackgroundPlaceholderDeliveryState } from "../repositories/messages";
 import { applySchema } from "../schema";
-
 let db: ReturnType<typeof createDatabase>;
 let dbPath: string;
 
@@ -1410,6 +1410,53 @@ describe("resolveDeferredToolResult", () => {
 			)
 			.get(placeholderId) as { table_name: string; row_id: string } | null;
 		expect(entry?.table_name).toBe("messages");
+	});
+
+	// #220: resolution stamps proof-of-delivery on the row itself so the
+	// dispatcher's clobber guard keys on "was the result delivered" instead of
+	// "was the in-flight marker present" (which has been observed missing).
+	it("stamps background_delivered and drops the in-flight marker on resolution", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-stamp";
+		const placeholderId = insertPlaceholder(threadId, callId);
+		db.run("UPDATE messages SET metadata = ? WHERE id = ?", [
+			JSON.stringify({ background: true, aux_thread: "child-1" }),
+			placeholderId,
+		]);
+
+		resolveDeferredToolResult(db, threadId, callId, "done", false, siteId);
+
+		const row = db.query("SELECT metadata FROM messages WHERE id = ?").get(placeholderId) as {
+			metadata: string;
+		};
+		const meta = JSON.parse(row.metadata) as Record<string, unknown>;
+		expect(meta.background_delivered).toBe(true);
+		expect(meta.background).toBeUndefined();
+		expect(meta.aux_thread).toBe("child-1");
+	});
+
+	// #220 defect 1 (observed live 2026-08-24, two placeholders in one batch):
+	// a placeholder that MISSED its `background` stamp entirely (metadata NULL)
+	// must still read as undelivered before resolution and delivered after —
+	// the fail-safe direction is to deliver.
+	it("treats an unstamped placeholder as undelivered, then delivered after resolution", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-nostamp";
+		const placeholderId = insertPlaceholder(threadId, callId); // metadata NULL — the missing-stamp shape
+
+		expect(findBackgroundPlaceholderDeliveryState(db, threadId, callId)).toEqual({
+			id: placeholderId,
+			delivered: false,
+		});
+
+		resolveDeferredToolResult(db, threadId, callId, "recovered result", false, siteId);
+
+		expect(findBackgroundPlaceholderDeliveryState(db, threadId, callId)?.delivered).toBe(true);
+		expect(contentOf(placeholderId).content).toBe("recovered result");
+	});
+
+	it("reports no delivery state when no placeholder row exists", () => {
+		expect(findBackgroundPlaceholderDeliveryState(db, randomUUID(), "call-none")).toBeNull();
 	});
 });
 // #201 — a NESTED (aux) loop resolves client tools inline and keeps running, so

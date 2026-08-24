@@ -597,6 +597,34 @@ export function findUnresolvedBackgroundPlaceholder(
 		.get(threadId, callId) as { id: string } | null;
 }
 
+/**
+ * #220: delivery state of the newest background placeholder for (thread, call_id).
+ *
+ * `resolveDeferredToolResult` stamps `background_delivered` when it lands the
+ * real result on the placeholder, so delivery is provable from the row itself.
+ * The dispatcher's clobber guard keys on THIS marker — not on the in-flight
+ * `background` marker — because the in-flight stamp has been observed missing
+ * (#220 defect 1), and requiring it inverted the guard into dropping the only
+ * delivery. Legacy placeholders resolved before the marker existed read as
+ * undelivered; the fail-safe direction is to deliver.
+ */
+export function findBackgroundPlaceholderDeliveryState(
+	db: Database,
+	threadId: string,
+	callId: string,
+): { id: string; delivered: boolean } | null {
+	const row = db
+		.query(
+			`SELECT id, json_extract(metadata, '$.background_delivered') AS delivered
+			 FROM messages
+			 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
+			 ORDER BY created_at DESC LIMIT 1`,
+		)
+		.get(threadId, callId) as { id: string; delivered: number | null } | null;
+	if (!row) return null;
+	return { id: row.id, delivered: row.delivered === 1 };
+}
+
 /** Includes tombstones because sync notifications describe the row just applied. */
 export function findMessageForSyncBroadcast<T>(db: Database, id: string): T | null {
 	return db.query("SELECT * FROM messages WHERE id = ?").get(id) as T | null;

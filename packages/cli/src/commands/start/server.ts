@@ -29,6 +29,7 @@ import {
 	expireClientToolCalls,
 	findAgentById,
 	findBackgroundAuxSeed,
+	findBackgroundPlaceholderDeliveryState,
 	findFreshPlatformHost,
 	findLatestTaskSettingsForThread,
 	findThreadAgentIdById,
@@ -76,7 +77,6 @@ import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 import type { AgentLoopFactory } from "./agent-factory.js";
 import { resolvePlatformToolsForThread } from "./platform-tools.js";
-
 export type { AgentLoopFactory } from "./agent-factory.js";
 
 const getTracer = () => trace.getTracer("bound.web");
@@ -506,17 +506,44 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				if (claimed.length === 0) return {};
 				const claimedIds = claimed.map((e) => e.message_id);
 
-				// Guard on the unresolved marker: a spurious re-wake after the
-				// placeholder already resolved must not clobber a delivered result
-				// with a duplicate (or a "not found" error).
+				// Guard on proof-of-delivery, not on the in-flight marker: a spurious
+				// re-wake after the placeholder already RESOLVED must not clobber a
+				// delivered result — but a placeholder that missed its `background`
+				// stamp (#220 defect 1, observed twice more on 2026-08-24) must still
+				// receive its only delivery. resolveDeferredToolResult stamps
+				// `background_delivered` when it lands a result, so "delivered" is
+				// provable from the row itself; anything else fails safe toward
+				// delivering. A missing row entirely is the placeholder-not-yet-
+				// persisted race, which resolveDeferredToolResult already handles
+				// (enqueue-only no-op).
 				const finishParent = (content: string, isError: boolean): void => {
-					if (
-						findUnresolvedBackgroundPlaceholder(
-							appContext.db,
-							seed.parentThreadId,
-							seed.parentCallId,
-						)
-					) {
+					const placeholder = findBackgroundPlaceholderDeliveryState(
+						appContext.db,
+						seed.parentThreadId,
+						seed.parentCallId,
+					);
+					if (!placeholder?.delivered) {
+						if (
+							placeholder &&
+							!findUnresolvedBackgroundPlaceholder(
+								appContext.db,
+								seed.parentThreadId,
+								seed.parentCallId,
+							)
+						) {
+							// The in-flight stamp is missing but the result is deliverable —
+							// keep the loud log so the stamp defect stays visible while the
+							// consequence (lost delivery) no longer occurs.
+							appContext.logger.error(
+								"[agent] Background placeholder missing its background stamp — delivering anyway (#220)",
+								{
+									parentThreadId: seed.parentThreadId,
+									parentCallId: seed.parentCallId,
+									auxThreadId: thread_id,
+									placeholderId: placeholder.id,
+								},
+							);
+						}
 						resolveDeferredToolResult(
 							appContext.db,
 							seed.parentThreadId,
@@ -527,21 +554,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							appContext.eventBus,
 						);
 					} else {
-						// #220: the guard exists to protect a DELIVERED result from a
-						// spurious re-wake — but when the placeholder was never stamped
-						// with the background marker, it inverts into silently dropping
-						// the only delivery (observed live: a completed migration sat
-						// unreported for 7h). Until the missing-stamp root cause is
-						// fixed, log loudly and push the recomputed count so a stale
-						// client indicator converges instead of sticking forever.
-						appContext.logger.error(
-							"[agent] Background aux result found no unresolved placeholder — result NOT delivered to parent",
+						// Already delivered — this is the spurious re-wake the guard exists
+						// for. Push the recomputed count so a stale client indicator
+						// converges, and leave the delivered result untouched.
+						appContext.logger.warn(
+							"[agent] Background aux re-wake after delivery — skipping duplicate resolution",
 							{
 								parentThreadId: seed.parentThreadId,
 								parentCallId: seed.parentCallId,
 								auxThreadId: thread_id,
-								isError,
-								contentHead: content.slice(0, 200),
 							},
 						);
 						appContext.eventBus.emit("background:count", {
