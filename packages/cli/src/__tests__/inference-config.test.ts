@@ -71,6 +71,13 @@ describe("toRouterConfig", () => {
 		expect(router.getThinkingConfig("opus")).toBeUndefined();
 	});
 
+	it("propagates `system_prompt_suffix` to the router", () => {
+		const cfg = bedrockOpusWithThinking();
+		cfg.backends[0].system_prompt_suffix = "Configured model only.";
+		const router = createModelRouter(toRouterConfig(cfg));
+		expect(router.getSystemPromptSuffix("opus")).toBe("Configured model only.");
+	});
+
 	it("propagates `max_output_tokens` so router.getMaxOutputTokens() returns it", () => {
 		// Nova Pro caps at 10_000; without this hand-off an explicit
 		// max_tokens above the ceiling lands at Bedrock and triggers

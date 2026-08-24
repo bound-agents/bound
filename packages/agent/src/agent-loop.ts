@@ -562,6 +562,10 @@ export class MainAgentLoop extends BoundAgentLoop {
 					truncationTargetTokens,
 					recentHardCeilingDeflator,
 					noHistory: this.config.noHistory,
+					systemPromptSuffix:
+						this.lastModelResolution?.kind === "local"
+							? this.lastModelResolution.systemPromptSuffix
+							: undefined,
 					systemPromptAddition: this.config.systemPromptAddition,
 					platformInstructions: this.config.platformInstructions,
 					commandRegistry: this.ctx.commandRegistry,

@@ -123,6 +123,7 @@ must be `""`.
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
 | `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |
 | `max_output_tokens` | int > 0 | absent | Per-backend output-token cap, applied as the lower of this value and the default limit. |
+| `system_prompt_suffix` | string | absent | Text appended to the system prompt only when this backend serves the turn. |
 | `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. Unsupported `1h` hints fall back to `5m`. |
 | `cache_warming` | cache-warming block | absent | Per-backend cache warming (see below). Absent disables warming for this backend. |
 | `connect_timeout_ms` | int > 0 | absent (off) | Deadline for receiving response headers. It applies on the host making the request and is not forwarded over the relay; streaming after headers uses separate timeout handling. |

@@ -117,6 +117,24 @@ describe("Config schemas", () => {
 			expect(invalid.success).toBe(false);
 		});
 
+		it("accepts an optional per-backend system prompt suffix", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "specialized",
+						provider: "bedrock",
+						model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+						region: "us-east-1",
+						context_window: 200_000,
+						tier: 1,
+						system_prompt_suffix: "Use the backend-specific policy.",
+					},
+				],
+				default: "specialized",
+			});
+			expect(result.success).toBe(true);
+		});
+
 		it("rejects empty backends array with non-empty default", () => {
 			const config = {
 				backends: [],

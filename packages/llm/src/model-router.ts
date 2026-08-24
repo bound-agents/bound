@@ -518,6 +518,11 @@ export class ModelRouter {
 		return typeof cap === "number" ? cap : undefined;
 	}
 
+	/** Returns the per-backend system prompt suffix, if configured. */
+	getSystemPromptSuffix(backendId: string): string | undefined {
+		return this.backendConfigs.get(backendId)?.systemPromptSuffix;
+	}
+
 	/**
 	 * Returns the per-backend prompt-cache TTL hint.
 	 *

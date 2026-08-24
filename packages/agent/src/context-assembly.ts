@@ -252,6 +252,8 @@ export interface ContextParams {
 	targetCapabilities?: BackendCapabilities;
 	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
 	toolTokenEstimate?: number;
+	/** Model-resolved text appended to the stable system prompt. */
+	systemPromptSuffix?: string;
 	/** Optional system prompt addition from client connection. Appended to system suffix. */
 	systemPromptAddition?: string;
 	/**
@@ -2029,6 +2031,7 @@ Original output was too large for the context window. If you need the full conte
 	// + skill index). Folding these into the `system` provider param keeps
 	// them inside the system-level cache breakpoint, so steady-state turns
 	// reuse the prefix across turns AND across threads (cron-task cache reuse).
+	if (params.systemPromptSuffix) systemParts.push(params.systemPromptSuffix);
 	const systemPrompt = systemParts.join("\n\n");
 
 	// Stage 7: BUDGET_VALIDATION
