@@ -244,6 +244,39 @@ describe("persisted Yard message reconstruction", () => {
 			}),
 		]);
 	});
+
+	it("uses the persisted Yard call ID when an ordinary result has no trace ID", async () => {
+		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
+		const completed = reconstructCompletedYardExecutions([
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "call_a378",
+						name: "yard",
+						input: { program: "function* main() { return { done: true }; }" },
+					},
+				]),
+			},
+			{
+				role: "tool_result",
+				tool_name: "call_a378",
+				content: JSON.stringify({ result: { done: true } }),
+			},
+		]);
+
+		expect(completed).toEqual([
+			expect.objectContaining({
+				traceId: "call_a378",
+				runId: "call_a378",
+				toolCallId: "call_a378",
+				phase: "completed",
+				compact: true,
+				resultPreview: JSON.stringify({ done: true }),
+			}),
+		]);
+	});
 });
 
 describe("message/live reconciliation", () => {
