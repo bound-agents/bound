@@ -75,8 +75,26 @@ investigator and overprompted to compensate.
 ## Defining and maintaining
 
 - `aux` action `define` — name, persona, optional `model_hint` and `tools`
-  allowlist. Pick the model for the role's demands (a reviewer wants a
-  strong reader; a scout can run cheaper).
+  allowlist.
+- **The model rides the identity.** Set `model_hint` from the
+  `<stable-context>` block's decision metadata (tier, context window, max
+  output — tier 1 is the most capable class), matched to the role's
+  demands:
+  - tier 1: judgment gates — reviewers, release owners, specialist
+    skeptics whose verdict other work waits on;
+  - tier 2: implementation and analysis — builders, investigators,
+    cartographers;
+  - tier 3: mechanical scatter — scouts, pattern scans, checklist
+    audits, watchers.
+  Every identity gets an explicit `model_hint`; an identity without one
+  falls back to the dispatching thread's default, which makes its cost
+  and capability depend on where it happens to be invoked from.
+- Do NOT override the model per invocation from orchestration code — a
+  Yard program or errand that passes `model` is routing around the
+  roster. If an override keeps feeling necessary, the fix is at the
+  definition: update the identity's `model_hint`, or the roster is
+  missing an identity (a checklist-shaped survey does not need the
+  reviewer's tier — define a scout instead).
 - `aux` action `update` — evolve a persona in place; the identity keeps its
   memory namespace.
 - `aux` action `retire` — one-shot identities named after a single errand
