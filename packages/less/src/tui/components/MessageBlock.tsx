@@ -578,6 +578,10 @@ export function StripeBox({
 	);
 }
 
+function formatCompactCount(value: number): string {
+	return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
+}
+
 export interface MessageBlockProps {
 	message: Message;
 	/**
@@ -755,6 +759,22 @@ export function MessageBlock({
 	}
 
 	if (message.role === "assistant") {
+		let cacheUsage: { read: number; write: number } | null = null;
+		try {
+			const metadata = JSON.parse(message.metadata ?? "null") as {
+				cache_usage?: { read?: unknown; write?: unknown };
+			} | null;
+			const read = metadata?.cache_usage?.read;
+			const write = metadata?.cache_usage?.write;
+			if (typeof read === "number" && typeof write === "number" && (read > 0 || write > 0)) {
+				cacheUsage = { read, write };
+			}
+		} catch {
+			// Malformed metadata is not card content.
+		}
+		const cacheFragment = cacheUsage
+			? `cache ${formatCompactCount(cacheUsage.read)} r / ${formatCompactCount(cacheUsage.write)} w`
+			: null;
 		return (
 			<StripeBox color="cyan" width={stripeWidth}>
 				<Text>
@@ -762,6 +782,7 @@ export function MessageBlock({
 						agent
 					</Text>
 					{activitySummary ? <Text dimColor> · {activitySummary}</Text> : null}
+					{cacheFragment ? <Text dimColor> · {cacheFragment}</Text> : null}
 				</Text>
 				{renderContent(parsedContent)}
 			</StripeBox>

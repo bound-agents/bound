@@ -8,6 +8,7 @@ import {
 	expireClientToolCallsForConnection,
 	findClientSessionIdById,
 	findFileByIdActive,
+	findLatestTurnCacheStateByThread,
 	findLiveClientSessionIdById,
 	findLiveThreadById,
 	findLiveThreadIdById,
@@ -323,11 +324,37 @@ export function createWebSocketHandler(
 		message: unknown;
 		thread_id: string;
 	}): void => {
+		let outboundMessage = data.message;
+		if (db && typeof data.message === "object" && data.message !== null) {
+			const message = data.message as Message;
+			if (message.role === "assistant") {
+				const cache = findLatestTurnCacheStateByThread(db, data.thread_id);
+				if (cache && ((cache.tokens_cache_read ?? 0) > 0 || (cache.tokens_cache_write ?? 0) > 0)) {
+					let metadata: Record<string, unknown> = {};
+					try {
+						const parsed = JSON.parse(message.metadata ?? "null");
+						if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) metadata = parsed;
+					} catch {
+						// Preserve delivery even when unrelated metadata is malformed.
+					}
+					outboundMessage = {
+						...message,
+						metadata: JSON.stringify({
+							...metadata,
+							cache_usage: {
+								read: cache.tokens_cache_read ?? 0,
+								write: cache.tokens_cache_write ?? 0,
+							},
+						}),
+					};
+				}
+			}
+		}
 		for (const [ws, conn] of clients) {
 			if (conn.subscriptions.has(data.thread_id)) {
 				const message = JSON.stringify({
 					type: "message:created",
-					data: data.message,
+					data: outboundMessage,
 				});
 				if (ws.readyState === 1) {
 					ws.send(message);

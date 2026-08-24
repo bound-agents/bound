@@ -11,6 +11,39 @@ import { MessageBlock } from "../tui/components/MessageBlock";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("MessageBlock", () => {
+	it("renders cache read/write usage on assistant cards and omits empty usage", () => {
+		const baseMessage = {
+			id: "assistant-cache",
+			thread_id: "t-1",
+			role: "assistant" as const,
+			content: "Done.",
+			model_id: "test-model",
+			tool_name: null,
+			created_at: new Date().toISOString(),
+			modified_at: null,
+			host_origin: "test",
+			deleted: 0,
+			exit_code: null,
+			metadata: JSON.stringify({ cache_usage: { read: 12_300, write: 400 } }),
+		};
+		const withCache =
+			render(
+				React.createElement(MessageBlock, {
+					message: baseMessage,
+					terminalColumns: 120,
+				}),
+			).lastFrame() ?? "";
+		const withoutCache =
+			render(
+				React.createElement(MessageBlock, {
+					message: { ...baseMessage, id: "assistant-no-cache", metadata: null },
+					terminalColumns: 120,
+				}),
+			).lastFrame() ?? "";
+
+		expect(withCache).toContain("cache 12.3k r / 0.4k w");
+		expect(withoutCache).not.toContain("cache");
+	});
 	it("renders aux tool results as clipped markdown with closed fences", () => {
 		const sourceLines = [
 			"# Aux report",
