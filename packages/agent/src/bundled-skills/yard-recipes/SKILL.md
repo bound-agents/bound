@@ -35,7 +35,13 @@ Effect results are ordinary JS values inside the program. Two rules:
 1. **Never interpolate an object into a string.** The guest throws at the
    coercion site (`` `${someObject}` `` is always data loss — it would embed
    `[object Object]`). `JSON.stringify()` the value, or extract the fields
-   you need.
+   you need. `String(x)` is the same trap wearing a helper's uniform —
+   aux/tool results can be structured objects, and `String(result)` /
+   `String(result).slice(0, n)` dies identically (observed live: a
+   well-shaped run built its verdicts input with
+   `String(reviews[i].value).slice(0, 6000)` inside a JSON.stringify'd
+   outer expression and lost the whole program at the synthesis step).
+   Truncate AFTER stringify: `JSON.stringify(value).slice(0, n)`.
 2. **`infer()` takes structured data via `request.input`**, not via prompt
    interpolation. The prompt says what to do; `input` carries the data.
 
@@ -472,6 +478,17 @@ Two notes that make this shape safe at migration scale:
   review). If the cap trips first, the result must say so as a blocked
   handoff — remaining objections, worktree state, exact failing
   commands — not as a completed run.
+- **A program bug read as a shape failure.** When a Yard dies on a
+  program-level error (a coercion guard, a schema violation, a typo), the
+  WORK is not lost — completed arms live in the worktree and their aux
+  threads — and the SHAPE is not wrong. Fix the one line and re-dispatch;
+  a repaired program can re-review existing diffs in minutes. Observed
+  live: a well-shaped lane program (per-role models, settled arms, review
+  gate, rework round) ran two full rounds, then died at the synthesis
+  step on `String(review.value)` — and instead of a one-line fix, the
+  orchestrator abandoned Yard entirely: foreground aux, background aux,
+  and ~90 own-loop bash calls absorbed the rest of the night. One
+  derailed car is a rerailing job, not a reason to close the line.
 
 ## Roster
 
