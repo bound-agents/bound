@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadConfigWithPrecedence } from "@bound/core";
+import { expandEnvVars, loadConfigWithPrecedence } from "@bound/core";
 import { modelBackendsSchema } from "@bound/shared";
 import type { ModelBackendsConfig } from "@bound/shared";
 import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
@@ -16,7 +16,7 @@ let quickJS: Promise<QuickJSWASMModule> | undefined;
 
 export type LoadedModelBackendsConfig = ModelBackendsConfig;
 
-type EvaluatedPricing = Array<string | undefined>;
+type EvaluatedPricing = Array<boolean>;
 
 function getQuickJS(): Promise<QuickJSWASMModule> {
 	quickJS ??= newQuickJSWASMModuleFromVariant(RELEASE_SYNC);
@@ -30,7 +30,7 @@ function errorMessage(value: unknown): string {
 	return String(value);
 }
 
-async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPricing> {
+async function loadDynamicPriceFunctions(source: string): Promise<Array<string | undefined>> {
 	const runtime = (await getQuickJS()).newRuntime();
 	runtime.setMemoryLimit(MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(STACK_LIMIT_BYTES);
@@ -38,16 +38,18 @@ async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPrici
 	runtime.setInterruptHandler(() => Date.now() > deadline);
 	const vm = runtime.newContext();
 	try {
-		const body = source.replace(/\bexport\s+default\s+/, "return (").replace(/;?\s*$/, ");");
+		// Dynamic prices are evaluated afresh in the hardened pricing VM. Keep the
+		// complete module body there so callbacks retain config-module helpers.
+		const body = source.replace(/\bexport\s+default\s+/, "const config =");
 		const result = vm.evalCode(
 			`(() => {
 				"use strict";
-				const config = (() => { ${body} })();
+				${body}
 				if (!config || typeof config !== "object" || !Array.isArray(config.backends)) {
 					throw new Error("model_backends.js export must contain a backends array");
 				}
 				return config.backends.map((backend, index) => {
-					if (!backend || typeof backend !== "object") return undefined;
+					if (!backend || typeof backend !== "object") return false;
 					for (const [key, value] of Object.entries(backend)) {
 						if (typeof value === "function" && key !== "price") {
 							throw new Error("only backend.price may be a function");
@@ -56,14 +58,7 @@ async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPrici
 					if (backend.price !== undefined && typeof backend.price !== "function") {
 						throw new Error(\`backend[\${index}].price must be a function\`);
 					}
-					if (backend.price === undefined) return undefined;
-					const priceSource = backend.price.toString();
-					// Method shorthand ("price(turn) { ... }") is not a valid expression on
-					// its own; prefix the function keyword. Arrows and function
-					// declarations are already evaluable and pass through unchanged.
-					return /^[A-Za-z_$][\\w$]*\\s*\\(/.test(priceSource)
-						? "function " + priceSource
-						: priceSource;
+					return backend.price !== undefined;
 				});
 			})()`,
 			"model_backends.js",
@@ -73,9 +68,13 @@ async function loadDynamicPriceFunctions(source: string): Promise<EvaluatedPrici
 			result.error.dispose();
 			throw new Error(errorMessage(error));
 		}
-		const value = vm.dump(result.value) as EvaluatedPricing;
+		const hasPrice = vm.dump(result.value) as EvaluatedPricing;
 		result.value.dispose();
-		return value;
+		return hasPrice.map((present, index) =>
+			present
+				? `(() => { "use strict"; ${body}\nreturn config.backends[${index}].price; })()`
+				: undefined,
+		);
 	} finally {
 		vm.dispose();
 		runtime.dispose();
@@ -90,11 +89,12 @@ export async function loadModelBackendsConfig(
 	if (!result.ok) {
 		// Preserve source-level policy errors (functions other than backend.price)
 		// which QuickJS serialization would otherwise erase before schema validation.
-		if (existsSync(jsPath)) await loadDynamicPriceFunctions(readFileSync(jsPath, "utf8"));
+		if (existsSync(jsPath))
+			await loadDynamicPriceFunctions(expandEnvVars(readFileSync(jsPath, "utf8")));
 		throw new Error(`${result.error.filename}: ${result.error.message}`);
 	}
 	const priceFunctions = existsSync(jsPath)
-		? await loadDynamicPriceFunctions(readFileSync(jsPath, "utf8"))
+		? await loadDynamicPriceFunctions(expandEnvVars(readFileSync(jsPath, "utf8")))
 		: [];
 	await compileDynamicPricing(
 		result.value.backends.map((backend, index) => ({
