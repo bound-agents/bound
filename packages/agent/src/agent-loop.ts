@@ -9,6 +9,7 @@ import { countContentTokens, countTokens, formatError } from "@bound/shared";
 import { context, trace } from "@opentelemetry/api";
 
 import {
+	acquireSummaryBackendWithFallback,
 	convertDeltaMessages,
 	deltaRequiresColdReassembly,
 	getResolvedModelId,
@@ -251,13 +252,14 @@ export class MainAgentLoop extends BoundAgentLoop {
 	protected override async afterRun(): Promise<void> {
 		await super.afterRun();
 
-		const primarySummaryModelId = this.modelRouter.getDefaultId();
-		const fallbackSummaryModelId = getResolvedModelId(
-			this.lastModelResolution,
-			this.config.modelId ?? "",
+		const turnModelId = getResolvedModelId(this.lastModelResolution, this.config.modelId ?? "");
+		const defaultModelId = this.modelRouter.getDefaultId();
+		const extractionBackend = acquireSummaryBackendWithFallback(
+			turnModelId,
+			defaultModelId,
+			this.modelRouter.listBackends().map((backend) => backend.id),
+			(modelId) => this.acquireSummaryBackend(modelId),
 		);
-		const summaryModelId = primarySummaryModelId || fallbackSummaryModelId;
-		const extractionBackend = this.acquireSummaryBackend(summaryModelId);
 		if (extractionBackend) {
 			extractSummaryAndMemories(
 				this.ctx.db,
@@ -273,7 +275,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 		} else {
 			this.ctx.logger.info("Skipping summary extraction \u2014 model unresolvable cluster-wide", {
 				threadId: this.config.threadId,
-				summaryModelId,
+				summaryModelId: turnModelId || defaultModelId,
 			});
 		}
 	}
