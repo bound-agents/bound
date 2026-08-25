@@ -2,6 +2,17 @@ import type { YardExecutionEvent, YardExecutionNode } from "@bound/shared";
 
 export type YardNodePhase = "unknown" | "started" | "completed" | "failed" | "settled";
 
+export interface YardNodeDetail {
+	[key: string]: unknown;
+	program?: string;
+	args?: string;
+	prompt?: string;
+	instructions?: string;
+	schema?: boolean;
+	result?: string;
+	hint?: string;
+}
+
 export interface YardNodeState {
 	id: string;
 	parentId: string | null;
@@ -12,6 +23,7 @@ export interface YardNodeState {
 	summary?: string;
 	startedAt?: string;
 	finishedAt?: string;
+	detail?: YardNodeDetail;
 }
 
 export interface YardTreeSnapshot {
@@ -220,6 +232,7 @@ export function extractYardProgramTopology(
 		phase: "unknown",
 		seq: 0,
 		startSeq: 0,
+		detail: program ? { program: program.slice(0, 200) } : undefined,
 	};
 	if (!program) return [root];
 	type Call = {
@@ -229,6 +242,7 @@ export function extractYardProgramTopology(
 		literal?: string;
 		id: string;
 		node: YardExecutionNode;
+		detail?: YardNodeDetail;
 	};
 	const closeParen = (open: number): number => {
 		let depth = 0;
@@ -256,6 +270,26 @@ export function extractYardProgramTopology(
 		const open = start + match[0].length - 1;
 		const body = program.slice(open + 1, closeParen(open));
 		const literal = body.match(/^\s*["'`]([^"'`]*)["'`]/)?.[1];
+		const rest = body
+			.slice((body.match(/^\s*["'`][^"'`]*["'`]/)?.[0] ?? "").length)
+			.replace(/^\s*,\s*/, "");
+		const quotedSecond = rest.match(/^["'`]([^"'`]*)["'`]/)?.[1];
+		const bounded = (value: string | undefined) => value?.slice(0, 200);
+		const detail =
+			kind === "tool"
+				? {
+						args: rest.startsWith("{")
+							? bounded(rest.slice(0, rest.indexOf("}") + 1 || rest.length))
+							: "dynamic",
+					}
+				: kind === "infer"
+					? {
+							prompt: bounded(rest.match(/prompt\s*:\s*["'`]([^"'`]*)["'`]/)?.[1]) ?? "dynamic",
+							schema: /\bschema\s*:/.test(rest),
+						}
+					: kind === "aux"
+						? { instructions: bounded(quotedSecond) ?? "dynamic" }
+						: undefined;
 		const node =
 			kind === "tool"
 				? ({ kind: "tool", name: literal ?? "tool (dynamic)" } as const)
@@ -273,6 +307,7 @@ export function extractYardProgramTopology(
 			literal,
 			id: `${runId}:static:${++sequence}`,
 			node,
+			detail,
 		});
 	}
 	const nodes = [
@@ -292,6 +327,7 @@ export function extractYardProgramTopology(
 				id: call.id,
 				parentId: parent?.id ?? root.id,
 				node: call.node,
+				detail: call.detail,
 				phase: "unknown" as const,
 				seq: index + 1,
 				startSeq: index + 1,

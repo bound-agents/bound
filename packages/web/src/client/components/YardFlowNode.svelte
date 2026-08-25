@@ -5,13 +5,13 @@ const { data }: NodeProps = $props();
 const yard = $derived(
 	data as {
 		label: string;
-		kind: "run" | "tool" | "inference" | "aux" | "unknown";
+		kind: "run" | "tool" | "inference" | "aux" | "unknown" | "result";
 		phase: "unknown" | "started" | "completed" | "failed" | "settled";
 		summary?: string;
 	},
 );
 const kindIcon = $derived(
-	{ run: "◆", tool: "⚙", inference: "✦", aux: "⇄", unknown: "?" }[yard.kind],
+	{ run: "◆", tool: "⚙", inference: "✦", aux: "⇄", unknown: "?", result: "⊣" }[yard.kind],
 );
 const statusIcon = $derived(
 	{ unknown: "○", started: "◌", completed: "✓", failed: "!", settled: "•" }[yard.phase],
@@ -28,7 +28,7 @@ const statusText = $derived(
 </script>
 
 <Handle type="target" position={Position.Left} aria-label="Input" />
-<article class="yard-flow-node {yard.kind} {yard.phase}" aria-label={`${yard.label}, ${statusText}`}>
+<button class="yard-flow-node {yard.kind} {yard.phase}" aria-label={`${yard.label}, ${statusText}. Open details`} aria-expanded="false">
 	<span class="rail" aria-hidden="true"></span>
 	<div class="node-row node-head">
 		<span class="kind-icon" aria-hidden="true">{kindIcon}</span>
@@ -36,7 +36,7 @@ const statusText = $derived(
 	</div>
 	<div class="node-row status"><span class="status-icon" aria-hidden="true">{statusIcon}</span><span>{statusText}</span></div>
 	{#if yard.summary}<p>{yard.summary}</p>{/if}
-</article>
+</button>
 <Handle type="source" position={Position.Right} aria-label="Output" />
 
 <style>
@@ -55,6 +55,8 @@ const statusText = $derived(
 		box-shadow: 2px 2px 0 color-mix(in srgb, var(--ink) 8%, transparent);
 		color: var(--ink);
 		font: 12px var(--font-mono);
+		text-align: left;
+		cursor: pointer;
 	}
 	.rail { position: absolute; inset: -1px auto -1px -1px; width: 4px; border-radius: 6px 0 0 6px; background: var(--kind); }
 	.node-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; align-items: center; min-width: 0; }
@@ -68,6 +70,8 @@ const statusText = $derived(
 	.inference { --kind: var(--line-9); }
 	.aux { --kind: var(--line-7); }
 	.unknown { --kind: var(--idle); }
+	.result { --kind: var(--line-2); border-style: double; background: color-mix(in srgb, var(--paper) 86%, var(--line-2)); }
+	.yard-flow-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 	.started { --state: var(--warn); }
 	.completed { --state: var(--ok); }
 	.settled { --state: var(--idle); }
