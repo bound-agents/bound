@@ -16,8 +16,10 @@ The Bound web UI runs on the web server, which defaults to
 interactive inline execution trees: nodes update from the lifecycle stream, show running,
 completed, or failed status, and can be panned or zoomed. The tree stays under its originating
 Yard call when that call is available; a tree that arrives first remains safely at the end of the
-conversation. Execution trees are live-only: lifecycle events are not persisted or replayed, so
-reloading or reconnecting during a run shows only events received after the connection resumes.
+conversation. Active trees reconnect from the server's in-memory replay buffer when available.
+Completed trees rebuild after reload from the normalized graph stored in the existing Yard
+tool-result message, so their full completed topology survives a server restart without a separate
+persistence layer. Older results retain a compact final card.
 Threads opened from **System Map** appear here.
 
 **Related documentation:** [Agent system](/bound/concepts/agent-system/) explains how a

@@ -13,7 +13,7 @@ export interface YardNodeState {
 }
 
 export interface YardTreeSnapshot {
-	/** Reconstructed from persisted tool messages; per-effect history is unavailable. */
+	/** Older persisted results without an execution payload render as a compact final card. */
 	compact?: boolean;
 	traceId: string;
 	runId: string;
@@ -160,7 +160,85 @@ export interface YardMessageLike {
 
 type ToolUse = { id?: unknown; name?: unknown; input?: unknown };
 
-type YardResult = { trace_id?: unknown; result?: unknown };
+type PersistedYardNode = {
+	id?: unknown;
+	parent_id?: unknown;
+	seq?: unknown;
+	start_seq?: unknown;
+	phase?: unknown;
+	node?: unknown;
+	started_at?: unknown;
+	finished_at?: unknown;
+	summary?: unknown;
+};
+
+type PersistedYardExecution = {
+	version?: unknown;
+	trace_id?: unknown;
+	run_id?: unknown;
+	phase?: unknown;
+	nodes?: unknown;
+};
+
+type YardResult = { trace_id?: unknown; result?: unknown; execution?: PersistedYardExecution };
+
+function isPhase(value: unknown): value is YardNodeState["phase"] {
+	return value === "started" || value === "completed" || value === "failed";
+}
+
+function isNode(value: unknown): value is YardExecutionNode {
+	if (!value || typeof value !== "object") return false;
+	const node = value as Record<string, unknown>;
+	return (
+		(node.kind === "run" && typeof node.depth === "number") ||
+		(node.kind === "tool" && typeof node.name === "string") ||
+		(node.kind === "inference" && typeof node.model === "string")
+	);
+}
+
+function decodeExecution(execution: PersistedYardExecution | undefined):
+	| {
+			traceId: string;
+			runId: string;
+			phase: YardTreeSnapshot["phase"];
+			nodes: YardNodeState[];
+	  }
+	| undefined {
+	if (!execution || execution.version !== 1 || typeof execution.trace_id !== "string")
+		return undefined;
+	if (execution.phase !== "completed" && execution.phase !== "failed") return undefined;
+	if (!Array.isArray(execution.nodes)) return undefined;
+	const nodes: YardNodeState[] = [];
+	for (const raw of execution.nodes as PersistedYardNode[]) {
+		if (
+			typeof raw.id !== "string" ||
+			(raw.parent_id !== null && typeof raw.parent_id !== "string") ||
+			typeof raw.seq !== "number" ||
+			(raw.start_seq !== undefined && typeof raw.start_seq !== "number") ||
+			!isPhase(raw.phase) ||
+			!isNode(raw.node)
+		)
+			continue;
+		nodes.push({
+			id: raw.id,
+			parentId: raw.parent_id,
+			node: raw.node,
+			phase: raw.phase,
+			seq: raw.seq,
+			startSeq: typeof raw.start_seq === "number" ? raw.start_seq : raw.seq,
+			summary: typeof raw.summary === "string" ? raw.summary : undefined,
+			startedAt: typeof raw.started_at === "string" ? raw.started_at : undefined,
+			finishedAt: typeof raw.finished_at === "string" ? raw.finished_at : undefined,
+		});
+	}
+	if (nodes.length === 0) return undefined;
+	return {
+		traceId: execution.trace_id,
+		runId: typeof execution.run_id === "string" ? execution.run_id : execution.trace_id,
+		phase: execution.phase,
+		nodes: nodes.sort((a, b) => a.startSeq - b.startSeq),
+	};
+}
 
 function parseJson(value: string): unknown {
 	try {
@@ -172,8 +250,8 @@ function parseJson(value: string): unknown {
 
 /**
  * Rebuilds completed Yard cards from the durable tool-call/result transcript.
- * The transcript does not retain individual effect events, so these are
- * deliberately compact root-only summaries rather than synthetic flow graphs.
+ * Newer results carry a safe normalized execution graph; older results retain
+ * a compact final card rather than fabricating effect history.
  */
 export function reconstructCompletedYardExecutions(
 	messages: YardMessageLike[],
@@ -195,21 +273,22 @@ export function reconstructCompletedYardExecutions(
 			if (!resultMessage) continue;
 			const result = parseJson(resultMessage.content) as YardResult | undefined;
 			const traceId = typeof result?.trace_id === "string" ? result.trace_id : block.id;
+			const execution = decodeExecution(result?.execution);
 			const input = block.input as { program?: unknown } | undefined;
 			const programPreview = typeof input?.program === "string" ? input.program : undefined;
 			const resultPreview =
 				result?.result === undefined ? resultMessage.content : JSON.stringify(result.result);
 			completed.push({
-				traceId,
-				runId: traceId,
-				phase: "completed",
-				compact: true,
+				traceId: execution?.traceId ?? traceId,
+				runId: execution?.runId ?? traceId,
+				phase: execution?.phase ?? "completed",
+				compact: execution === undefined,
 				programPreview,
 				resultPreview,
 				toolCallId: block.id,
 				startedAt: message.created_at,
 				finishedAt: resultMessage.created_at,
-				nodes: [],
+				nodes: execution?.nodes ?? [],
 			});
 		}
 	}
