@@ -232,7 +232,7 @@ export function extractYardProgramTopology(
 		phase: "unknown",
 		seq: 0,
 		startSeq: 0,
-		detail: program ? { program: program.slice(0, 200) } : undefined,
+		detail: program ? { program } : undefined,
 	};
 	if (!program) return [root];
 	type Call = {
@@ -423,10 +423,45 @@ export function reconcileYardExecutions(
 	messages: YardMessageLike[],
 ): YardExecutionState {
 	const reconstructed = reconstructCompletedYardExecutions(messages);
-	if (reconstructed.length === 0) return state;
+	const programsByCallId = new Map<string, string>();
+	for (const message of messages) {
+		if (message.role !== "tool_call") continue;
+		const blocks = parseJson(message.content);
+		if (!Array.isArray(blocks)) continue;
+		for (const block of blocks as ToolUse[]) {
+			const input = block.input as { program?: unknown } | undefined;
+			if (
+				block.name === "yard" &&
+				typeof block.id === "string" &&
+				typeof input?.program === "string"
+			)
+				programsByCallId.set(block.id, input.program);
+		}
+	}
 	const traceIds = new Set(reconstructed.map((tree) => tree.traceId));
 	const live = new Map(state.live);
-	for (const traceId of traceIds) live.delete(traceId);
+	let changed = false;
+	for (const [traceId, tree] of state.live) {
+		if (traceIds.has(traceId)) {
+			live.delete(traceId);
+			changed = true;
+			continue;
+		}
+		const program = tree.toolCallId ? programsByCallId.get(tree.toolCallId) : undefined;
+		if (!program || tree.programPreview === program) continue;
+		live.set(traceId, {
+			...tree,
+			programPreview: program,
+			nodes: tree.nodes.map((node) =>
+				node.node.kind === "run" && node.parentId === null
+					? { ...node, detail: { ...node.detail, program } }
+					: node,
+			),
+		});
+		changed = true;
+	}
+	if (reconstructed.length === 0 && !changed) return state;
+
 	return {
 		...state,
 		live,
