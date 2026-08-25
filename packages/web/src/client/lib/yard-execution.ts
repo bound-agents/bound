@@ -1,10 +1,12 @@
 import type { YardExecutionEvent, YardExecutionNode } from "@bound/shared";
 
+export type YardNodePhase = "unknown" | "started" | "completed" | "failed" | "settled";
+
 export interface YardNodeState {
 	id: string;
 	parentId: string | null;
 	node: YardExecutionNode;
-	phase: "unknown" | "started" | "completed" | "failed";
+	phase: YardNodePhase;
 	seq: number;
 	startSeq: number;
 	summary?: string;
@@ -40,6 +42,24 @@ export const EMPTY_YARD_STATE: YardExecutionState = {
 	seenTerminalRoots: new Set(),
 	pending: new Map(),
 };
+
+export interface YardProgress {
+	total: number;
+	settled: number;
+	failed: number;
+	running: number;
+}
+
+/** Counts terminal presentation states without treating them as individual successes. */
+export function yardProgress(tree: YardTreeSnapshot): YardProgress {
+	return {
+		total: tree.nodes.length,
+		settled: tree.nodes.filter((node) => ["completed", "failed", "settled"].includes(node.phase))
+			.length,
+		failed: tree.nodes.filter((node) => node.phase === "failed").length,
+		running: tree.nodes.filter((node) => node.phase === "started").length,
+	};
+}
 
 function snapshotNodes(nodes: Map<string, YardNodeState>): YardNodeState[] {
 	return [...nodes.values()].sort((a, b) => a.startSeq - b.startSeq).map((node) => ({ ...node }));
@@ -298,7 +318,7 @@ export function overlayYardLifecycle(
 	for (const event of events.sort((a, b) => a.seq - b.seq)) {
 		const candidate = nodes.find(
 			(node) =>
-				node.phase === "unknown" &&
+				(node.phase === "unknown" || node.phase === "settled") &&
 				node.node.kind === event.node.kind &&
 				(node.node.kind !== "tool" ||
 					event.node.kind !== "tool" ||
@@ -350,7 +370,11 @@ export function reconstructCompletedYardExecutions(
 				toolCallId: block.id,
 				startedAt: message.created_at,
 				finishedAt: resultMessage.created_at,
-				nodes: extractYardProgramTopology(programPreview, traceId),
+				nodes: extractYardProgramTopology(programPreview, traceId).map((node) => ({
+					...node,
+					// A durable result proves the run settled, not which effects succeeded.
+					phase: "settled",
+				})),
 			});
 		}
 	}

@@ -1,7 +1,7 @@
 import type { YardTreeSnapshot } from "./yard-execution";
 
 export type YardFlowKind = "run" | "tool" | "inference" | "unknown";
-export type YardFlowPhase = "unknown" | "started" | "completed" | "failed";
+export type YardFlowPhase = "unknown" | "started" | "completed" | "failed" | "settled";
 
 export interface YardFlowNode {
 	id: string;
